@@ -21,6 +21,7 @@ import {
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  LEGGINGS_CASUAL_BLUEPRINT_ID,
   type PlacerEditor,
   type PrintFileLayout,
   type GarmentLayout,
@@ -201,6 +202,15 @@ export default function FreshStartDialog({ open, onOpenChange, onConfirm, onLoad
                   onClick={() => setBlueprintId(String(ZIP_HOODIE_BLUEPRINT_ID))}
                 >
                   Zip 451
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => setBlueprintId(String(LEGGINGS_CASUAL_BLUEPRINT_ID))}
+                >
+                  Leggings 256
                 </Button>
                 <Button
                   type="button"

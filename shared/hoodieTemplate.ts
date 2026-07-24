@@ -114,6 +114,15 @@ export function bomberPatternPrintTileScaleForPanel(
   return 1;
 }
 
+/** Printify blueprint 256 — Women's Cut & Sew Casual Leggings (AOP). */
+export const LEGGINGS_CASUAL_BLUEPRINT_ID = 256;
+/** Printify blueprint 1050 — Women's Cut & Sew Capri Leggings (AOP); legs only, no waistbands. */
+export const LEGGINGS_CAPRI_BLUEPRINT_ID = 1050;
+export const LEGGINGS_BLUEPRINT_IDS: readonly number[] = [
+  LEGGINGS_CASUAL_BLUEPRINT_ID,
+  LEGGINGS_CAPRI_BLUEPRINT_ID,
+];
+
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**
@@ -170,7 +179,32 @@ export type HoodiePanelKey =
   | "left_hood"
   | "right_hood"
   | "waistband"
-  | "back";
+  | "back"
+  /** Leggings Printify `left_side` (alias `left_leg`). Wearer's left leg. */
+  | "left_side"
+  /** Leggings Printify `right_side` (alias `right_leg`). Wearer's right leg. */
+  | "right_side"
+  /**
+   * Legacy PatternCustomizer mask slots only — bp 256 Printify has no separate
+   * waistband print files (inner waistband is the top of left/right_side).
+   * Kept on the type so old templates don't crash; not offered in the mapper.
+   */
+  | "front_waistband"
+  | "back_waistband";
+
+/** Panel keys only used by cut-and-sew leggings blueprints. */
+export const LEGGINGS_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "left_side",
+  "right_side",
+  "front_waistband",
+  "back_waistband",
+];
+
+/** Printify-uploadable leggings panels (bp 256 / 1050). */
+export const LEGGINGS_PRINTIFY_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "left_side",
+  "right_side",
+];
 
 export type HoodieToolId =
   | "move"
@@ -981,6 +1015,17 @@ export function isZipHoodieBlueprint(blueprintId: number | null | undefined): bo
   return blueprintId === ZIP_HOODIE_BLUEPRINT_ID;
 }
 
+export function isLeggingsBlueprint(blueprintId: number | null | undefined): boolean {
+  return (
+    blueprintId === LEGGINGS_CASUAL_BLUEPRINT_ID ||
+    blueprintId === LEGGINGS_CAPRI_BLUEPRINT_ID
+  );
+}
+
+export function isCasualLeggingsBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === LEGGINGS_CASUAL_BLUEPRINT_ID;
+}
+
 export function isBomberJacketBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === BOMBER_JACKET_BLUEPRINT_ID;
 }
@@ -1023,6 +1068,8 @@ export function resolvePlacerEditor(
   template: PlacerEditorTemplateLike | null | undefined,
 ): PlacerEditor {
   if (!template) return "hoodie";
+  // Leggings always use the multi-panel hoodie placer (not pillow front/back faces).
+  if (isLeggingsBlueprint(template.blueprintId)) return "hoodie";
   if (template.placerEditor === "hoodie" || template.placerEditor === "front-back-face") {
     return template.placerEditor;
   }
@@ -1035,7 +1082,8 @@ export function resolvePlacerEditor(
       ids.has("front-face") &&
       ids.has("back-face") &&
       !ids.has("front-body") &&
-      !ids.has("hood")
+      !ids.has("hood") &&
+      !ids.has("left-leg")
     ) {
       return "front-back-face";
     }
@@ -1132,7 +1180,45 @@ const PILLOW_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
   "left_hood",
   "right_hood",
   "waistband",
+  ...LEGGINGS_PANEL_KEYS,
 ];
+
+/**
+ * Design groups for cut-and-sew leggings (bp 256 / 1050).
+ * Printify only uploads `left_side` / `right_side` — waistband art is the top
+ * of those panels (include it in the leg mesh), not separate print files.
+ */
+export function defaultLeggingsDesignGroups(
+  _blueprintId?: number | null,
+): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  return [
+    {
+      id: "left-leg",
+      name: "Left leg",
+      panelKeys: ["left_side"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-leg",
+      name: "Right leg",
+      panelKeys: ["right_side"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+}
+
+function designGroupsLookLikeLeggings(groups: DesignGroup[] | undefined): boolean {
+  if (!groups?.length) return false;
+  const ids = new Set(groups.map((g) => g.id));
+  return ids.has("left-leg") && ids.has("right-leg");
+}
 
 export function defaultPillowWrapDesignGroups(): DesignGroup[] {
   const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
@@ -1187,6 +1273,7 @@ export function designGroupsForBlueprint(
   garmentLayout?: GarmentLayout | null,
 ): DesignGroup[] {
   if (isPillowWrapBlueprint(blueprintId)) return defaultPillowWrapDesignGroups();
+  if (isLeggingsBlueprint(blueprintId)) return defaultLeggingsDesignGroups(blueprintId);
   const layout =
     garmentLayout ??
     (isSweatshirtBlueprint(blueprintId) ? "jumper-no-hood" : "hoodie");
@@ -1233,6 +1320,11 @@ export function panelsEligibleForView(
   garmentLayout?: GarmentLayout | null,
 ): readonly HoodiePanelKey[] {
   const all = PANELS_PER_VIEW[view];
+  if (isLeggingsBlueprint(blueprintId)) {
+    // Same on front/back views — each view gets a mesh for the visible half
+    // of the shared left_side / right_side Printify panel.
+    return [...LEGGINGS_PRINTIFY_PANEL_KEYS];
+  }
   const frontBackFace =
     placerEditor === "front-back-face" ||
     (placerEditor == null && isPillowWrapBlueprint(blueprintId));
@@ -1241,17 +1333,19 @@ export function panelsEligibleForView(
   }
   const jumperPanels =
     garmentLayout === "jumper-no-hood" || isSweatshirtBlueprint(blueprintId);
+  const withoutLeggings = (keys: readonly HoodiePanelKey[]) =>
+    keys.filter((k) => !LEGGINGS_PANEL_KEYS.includes(k));
   if (jumperPanels) {
-    return all.filter((k) => !SWEATSHIRT_EXCLUDED_PANEL_KEYS.includes(k));
+    return withoutLeggings(all.filter((k) => !SWEATSHIRT_EXCLUDED_PANEL_KEYS.includes(k)));
   }
-  if (view !== "front") return all;
+  if (view !== "front") return withoutLeggings(all);
   if (isPulloverHoodieBlueprint(blueprintId)) {
-    return all.filter((k) => !ZIP_ONLY_FRONT_PANEL_KEYS.includes(k));
+    return withoutLeggings(all.filter((k) => !ZIP_ONLY_FRONT_PANEL_KEYS.includes(k)));
   }
   if (isZipHoodieBlueprint(blueprintId) || isBomberJacketBlueprint(blueprintId)) {
-    return all.filter((k) => k !== "front");
+    return withoutLeggings(all.filter((k) => k !== "front"));
   }
-  return all;
+  return withoutLeggings(all);
 }
 
 /**
@@ -1266,6 +1360,7 @@ export function hoodiePanelKeyToPrintifyPosition(panelKey: HoodiePanelKey): stri
   if (panelKey === "collar_front" || panelKey === "collar_back") return "Collar";
   // Printify catalog bp 450 names the kangaroo slot `pocket`.
   if (panelKey === "front_pocket") return "pocket";
+  // Leggings catalog uses `left_side` / `right_side` (also aliased as left_leg / right_leg).
   return panelKey;
 }
 
@@ -1357,7 +1452,19 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
   } else if (isSweatshirtBlueprint(template.blueprintId)) {
     designGroups = migrateSweatshirtDesignGroups(designGroups);
   }
-  if (placerEditor === "front-back-face") {
+  if (isLeggingsBlueprint(template.blueprintId)) {
+    // Heal templates started as pillow front/back-face before leggings keys existed.
+    // Also drop obsolete separate waistband groups (waistband is part of leg panels).
+    const hasWaistbandGroup = designGroups.some(
+      (g) => g.id === "front-waistband" || g.id === "back-waistband",
+    );
+    if (!designGroupsLookLikeLeggings(designGroups) || hasWaistbandGroup) {
+      designGroups = mergeDesignGroupsForBlueprintSwitch(
+        template.blueprintId!,
+        designGroups,
+      );
+    }
+  } else if (placerEditor === "front-back-face") {
     const bp = template.blueprintId ?? PILLOW_WRAP_BLUEPRINT_ID;
     if (designGroupsLookLikeHoodie(designGroups) || !designGroups?.some((g) => g.id === "front-face")) {
       designGroups = mergeDesignGroupsForBlueprintSwitch(bp, designGroups);
@@ -1370,15 +1477,18 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     designGroups = mergeDesignGroupsForBlueprintSwitch(bp, designGroups, "jumper-no-hood");
     designGroups = migrateSweatshirtDesignGroups(designGroups);
   }
+  const resolvedPlacer = isLeggingsBlueprint(template.blueprintId)
+    ? ("hoodie" as const)
+    : placerEditor;
   const printFileLayout = resolvePrintFileLayout({
     ...template,
-    placerEditor,
+    placerEditor: resolvedPlacer,
   });
   return {
     ...template,
-    placerEditor,
+    placerEditor: resolvedPlacer,
     printFileLayout,
-    garmentLayout: placerEditor === "front-back-face" ? undefined : garmentLayout,
+    garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
     designGroups,
     tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration:
@@ -1403,6 +1513,7 @@ export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
   if (isPulloverHoodieBlueprint(blueprintId)) return "pullover-hoodie-aop";
   if (isZipHoodieBlueprint(blueprintId)) return "zip-hoodie-aop";
   if (isBomberJacketBlueprint(blueprintId)) return "bomber-jacket-aop";
+  if (isLeggingsBlueprint(blueprintId)) return "leggings-aop";
   return `aop-bp-${blueprintId}`;
 }
 
@@ -1483,6 +1594,9 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "waistband",
     "collar_front",
     "collar_back",
+    "left_side",
+    "right_side",
+    "front_waistband",
   ],
   back: [
     "back",
@@ -1494,6 +1608,9 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "right_hood",
     "waistband",
     "collar_back",
+    "left_side",
+    "right_side",
+    "back_waistband",
   ],
 } as const;
 
@@ -1514,6 +1631,10 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   right_hood: "Right Hood",
   waistband: "Waistband",
   back: "Back",
+  left_side: "Left Leg (wearer's left)",
+  right_side: "Right Leg (wearer's right)",
+  front_waistband: "Front Waistband",
+  back_waistband: "Back Waistband",
 };
 
 /**
@@ -1537,6 +1658,8 @@ export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   front: 20,
   front_left: 20,
   front_right: 20,
+  left_side: 20,
+  right_side: 20,
   left_sleeve: 30,
   right_sleeve: 30,
   left_hood: 40,
@@ -1546,6 +1669,8 @@ export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   collar_back: 52,
   collar_front: 55,
   waistband: 60,
+  front_waistband: 60,
+  back_waistband: 60,
   front_pocket: 70,
   pocket_left: 70,
   pocket_right: 70,

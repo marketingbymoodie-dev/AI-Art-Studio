@@ -31,8 +31,10 @@ import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  LEGGINGS_CASUAL_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
   isPillowWrapBlueprint,
+  isLeggingsBlueprint,
   isPillowWrapTemplate,
   resolvePlacerEditor,
   resolvePrintFileLayout,
@@ -222,10 +224,20 @@ export default function RightSidebar() {
               <span className="text-slate-300">Front Pocket</span>. Zip L/R keys are hidden.
             </p>
           )}
+          {isLeggingsBlueprint(template.blueprintId) && (
+            <p className="mt-2 text-[10px] leading-snug text-slate-500">
+              Leggings (bp {template.blueprintId === LEGGINGS_CASUAL_BLUEPRINT_ID ? "256" : "1050"}):
+              Printify only has <span className="text-slate-300">Left/Right side</span> print files —
+              include the inner waistband in each leg mesh. On FRONT and BACK photos assign wearer’s
+              left → <span className="text-slate-300">Left Leg</span>, right →{" "}
+              <span className="text-slate-300">Right Leg</span>. Do not use Front (full body) or
+              separate waistband keys.
+            </p>
+          )}
           <p className="mt-2 text-[10px] leading-snug text-slate-500">
             <span className="text-slate-400">blueprintId</span> = Printify catalog number from the product URL
             (e.g. <span className="font-mono text-slate-400">…/products/2758/…</span> → 2758). Pillows: 220 square,
-            223 faux suede, 2758 body. Hoodies: 450 pullover, 451 zip. Wrong id → wrong Part/View controls on the
+            223 faux suede, 2758 body. Hoodies: 450 pullover, 451 zip. Leggings: 256 casual, 1050 capri. Wrong id → wrong Part/View controls on the
             storefront.{" "}
             <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
             <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}

@@ -14,6 +14,8 @@ import {
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
   bomberPatternPrintTileScaleForPanel,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  LEGGINGS_CASUAL_BLUEPRINT_ID,
+  LEGGINGS_CAPRI_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
   PILLOW_WRAP_BLUEPRINT_ID,
@@ -201,7 +203,62 @@ describe("defaultHoodieTypeForBlueprint", () => {
   it("maps known blueprints", () => {
     expect(defaultHoodieTypeForBlueprint(450)).toBe("pullover-hoodie-aop");
     expect(defaultHoodieTypeForBlueprint(451)).toBe("zip-hoodie-aop");
+    expect(defaultHoodieTypeForBlueprint(LEGGINGS_CASUAL_BLUEPRINT_ID)).toBe("leggings-aop");
     expect(defaultHoodieTypeForBlueprint(1604)).toBe("aop-bp-1604");
+  });
+});
+
+describe("leggings panels (bp 256 / 1050)", () => {
+  it("offers only left/right side (waistband is part of the leg print file)", () => {
+    const front = panelsEligibleForView("front", LEGGINGS_CASUAL_BLUEPRINT_ID, "hoodie");
+    const back = panelsEligibleForView("back", LEGGINGS_CASUAL_BLUEPRINT_ID, "hoodie");
+    expect(front).toEqual(["left_side", "right_side"]);
+    expect(back).toEqual(["left_side", "right_side"]);
+    expect(front).not.toContain("front_waistband");
+    expect(front).not.toContain("front");
+  });
+
+  it("capri matches casual print panels", () => {
+    const front = panelsEligibleForView("front", LEGGINGS_CAPRI_BLUEPRINT_ID, "hoodie");
+    expect(front).toEqual(["left_side", "right_side"]);
+  });
+
+  it("hides leggings keys from hoodie blueprints", () => {
+    const zip = panelsEligibleForView("front", ZIP_HOODIE_BLUEPRINT_ID);
+    expect(zip).not.toContain("left_side");
+    expect(zip).not.toContain("front_waistband");
+  });
+
+  it("seeds leggings design groups and heals pillow-style saves", () => {
+    const fresh = createFreshAopTemplate({
+      name: "leggings-aop-L",
+      blueprintId: LEGGINGS_CASUAL_BLUEPRINT_ID,
+    });
+    expect(fresh.hoodieType).toBe("leggings-aop");
+    expect(fresh.placerEditor).toBe("hoodie");
+    expect(fresh.designGroups?.map((g) => g.id)).toEqual(["left-leg", "right-leg"]);
+
+    const healed = normalizeHoodieTemplate({
+      ...fresh,
+      placerEditor: "front-back-face",
+      designGroups: [
+        {
+          id: "front-face",
+          name: "Front face",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ],
+    });
+    expect(healed.placerEditor).toBe("hoodie");
+    expect(healed.designGroups?.find((g) => g.id === "left-leg")).toBeDefined();
+    expect(hoodiePanelKeyToPrintifyPosition("left_side")).toBe("left_side");
   });
 });
 

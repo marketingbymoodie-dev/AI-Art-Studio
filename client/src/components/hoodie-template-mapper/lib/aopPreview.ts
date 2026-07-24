@@ -668,6 +668,10 @@ const PANEL_COLORS: Record<HoodiePanelKey | "unassigned", string> = {
   right_hood: "#8b5cf6",    // violet
   waistband: "#ec4899",     // pink
   back: "#a855f7",          // purple
+  left_side: "#f97316",     // orange — wearer's left leg
+  right_side: "#fb7185",    // rose — wearer's right leg
+  front_waistband: "#ec4899",
+  back_waistband: "#db2777",
   unassigned: "#64748b",    // slate
 };
 

@@ -8,6 +8,7 @@ import {
   resizeMesh,
   mergeDesignGroupsForBlueprintSwitch,
   isPillowWrapBlueprint,
+  isLeggingsBlueprint,
   defaultPlacerEditorForBlueprint,
   defaultPrintFileLayoutForBlueprint,
   defaultHoodieTypeForBlueprint,
@@ -842,6 +843,12 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             next = { ...next, hoodieType: "zip-hoodie-aop" };
           } else if (isPillowWrapBlueprint(patch.blueprintId)) {
             next = { ...next, hoodieType: "pillow-wrap-aop" };
+          } else if (isLeggingsBlueprint(patch.blueprintId)) {
+            next = {
+              ...next,
+              hoodieType: "leggings-aop",
+              placerEditor: "hoodie",
+            };
           } else if (next.placerEditor === "hoodie") {
             next = { ...next, hoodieType: defaultHoodieTypeForBlueprint(patch.blueprintId) };
           }
