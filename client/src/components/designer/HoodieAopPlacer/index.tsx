@@ -300,9 +300,14 @@ function resolveEditGroupIds(
   activeGroupId: string,
   template?: HoodieTemplate,
   hoodLinked?: boolean,
+  /** Link or Mirror: Artwork enabled / Reset act on both legs together. */
+  legsTogether = false,
 ): string[] {
   if (isSleevesPart(activeGroupId)) return [...SLEEVE_GROUP_IDS];
-  if (activeGroupId === LEGS_PART_ID) return [...LEG_GROUP_IDS];
+  if (isLegsPart(activeGroupId)) {
+    if (legsTogether || activeGroupId === LEGS_PART_ID) return [...LEG_GROUP_IDS];
+    return [activeGroupId];
+  }
   if (
     hoodLinked &&
     template &&
@@ -313,6 +318,28 @@ function resolveEditGroupIds(
   }
   return [activeGroupId];
 }
+
+function clonePlacements(
+  placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
+): Record<string, Record<HoodieView, ArtworkPlacement>> {
+  const out: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
+  for (const [id, perView] of Object.entries(placements)) {
+    out[id] = {
+      front: { ...(perView.front ?? DEFAULT_ARTWORK_PLACEMENT) },
+      back: { ...(perView.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+    };
+  }
+  return out;
+}
+
+/** Snapshot of Place-mode leggings session restored when leaving Pattern. */
+type PlaceSessionSnapshot = {
+  legsSynced: boolean;
+  legsMirrored: boolean;
+  placements: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  enabled: Record<string, boolean>;
+  activeGroupId: string;
+};
 
 /** Sleeves/legs are one customer control — scale/nudge apply on both mockup views. */
 function viewsForPlacementEdit(activeGroupId: string, currentView: HoodieView): HoodieView[] {
@@ -912,6 +939,9 @@ export default function HoodieAopPlacer({
   // its product-preview loading scan).
   const baselineSignatureRef = useRef<string | null>(null);
 
+  // Place→Pattern: stash Link/Mirror/placements/enabled so Place can restore.
+  const placeSessionRef = useRef<PlaceSessionSnapshot | null>(null);
+
   // Set true at first state-seed when initialState carried a saved placement
   // (i.e. we're resuming a previously-saved design). Used to suppress the
   // initial auto-apply regardless of the parent prop's render timing.
@@ -1082,8 +1112,50 @@ export default function HoodieAopPlacer({
   };
 
   const setMode = useCallback((mode: "place" | "pattern") => {
-    setState((prev) => (prev ? { ...prev, mode } : prev));
-  }, []);
+    setState((prev) => {
+      if (!prev) return prev;
+      if (prev.mode === mode) return prev;
+      const leggings =
+        !!data && isLeggingsBlueprint(data.template.blueprintId);
+      if (!leggings) return { ...prev, mode };
+
+      // Leaving Place: remember session, force Link+Mirror off for clean tile symmetry.
+      if (prev.mode === "place" && mode === "pattern") {
+        placeSessionRef.current = {
+          legsSynced: prev.legsSynced,
+          legsMirrored: prev.legsMirrored,
+          placements: clonePlacements(prev.placements),
+          enabled: { ...prev.enabled },
+          activeGroupId: prev.activeGroupId,
+        };
+        return {
+          ...prev,
+          mode: "pattern",
+          legsSynced: false,
+          legsMirrored: false,
+        };
+      }
+
+      // Returning to Place: restore last Place Link/Mirror/placements/enabled.
+      if (prev.mode === "pattern" && mode === "place") {
+        const snap = placeSessionRef.current;
+        if (!snap) return { ...prev, mode: "place" };
+        return {
+          ...prev,
+          mode: "place",
+          legsSynced: snap.legsSynced,
+          legsMirrored: snap.legsMirrored,
+          placements: clonePlacements(snap.placements),
+          enabled: { ...prev.enabled, ...snap.enabled },
+          activeGroupId: isLegsPart(snap.activeGroupId)
+            ? snap.activeGroupId
+            : "right-leg",
+        };
+      }
+
+      return { ...prev, mode };
+    });
+  }, [data]);
 
   /**
    * View-row button handler. Front/Back always engage the matching body
@@ -1257,9 +1329,21 @@ export default function HoodieAopPlacer({
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) => {
       if (!prev) return prev;
-      const ids = resolveEditGroupIds(groupId, data?.template, prev.hoodLinked);
+      const legsTogether = prev.legsSynced || prev.legsMirrored;
+      const ids = resolveEditGroupIds(
+        groupId,
+        data?.template,
+        prev.hoodLinked,
+        legsTogether,
+      );
       const enabled = { ...prev.enabled };
       for (const id of ids) enabled[id] = on;
+      // Link/Mirror with a stuck-off partner: turning Artwork on always
+      // re-enables both legs even if resolve missed one.
+      if (on && isLegsPart(groupId) && legsTogether) {
+        enabled["left-leg"] = true;
+        enabled["right-leg"] = true;
+      }
       const placements =
         on && (isSleevesPart(groupId) || ids.some((id) => id === "left-sleeve" || id === "right-sleeve"))
           ? syncSleevePlacements(prev.placements, prev.sleevesMirrored)
@@ -1481,16 +1565,30 @@ export default function HoodieAopPlacer({
       data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
     setState((prev) => {
       if (!prev) return prev;
-      const ids = resolveEditGroupIds(prev.activeGroupId, data.template, prev.hoodLinked);
+      const legsTogether = prev.legsSynced || prev.legsMirrored;
+      const ids = resolveEditGroupIds(
+        prev.activeGroupId,
+        data.template,
+        prev.hoodLinked,
+        legsTogether,
+      );
       const placements = { ...prev.placements };
+      const enabled = { ...prev.enabled };
       for (const id of ids) {
         const g = groups.find((x) => x.id === id);
         placements[id] = {
           front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
           back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
         };
+        // Reset must bring artwork back — previously only cleared offsets,
+        // so a disabled leg stayed stuck off.
+        enabled[id] = true;
       }
-      return { ...prev, placements };
+      if (isLegsPart(prev.activeGroupId) && legsTogether) {
+        enabled["left-leg"] = true;
+        enabled["right-leg"] = true;
+      }
+      return { ...prev, placements, enabled };
     });
   }, [data]);
 
@@ -1694,7 +1792,14 @@ export default function HoodieAopPlacer({
   const activePartEnabled = isSleevesPart(state.activeGroupId)
     ? !!state.enabled["left-sleeve"]
     : isLegsPart(state.activeGroupId)
-      ? !!state.enabled["right-leg"] || !!state.enabled["left-leg"]
+      ? state.legsSynced || state.legsMirrored
+        ? // Link/Mirror: both must be on (OR previously hid a stuck-off leg).
+          !!state.enabled["right-leg"] && !!state.enabled["left-leg"]
+        : !!(
+            state.enabled[
+              state.activeGroupId === "left-leg" ? "left-leg" : "right-leg"
+            ]
+          )
       : !!effectiveRender.enabled[editGroupId];
   const showOverlay =
     !!mockup &&
@@ -1793,6 +1898,12 @@ export default function HoodieAopPlacer({
           data-testid="hoodie-aop-canvas-area"
           data-appai-wheel-forward="true"
         >
+          <div
+            className="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] font-semibold tracking-wide text-white"
+            data-testid="hoodie-aop-view-label"
+          >
+            {state.view === "front" ? "Front View" : "Back View"}
+          </div>
           <div className="relative max-h-full max-w-full overflow-hidden">
             <canvas
               ref={canvasRef}

@@ -36,8 +36,11 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 | Control | Behavior |
 |---------|----------|
 | Place | Full motif contain-fit **per leg** (not continuous mural) |
-| Link sides | Like hood↔front link: toggle on/off **keeps** current L/R placements; while on, edits propagate as **same** dx/dy/scale ratio; union bounding box; both Left/Right toggles look on |
+| Link sides | Like hood↔front link: toggle on/off **keeps** current L/R placements; while on, edits propagate as **same** dx/dy/scale ratio; union bounding box; both Left/Right toggles look on; Artwork enabled / Reset act on **both** legs |
 | Mirror | Left art horizontally flipped; optionally copies right placement when turned on |
+| Place → Pattern | Link + Mirror forced **off** for clean tile symmetry; Place session (placements + toggles + enabled) snapshotted |
+| Pattern → Place | Restores last Place session Link/Mirror/placements/enabled |
+| Viewer | Top-left label: **Front View** / **Back View** |
 | Left / Right | Select which leg to edit; click artwork on a leg to switch (Link: either side activates the shared box) |
 | Drag X | Inverted vs raw offset so mouse left → art moves left on-body (Printify flat flip) |
 | Pattern + Link | Extra flip on left_side tile so patterns meet symmetrically at the crotch |
