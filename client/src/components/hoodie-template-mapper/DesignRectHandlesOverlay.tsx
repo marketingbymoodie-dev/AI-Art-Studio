@@ -73,6 +73,8 @@ export type DesignRectHandlesOverlayProps = {
   snapMode?: "seam" | "x" | "y" | "both" | "none";
   /** Pixel threshold for the snap. Defaults to 3 mockup px. */
   snapPx?: number;
+  /** Leggings: Mirror ON sizes the Legs rect to the right leg only. */
+  legsMirrored?: boolean;
   /** Patch the active group's placement (caller handles propagation). */
   onChange: (next: ArtworkPlacement) => void;
 };
@@ -91,6 +93,7 @@ export default function DesignRectHandlesOverlay({
   lockedScaleAroundAnchor = false,
   snapMode = "seam",
   snapPx = 3,
+  legsMirrored = false,
   onChange,
 }: DesignRectHandlesOverlayProps) {
   const info: DesignRectInfo | null = useMemo(() => {
@@ -98,6 +101,7 @@ export default function DesignRectHandlesOverlay({
       placementOverrides,
       seamOverrides,
       enabledOverrides,
+      legsMirrored,
     });
     return map.get(groupId) ?? null;
   }, [
@@ -108,6 +112,7 @@ export default function DesignRectHandlesOverlay({
     placementOverrides,
     seamOverrides,
     enabledOverrides,
+    legsMirrored,
   ]);
 
   const mockupW = mockup.naturalWidth || mockup.width;

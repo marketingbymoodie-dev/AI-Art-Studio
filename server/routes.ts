@@ -43,8 +43,10 @@ import {
   computeAspectRatioFromPixelDims,
   normalizeStandardApparelAspectRatio,
   pickPrimaryPrintPlaceholderDims,
+  resolveLeggingsAopAspectRatio,
   resolveStandardApparelAspectRatioFromPlaceholders,
 } from "@shared/apparelAspectRatio";
+import { isLeggingsBlueprint } from "@shared/hoodieTemplate";
 import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
 import {
   cacheCoversVariantIds,
@@ -569,14 +571,40 @@ const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
   return "9:16";
 };
 
+function parsePlaceholderPositionsForAspect(
+  raw: unknown,
+): Array<{ position: string; width: number; height: number }> | null {
+  try {
+    const arr = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+    if (!Array.isArray(arr)) return null;
+    return arr
+      .map((p: any) => ({
+        position: String(p?.position ?? ""),
+        width: Number(p?.width) || 0,
+        height: Number(p?.height) || 0,
+      }))
+      .filter((p) => p.position && p.width > 0 && p.height > 0);
+  } catch {
+    return null;
+  }
+}
+
 function resolveGenerationAspectRatio(
   aspectRatioStr: string,
   opts: {
     isApparel?: boolean;
     isAllOverPrint?: boolean;
     flatCalibration?: unknown;
+    printifyBlueprintId?: number | null;
+    placeholderPositions?: unknown;
   },
 ): string {
+  // Leggings AOP: tall single-leg panel AR (not product 1:1).
+  if (opts.isAllOverPrint && isLeggingsBlueprint(opts.printifyBlueprintId)) {
+    return resolveLeggingsAopAspectRatio(
+      parsePlaceholderPositionsForAspect(opts.placeholderPositions),
+    );
+  }
   if (opts.isApparel && !opts.isAllOverPrint) {
     // Flat-calibrated tees/etc.: use harvested dashed-guide AR (probed on blank).
     // Other apparel: keep import-time per-size placeholder ratios (only fix landscape).
@@ -591,7 +619,14 @@ function designerDisplayAspectRatio(productType: {
   aspectRatio?: string | null;
   designerType?: string | null;
   isAllOverPrint?: boolean | null;
+  printifyBlueprintId?: number | null;
+  placeholderPositions?: unknown;
 }): string {
+  if (productType.isAllOverPrint && isLeggingsBlueprint(productType.printifyBlueprintId)) {
+    return resolveLeggingsAopAspectRatio(
+      parsePlaceholderPositionsForAspect(productType.placeholderPositions),
+    );
+  }
   const stored = productType.aspectRatio || "1:1";
   if (productType.designerType === "apparel" && !productType.isAllOverPrint) {
     return normalizeStandardApparelAspectRatio(stored);
@@ -2536,6 +2571,8 @@ export async function registerRoutes(
         isApparel,
         isAllOverPrint,
         flatCalibration: (productType as any)?.flatCalibration,
+        printifyBlueprintId: productType?.printifyBlueprintId,
+        placeholderPositions: (productType as any)?.placeholderPositions,
       });
       if (sizeConfig && (sizeConfig as any).aspectRatio !== aspectRatioStr) {
         const genDims = calculateGenDimensions(aspectRatioStr);
@@ -3464,11 +3501,17 @@ RECTANGULAR PRINT AREA:
       }
 
       // Determine aspect ratio and orientation
-      if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
+      if (
+        (embedIsApparelEarly && !embedIsAllOverPrintEarly) ||
+        (embedIsAllOverPrintEarly &&
+          isLeggingsBlueprint(productType?.printifyBlueprintId))
+      ) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
-          isApparel: true,
-          isAllOverPrint: false,
+          isApparel: embedIsApparelEarly,
+          isAllOverPrint: embedIsAllOverPrintEarly,
           flatCalibration: (productType as any)?.flatCalibration,
+          printifyBlueprintId: productType?.printifyBlueprintId,
+          placeholderPositions: (productType as any)?.placeholderPositions,
         });
         if (normalized !== sizeConfig.aspectRatio) {
           const genDims = calculateGenDimensions(normalized);

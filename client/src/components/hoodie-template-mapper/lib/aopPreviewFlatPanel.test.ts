@@ -3,6 +3,8 @@ import {
   buildFlatMeshTargetPoints,
   meshSourceFlipXForPanel,
   sleevePanelHalfSourceRect,
+  synthesiseLeggingsMirroredSourceRect,
+  type DesignRectInfo,
 } from "./aopPreview";
 
 describe("buildFlatMeshTargetPoints", () => {
@@ -43,6 +45,45 @@ describe("meshSourceFlipXForPanel", () => {
     expect(meshSourceFlipXForPanel("left_side", true, false, false)).toBe(false);
     expect(meshSourceFlipXForPanel("left_side", false, false, true)).toBe(false);
     expect(meshSourceFlipXForPanel("right_side", false, false, true)).toBe(true);
+  });
+});
+
+describe("synthesiseLeggingsMirroredSourceRect", () => {
+  it("maps each leg panel to the full artwork at scale 1 (matched copies)", () => {
+    const panelBb = { x: 100, y: 50, width: 200, height: 400 };
+    const fitted = { x: 100, y: 150, width: 200, height: 200 }; // square art in tall panel
+    const groupRect: DesignRectInfo = {
+      union: panelBb,
+      base: fitted,
+      effective: { ...fitted },
+      anchor: { x: 200, y: 250 },
+      hasSeamPair: false,
+      anchorIsSeam: false,
+      seamAllowance: 0,
+      groupId: "legs",
+      enabled: true,
+    };
+    // Tall artwork 200×400 — fits the panel exactly.
+    const left = synthesiseLeggingsMirroredSourceRect(
+      panelBb,
+      groupRect,
+      200,
+      400,
+    );
+    const rightPanel = { x: 400, y: 50, width: 200, height: 400 };
+    const right = synthesiseLeggingsMirroredSourceRect(
+      rightPanel,
+      groupRect,
+      200,
+      400,
+    );
+    // Both legs sample essentially the full artwork (matched size).
+    expect(left.width).toBeCloseTo(200, 0);
+    expect(left.height).toBeCloseTo(400, 0);
+    expect(right.width).toBeCloseTo(200, 0);
+    expect(right.height).toBeCloseTo(400, 0);
+    expect(left.x).toBeCloseTo(right.x, 0);
+    expect(left.y).toBeCloseTo(right.y, 0);
   });
 });
 

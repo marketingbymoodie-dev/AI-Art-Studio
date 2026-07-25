@@ -157,9 +157,9 @@ export type HoodieAopPlacerState = {
    */
   sleevesMirrored: boolean;
   /**
-   * Leggings: when true, left_side artwork is flipped relative to right_side
-   * (PatternCustomizer Mirror). Both legs already share one placement group
-   * (`legs`) so Sync is inherent.
+   * Leggings Mirror ON: left_side is a flipped full-panel copy of right_side
+   * (PatternCustomizer Mirror). OFF: continuous mural across both legs.
+   * Sync is inherent via the single `legs` group.
    */
   legsMirrored: boolean;
   /** Background fill colour (CSS) painted under the artwork. */
@@ -1049,6 +1049,7 @@ export default function HoodieAopPlacer({
       const rects = computeGroupRects(effective.template, state.view, artworkImg, {
         placementOverrides: effective.placements,
         enabledOverrides: effective.enabled,
+        legsMirrored: state.legsMirrored,
       });
 
       if (isPillowWrapTemplate(data.template)) {
@@ -1549,7 +1550,9 @@ export default function HoodieAopPlacer({
       {/* Left: live mockup with overlay */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
-          className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
+          className={`relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:p-4 ${
+            isLeggings ? "lg:min-h-[min(78vh,720px)]" : "lg:aspect-square"
+          }`}
           onClick={handleCanvasBackdropClick}
           data-testid="hoodie-aop-canvas-area"
           data-appai-wheel-forward="true"
@@ -1573,6 +1576,7 @@ export default function HoodieAopPlacer({
                 placementOverrides={effectiveRender.placements}
                 enabledOverrides={effectiveRender.enabled}
                 snapMode={snapMode}
+                legsMirrored={state.legsMirrored}
                 onChange={(next) => updateActiveGroupPlacement(state.view, next)}
               />
             )}
@@ -1604,7 +1608,7 @@ export default function HoodieAopPlacer({
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}
       <div
         data-hoodie-aop-controls
-        className="w-full shrink-0 space-y-4 overflow-y-auto overscroll-contain lg:max-h-[min(88vh,960px)] lg:w-80"
+        className="w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]"
       >
         {/* Pattern / Place segmented toggle */}
         <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
@@ -1743,7 +1747,7 @@ export default function HoodieAopPlacer({
                 </button>
                 <div className="mt-1 text-[10px] text-muted-foreground">
                   {state.legsMirrored
-                    ? "Left leg flips art relative to the right. Both legs share one placement."
+                    ? "Left leg is a flipped copy of the right (same size/placement)."
                     : "Both legs share one continuous placement across the front seam."}
                 </div>
               </div>
@@ -1772,7 +1776,7 @@ export default function HoodieAopPlacer({
             </button>
             <div className="mt-1 text-[10px] text-muted-foreground">
               {state.legsMirrored
-                ? "Left leg flips the pattern relative to the right."
+                ? "Left leg is a flipped copy of the right (same tile size)."
                 : "Same pattern orientation on both legs (synced)."}
             </div>
           </div>

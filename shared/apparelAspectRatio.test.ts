@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   aspectRatioFromFlatCalibration,
   normalizeStandardApparelAspectRatio,
+  resolveLeggingsAopAspectRatio,
 } from "./apparelAspectRatio";
 
 describe("apparelAspectRatio — DTG chest generation", () => {
@@ -36,5 +37,21 @@ describe("apparelAspectRatio — DTG chest generation", () => {
       }),
     ).toBe("5:6");
     expect(aspectRatioFromFlatCalibration(null)).toBeNull();
+  });
+});
+
+describe("resolveLeggingsAopAspectRatio", () => {
+  it("uses a single leg panel and returns tall AR (not 1:1)", () => {
+    expect(
+      resolveLeggingsAopAspectRatio([
+        { position: "left_side", width: 1311, height: 4000 },
+        { position: "right_side", width: 1311, height: 4000 },
+      ]),
+    ).toBe("9:16");
+  });
+
+  it("falls back to 2:3 when placeholders missing", () => {
+    expect(resolveLeggingsAopAspectRatio(null)).toBe("2:3");
+    expect(resolveLeggingsAopAspectRatio([])).toBe("2:3");
   });
 });
