@@ -46,6 +46,11 @@ describe("meshSourceFlipXForPanel", () => {
     expect(meshSourceFlipXForPanel("left_side", false, false, true)).toBe(false);
     expect(meshSourceFlipXForPanel("right_side", false, false, true)).toBe(true);
   });
+
+  it("Link-sides pattern symmetry XORs left_side the same as Mirror", () => {
+    expect(meshSourceFlipXForPanel("left_side", false, false, false, true)).toBe(false);
+    expect(meshSourceFlipXForPanel("right_side", false, false, false, true)).toBe(true);
+  });
 });
 
 describe("synthesiseLeggingsMirroredSourceRect", () => {

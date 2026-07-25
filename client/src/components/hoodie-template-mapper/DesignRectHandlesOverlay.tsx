@@ -73,6 +73,16 @@ export type DesignRectHandlesOverlayProps = {
   snapMode?: "seam" | "x" | "y" | "both" | "none";
   /** Pixel threshold for the snap. Defaults to 3 mockup px. */
   snapPx?: number;
+  /**
+   * Invert horizontal drag (and report −ΔoffsetX). Needed when the mockup
+   * panel is Printify-flipped so mouse left matches art moving left on-body.
+   */
+  invertOffsetX?: boolean;
+  /**
+   * When set, draw/drag this rect instead of computing from `groupId`
+   * (e.g. union of both legs when Link sides is on).
+   */
+  rectOverride?: DesignRectInfo | null;
   /** Patch the active group's placement (caller handles propagation). */
   onChange: (next: ArtworkPlacement) => void;
 };
@@ -91,9 +101,12 @@ export default function DesignRectHandlesOverlay({
   lockedScaleAroundAnchor = false,
   snapMode = "seam",
   snapPx = 3,
+  invertOffsetX = false,
+  rectOverride = null,
   onChange,
 }: DesignRectHandlesOverlayProps) {
   const info: DesignRectInfo | null = useMemo(() => {
+    if (rectOverride) return rectOverride;
     const map = computeGroupRects(template, view, artwork, {
       placementOverrides,
       seamOverrides,
@@ -108,6 +121,7 @@ export default function DesignRectHandlesOverlay({
     placementOverrides,
     seamOverrides,
     enabledOverrides,
+    rectOverride,
   ]);
 
   const mockupW = mockup.naturalWidth || mockup.width;
@@ -128,6 +142,9 @@ export default function DesignRectHandlesOverlay({
         canvasRect: DOMRect;
       }
   >(null);
+
+  const invertXRef = useRef(invertOffsetX);
+  invertXRef.current = invertOffsetX;
 
   // Cache snap policy in a ref so the global pointermove listener
   // sees the latest value without rebinding (which would drop a
@@ -160,7 +177,8 @@ export default function DesignRectHandlesOverlay({
       const dyMock = dyClient * sy;
 
       if (drag.mode === "translate") {
-        let nextOffsetX = drag.startPlacement.offsetX + dxMock;
+        const xSign = invertXRef.current ? -1 : 1;
+        let nextOffsetX = drag.startPlacement.offsetX + dxMock * xSign;
         let nextOffsetY = drag.startPlacement.offsetY + dyMock;
         const { snapMode: mode, snapPx: px } = snapRef.current;
         // Resolve snap policy → which axes snap right now.

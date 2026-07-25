@@ -292,6 +292,11 @@ export type AopPreviewParams = {
    */
   legsMirrored?: boolean;
   /**
+   * Leggings Link sides: in Pattern (tile) mode, flip left so tiles meet
+   * symmetrically across the crotch (place mode uses shared edit deltas only).
+   */
+  legsLinked?: boolean;
+  /**
    * Printify placeholder dims — used by the front→back sleeve/hood bridge
    * so the preview flat panel matches print export aspect (not just the
    * calibration PNG size).
@@ -309,13 +314,17 @@ export function meshSourceFlipXForPanel(
   meshSourceFlipX: boolean | undefined,
   sleevesMirrored: boolean | undefined,
   legsMirrored?: boolean,
+  /** Pattern mode + Link: flip left for symmetrical tile meeting at the seam. */
+  legsLinkedPatternSymmetry?: boolean,
 ): boolean {
   const calib = Boolean(meshSourceFlipX);
   if (sleevesMirrored && panelKey === "right_sleeve") return !calib;
   // Printify left_side/right_side flats are mirrored vs on-body mockup.
   if (panelKey === "left_side" || panelKey === "right_side") {
     let flip = !calib;
-    if (legsMirrored && panelKey === "left_side") flip = !flip;
+    const flipLeft =
+      Boolean(legsMirrored) || Boolean(legsLinkedPatternSymmetry);
+    if (flipLeft && panelKey === "left_side") flip = !flip;
     return flip;
   }
   return calib;
@@ -2277,6 +2286,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
               false,
               params.sleevesMirrored,
               params.legsMirrored,
+              Boolean(params.legsLinked),
             ),
             sourceFlipY: false,
           });
@@ -2599,6 +2609,7 @@ export type RenderFlatPrintPanelsParams = {
   sleevesMirrored?: boolean;
   /** Mirror left leg relative to right (leggings continuous place/pattern). */
   legsMirrored?: boolean;
+  legsLinked?: boolean;
 };
 
 function placeholderDimsByPosition(
@@ -3199,6 +3210,7 @@ export function renderFlatPrintPanels(
           false,
           params.sleevesMirrored,
           params.legsMirrored,
+          Boolean(params.legsLinked),
         )
       ) {
         const flipped = document.createElement("canvas");
