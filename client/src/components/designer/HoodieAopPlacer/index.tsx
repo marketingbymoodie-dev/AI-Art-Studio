@@ -22,6 +22,7 @@ import {
 } from "@/components/designer/placerControlStyles";
 import {
   designGroupsForBlueprint,
+  isLeggingsBlueprint,
   isPillowWrapTemplate,
   isPulloverHoodieBlueprint,
   isZipHoodieBlueprint,
@@ -155,6 +156,12 @@ export type HoodieAopPlacerState = {
    * uses negated offsetX (existing non-mirror behaviour).
    */
   sleevesMirrored: boolean;
+  /**
+   * Leggings: when true, left_side artwork is flipped relative to right_side
+   * (PatternCustomizer Mirror). Both legs already share one placement group
+   * (`legs`) so Sync is inherent.
+   */
+  legsMirrored: boolean;
   /** Background fill colour (CSS) painted under the artwork. */
   backgroundColor: string;
   /** Tile settings (pattern mode). Falls back to template defaults. */
@@ -236,6 +243,7 @@ function outputSignature(s: HoodieAopPlacerState): string {
     trimEnabled: s.trimEnabled,
     pocketsEnabled: s.pocketsEnabled,
     sleevesMirrored: s.sleevesMirrored,
+    legsMirrored: s.legsMirrored,
     backgroundColor: s.backgroundColor,
     tileSettings: s.tileSettings,
     wrapBackMode: s.wrapBackMode,
@@ -293,9 +301,9 @@ function resolveEditGroupIds(
   return [activeGroupId];
 }
 
-/** Sleeves are one customer control — scale/nudge apply on both mockup views. */
+/** Sleeves/legs are one customer control — scale/nudge apply on both mockup views. */
 function viewsForPlacementEdit(activeGroupId: string, currentView: HoodieView): HoodieView[] {
-  if (isSleevesPart(activeGroupId)) return ["front", "back"];
+  if (isSleevesPart(activeGroupId) || activeGroupId === "legs") return ["front", "back"];
   return [currentView];
 }
 
@@ -314,6 +322,9 @@ function customerGroupEnabledByDefault(
   }
   if (usesJumperNoHoodGarmentUi(template)) {
     return groupId === "front-body";
+  }
+  if (isLeggingsBlueprint(blueprintId)) {
+    return groupId === "legs" ? group.enabled !== false : false;
   }
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
     if (groupId === "front-body" || groupId === "hood") {
@@ -457,6 +468,7 @@ function buildInitialState(
   const isHoodieBp =
     isZipHoodieBlueprint(template.blueprintId) ||
     isPulloverHoodieBlueprint(template.blueprintId);
+  const leggings = isLeggingsBlueprint(template.blueprintId);
   const pillow = isPillowWrapTemplate(template);
   const defaultPlacement: ArtworkPlacement = pillow
     ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: 1.1 }
@@ -473,7 +485,7 @@ function buildInitialState(
   const base: HoodieAopPlacerState = {
     mode: "place",
     view: "front",
-    activeGroupId: "front-body",
+    activeGroupId: leggings ? "legs" : "front-body",
     artworkUrl: null,
     placements: syncSleevePlacements(placements, true),
     enabled,
@@ -488,6 +500,7 @@ function buildInitialState(
     leftSleeveLinked: true,
     rightSleeveLinked: true,
     sleevesMirrored: true,
+    legsMirrored: false,
     backgroundColor: DEFAULT_BG_COLOR,
     tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
     wrapBackMode: saved?.wrapBackMode ?? template.wrapBackMode ?? "duplicate",
@@ -514,7 +527,13 @@ function buildInitialState(
     leftSleeveLinked: saved.leftSleeveLinked ?? base.leftSleeveLinked,
     rightSleeveLinked: saved.rightSleeveLinked ?? base.rightSleeveLinked,
     sleevesMirrored: saved.sleevesMirrored ?? base.sleevesMirrored,
+    legsMirrored: saved.legsMirrored ?? base.legsMirrored,
     wrapBackMode: saved.wrapBackMode ?? base.wrapBackMode,
+    activeGroupId: leggings
+      ? "legs"
+      : pillow
+        ? "front-face"
+        : (saved.activeGroupId ?? baseWithGroups.activeGroupId),
   };
 }
 
@@ -941,6 +960,7 @@ export default function HoodieAopPlacer({
       tileSettings: state.tileSettings,
       pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
       sleevesMirrored: state.sleevesMirrored,
+      legsMirrored: state.legsMirrored,
       placeholderPositions,
     });
   }, [data, state, mockups, artworkImg, placeholderPositions]);
@@ -971,11 +991,14 @@ export default function HoodieAopPlacer({
     setState((prev) => {
       if (!prev) return prev;
       const pillow = data && isPillowWrapTemplate(data.template);
+      const leggings = data && isLeggingsBlueprint(data.template.blueprintId);
       const activeGroupId = pillow
         ? "front-face"
-        : view === "back"
-          ? "back-body"
-          : "front-body";
+        : leggings
+          ? "legs"
+          : view === "back"
+            ? "back-body"
+            : "front-body";
       return { ...prev, view, activeGroupId };
     });
   }, [data]);
@@ -1309,6 +1332,7 @@ export default function HoodieAopPlacer({
         tileSettings: state.tileSettings,
         pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
         sleevesMirrored: state.sleevesMirrored,
+        legsMirrored: state.legsMirrored,
         placeholderPositions,
       });
       return c;
@@ -1338,6 +1362,7 @@ export default function HoodieAopPlacer({
       maxLongEdgePx: opts?.maxLongEdgePx,
       placeholderPositions,
       sleevesMirrored: state.sleevesMirrored,
+      legsMirrored: state.legsMirrored,
     });
     // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
     // PNG — matters because a zip hoodie exports ~12 panels per save.
@@ -1452,27 +1477,32 @@ export default function HoodieAopPlacer({
     !!artworkImg &&
     state.mode === "place" &&
     activePartEnabled &&
-    // Hood/sleeve handles only render on front view (back panels inherit via
+    // Hood/sleeve/leg handles only render on front view (back panels inherit via
     // the flat-panel bridge, no draggable equivalent).
     !(
       state.view === "back" &&
-      (state.activeGroupId === "hood" || isSleevesPart(state.activeGroupId))
+      (state.activeGroupId === "hood" ||
+        isSleevesPart(state.activeGroupId) ||
+        state.activeGroupId === "legs")
     );
   const isJumperNoHood = usesJumperNoHoodGarmentUi(data.template);
   const isPillow = isPillowWrapTemplate(data.template);
+  const isLeggings = isLeggingsBlueprint(data.template.blueprintId);
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
     isPillow || state.activeGroupId === "back-body" || state.activeGroupId === "back-face" || state.activeGroupId === "collar"
       ? "both"
       : "seam";
-  const hasHoodGroup = !isJumperNoHood && !isPillow && groups.some((g) => g.id === "hood");
-  const hasCollarGroup = !isJumperNoHood && !isPillow && groups.some((g) => g.id === "collar");
+  const hasHoodGroup = !isJumperNoHood && !isPillow && !isLeggings && groups.some((g) => g.id === "hood");
+  const hasCollarGroup = !isJumperNoHood && !isPillow && !isLeggings && groups.some((g) => g.id === "collar");
   const hasSleeves =
     !isPillow &&
+    !isLeggings &&
     groups.some((g) => g.id === "left-sleeve") &&
     groups.some((g) => g.id === "right-sleeve");
   const hasPocketPanels =
     !isJumperNoHood &&
     !isPillow &&
+    !isLeggings &&
     groups.some((g) =>
       g.panelKeys.some((k) => (POCKET_PANEL_KEYS as readonly string[]).includes(k)),
     );
@@ -1495,6 +1525,9 @@ export default function HoodieAopPlacer({
   if (isPillow) {
     const front = groups.find((g) => g.id === "front-face");
     if (front) placePartGroups.push({ id: front.id, name: front.name });
+  } else if (isLeggings) {
+    const legs = groups.find((g) => g.id === "legs");
+    if (legs) placePartGroups.push({ id: legs.id, name: legs.name });
   } else {
     for (const id of ["front-body", "back-body"] as const) {
       const g = groups.find((x) => x.id === id);
@@ -1692,6 +1725,56 @@ export default function HoodieAopPlacer({
                 )}
               </div>
             )}
+            {isLeggings && state.activeGroupId === "legs" && (
+              <div className="mt-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setState((prev) =>
+                      prev ? { ...prev, legsMirrored: !prev.legsMirrored } : prev,
+                    )
+                  }
+                  aria-pressed={state.legsMirrored}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                    state.legsMirrored,
+                  )}`}
+                >
+                  Mirror
+                </button>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  {state.legsMirrored
+                    ? "Left leg flips art relative to the right. Both legs share one placement."
+                    : "Both legs share one continuous placement across the front seam."}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {/* Pattern mode: Mirror for leggings (no Part picker in pattern). */}
+        {state.mode === "pattern" && isLeggings && (
+          <div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Legs
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setState((prev) =>
+                  prev ? { ...prev, legsMirrored: !prev.legsMirrored } : prev,
+                )
+              }
+              aria-pressed={state.legsMirrored}
+              className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                state.legsMirrored,
+              )}`}
+            >
+              Mirror
+            </button>
+            <div className="mt-1 text-[10px] text-muted-foreground">
+              {state.legsMirrored
+                ? "Left leg flips the pattern relative to the right."
+                : "Same pattern orientation on both legs (synced)."}
+            </div>
           </div>
         )}
 

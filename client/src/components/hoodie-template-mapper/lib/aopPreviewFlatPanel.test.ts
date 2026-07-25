@@ -36,6 +36,14 @@ describe("meshSourceFlipXForPanel", () => {
     expect(meshSourceFlipXForPanel("left_sleeve", false, true)).toBe(false);
     expect(meshSourceFlipXForPanel("left_sleeve", true, true)).toBe(true);
   });
+
+  it("flips both leggings sides vs calibration; legsMirrored XORs left_side", () => {
+    expect(meshSourceFlipXForPanel("left_side", false, false, false)).toBe(true);
+    expect(meshSourceFlipXForPanel("right_side", false, false, false)).toBe(true);
+    expect(meshSourceFlipXForPanel("left_side", true, false, false)).toBe(false);
+    expect(meshSourceFlipXForPanel("left_side", false, false, true)).toBe(false);
+    expect(meshSourceFlipXForPanel("right_side", false, false, true)).toBe(true);
+  });
 });
 
 describe("sleevePanelHalfSourceRect", () => {

@@ -236,7 +236,9 @@ describe("leggings panels (bp 256 / 1050)", () => {
     });
     expect(fresh.hoodieType).toBe("leggings-aop");
     expect(fresh.placerEditor).toBe("hoodie");
-    expect(fresh.designGroups?.map((g) => g.id)).toEqual(["left-leg", "right-leg"]);
+    expect(fresh.designGroups?.map((g) => g.id)).toEqual(["legs"]);
+    expect(fresh.designGroups?.[0]?.panelKeys).toEqual(["left_side", "right_side"]);
+    expect(fresh.designGroups?.[0]?.seamAllowance).toBe(0);
 
     const healed = normalizeHoodieTemplate({
       ...fresh,
@@ -257,8 +259,42 @@ describe("leggings panels (bp 256 / 1050)", () => {
       ],
     });
     expect(healed.placerEditor).toBe("hoodie");
-    expect(healed.designGroups?.find((g) => g.id === "left-leg")).toBeDefined();
+    expect(healed.designGroups?.map((g) => g.id)).toEqual(["legs"]);
     expect(hoodiePanelKeyToPrintifyPosition("left_side")).toBe("left_side");
+  });
+
+  it("heals split left-leg/right-leg drafts into unified legs", () => {
+    const healed = normalizeHoodieTemplate({
+      name: "leggings-split",
+      blueprintId: LEGGINGS_CASUAL_BLUEPRINT_ID,
+      designGroups: [
+        {
+          id: "left-leg",
+          name: "Left leg",
+          panelKeys: ["left_side"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+        {
+          id: "right-leg",
+          name: "Right leg",
+          panelKeys: ["right_side"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ],
+    });
+    expect(healed.designGroups?.map((g) => g.id)).toEqual(["legs"]);
   });
 });
 

@@ -1185,8 +1185,10 @@ const PILLOW_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
 
 /**
  * Design groups for cut-and-sew leggings (bp 256 / 1050).
- * Printify only uploads `left_side` / `right_side` — waistband art is the top
- * of those panels (include it in the leg mesh), not separate print files.
+ * One group spans both Printify legs so Place/Pattern can run continuously
+ * across the front seam (same idea as zip front_left/front_right). Waistband
+ * art is the top of those panels — not separate print files.
+ * seamAllowance stays 0 so UV is not trimmed at the seam (unlike zip trim).
  */
 export function defaultLeggingsDesignGroups(
   _blueprintId?: number | null,
@@ -1194,18 +1196,9 @@ export function defaultLeggingsDesignGroups(
   const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
   return [
     {
-      id: "left-leg",
-      name: "Left leg",
-      panelKeys: ["left_side"],
-      placement: { front: { ...blank }, back: { ...blank } },
-      seamAllowance: 0,
-      lockedRatio: null,
-      enabled: true,
-    },
-    {
-      id: "right-leg",
-      name: "Right leg",
-      panelKeys: ["right_side"],
+      id: "legs",
+      name: "Legs",
+      panelKeys: ["left_side", "right_side"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -1217,7 +1210,8 @@ export function defaultLeggingsDesignGroups(
 function designGroupsLookLikeLeggings(groups: DesignGroup[] | undefined): boolean {
   if (!groups?.length) return false;
   const ids = new Set(groups.map((g) => g.id));
-  return ids.has("left-leg") && ids.has("right-leg");
+  // Prefer unified `legs`; still detect early left-leg/right-leg drafts.
+  return ids.has("legs") || (ids.has("left-leg") && ids.has("right-leg"));
 }
 
 export function defaultPillowWrapDesignGroups(): DesignGroup[] {
@@ -1394,8 +1388,8 @@ export function findGroupForPanel(
  * contribute to seam-allowance UV insetting.
  */
 export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
-  left: ["front_left", "left_hood", "pocket_left"],
-  right: ["front_right", "right_hood", "pocket_right"],
+  left: ["front_left", "left_hood", "pocket_left", "left_side"],
+  right: ["front_right", "right_hood", "pocket_right", "right_side"],
 };
 
 /**
@@ -1453,12 +1447,12 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     designGroups = migrateSweatshirtDesignGroups(designGroups);
   }
   if (isLeggingsBlueprint(template.blueprintId)) {
-    // Heal templates started as pillow front/back-face before leggings keys existed.
-    // Also drop obsolete separate waistband groups (waistband is part of leg panels).
+    // Heal pillow / split-leg / waistband drafts → unified continuous `legs` group.
     const hasWaistbandGroup = designGroups.some(
       (g) => g.id === "front-waistband" || g.id === "back-waistband",
     );
-    if (!designGroupsLookLikeLeggings(designGroups) || hasWaistbandGroup) {
+    const hasUnifiedLegs = designGroups.some((g) => g.id === "legs");
+    if (!hasUnifiedLegs || hasWaistbandGroup || !designGroupsLookLikeLeggings(designGroups)) {
       designGroups = mergeDesignGroupsForBlueprintSwitch(
         template.blueprintId!,
         designGroups,
