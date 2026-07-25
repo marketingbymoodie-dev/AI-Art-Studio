@@ -953,8 +953,8 @@ export default function AdminProducts() {
                             </p>
                           ) : (
                             <p className="text-xs text-amber-700 dark:text-amber-400">
-                              Not linked — publish the template in Platform Catalog, then reload this
-                              product or re-import from catalog.
+                              Not linked — publish the template in Platform Catalog, then open Test
+                              Generator (or the storefront customizer) once to sync.
                             </p>
                           )}
                           <p className="text-[10px] text-muted-foreground">

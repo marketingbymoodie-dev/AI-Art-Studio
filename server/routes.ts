@@ -5700,7 +5700,7 @@ ${orientationExtra}
         setTimeout(() => reject(new Error('Database query timeout after 5s')), 5000)
       );
 
-      const productType = await Promise.race([
+      let productType = await Promise.race([
         storage.getProductType(id),
         timeoutPromise
       ]);
@@ -5710,6 +5710,22 @@ ${orientationExtra}
         // Prevent caching of 404 responses
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Same as storefront: pull published Platform Catalog AOP/flat metadata onto the
+      // product type so Test Generator gets panelMappingTemplate without a separate
+      // storefront hit or re-import.
+      {
+        const prepared = await prepareProductTypeForDesigner(productType, {
+          allowUnpublishedHarvest: true,
+        });
+        if (prepared && prepared !== productType) {
+          console.log(
+            `[Designer API] Synced catalog metadata onto pt ${id}` +
+              ` (panelMappingTemplate=${(prepared as any).panelMappingTemplate ?? "null"})`,
+          );
+          productType = prepared;
+        }
       }
 
       const sizes = typeof productType.sizes === 'string' 
