@@ -14,6 +14,7 @@ import {
   defaultHoodieTypeForBlueprint,
   resolveGarmentLayout,
   migrateSweatshirtDesignGroups,
+  PANEL_DISPLAY_LABEL,
   PILLOW_WRAP_BLUEPRINT_ID,
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -269,6 +270,12 @@ export type HoodieMapperActions = {
    */
   duplicateLayer: (id: string) => string | null;
   /**
+   * Mirror-copy mask + mesh from a leggings left_side/right_side layer onto
+   * the opposite leg in the same view (mockup-space flip X + mesh column reorder).
+   * Returns true on success.
+   */
+  applyMirroredMeshToOppositeLeg: (sourceLayerId: string) => boolean;
+  /**
    * Replace the geometry of an existing layer. Re-serializes maskPath from
    * the supplied anchors. Used by anchor edits (drag/insert/delete) and the
    * Simplify/Smooth path-utility buttons.
@@ -492,6 +499,28 @@ function applyAnchorsTo(
 /** Apply a point-wise map to mask polygon + mesh geometry on one layer. */
 /** Which primitive(s) a rigid-body transform should move. */
 type PanelPointMapMode = "both" | "mask-only" | "mesh-only";
+
+function oppositeLegPanelKey(
+  key: HoodiePanelKey | null | undefined,
+): HoodiePanelKey | null {
+  if (key === "left_side") return "right_side";
+  if (key === "right_side") return "left_side";
+  return null;
+}
+
+/** After flipping targetPoints in X, reorder columns so UV edges stay on seams. */
+function reorderMeshColumnsFlippedX(mesh: MeshGrid): Pt[] {
+  const { cols, rows, targetPoints } = mesh;
+  const out: Pt[] = new Array(targetPoints.length);
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const src = r * cols + c;
+      const dst = r * cols + (cols - 1 - c);
+      out[dst] = { ...targetPoints[src] };
+    }
+  }
+  return out;
+}
 
 function mapLayerPanelPoints(
   layer: MaskLayer,
@@ -1024,6 +1053,105 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         });
       });
       return newId;
+    },
+    applyMirroredMeshToOppositeLeg: (sourceLayerId) => {
+      const state = get();
+      const found = findLayerById(state.template, sourceLayerId);
+      if (!found) return false;
+      const oppKey = oppositeLegPanelKey(found.layer.panelKey);
+      if (!oppKey) return false;
+
+      const viewLayers = state.template.views[found.view]?.layers ?? [];
+      let dest = viewLayers.find((l) => l.panelKey === oppKey) ?? null;
+
+      const srcBb = boundingBoxOfSubpaths(svgPathToSubpaths(found.layer.maskPath));
+      if (!srcBb) return false;
+
+      let midX: number;
+      if (dest) {
+        const destBb = boundingBoxOfSubpaths(svgPathToSubpaths(dest.maskPath));
+        if (destBb) {
+          midX = (srcBb.minX + srcBb.maxX + destBb.minX + destBb.maxX) / 4;
+        } else {
+          midX = (srcBb.minX + srcBb.maxX) / 2;
+        }
+      } else {
+        // No opposite yet — flip about source center, then offset so the
+        // copy lands on the other half of the mockup (roughly).
+        midX = (srcBb.minX + srcBb.maxX) / 2;
+        const mockupW = state.template.views[found.view]?.mockup?.width ?? 0;
+        if (mockupW > 0) midX = mockupW / 2;
+      }
+
+      const flipX = (p: Pt): Pt => ({ x: 2 * midX - p.x, y: p.y });
+      let mirrored = mapLayerPanelPoints(found.layer, flipX, "both");
+      if (mirrored.mesh) {
+        mirrored = {
+          ...mirrored,
+          mesh: {
+            ...mirrored.mesh,
+            targetPoints: reorderMeshColumnsFlippedX(mirrored.mesh),
+          },
+        };
+      }
+
+      if (!dest) {
+        const newId = newLayerId();
+        dest = {
+          ...mirrored,
+          id: newId,
+          name: PANEL_DISPLAY_LABEL?.[oppKey] ?? oppKey,
+          panelKey: oppKey,
+          zIndex:
+            Math.max(0, ...viewLayers.map((l) => l.zIndex ?? 0)) + 1,
+        };
+        set((s) => {
+          const view = s.template.views[found.view] ?? EMPTY_HOODIE_VIEW;
+          return withUndo(s, {
+            template: patchView(s.template, found.view, {
+              layers: [...view.layers, dest!],
+            }),
+            selectedLayerId: dest!.id,
+            dirty: true,
+          });
+        });
+        return true;
+      }
+
+      const destId = dest.id;
+      set((s) => {
+        const layers = (s.template.views[found.view]?.layers ?? []).map((l) =>
+          l.id === destId
+            ? {
+                ...l,
+                maskPath: mirrored.maskPath,
+                mesh: mirrored.mesh
+                  ? {
+                      ...mirrored.mesh,
+                      targetPoints: mirrored.mesh.targetPoints.map((p) => ({
+                        x: p.x,
+                        y: p.y,
+                      })),
+                    }
+                  : mirrored.mesh,
+                cornerPins: mirrored.cornerPins
+                  ? (mirrored.cornerPins.map((p) => ({
+                      x: p.x,
+                      y: p.y,
+                    })) as typeof l.cornerPins)
+                  : l.cornerPins,
+                productionPanelSrc:
+                  mirrored.productionPanelSrc ?? l.productionPanelSrc,
+              }
+            : l,
+        );
+        return withUndo(s, {
+          template: patchView(s.template, found.view, { layers }),
+          selectedLayerId: destId,
+          dirty: true,
+        });
+      });
+      return true;
     },
     mergeSelectedLayers: (opts) => {
       const state = get();

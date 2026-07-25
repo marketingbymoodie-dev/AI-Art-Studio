@@ -1129,9 +1129,12 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
   const tool = useHoodieMapperStore((s) => s.tool);
   const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
   const actions = useHoodieMapperStore((s) => s.actions);
+  const { toast } = useToast();
   const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const canInit = anchors.length >= 3;
   const mesh = layer.mesh;
+  const isLegPanel =
+    layer.panelKey === "left_side" || layer.panelKey === "right_side";
   // Preload the already-uploaded source panel (if any) so a fresh mesh
   // seeds sourceRect to the real calibrated sheet size on creation,
   // instead of defaulting to null and silently falling back to the
@@ -1214,6 +1217,28 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             on the uploaded panel image in the Source artwork section.
           </div>
           <SourceTransformControls layer={layer} mesh={mesh} />
+          {isLegPanel && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 w-full text-[11px]"
+              onClick={() => {
+                const ok = actions.applyMirroredMeshToOppositeLeg(layer.id);
+                toast({
+                  title: ok
+                    ? "Mirrored map applied to opposite leg"
+                    : "Could not mirror to opposite leg",
+                  description: ok
+                    ? "Mask + mesh were flipped in mockup space onto the other side panel."
+                    : "Select a left_side or right_side layer with a traced mask.",
+                  variant: ok ? "default" : "destructive",
+                });
+              }}
+            >
+              <FlipHorizontal className="mr-1 h-3.5 w-3.5" />
+              Apply Mapped Mirrored to opposite leg
+            </Button>
+          )}
           <div className="flex gap-2">
             <Button
               size="sm"

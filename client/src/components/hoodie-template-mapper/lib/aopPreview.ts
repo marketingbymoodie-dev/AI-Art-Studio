@@ -570,11 +570,6 @@ export function computeGroupRects(
     seamOverrides?: Record<string, number>;
     enabledOverrides?: Record<string, boolean>;
     legacyPlacement?: ArtworkPlacement;
-    /**
-     * Leggings Mirror ON: size the Legs design rect to the right leg only
-     * so place handles match per-panel mirrored sampling (not the two-leg union).
-     */
-    legsMirrored?: boolean;
   },
 ): Map<string, DesignRectInfo> {
   const result = new Map<string, DesignRectInfo>();
@@ -595,20 +590,9 @@ export function computeGroupRects(
     return result;
   }
   for (const group of groups) {
-    let groupLayers = layers.filter(
+    const groupLayers = layers.filter(
       (l) => l.panelKey && group.panelKeys.includes(l.panelKey),
     );
-    // Mirror: place box sits on the right leg; left samples the same
-    // scale/offset via synthesiseLeggingsMirroredSourceRect.
-    if (
-      options?.legsMirrored &&
-      group.id === "legs" &&
-      group.panelKeys.includes("left_side") &&
-      group.panelKeys.includes("right_side")
-    ) {
-      const rightOnly = groupLayers.filter((l) => l.panelKey === "right_side");
-      if (rightOnly.length > 0) groupLayers = rightOnly;
-    }
     if (groupLayers.length === 0) continue;
     // Note: the back-view hood/sleeve placement-inherit hack lived here in
     // an earlier pass. It's been removed because the renderer now
@@ -950,9 +934,8 @@ function synthesiseSeamAwareSourceRect(
 }
 
 /**
- * PatternCustomizer-style Mirror: each leg gets a full-panel sample of the
- * artwork with the group's shared scale/offset (not continuous half-slices).
- * Call only when `legsMirrored` is on.
+ * Per-leg Place sampling (PatternCustomizer): full artwork fitted into one
+ * leg panel with that group's scale/offset — not continuous half-slices.
  */
 export function synthesiseLeggingsMirroredSourceRect(
   panelBb: Aabb,
@@ -998,9 +981,10 @@ function artworkSourceRectForPanel(
   aw: number,
   ah: number,
   seamSide: "left" | "right" | "none",
-  legsMirrored?: boolean,
+  _legsMirrored?: boolean,
 ): Aabb {
-  if (legsMirrored && isLeggingsSidePanelKey(panelKey)) {
+  // Leggings always use full-panel place (Sync/Mirror only change transforms/flip).
+  if (isLeggingsSidePanelKey(panelKey)) {
     return synthesiseLeggingsMirroredSourceRect(panelBb, groupRect, aw, ah);
   }
   return synthesiseSeamAwareSourceRect(panelBb, groupRect, aw, ah, seamSide);
@@ -1117,16 +1101,15 @@ export function renderHoodFlatPanel(
     if (!bb) return null;
     const aw = artwork.naturalWidth || artwork.width;
     const ah = artwork.naturalHeight || artwork.height;
-    const side: "left" | "right" | "none" =
-      options?.legsMirrored && isLeggingsSidePanelKey(frontLayer.panelKey)
-        ? "none"
-        : frontLayer.panelKey
-          ? SEAM_PAIR_PANELS.left.includes(frontLayer.panelKey)
-            ? "left"
-            : SEAM_PAIR_PANELS.right.includes(frontLayer.panelKey)
-              ? "right"
-              : "none"
-          : "none";
+    const side: "left" | "right" | "none" = isLeggingsSidePanelKey(frontLayer.panelKey)
+      ? "none"
+      : frontLayer.panelKey
+        ? SEAM_PAIR_PANELS.left.includes(frontLayer.panelKey)
+          ? "left"
+          : SEAM_PAIR_PANELS.right.includes(frontLayer.panelKey)
+            ? "right"
+            : "none"
+        : "none";
     const sampleBb = applyPanelPlacementBiasToBbox(
       bb,
       frontRect,
@@ -2028,10 +2011,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // Used to bias the synthSrc UV when seam allowance > 0.
   const seamSideForLayer = (layer: MaskLayer): "left" | "right" | "none" => {
     if (!layer.panelKey) return "none";
-    // Mirrored legs use per-panel full art — not continuous L/R halves.
-    if (params.legsMirrored && isLeggingsSidePanelKey(layer.panelKey)) {
-      return "none";
-    }
+    // Leggings: per-panel full art (never continuous L/R halves).
+    if (isLeggingsSidePanelKey(layer.panelKey)) return "none";
     if (SEAM_PAIR_PANELS.left.includes(layer.panelKey)) return "left";
     if (SEAM_PAIR_PANELS.right.includes(layer.panelKey)) return "right";
     return "none";
@@ -3274,14 +3255,13 @@ export function renderFlatPrintPanels(
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
-          const side: "left" | "right" | "none" =
-            params.legsMirrored && isLeggingsSidePanelKey(panelKey)
-              ? "none"
-              : SEAM_PAIR_PANELS.left.includes(panelKey)
-                ? "left"
-                : SEAM_PAIR_PANELS.right.includes(panelKey)
-                  ? "right"
-                  : "none";
+          const side: "left" | "right" | "none" = isLeggingsSidePanelKey(panelKey)
+            ? "none"
+            : SEAM_PAIR_PANELS.left.includes(panelKey)
+              ? "left"
+              : SEAM_PAIR_PANELS.right.includes(panelKey)
+                ? "right"
+                : "none";
           const sampleBb = rect
             ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
             : bb;

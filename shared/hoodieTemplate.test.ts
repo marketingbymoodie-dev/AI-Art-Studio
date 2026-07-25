@@ -229,16 +229,20 @@ describe("leggings panels (bp 256 / 1050)", () => {
     expect(zip).not.toContain("front_waistband");
   });
 
-  it("seeds leggings design groups and heals pillow-style saves", () => {
+  it("seeds left-leg/right-leg design groups and heals pillow-style saves", () => {
     const fresh = createFreshAopTemplate({
       name: "leggings-aop-L",
       blueprintId: LEGGINGS_CASUAL_BLUEPRINT_ID,
     });
     expect(fresh.hoodieType).toBe("leggings-aop");
     expect(fresh.placerEditor).toBe("hoodie");
-    expect(fresh.designGroups?.map((g) => g.id)).toEqual(["legs"]);
-    expect(fresh.designGroups?.[0]?.panelKeys).toEqual(["left_side", "right_side"]);
-    expect(fresh.designGroups?.[0]?.seamAllowance).toBe(0);
+    expect(fresh.designGroups?.map((g) => g.id)).toEqual(["right-leg", "left-leg"]);
+    expect(fresh.designGroups?.find((g) => g.id === "right-leg")?.panelKeys).toEqual([
+      "right_side",
+    ]);
+    expect(fresh.designGroups?.find((g) => g.id === "left-leg")?.panelKeys).toEqual([
+      "left_side",
+    ]);
 
     const healed = normalizeHoodieTemplate({
       ...fresh,
@@ -259,31 +263,19 @@ describe("leggings panels (bp 256 / 1050)", () => {
       ],
     });
     expect(healed.placerEditor).toBe("hoodie");
-    expect(healed.designGroups?.map((g) => g.id)).toEqual(["legs"]);
+    expect(healed.designGroups?.map((g) => g.id)).toEqual(["right-leg", "left-leg"]);
     expect(hoodiePanelKeyToPrintifyPosition("left_side")).toBe("left_side");
   });
 
-  it("heals split left-leg/right-leg drafts into unified legs", () => {
+  it("heals unified legs group into left-leg/right-leg", () => {
     const healed = normalizeHoodieTemplate({
-      name: "leggings-split",
+      name: "leggings-unified",
       blueprintId: LEGGINGS_CASUAL_BLUEPRINT_ID,
       designGroups: [
         {
-          id: "left-leg",
-          name: "Left leg",
-          panelKeys: ["left_side"],
-          placement: {
-            front: { scale: 1, offsetX: 0, offsetY: 0 },
-            back: { scale: 1, offsetX: 0, offsetY: 0 },
-          },
-          seamAllowance: 0,
-          lockedRatio: null,
-          enabled: true,
-        },
-        {
-          id: "right-leg",
-          name: "Right leg",
-          panelKeys: ["right_side"],
+          id: "legs",
+          name: "Legs",
+          panelKeys: ["left_side", "right_side"],
           placement: {
             front: { scale: 1, offsetX: 0, offsetY: 0 },
             back: { scale: 1, offsetX: 0, offsetY: 0 },
@@ -294,7 +286,7 @@ describe("leggings panels (bp 256 / 1050)", () => {
         },
       ],
     });
-    expect(healed.designGroups?.map((g) => g.id)).toEqual(["legs"]);
+    expect(healed.designGroups?.map((g) => g.id)).toEqual(["right-leg", "left-leg"]);
   });
 });
 

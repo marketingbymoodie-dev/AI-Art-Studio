@@ -6,6 +6,8 @@
 
 /** Virtual part id — both sleeve design groups edited together. */
 export const SLEEVES_PART_ID = "sleeves";
+/** Customer Part chip for leggings — edits resolve to left-leg / right-leg groups. */
+export const LEGS_PART_ID = "legs";
 
 const SEGMENT_SELECTED =
   "bg-foreground text-background border-foreground";

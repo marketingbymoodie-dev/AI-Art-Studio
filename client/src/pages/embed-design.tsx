@@ -6933,6 +6933,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           placements: result.state.placements,
           enabled: result.state.enabled,
           sleevesMirrored: result.state.sleevesMirrored,
+          legsSynced: result.state.legsSynced,
           legsMirrored: result.state.legsMirrored,
         });
         void (async () => {
