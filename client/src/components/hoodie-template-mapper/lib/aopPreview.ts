@@ -151,14 +151,62 @@ export function normalizeRotationDeg(deg: number): number {
   return d;
 }
 
-/** Compose calibration mesh rotation with customer Place rotation (both CW). */
-export function composeArtworkSourceRotation(
-  meshSourceRotation: number | null | undefined,
-  placementRotationDeg: number | null | undefined,
-): number {
-  return normalizeRotationDeg(
-    (meshSourceRotation ?? 0) + (placementRotationDeg ?? 0),
-  );
+/**
+ * Bake customer Place rotation into a same-sized artwork canvas (CW).
+ *
+ * Must NOT be applied as per-panel mesh `sourceRotation`: linked leggings
+ * each sample their own crop, so UV-spinning every panel around its own
+ * centre splits the motif at the crotch. Pre-rotating once keeps both
+ * legs (and every other panel in the group) sampling the same upright
+ * bitmap — same as if the customer had uploaded a pre-rotated image.
+ *
+ * Canvas size stays equal to the source so existing sourceRect / scale
+ * math is unchanged; corners that leave the square become transparent.
+ */
+export function bakeArtworkPlacementRotation(
+  artwork: CanvasImageSource,
+  width: number,
+  height: number,
+  rotationDeg: number,
+): CanvasImageSource {
+  const deg = normalizeRotationDeg(rotationDeg);
+  if (!deg || width <= 0 || height <= 0) return artwork;
+  if (typeof document === "undefined") return artwork;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return artwork;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(artwork, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+  return canvas;
+}
+
+/** Per-render cache: same artwork + angle → one baked canvas. */
+function artworkRotationCache() {
+  const map = new Map<string, CanvasImageSource>();
+  return (
+    artwork: CanvasImageSource,
+    width: number,
+    height: number,
+    rotationDeg: number,
+  ): CanvasImageSource => {
+    const deg = normalizeRotationDeg(rotationDeg);
+    if (!deg) return artwork;
+    const key = `${deg}|${width}x${height}|${
+      typeof artwork === "object" && artwork && "src" in artwork
+        ? String((artwork as HTMLImageElement).src ?? "")
+        : ""
+    }`;
+    const hit = map.get(key);
+    if (hit) return hit;
+    const baked = bakeArtworkPlacementRotation(artwork, width, height, deg);
+    map.set(key, baked);
+    return baked;
+  };
 }
 
 export type AopPreviewParams = {
@@ -1198,18 +1246,21 @@ export function renderHoodFlatPanel(
 
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
+  const artSource = bakeArtworkPlacementRotation(
+    artwork,
+    aw,
+    ah,
+    frontRect.rotationDeg ?? 0,
+  );
   // Bake through the same mesh topology the live preview uses, but with
   // targetPoints on a uniform flat grid so the entire Printify placeholder
   // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
   // into a fractional dest rect left most of the canvas white on Printify.
-  drawMeshWarp(ctx, artwork, aw, ah, {
+  // Customer Place rotation is pre-baked into `artSource` (not mesh UV).
+  drawMeshWarp(ctx, artSource, aw, ah, {
     ...frontLayer.mesh,
     targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
     sourceRect: slice,
-    sourceRotation: composeArtworkSourceRotation(
-      frontLayer.mesh.sourceRotation,
-      frontRect.rotationDeg,
-    ),
     sourceFlipX: meshSourceFlipXForPanel(
       frontLayer.panelKey,
       frontLayer.mesh.sourceFlipX,
@@ -2015,6 +2066,9 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // template renders as a plain (background-tinted) hoodie.
   const solidColorFallback = params.solidColorFallback !== false;
   const useColors = mode === "solid-colors" || (!artwork && solidColorFallback);
+  // Place rotation is baked into the artwork bitmap once per angle so
+  // linked multi-panel groups (leggings) share one upright source.
+  const rotatedArtworkFor = artworkRotationCache();
   // Per-group design rects — the new core. Each group computes its
   // own anchor + base + effective rect from its panels' polygons.
   // The legacy single-rect path lives as a fallback inside
@@ -2458,13 +2512,18 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         synthSrc = { x: 0, y: 0, width: aw, height: ah };
       }
       if (synthSrc) {
-        drawMeshWarp(pctx, artwork, aw, ah, {
+        const artSource = rotatedArtworkFor(
+          artwork,
+          aw,
+          ah,
+          layerRect?.rotationDeg ?? 0,
+        );
+        drawMeshWarp(pctx, artSource, aw, ah, {
           ...layer.mesh,
           sourceRect: synthSrc,
-          sourceRotation: composeArtworkSourceRotation(
-            layer.mesh.sourceRotation,
-            layerRect?.rotationDeg,
-          ),
+          // Keep calibration UV rotation only — Place rotation is baked
+          // into artSource so linked legs share one upright bitmap.
+          sourceRotation: layer.mesh.sourceRotation ?? 0,
           sourceFlipX: meshSourceFlipXForPanel(
             layer.panelKey,
             layer.mesh.sourceFlipX,
@@ -2501,38 +2560,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             seamSideForLayer(layer),
             params.legsMirrored,
           );
-          const rot = layerRect.rotationDeg ?? 0;
-          if (!rot) {
-            pctx.drawImage(
-              artwork,
-              slice.x,
-              slice.y,
-              slice.width,
-              slice.height,
-              bb.x,
-              bb.y,
-              bb.width,
-              bb.height,
-            );
-          } else {
-            const cx = bb.x + bb.width / 2;
-            const cy = bb.y + bb.height / 2;
-            pctx.save();
-            pctx.translate(cx, cy);
-            pctx.rotate((rot * Math.PI) / 180);
-            pctx.drawImage(
-              artwork,
-              slice.x,
-              slice.y,
-              slice.width,
-              slice.height,
-              -bb.width / 2,
-              -bb.height / 2,
-              bb.width,
-              bb.height,
-            );
-            pctx.restore();
-          }
+          const artSource = rotatedArtworkFor(
+            artwork,
+            aw,
+            ah,
+            layerRect.rotationDeg ?? 0,
+          );
+          pctx.drawImage(
+            artSource,
+            slice.x,
+            slice.y,
+            slice.width,
+            slice.height,
+            bb.x,
+            bb.y,
+            bb.width,
+            bb.height,
+          );
         }
       } else {
         const bb = layerBb;
@@ -3522,8 +3566,14 @@ export function renderFlatPrintPanels(
                 cctx.translate(c.width, 0);
                 cctx.scale(-1, 1);
               }
-              cctx.drawImage(
+              const artSource = bakeArtworkPlacementRotation(
                 artwork,
+                aw,
+                ah,
+                rect.rotationDeg ?? 0,
+              );
+              cctx.drawImage(
+                artSource,
                 slice.x,
                 slice.y,
                 slice.width,

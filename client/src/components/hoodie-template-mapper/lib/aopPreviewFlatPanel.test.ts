@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  bakeArtworkPlacementRotation,
   buildFlatMeshTargetPoints,
-  composeArtworkSourceRotation,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
@@ -12,16 +12,19 @@ import {
   type DesignRectInfo,
 } from "./aopPreview";
 
-describe("normalizeRotationDeg / composeArtworkSourceRotation", () => {
+describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
   it("normalizes to (-180, 180]", () => {
     expect(normalizeRotationDeg(270)).toBe(-90);
     expect(normalizeRotationDeg(-270)).toBe(90);
     expect(normalizeRotationDeg(180)).toBe(180);
   });
 
-  it("composes calibration + customer Place rotation", () => {
-    expect(composeArtworkSourceRotation(90, 15)).toBe(105);
-    expect(composeArtworkSourceRotation(0, -10)).toBe(-10);
+  it("is a no-op at 0° (same object reference)", () => {
+    const src = document.createElement("canvas");
+    src.width = 40;
+    src.height = 20;
+    expect(bakeArtworkPlacementRotation(src, 40, 20, 0)).toBe(src);
+    expect(bakeArtworkPlacementRotation(src, 40, 20, 360)).toBe(src);
   });
 });
 

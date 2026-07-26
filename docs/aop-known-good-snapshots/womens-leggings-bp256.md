@@ -46,7 +46,7 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 | Left / Right | Select which leg to edit; click artwork on a leg to switch (Link: either side activates the shared box) |
 | Drag X | Inverted vs raw offset so mouse left → art moves left on-body (Printify flat flip) |
 | Off-edge warning | Place mode: if left/right nudge slides art past the panel edge (onto the unseen Front/Back of the leg), amber hint under nudge + Legs controls — switch view to check |
-| Rotate | Place bounding box: bottom-right rotate handle (CW); stored as `rotationDeg` on placement; Link sides shares angle |
+| Rotate | Place bounding box: bottom-right rotate handle (CW); stored as `rotationDeg`; baked into artwork once (not per-panel UV) so Link sides stays height-aligned |
 | Pattern + Link / Mirror | Extra flip on left_side; Back view bridges tiled flats from Front mesh so Mirror matches |
 | Pattern tile size | Leg panels anchor tile grid at panel **center** (not crotch seam edge) |
 
