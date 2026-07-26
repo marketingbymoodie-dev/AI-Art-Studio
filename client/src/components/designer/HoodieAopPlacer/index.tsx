@@ -132,6 +132,13 @@ export type HoodieAopPlacerProps = {
   /** When set, preview shows this Printify shot instead of the live canvas. */
   canvasOverrideUrl?: string | null;
   canvasOverrideLabel?: string | null;
+  /**
+   * Leave Printers Mockup / person gallery and show the live mesh editor.
+   * Fired when the customer clicks Front, Back, Place, or Pattern — including
+   * re-clicking the already-selected Front while a person shot is showing
+   * (view state alone would not change).
+   */
+  onEngageLiveEditor?: () => void;
 };
 
 /**
@@ -886,7 +893,10 @@ export default function HoodieAopPlacer({
   printersMockupAction = null,
   canvasOverrideUrl = null,
   canvasOverrideLabel = null,
+  onEngageLiveEditor,
 }: HoodieAopPlacerProps) {
+  const onEngageLiveEditorRef = useRef(onEngageLiveEditor);
+  onEngageLiveEditorRef.current = onEngageLiveEditor;
   // ---------- Template fetch ----------
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1216,7 +1226,12 @@ export default function HoodieAopPlacer({
   const setMode = useCallback((mode: "place" | "pattern") => {
     setState((prev) => {
       if (!prev) return prev;
-      if (prev.mode === mode) return prev;
+      if (prev.mode === mode) {
+        // Same mode chip, but still leave Printers Mockup if showing.
+        onEngageLiveEditorRef.current?.();
+        return prev;
+      }
+      onEngageLiveEditorRef.current?.();
       const leggings =
         !!data && isLeggingsBlueprint(data.template.blueprintId);
       // Always show Front View editor when switching Place ↔ Pattern.
@@ -1266,8 +1281,10 @@ export default function HoodieAopPlacer({
    * View-row button handler. Front/Back always engage the matching body
    * Part (front-body / back-body) so customers aren't left on Sleeves/Hood
    * after changing view. Pick Sleeves again explicitly to edit sleeves.
+   * Also leaves Printers Mockup so the first click is never a no-op.
    */
   const setView = useCallback((view: HoodieView) => {
+    onEngageLiveEditorRef.current?.();
     setState((prev) => {
       if (!prev) return prev;
       const pillow = data && isPillowWrapTemplate(data.template);

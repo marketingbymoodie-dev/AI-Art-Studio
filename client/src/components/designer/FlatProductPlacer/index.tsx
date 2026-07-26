@@ -638,8 +638,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   onViewChangeRef.current = onViewChange;
   const setView = useCallback((view: ViewName) => {
     setState((prev) => {
-      if (!prev || prev.view === view) return prev;
+      if (!prev) return prev;
+      // Always leave lifestyle/catalog override — including re-clicking the
+      // already-selected Front/Back while a person shot is on screen.
       queueMicrotask(() => onViewChangeRef.current?.(view));
+      if (prev.view === view) return prev;
       return { ...prev, view };
     });
   }, []);

@@ -2416,7 +2416,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [selectedMockupIndex, postGenGalleryItems]);
 
-  // Place ↔ Pattern: always return to the live Front View editor (not Printers Mockup).
+  // Place ↔ Pattern / Front ↔ Back: always return to the live mesh editor
+  // (not Printers Mockup). Front/Back also call `engageAopLiveEditor` so
+  // re-clicking the already-selected view still clears a person shot.
   const prevHoodieAopModeRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const mode = hoodieAopPlacerState?.mode;
@@ -2430,6 +2432,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     stickAopPersonGalleryRef.current = false;
     setSelectedMockupIndex(0);
   }, [hoodieAopPlacerState?.mode]);
+
+  const engageAopLiveEditor = useCallback(() => {
+    stickAopPersonGalleryRef.current = false;
+    setSelectedMockupIndex(0);
+  }, []);
 
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
@@ -10895,6 +10902,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     skipInitialAutoApply={!!hoodieAopPlacerState}
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
+                    onEngageLiveEditor={engageAopLiveEditor}
                     printersMockupAction={
                       canRequestAopPrintersMockup
                         ? {
