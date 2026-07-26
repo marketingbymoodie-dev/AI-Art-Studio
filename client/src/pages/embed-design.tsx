@@ -2407,7 +2407,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     });
   }, [postGenGalleryItems]);
 
-  // Place ↔ Pattern auto-apply must not yank off an on-screen Printers Mockup.
+  // Keep stick while the customer is actively viewing a person slide (so a
+  // placement auto-apply does not drop them). Cleared on mode switch / Artwork.
   useEffect(() => {
     const item = postGenGalleryItems[selectedMockupIndex];
     if (item?.kind === "mockup" && isPersonMockupLabel(item.label)) {
@@ -2415,25 +2416,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [selectedMockupIndex, postGenGalleryItems]);
 
-  // Mode switch changes placer signature → auto-apply; re-stick if person shots exist
-  // and we were (or still are) on a person gallery slide.
+  // Place ↔ Pattern: always return to the live Front View editor (not Printers Mockup).
+  const prevHoodieAopModeRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!hoodieAopPlacerState?.mode) return;
-    if (aopPersonMockupsRef.current.length === 0) return;
-    setSelectedMockupIndex((prev) => {
-      const cur = postGenGalleryItems[prev];
-      if (cur?.kind === "mockup" && isPersonMockupLabel(cur.label)) {
-        stickAopPersonGalleryRef.current = true;
-        return prev;
-      }
-      if (!stickAopPersonGalleryRef.current) return prev;
-      const idx = postGenGalleryItems.findIndex(
-        (item) =>
-          item.kind === "mockup" && isPersonMockupLabel(item.label),
-      );
-      return idx >= 0 ? idx : prev;
-    });
-  }, [hoodieAopPlacerState?.mode, postGenGalleryItems]);
+    const mode = hoodieAopPlacerState?.mode;
+    if (!mode) return;
+    if (prevHoodieAopModeRef.current === undefined) {
+      prevHoodieAopModeRef.current = mode;
+      return;
+    }
+    if (prevHoodieAopModeRef.current === mode) return;
+    prevHoodieAopModeRef.current = mode;
+    stickAopPersonGalleryRef.current = false;
+    setSelectedMockupIndex(0);
+  }, [hoodieAopPlacerState?.mode]);
 
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
@@ -7043,13 +7039,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const withPersonUrls = withPerson.map((i) => i.url);
       setPrintifyMockupImages(withPerson);
       setPrintifyMockups(withPersonUrls);
-      // Keep Printers Mockup visible across Place↔Pattern (auto-apply) when
-      // person shots exist and the customer was viewing one / stick is on.
       setSelectedMockupIndex((prev) => {
-        const keepPerson =
-          stickAopPersonGalleryRef.current &&
-          aopPersonMockupsRef.current.length > 0;
-        if (!keepPerson) return 0;
+        // Stick keeps Printers Mockup after placement edits; mode switch clears
+        // stick first so apply lands on Artwork / live editor.
+        if (
+          !stickAopPersonGalleryRef.current ||
+          aopPersonMockupsRef.current.length === 0
+        ) {
+          return 0;
+        }
         const personIdx = withPerson.findIndex((m) =>
           isPersonMockupLabel(m.label),
         );

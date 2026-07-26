@@ -1214,7 +1214,8 @@ export default function HoodieAopPlacer({
       if (prev.mode === mode) return prev;
       const leggings =
         !!data && isLeggingsBlueprint(data.template.blueprintId);
-      if (!leggings) return { ...prev, mode };
+      // Always show Front View editor when switching Place ↔ Pattern.
+      if (!leggings) return { ...prev, mode, view: "front" };
 
       // Leaving Place: remember session, force Link+Mirror off for clean tile symmetry.
       if (prev.mode === "place" && mode === "pattern") {
@@ -1228,6 +1229,7 @@ export default function HoodieAopPlacer({
         return {
           ...prev,
           mode: "pattern",
+          view: "front",
           legsSynced: false,
           legsMirrored: false,
         };
@@ -1236,10 +1238,11 @@ export default function HoodieAopPlacer({
       // Returning to Place: restore last Place Link/Mirror/placements/enabled.
       if (prev.mode === "pattern" && mode === "place") {
         const snap = placeSessionRef.current;
-        if (!snap) return { ...prev, mode: "place" };
+        if (!snap) return { ...prev, mode: "place", view: "front" };
         return {
           ...prev,
           mode: "place",
+          view: "front",
           legsSynced: snap.legsSynced,
           legsMirrored: snap.legsMirrored,
           placements: clonePlacements(snap.placements),
@@ -1250,7 +1253,7 @@ export default function HoodieAopPlacer({
         };
       }
 
-      return { ...prev, mode };
+      return { ...prev, mode, view: "front" };
     });
   }, [data]);
 
