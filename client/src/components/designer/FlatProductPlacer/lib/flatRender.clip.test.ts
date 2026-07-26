@@ -30,17 +30,17 @@ describe("clipFlatArtToPrintArea", () => {
     expect(raw.globalCompositeOperation).toBe("source-over");
   });
 
-  it("uses pixel mask when present", () => {
+  it("uses pixel mask then hard-clips to the dashed guide rect", () => {
     const { actx, raw } = mockCtx();
     const mask = { naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement;
     const mode = clipFlatArtToPrintArea(actx, {
       mask,
-      rect: { x: 0, y: 0, width: 100, height: 100 },
+      rect: { x: 10, y: 20, width: 100, height: 200 },
       canvasW: 1024,
       canvasH: 1024,
     });
-    expect(mode).toBe("mask");
+    expect(mode).toBe("mask+rect");
     expect(raw.drawImage).toHaveBeenCalled();
-    expect(raw.fillRect).not.toHaveBeenCalled();
+    expect(raw.fillRect).toHaveBeenCalledWith(10, 20, 100, 200);
   });
 });

@@ -1256,6 +1256,11 @@ function solidifyMaskForClip(
  * Clip the offscreen artwork layer to the printable area.
  * Prefer the pixel mask when present; otherwise hard-clip to `rect` (wall-decal
  * catalog blanks skip the shared harvest mask but still need side/top trim).
+ *
+ * When a mask is present, also hard-clip to `rect` (the dashed guide). Soft
+ * mask silhouettes / AABB drift can otherwise paint past the guide while the
+ * UI still shows the smaller harvest rectangle — customers see "art outside
+ * the dashed line" with no matching clip edge.
  */
 export function clipFlatArtToPrintArea(
   actx: CanvasRenderingContext2D,
@@ -1266,7 +1271,7 @@ export function clipFlatArtToPrintArea(
     canvasH: number;
     fabricWeave?: boolean;
   },
-): "mask" | "rect" {
+): "mask" | "rect" | "mask+rect" {
   const { mask, rect, canvasW, canvasH, fabricWeave } = opts;
   actx.globalCompositeOperation = "destination-in";
   if (mask) {
@@ -1274,6 +1279,13 @@ export function clipFlatArtToPrintArea(
       actx.drawImage(solidifyMaskForClip(mask, canvasW, canvasH), 0, 0);
     } else {
       actx.drawImage(mask, 0, 0, canvasW, canvasH);
+    }
+    if (rect.width > 0 && rect.height > 0) {
+      // Second pass: keep only pixels inside the dashed placement guide.
+      actx.fillStyle = "#fff";
+      actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+      actx.globalCompositeOperation = "source-over";
+      return "mask+rect";
     }
     actx.globalCompositeOperation = "source-over";
     return "mask";

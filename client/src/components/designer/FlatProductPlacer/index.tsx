@@ -871,8 +871,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           }}
           data-testid="flat-placer-canvas-area"
         >
+          {/*
+            inline-block + leading-none so the overlay's absolute inset-0 matches
+            the canvas CSS box exactly (a flex wrapper can letterbox and desync
+            the dashed guide from where pixels are clipped).
+          */}
           <div
-            className="relative flex max-h-full max-w-full items-center justify-center overflow-hidden"
+            className="relative inline-block max-h-full max-w-full overflow-hidden leading-none"
             style={{
               transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
               transformOrigin: "center center",
