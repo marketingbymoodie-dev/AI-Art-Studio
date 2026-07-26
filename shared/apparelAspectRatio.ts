@@ -91,3 +91,70 @@ export function resolveStandardApparelAspectRatioFromPlaceholders(
   if (w > h) [w, h] = [h, w];
   return computeAspectRatioFromPixelDims(w, h);
 }
+
+/**
+ * Women's leggings AOP (bp 256 / 1050): generation should be tall like a
+ * single leg print panel — not the product-level near-square AR that import
+ * often stores as 1:1.
+ */
+export function resolveLeggingsAopAspectRatio(
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }> | null,
+  fallback = "2:3",
+): string {
+  if (!placeholderPositions?.length) return fallback;
+  const side = placeholderPositions.find((p) => {
+    const pos = String(p.position || "").toLowerCase();
+    return (
+      pos === "left_side" ||
+      pos === "right_side" ||
+      pos === "left_leg" ||
+      pos === "right_leg"
+    );
+  });
+  if (!side?.width || !side?.height) return fallback;
+  let w = side.width;
+  let h = side.height;
+  if (w > h) [w, h] = [h, w];
+  return computeAspectRatioFromPixelDims(w, h);
+}
+
+/**
+ * Aspect ratio from a flat-calibration harvest — matches the dashed print guide
+ * in FlatProductPlacer (visible/print bounds on the blank). Falls back to
+ * printFileDims. Only used when a product has flatCalibration; other apparel
+ * keeps per-size probed placeholder ratios from import.
+ */
+export function aspectRatioFromFlatCalibration(flatCalibration: unknown): string | null {
+  let cal: any = flatCalibration;
+  if (typeof cal === "string") {
+    try {
+      cal = JSON.parse(cal);
+    } catch {
+      return null;
+    }
+  }
+  if (!cal || typeof cal !== "object") return null;
+  const view = cal.views?.front || cal.views?.back;
+  if (!view || typeof view !== "object") return null;
+
+  // Dashed guide on the mockup = visible / print bounds (normalized mockup space).
+  const nr = view.visibleRectNormalized || view.printBoundsNormalized;
+  if (nr && Number(nr.width) > 0 && Number(nr.height) > 0) {
+    let w = Math.round(Number(nr.width) * 1000);
+    let h = Math.round(Number(nr.height) * 1000);
+    if (w > h) [w, h] = [h, w];
+    return computeAspectRatioFromPixelDims(w, h);
+  }
+
+  const dims = view.printFileDims;
+  if (!dims?.width || !dims?.height) return null;
+  let w = Number(dims.width);
+  let h = Number(dims.height);
+  if (!w || !h || Number.isNaN(w) || Number.isNaN(h)) return null;
+  if (w > h) [w, h] = [h, w];
+  return computeAspectRatioFromPixelDims(w, h);
+}

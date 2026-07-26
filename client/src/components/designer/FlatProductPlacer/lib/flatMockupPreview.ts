@@ -14,10 +14,27 @@ export async function renderFlatMockupDataUrl(
   placerState: FlatProductPlacerState,
   view: FlatViewName,
   artworkUrl: string,
-  opts?: { decorMode?: boolean; fabricWeave?: boolean },
+  opts?: {
+    decorMode?: boolean;
+    fabricWeave?: boolean;
+    landscapeOrientation?: boolean;
+    blankUrlOverride?: string | null;
+    catalogSizeAspectRatio?: string | null;
+  },
 ): Promise<string | null> {
-  const assets = await loadFlatViewAssets(manifest, colorId, view);
-  const calib = resolveFlatViewCalibration(manifest, colorId, view);
+  const refitCatalogSizeGuide =
+    !!opts?.blankUrlOverride && !!opts?.catalogSizeAspectRatio;
+  const assets = await loadFlatViewAssets(manifest, colorId, view, {
+    landscapeOrientation: opts?.landscapeOrientation,
+    blankUrlOverride: opts?.blankUrlOverride,
+    sizeAspectRatio: opts?.catalogSizeAspectRatio,
+    refitCatalogSizeGuide,
+  });
+  const calib = resolveFlatViewCalibration(manifest, colorId, view, {
+    landscapeOrientation: !!opts?.landscapeOrientation,
+    sizeAspectRatio: opts?.catalogSizeAspectRatio,
+    refitCatalogSizeGuide,
+  });
   if (!assets?.blank || !calib) return null;
 
   const includeArtwork = !!placerState.enabled[view];

@@ -9,6 +9,8 @@ import { Loader2, Sparkles, ImagePlus, RefreshCw, X, Info } from "lucide-react";
 import { StyleSelector } from "./StyleSelector";
 import { useDesignerState } from "./useDesignerState";
 import {
+  filterStylePresetsForPage,
+  parseCustomizerPageStyleConfig,
   selectableCategoriesForDesignerType,
   styleMatchesSelectableCategories,
 } from "@shared/customizerPageStyles";
@@ -83,13 +85,21 @@ export function BaseDesigner({
 
   const allStylePresets = stylePresetsData?.stylePresets || [];
   
-  // Filter styles based on designerType (decor + graphics for pillows, etc.)
+  // Prefer customizer-page styleConfig (same as store / Generator Tester).
   const stylePresets = useMemo(() => {
     if (!designerConfig) return [];
-
+    const pageCfg = parseCustomizerPageStyleConfig(
+      (designerConfig as { styleConfig?: unknown }).styleConfig,
+    );
+    if (pageCfg) {
+      return filterStylePresetsForPage(
+        allStylePresets,
+        pageCfg,
+        designerConfig.designerType,
+      );
+    }
     const selectable = selectableCategoriesForDesignerType(designerConfig.designerType);
     if (selectable === "all") return allStylePresets;
-
     return allStylePresets.filter((s) => styleMatchesSelectableCategories(s, selectable));
   }, [allStylePresets, designerConfig]);
 

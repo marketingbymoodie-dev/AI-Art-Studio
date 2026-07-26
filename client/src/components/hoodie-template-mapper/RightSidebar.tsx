@@ -22,6 +22,8 @@ import {
   FlipHorizontal,
   FlipVertical,
   Crop,
+  Link2,
+  Unlink2,
 } from "lucide-react";
 import {
   MAX_MESH_COLS,
@@ -29,8 +31,10 @@ import {
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  LEGGINGS_CASUAL_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
   isPillowWrapBlueprint,
+  isLeggingsBlueprint,
   isPillowWrapTemplate,
   resolvePlacerEditor,
   resolvePrintFileLayout,
@@ -46,7 +50,7 @@ import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
 import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
 import { loadMapperAssetImage } from "./lib/mapperAssetImage";
-import { MapperAssetThumbnail } from "./lib/useMapperAssetImage";
+import { MapperAssetThumbnail, useMapperAssetImage } from "./lib/useMapperAssetImage";
 import SourceArtworkCropPicker from "./SourceArtworkCropPicker";
 import { detectMockupContentBounds } from "./lib/mockupCrop";
 import { applyMockupCropUpload } from "./lib/mockupCropApply";
@@ -220,10 +224,20 @@ export default function RightSidebar() {
               <span className="text-slate-300">Front Pocket</span>. Zip L/R keys are hidden.
             </p>
           )}
+          {isLeggingsBlueprint(template.blueprintId) && (
+            <p className="mt-2 text-[10px] leading-snug text-slate-500">
+              Leggings (bp {template.blueprintId === LEGGINGS_CASUAL_BLUEPRINT_ID ? "256" : "1050"}):
+              Printify only has <span className="text-slate-300">Left/Right side</span> print files —
+              include the inner waistband in each leg mesh. On FRONT and BACK photos assign wearer’s
+              left → <span className="text-slate-300">Left Leg</span>, right →{" "}
+              <span className="text-slate-300">Right Leg</span>. Do not use Front (full body) or
+              separate waistband keys.
+            </p>
+          )}
           <p className="mt-2 text-[10px] leading-snug text-slate-500">
             <span className="text-slate-400">blueprintId</span> = Printify catalog number from the product URL
             (e.g. <span className="font-mono text-slate-400">…/products/2758/…</span> → 2758). Pillows: 220 square,
-            223 faux suede, 2758 body. Hoodies: 450 pullover, 451 zip. Wrong id → wrong Part/View controls on the
+            223 faux suede, 2758 body. Hoodies: 450 pullover, 451 zip. Leggings: 256 casual, 1050 capri. Wrong id → wrong Part/View controls on the
             storefront.{" "}
             <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
             <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}
@@ -985,8 +999,14 @@ function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
     setBusy(true);
     try {
       const panelKey = layer.panelKey ?? `mask-${layer.id}`;
-      const { url } = await uploadSourcePanel(templateName, panelKey, file);
-      actions.setLayerSourcePanel(layer.id, url);
+      const [{ url }, dims] = await Promise.all([
+        uploadSourcePanel(templateName, panelKey, file),
+        readImageDimensions(file).catch(() => null),
+      ]);
+      // Seed mesh.sourceRect to this sheet's real size (when the mesh
+      // doesn't already have one) so print export uses the calibrated
+      // panel resolution instead of the mesh's own target-point bbox.
+      actions.setLayerSourcePanel(layer.id, url, dims);
       toast({ title: "Source artwork uploaded", description: url });
     } catch (err: any) {
       toast({
@@ -1109,9 +1129,17 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
   const tool = useHoodieMapperStore((s) => s.tool);
   const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
   const actions = useHoodieMapperStore((s) => s.actions);
+  const { toast } = useToast();
   const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const canInit = anchors.length >= 3;
   const mesh = layer.mesh;
+  const isLegPanel =
+    layer.panelKey === "left_side" || layer.panelKey === "right_side";
+  // Preload the already-uploaded source panel (if any) so a fresh mesh
+  // seeds sourceRect to the real calibrated sheet size on creation,
+  // instead of defaulting to null and silently falling back to the
+  // mesh's own (arbitrary) target-point bbox at print-export time.
+  const { img: sourceImg } = useMapperAssetImage(mesh ? null : layer.productionPanelSrc);
 
   return (
     <div className="mt-3 rounded border border-purple-900/40 bg-purple-950/20 p-2">
@@ -1130,7 +1158,16 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             variant="outline"
             className="h-8 w-full text-[11px]"
             disabled={!canInit}
-            onClick={() => actions.initLayerMesh(layer.id, 4, 4)}
+            onClick={() =>
+              actions.initLayerMesh(
+                layer.id,
+                4,
+                4,
+                sourceImg
+                  ? { width: sourceImg.naturalWidth, height: sourceImg.naturalHeight }
+                  : null,
+              )
+            }
           >
             <Grid3X3 className="mr-1 h-3.5 w-3.5" />
             Initialise 4×4 mesh
@@ -1180,6 +1217,28 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             on the uploaded panel image in the Source artwork section.
           </div>
           <SourceTransformControls layer={layer} mesh={mesh} />
+          {isLegPanel && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 w-full text-[11px]"
+              onClick={() => {
+                const ok = actions.applyMirroredMeshToOppositeLeg(layer.id);
+                toast({
+                  title: ok
+                    ? "Mirrored map applied to opposite leg"
+                    : "Could not mirror to opposite leg",
+                  description: ok
+                    ? "Mask + mesh were flipped in mockup space onto the other side panel."
+                    : "Select a left_side or right_side layer with a traced mask.",
+                  variant: ok ? "default" : "destructive",
+                });
+              }}
+            >
+              <FlipHorizontal className="mr-1 h-3.5 w-3.5" />
+              Apply Mapped Mirrored to opposite leg
+            </Button>
+          )}
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -1210,9 +1269,13 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
 }
 
 /**
- * Rigid-body transform controls for the whole panel (mask polygon +
- * mesh + artwork). Move and scale always apply to mask and mesh together.
- * Rotation (when shown) still affects mesh/artwork only.
+ * Rigid-body transform controls for the panel (mask polygon + mesh +
+ * artwork). By default Move and Scale apply to mask and mesh together
+ * (the "linked" toggle below). Switch it off to reposition/rescale just
+ * the mesh (artwork placement) — e.g. nudging a sleeve or hood panel so
+ * left/right look symmetric — without moving the traced mask boundary
+ * that determines what's actually visible/printed. Rotation always
+ * affects mesh/artwork only, link or no.
  */
 function PanelTransformControls({
   layer,
@@ -1224,6 +1287,7 @@ function PanelTransformControls({
   showRotate?: boolean;
 }) {
   const actions = useHoodieMapperStore((s) => s.actions);
+  const linked = useHoodieMapperStore((s) => s.meshEdit.linkMaskToMesh);
   const maskAnchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
 
   // Centroid of mask + mesh — stable pivot when both exist but drifted.
@@ -1267,9 +1331,32 @@ function PanelTransformControls({
 
   return (
     <div className="space-y-2 rounded border border-yellow-700/30 bg-yellow-950/15 p-2">
-      <div className="text-[10px] uppercase tracking-wide text-yellow-300">
-        Panel transform (mask + mesh)
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] uppercase tracking-wide text-yellow-300">
+          Panel transform {linked ? "(mask + mesh)" : "(mesh/artwork only)"}
+        </div>
+        {mesh && (
+          <Button
+            size="sm"
+            variant={linked ? "outline" : "default"}
+            className="h-6 shrink-0 gap-1 px-2 text-[10px]"
+            onClick={() => actions.setMeshEdit({ linkMaskToMesh: !linked })}
+            title={
+              linked
+                ? "Linked: move/scale affects mask + mesh together. Click to unlink."
+                : "Unlinked: move/scale affects the mesh/artwork only, mask stays put. Click to re-link."
+            }
+          >
+            {linked ? <Link2 className="h-3 w-3" /> : <Unlink2 className="h-3 w-3" />}
+            {linked ? "Linked" : "Unlinked"}
+          </Button>
+        )}
       </div>
+      {!linked && (
+        <div className="text-[10px] text-amber-300/90">
+          Move/scale now reposition the artwork mesh only — the traced mask boundary stays put.
+        </div>
+      )}
 
       {showRotate && mesh && (
       <div className="space-y-1">
@@ -1348,7 +1435,9 @@ function PanelTransformControls({
 
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-[10px] text-slate-400">Size (mask + mesh)</Label>
+          <Label className="text-[10px] text-slate-400">
+            Size {linked ? "(mask + mesh)" : "(mesh only)"}
+          </Label>
           <span className="text-[10px] text-yellow-300">×{sessionScale.toFixed(2)}</span>
         </div>
         <Slider
@@ -1409,7 +1498,9 @@ function PanelTransformControls({
       </div>
 
       <div className="space-y-1">
-        <Label className="text-[10px] text-slate-400">Nudge position (mockup px)</Label>
+        <Label className="text-[10px] text-slate-400">
+          Nudge position (mockup px){linked ? "" : " — mesh only"}
+        </Label>
         <div className="grid grid-cols-3 gap-1">
           <span />
           <Button

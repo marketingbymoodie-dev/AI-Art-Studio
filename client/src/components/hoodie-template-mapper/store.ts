@@ -8,11 +8,13 @@ import {
   resizeMesh,
   mergeDesignGroupsForBlueprintSwitch,
   isPillowWrapBlueprint,
+  isLeggingsBlueprint,
   defaultPlacerEditorForBlueprint,
   defaultPrintFileLayoutForBlueprint,
   defaultHoodieTypeForBlueprint,
   resolveGarmentLayout,
   migrateSweatshirtDesignGroups,
+  PANEL_DISPLAY_LABEL,
   PILLOW_WRAP_BLUEPRINT_ID,
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
@@ -185,11 +187,21 @@ export type MeshEditState = {
   showFullArtwork: boolean;
   /** When true, the editor exposes draggable handles for the source rect. */
   cropEditing: boolean;
+  /**
+   * When true (default), rigid-body translate/scale move the mask polygon
+   * and the mesh together — the historical "always linked" behaviour.
+   * Toggling this off lets an admin reposition/rescale the mesh (i.e. the
+   * artwork placement) OR the mask polygon independently — e.g. nudging a
+   * sleeve's mesh a few px so left/right look symmetric without moving
+   * the traced boundary that defines what's actually visible/printed.
+   */
+  linkMaskToMesh: boolean;
 };
 
 export const DEFAULT_MESH_EDIT_STATE: MeshEditState = {
   showFullArtwork: false,
   cropEditing: false,
+  linkMaskToMesh: true,
 };
 
 export type HoodieMapperActions = {
@@ -258,6 +270,12 @@ export type HoodieMapperActions = {
    */
   duplicateLayer: (id: string) => string | null;
   /**
+   * Mirror-copy mask + mesh from a leggings left_side/right_side layer onto
+   * the opposite leg in the same view (mockup-space flip X + mesh column reorder).
+   * Returns true on success.
+   */
+  applyMirroredMeshToOppositeLeg: (sourceLayerId: string) => boolean;
+  /**
    * Replace the geometry of an existing layer. Re-serializes maskPath from
    * the supplied anchors. Used by anchor edits (drag/insert/delete) and the
    * Simplify/Smooth path-utility buttons.
@@ -282,8 +300,36 @@ export type HoodieMapperActions = {
    */
   closePenDraft: () => string | null;
   /** Mesh-warp actions. */
-  setLayerSourcePanel: (id: string, src: string | null) => void;
-  initLayerMesh: (id: string, cols?: number, rows?: number) => void;
+  /**
+   * Set (or clear) the calibrated Printify panel sheet this layer's mesh
+   * samples from. When `dims` is supplied and the layer's mesh doesn't
+   * already have an explicit `sourceRect`, the mesh's `sourceRect` is
+   * auto-populated to the full image size — this is what makes the
+   * flat print-file export use the *real* calibrated panel resolution
+   * instead of falling back to the mesh's on-screen target bbox (whose
+   * aspect ratio is just a side-effect of how far the admin dragged the
+   * warp handles, and can drift from the real panel shape unnoticed
+   * because the on-screen preview always clips to the mask polygon).
+   */
+  setLayerSourcePanel: (
+    id: string,
+    src: string | null,
+    dims?: { width: number; height: number } | null,
+  ) => void;
+  /**
+   * Create the initial mesh grid for a layer, covering its mask polygon's
+   * bounding box. When `sourceRectDefault` is supplied (the natural size
+   * of the layer's already-uploaded `productionPanelSrc`), the new mesh's
+   * `sourceRect` is seeded to that full image size so print export starts
+   * out correctly calibrated rather than defaulting to the mesh's own
+   * (arbitrary) target-point bbox.
+   */
+  initLayerMesh: (
+    id: string,
+    cols?: number,
+    rows?: number,
+    sourceRectDefault?: { width: number; height: number } | null,
+  ) => void;
   resetLayerMesh: (id: string, cols?: number, rows?: number) => void;
   resizeLayerMesh: (id: string, cols: number, rows: number) => void;
   setLayerMeshTargetPoint: (id: string, index: number, point: Pt) => void;
@@ -312,16 +358,25 @@ export type HoodieMapperActions = {
    */
   rotateLayerMesh: (id: string, deltaDeg: number, anchor: Pt) => void;
   /**
-   * Rigid-body translate the whole panel — mask polygon, mesh target
-   * points, and corner pins — by `(dx, dy)` mockup pixels.
+   * Rigid-body translate the panel by `(dx, dy)` mockup pixels. When
+   * `meshEdit.linkMaskToMesh` is true (default), moves mask polygon +
+   * mesh target points + corner pins together. When false, moves ONLY
+   * the mesh/artwork (mask stays put) — use to reposition artwork
+   * placement without disturbing the traced boundary.
    */
   translateLayerMesh: (id: string, dx: number, dy: number) => void;
   /**
-   * Uniformly scale the whole panel — mask polygon, mesh target points,
-   * and corner pins — by `scale` around `anchor` (mockup pixel coords).
+   * Uniformly scale the panel by `scale` around `anchor` (mockup pixel
+   * coords). Respects `meshEdit.linkMaskToMesh` the same way as
+   * `translateLayerMesh` — unlinked scales the mesh/artwork only.
    */
   scaleLayerMesh: (id: string, scale: number, anchor: Pt) => void;
-  /** Alias of `translateLayerMesh` — mask and mesh always move together. */
+  /**
+   * Translate the mask polygon by `(dx, dy)` mockup pixels — used by the
+   * Move tool's "drag panel body" gesture. When `meshEdit.linkMaskToMesh`
+   * is true (default), the mesh comes along too (historical behaviour).
+   * When false, moves ONLY the mask polygon (mesh/artwork stays put).
+   */
   translateLayerPolygon: (id: string, dx: number, dy: number) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
@@ -442,11 +497,49 @@ function applyAnchorsTo(
 }
 
 /** Apply a point-wise map to mask polygon + mesh geometry on one layer. */
-function mapLayerPanelPoints(layer: MaskLayer, mapPoint: (p: Pt) => Pt): MaskLayer {
+/** Which primitive(s) a rigid-body transform should move. */
+type PanelPointMapMode = "both" | "mask-only" | "mesh-only";
+
+function oppositeLegPanelKey(
+  key: HoodiePanelKey | null | undefined,
+): HoodiePanelKey | null {
+  if (key === "left_side") return "right_side";
+  if (key === "right_side") return "left_side";
+  return null;
+}
+
+/** After flipping targetPoints in X, reorder columns so UV edges stay on seams. */
+function reorderMeshColumnsFlippedX(mesh: MeshGrid): Pt[] {
+  const { cols, rows, targetPoints } = mesh;
+  const out: Pt[] = new Array(targetPoints.length);
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const src = r * cols + c;
+      const dst = r * cols + (cols - 1 - c);
+      out[dst] = { ...targetPoints[src] };
+    }
+  }
+  return out;
+}
+
+function mapLayerPanelPoints(
+  layer: MaskLayer,
+  mapPoint: (p: Pt) => Pt,
+  mode: PanelPointMapMode = "both",
+): MaskLayer {
+  if (mode === "mesh-only") {
+    if (!layer.mesh) return layer;
+    const targetPoints = layer.mesh.targetPoints.map(mapPoint);
+    const cornerPins = layer.cornerPins
+      ? (layer.cornerPins.map(mapPoint) as typeof layer.cornerPins)
+      : layer.cornerPins;
+    return { ...layer, mesh: { ...layer.mesh, targetPoints }, cornerPins };
+  }
+
   const subpaths = svgPathToSubpaths(layer.maskPath).map((ring) => ring.map(mapPoint));
   const maskPath = subpathsToSvgPath(subpaths) || layer.maskPath;
 
-  if (!layer.mesh) {
+  if (mode === "mask-only" || !layer.mesh) {
     return { ...layer, maskPath };
   }
 
@@ -461,11 +554,12 @@ function applyPanelPointMap(
   template: HoodieTemplate,
   id: string,
   mapPoint: (p: Pt) => Pt,
+  mode: PanelPointMapMode = "both",
 ): HoodieTemplate | null {
   const found = findLayerById(template, id);
   if (!found) return null;
   const layers = template.views[found.view].layers.map((l) =>
-    l.id === id ? mapLayerPanelPoints(l, mapPoint) : l,
+    l.id === id ? mapLayerPanelPoints(l, mapPoint, mode) : l,
   );
   return patchView(template, found.view, { layers });
 }
@@ -778,6 +872,12 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             next = { ...next, hoodieType: "zip-hoodie-aop" };
           } else if (isPillowWrapBlueprint(patch.blueprintId)) {
             next = { ...next, hoodieType: "pillow-wrap-aop" };
+          } else if (isLeggingsBlueprint(patch.blueprintId)) {
+            next = {
+              ...next,
+              hoodieType: "leggings-aop",
+              placerEditor: "hoodie",
+            };
           } else if (next.placerEditor === "hoodie") {
             next = { ...next, hoodieType: defaultHoodieTypeForBlueprint(patch.blueprintId) };
           }
@@ -953,6 +1053,105 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         });
       });
       return newId;
+    },
+    applyMirroredMeshToOppositeLeg: (sourceLayerId) => {
+      const state = get();
+      const found = findLayerById(state.template, sourceLayerId);
+      if (!found) return false;
+      const oppKey = oppositeLegPanelKey(found.layer.panelKey);
+      if (!oppKey) return false;
+
+      const viewLayers = state.template.views[found.view]?.layers ?? [];
+      let dest = viewLayers.find((l) => l.panelKey === oppKey) ?? null;
+
+      const srcBb = boundingBoxOfSubpaths(svgPathToSubpaths(found.layer.maskPath));
+      if (!srcBb) return false;
+
+      let midX: number;
+      if (dest) {
+        const destBb = boundingBoxOfSubpaths(svgPathToSubpaths(dest.maskPath));
+        if (destBb) {
+          midX = (srcBb.minX + srcBb.maxX + destBb.minX + destBb.maxX) / 4;
+        } else {
+          midX = (srcBb.minX + srcBb.maxX) / 2;
+        }
+      } else {
+        // No opposite yet — flip about source center, then offset so the
+        // copy lands on the other half of the mockup (roughly).
+        midX = (srcBb.minX + srcBb.maxX) / 2;
+        const mockupW = state.template.views[found.view]?.mockup?.width ?? 0;
+        if (mockupW > 0) midX = mockupW / 2;
+      }
+
+      const flipX = (p: Pt): Pt => ({ x: 2 * midX - p.x, y: p.y });
+      let mirrored = mapLayerPanelPoints(found.layer, flipX, "both");
+      if (mirrored.mesh) {
+        mirrored = {
+          ...mirrored,
+          mesh: {
+            ...mirrored.mesh,
+            targetPoints: reorderMeshColumnsFlippedX(mirrored.mesh),
+          },
+        };
+      }
+
+      if (!dest) {
+        const newId = newLayerId();
+        dest = {
+          ...mirrored,
+          id: newId,
+          name: PANEL_DISPLAY_LABEL?.[oppKey] ?? oppKey,
+          panelKey: oppKey,
+          zIndex:
+            Math.max(0, ...viewLayers.map((l) => l.zIndex ?? 0)) + 1,
+        };
+        set((s) => {
+          const view = s.template.views[found.view] ?? EMPTY_HOODIE_VIEW;
+          return withUndo(s, {
+            template: patchView(s.template, found.view, {
+              layers: [...view.layers, dest!],
+            }),
+            selectedLayerId: dest!.id,
+            dirty: true,
+          });
+        });
+        return true;
+      }
+
+      const destId = dest.id;
+      set((s) => {
+        const layers = (s.template.views[found.view]?.layers ?? []).map((l) =>
+          l.id === destId
+            ? {
+                ...l,
+                maskPath: mirrored.maskPath,
+                mesh: mirrored.mesh
+                  ? {
+                      ...mirrored.mesh,
+                      targetPoints: mirrored.mesh.targetPoints.map((p) => ({
+                        x: p.x,
+                        y: p.y,
+                      })),
+                    }
+                  : mirrored.mesh,
+                cornerPins: mirrored.cornerPins
+                  ? (mirrored.cornerPins.map((p) => ({
+                      x: p.x,
+                      y: p.y,
+                    })) as typeof l.cornerPins)
+                  : l.cornerPins,
+                productionPanelSrc:
+                  mirrored.productionPanelSrc ?? l.productionPanelSrc,
+              }
+            : l,
+        );
+        return withUndo(s, {
+          template: patchView(s.template, found.view, { layers }),
+          selectedLayerId: destId,
+          dirty: true,
+        });
+      });
+      return true;
     },
     mergeSelectedLayers: (opts) => {
       const state = get();
@@ -1137,30 +1336,45 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       );
       return layer.id;
     },
-    setLayerSourcePanel: (id, src) =>
+    setLayerSourcePanel: (id, src, dims) =>
       set((s) => {
         const found = findLayerById(s.template, id);
         if (!found) return {} as Partial<Store>;
-        const layers = s.template.views[found.view].layers.map((l) =>
-          l.id === id ? { ...l, productionPanelSrc: src } : l,
-        );
+        const layers = s.template.views[found.view].layers.map((l) => {
+          if (l.id !== id) return l;
+          // Auto-seed sourceRect from the newly-uploaded sheet's real
+          // dimensions so print export uses the calibrated panel size
+          // instead of falling back to the mesh's target-point bbox
+          // (see initLayerMesh doc comment for why that fallback drifts).
+          // Only when unset — never clobber an admin's deliberate crop.
+          const mesh =
+            l.mesh && src && dims && dims.width > 0 && dims.height > 0 && !l.mesh.sourceRect
+              ? { ...l.mesh, sourceRect: { x: 0, y: 0, width: dims.width, height: dims.height } }
+              : l.mesh;
+          return { ...l, productionPanelSrc: src, mesh };
+        });
         return withUndo(s, {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,
         });
       }),
-    initLayerMesh: (id, cols = 4, rows = 4) =>
+    initLayerMesh: (id, cols = 4, rows = 4, sourceRectDefault) =>
       set((s) => {
         const found = findLayerById(s.template, id);
         if (!found) return {} as Partial<Store>;
         const anchors = svgPathToSubpaths(found.layer.maskPath);
         const bb = boundingBoxOfSubpaths(anchors);
         if (!bb) return {} as Partial<Store>;
+        const sourceRect =
+          found.layer.mesh?.sourceRect ??
+          (sourceRectDefault && sourceRectDefault.width > 0 && sourceRectDefault.height > 0
+            ? { x: 0, y: 0, width: sourceRectDefault.width, height: sourceRectDefault.height }
+            : null);
         const mesh: MeshGrid = createDefaultMesh(
           { x: bb.minX, y: bb.minY, width: bb.maxX - bb.minX, height: bb.maxY - bb.minY },
           cols,
           rows,
-          found.layer.mesh?.sourceRect ?? null,
+          sourceRect,
         );
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id ? { ...l, mesh } : l,
@@ -1305,7 +1519,8 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           return {} as Partial<Store>;
         }
         const trans = (p: Pt): Pt => ({ x: p.x + dx, y: p.y + dy });
-        const next = applyPanelPointMap(s.template, id, trans);
+        const mode: PanelPointMapMode = s.meshEdit.linkMaskToMesh ? "both" : "mesh-only";
+        const next = applyPanelPointMap(s.template, id, trans, mode);
         if (!next) return {} as Partial<Store>;
         return withUndo(s, { template: next, dirty: true });
       }),
@@ -1318,11 +1533,22 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           x: anchor.x + (p.x - anchor.x) * scale,
           y: anchor.y + (p.y - anchor.y) * scale,
         });
-        const next = applyPanelPointMap(s.template, id, sc);
+        const mode: PanelPointMapMode = s.meshEdit.linkMaskToMesh ? "both" : "mesh-only";
+        const next = applyPanelPointMap(s.template, id, sc, mode);
         if (!next) return {} as Partial<Store>;
         return withUndo(s, { template: next, dirty: true });
       }),
-    translateLayerPolygon: (id, dx, dy) => get().actions.translateLayerMesh(id, dx, dy),
+    translateLayerPolygon: (id, dx, dy) =>
+      set((s) => {
+        if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
+          return {} as Partial<Store>;
+        }
+        const trans = (p: Pt): Pt => ({ x: p.x + dx, y: p.y + dy });
+        const mode: PanelPointMapMode = s.meshEdit.linkMaskToMesh ? "both" : "mask-only";
+        const next = applyPanelPointMap(s.template, id, trans, mode);
+        if (!next) return {} as Partial<Store>;
+        return withUndo(s, { template: next, dirty: true });
+      }),
     setMeshEdit: (patch) =>
       set((s) => ({ meshEdit: { ...s.meshEdit, ...patch } })),
   },

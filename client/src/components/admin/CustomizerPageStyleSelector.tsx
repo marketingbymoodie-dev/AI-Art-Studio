@@ -101,7 +101,7 @@ export default function CustomizerPageStyleSelector({
       {mode === "selected" && (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Select one or more styles ({selectedIds.size} selected)
+            Select one or more styles from any category ({selectedIds.size} selected)
           </p>
           <div className="max-h-44 overflow-y-auto rounded border bg-background p-2 space-y-1">
             {stylesForProduct.length === 0 ? (

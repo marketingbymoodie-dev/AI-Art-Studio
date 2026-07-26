@@ -698,6 +698,10 @@ export const designProducts = pgTable("design_products", {
   jobId: varchar("job_id").notNull(),              // generationJobs.id — source artwork + placement
   productTypeId: integer("product_type_id"),
   shopifyProductId: text("shopify_product_id"),
+  /** Persistent Printify product (NOT a temp/deleted one) — holds the print-ready artwork in
+   *  the merchant's own Printify account and is the order-time fulfillment target. Null if
+   *  Printify product creation failed at publish time (listing still exists as a Shopify draft). */
+  printifyProductId: text("printify_product_id"),
   handle: text("handle"),
   title: text("title").notNull(),
   status: text("status").notNull().default("active"), // active | inactive
@@ -785,7 +789,7 @@ export const STYLE_PRESETS = [
   { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of", category: "decor" },
   { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of", category: "decor" },
   { id: "abstract", name: "Abstract", promptPrefix: "A full-bleed abstract modern art piece with bold colors filling the entire canvas edge-to-edge representing", category: "decor" },
-  { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel poster style illustration that fills the entire canvas with the design extending to all edges of", category: "decor" },
+  { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of", category: "decor" },
   { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of", category: "decor" },
   
   // Apparel Artwork - Centered vector graphics for t-shirts, hoodies, etc.

@@ -37,21 +37,60 @@
 
 import type {
   DesignGroup,
+  FrontBodyPanelPlacementBias,
   HoodiePanelKey,
   HoodieTemplate,
   HoodieView,
   MaskLayer,
   MeshGrid,
+  PanelPlacementBiasPercent,
   Pt,
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
+  BOMBER_BACK_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_ASPECT_X_SCALE,
+  BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE,
+  BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE,
+  BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  bomberPatternPrintTileScaleForPanel,
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isBomberJacketBlueprint,
+  isPulloverHoodieBlueprint,
+  isSweatshirtBlueprint,
+  migrateFrontPocketOutOfTrimGroup,
+  PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE,
+  resolveFrontBodyPanelBias,
+  hoodiePanelKeyToPrintifyPosition,
+  shouldForceSolidSweatshirtCollar,
+  shouldRenderKangarooPocketArtwork,
+  SWEATSHIRT_COLLAR_PRINT_DIMS,
+  SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   layerRenderPriority,
   mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
+import { shouldExportPulloverPocketAsPrintifyPanel } from "@shared/pulloverPocketPrintMerge";
+import {
+  BODY_PRINT_BLEED_PANEL_KEYS,
+  computeTilePxOnFlatCanvas,
+  computePreviewMeshTileStretch,
+  patternModeFrontBodyTileScale,
+  patternModeUniformTileScale,
+  PRINT_PANEL_BOTTOM_BLEED_FRACTION,
+  PRINT_PANEL_TOP_BLEED_FRACTION,
+  referenceMockupToFlatScale,
+  usesBomberUniformPatternTileScale,
+  usesFrontMatchedBodyPatternTileScale,
+  usesPerPanelPatternTileScale,
+  type MeshScaleSample,
+} from "@shared/aopTileScale";
 import { svgPathToAnchors, svgPathToSubpaths, clipCanvasToMaskSubpaths, appendMaskSubpathsToPath, boundingBoxOfSubpaths } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
 
@@ -92,13 +131,83 @@ export type ArtworkPlacement = {
   scale: number;
   offsetX: number;
   offsetY: number;
+  /** Clockwise degrees on the mockup (0 = upright). Optional for legacy saves. */
+  rotationDeg?: number;
 };
 
 export const DEFAULT_ARTWORK_PLACEMENT: ArtworkPlacement = {
   scale: 1,
   offsetX: 0,
   offsetY: 0,
+  rotationDeg: 0,
 };
+
+/** Normalize to (-180, 180] for stable compare / snap. */
+export function normalizeRotationDeg(deg: number): number {
+  if (!Number.isFinite(deg)) return 0;
+  let d = deg % 360;
+  if (d > 180) d -= 360;
+  if (d <= -180) d += 360;
+  return d;
+}
+
+/**
+ * Bake customer Place rotation into a same-sized artwork canvas (CW).
+ *
+ * Must NOT be applied as per-panel mesh `sourceRotation`: linked leggings
+ * each sample their own crop, so UV-spinning every panel around its own
+ * centre splits the motif at the crotch. Pre-rotating once keeps both
+ * legs (and every other panel in the group) sampling the same upright
+ * bitmap — same as if the customer had uploaded a pre-rotated image.
+ *
+ * Canvas size stays equal to the source so existing sourceRect / scale
+ * math is unchanged; corners that leave the square become transparent.
+ */
+export function bakeArtworkPlacementRotation(
+  artwork: CanvasImageSource,
+  width: number,
+  height: number,
+  rotationDeg: number,
+): CanvasImageSource {
+  const deg = normalizeRotationDeg(rotationDeg);
+  if (!deg || width <= 0 || height <= 0) return artwork;
+  if (typeof document === "undefined") return artwork;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return artwork;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(artwork, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+  return canvas;
+}
+
+/** Per-render cache: same artwork + angle → one baked canvas. */
+function artworkRotationCache() {
+  const map = new Map<string, CanvasImageSource>();
+  return (
+    artwork: CanvasImageSource,
+    width: number,
+    height: number,
+    rotationDeg: number,
+  ): CanvasImageSource => {
+    const deg = normalizeRotationDeg(rotationDeg);
+    if (!deg) return artwork;
+    const key = `${deg}|${width}x${height}|${
+      typeof artwork === "object" && artwork && "src" in artwork
+        ? String((artwork as HTMLImageElement).src ?? "")
+        : ""
+    }`;
+    const hit = map.get(key);
+    if (hit) return hit;
+    const baked = bakeArtworkPlacementRotation(artwork, width, height, deg);
+    map.set(key, baked);
+    return baked;
+  };
+}
 
 export type AopPreviewParams = {
   template: HoodieTemplate;
@@ -179,6 +288,11 @@ export type AopPreviewParams = {
    */
   groupEnabledOverrides?: Record<string, boolean>;
   /**
+   * Per-group chest/pocket UV bias overrides (admin modal preview).
+   * Merged with `template.designGroups[].panelPlacementBias` at render time.
+   */
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
+  /**
    * `id` of the design group whose handles are currently being edited.
    * The renderer dims the other groups' design-rect outlines so the
    * canvas only highlights the rect the user is interacting with.
@@ -237,7 +351,86 @@ export type AopPreviewParams = {
    *   uploaded yet. Used by `HoodieAopPlacer`.
    */
   solidColorFallback?: boolean;
+  /**
+   * When true, horizontally flip customer artwork on `right_sleeve`
+   * (XOR with mesh calibration `sourceFlipX`) for bilateral symmetry.
+   */
+  sleevesMirrored?: boolean;
+  /**
+   * Leggings: mirror left_side art relative to right_side (XOR on top of
+   * the base Printify orientation flip applied to both legs).
+   */
+  legsMirrored?: boolean;
+  /**
+   * Leggings Link sides: in Pattern (tile) mode, flip left so tiles meet
+   * symmetrically across the crotch (place mode uses shared edit deltas only).
+   */
+  legsLinked?: boolean;
+  /**
+   * Printify placeholder dims — used by the front→back sleeve/hood bridge
+   * so the preview flat panel matches print export aspect (not just the
+   * calibration PNG size).
+   */
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
 };
+
+/** XOR customer sleeve/leg mirror with mesh calibration flip. */
+export function meshSourceFlipXForPanel(
+  panelKey: HoodiePanelKey | null | undefined,
+  meshSourceFlipX: boolean | undefined,
+  sleevesMirrored: boolean | undefined,
+  legsMirrored?: boolean,
+  /** Pattern mode + Link: flip left for symmetrical tile meeting at the seam. */
+  legsLinkedPatternSymmetry?: boolean,
+): boolean {
+  const calib = Boolean(meshSourceFlipX);
+  if (sleevesMirrored && panelKey === "right_sleeve") return !calib;
+  // Printify left_side/right_side flats are mirrored vs on-body mockup.
+  if (panelKey === "left_side" || panelKey === "right_side") {
+    let flip = !calib;
+    const flipLeft =
+      Boolean(legsMirrored) || Boolean(legsLinkedPatternSymmetry);
+    if (flipLeft && panelKey === "left_side") flip = !flip;
+    return flip;
+  }
+  return calib;
+}
+
+export function isLeggingsSidePanelKey(
+  panelKey: HoodiePanelKey | null | undefined,
+): boolean {
+  return panelKey === "left_side" || panelKey === "right_side";
+}
+
+/**
+ * Vertical half of a Printify sleeve panel for app mockup sampling.
+ * Left sleeve: front = left half, back = right half.
+ * Right sleeve: front = right half, back = left half.
+ * Returns null for non-sleeve panels (caller uses the full flat).
+ */
+export function sleevePanelHalfSourceRect(
+  panelKey: HoodiePanelKey | null | undefined,
+  view: HoodieView,
+  flatW: number,
+  flatH: number,
+): { x: number; y: number; width: number; height: number } | null {
+  if (panelKey !== "left_sleeve" && panelKey !== "right_sleeve") return null;
+  const w = Math.max(1, Math.floor(flatW / 2));
+  const h = Math.max(1, Math.round(flatH));
+  const useRightHalf =
+    (panelKey === "left_sleeve" && view === "back") ||
+    (panelKey === "right_sleeve" && view === "front");
+  return {
+    x: useRightHalf ? flatW - w : 0,
+    y: 0,
+    width: w,
+    height: h,
+  };
+}
 
 /**
  * Read-only helper: should this panel participate in single-sheet
@@ -307,6 +500,8 @@ export type DesignRectInfo = {
   groupId: string;
   /** Whether the group is enabled (false → background colour only). */
   enabled: boolean;
+  /** Customer Place rotation (CW deg); applied in source UV / draw. */
+  rotationDeg: number;
 };
 
 /**
@@ -438,6 +633,7 @@ function computeGroupRect(
     seamAllowance,
     groupId,
     enabled,
+    rotationDeg: normalizeRotationDeg(placement.rotationDeg ?? 0),
   };
 }
 
@@ -572,6 +768,10 @@ const PANEL_COLORS: Record<HoodiePanelKey | "unassigned", string> = {
   right_hood: "#8b5cf6",    // violet
   waistband: "#ec4899",     // pink
   back: "#a855f7",          // purple
+  left_side: "#f97316",     // orange — wearer's left leg
+  right_side: "#fb7185",    // rose — wearer's right leg
+  front_waistband: "#ec4899",
+  back_waistband: "#db2777",
   unassigned: "#64748b",    // slate
 };
 
@@ -614,19 +814,24 @@ export function resolveAopPreviewCanvasBounds(
 ): AopPreviewCanvasBounds {
   const viewState = template.views[view];
   const mockupAsset = viewState?.mockup ?? null;
-  const baseW = mockup.naturalWidth || mockup.width || 1;
-  const baseH = mockup.naturalHeight || mockup.height || 1;
   let minX = 0;
   let minY = 0;
-  let maxX = baseW;
-  let maxY = baseH;
+  let maxX: number;
+  let maxY: number;
 
   if (mockupAsset) {
+    // Use the template's stored draw rect, not the image's natural size: the
+    // blank is drawn at the stored width/height, so a source file whose pixel
+    // dimensions differ (e.g. a re-harvested 2048px blank on a 1024px-traced
+    // template) must not inflate the canvas and shrink the garment.
     const dr = mockupDrawRect(mockupAsset);
     minX = Math.min(minX, dr.x);
     minY = Math.min(minY, dr.y);
-    maxX = Math.max(maxX, dr.x + dr.renderWidth);
-    maxY = Math.max(maxY, dr.y + dr.renderHeight);
+    maxX = dr.x + dr.renderWidth;
+    maxY = dr.y + dr.renderHeight;
+  } else {
+    maxX = mockup.naturalWidth || mockup.width || 1;
+    maxY = mockup.naturalHeight || mockup.height || 1;
   }
 
   for (const layer of viewState?.layers ?? []) {
@@ -735,6 +940,34 @@ function fitAspectInside(union: Aabb, aspect: number): Aabb {
  * appear visually distorted — only the centre strip is hidden inside
  * the simulated seam.
  */
+export function applyPanelPlacementBiasToBbox(
+  bb: Aabb,
+  rect: DesignRectInfo,
+  bias: PanelPlacementBiasPercent | null | undefined,
+): Aabb {
+  if (!bias || (bias.offsetXPercent === 0 && bias.offsetYPercent === 0)) return bb;
+  const dx = (bias.offsetXPercent / 100) * rect.effective.width;
+  const dy = (bias.offsetYPercent / 100) * rect.effective.height;
+  return { x: bb.x + dx, y: bb.y + dy, width: bb.width, height: bb.height };
+}
+
+function samplingBboxForLayer(
+  bb: Aabb,
+  layer: MaskLayer,
+  layerRect: DesignRectInfo,
+  template: HoodieTemplate,
+  panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
+): Aabb {
+  const group = findGroupForPanel(template.designGroups, layer.panelKey);
+  if (!group) return bb;
+  const bias = resolveFrontBodyPanelBias(
+    group,
+    layer.panelKey,
+    panelBiasOverrides?.[group.id],
+  );
+  return applyPanelPlacementBiasToBbox(bb, layerRect, bias);
+}
+
 function synthesiseSeamAwareSourceRect(
   bb: Aabb,
   rect: DesignRectInfo,
@@ -783,6 +1016,113 @@ function synthesiseSeamAwareSourceRect(
 }
 
 /**
+ * Per-leg Place sampling (PatternCustomizer): full artwork fitted into one
+ * leg panel with that group's scale/offset — not continuous half-slices.
+ */
+/**
+ * Fraction of a leg panel's horizontal span that still samples inside the
+ * artwork UV [0, 1]. At high Place scale a centered motif can overhang the
+ * panel in mockup space while every panel pixel still hits art — coverage
+ * stays 1. Nudging left/right until a panel edge samples past the art edge
+ * drops coverage (art wrapping onto the unseen Front/Back side of the leg).
+ */
+export function leggingsPanelHorizontalArtCoverage(rect: DesignRectInfo): number {
+  const panel = rect.union;
+  const eff = rect.effective;
+  if (!(eff.width > 0) || !(panel.width > 0)) return 0;
+  const uL = (panel.x - eff.x) / eff.width;
+  const uR = (panel.x + panel.width - eff.x) / eff.width;
+  const span = uR - uL;
+  if (!(span > 1e-9)) return 0;
+  const valid = Math.min(uR, 1) - Math.max(uL, 0);
+  return Math.max(0, Math.min(1, valid / span));
+}
+
+/** ~2% of panel width empty before we warn — ignores float noise. */
+export const LEGGINGS_OFF_UNSEEN_SIDE_COVERAGE_MIN = 0.98;
+
+/** True when any enabled leg rect has slid past the left/right panel edge. */
+export function leggingsArtworkFallingOffUnseenSide(
+  rects: Iterable<DesignRectInfo | null | undefined>,
+  minCoverage = LEGGINGS_OFF_UNSEEN_SIDE_COVERAGE_MIN,
+): boolean {
+  for (const rect of rects) {
+    if (!rect?.enabled) continue;
+    if (leggingsPanelHorizontalArtCoverage(rect) < minCoverage) return true;
+  }
+  return false;
+}
+
+export function synthesiseLeggingsMirroredSourceRect(
+  panelBb: Aabb,
+  groupRect: DesignRectInfo,
+  aw: number,
+  ah: number,
+): Aabb {
+  const artAspect = aw / Math.max(1, ah);
+  const fitted = fitAspectInside(panelBb, artAspect);
+  const baseW = Math.max(1e-6, groupRect.base.width);
+  const s = groupRect.effective.width / baseW;
+  const offX =
+    groupRect.effective.x + groupRect.effective.width / 2 - groupRect.anchor.x;
+  const offY =
+    groupRect.effective.y + groupRect.effective.height / 2 - groupRect.anchor.y;
+  const cx = panelBb.x + panelBb.width / 2;
+  const cy = panelBb.y + panelBb.height / 2;
+  const w = fitted.width * s;
+  const h = fitted.height * s;
+  const perPanelRect: DesignRectInfo = {
+    union: panelBb,
+    base: fitted,
+    effective: {
+      x: cx - w / 2 + offX,
+      y: cy - h / 2 + offY,
+      width: w,
+      height: h,
+    },
+    anchor: { x: cx, y: cy },
+    hasSeamPair: false,
+    anchorIsSeam: false,
+    seamAllowance: 0,
+    groupId: groupRect.groupId,
+    enabled: groupRect.enabled,
+    rotationDeg: groupRect.rotationDeg ?? 0,
+  };
+  return synthesiseSeamAwareSourceRect(panelBb, perPanelRect, aw, ah, "none");
+}
+
+function artworkSourceRectForPanel(
+  panelBb: Aabb,
+  panelKey: HoodiePanelKey | null | undefined,
+  groupRect: DesignRectInfo,
+  aw: number,
+  ah: number,
+  seamSide: "left" | "right" | "none",
+  _legsMirrored?: boolean,
+): Aabb {
+  // Leggings always use full-panel place (Sync/Mirror only change transforms/flip).
+  if (isLeggingsSidePanelKey(panelKey)) {
+    return synthesiseLeggingsMirroredSourceRect(panelBb, groupRect, aw, ah);
+  }
+  return synthesiseSeamAwareSourceRect(panelBb, groupRect, aw, ah, seamSide);
+}
+
+/** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
+export function buildFlatMeshTargetPoints(mesh: MeshGrid, flatW: number, flatH: number): Pt[] {
+  const { cols, rows } = mesh;
+  const points: Pt[] = [];
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      points.push({
+        x: (c / (cols - 1)) * flatW,
+        y: (r / (rows - 1)) * flatH,
+      });
+    }
+  }
+  return points;
+}
+
+/**
  * Render the flat printable panel for one front-view layer with a
  * mesh, given the user's artwork + the front-view group rect that
  * controls where the artwork lands on the union of single-sheet
@@ -822,6 +1162,17 @@ export function renderHoodFlatPanel(
      *  coordinate system the mesh's targetPoints were calibrated
      *  against, so it's the right flat-panel size by construction. */
     fallbackSize?: { width: number; height: number };
+    /** Uniform multiplier applied to the output canvas dimensions.
+     *  Print export uses this to render above mockup resolution so
+     *  the artwork's native detail survives into the print file.
+     *  Geometry (slice, rotation, flips) is unaffected. Default 1. */
+    outputScale?: number;
+    /** Chest/pocket UV bias for this panel's artwork slice. */
+    panelPlacementBias?: PanelPlacementBiasPercent | null;
+    /** Flip right-sleeve artwork for customer Mirror toggle. */
+    sleevesMirrored?: boolean;
+    /** Mirror left leg relative to right (leggings). */
+    legsMirrored?: boolean;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -846,6 +1197,9 @@ export function renderHoodFlatPanel(
     flatW = Math.max(1, artwork.naturalWidth || artwork.width);
     flatH = Math.max(1, artwork.naturalHeight || artwork.height);
   }
+  const outputScale = Math.max(0.01, options?.outputScale ?? 1);
+  flatW = Math.max(1, Math.round(flatW * outputScale));
+  flatH = Math.max(1, Math.round(flatH * outputScale));
 
   const canvas = document.createElement("canvas");
   canvas.width = flatW;
@@ -864,44 +1218,56 @@ export function renderHoodFlatPanel(
     if (!bb) return null;
     const aw = artwork.naturalWidth || artwork.width;
     const ah = artwork.naturalHeight || artwork.height;
-    const side: "left" | "right" | "none" = frontLayer.panelKey
-      ? SEAM_PAIR_PANELS.left.includes(frontLayer.panelKey)
-        ? "left"
-        : SEAM_PAIR_PANELS.right.includes(frontLayer.panelKey)
-          ? "right"
-          : "none"
-      : "none";
-    slice = synthesiseSeamAwareSourceRect(bb, frontRect, aw, ah, side);
+    const side: "left" | "right" | "none" = isLeggingsSidePanelKey(frontLayer.panelKey)
+      ? "none"
+      : frontLayer.panelKey
+        ? SEAM_PAIR_PANELS.left.includes(frontLayer.panelKey)
+          ? "left"
+          : SEAM_PAIR_PANELS.right.includes(frontLayer.panelKey)
+            ? "right"
+            : "none"
+        : "none";
+    const sampleBb = applyPanelPlacementBiasToBbox(
+      bb,
+      frontRect,
+      options?.panelPlacementBias,
+    );
+    slice = artworkSourceRectForPanel(
+      sampleBb,
+      frontLayer.panelKey,
+      frontRect,
+      aw,
+      ah,
+      side,
+      options?.legsMirrored,
+    );
   }
   if (slice.width <= 0 || slice.height <= 0) return null;
 
-  // Honour the front-view mesh's source UV transform (rotation /
-  // flip) so the flat panel matches the orientation the admin
-  // calibrated. Without this, a 90°-rotated mesh would feed the
-  // back-view warp an unrotated image and the result would be
-  // misaligned.
-  const rotation = frontLayer.mesh.sourceRotation ?? 0;
-  const flipX = frontLayer.mesh.sourceFlipX ?? false;
-  const flipY = frontLayer.mesh.sourceFlipY ?? false;
-  ctx.save();
-  if (rotation || flipX || flipY) {
-    ctx.translate(flatW / 2, flatH / 2);
-    if (rotation) ctx.rotate((rotation * Math.PI) / 180);
-    ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-    ctx.translate(-flatW / 2, -flatH / 2);
-  }
-  ctx.drawImage(
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const artSource = bakeArtworkPlacementRotation(
     artwork,
-    slice.x,
-    slice.y,
-    slice.width,
-    slice.height,
-    0,
-    0,
-    flatW,
-    flatH,
+    aw,
+    ah,
+    frontRect.rotationDeg ?? 0,
   );
-  ctx.restore();
+  // Bake through the same mesh topology the live preview uses, but with
+  // targetPoints on a uniform flat grid so the entire Printify placeholder
+  // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
+  // into a fractional dest rect left most of the canvas white on Printify.
+  // Customer Place rotation is pre-baked into `artSource` (not mesh UV).
+  drawMeshWarp(ctx, artSource, aw, ah, {
+    ...frontLayer.mesh,
+    targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
+    sourceRect: slice,
+    sourceFlipX: meshSourceFlipXForPanel(
+      frontLayer.panelKey,
+      frontLayer.mesh.sourceFlipX,
+      options?.sleevesMirrored,
+      options?.legsMirrored,
+    ),
+  });
   return canvas;
 }
 
@@ -915,6 +1281,9 @@ const FLAT_PANEL_BRIDGE_PANEL_KEYS = new Set<string>([
   "right_hood",
   "left_sleeve",
   "right_sleeve",
+  // Same Printify panel spans front/back mockup halves (like sleeves).
+  "left_side",
+  "right_side",
 ]);
 
 /**
@@ -934,6 +1303,58 @@ function findFrontLayerByPanelKey(
     }
   }
   return null;
+}
+
+/** Higher score wins when the same Printify position exists on front + back. */
+function scorePrintExportLayer(
+  panelKey: HoodiePanelKey,
+  view: HoodieView,
+  layer: MaskLayer,
+): number {
+  let score = 0;
+  if (layer.mesh) score += 10;
+  if (layer.mesh?.sourceRect && layer.mesh.sourceRect.width > 0) score += 100;
+  // Pullover front hoods are often uncalibrated; back hoods have sourceRect.
+  if (
+    (panelKey === "left_hood" || panelKey === "right_hood") &&
+    view === "back"
+  ) {
+    score += 50;
+  } else if (view === "front") {
+    score += 20;
+  }
+  return score;
+}
+
+/**
+ * One export layer per Printify position. Prefers calibrated back hoods so
+ * left/right hood print files aren't taken from coarse front meshes that can
+ * land as blank/solid on Printify.
+ */
+function collectPrintExportLayers(
+  template: HoodieTemplate,
+): Array<{ view: HoodieView; layer: MaskLayer; panelKey: HoodiePanelKey }> {
+  const best = new Map<
+    string,
+    { view: HoodieView; layer: MaskLayer; panelKey: HoodiePanelKey; score: number }
+  >();
+  for (const view of ["front", "back"] as HoodieView[]) {
+    for (const layer of template.views[view]?.layers ?? []) {
+      if (!layer.visible || layer.isExclusion || !layer.panelKey) continue;
+      const panelKey = layer.panelKey as HoodiePanelKey;
+      const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+      const score = scorePrintExportLayer(panelKey, view, layer);
+      const prev = best.get(position);
+      if (!prev || score > prev.score) {
+        best.set(position, { view, layer, panelKey, score });
+      }
+    }
+  }
+  return Array.from(best.values()).map(({ view, layer, panelKey }) => ({
+    view,
+    layer,
+    panelKey,
+  }));
 }
 
 /**
@@ -1017,6 +1438,234 @@ function meshTargetBbox(mesh: MeshGrid): Aabb | null {
 }
 
 /**
+ * Preview-only: when the mesh target bbox overscans the visible panel polygon,
+ * compensate tile density so the warped preview matches Printify. Uses mockup
+ * space only — never apply on print export.
+ */
+export function computeMeshFlatTileStretch(
+  meshTargetWidth: number,
+  visiblePolyWidth: number,
+): number {
+  return computePreviewMeshTileStretch(meshTargetWidth, visiblePolyWidth);
+}
+
+/** Mesh target bbox preferred for tile math; polygon bbox for merge placement. */
+function layerReferenceBbox(layer: MaskLayer): Aabb | null {
+  if (layer.mesh) {
+    const meshBb = meshTargetBbox(layer.mesh);
+    if (meshBb) return meshBb;
+  }
+  return aabbOf(svgPathToAnchors(layer.maskPath));
+}
+
+function extendPanelPrintBleed(
+  canvas: HTMLCanvasElement,
+  panelKey: HoodiePanelKey,
+  bg: string,
+): HTMLCanvasElement {
+  if (!BODY_PRINT_BLEED_PANEL_KEYS.has(panelKey)) return canvas;
+  const topBleedH = Math.max(
+    2,
+    Math.ceil(canvas.height * PRINT_PANEL_TOP_BLEED_FRACTION),
+  );
+  const bottomBleedH = Math.max(
+    2,
+    Math.ceil(canvas.height * PRINT_PANEL_BOTTOM_BLEED_FRACTION),
+  );
+  if (topBleedH <= 0 && bottomBleedH <= 0) return canvas;
+  const next = document.createElement("canvas");
+  next.width = canvas.width;
+  next.height = canvas.height + topBleedH + bottomBleedH;
+  const ctx = next.getContext("2d");
+  if (!ctx) return canvas;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, next.width, next.height);
+  ctx.drawImage(canvas, 0, topBleedH);
+  return next;
+}
+
+/**
+ * Calibrated flat-panel size for a layer. Pullover front meshes often lack
+ * `sourceRect` while the matching back layer has it (same Printify sheet) —
+ * borrow that for export sizing. Do not invent Printify catalog dims here:
+ * forcing a large flat onto a small mesh makes pocket/hood tiles look like
+ * solid white / wrong scale in the mockup preview.
+ */
+function resolveLayerSourceRect(
+  template: HoodieTemplate | null | undefined,
+  layer: MaskLayer,
+  view?: HoodieView,
+): { x: number; y: number; width: number; height: number } | null {
+  const own = layer.mesh?.sourceRect;
+  if (own && own.width > 0 && own.height > 0) return own;
+  if (!layer.panelKey || !template) return null;
+  const views: HoodieView[] =
+    view === "front"
+      ? ["back", "front"]
+      : view === "back"
+        ? ["front", "back"]
+        : ["front", "back"];
+  for (const v of views) {
+    for (const other of template.views[v]?.layers ?? []) {
+      if (other.panelKey !== layer.panelKey || other === layer) continue;
+      const src = other.mesh?.sourceRect;
+      if (src && src.width > 0 && src.height > 0) return src;
+    }
+  }
+  return null;
+}
+
+/** Scale effective rect about its center (preview and/or print, depending on caller). */
+function scaleDesignRectEffective(info: DesignRectInfo, factor: number): DesignRectInfo {
+  if (factor === 1) return info;
+  const cx = info.effective.x + info.effective.width / 2;
+  const cy = info.effective.y + info.effective.height / 2;
+  const w = info.effective.width * factor;
+  const h = info.effective.height * factor;
+  return {
+    ...info,
+    effective: { x: cx - w / 2, y: cy - h / 2, width: w, height: h },
+  };
+}
+
+/** Widen effective rect on X only (about center) — un-stretches split-front panels. */
+function scaleDesignRectEffectiveX(info: DesignRectInfo, factor: number): DesignRectInfo {
+  if (factor === 1) return info;
+  const cx = info.effective.x + info.effective.width / 2;
+  const w = info.effective.width * factor;
+  return {
+    ...info,
+    effective: {
+      ...info.effective,
+      x: cx - w / 2,
+      width: w,
+    },
+  };
+}
+
+/** Scale effective rect height only (about center) — preview mesh Y stretch. */
+function scaleDesignRectEffectiveY(info: DesignRectInfo, factor: number): DesignRectInfo {
+  if (factor === 1) return info;
+  const cy = info.effective.y + info.effective.height / 2;
+  const h = info.effective.height * factor;
+  return {
+    ...info,
+    effective: {
+      ...info.effective,
+      y: cy - h / 2,
+      height: h,
+    },
+  };
+}
+
+/** Shift effective rect vertically by a fraction of its height. */
+function offsetDesignRectEffectiveY(info: DesignRectInfo, yFrac: number): DesignRectInfo {
+  if (yFrac === 0) return info;
+  return {
+    ...info,
+    effective: {
+      ...info.effective,
+      y: info.effective.y + info.effective.height * yFrac,
+    },
+  };
+}
+
+/**
+ * Bomber front-body (preview + print): enlarge + nudge up for Printify coverage.
+ * Preview-only front scale/lower is applied separately.
+ */
+function applyBomberFrontBodyPlacement(
+  template: HoodieTemplate,
+  rects: Map<string, DesignRectInfo>,
+): void {
+  if (!isBomberJacketBlueprint(template.blueprintId)) return;
+  const fb = rects.get("front-body");
+  if (!fb) return;
+  let next = scaleDesignRectEffectiveX(fb, BOMBER_FRONT_BODY_ASPECT_X_SCALE);
+  next = scaleDesignRectEffective(next, BOMBER_FRONT_BODY_PLACEMENT_SCALE);
+  next = offsetDesignRectEffectiveY(next, BOMBER_FRONT_BODY_OFFSET_Y_FRAC);
+  rects.set("front-body", next);
+}
+
+/** Preview-only: enlarge bomber sleeve design rects to match Printify mockups. */
+function applyBomberSleevePreviewPlacementScale(
+  template: HoodieTemplate,
+  rects: Map<string, DesignRectInfo>,
+): void {
+  if (!isBomberJacketBlueprint(template.blueprintId)) return;
+  for (const groupId of ["left-sleeve", "right-sleeve"] as const) {
+    const info = rects.get(groupId);
+    if (info) {
+      rects.set(
+        groupId,
+        scaleDesignRectEffective(info, BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+  }
+}
+
+/**
+ * Preview-only body placement bump (does not affect print export).
+ * `includeBomberSleeves` defaults true for the live front mockup; the
+ * front→back sleeve bridge omits it so the flat bake matches Printify.
+ */
+function applyFrontBodyPreviewPlacementScale(
+  template: HoodieTemplate,
+  rects: Map<string, DesignRectInfo>,
+  opts?: { includeBomberSleeves?: boolean },
+): void {
+  if (
+    isPulloverHoodieBlueprint(template.blueprintId) ||
+    template.hoodieType === "pullover-hoodie-aop"
+  ) {
+    const fb = rects.get("front-body");
+    if (fb) {
+      rects.set(
+        "front-body",
+        scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+    return;
+  }
+  if (isBomberJacketBlueprint(template.blueprintId)) {
+    const front = rects.get("front-body");
+    if (front) {
+      let next = scaleDesignRectEffective(
+        front,
+        BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+      );
+      next = scaleDesignRectEffectiveY(next, BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE);
+      next = offsetDesignRectEffectiveY(
+        next,
+        BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
+      );
+      rects.set("front-body", next);
+    }
+    const back = rects.get("back-body");
+    if (back) {
+      rects.set(
+        "back-body",
+        scaleDesignRectEffective(back, BOMBER_BACK_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+    if (opts?.includeBomberSleeves !== false) {
+      applyBomberSleevePreviewPlacementScale(template, rects);
+    }
+    return;
+  }
+  if (!isSweatshirtBlueprint(template.blueprintId)) return;
+  for (const groupId of ["front-body", "back-body"] as const) {
+    const info = rects.get(groupId);
+    if (info) {
+      rects.set(
+        groupId,
+        scaleDesignRectEffective(info, SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE),
+      );
+    }
+  }
+}
+
+/**
  * Tile mode — render a per-panel **flat tile sheet** for a layer with
  * a mesh. Mirrors the place-on-item pipeline: tile the artwork in the
  * panel's flat coordinate system (so the pattern runs along the
@@ -1043,43 +1692,158 @@ function meshTargetBbox(mesh: MeshGrid): Aabb | null {
  * Returns `null` if the layer has no mesh, the mesh is degenerate, or
  * the canvas couldn't be created.
  */
+/**
+ * Collect per-panel flat/mesh ratios for Pattern-mode tile scale. Uses each
+ * layer's own `sourceRect` when present (no sibling borrow) so the front
+ * reference isn't polluted by a calibrated back sheet.
+ */
+function collectPatternTileScaleSamples(template: HoodieTemplate): MeshScaleSample[] {
+  const out: MeshScaleSample[] = [];
+  for (const view of ["front", "back"] as HoodieView[]) {
+    for (const layer of template.views[view]?.layers ?? []) {
+      if (!layer.visible || layer.isExclusion || !layer.mesh || !layer.panelKey) continue;
+      const meshTb = meshTargetBbox(layer.mesh);
+      if (!meshTb || meshTb.width <= 0) continue;
+      const own = layer.mesh.sourceRect;
+      const flatCanvasW =
+        own && own.width > 0 ? own.width : Math.max(1, meshTb.width);
+      out.push({
+        panelKey: layer.panelKey,
+        flatCanvasW,
+        meshTargetWidth: meshTb.width,
+      });
+    }
+  }
+  return out;
+}
+
+function patternTileScaleOverrideForPanel(
+  panelKey: string | null | undefined,
+  opts: {
+    frontMatched?: number | null;
+    bomberUniform?: number | null;
+  },
+): number | undefined {
+  if (usesPerPanelPatternTileScale(panelKey)) return undefined;
+  if (
+    opts.bomberUniform != null &&
+    usesBomberUniformPatternTileScale(panelKey)
+  ) {
+    return opts.bomberUniform;
+  }
+  if (
+    opts.frontMatched != null &&
+    usesFrontMatchedBodyPatternTileScale(panelKey)
+  ) {
+    return opts.frontMatched;
+  }
+  return undefined;
+}
+
+/** Bomber Pattern: shift front tile grid up (same intent as place-on-item Y nudge). */
+function bomberPatternFrontTileAnchorYOffsetFrac(
+  template: HoodieTemplate | null | undefined,
+  panelKey: string | null | undefined,
+): number {
+  if (!template || !isBomberJacketBlueprint(template.blueprintId)) return 0;
+  if (
+    panelKey !== "front" &&
+    panelKey !== "front_left" &&
+    panelKey !== "front_right"
+  ) {
+    return 0;
+  }
+  return BOMBER_FRONT_BODY_OFFSET_Y_FRAC;
+}
+
+function drawTiledArtworkOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  artwork: HTMLImageElement,
+  settings: TileSettings,
+  flatW: number,
+  flatH: number,
+  tilePxFlat: number,
+  anchorX: number,
+  anchorY: number,
+): void {
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
+  const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
+  const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
+  const startCol = colOf(0) - 1;
+  const endCol = colOf(flatW) + 1;
+  const startRow = rowOf(0) - 1;
+  const endRow = rowOf(flatH) + 1;
+  for (let row = startRow; row <= endRow; row += 1) {
+    const y = anchorY + row * tileHFlat;
+    const xOffset =
+      settings.pattern === "brick" && row % 2 !== 0 ? tilePxFlat / 2 : 0;
+    for (let col = startCol; col <= endCol; col += 1) {
+      const x = anchorX + col * tilePxFlat + xOffset;
+      const yOffset =
+        settings.pattern === "half-drop" && col % 2 !== 0 ? tileHFlat / 2 : 0;
+      ctx.drawImage(artwork, x, y + yOffset, tilePxFlat, tileHFlat);
+    }
+  }
+}
+
 function renderTiledFlatPanel(
   layer: MaskLayer,
   artwork: HTMLImageElement,
   settings: TileSettings,
   pixelsPerInch: number,
   canvasW: number,
+  opts?: {
+    outputScale?: number;
+    meshOverscanCompensation?: boolean;
+    mockupToFlatScaleOverride?: number;
+    /** Multiplies final tile px (print-only panel corrections). */
+    tilePxMultiplier?: number;
+    /** When set, borrow calibrated sourceRect from the sibling view if missing. */
+    template?: HoodieTemplate | null;
+    view?: HoodieView;
+  },
 ): HTMLCanvasElement | null {
+  const outputScale = opts?.outputScale ?? 1;
+  const meshOverscanCompensation = opts?.meshOverscanCompensation ?? false;
+  const tilePxMultiplier = opts?.tilePxMultiplier ?? 1;
   if (!layer.mesh) return null;
+
+  const meshTb = meshTargetBbox(layer.mesh);
+  if (!meshTb) return null;
 
   // Decide flat-panel canvas dimensions.
   let flatW: number;
   let flatH: number;
-  const src = layer.mesh.sourceRect;
+  let flatCanvasWBase: number;
+  const src = resolveLayerSourceRect(opts?.template ?? null, layer, opts?.view);
   if (src && src.width > 0 && src.height > 0) {
-    flatW = Math.max(1, Math.round(src.width));
+    flatCanvasWBase = Math.max(1, Math.round(src.width));
+    flatW = flatCanvasWBase;
     flatH = Math.max(1, Math.round(src.height));
   } else {
-    // Use the mesh's projected area in mockup coordinates so the flat
-    // canvas is in the same coord space the mesh maps onto. Critical
-    // for tile-size uniformity across panels — the polygon bbox is
-    // not a reliable proxy because admin meshes typically extend past
-    // the polygon by 2× or more on sleeves / hood / waistband.
-    const tb = meshTargetBbox(layer.mesh);
-    if (!tb) return null;
-    flatW = Math.max(1, Math.round(tb.width));
-    flatH = Math.max(1, Math.round(tb.height));
+    flatCanvasWBase = Math.max(1, Math.round(meshTb.width));
+    flatW = flatCanvasWBase;
+    flatH = Math.max(1, Math.round(meshTb.height));
   }
+  const scale = Math.max(0.01, outputScale);
+  flatW = Math.max(1, Math.round(flatW * scale));
+  flatH = Math.max(1, Math.round(flatH * scale));
 
-  // Tile size in flat-canvas px. Because flatW/H matches the mesh's
-  // projected area in mockup px, a tile that's `tilePxMockup` flat-px
-  // wide will render at the same `tilePxMockup` mockup-px wide on
-  // screen (modulo per-triangle deformation from fabric drape).
-  const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
-  const tilePxFlat = tilePxMockup;
-  const aw = artwork.naturalWidth || artwork.width;
-  const ah = artwork.naturalHeight || artwork.height;
-  const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
+  const polyAnchors = svgPathToAnchors(layer.maskPath);
+  const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
+  const tilePxFlat =
+    computeTilePxOnFlatCanvas({
+      tileSizeInches: settings.tileSizeInches,
+      pixelsPerInch,
+      flatCanvasW: flatCanvasWBase,
+      meshTargetWidth: meshTb.width,
+      visiblePolyWidth: polyBb?.width,
+      outputScale: scale,
+      meshOverscanCompensation,
+      mockupToFlatScaleOverride: opts?.mockupToFlatScaleOverride,
+    }) * Math.max(0.01, tilePxMultiplier);
 
   const canvas = document.createElement("canvas");
   canvas.width = flatW;
@@ -1088,23 +1852,18 @@ function renderTiledFlatPanel(
   if (!ctx) return null;
 
   // Anchor strategy.
-  //   - Default: flat-canvas center → pattern symmetric about each
-  //     panel's own centerline. Right for centered panels (back body,
-  //     waistband, kangaroo pocket).
-  //   - Seam panels: when the panel polygon has an edge that sits on
-  //     the mockup canvas X-center (within ~4% tolerance), that edge
-  //     is a seam (front zip, hood opening, pocket halves). Anchor the
-  //     tile grid at the flat-canvas edge that maps onto that seam
-  //     edge so a tile boundary lands EXACTLY at the seam — both
-  //     paired panels' patterns then mirror outward from the seam,
-  //     which is what the customer visually expects (and matches how
-  //     Printify-printed garments look when the print is symmetric
-  //     about the seams).
+  //   - Default: flat-canvas center → pattern grows/shrinks about the
+  //     panel centerline when tile size changes.
+  //   - Seam panels (zip / hood): when the polygon hugs mockup X-center,
+  //     pin a tile edge to the seam so L/R halves mirror outward.
+  //   - Leggings left_side/right_side: always center. Seam-edge anchoring
+  //     made tile size feel like it scaled from the crotch/corner; Mirror
+  //     / Link already handle crotch symmetry via sourceFlipX.
   let anchorX = flatW / 2;
   const cx = canvasW / 2;
-  const polyAnchors = svgPathToAnchors(layer.maskPath);
-  const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
+  const forceCenterAnchor = isLeggingsSidePanelKey(layer.panelKey);
   if (
+    !forceCenterAnchor &&
     polyBb &&
     layer.mesh.cols >= 2 &&
     layer.mesh.rows >= 1 &&
@@ -1131,24 +1890,20 @@ function renderTiledFlatPanel(
       anchorX = Math.abs(leftMockupX - cx) < Math.abs(rightMockupX - cx) ? 0 : flatW;
     }
   }
-  const anchorY = flatH / 2;
-  const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
-  const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
-  const startCol = colOf(0) - 1;
-  const endCol = colOf(flatW) + 1;
-  const startRow = rowOf(0) - 1;
-  const endRow = rowOf(flatH) + 1;
-  for (let row = startRow; row <= endRow; row += 1) {
-    const y = anchorY + row * tileHFlat;
-    const xOffset =
-      settings.pattern === "brick" && row % 2 !== 0 ? tilePxFlat / 2 : 0;
-    for (let col = startCol; col <= endCol; col += 1) {
-      const x = anchorX + col * tilePxFlat + xOffset;
-      const yOffset =
-        settings.pattern === "half-drop" && col % 2 !== 0 ? tileHFlat / 2 : 0;
-      ctx.drawImage(artwork, x, y + yOffset, tilePxFlat, tileHFlat);
-    }
-  }
+  const yNudge =
+    bomberPatternFrontTileAnchorYOffsetFrac(opts?.template, layer.panelKey) *
+    flatH;
+  const anchorY = flatH / 2 + yNudge;
+  drawTiledArtworkOnCanvas(
+    ctx,
+    artwork,
+    settings,
+    flatW,
+    flatH,
+    tilePxFlat,
+    anchorX,
+    anchorY,
+  );
 
   return canvas;
 }
@@ -1311,6 +2066,9 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // template renders as a plain (background-tinted) hoodie.
   const solidColorFallback = params.solidColorFallback !== false;
   const useColors = mode === "solid-colors" || (!artwork && solidColorFallback);
+  // Place rotation is baked into the artwork bitmap once per angle so
+  // linked multi-panel groups (leggings) share one upright source.
+  const rotatedArtworkFor = artworkRotationCache();
   // Per-group design rects — the new core. Each group computes its
   // own anchor + base + effective rect from its panels' polygons.
   // The legacy single-rect path lives as a fallback inside
@@ -1322,8 +2080,11 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           seamOverrides: params.groupSeamOverrides,
           enabledOverrides: params.groupEnabledOverrides,
           legacyPlacement: artworkPlacement,
+          legsMirrored: params.legsMirrored,
         })
       : new Map<string, DesignRectInfo>();
+  applyBomberFrontBodyPlacement(template, groupRects);
+  applyFrontBodyPreviewPlacementScale(template, groupRects);
   // Helper: which design rect should this layer sample from?
   const rectForLayer = (layer: MaskLayer): DesignRectInfo | null => {
     const group = findGroupForPanel(template.designGroups, layer.panelKey);
@@ -1343,12 +2104,21 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     } else {
       frontRectsCache =
         mode === "single-sheet"
-          ? computeGroupRects(template, "front", artwork, {
-              placementOverrides: params.groupPlacementOverrides,
-              seamOverrides: params.groupSeamOverrides,
-              enabledOverrides: params.groupEnabledOverrides,
-              legacyPlacement: artworkPlacement,
-            })
+          ? (() => {
+              const rects = computeGroupRects(template, "front", artwork, {
+                placementOverrides: params.groupPlacementOverrides,
+                seamOverrides: params.groupSeamOverrides,
+                enabledOverrides: params.groupEnabledOverrides,
+                legacyPlacement: artworkPlacement,
+                legsMirrored: params.legsMirrored,
+              });
+              applyBomberFrontBodyPlacement(template, rects);
+              // Same preview knobs as the front mockup (incl. bomber sleeve
+              // scale) so back-bridge sleeves match Front placement size —
+              // same pattern as hood front→back continuity.
+              applyFrontBodyPreviewPlacementScale(template, rects);
+              return rects;
+            })()
           : new Map<string, DesignRectInfo>();
     }
     return frontRectsCache;
@@ -1365,6 +2135,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // Used to bias the synthSrc UV when seam allowance > 0.
   const seamSideForLayer = (layer: MaskLayer): "left" | "right" | "none" => {
     if (!layer.panelKey) return "none";
+    // Leggings: per-panel full art (never continuous L/R halves).
+    if (isLeggingsSidePanelKey(layer.panelKey)) return "none";
     if (SEAM_PAIR_PANELS.left.includes(layer.panelKey)) return "left";
     if (SEAM_PAIR_PANELS.right.includes(layer.panelKey)) return "right";
     return "none";
@@ -1372,11 +2144,24 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // Tile mode resolution: respect explicit params, else fall back to
   // template defaults seeded by normalizeHoodieTemplate.
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  // Sweatshirt: lock front/back body Pattern density to the front body's
+  // flat/mesh ratio (back was printing a bit small with native per-panel).
+  // Bomber: one median scale for chest/back/sleeves so sleeve motifs match body.
+  // Pullover/zip keep native scale — garment-wide overrides regress those.
+  const patternTileSamples =
+    mode === "tile" ? collectPatternTileScaleSamples(template) : [];
+  const frontMatchedTileScale =
+    mode === "tile" && isSweatshirtBlueprint(template.blueprintId)
+      ? patternModeFrontBodyTileScale(patternTileSamples)
+      : null;
+  const bomberUniformTileScale =
+    mode === "tile" && isBomberJacketBlueprint(template.blueprintId)
+      ? patternModeUniformTileScale(patternTileSamples)
+      : null;
   const ppi =
     params.pixelsPerInch ??
     template.realWorldCalibration?.pixelsPerInch ??
     1024 / 24;
-
   for (const layer of printLayers) {
     const subpaths = svgPathToSubpaths(layer.maskPath);
     const layerBb = aabbOf(subpaths.flat());
@@ -1410,10 +2195,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         ? params.panelEnabledOverrides[layer.panelKey]
         : undefined;
     const panelMutedByCustomer = panelOverride === false;
-    const skipArtwork =
-      panelMutedByCustomer ||
-      (mode === "single-sheet" && !groupEnabled) ||
-      (mode === "tile" && !groupEnabled);
+    // Tile mode: only customer panel overrides mute artwork (group toggles
+    // don't apply — same as print export). Single-sheet still honours groups.
+    const skipArtwork = shouldRenderKangarooPocketArtwork(layer.panelKey, panelOverride)
+      ? false
+      : panelMutedByCustomer ||
+        (mode === "single-sheet" && !groupEnabled);
 
     // Background colour fill — sits UNDER the artwork inside each
     // panel's polygon. Explicit `backgroundColor` fills every panel;
@@ -1462,6 +2249,63 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       );
     } else if (
       view === "back" &&
+      mode === "tile" &&
+      tileSettings &&
+      artwork &&
+      layer.mesh &&
+      isLeggingsSidePanelKey(layer.panelKey)
+    ) {
+      // Leggings Pattern + Back: bake the tiled flat from the FRONT mesh
+      // (same sheet Front uses), then warp through the back mesh so Mirror /
+      // Link flips match what the customer already sees on Front.
+      const frontLayer = findFrontLayerByPanelKey(template, layer.panelKey);
+      const tileSrc = frontLayer?.mesh ? frontLayer : layer;
+      const flatTile = renderTiledFlatPanel(
+        tileSrc,
+        artwork,
+        tileSettings,
+        ppi,
+        W,
+        {
+          meshOverscanCompensation: false,
+          mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
+            layer.panelKey,
+            {
+              frontMatched: frontMatchedTileScale,
+              bomberUniform: bomberUniformTileScale,
+            },
+          ),
+          template,
+          view: frontLayer?.mesh ? "front" : view,
+        },
+      );
+      if (flatTile) {
+        drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
+          ...layer.mesh,
+          sourceRect: {
+            x: 0,
+            y: 0,
+            width: flatTile.width,
+            height: flatTile.height,
+          },
+          sourceRotation: 0,
+          sourceFlipX: meshSourceFlipXForPanel(
+            layer.panelKey,
+            false,
+            params.sleevesMirrored,
+            params.legsMirrored,
+            Boolean(params.legsLinked),
+          ),
+          sourceFlipY: false,
+        });
+      } else if (layerBb) {
+        drawTileFlat(pctx, artwork, layerBb, tileSettings, ppi, {
+          x: W / 2,
+          y: H / 2,
+        });
+      }
+    } else if (
+      view === "back" &&
       mode === "single-sheet" &&
       artwork &&
       layer.mesh &&
@@ -1497,22 +2341,38 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             ? layerSources.get(layer.productionPanelSrc) ?? null
             : null;
         const calibImg = frontCalib ?? backCalib;
+        // Prefer calibration PNG size — front/back meshes share that UV space
+        // (same as hood bridge). Printify placeholder aspect is for export.
+        const placeholders = placeholderDimsByPosition(params.placeholderPositions);
+        const printPos = hoodiePanelKeyToPrintifyPosition(layer.panelKey);
+        const ph =
+          placeholders.get(printPos) ??
+          placeholders.get(printPos.toLowerCase());
         const fallbackSize = calibImg
           ? {
               width: calibImg.naturalWidth || calibImg.width,
               height: calibImg.naturalHeight || calibImg.height,
             }
-          : undefined;
+          : ph
+            ? { width: ph.width, height: ph.height }
+            : undefined;
         const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
           fallbackSize,
+          sleevesMirrored: params.sleevesMirrored,
+          legsMirrored: params.legsMirrored,
         });
         if (flat) {
+          // Like hood: warp the FULL flat through the back mesh. Mesh UVs
+          // select the back-of-arm (or back-of-hood) region — do not half-crop
+          // sourceRect (that 2×-stretched the wrong region vs Front scale).
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
             ...layer.mesh,
-            sourceRect: { x: 0, y: 0, width: flat.width, height: flat.height },
-            // The flat panel already bakes in the front mesh's source
-            // UV transform, so reset these on the back warp to avoid
-            // double-applying.
+            sourceRect: {
+              x: 0,
+              y: 0,
+              width: flat.width,
+              height: flat.height,
+            },
             sourceRotation: 0,
             sourceFlipX: false,
             sourceFlipY: false,
@@ -1564,6 +2424,20 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           tileSettings,
           ppi,
           W,
+          {
+            // Native flat/mesh per panel by default; sweatshirt front/back
+            // share the front body's scale; bomber body+sleeves share median.
+            meshOverscanCompensation: false,
+            mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
+              layer.panelKey,
+              {
+                frontMatched: frontMatchedTileScale,
+                bomberUniform: bomberUniformTileScale,
+              },
+            ),
+            template,
+            view,
+          },
         );
         if (flatTile) {
           drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
@@ -1577,8 +2451,15 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             // Tile pattern is omnidirectional and already lives in
             // the panel's flat coord system — reset the calibration's
             // source UV transform so the mesh samples it as-is.
+            // Customer Mirror still flips the right sleeve pattern.
             sourceRotation: 0,
-            sourceFlipX: false,
+            sourceFlipX: meshSourceFlipXForPanel(
+              layer.panelKey,
+              false,
+              params.sleevesMirrored,
+              params.legsMirrored,
+              Boolean(params.legsLinked),
+            ),
             sourceFlipY: false,
           });
           drewTile = true;
@@ -1609,12 +2490,21 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       ) {
         const bb = layerBb;
         if (bb) {
-          synthSrc = synthesiseSeamAwareSourceRect(
+          const sampleBb = samplingBboxForLayer(
             bb,
+            layer,
+            layerRect,
+            template,
+            params.groupPanelBiasOverrides,
+          );
+          synthSrc = artworkSourceRectForPanel(
+            sampleBb,
+            layer.panelKey,
             layerRect,
             aw,
             ah,
             seamSideForLayer(layer),
+            params.legsMirrored,
           );
         }
       } else {
@@ -1622,7 +2512,25 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         synthSrc = { x: 0, y: 0, width: aw, height: ah };
       }
       if (synthSrc) {
-        drawMeshWarp(pctx, artwork, aw, ah, { ...layer.mesh, sourceRect: synthSrc });
+        const artSource = rotatedArtworkFor(
+          artwork,
+          aw,
+          ah,
+          layerRect?.rotationDeg ?? 0,
+        );
+        drawMeshWarp(pctx, artSource, aw, ah, {
+          ...layer.mesh,
+          sourceRect: synthSrc,
+          // Keep calibration UV rotation only — Place rotation is baked
+          // into artSource so linked legs share one upright bitmap.
+          sourceRotation: layer.mesh.sourceRotation ?? 0,
+          sourceFlipX: meshSourceFlipXForPanel(
+            layer.panelKey,
+            layer.mesh.sourceFlipX,
+            params.sleevesMirrored,
+            params.legsMirrored,
+          ),
+        });
       }
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw.
@@ -1636,15 +2544,30 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
-          const slice = synthesiseSeamAwareSourceRect(
+          const sampleBb = samplingBboxForLayer(
             bb,
+            layer,
+            layerRect,
+            template,
+            params.groupPanelBiasOverrides,
+          );
+          const slice = artworkSourceRectForPanel(
+            sampleBb,
+            layer.panelKey,
             layerRect,
             aw,
             ah,
             seamSideForLayer(layer),
+            params.legsMirrored,
+          );
+          const artSource = rotatedArtworkFor(
+            artwork,
+            aw,
+            ah,
+            layerRect.rotationDeg ?? 0,
           );
           pctx.drawImage(
-            artwork,
+            artSource,
             slice.x,
             slice.y,
             slice.width,
@@ -1809,4 +2732,932 @@ export function renderAopPreviewToCanvas(params: AopPreviewParams): HTMLCanvasEl
   if (!ctx) return canvas;
   renderAopPreview(ctx, params);
   return canvas;
+}
+
+// ---------------------------------------------------------------------------
+// Flat print-panel export (order fulfillment)
+// ---------------------------------------------------------------------------
+
+/** Target long edge for artwork-bearing print panels. The flat-panel coordinate
+ *  system is mockup-resolution (~1024px), far below print needs, so panels are
+ *  upscaled toward this target. Detail is bounded by the artwork's own
+ *  resolution — going higher than this just inflates upload bytes. */
+const PRINT_PANEL_TARGET_LONG_EDGE_PX = 3200;
+/** Hard cap on exported panel long edge (memory / upload safety). */
+const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
+
+/**
+ * Scale factor so a flat canvas whose pre-scale long edge is `baseLongEdge`
+ * lands near {@link PRINT_PANEL_TARGET_LONG_EDGE_PX}, never above `maxLongEdgePx`.
+ *
+ * `baseLongEdge` MUST be the size `renderHoodFlatPanel` / `renderTiledFlatPanel`
+ * actually use (mesh `sourceRect` / mesh bbox) — not Printify placeholder px.
+ * Placeholders are often 8–12k; feeding those into the scale while the mesh
+ * base stayed ~hundreds crushed exports to ~7 DPI (leggings bp 256).
+ */
+export function printPanelOutputScale(
+  baseLongEdge: number,
+  maxLongEdgePx: number = PRINT_PANEL_MAX_LONG_EDGE_PX,
+): number {
+  const long = Math.max(1, baseLongEdge);
+  const maxEdge = Math.max(1, maxLongEdgePx);
+  return Math.min(
+    Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / long),
+    maxEdge / long,
+  );
+}
+
+/** Pre-scale flat size for Place-mode mesh export (mirrors `renderHoodFlatPanel`). */
+function hoodFlatPanelBaseDims(
+  layer: MaskLayer,
+  fallback: { width: number; height: number } | null,
+  artwork: HTMLImageElement | null,
+): { width: number; height: number } {
+  const src = layer.mesh?.sourceRect;
+  if (src && src.width > 0 && src.height > 0) {
+    return { width: Math.round(src.width), height: Math.round(src.height) };
+  }
+  if (fallback && fallback.width > 0 && fallback.height > 0) {
+    return {
+      width: Math.round(fallback.width),
+      height: Math.round(fallback.height),
+    };
+  }
+  if (artwork) {
+    return {
+      width: Math.max(1, artwork.naturalWidth || artwork.width),
+      height: Math.max(1, artwork.naturalHeight || artwork.height),
+    };
+  }
+  return { width: 1, height: 1 };
+}
+
+/** Pre-scale flat size for Pattern-mode mesh export (mirrors `renderTiledFlatPanel`). */
+function tiledFlatPanelBaseDims(
+  layer: MaskLayer,
+  template: HoodieTemplate | null | undefined,
+  view: HoodieView | undefined,
+  fallback: { width: number; height: number },
+): { width: number; height: number } {
+  const src = resolveLayerSourceRect(template ?? null, layer, view);
+  if (src && src.width > 0 && src.height > 0) {
+    return { width: Math.round(src.width), height: Math.round(src.height) };
+  }
+  if (layer.mesh) {
+    const tb = meshTargetBbox(layer.mesh);
+    if (tb) {
+      return { width: Math.round(tb.width), height: Math.round(tb.height) };
+    }
+  }
+  return {
+    width: Math.round(fallback.width),
+    height: Math.round(fallback.height),
+  };
+}
+
+/** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
+export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
+/** Solid background-only panels compress to almost nothing; Printify scales
+ *  the image to the placeholder, so a modest aspect-correct fill is enough.
+ *  Keep this large enough that wide strips (collar ~11:1) retain a usable
+ *  short edge — sub-~64px heights are ignored and leave white trim. */
+const SOLID_PRINT_PANEL_LONG_EDGE_PX = 1024;
+/** Minimum short-edge px after scaling solid fills (collar / waistband strips). */
+const SOLID_PRINT_PANEL_MIN_SHORT_EDGE_PX = 128;
+
+export type FlatPrintPanelExport = {
+  /** Printify placeholder position (e.g. `front_left`, `left_cuff_panel`). */
+  position: string;
+  panelKey: HoodiePanelKey;
+  canvas: HTMLCanvasElement;
+};
+
+export type RenderFlatPrintPanelsParams = {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement | null;
+  /** "single-sheet" = Place-on-item, "tile" = repeating Pattern mode. */
+  mode: "single-sheet" | "tile";
+  tileSettings?: TileSettings | null;
+  pixelsPerInch?: number;
+  /** Fabric colour baked under the artwork across the whole panel. AOP print
+   *  files need full coverage, so `null` falls back to white. */
+  backgroundColor?: string | null;
+  groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  groupSeamOverrides?: Record<string, number>;
+  groupEnabledOverrides?: Record<string, boolean>;
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
+  panelEnabledOverrides?: Partial<Record<string, boolean>>;
+  /** Loaded view mockups — used only to derive each view's canvas width for
+   *  tile-mode seam anchoring. Optional; falls back to template geometry. */
+  mockups?: Partial<Record<HoodieView, HTMLImageElement | null>>;
+  /** Override max long edge (e.g. mockup-bound export). Defaults to print cap. */
+  maxLongEdgePx?: number;
+  /**
+   * Printify catalog placeholder sizes (from product type / blueprint).
+   * When set, flat export canvases use these aspects so Printify does not
+   * re-stretch panels (back already matched; front halves often need this).
+   */
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
+  /** Flip right-sleeve artwork for customer Mirror toggle (preview + print). */
+  sleevesMirrored?: boolean;
+  /** Mirror left leg relative to right (leggings continuous place/pattern). */
+  legsMirrored?: boolean;
+  legsLinked?: boolean;
+};
+
+function placeholderDimsByPosition(
+  positions: RenderFlatPrintPanelsParams["placeholderPositions"],
+): Map<string, { width: number; height: number }> {
+  const map = new Map<string, { width: number; height: number }>();
+  for (const p of positions ?? []) {
+    if (!p?.position || !(p.width > 0) || !(p.height > 0)) continue;
+    map.set(p.position, { width: p.width, height: p.height });
+    map.set(p.position.toLowerCase(), { width: p.width, height: p.height });
+  }
+  return map;
+}
+
+/** Prefer Printify placeholder aspect; fall back to mesh/mask calibration dims. */
+function resolveExportPanelDims(
+  layer: MaskLayer,
+  panelKey: HoodiePanelKey,
+  template: HoodieTemplate | null | undefined,
+  view: HoodieView | undefined,
+  placeholders: Map<string, { width: number; height: number }>,
+): { width: number; height: number } | null {
+  const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+  const ph =
+    placeholders.get(position) ?? placeholders.get(position.toLowerCase());
+  if (ph) {
+    return { width: Math.round(ph.width), height: Math.round(ph.height) };
+  }
+  return flatPanelBaseDims(layer, template, view);
+}
+
+/** Canvas width for a view without requiring the mockup image (mirrors
+ *  resolveAopPreviewCanvasBounds' extents using stored template geometry). */
+function viewCanvasWidth(
+  template: HoodieTemplate,
+  view: HoodieView,
+  mockup?: HTMLImageElement | null,
+): number {
+  if (mockup) {
+    return resolveAopPreviewCanvasBounds(template, view, mockup).width;
+  }
+  const viewState = template.views[view];
+  let maxX = 0;
+  const asset = viewState?.mockup;
+  if (asset) {
+    const dr = mockupDrawRect(asset);
+    maxX = Math.max(maxX, dr.x + dr.renderWidth);
+  }
+  for (const layer of viewState?.layers ?? []) {
+    const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+    if (bb) maxX = Math.max(maxX, bb.x + bb.width);
+  }
+  return Math.max(1, Math.round(maxX));
+}
+
+/** Base (unscaled) flat-panel dims for a layer: calibrated sourceRect first
+ *  (including sibling-view borrow), then mesh target bbox, then polygon AABB. */
+function flatPanelBaseDims(
+  layer: MaskLayer,
+  template?: HoodieTemplate | null,
+  view?: HoodieView,
+): { width: number; height: number } | null {
+  const src = resolveLayerSourceRect(template ?? null, layer, view);
+  if (src && src.width > 0 && src.height > 0) {
+    return { width: Math.round(src.width), height: Math.round(src.height) };
+  }
+  if (layer.mesh) {
+    const tb = meshTargetBbox(layer.mesh);
+    if (tb) return { width: Math.round(tb.width), height: Math.round(tb.height) };
+  }
+  const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+  if (bb && bb.width > 0 && bb.height > 0) {
+    return { width: Math.round(bb.width), height: Math.round(bb.height) };
+  }
+  return null;
+}
+
+function solidPanelCanvas(
+  dims: { width: number; height: number },
+  fill: string,
+): HTMLCanvasElement | null {
+  const long = Math.max(dims.width, dims.height, 1);
+  let s = SOLID_PRINT_PANEL_LONG_EDGE_PX / long;
+  let width = Math.max(1, Math.round(dims.width * s));
+  let height = Math.max(1, Math.round(dims.height * s));
+  const short = Math.min(width, height);
+  if (short < SOLID_PRINT_PANEL_MIN_SHORT_EDGE_PX) {
+    const boost = SOLID_PRINT_PANEL_MIN_SHORT_EDGE_PX / short;
+    width = Math.max(1, Math.round(width * boost));
+    height = Math.max(1, Math.round(height * boost));
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/**
+ * Pullover kangaroo pocket — mirror zip hoodie: keep `front_pocket` as its own
+ * Printify panel upload. Live bp 450 placeholders include a pocket slot; when
+ * we omit it the mockup server fills that slot with solid bgColor (blank pocket).
+ * When pockets are off, drop the panel so the fill stays garment colour.
+ */
+export function finalizePulloverPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  panelEnabledOverrides?: Partial<Record<string, boolean>>,
+  _backgroundColor?: string | null,
+): FlatPrintPanelExport[] {
+  const pocketsEnabled = panelEnabledOverrides?.front_pocket !== false;
+  if (
+    !shouldExportPulloverPocketAsPrintifyPanel(
+      template.blueprintId,
+      pocketsEnabled,
+      template.hoodieType,
+    )
+  ) {
+    return panels.filter((p) => p.panelKey !== "front_pocket");
+  }
+  // Ensure position string matches Printify (and server aliases).
+  return panels.map((p) =>
+    p.panelKey === "front_pocket"
+      ? { ...p, position: hoodiePanelKeyToPrintifyPosition("front_pocket") }
+      : p,
+  );
+}
+
+/** Typical XL bp 433 `front` placeholder when product-type dims are missing. */
+const BOMBER_FRONT_PRINT_DIMS_FALLBACK = { width: 4011, height: 5025 } as const;
+
+/**
+ * Union AABB of front_left + front_right masks (mockup space), or a single
+ * `front` mask when the template is already single-panel.
+ */
+function bomberFrontUnionBbox(template: HoodieTemplate): Aabb | null {
+  const layers = (template.views.front?.layers ?? []).filter(
+    (l) =>
+      l.visible &&
+      !l.isExclusion &&
+      (l.panelKey === "front_left" ||
+        l.panelKey === "front_right" ||
+        l.panelKey === "front"),
+  );
+  return totalPrintAabb(layers);
+}
+
+/**
+ * Bomber bp 433 has a single Printify `front` (not zip halves). Bake one
+ * continuous front print file from the full front-body artwork placement —
+ * same idea as `back` — instead of stitching half-panel meshes (that squashed
+ * circles and left shoulders bare).
+ */
+export function bakeBomberFrontPrintPanel(args: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  frontBodyRect: DesignRectInfo;
+  backgroundColor?: string | null;
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
+  maxLongEdgePx?: number;
+}): FlatPrintPanelExport | null {
+  const {
+    template,
+    artwork,
+    frontBodyRect,
+    backgroundColor,
+    placeholderPositions,
+    maxLongEdgePx,
+  } = args;
+  if (!isBomberJacketBlueprint(template.blueprintId)) return null;
+
+  const ph = placeholderPositions?.find(
+    (p) => p.position === "front" || p.position.toLowerCase() === "front",
+  );
+  let dimsW = ph && ph.width > 0 ? ph.width : BOMBER_FRONT_PRINT_DIMS_FALLBACK.width;
+  let dimsH = ph && ph.height > 0 ? ph.height : BOMBER_FRONT_PRINT_DIMS_FALLBACK.height;
+  const longEdge = Math.max(dimsW, dimsH, 1);
+  const panelMax = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const outputScale = Math.min(
+    Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
+    panelMax / longEdge,
+  );
+  const targetW = Math.max(1, Math.round(dimsW * outputScale));
+  const targetH = Math.max(1, Math.round(dimsH * outputScale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, targetW, targetH);
+
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  if (!(aw > 0 && ah > 0)) {
+    return { position: "front", panelKey: "front", canvas };
+  }
+
+  const union =
+    bomberFrontUnionBbox(template) ??
+    ({
+      x: frontBodyRect.effective.x,
+      y: frontBodyRect.effective.y,
+      width: frontBodyRect.effective.width,
+      height: frontBodyRect.effective.height,
+    } satisfies Aabb);
+
+  // Sample the front-body design the same way preview does for the combined
+  // chest (no L/R seam split) — then fill the Printify front placeholder.
+  const slice = synthesiseSeamAwareSourceRect(
+    union,
+    frontBodyRect,
+    aw,
+    ah,
+    "none",
+  );
+  if (slice.width > 0 && slice.height > 0) {
+    ctx.drawImage(
+      artwork,
+      slice.x,
+      slice.y,
+      slice.width,
+      slice.height,
+      0,
+      0,
+      targetW,
+      targetH,
+    );
+  }
+
+  return { position: "front", panelKey: "front", canvas };
+}
+
+/**
+ * Bomber Pattern mode — tile a continuous Printify `front` panel (catalog has
+ * no front_left/front_right). Uses the same physical tile math + uniform scale
+ * as body/sleeve Pattern sheets, plus the front Y nudge toward the collar.
+ */
+export function bakeBomberFrontTiledPrintPanel(args: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  tileSettings: TileSettings;
+  pixelsPerInch: number;
+  mockupToFlatScaleOverride?: number | null;
+  backgroundColor?: string | null;
+  placeholderPositions?: ReadonlyArray<{
+    position: string;
+    width: number;
+    height: number;
+  }>;
+  maxLongEdgePx?: number;
+  artworkLongEdge?: number;
+}): FlatPrintPanelExport | null {
+  const {
+    template,
+    artwork,
+    tileSettings,
+    pixelsPerInch,
+    mockupToFlatScaleOverride,
+    backgroundColor,
+    placeholderPositions,
+    maxLongEdgePx,
+    artworkLongEdge,
+  } = args;
+  if (!isBomberJacketBlueprint(template.blueprintId)) return null;
+
+  const ph = placeholderPositions?.find(
+    (p) => p.position === "front" || p.position.toLowerCase() === "front",
+  );
+  let dimsW = ph && ph.width > 0 ? ph.width : BOMBER_FRONT_PRINT_DIMS_FALLBACK.width;
+  let dimsH = ph && ph.height > 0 ? ph.height : BOMBER_FRONT_PRINT_DIMS_FALLBACK.height;
+  const longEdge = Math.max(dimsW, dimsH, 1);
+  const panelMax = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const artEdge =
+    artworkLongEdge ??
+    Math.max(
+      artwork.naturalWidth || artwork.width,
+      artwork.naturalHeight || artwork.height,
+      1,
+    );
+  const tilePxBase = Math.max(1, tileSettings.tileSizeInches * pixelsPerInch);
+  const wanted = artEdge / tilePxBase;
+  const capped = Math.min(wanted, panelMax / longEdge);
+  const outputScale = Math.max(1, capped);
+  const targetW = Math.max(1, Math.round(dimsW * outputScale));
+  const targetH = Math.max(1, Math.round(dimsH * outputScale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, targetW, targetH);
+
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  if (!(aw > 0 && ah > 0)) {
+    return { position: "front", panelKey: "front", canvas };
+  }
+
+  // Never fall back to flatW/meshW = dims/dims (=1) — that made Printify
+  // front motifs microscopic vs mesh-based sleeve/back sheets.
+  const samples = collectPatternTileScaleSamples(template);
+  const baseScale =
+    mockupToFlatScaleOverride ??
+    patternModeUniformTileScale(samples) ??
+    referenceMockupToFlatScale(samples) ??
+    1;
+  const printScale = baseScale * BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE;
+  const tilePxFlat = computeTilePxOnFlatCanvas({
+    tileSizeInches: tileSettings.tileSizeInches,
+    pixelsPerInch,
+    flatCanvasW: dimsW,
+    meshTargetWidth: dimsW,
+    outputScale,
+    mockupToFlatScaleOverride: printScale,
+  });
+  const yNudge = BOMBER_FRONT_BODY_OFFSET_Y_FRAC * targetH;
+  drawTiledArtworkOnCanvas(
+    ctx,
+    artwork,
+    tileSettings,
+    targetW,
+    targetH,
+    tilePxFlat,
+    targetW / 2,
+    targetH / 2 + yNudge,
+  );
+
+  return { position: "front", panelKey: "front", canvas };
+}
+
+/**
+ * Drop zip-style half front uploads and attach a single baked `front` panel.
+ */
+export function finalizeBomberPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  bakedFront: FlatPrintPanelExport | null,
+): FlatPrintPanelExport[] {
+  if (!isBomberJacketBlueprint(template.blueprintId)) return panels;
+
+  const rest = panels.filter(
+    (p) =>
+      p.panelKey !== "front_left" &&
+      p.panelKey !== "front_right" &&
+      p.panelKey !== "front" &&
+      p.position !== "front",
+  );
+
+  if (bakedFront) {
+    return [...rest, bakedFront];
+  }
+
+  const existingFront = panels.find(
+    (p) => p.panelKey === "front" || p.position === "front",
+  );
+  if (existingFront) {
+    return [
+      ...rest,
+      { ...existingFront, position: "front", panelKey: "front" },
+    ];
+  }
+  return rest;
+}
+
+/**
+ * Sweatshirt collar is often missing from the mesh template (or muted without
+ * dims). Printify still has a `collar` placeholder — without a solid bg upload
+ * the neck rib stays white on mockups and orders. Always force a cream/bg fill.
+ */
+export function finalizeSweatshirtPrintPanelsForPrintify(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  backgroundColor?: string | null,
+): FlatPrintPanelExport[] {
+  if (!shouldForceSolidSweatshirtCollar(template)) return panels;
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  const withoutCollar = panels.filter(
+    (p) =>
+      p.position.toLowerCase() !== "collar" &&
+      p.panelKey !== "collar_front" &&
+      p.panelKey !== "collar_back",
+  );
+  // Always size from the live Printify collar aspect — never reuse a prior
+  // tiny solid canvas (those were ignored and left the neck rib white).
+  // Position must be title-case `Collar` (bp 449 live placeholder name).
+  const solid = solidPanelCanvas({ ...SWEATSHIRT_COLLAR_PRINT_DIMS }, bg);
+  if (!solid) return withoutCollar;
+  return [
+    ...withoutCollar,
+    {
+      position: hoodiePanelKeyToPrintifyPosition("collar_front"),
+      panelKey: "collar_front",
+      canvas: solid,
+    },
+  ];
+}
+
+/**
+ * Export the flat per-panel print files for a template + customer state —
+ * the "Phase 5 production export" counterpart of `renderAopPreview`. These
+ * are the images submitted to Printify order `print_areas` (one per
+ * placeholder position, `{ scale: 1, x: 0.5, y: 0.5 }`), so each panel is:
+ *
+ *   1. Filled edge-to-edge with the garment background colour (AOP panels
+ *      must have full coverage — transparent regions would print white).
+ *   2. Overlaid with the artwork slice (Place mode, seam-aware — the exact
+ *      geometry `renderHoodFlatPanel` feeds the mockup warp) or the tile
+ *      sheet (Pattern mode, same grid `renderTiledFlatPanel` previews).
+ *
+ * Muted panels (customer toggles, disabled groups) export as solid
+ * background fills so Printify still receives full panel coverage.
+ *
+ * Front-view layers win when a panel exists in both views (hood/sleeves are
+ * one fabric piece bridged from the front); back-only panels (back body)
+ * export from the back view with the back-view placement.
+ */
+export function renderFlatPrintPanels(
+  params: RenderFlatPrintPanelsParams,
+): FlatPrintPanelExport[] {
+  let {
+    template,
+    artwork,
+    mode,
+    backgroundColor,
+    groupPlacementOverrides,
+    groupSeamOverrides,
+    groupEnabledOverrides,
+    groupPanelBiasOverrides,
+    panelEnabledOverrides,
+    mockups,
+    maxLongEdgePx,
+  } = params;
+  const bg = backgroundColor || DEFAULT_GARMENT_BACKGROUND;
+  if (
+    shouldExportPulloverPocketAsPrintifyPanel(
+      template.blueprintId,
+      panelEnabledOverrides?.front_pocket !== false,
+      template.hoodieType,
+    )
+  ) {
+    template = {
+      ...template,
+      designGroups: migrateFrontPocketOutOfTrimGroup(template.designGroups ?? []),
+    };
+  }
+  const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  const patternTileSamples =
+    mode === "tile" ? collectPatternTileScaleSamples(template) : [];
+  const frontMatchedTileScale =
+    mode === "tile" && isSweatshirtBlueprint(template.blueprintId)
+      ? patternModeFrontBodyTileScale(patternTileSamples)
+      : null;
+  const bomberUniformTileScale =
+    mode === "tile" && isBomberJacketBlueprint(template.blueprintId)
+      ? patternModeUniformTileScale(patternTileSamples)
+      : null;
+  const ppi =
+    params.pixelsPerInch ??
+    template.realWorldCalibration?.pixelsPerInch ??
+    1024 / 24;
+  const artworkLongEdge = artwork
+    ? Math.max(artwork.naturalWidth || artwork.width, artwork.naturalHeight || artwork.height, 1)
+    : 1;
+
+  const out: FlatPrintPanelExport[] = [];
+  const exportLayers = collectPrintExportLayers(template);
+  const placeholders = placeholderDimsByPosition(params.placeholderPositions);
+  const rectsByView = new Map<HoodieView, Map<string, DesignRectInfo>>();
+  if (mode === "single-sheet") {
+    for (const view of ["front", "back"] as HoodieView[]) {
+      const rects = computeGroupRects(template, view, artwork, {
+        placementOverrides: groupPlacementOverrides,
+        seamOverrides: groupSeamOverrides,
+        enabledOverrides: groupEnabledOverrides,
+        legsMirrored: params.legsMirrored,
+      });
+      applyBomberFrontBodyPlacement(template, rects);
+      rectsByView.set(view, rects);
+    }
+  }
+
+  for (const { view, layer, panelKey } of exportLayers) {
+    // Bomber Printify catalog is a single `front` — skip zip halves; baked below.
+    if (
+      isBomberJacketBlueprint(template.blueprintId) &&
+      (panelKey === "front_left" || panelKey === "front_right")
+    ) {
+      continue;
+    }
+    const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+    const dims = resolveExportPanelDims(
+      layer,
+      panelKey,
+      template,
+      view,
+      placeholders,
+    );
+    if (!dims) continue;
+
+    const rects = rectsByView.get(view) ?? new Map<string, DesignRectInfo>();
+    const canvasW = viewCanvasWidth(template, view, mockups?.[view]);
+    const group = findGroupForPanel(template.designGroups, panelKey);
+    let rect = group
+      ? rects.get(group.id) ?? null
+      : rects.get("__legacy__") ?? rects.get("__ungrouped__") ?? null;
+    // Place-on-item: pullover chest print files read a bit large vs pocket on
+    // Printify — shrink only the main front panel export (not preview/pocket).
+    if (
+      mode === "single-sheet" &&
+      panelKey === "front" &&
+      rect &&
+      (isPulloverHoodieBlueprint(template.blueprintId) ||
+        template.hoodieType === "pullover-hoodie-aop")
+    ) {
+      rect = scaleDesignRectEffective(rect, PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE);
+    }
+    // Mirror renderAopPreview's skipArtwork semantics exactly so the print
+    // file matches the preview: single-sheet honours the group rect's
+    // enabled flag; tile mode has no group rects (group toggles don't mute
+    // there) — only customer-level panel overrides do.
+    const panelOverride = panelEnabledOverrides?.[panelKey];
+    const muted = shouldRenderKangarooPocketArtwork(panelKey, panelOverride)
+      ? false
+      : panelOverride === false ||
+        (mode === "single-sheet" && rect != null && !rect.enabled);
+
+    if (muted || !artwork || (mode === "tile" && !tileSettings)) {
+      const solid = solidPanelCanvas(dims, bg);
+      if (solid) {
+        out.push({ position, panelKey, canvas: solid });
+      }
+      continue;
+    }
+
+    let artCanvas: HTMLCanvasElement | null = null;
+
+    if (mode === "tile" && tileSettings) {
+      // Density target: one tile ≈ the artwork's native resolution, capped
+      // by the max canvas edge. Below-1 scales are clamped (never shrink).
+      // Cap against the *mesh flat base*, not Printify placeholder px.
+      const tileBase = layer.mesh
+        ? tiledFlatPanelBaseDims(layer, template, view, dims)
+        : dims;
+      const scaleBaseLong = Math.max(tileBase.width, tileBase.height, 1);
+      const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
+      const wanted = artworkLongEdge / tilePxBase;
+      const capped = Math.min(wanted, panelMaxLongEdge / scaleBaseLong);
+      const outputScale = Math.max(1, capped);
+      artCanvas = layer.mesh
+        ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
+            outputScale,
+            mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
+              panelKey,
+              {
+                frontMatched: frontMatchedTileScale,
+                bomberUniform: bomberUniformTileScale,
+              },
+            ),
+            tilePxMultiplier: isBomberJacketBlueprint(template.blueprintId)
+              ? bomberPatternPrintTileScaleForPanel(panelKey)
+              : 1,
+            template,
+            view,
+          })
+        : null;
+      if (!artCanvas) {
+        // No mesh — tile straight into an upscaled polygon-bbox canvas.
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(dims.width * outputScale));
+        c.height = Math.max(1, Math.round(dims.height * outputScale));
+        const cctx = c.getContext("2d");
+        if (cctx) {
+          const bb = { x: 0, y: 0, width: c.width, height: c.height };
+          drawTileFlat(cctx, artwork, bb, tileSettings, ppi * outputScale, {
+            x: c.width / 2,
+            y: c.height / 2,
+          });
+          artCanvas = c;
+        }
+      }
+      // Flat tile sheets don't go through meshFlip — apply sleeve/leg flips here.
+      if (
+        artCanvas &&
+        meshSourceFlipXForPanel(
+          panelKey,
+          false,
+          params.sleevesMirrored,
+          params.legsMirrored,
+          Boolean(params.legsLinked),
+        )
+      ) {
+        const flipped = document.createElement("canvas");
+        flipped.width = artCanvas.width;
+        flipped.height = artCanvas.height;
+        const fctx = flipped.getContext("2d");
+        if (fctx) {
+          fctx.translate(flipped.width, 0);
+          fctx.scale(-1, 1);
+          fctx.drawImage(artCanvas, 0, 0);
+          artCanvas = flipped;
+        }
+      }
+    } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
+      // Place-on-item hood/sleeve bridge: bake from the front layer when
+      // exporting a back-view mesh so both sides share one flat UV.
+      let bakeLayer = layer;
+      let bakeRect = rect;
+      if (
+        view === "back" &&
+        FLAT_PANEL_BRIDGE_PANEL_KEYS.has(panelKey) &&
+        layer.mesh
+      ) {
+        const frontLayer = findFrontLayerByPanelKey(template, panelKey);
+        const frontRects = rectsByView.get("front");
+        const frontGroup = findGroupForPanel(template.designGroups, panelKey);
+        const frontRect = frontGroup
+          ? frontRects?.get(frontGroup.id) ?? null
+          : frontRects?.get("__legacy__") ?? frontRects?.get("__ungrouped__") ?? null;
+        if (frontLayer?.mesh && frontRect) {
+          bakeLayer = frontLayer;
+          bakeRect = frontRect;
+        }
+      }
+      const scaleBase = bakeLayer.mesh
+        ? hoodFlatPanelBaseDims(bakeLayer, dims, artwork)
+        : dims;
+      const outputScale = printPanelOutputScale(
+        Math.max(scaleBase.width, scaleBase.height, 1),
+        panelMaxLongEdge,
+      );
+      if (bakeLayer.mesh) {
+        const panelBias = group
+          ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
+          : null;
+        artCanvas = renderHoodFlatPanel(bakeLayer, artwork, bakeRect, {
+          fallbackSize: dims,
+          outputScale,
+          panelPlacementBias: panelBias,
+          sleevesMirrored: params.sleevesMirrored,
+          legsMirrored: params.legsMirrored,
+        });
+      } else {
+        // No mesh — draw the seam-aware artwork slice straight into the
+        // polygon-bbox canvas (same slice the flat-stretch preview uses).
+        const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+        if (bb) {
+          const aw = artwork.naturalWidth || artwork.width;
+          const ah = artwork.naturalHeight || artwork.height;
+          const side: "left" | "right" | "none" = isLeggingsSidePanelKey(panelKey)
+            ? "none"
+            : SEAM_PAIR_PANELS.left.includes(panelKey)
+              ? "left"
+              : SEAM_PAIR_PANELS.right.includes(panelKey)
+                ? "right"
+                : "none";
+          const sampleBb = rect
+            ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
+            : bb;
+          const slice = artworkSourceRectForPanel(
+            sampleBb,
+            panelKey,
+            rect,
+            aw,
+            ah,
+            side,
+            params.legsMirrored,
+          );
+          if (slice.width > 0 && slice.height > 0) {
+            const c = document.createElement("canvas");
+            c.width = Math.max(1, Math.round(dims.width * outputScale));
+            c.height = Math.max(1, Math.round(dims.height * outputScale));
+            const cctx = c.getContext("2d");
+            if (cctx) {
+              const flipX = meshSourceFlipXForPanel(
+                panelKey,
+                false,
+                params.sleevesMirrored,
+                params.legsMirrored,
+              );
+              if (flipX) {
+                cctx.translate(c.width, 0);
+                cctx.scale(-1, 1);
+              }
+              const artSource = bakeArtworkPlacementRotation(
+                artwork,
+                aw,
+                ah,
+                rect.rotationDeg ?? 0,
+              );
+              cctx.drawImage(
+                artSource,
+                slice.x,
+                slice.y,
+                slice.width,
+                slice.height,
+                0,
+                0,
+                c.width,
+                c.height,
+              );
+              artCanvas = c;
+            }
+          }
+        }
+      }
+    }
+
+    if (!artCanvas) {
+      const solid = solidPanelCanvas(dims, bg);
+      if (solid) {
+        out.push({ position, panelKey, canvas: solid });
+      }
+      continue;
+    }
+
+    // Composite: opaque background colour under the artwork.
+    const panel = document.createElement("canvas");
+    panel.width = artCanvas.width;
+    panel.height = artCanvas.height;
+    const pctx = panel.getContext("2d");
+    if (!pctx) continue;
+    pctx.fillStyle = bg;
+    pctx.fillRect(0, 0, panel.width, panel.height);
+    pctx.drawImage(artCanvas, 0, 0);
+
+    out.push({ position, panelKey, canvas: panel });
+  }
+
+  const afterPullover = finalizePulloverPrintPanelsForPrintify(
+    out,
+    template,
+    panelEnabledOverrides,
+    backgroundColor,
+  );
+  let bakedBomberFront: FlatPrintPanelExport | null = null;
+  if (isBomberJacketBlueprint(template.blueprintId) && artwork) {
+    if (mode === "tile" && tileSettings) {
+      bakedBomberFront = bakeBomberFrontTiledPrintPanel({
+        template,
+        artwork,
+        tileSettings,
+        pixelsPerInch: ppi,
+        mockupToFlatScaleOverride: bomberUniformTileScale,
+        backgroundColor,
+        placeholderPositions: params.placeholderPositions,
+        maxLongEdgePx: panelMaxLongEdge,
+        artworkLongEdge,
+      });
+    } else {
+      const frontRects = rectsByView.get("front");
+      const frontBodyRect = frontRects?.get("front-body") ?? null;
+      if (frontBodyRect && mode === "single-sheet") {
+        bakedBomberFront = bakeBomberFrontPrintPanel({
+          template,
+          artwork,
+          frontBodyRect,
+          backgroundColor,
+          placeholderPositions: params.placeholderPositions,
+          maxLongEdgePx: panelMaxLongEdge,
+        });
+      }
+    }
+  }
+  const afterBomber = finalizeBomberPrintPanelsForPrintify(
+    afterPullover,
+    template,
+    bakedBomberFront,
+  );
+  const merged = finalizeSweatshirtPrintPanelsForPrintify(
+    afterBomber,
+    template,
+    backgroundColor,
+  );
+  return merged.map((p) => ({
+    ...p,
+    canvas: extendPanelPrintBleed(p.canvas, p.panelKey, bg),
+  }));
 }

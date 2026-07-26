@@ -70,6 +70,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "fulfillment_layout",       type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
+  { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -99,6 +100,19 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types SET fabric_weave_texture = true
    WHERE printify_blueprint_id = 1649
      AND fabric_weave_texture IS NULL`,
+  // Vintage Poster: drop "travel poster" portrait bias — follow canvas orientation.
+  `UPDATE style_presets
+   SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
+   WHERE LOWER(name) = 'vintage poster'
+     AND (
+       prompt_prefix ILIKE '%vintage travel poster%'
+       OR prompt_prefix NOT ILIKE '%canvas orientation%'
+     )`,
+  // Wall Decals: product-level AR was portrait 2:3; per-size ARs are authoritative.
+  `UPDATE product_types
+   SET aspect_ratio = '1:1'
+   WHERE printify_blueprint_id = 759
+     AND aspect_ratio = '2:3'`,
   // Backfill materialized balances from the legacy customer columns.
   `INSERT INTO credit_balances (
       customer_id,

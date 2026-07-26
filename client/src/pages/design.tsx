@@ -31,8 +31,11 @@ import {
 import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
 import {
+  filterStylePresetsForPage,
+  parseCustomizerPageStyleConfig,
   selectableCategoriesForDesignerType,
   styleMatchesSelectableCategories,
+  type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
 import { getColorTier, type ColorTier } from "@shared/colorUtils";
 import {
@@ -83,6 +86,10 @@ interface ProductDesignerConfig {
   };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
   variantPrices?: Record<string, string>;
+  /** From linked customizer page — same allow-list as the storefront. */
+  styleConfig?: CustomizerPageStyleConfig | null;
+  /** Merchant-scoped + page-filtered (prefer over /api/config). */
+  stylePresets?: StylePreset[];
 }
 
 export default function DesignPage() {
@@ -917,14 +924,29 @@ export default function DesignPage() {
     setShowTweak(false);
   };
 
+  const pageStyleConfig =
+    parseCustomizerPageStyleConfig(designerConfig?.styleConfig) ?? null;
   const selectableStyleCategories = selectableCategoriesForDesignerType(designerConfig?.designerType);
-  const filteredStyles =
-    config?.stylePresets.filter((style) =>
-      styleMatchesSelectableCategories(style as { category?: string | null }, selectableStyleCategories),
-    ) || [];
+  const sourceStyles =
+    designerConfig?.stylePresets && designerConfig.stylePresets.length > 0
+      ? designerConfig.stylePresets
+      : config?.stylePresets || [];
+  const filteredStyles = pageStyleConfig
+    ? filterStylePresetsForPage(
+        sourceStyles,
+        pageStyleConfig,
+        designerConfig?.designerType,
+      )
+    : sourceStyles.filter((style) =>
+        styleMatchesSelectableCategories(
+          style as { category?: string | null },
+          selectableStyleCategories,
+        ),
+      );
 
-  const styleCategoryLabel =
-    selectableStyleCategories === "all"
+  const styleCategoryLabel = pageStyleConfig
+    ? "Page styles"
+    : selectableStyleCategories === "all"
       ? "All Artwork"
       : selectableStyleCategories.includes("apparel") && selectableStyleCategories.length === 1
         ? "Apparel Artwork"

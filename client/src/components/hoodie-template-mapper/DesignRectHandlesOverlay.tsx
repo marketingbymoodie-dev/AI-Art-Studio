@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useRef } from "react";
+import { RotateCw } from "lucide-react";
 import type { HoodieTemplate, HoodieView } from "@shared/hoodieTemplate";
 import {
   computeGroupRects,
+  normalizeRotationDeg,
   type ArtworkPlacement,
   type DesignRectInfo,
 } from "./lib/aopPreview";
 
 /**
- * Reusable design-rect drag/resize overlay for AOP placement UIs.
+ * Reusable design-rect drag/resize/rotate overlay for AOP placement UIs.
  *
  * The overlay sits `inset-0` over the AOP preview canvas and exposes
- * drag-to-translate + corner-drag-to-resize gestures bound to
- * `ArtworkPlacement`. Aspect ratio is locked — the rect always
- * reflects the artwork's natural shape (computed by
+ * drag-to-translate + corner-drag-to-resize + bottom-right rotate
+ * gestures bound to `ArtworkPlacement`. Aspect ratio is locked — the
+ * rect always reflects the artwork's natural shape (computed by
  * `computeDesignRect`), so corner drags only ever scale uniformly,
  * never squish.
  *
@@ -27,6 +29,8 @@ import {
  *     centroid fixed while picking the bigger of the two pointer
  *     deltas to drive width (height is derived from the locked
  *     aspect).
+ *   - Rotate uses atan2 around the rect centre; positive degrees are
+ *     clockwise on screen (matches mesh `sourceRotation` / canvas).
  *
  * Used in two places today:
  *   - The admin AOP Preview Modal (this is where the component lived
@@ -73,9 +77,23 @@ export type DesignRectHandlesOverlayProps = {
   snapMode?: "seam" | "x" | "y" | "both" | "none";
   /** Pixel threshold for the snap. Defaults to 3 mockup px. */
   snapPx?: number;
+  /**
+   * Invert horizontal drag (and report −ΔoffsetX). Needed when the mockup
+   * panel is Printify-flipped so mouse left matches art moving left on-body.
+   */
+  invertOffsetX?: boolean;
+  /**
+   * When set, draw/drag this rect instead of computing from `groupId`
+   * (e.g. union of both legs when Link sides is on).
+   */
+  rectOverride?: DesignRectInfo | null;
+  /** Cap for corner-drag scale (matches Place slider). Omit = no max. */
+  maxScale?: number;
   /** Patch the active group's placement (caller handles propagation). */
   onChange: (next: ArtworkPlacement) => void;
 };
+
+const ROTATION_SNAP_DEG = 4;
 
 export default function DesignRectHandlesOverlay({
   canvasRef,
@@ -91,9 +109,13 @@ export default function DesignRectHandlesOverlay({
   lockedScaleAroundAnchor = false,
   snapMode = "seam",
   snapPx = 3,
+  invertOffsetX = false,
+  rectOverride = null,
+  maxScale,
   onChange,
 }: DesignRectHandlesOverlayProps) {
   const info: DesignRectInfo | null = useMemo(() => {
+    if (rectOverride) return rectOverride;
     const map = computeGroupRects(template, view, artwork, {
       placementOverrides,
       seamOverrides,
@@ -108,6 +130,7 @@ export default function DesignRectHandlesOverlay({
     placementOverrides,
     seamOverrides,
     enabledOverrides,
+    rectOverride,
   ]);
 
   const mockupW = mockup.naturalWidth || mockup.width;
@@ -119,15 +142,19 @@ export default function DesignRectHandlesOverlay({
   const dragRef = useRef<
     | null
     | {
-        mode: "translate" | "scale";
+        mode: "translate" | "scale" | "rotate";
         corner?: "nw" | "ne" | "sw" | "se";
         startClientX: number;
         startClientY: number;
         startPlacement: ArtworkPlacement;
         startInfo: DesignRectInfo;
         canvasRect: DOMRect;
+        startAngleRad?: number;
       }
   >(null);
+
+  const invertXRef = useRef(invertOffsetX);
+  invertXRef.current = invertOffsetX;
 
   // Cache snap policy in a ref so the global pointermove listener
   // sees the latest value without rebinding (which would drop a
@@ -160,7 +187,8 @@ export default function DesignRectHandlesOverlay({
       const dyMock = dyClient * sy;
 
       if (drag.mode === "translate") {
-        let nextOffsetX = drag.startPlacement.offsetX + dxMock;
+        const xSign = invertXRef.current ? -1 : 1;
+        let nextOffsetX = drag.startPlacement.offsetX + dxMock * xSign;
         let nextOffsetY = drag.startPlacement.offsetY + dyMock;
         const { snapMode: mode, snapPx: px } = snapRef.current;
         // Resolve snap policy → which axes snap right now.
@@ -179,20 +207,40 @@ export default function DesignRectHandlesOverlay({
         return;
       }
 
-      // Scale: corner handles always grow/shrink the rect around
-      // its centre (the group's anchor + current offset), so the
-      // rect stays seam-aligned and matches what the Scale slider
-      // does. Aspect ratio is locked to the artwork's natural
-      // shape, so we pick whichever axis the pointer pushed
-      // furthest from centre and derive the other.
-      if (drag.mode === "scale") {
+      if (drag.mode === "rotate") {
         const start = drag.startInfo.effective;
-        const baseW = drag.startInfo.base.width;
-        const baseH = drag.startInfo.base.height;
-        const aspect = start.width / start.height;
         const centre = {
           x: start.x + start.width / 2,
           y: start.y + start.height / 2,
+        };
+        const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
+        const angle = Math.atan2(m.y - centre.y, m.x - centre.x);
+        const startAngle = drag.startAngleRad ?? angle;
+        // Screen y-down: atan2 increases clockwise → matches CW rotationDeg.
+        const deltaDeg = ((angle - startAngle) * 180) / Math.PI;
+        let next = normalizeRotationDeg(
+          (drag.startPlacement.rotationDeg ?? 0) + deltaDeg,
+        );
+        if (Math.abs(next) <= ROTATION_SNAP_DEG) next = 0;
+        onChange({
+          ...drag.startPlacement,
+          rotationDeg: next,
+        });
+        return;
+      }
+
+      // Scale: corner handles grow/shrink around the rect centre.
+      // Scale is derived from the gesture-start size × start placement
+      // scale — NOT effective/base. Linked leg unions set base=effective
+      // (already scaled), so newW/baseW snapped to ~1 on the first move.
+      if (drag.mode === "scale") {
+        const start = drag.startInfo.effective;
+        const startW = Math.max(1, start.width);
+        const startH = Math.max(1, start.height);
+        const aspect = startW / startH;
+        const centre = {
+          x: start.x + startW / 2,
+          y: start.y + startH / 2,
         };
         const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
         const halfW = Math.abs(m.x - centre.x);
@@ -204,16 +252,16 @@ export default function DesignRectHandlesOverlay({
         } else {
           newW = newH * aspect;
         }
+        const startScale = Math.max(0.0001, drag.startPlacement.scale || 1);
+        let newScale = startScale * (newW / startW);
         const minScale = 0.05;
-        if (newW / baseW < minScale) {
-          newW = baseW * minScale;
-          newH = baseH * minScale;
+        if (newScale < minScale) newScale = minScale;
+        if (typeof maxScale === "number" && maxScale > 0 && newScale > maxScale) {
+          newScale = maxScale;
         }
-        const newScale = newW / baseW;
         onChange({
+          ...drag.startPlacement,
           scale: newScale,
-          offsetX: drag.startPlacement.offsetX,
-          offsetY: drag.startPlacement.offsetY,
         });
         // `lockedScaleAroundAnchor` is now redundant (we always
         // scale around centre), but kept on the API for forward
@@ -237,19 +285,30 @@ export default function DesignRectHandlesOverlay({
     // we wire it via a stable ref above by re-binding the listener
     // on each change. Using state setter from props is fine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mockupW, mockupH, onChange]);
+  }, [mockupW, mockupH, onChange, maxScale]);
 
   if (!info) return null;
 
   const startDrag = (
     e: React.PointerEvent<HTMLDivElement>,
-    mode: "translate" | "scale",
+    mode: "translate" | "scale" | "rotate",
     corner?: "nw" | "ne" | "sw" | "se",
   ) => {
     e.preventDefault();
     e.stopPropagation();
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    let startAngleRad: number | undefined;
+    if (mode === "rotate") {
+      const start = info.effective;
+      const centre = {
+        x: start.x + start.width / 2,
+        y: start.y + start.height / 2,
+      };
+      const m = clientToMockup(e.clientX, e.clientY, canvasRect);
+      startAngleRad = Math.atan2(m.y - centre.y, m.x - centre.x);
+    }
     dragRef.current = {
       mode,
       corner,
@@ -257,7 +316,8 @@ export default function DesignRectHandlesOverlay({
       startClientY: e.clientY,
       startPlacement: placement,
       startInfo: info,
-      canvasRect: canvas.getBoundingClientRect(),
+      canvasRect,
+      startAngleRad,
     };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   };
@@ -268,6 +328,8 @@ export default function DesignRectHandlesOverlay({
     width: (info.effective.width / mockupW) * 100,
     height: (info.effective.height / mockupH) * 100,
   };
+  const rotationDeg =
+    placement.rotationDeg ?? info.rotationDeg ?? 0;
 
   const handleSize = 14;
   const cornerStyle = (
@@ -286,8 +348,11 @@ export default function DesignRectHandlesOverlay({
   };
 
   return (
+    // Clip hit-testing to the canvas display: enlarged artwork rects can
+    // extend past the mockup and would otherwise cover nudge controls /
+    // chrome below the preview.
     <div
-      className="pointer-events-none absolute inset-0"
+      className="pointer-events-none absolute inset-0 overflow-hidden"
       data-testid="design-rect-overlay"
     >
       <div
@@ -297,6 +362,8 @@ export default function DesignRectHandlesOverlay({
           top: `${pctRect.top}%`,
           width: `${pctRect.width}%`,
           height: `${pctRect.height}%`,
+          transform: rotationDeg ? `rotate(${rotationDeg}deg)` : undefined,
+          transformOrigin: "50% 50%",
         }}
         // Stop clicks on the rect from bubbling to the canvas backdrop
         // (which uses onClick to toggle overlay visibility in the
@@ -319,6 +386,22 @@ export default function DesignRectHandlesOverlay({
             title="Drag corner to resize (aspect locked)"
           />
         ))}
+        <button
+          type="button"
+          onPointerDown={(e) => startDrag(e, "rotate")}
+          className="absolute flex h-7 w-7 items-center justify-center rounded-full border-2 border-primary/50 bg-background text-primary shadow-md hover:scale-110"
+          style={{
+            right: -handleSize / 2 - 22,
+            bottom: -handleSize / 2 - 22,
+            touchAction: "none",
+            cursor: "grab",
+          }}
+          title="Drag to rotate artwork"
+          aria-label="Rotate artwork"
+          data-testid="design-rect-rotate-handle"
+        >
+          <RotateCw className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );

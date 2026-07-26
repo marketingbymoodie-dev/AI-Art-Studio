@@ -6,7 +6,14 @@
  * - Structured error responses with step info
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { normalizeMockupCameraLabel, pickPreferredMockupViews, shouldSupplementInlineMockups, extractBase64FromDataUrl, isWrapOnlyPlaceholder } from "./printify-mockups";
+import {
+  normalizeMockupCameraLabel,
+  pickPreferredMockupViews,
+  shouldSupplementInlineMockups,
+  isContextLikeMockupLabel,
+  extractBase64FromDataUrl,
+  isWrapOnlyPlaceholder,
+} from "./printify-mockups";
 
 // We test the module's exported function
 // Mock fetch for Printify API calls
@@ -415,10 +422,19 @@ describe("Mockup camera_label preference", () => {
     ]);
   });
 
-  it("shouldSupplementInlineMockups when only front returned for decor", () => {
+  it("shouldSupplementInlineMockups only when a single non-AOP view is inline", () => {
     expect(
       shouldSupplementInlineMockups([{ url: "https://x.example/f.png", label: "front" }], false),
     ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/b.png", label: "back" },
+        ],
+        false,
+      ),
+    ).toBe(false);
     expect(
       shouldSupplementInlineMockups(
         [
@@ -429,6 +445,151 @@ describe("Mockup camera_label preference", () => {
       ),
     ).toBe(false);
     expect(shouldSupplementInlineMockups([], true)).toBe(false);
+    expect(
+      shouldSupplementInlineMockups([{ url: "https://x.example/f.png", label: "front" }], true),
+    ).toBe(false);
+  });
+
+  it("preferContextViews keeps waiting until a lifestyle/context camera appears", () => {
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/s.png", label: "front side" },
+        ],
+        false,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/c.png", label: "context-1" },
+        ],
+        false,
+        true,
+      ),
+    ).toBe(false);
+    // AOP flag must not short-circuit Lifestyle wait (tote is AOP-titled, flat placer).
+    expect(
+      shouldSupplementInlineMockups(
+        [{ url: "https://x.example/f.png", label: "front" }],
+        true,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/p.png", label: "On Person" },
+        ],
+        true,
+        true,
+      ),
+    ).toBe(false);
+    expect(isContextLikeMockupLabel("context-1")).toBe(true);
+    expect(isContextLikeMockupLabel("Context 2")).toBe(true);
+    expect(isContextLikeMockupLabel("On Person")).toBe(true);
+    expect(isContextLikeMockupLabel("front side")).toBe(false);
+  });
+
+  it("keeps context-N / wall cameras instead of dropping them after front match", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/ctx.png", label: "context-1" },
+      { url: "https://x.example/wall.png", label: "wall" },
+    ];
+    expect(pickPreferredMockupViews(images).map((p) => p.label)).toEqual([
+      "front",
+      "context-1",
+      "wall",
+    ]);
+  });
+
+  it("preferContextViews surfaces On Person before Context / flat front", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/side.png", label: "front side" },
+      { url: "https://x.example/ctx2.png", label: "Context 2" },
+      { url: "https://x.example/person.png", label: "On Person" },
+    ];
+    const picked = pickPreferredMockupViews(images, false, undefined, true).map((p) => p.label);
+    expect(picked[0]).toBe("On Person");
+    expect(picked).toContain("Context 2");
+    expect(picked).not.toContain("front");
+    expect(picked).not.toContain("front side");
+  });
+
+  it("preferPersonViews surfaces Front Person for AOP leggings cameras", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/fs.png", label: "front side" },
+      { url: "https://x.example/fp.png", label: "Front Person" },
+      { url: "https://x.example/sp.png", label: "Side Person" },
+      { url: "https://x.example/bp.png", label: "Back Person" },
+    ];
+    const aopTrimmed = pickPreferredMockupViews(images, true, undefined, false, false).map(
+      (p) => p.label,
+    );
+    expect(aopTrimmed).toEqual(["front", "back"]);
+
+    const person = pickPreferredMockupViews(images, false, undefined, false, true).map(
+      (p) => p.label,
+    );
+    expect(person[0]).toBe("Front Person");
+    expect(person).toContain("Side Person");
+    expect(person).toContain("Back Person");
+    expect(person).not.toContain("front");
+    expect(person).not.toContain("front side");
+  });
+
+  it("preferPersonViews waits until a person camera appears", () => {
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/b.png", label: "back" },
+        ],
+        true,
+        false,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/fp.png", label: "Front Person" },
+        ],
+        true,
+        false,
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it("preferContextViews prefers tote On Person and drops Context 1", () => {
+    // Real Printify create-product labels for Shoulder Tote bp 836.
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/person.png", label: "on-person" },
+      { url: "https://x.example/c1.png", label: "context-1" },
+      { url: "https://x.example/c2.png", label: "context-2" },
+    ];
+    // Bug shape: isAop → frontBackOnly=true strips lifestyle (only flat lays).
+    const aopTrimmed = pickPreferredMockupViews(images, true, undefined, true).map((p) => p.label);
+    expect(aopTrimmed).toEqual(["front", "back"]);
+
+    const lifestyle = pickPreferredMockupViews(images, false, undefined, true).map((p) => p.label);
+    expect(lifestyle[0]).toBe("on-person");
+    expect(lifestyle).toContain("context-2");
+    expect(lifestyle).not.toContain("context-1");
+    expect(lifestyle).not.toContain("front");
+    expect(lifestyle).not.toContain("back");
   });
 
   it("dedupes by URL when the same asset appears under two labels", () => {

@@ -47,14 +47,41 @@ export const FLAT_SCALE_MAX = 1.0;
 export const FLAT_SCALE_MAX_EDGE_WRAP = 2.0;
 /** Framed / decor — zoom in to crop built-in borders past the mat opening. */
 export const FLAT_SCALE_MAX_DECOR = 2.5;
+/** Tapestry — zoom past 100% so art can refill after nudging (avoid raw weave). */
+export const FLAT_SCALE_MAX_FABRIC = 2.0;
+/**
+ * Standard flat DTG apparel (tees etc.): start under 100% so chest art fits
+ * inside the dashed print guide. Apparel seed used to inherit the old 135%
+ * Printify-mockup zoom, which always overflowed (and couldn't be re-selected
+ * because the slider max is 100%).
+ */
+export const FLAT_APPAREL_DEFAULT_SCALE = 0.85;
 
 export function flatPlacementScaleMax(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
+  fabricWeave?: boolean;
 }): number {
   if (opts.edgeWrapMode) return FLAT_SCALE_MAX_EDGE_WRAP;
   if (opts.decorMode) return FLAT_SCALE_MAX_DECOR;
+  if (opts.fabricWeave) return FLAT_SCALE_MAX_FABRIC;
   return FLAT_SCALE_MAX;
+}
+
+/** Seed / reset placement scale for flat placer (print placement, not preview zoom). */
+export function flatDefaultPlacementScale(opts: {
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+  fabricWeave?: boolean;
+  /** Percent zoom used for decor / edge-wrap / fabric (e.g. 110). Ignored for apparel. */
+  zoomPercent?: number;
+}): number {
+  const max = flatPlacementScaleMax(opts);
+  if (opts.edgeWrapMode || opts.decorMode || opts.fabricWeave) {
+    const pct = typeof opts.zoomPercent === "number" ? opts.zoomPercent : 100;
+    return Math.max(FLAT_SCALE_MIN, Math.min(max, pct / 100));
+  }
+  return Math.min(max, FLAT_APPAREL_DEFAULT_SCALE);
 }
 
 /** Floor for the normalized shading multiply so artwork never goes fully black. */
@@ -556,6 +583,27 @@ export function flatArtBox(
   return { x: cx - drawW / 2, y: cy - drawH / 2, width: drawW, height: drawH };
 }
 
+/** Draw artwork into `box`, optionally rotated CW around the box centre. */
+export function drawFlatArtwork(
+  ctx: CanvasRenderingContext2D,
+  artwork: CanvasImageSource,
+  box: Rect,
+  rotationDeg = 0,
+): void {
+  const deg = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+  if (!deg) {
+    ctx.drawImage(artwork, box.x, box.y, box.width, box.height);
+    return;
+  }
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(artwork, -box.width / 2, -box.height / 2, box.width, box.height);
+  ctx.restore();
+}
+
 /** True when the artwork box fully covers the print rect (no garment edges). */
 export function flatCovers(rect: Rect, box: Rect): boolean {
   const eps = 0.5;
@@ -992,9 +1040,8 @@ function applyPhoneCaseMapShading(
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
  *
- * When `fabricWeave` is set (tapestry / woven decor), skip blank luminance
- * multiply (photo noise → sand-grain "speckle") and apply a procedural
- * warp/weft pattern instead.
+ * When `fabricWeave` is set (tapestry): simple coloured blank multiply only —
+ * no procedural weave grid. Printify's photo mockup is available on demand.
  */
 function applyShading(
   artCanvas: HTMLCanvasElement,
@@ -1008,8 +1055,7 @@ function applyShading(
   opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
 ): void {
   if (opts?.fabricWeave) {
-    // Blank AO is the speckly grain on tapestry photos — do not multiply it.
-    applyProceduralFabricWeave(artCanvas, artCtx, w, h);
+    applySimpleBlankMultiply(artCanvas, artCtx, blank, w, h);
     return;
   }
 
@@ -1105,8 +1151,126 @@ function solidifyMaskForClip(
   return solid;
 }
 
+/**
+ * Clip the offscreen artwork layer to the printable area.
+ * Prefer the pixel mask when present; otherwise hard-clip to `rect` (wall-decal
+ * catalog blanks skip the shared harvest mask but still need side/top trim).
+ */
+export function clipFlatArtToPrintArea(
+  actx: CanvasRenderingContext2D,
+  opts: {
+    mask: HTMLImageElement | null;
+    rect: Rect;
+    canvasW: number;
+    canvasH: number;
+    fabricWeave?: boolean;
+  },
+): "mask" | "rect" {
+  const { mask, rect, canvasW, canvasH, fabricWeave } = opts;
+  actx.globalCompositeOperation = "destination-in";
+  if (mask) {
+    if (fabricWeave) {
+      actx.drawImage(solidifyMaskForClip(mask, canvasW, canvasH), 0, 0);
+    } else {
+      actx.drawImage(mask, 0, 0, canvasW, canvasH);
+    }
+    actx.globalCompositeOperation = "source-over";
+    return "mask";
+  }
+  actx.fillStyle = "#fff";
+  actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  actx.globalCompositeOperation = "source-over";
+  return "rect";
+}
+
 // ---------------------------------------------------------------------------
-// Fabric weave texture — tunable config
+// Tapestry blank-blend (merchant defaults dialed vs Printify woven mockups)
+// ---------------------------------------------------------------------------
+
+export type FabricBlendConfig = {
+  /** 0 = full blank multiply, 1 = no blank effect. */
+  transparency: number;
+  /** Soft-light cream tint from blank, 0–1. */
+  cream: number;
+  /** Extra overall darkening (multiply mid-grey), 0–1. */
+  darkening: number;
+  /** Cloth saturation before multiply: 0 = grey, 1 = natural, 2 = boosted. */
+  vibrance: number;
+  /** Fine film grain, 0–1. */
+  grain: number;
+  /** Coarser sparse speckle, 0–1. */
+  speckle: number;
+  /** Horizontal line spacing (px). Lower = denser weft-like lines. */
+  linealX: number;
+  /** Vertical line spacing (px). Lower = denser warp-like lines. */
+  linealY: number;
+  /** Lineal overlay strength, 0–1. */
+  linealAlpha: number;
+};
+
+/** Shipped defaults — dialed in against Printify woven tapestry (2026-07). */
+export const DEFAULT_FABRIC_BLEND_CONFIG: FabricBlendConfig = {
+  transparency: 0.17,
+  cream: 0.41,
+  darkening: 0.07,
+  vibrance: 0.2,
+  grain: 0.9,
+  speckle: 0.91,
+  linealX: 7,
+  linealY: 5,
+  linealAlpha: 0.2,
+};
+
+/** Bump when defaults change so stale browser tuning does not override merchants. */
+const FABRIC_BLEND_STORAGE_KEY = "appai:fabricBlendConfig:v2";
+
+let activeFabricBlendConfig: FabricBlendConfig | null = null;
+
+function loadStoredFabricBlendConfig(): FabricBlendConfig {
+  try {
+    const raw = window.localStorage.getItem(FABRIC_BLEND_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_FABRIC_BLEND_CONFIG, ...parsed };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { ...DEFAULT_FABRIC_BLEND_CONFIG };
+}
+
+export function getFabricBlendConfig(): FabricBlendConfig {
+  if (!activeFabricBlendConfig) activeFabricBlendConfig = loadStoredFabricBlendConfig();
+  return activeFabricBlendConfig;
+}
+
+export function setFabricBlendConfig(patch: Partial<FabricBlendConfig>): FabricBlendConfig {
+  activeFabricBlendConfig = { ...getFabricBlendConfig(), ...patch };
+  try {
+    window.localStorage.setItem(
+      FABRIC_BLEND_STORAGE_KEY,
+      JSON.stringify(activeFabricBlendConfig),
+    );
+  } catch {
+    // best-effort
+  }
+  return activeFabricBlendConfig;
+}
+
+export function resetFabricBlendConfig(): FabricBlendConfig {
+  activeFabricBlendConfig = { ...DEFAULT_FABRIC_BLEND_CONFIG };
+  try {
+    window.localStorage.removeItem(FABRIC_BLEND_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+  return activeFabricBlendConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Fabric weave texture — tunable config (legacy procedural; admin calibrator)
 // ---------------------------------------------------------------------------
 
 export type WeaveConfig = {
@@ -1132,22 +1296,24 @@ export type WeaveConfig = {
   multiplyAlpha: number;
 };
 
-// Defaults hand-tuned in the admin weave panel against Printify's tapestry render (2026-07).
+// Tuned against Printify woven tapestry mockups (bp 1649) — coarse knot grid,
+// strong micro-contrast in both lights and darks (2026-07).
 export const DEFAULT_WEAVE_CONFIG: WeaveConfig = {
-  weftMin: 2,
-  weftMax: 5,
-  warpMin: 7,
-  warpMax: 8,
-  scale: 0.35,
-  slub: 54,
-  cellNoise: 13,
-  grooveTone: 90, // groove darkness 38
-  ridgeTone: 172, // ridge brightness 44
-  overlayAlpha: 0.4,
-  multiplyAlpha: 0.45,
+  weftMin: 4,
+  weftMax: 8,
+  warpMin: 6,
+  warpMax: 11,
+  scale: 0.95,
+  slub: 70,
+  cellNoise: 22,
+  grooveTone: 62,
+  ridgeTone: 198,
+  overlayAlpha: 0.62,
+  multiplyAlpha: 0.72,
 };
 
-const WEAVE_STORAGE_KEY = "appai:weaveConfig";
+/** Bump when defaults change so stale admin localStorage does not keep a fine weave. */
+const WEAVE_STORAGE_KEY = "appai:weaveConfig:v3";
 
 let activeWeaveConfig: WeaveConfig | null = null;
 
@@ -1286,19 +1452,178 @@ function getFabricWeaveTile(cfg: WeaveConfig): HTMLCanvasElement {
   return tile;
 }
 
+/** Deterministic noise for grain/speckle (stable across re-renders). */
+function makeBlendLcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function clipLayerToArt(
+  layer: HTMLCanvasElement,
+  artCanvas: HTMLCanvasElement,
+): void {
+  const ctx = layer.getContext("2d");
+  if (!ctx) return;
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(artCanvas, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function buildLinealOverlay(
+  w: number,
+  h: number,
+  cfg: FabricBlendConfig,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return c;
+  // Neutral mid-grey field; darken lines for multiply/overlay.
+  ctx.fillStyle = "rgb(180,180,180)";
+  ctx.fillRect(0, 0, w, h);
+  const lx = Math.max(2, Math.round(cfg.linealX));
+  const ly = Math.max(2, Math.round(cfg.linealY));
+  ctx.fillStyle = "rgb(95,95,95)";
+  for (let x = 0; x < w; x += lx) ctx.fillRect(x, 0, 1, h);
+  for (let y = 0; y < h; y += ly) ctx.fillRect(0, y, w, 1);
+  return c;
+}
+
+function buildNoiseOverlay(
+  w: number,
+  h: number,
+  grain: number,
+  speckle: number,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return c;
+  ctx.fillStyle = "rgb(128,128,128)";
+  ctx.fillRect(0, 0, w, h);
+  const rand = makeBlendLcg(0xb13ed);
+  // Fine grain — sample every few pixels for speed.
+  if (grain > 0.005) {
+    const step = Math.max(1, Math.round(3 - grain * 2));
+    const amp = Math.round(grain * 55);
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const v = 128 + Math.round((rand() - 0.5) * 2 * amp);
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(x, y, step, step);
+      }
+    }
+  }
+  // Coarse sparse speckle.
+  if (speckle > 0.005) {
+    const count = Math.round((w * h * speckle) / 900);
+    for (let i = 0; i < count; i++) {
+      const x = Math.floor(rand() * w);
+      const y = Math.floor(rand() * h);
+      const dark = rand() > 0.5;
+      const v = dark ? Math.round(40 + rand() * 50) : Math.round(180 + rand() * 50);
+      const s = 1 + Math.floor(rand() * 2);
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(x, y, s, s);
+    }
+  }
+  return c;
+}
+
+/** Real tapestry blank × art using shipped FabricBlendConfig defaults. */
+function applySimpleBlankMultiply(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+): void {
+  const cfg = getFabricBlendConfig();
+  const multiplyAlpha = Math.max(0, Math.min(1, 1 - cfg.transparency));
+
+  const cloth = document.createElement("canvas");
+  cloth.width = w;
+  cloth.height = h;
+  const cctx = cloth.getContext("2d");
+  if (!cctx) return;
+
+  const sat = Math.max(0, Math.min(2, cfg.vibrance));
+  cctx.filter = `saturate(${Math.round(sat * 100)}%)`;
+  cctx.drawImage(blank, 0, 0, w, h);
+  cctx.filter = "none";
+  clipLayerToArt(cloth, artCanvas);
+
+  artCtx.save();
+  if (multiplyAlpha > 0.001) {
+    artCtx.globalCompositeOperation = "multiply";
+    artCtx.globalAlpha = multiplyAlpha;
+    artCtx.drawImage(cloth, 0, 0);
+  }
+  if (cfg.cream > 0.001) {
+    artCtx.globalCompositeOperation = "soft-light";
+    artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.cream));
+    artCtx.drawImage(cloth, 0, 0);
+  }
+  if (cfg.darkening > 0.001) {
+    // Mid-grey multiply darkens fabric without crushing blacks to solid.
+    const shade = document.createElement("canvas");
+    shade.width = w;
+    shade.height = h;
+    const sctx = shade.getContext("2d");
+    if (sctx) {
+      const g = Math.round(255 * (1 - Math.max(0, Math.min(1, cfg.darkening)) * 0.55));
+      sctx.fillStyle = `rgb(${g},${g},${g})`;
+      sctx.fillRect(0, 0, w, h);
+      clipLayerToArt(shade, artCanvas);
+      artCtx.globalCompositeOperation = "multiply";
+      artCtx.globalAlpha = 1;
+      artCtx.drawImage(shade, 0, 0);
+    }
+  }
+  if (cfg.linealAlpha > 0.001) {
+    const lineal = buildLinealOverlay(w, h, cfg);
+    clipLayerToArt(lineal, artCanvas);
+    artCtx.globalCompositeOperation = "overlay";
+    artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.linealAlpha));
+    artCtx.drawImage(lineal, 0, 0);
+  }
+  if (cfg.grain > 0.005 || cfg.speckle > 0.005) {
+    const noise = buildNoiseOverlay(w, h, cfg.grain, cfg.speckle);
+    clipLayerToArt(noise, artCanvas);
+    artCtx.globalCompositeOperation = "overlay";
+    artCtx.globalAlpha = Math.max(
+      0,
+      Math.min(1, Math.max(cfg.grain, cfg.speckle) * 0.85),
+    );
+    artCtx.drawImage(noise, 0, 0);
+  }
+  artCtx.restore();
+}
+
 /**
  * Emboss art with a tiled warp/weft pattern. Two passes:
  * overlay (texture contrast — highlights in shadow, grooves in light) then
  * multiply (overall fabric darkening to match Printify renders).
  * Instant: one cached tile, no network, no getImageData.
+ *
+ * `strengthScale` damps both passes when blank multiply already supplies body shading.
  */
 function applyProceduralFabricWeave(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,
   w: number,
   h: number,
+  opts?: { strengthScale?: number },
 ): void {
   const cfg = getWeaveConfig();
+  const strength = Math.max(0, Math.min(1, opts?.strengthScale ?? 1));
+  if (strength <= 0) return;
+
   const tile = getFabricWeaveTile(cfg);
   const weave = document.createElement("canvas");
   weave.width = w;
@@ -1320,13 +1645,17 @@ function applyProceduralFabricWeave(
   wctx.globalCompositeOperation = "source-over";
 
   artCtx.save();
-  // Pass 1: overlay — strong weave contrast without flattening the art.
+  // Pass 1: overlay — yarn ridges/grooves visible in both light and dark art.
   artCtx.globalCompositeOperation = "overlay";
-  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha));
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.overlayAlpha * strength));
   artCtx.drawImage(weave, 0, 0);
-  // Pass 2: multiply — fabric absorbs light, matching Printify's darker render.
+  // Pass 2: hard-light — Printify-like knot micro-contrast (breaks up flats).
+  artCtx.globalCompositeOperation = "hard-light";
+  artCtx.globalAlpha = Math.max(0, Math.min(1, 0.35 * strength));
+  artCtx.drawImage(weave, 0, 0);
+  // Pass 3: multiply — fabric absorbs light, matching Printify's heavier blend.
   artCtx.globalCompositeOperation = "multiply";
-  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha));
+  artCtx.globalAlpha = Math.max(0, Math.min(1, cfg.multiplyAlpha * strength));
   artCtx.drawImage(weave, 0, 0);
   artCtx.restore();
 }
@@ -1454,8 +1783,9 @@ function buildBlankHardwarePunchMask(
   }
   pmCtx.putImageData(punchData, 0, 0);
 
-  // Thin outer rim — case bevel over artwork (rounded, follows mask silhouette).
-  const outerDraw = scaleRectAroundCenter(maskDraw, 1.012);
+  // Thin outer rim — case bevel over artwork. Keep tiny so corners don't look like
+  // missing art where plastic reflections should read instead.
+  const outerDraw = scaleRectAroundCenter(maskDraw, 1.003);
   pmCtx.globalCompositeOperation = "source-over";
   pmCtx.fillStyle = "#ffffff";
   drawEdgeWrapMaskAt(pmCtx, mask, outerDraw, view, maskAligned, crop, drawAssetScaled);
@@ -1682,7 +2012,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     if (!actx) return;
 
     const box = flatArtBox(rect, placement, artW, artH);
-    actx.drawImage(artwork, box.x, box.y, box.width, box.height);
+    drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
 
     if (mask) {
       clipMaskToDest(actx, maskDraw);
@@ -1791,7 +2121,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     const mesh = buildMeshGrid(view, scaleX, scaleY, printRect);
     if (pctx && mesh) {
       const box = flatArtBox(printRect, placement, artW, artH);
-      pctx.drawImage(artwork, box.x, box.y, box.width, box.height);
+      drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
       drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
       drewMesh = true;
     }
@@ -1799,21 +2129,16 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (!drewMesh) {
     const box = flatArtBox(rect, placement, artW, artH);
-    actx.drawImage(artwork, box.x, box.y, box.width, box.height);
+    drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
   }
 
-  if (mask) {
-    actx.globalCompositeOperation = "destination-in";
-    if (fabricWeave && !edgeWrapMode) {
-      // Woven-fabric harvests produce masks with pinhole noise (magenta
-      // detection stumbles on thread grooves). Clipping with the raw mask
-      // lets the light blank show through as white speckle — solidify first.
-      actx.drawImage(solidifyMaskForClip(mask, W, H), 0, 0);
-    } else {
-      actx.drawImage(mask, 0, 0, W, H);
-    }
-    actx.globalCompositeOperation = "source-over";
-  }
+  clipFlatArtToPrintArea(actx, {
+    mask,
+    rect,
+    canvasW: W,
+    canvasH: H,
+    fabricWeave: fabricWeave && !edgeWrapMode,
+  });
 
   const shadeMode: "blank" | "map" =
     view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;

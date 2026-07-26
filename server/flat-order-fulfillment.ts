@@ -46,6 +46,7 @@
  * flat-calibration bucket (already required for flat/mesh products) and use that
  * URL — no Printify image-id round trip is needed.
  */
+import { getBlueprintVariantPlaceholders } from "./printify-mockups";
 import { pool } from "./db";
 import { storage } from "./storage";
 import {
@@ -54,7 +55,11 @@ import {
   type FlatPlacement,
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
-import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import {
+  resolveVariantFromMap,
+  resolveVariantForSizeOnly,
+  type VariantMap,
+} from "@shared/variantMapResolve";
 import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
 import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
@@ -146,6 +151,8 @@ export type ResolvedFlatDesign = {
   artworkUrl: string;
   sizeId: string;
   colorId: string;
+  /** Design product's persistent Printify product (if any) — bake-failure fallback (Phase 3). */
+  printifyProductId?: string | null;
 };
 
 export type ResolvedToteFoldedDesign = {
@@ -157,12 +164,53 @@ export type ResolvedToteFoldedDesign = {
   artworkUrl: string;
   sizeId: string;
   colorId: string;
+  /** Design product's persistent Printify product (if any) — bake-failure fallback (Phase 3). */
+  printifyProductId?: string | null;
   placement: ToteFoldedPlacement;
+};
+
+/**
+ * A design product whose artwork already lives on a persistent Printify product
+ * (server/design-product-publish.ts). No bake needed — the order line references
+ * that product + variant directly. This is the ONLY fulfillment path for design
+ * products outside the flat/mesh/tote_folded tiers (e.g. AOP, static/single-image).
+ */
+export type ResolvedProductReferenceDesign = {
+  designId: string;
+  shop: string;
+  job: GenerationJob;
+  productType: ProductType;
+  merchant: Merchant;
+  printifyProductId: string;
+  sizeId: string;
+  colorId: string;
+};
+
+/**
+ * An AOP design whose per-panel print files were captured on the job's
+ * designState (`aopPrintPanelUrls`, written by the studio's apply step). The
+ * order line submits those panels directly as on-the-fly `print_areas`
+ * ({ position: [{ src, scale:1, x:0.5, y:0.5 }] }) — exactly what Printify
+ * bakes for the mockups the merchant saw in-app. Used by the admin test-order
+ * flow and as the fallback for AOP orders with no persistent Printify product.
+ */
+export type ResolvedAopDesign = {
+  designId: string;
+  shop: string;
+  job: GenerationJob;
+  productType: ProductType;
+  merchant: Merchant;
+  /** position → hosted print-panel URL */
+  panels: Array<{ position: string; url: string }>;
+  sizeId: string;
+  colorId: string;
 };
 
 export type ResolveResult =
   | { ok: true; kind: "flat"; design: ResolvedFlatDesign }
   | { ok: true; kind: "tote_folded"; design: ResolvedToteFoldedDesign }
+  | { ok: true; kind: "product_reference"; design: ResolvedProductReferenceDesign }
+  | { ok: true; kind: "aop"; design: ResolvedAopDesign }
   | { ok: false; skip: true; reason: string }
   | { ok: false; skip: false; reason: string };
 
@@ -177,6 +225,56 @@ function parseJson<T = any>(value: unknown, fallback: T): T {
     }
   }
   return fallback;
+}
+
+/**
+ * Prefer live placer artwork (updated on Apply) over generate-time job columns.
+ * Exported for unit tests.
+ */
+export function pickFlatOrderArtworkUrl(args: {
+  flatPlacerArtworkUrl?: string | null;
+  jobDesignImageUrl?: string | null;
+  lineArtworkUrl?: string | null;
+}): string {
+  return (
+    (args.flatPlacerArtworkUrl && String(args.flatPlacerArtworkUrl)) ||
+    (args.jobDesignImageUrl && String(args.jobDesignImageUrl)) ||
+    (args.lineArtworkUrl && String(args.lineArtworkUrl)) ||
+    ""
+  );
+}
+
+/**
+ * Prefer designState size/colour (persisted on Apply) over stale job columns.
+ * Design-product / line overrides still win for real Shopify checkouts.
+ * Exported for unit tests.
+ */
+export function pickFlatOrderSizeColor(args: {
+  designProductSizeId?: string | null;
+  designProductColorId?: string | null;
+  designStateSize?: string | null;
+  designStateColor?: string | null;
+  lineSize?: string | null;
+  lineColor?: string | null;
+  jobSize?: string | null;
+  jobColor?: string | null;
+}): { sizeId: string; colorId: string } {
+  return {
+    sizeId: String(
+      args.designProductSizeId ||
+        args.designStateSize ||
+        args.lineSize ||
+        args.jobSize ||
+        "default",
+    ),
+    colorId: String(
+      args.designProductColorId ||
+        args.designStateColor ||
+        args.lineColor ||
+        args.jobColor ||
+        "default",
+    ),
+  };
 }
 
 /** Look up a published (shadow) product by its purchasable Shopify variant id. */
@@ -210,10 +308,10 @@ async function findPublishedProductByVariant(
 async function findDesignProductByVariant(
   shop: string,
   variantId: string,
-): Promise<{ jobId: string; sizeId: string | null; colorId: string | null } | null> {
+): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null> {
   const numeric = variantId.replace("gid://shopify/ProductVariant/", "");
-  const result = await pool.query<{ job_id: string; variant_map: any }>(
-    `SELECT job_id, variant_map
+  const result = await pool.query<{ job_id: string; variant_map: any; printify_product_id: string | null }>(
+    `SELECT job_id, variant_map, printify_product_id
        FROM design_products
       WHERE shop = $1 AND variant_map::jsonb ? $2
       ORDER BY created_at DESC
@@ -224,7 +322,12 @@ async function findDesignProductByVariant(
   if (!row) return null;
   const map = parseJson<Record<string, { sizeId?: string; colorId?: string }>>(row.variant_map, {});
   const entry = map[numeric];
-  return { jobId: row.job_id, sizeId: entry?.sizeId ?? null, colorId: entry?.colorId ?? null };
+  return {
+    jobId: row.job_id,
+    sizeId: entry?.sizeId ?? null,
+    colorId: entry?.colorId ?? null,
+    printifyProductId: row.printify_product_id ?? null,
+  };
 }
 
 /**
@@ -241,7 +344,7 @@ export async function resolveDesignForOrderLine(
   //    → designId (fallback to line properties for older/legacy carts)
   let designId: string | null = null;
   let resolvedShop = shop;
-  let designProductOverride: { sizeId: string | null; colorId: string | null } | null = null;
+  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
     if (pp) {
@@ -251,7 +354,7 @@ export async function resolveDesignForOrderLine(
       const dp = await findDesignProductByVariant(shop, line.variantId);
       if (dp) {
         designId = dp.jobId;
-        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId };
+        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId };
       }
     }
   }
@@ -273,11 +376,11 @@ export async function resolveDesignForOrderLine(
     | { placements?: Partial<Record<ViewName, FlatPlacement>>; enabled?: Partial<Record<ViewName, boolean>>; artworkUrl?: string }
     | undefined;
 
-  const artworkUrl =
-    (job.designImageUrl as string | null) ||
-    line.properties["_artwork_url"] ||
-    flatPlacerState?.artworkUrl ||
-    "";
+  const artworkUrl = pickFlatOrderArtworkUrl({
+    flatPlacerArtworkUrl: flatPlacerState?.artworkUrl,
+    jobDesignImageUrl: job.designImageUrl as string | null,
+    lineArtworkUrl: line.properties["_artwork_url"],
+  });
   if (!artworkUrl) {
     return { ok: false, skip: true, reason: `no artwork url for design ${designId}` };
   }
@@ -317,8 +420,16 @@ export async function resolveDesignForOrderLine(
       offsetX: (dsX - 50) / 50,
       offsetY: (dsY - 50) / 50,
     };
-    const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
-    const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
+    const { sizeId, colorId } = pickFlatOrderSizeColor({
+      designProductSizeId: designProductOverride?.sizeId,
+      designProductColorId: designProductOverride?.colorId,
+      designStateSize: designState?.selectedSize,
+      designStateColor: designState?.selectedFrameColor,
+      lineSize: line.properties["Size"],
+      lineColor: line.properties["Color"],
+      jobSize: job.size,
+      jobColor: job.frameColor,
+    });
 
     return {
       ok: true,
@@ -333,12 +444,95 @@ export async function resolveDesignForOrderLine(
         sizeId,
         colorId,
         placement,
+        printifyProductId: designProductOverride?.printifyProductId ?? null,
       },
     };
   }
 
   const tier = productType.onTheFlyTier;
   if (tier !== "flat" && tier !== "mesh") {
+    // Design products (My Designs → List as product) outside the flat/mesh/tote_folded
+    // tiers (e.g. AOP, static/single-image products) have no on-the-fly bake path at
+    // all — their artwork was already baked into a persistent Printify product at
+    // publish time (server/design-product-publish.ts). Submit a product-reference
+    // order line: no print_areas needed, Printify already has them.
+    if (designProductOverride?.printifyProductId) {
+      if (!productType.merchantId) {
+        return { ok: false, skip: false, reason: `product type ${productTypeId} has no merchant` };
+      }
+      const merchant = await storage.getMerchant(productType.merchantId);
+      if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
+        return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
+      }
+      const { sizeId, colorId } = pickFlatOrderSizeColor({
+        designProductSizeId: designProductOverride.sizeId,
+        designProductColorId: designProductOverride.colorId,
+        designStateSize: designState?.selectedSize,
+        designStateColor: designState?.selectedFrameColor,
+        lineSize: line.properties["Size"],
+        lineColor: line.properties["Color"],
+        jobSize: job.size,
+        jobColor: job.frameColor,
+      });
+      return {
+        ok: true,
+        kind: "product_reference",
+        design: {
+          designId,
+          shop: resolvedShop,
+          job,
+          productType,
+          merchant,
+          printifyProductId: designProductOverride.printifyProductId,
+          sizeId,
+          colorId,
+        },
+      };
+    }
+
+    // AOP with captured print panels: submit the panels directly as on-the-fly
+    // print_areas — same files that produced the in-app Printify mockups. This is
+    // what the admin AOP test-order uses (and any AOP order without a persistent
+    // Printify product).
+    if (productType.isAllOverPrint) {
+      const rawPanels = Array.isArray(designState?.aopPrintPanelUrls) ? designState.aopPrintPanelUrls : [];
+      // Printify's order `src` must be a fetchable URL — hosted http(s) or app-relative
+      // paths only (data: URLs from unpersisted local state can't be used).
+      const panels = rawPanels
+        .map((p: any) => ({ position: String(p?.position || ""), url: String(p?.url || "") }))
+        .filter((p: { position: string; url: string }) =>
+          p.position && p.url && (p.url.startsWith("http") || p.url.startsWith("/")));
+      if (panels.length === 0) {
+        return {
+          ok: false,
+          skip: true,
+          reason: `AOP design ${designId} has no saved print panels yet — they upload in the background a few seconds after each change. Wait a moment and try again (or re-apply the design once).`,
+        };
+      }
+      if (!productType.merchantId) {
+        return { ok: false, skip: false, reason: `product type ${productTypeId} has no merchant` };
+      }
+      const merchant = await storage.getMerchant(productType.merchantId);
+      if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
+        return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
+      }
+      const { sizeId, colorId } = pickFlatOrderSizeColor({
+        designProductSizeId: designProductOverride?.sizeId,
+        designProductColorId: designProductOverride?.colorId,
+        designStateSize: designState?.selectedSize,
+        designStateColor: designState?.selectedFrameColor,
+        lineSize: line.properties["Size"],
+        lineColor: line.properties["Color"],
+        jobSize: job.size,
+        jobColor: job.frameColor,
+      });
+      return {
+        ok: true,
+        kind: "aop",
+        design: { designId, shop: resolvedShop, job, productType, merchant, panels, sizeId, colorId },
+      };
+    }
+
     return { ok: false, skip: true, reason: `product type ${productTypeId} tier=${tier ?? "none"} not flat/mesh` };
   }
   const flatCalibration = parseJson<any>(productType.flatCalibration, null);
@@ -361,15 +555,28 @@ export async function resolveDesignForOrderLine(
   for (const v of VIEWS) {
     const p = flatPlacerState?.placements?.[v];
     placements[v] = p && typeof p === "object"
-      ? { scale: Number(p.scale ?? 1), offsetX: Number(p.offsetX ?? 0), offsetY: Number(p.offsetY ?? 0) }
-      : { scale: 1, offsetX: 0, offsetY: 0 };
+      ? {
+          scale: Number(p.scale ?? 1),
+          offsetX: Number(p.offsetX ?? 0),
+          offsetY: Number(p.offsetY ?? 0),
+          rotationDeg: Number((p as { rotationDeg?: number }).rotationDeg ?? 0) || 0,
+        }
+      : { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 };
     if (flatPlacerState?.enabled && typeof flatPlacerState.enabled[v] === "boolean") {
       enabled[v] = flatPlacerState.enabled[v]!;
     }
   }
 
-  const sizeId = String(designProductOverride?.sizeId || line.properties["Size"] || job.size || "default");
-  const colorId = String(designProductOverride?.colorId || line.properties["Color"] || job.frameColor || "default");
+  const { sizeId, colorId } = pickFlatOrderSizeColor({
+    designProductSizeId: designProductOverride?.sizeId,
+    designProductColorId: designProductOverride?.colorId,
+    designStateSize: designState?.selectedSize,
+    designStateColor: designState?.selectedFrameColor,
+    lineSize: line.properties["Size"],
+    lineColor: line.properties["Color"],
+    jobSize: job.size,
+    jobColor: job.frameColor,
+  });
 
   return {
     ok: true,
@@ -387,6 +594,7 @@ export async function resolveDesignForOrderLine(
       artworkUrl,
       sizeId,
       colorId,
+      printifyProductId: designProductOverride?.printifyProductId ?? null,
     },
   };
 }
@@ -408,7 +616,15 @@ export function resolvePrintifyTarget(
   colorId: string,
 ): PrintifyTarget | null {
   const variantMap = parseJson<VariantMap>(productType.variantMap, {});
-  const resolved = resolveVariantFromMap(variantMap, sizeId, colorId);
+  let resolved = resolveVariantFromMap(variantMap, sizeId, colorId);
+  // Phone / edge-wrap: colour is irrelevant (or a junk Model fragment). Match harvest —
+  // any Printify variant for the model sizeId.
+  if (!resolved) {
+    const cal = parseJson<{ edgeWrap?: boolean }>(productType.flatCalibration, {});
+    if (cal?.edgeWrap) {
+      resolved = resolveVariantForSizeOnly(variantMap, sizeId);
+    }
+  }
   const variantData = resolved?.entry;
   if (!variantData || variantData.printifyVariantId == null) return null;
   const blueprintId = Number(productType.printifyBlueprintId);
@@ -430,6 +646,13 @@ async function pf<T = any>(pathname: string, token: string, init?: RequestInit):
 }
 
 type PrintAreaImage = { src: string; scale: number; x: number; y: number; angle: number };
+
+/** Printify must be able to fetch `src` — expand app-relative paths (/objects/…) to the public app URL. */
+function toAbsolutePrintUrl(url: string): string {
+  if (!url || url.startsWith("http://") || url.startsWith("https://")) return url;
+  const base = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "");
+  return `${base}${url.startsWith("/") ? "" : "/"}${url}`;
+}
 
 /**
  * Bake + persist the enabled views' print files for one resolved design and
@@ -609,14 +832,22 @@ export async function submitFlatOrderToPrintify(
   }
 
   const skippedReasons: string[] = [];
-  const lineItems: Array<{
+  type BakedLineItem = {
     print_provider_id: number;
     blueprint_id: number;
     variant_id: number;
     quantity: number;
     external_id: string;
     print_areas: Record<string, PrintAreaImage[]>;
-  }> = [];
+  };
+  /** Product-reference order line — no print_areas, artwork already lives on the persistent Printify product. */
+  type ProductRefLineItem = {
+    product_id: string;
+    variant_id: number;
+    quantity: number;
+    external_id: string;
+  };
+  const lineItems: Array<BakedLineItem | ProductRefLineItem> = [];
   const allUrls: Record<string, string> = {};
   let printifyShopId: string | null = null;
   let printifyToken: string | null = null;
@@ -651,13 +882,88 @@ export async function submitFlatOrderToPrintify(
     firstProductTypeId = firstProductTypeId ?? productType.id;
     resolvedShop = resolved.design.shop || resolvedShop;
 
-    let built: { printAreas: Record<string, PrintAreaImage[]>; urls: Record<string, string> };
+    // Design product whose artwork already lives on a persistent Printify product
+    // (AOP / static products with no on-the-fly bake path) — reference it directly.
+    if (resolved.kind === "product_reference") {
+      lineItems.push({
+        product_id: resolved.design.printifyProductId,
+        variant_id: target.printifyVariantId,
+        quantity: line.quantity,
+        external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
+      });
+      continue;
+    }
+
+    // AOP: submit the captured per-panel print files directly as print_areas —
+    // no bake step, these are the exact files the in-app Printify mockups used.
+    if (resolved.kind === "aop") {
+      const validPlaceholderPositions = await getBlueprintVariantPlaceholders(
+        target.blueprintId,
+        target.providerId,
+        target.printifyVariantId,
+        printifyToken!,
+      );
+      // Map lowercase → canonical Printify spelling (bp 449 uses `Collar`).
+      const allowedByLower = validPlaceholderPositions
+        ? new Map(
+            validPlaceholderPositions.map((p) => [p.position.toLowerCase(), p.position] as const),
+          )
+        : null;
+
+      const printAreas: Record<string, PrintAreaImage[]> = {};
+      for (const panel of resolved.design.panels) {
+        const canonicalPosition = allowedByLower
+          ? allowedByLower.get(panel.position.toLowerCase())
+          : panel.position;
+        if (allowedByLower && !canonicalPosition) {
+          console.warn(
+            `[flat-order-fulfillment] Skipping AOP panel "${panel.position}" — not a Printify placeholder for variant ${target.printifyVariantId} (allowed: ${[...allowedByLower.values()].join(", ")})`,
+          );
+          continue;
+        }
+        const position = canonicalPosition ?? panel.position;
+        const src = toAbsolutePrintUrl(panel.url);
+        printAreas[position] = [{ src, scale: 1, x: 0.5, y: 0.5, angle: 0 }];
+        allUrls[`${designId}:${position}`] = src;
+      }
+      if (Object.keys(printAreas).length === 0) {
+        skippedReasons.push(
+          `line ${line.lineId}: no AOP print panels match Printify placeholders for variant ${target.printifyVariantId}`,
+        );
+        continue;
+      }
+      lineItems.push({
+        print_provider_id: target.providerId,
+        blueprint_id: target.blueprintId,
+        variant_id: target.printifyVariantId,
+        quantity: line.quantity,
+        external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
+        print_areas: printAreas,
+      });
+      continue;
+    }
+
+    let built: { printAreas: Record<string, PrintAreaImage[]>; urls: Record<string, string> } | null = null;
     try {
       built =
         resolved.kind === "tote_folded"
           ? await buildToteFoldedPrintAreasForDesign(resolved.design)
           : await buildPrintAreasForDesign(resolved.design);
     } catch (e: any) {
+      // Flat/mesh/tote_folded design products fall back to their persistent Printify
+      // product (if publish created one) rather than dropping the line entirely.
+      if (resolved.design.printifyProductId) {
+        console.warn(
+          `[flat-order-fulfillment] line ${line.lineId}: bake failed (${e?.message || e}) — falling back to product-reference order`,
+        );
+        lineItems.push({
+          product_id: resolved.design.printifyProductId,
+          variant_id: target.printifyVariantId,
+          quantity: line.quantity,
+          external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
+        });
+        continue;
+      }
       skippedReasons.push(`line ${line.lineId}: bake failed ${e?.message || e}`);
       continue;
     }
@@ -771,20 +1077,35 @@ export async function submitFlatOrderToPrintify(
  * test-order endpoint when no explicit designId is supplied.
  */
 export async function findLatestFlatDesignJobId(productTypeId: number): Promise<string | null> {
-  const toteProduct = await storage.getProductType(productTypeId);
+  const product = await storage.getProductType(productTypeId);
   const toteFolded =
-    toteProduct &&
+    product &&
     usesToteFoldedFulfillment({
-      isAllOverPrint: toteProduct.isAllOverPrint,
-      storefrontMockupMode: (toteProduct as any).storefrontMockupMode,
-      fulfillmentLayout: (toteProduct as any).fulfillmentLayout,
-      printifyBlueprintId: toteProduct.printifyBlueprintId,
+      isAllOverPrint: product.isAllOverPrint,
+      storefrontMockupMode: (product as any).storefrontMockupMode,
+      fulfillmentLayout: (product as any).fulfillmentLayout,
+      printifyBlueprintId: product.printifyBlueprintId,
     });
 
   if (toteFolded) {
     const jobs = await storage.getGenerationJobsByProductType(productTypeId);
     const job = jobs.find((j) => j.status === "complete" && j.designImageUrl) ?? jobs[0];
     return job?.id ?? null;
+  }
+
+  // AOP: the usable design is the one whose apply step captured per-panel print
+  // files (aopPrintPanelUrls) — those become the order's print_areas directly.
+  if (product?.isAllOverPrint) {
+    const result = await pool.query<{ id: string }>(
+      `SELECT id
+         FROM generation_jobs
+        WHERE product_type_id = $1
+          AND design_state::text LIKE '%aopPrintPanelUrls%'
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [String(productTypeId)],
+    );
+    return result.rows[0]?.id ?? null;
   }
 
   const result = await pool.query<{ id: string }>(
@@ -817,13 +1138,25 @@ export async function submitFlatTestOrder(args: {
   }
   if (!designId) {
     throw new Error(
-      "No saved design found for this product. Create a design on this product in the customizer first, then send a test order.",
+      args.productType.isAllOverPrint
+        ? "No saved AOP design with captured print panels found for this product. Create a design in the customizer and apply the pattern once, then send a test order."
+        : "No saved design found for this product. Create a design on this product in the customizer first, then send a test order.",
     );
   }
 
   const idempotencyKey = `flat-test-order:${args.productType.id}:${designId}:${Date.now()}`;
   // Build a synthetic single-line order keyed by the design id so the standard
   // resolution path (line.properties._appai_job_id → generation_jobs) is used.
+  // Carry Size/Color from the latest designState (Apply) so bake doesn't rely
+  // only on generate-time job columns.
+  const job = await storage.getGenerationJob(designId);
+  const designState = parseJson<Record<string, any>>(job?.designState, {});
+  const { sizeId, colorId } = pickFlatOrderSizeColor({
+    designStateSize: designState?.selectedSize,
+    designStateColor: designState?.selectedFrameColor,
+    jobSize: job?.size,
+    jobColor: job?.frameColor,
+  });
   const syntheticOrder = {
     id: idempotencyKey,
     shop_domain: args.productType.shopifyShopDomain || "",
@@ -832,7 +1165,11 @@ export async function submitFlatTestOrder(args: {
     lineId: "test-1",
     variantId: null,
     quantity: 1,
-    properties: { _appai_job_id: designId },
+    properties: {
+      _appai_job_id: designId,
+      Size: sizeId,
+      Color: colorId,
+    },
   };
 
   const result = await submitFlatOrderToPrintify({

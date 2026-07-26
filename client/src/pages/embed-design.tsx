@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -37,6 +37,7 @@ import HoodieAopPlacer, {
   type HoodieAopPlacerState,
   type HoodieAopPlacerApplyResult,
 } from "@/components/designer/HoodieAopPlacer";
+import { MOCKUP_PANEL_MAX_LONG_EDGE_PX } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import FlatProductPlacer, {
   type FlatApplyStatus,
   type FlatProductPlacerHandle,
@@ -48,13 +49,35 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
+import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
+import {
+  detectStylePromptMismatch,
+  resolveSuggestedStylePresets,
+} from "@shared/stylePromptCompatibility";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
+  canvasOrientationFromAspect,
+  filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
+  listCanvasOrientationsInSizes,
+  parseCanvasOrientationFromLabel,
+  pickSizeForCanvasOrientation,
+  productLooksLikeFramedDecor,
+  looksLikePhoneModelName,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
+  sizesHaveMixedCanvasOrientation,
+  sizesLookLikePhoneModels,
+  sortDimensionalSizesAscending,
+  styleChoicesIncludeCanvasOrientation,
+  type CanvasOrientation,
 } from "@shared/productVariantOptions";
+import {
+  isCatalogSizeBlankBlueprint,
+  resolveBlankUrlForSize,
+} from "@shared/catalogSizeBlanks";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   filterStylePresetsForPage,
@@ -72,6 +95,20 @@ import {
   STOREFRONT_OPEN_GOOGLE_AUTH_MESSAGE,
 } from "@shared/storefront-auth";
 import { buildCentralAppUrl } from "@/lib/storefrontAuth";
+import {
+  isFlatPlacerGalleryReachable,
+  stepPostGenGalleryIndex,
+} from "@/lib/postGenGalleryNav";
+import {
+  FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR,
+  isContext1MockupLabel,
+  isContextLikeMockupLabel,
+  isFrontPersonMockupLabel,
+  isOnPersonMockupLabel,
+  isPersonMockupLabel,
+  lifestyleMockupPreferenceRank,
+  personMockupPreferenceRank,
+} from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -657,6 +694,19 @@ function variantCatalogIsUsable(
   return catalog.some((v) => v.option1 || v.option2);
 }
 
+/** Session restore key — must include productTypeId so art does not leak across products in the Generator Tester. */
+function designSessionStorageKey(
+  shop: string | null | undefined,
+  productHandle: string | null | undefined,
+  productTypeId: string | number | null | undefined,
+): string {
+  const pt =
+    productTypeId != null && String(productTypeId) !== "" && String(productTypeId) !== "0"
+      ? String(productTypeId)
+      : "unknown";
+  return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
+}
+
 /** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
 function buildProductVariantsFetchUrl(
   shop: string,
@@ -978,11 +1028,32 @@ function ProductInfoSections({
  *      /api/mockup/generate authenticate. A nested iframe has no App Bridge → 401.
  * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
  */
+/** Fulfillment-panel capture status reported to the admin tester host page. */
+export type TesterDesignStatus = {
+  /** Generation job id of the design currently on screen (null before first generation). */
+  jobId: string | null;
+  /**
+   * AOP print-panel persistence for that job:
+   *   none   — no capture started yet (or non-AOP product)
+   *   saving — a capture is uploading; a test order sent now would miss it
+   *   saved  — latest apply's panels are on the job
+   *   error  — the latest capture failed (check console)
+   */
+  aopPanels: 'none' | 'saving' | 'saved' | 'error';
+};
+
 export interface EmbedDesignProps {
   embeddedContext?:
     | {
-        mode: 'admin-tester';
-        productTypeId: string | number;
+    mode: 'admin-tester';
+    productTypeId: string | number;
+        /** Fired whenever the on-screen design's job id or panel-capture status changes,
+         *  so the tester page can target test orders at the design on screen. */
+        onTesterDesignStatus?: (status: TesterDesignStatus) => void;
+        /** Set by EmbedDesign — parent calls `.current()` to save the on-screen design to My Designs. */
+        saveDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+        /** Set by EmbedDesign — parent awaits `.current()` to flush placement/zoom before test order. */
+        flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
       }
     | {
         mode: 'merchant-studio';
@@ -1034,7 +1105,28 @@ function formatPostGenMockupLabel(raw: string, fallback: string): string {
   const l = raw.toLowerCase();
   if (l === "front" || l === "mockup 1") return "Front";
   if (l === "back" || l === "mockup 2") return "Back";
+  if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
+  if (isFrontPersonMockupLabel(raw)) return "Front Person";
+  if (/\bside[\s-]*person\b/i.test(l)) return "Side Person";
+  if (/\bback[\s-]*person\b/i.test(l)) return "Back Person";
+  if (/\bon[\s-]*person\b/i.test(l)) return "On Person";
+  if (/lifestyle/i.test(l)) return "Lifestyle";
+  if (/(context|room|home|bedroom|wall)/i.test(l)) return "Context";
   return raw || fallback;
+}
+
+/** Align with server — never treat flatlay "front side" as Lifestyle Context. */
+function isPrintifyContextMockupLabel(label: string): boolean {
+  return isContextLikeMockupLabel(label);
+}
+
+/** On-demand slides: lifestyle/context, tapestry Printers Mockup, or AOP person. */
+function isPrintifyOnDemandMockupLabel(label: string): boolean {
+  const l = String(label || "").toLowerCase();
+  if (!l) return false;
+  if (l.startsWith("printers") || l.startsWith("printify")) return true;
+  if (isPersonMockupLabel(label)) return true;
+  return isPrintifyContextMockupLabel(label);
 }
 
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
@@ -1046,16 +1138,33 @@ function buildPostGenGalleryItems(
   const items: PostGenGalleryItem[] = [{ kind: "artwork", label: "Artwork" }];
   const seen = new Set<string>();
 
-  const printifyEntries =
-    printifyMockupImages.length > 0
-      ? printifyMockupImages.slice(0, 3).map((img, i) => ({
-          url: img.url,
-          label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
-        }))
-      : printifyMockups.slice(0, 3).map((url, i) => ({
-          url,
-          label: formatPostGenMockupLabel("", i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
-        }));
+  // Prefer front/back first, then always include person cameras (Printers Mockup)
+  // even when that exceeds the old 3-slot cap.
+  let printifyEntries: Array<{ url: string; label: string }> = [];
+  if (printifyMockupImages.length > 0) {
+    const person = printifyMockupImages.filter((img) =>
+      isPersonMockupLabel(img.label),
+    );
+    const rest = printifyMockupImages.filter(
+      (img) => !isPersonMockupLabel(img.label),
+    );
+    const ordered = [...rest.slice(0, 2), ...person, ...rest.slice(2)].slice(
+      0,
+      Math.max(3, 2 + person.length),
+    );
+    printifyEntries = ordered.map((img, i) => ({
+      url: img.url,
+      label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+    }));
+  } else {
+    printifyEntries = printifyMockups.slice(0, 3).map((url, i) => ({
+      url,
+      label: formatPostGenMockupLabel(
+        "",
+        i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`,
+      ),
+    }));
+  }
 
   for (const entry of printifyEntries) {
     if (!entry.url) continue;
@@ -1103,7 +1212,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     ? 'admin-tester'
     : embeddedContext?.mode === 'merchant-studio'
       ? 'merchant-studio'
-      : detectRuntimeMode(searchParams);
+    : detectRuntimeMode(searchParams);
 
   const isAdminTester = runtimeMode === 'admin-tester';
   // merchant-studio: merchant admin "My Designs" studio. Uses the same storefront endpoints
@@ -1116,6 +1225,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = !isAdminTester && !isMerchantStudio && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
+  // Printify composite mockups + post-gen carousel. Admin Generator Tester
+  // already fetches via /api/mockup/generate but used to leave mockupUrl null
+  // (storefront/Shopify-only gate) — tumblers then showed raw artwork only.
+  const showsPrintifyMockupPreview = isShopify || isStorefront || isAdminTester;
   // State (not a plain const) so it can react LIVE to the parent embed
   // script's `ai-art-studio:set-scroll-mode` message. Shopify's theme editor
   // "mobile preview" toggle resizes the SAME iframe without a reload, so a
@@ -1388,19 +1501,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [sizeChartLoading, setSizeChartLoading] = useState(false);
 
   // Derived early — cart-state sync and load-design helpers reference these before JSX.
-  const printSizes: PrintSize[] = useMemo(
-    () =>
-      (productTypeConfig?.sizes || []).map((s) => ({
-        id: s.id,
-        name: s.name,
-        width: s.width,
-        height: s.height,
-        aspectRatio:
-          s.aspectRatio ||
-          resolveSizeAspectRatio(s, productTypeConfig?.aspectRatio),
-      })),
-    [productTypeConfig],
-  );
+  // Dimensional sizes are sorted smallest→largest by the first inch number (11×8 before 14×11).
+  // Label sizes (S/M/L) have no inch dims and keep their relative order.
+  const printSizes: PrintSize[] = useMemo(() => {
+    const mapped = (productTypeConfig?.sizes || []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      width: s.width,
+      height: s.height,
+      aspectRatio:
+        s.aspectRatio ||
+        resolveSizeAspectRatio(s, productTypeConfig?.aspectRatio),
+    }));
+    return sortDimensionalSizesAscending(mapped);
+  }, [productTypeConfig]);
 
   const frameOptionsRedundantWithSizes = useMemo(
     () =>
@@ -1410,6 +1524,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         productTypeConfig?.colorLabel,
       ),
     [printSizes, productTypeConfig?.frameColors, productTypeConfig?.colorLabel],
+  );
+
+  const hasMixedCanvasOrientation = useMemo(
+    () =>
+      sizesHaveMixedCanvasOrientation(
+        printSizes,
+        productTypeConfig?.aspectRatio,
+      ),
+    [printSizes, productTypeConfig?.aspectRatio],
+  );
+
+  const availableCanvasOrientations = useMemo(
+    () =>
+      listCanvasOrientationsInSizes(
+        printSizes,
+        productTypeConfig?.aspectRatio,
+      ),
+    [printSizes, productTypeConfig?.aspectRatio],
   );
 
   const frameColorObjects: FrameColor[] = useMemo(
@@ -1422,8 +1554,38 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [productTypeConfig],
   );
 
+  /** Phone cases: Size list is device models; Printify often also ships a junk "Model" option. */
+  const isPhoneCaseProduct = useMemo(() => {
+    const edgeWrap = !!productTypeConfig?.flatCalibration?.edgeWrap;
+    return edgeWrap || sizesLookLikePhoneModels(printSizes);
+  }, [productTypeConfig?.flatCalibration?.edgeWrap, printSizes]);
+
+  const frameColorsArePhoneModels = useMemo(
+    () =>
+      frameColorObjects.some(
+        (c) => looksLikePhoneModelName(c.name) || looksLikePhoneModelName(c.id),
+      ),
+    [frameColorObjects],
+  );
+
+  // Hide the redundant Printify "Model" dropdown when models already live in Size.
   const showFrameColorSelector =
-    frameColorObjects.length > 0 && !frameOptionsRedundantWithSizes;
+    frameColorObjects.length > 0 &&
+    !frameOptionsRedundantWithSizes &&
+    !(isPhoneCaseProduct && !frameColorsArePhoneModels);
+
+  // Phone cases with models in Size: never leave a junk Model fragment as frameColor.
+  useEffect(() => {
+    if (!isPhoneCaseProduct || frameColorsArePhoneModels) return;
+    const id = selectedFrameColor || "";
+    const looksLikeModel =
+      !id ||
+      looksLikePhoneModelName(id) ||
+      looksLikePhoneModelName(id.replace(/_/g, " "));
+    if (looksLikeModel && selectedFrameColor !== "default") {
+      setSelectedFrameColor("default");
+    }
+  }, [isPhoneCaseProduct, frameColorsArePhoneModels, selectedFrameColor]);
 
   /** Flat/mesh on-the-fly preview — respects merchant `storefrontMockupMode` override. */
   const usesFlatOnTheFlyPreview = useMemo(() => {
@@ -1432,14 +1594,36 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         productTypeConfig?.onTheFlyTier === "mesh") &&
       productTypeConfig?.flatCalibration
     );
+    if (!hasFlatAssets) return false;
     const mode = productTypeConfig?.effectiveStorefrontMockupMode;
-    if (mode === "printify" || mode === "aop") return false;
-    if (mode === "flat") return hasFlatAssets;
-    return hasFlatAssets;
+    if (mode === "aop") return false;
+    // HFP/VFP/pillows with calibration: always use VFP-style placer + local mockups
+    // even when storefrontMockupMode was set to "printify" (that left HFP on Zoom-only).
+    const cal = productTypeConfig?.flatCalibration;
+    const framedOrDecor = !!(
+      cal &&
+      !cal.edgeWrap &&
+      productLooksLikeFramedDecor({
+        designerType: productTypeConfig?.designerType,
+        name: productTypeConfig?.name,
+        decorPerSize: cal.decorPerSize,
+      })
+    );
+    // Comforter / wall decals: same — Printify zoom mode left tester stuck on
+    // "Save design / Refresh Mockups" because placement never auto-Applied.
+    const catalogSizeBlank = isCatalogSizeBlankBlueprint(
+      productTypeConfig?.printifyBlueprintId,
+    );
+    if (framedOrDecor || catalogSizeBlank) return true;
+    if (mode === "printify") return false;
+    return true;
   }, [
     productTypeConfig?.effectiveStorefrontMockupMode,
     productTypeConfig?.onTheFlyTier,
     productTypeConfig?.flatCalibration,
+    productTypeConfig?.designerType,
+    productTypeConfig?.name,
+    productTypeConfig?.printifyBlueprintId,
   ]);
 
   // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
@@ -1625,9 +1809,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
         setGalleryLimit(data.savedLimit || 30);
+        canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
       })
       .catch((err) => console.warn('[EmbedDesign] merchant-studio identity bootstrap failed', err));
   }, [isMerchantStudio, shopDomain]);
+
+  // admin-tester: resolve merchant design-studio identity so manual "Save to My Designs"
+  // can link generation_jobs rows the same way merchant-studio auto-save does.
+  useEffect(() => {
+    if (!isAdminTester) return;
+    safeFetch(`${API_BASE}/api/appai/design-studio/identity`, {
+      credentials: 'include',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.customerId) return;
+        setStorefrontCustomerId(data.customerId);
+        adminTesterShopRef.current = data.shop || null;
+        setGalleryLimit(data.savedLimit || 30);
+        canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
+      })
+      .catch((err) => console.warn('[EmbedDesign] admin-tester identity bootstrap failed', err));
+  }, [isAdminTester]);
 
   const completeStorefrontLogin = useCallback((data: {
     customerId: string;
@@ -1813,6 +2016,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [shopDomain, centralAppUrl, googleAuthEnabled]);
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
   const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
+  const [styleMismatchDialog, setStyleMismatchDialog] = useState<{
+    reasons: string[];
+    suggestions: { id: string; name: string }[];
+    currentStyleName: string;
+  } | null>(null);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
@@ -1887,10 +2095,32 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     useState<FlatProductPlacerState | null>(null);
   const [flatPlacerEditOpen, setFlatPlacerEditOpen] = useState(false);
   const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
+  /** Local placement/zoom changed since last Apply — blocks ATC / test order. */
+  const [flatPlacementDirty, setFlatPlacementDirty] = useState(false);
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
+  const flatPlacementDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Bumps to force flat gallery re-raster / placer remount. */
+  const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
+  /** True while framed flat decor is re-rastering after size/colour change. */
+  const [flatMockupRefreshing, setFlatMockupRefreshing] = useState(false);
+  /** On-demand Printify lifestyle/context for flat framed (not auto-fetched). */
+  const [lifestyleShotLoading, setLifestyleShotLoading] = useState(false);
+  const [lifestyleShotError, setLifestyleShotError] = useState<string | null>(null);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
+  /** Latest flat front URLs — Printify lifestyle merge keeps these. */
+  const flatFrontMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /** Mesh AOP local front/back — Printers Mockup (person) merge keeps these. */
+  const aopBaseMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /** Last AOP Front/Side/Back Person shots — re-attached after placer auto-apply. */
+  const aopPersonMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /**
+   * After Printers Mockup lands, keep selecting Front Person even if placer
+   * auto-apply / primary mockup fetch tries to reset the gallery index.
+   * Cleared when the customer manually steps to Artwork (or a non-person slide).
+   */
+  const stickAopPersonGalleryRef = useRef(false);
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -1904,6 +2134,47 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  // admin-tester has no shop URL param — the admin generate endpoint returns the job's
+  // shop so applied AOP panels can be persisted for "Send a Test Order to Printify".
+  const savedJobShopRef = useRef<string | null>(null);
+  /** Merchant shop from design-studio identity — fallback when save-design needs a shop. */
+  const adminTesterShopRef = useRef<string | null>(null);
+  /** Admin tester: auto-flush flat Apply once per job after generate. */
+  const lastTesterFlatAutoFlushJobRef = useRef<string | null>(null);
+  /** Skip the first size/colour sync after a new job (initial Apply handles it). */
+  const testerVariantSyncSkipRef = useRef(true);
+  /** Prevents size/colour sync from re-firing on unstable callback identity. */
+  const lastSyncedVariantKeyRef = useRef<string | null>(null);
+  /** Mutex so overlapping force-Applies cannot stack. */
+  const flatApplyInFlightRef = useRef(false);
+  /** Live colour/size for save-time reads (avoid stale closures / "default" writes). */
+  const selectedFrameColorRef = useRef(selectedFrameColor);
+  const selectedSizeRef = useRef(selectedSize);
+  selectedFrameColorRef.current = selectedFrameColor;
+  selectedSizeRef.current = selectedSize;
+  const onTesterDesignStatusRef = useRef<
+    ((status: TesterDesignStatus) => void) | undefined
+  >(undefined);
+  if (embeddedContext?.mode === "admin-tester") {
+    onTesterDesignStatusRef.current = embeddedContext.onTesterDesignStatus;
+  }
+  /** Whether this merchant's plan allows saving to My Designs (Starter+). */
+  const canSaveMerchantDesignsRef = useRef(false);
+  // Monotonic sequence for AOP print-panel captures. Each apply bumps it; a capture
+  // whose sequence is no longer current aborts before writing, so a slow earlier
+  // upload can never overwrite the panels from a newer apply (last-apply-wins).
+  const aopPanelPersistSeqRef = useRef(0);
+  // Last status reported to the admin tester host (see TesterDesignStatus).
+  const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
+  const emitTesterDesignStatus = useCallback(
+    (patch: Partial<TesterDesignStatus>) => {
+      testerDesignStatusRef.current = { ...testerDesignStatusRef.current, ...patch };
+      if (isAdminTester) {
+        onTesterDesignStatusRef.current?.({ ...testerDesignStatusRef.current });
+      }
+    },
+    [isAdminTester],
+  );
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
@@ -1932,9 +2203,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration &&
     !flatEdgeWrapMode &&
     !isApparel &&
-    (productTypeConfig.flatCalibration.decorPerSize ||
-      productTypeConfig.designerType === "framed-print" ||
-      productTypeConfig.designerType === "pillow")
+    productLooksLikeFramedDecor({
+      designerType: productTypeConfig.designerType,
+      name: productTypeConfig.name,
+      decorPerSize: productTypeConfig.flatCalibration.decorPerSize,
+    })
   );
   const flatFabricWeave = resolveFabricWeaveTexture({
     fabricWeaveTexture: productTypeConfig?.fabricWeaveTexture,
@@ -2033,24 +2306,67 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return isLandscapeSizeAspect(ar);
   }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
 
-  const orientationBlankOverride = useMemo(() => {
-    if (!frameOptionsRedundantWithSizes || !flatLandscapeOrientation || !selectedSize) return null;
-    const manifest = productTypeConfig?.flatCalibration;
-    if (!manifest?.blanks) return null;
-    const sizeNorm = normalizeFlatColorKey(selectedSize);
-    const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
-      if (k === "default") return false;
-      return k === selectedSize || normalizeFlatColorKey(k) === sizeNorm;
+  /** Inch AR for catalog size blanks (wall decals) — drives dashed guide when harvest is shared 2:3. */
+  const catalogSizeAspectRatio = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (!sizeConfig) return null;
+    return (
+      sizeConfig.aspectRatio ||
+      resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio) ||
+      null
+    );
+  }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
+
+  /** Classify catalog placeholder images by natural aspect (for orientation blanks). */
+  const [catalogBlankByOrientation, setCatalogBlankByOrientation] = useState<
+    Partial<Record<CanvasOrientation, string>>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const urls = catalogPreviewImages;
+    if (urls.length === 0) {
+      setCatalogBlankByOrientation({});
+      return;
+    }
+    Promise.all(
+      urls.map(
+        (url) =>
+          new Promise<{ url: string; orientation: CanvasOrientation }>((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              const w = img.naturalWidth || 0;
+              const h = img.naturalHeight || 0;
+              let orientation: CanvasOrientation = "vertical";
+              if (w > 0 && h > 0) {
+                if (w > h * 1.05) orientation = "horizontal";
+                else if (h > w * 1.05) orientation = "vertical";
+                else orientation = "square";
+              }
+              resolve({ url, orientation });
+            };
+            img.onerror = () => resolve({ url, orientation: "vertical" });
+            img.src = url;
+          }),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Partial<Record<CanvasOrientation, string>> = {};
+      for (const r of results) {
+        if (!map[r.orientation]) map[r.orientation] = r.url;
+      }
+      // Fallback: if only one catalog image, use it for every orientation.
+      if (Object.keys(map).length === 1 && urls[0]) {
+        map.horizontal = map.horizontal || urls[0];
+        map.vertical = map.vertical || urls[0];
+        map.square = map.square || urls[0];
+      }
+      setCatalogBlankByOrientation(map);
     });
-    if (hasOrientationBlank) return null;
-    return catalogPreviewImages.length > 1 ? catalogPreviewImages[1] : null;
-  }, [
-    frameOptionsRedundantWithSizes,
-    flatLandscapeOrientation,
-    selectedSize,
-    productTypeConfig?.flatCalibration,
-    catalogPreviewImages,
-  ]);
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogPreviewImages.join("|")]);
 
   useEffect(() => {
     setCatalogPreviewIndex(0);
@@ -2074,6 +2390,53 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       prev >= postGenGalleryItems.length ? 0 : prev,
     );
   }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
+
+  // After Printers Mockup, land on Front Person (and recover if apply/mockup
+  // rebuild resets the index). Keep Side/Back Person if the customer already
+  // stepped there.
+  useEffect(() => {
+    if (!stickAopPersonGalleryRef.current) return;
+    setSelectedMockupIndex((prev) => {
+      const cur = postGenGalleryItems[prev];
+      if (cur?.kind === "mockup" && isPersonMockupLabel(cur.label)) return prev;
+      const idx = postGenGalleryItems.findIndex(
+        (item) =>
+          item.kind === "mockup" && isPersonMockupLabel(item.label),
+      );
+      return idx >= 0 ? idx : prev;
+    });
+  }, [postGenGalleryItems]);
+
+  // Keep stick while the customer is actively viewing a person slide (so a
+  // placement auto-apply does not drop them). Cleared on mode switch / Artwork.
+  useEffect(() => {
+    const item = postGenGalleryItems[selectedMockupIndex];
+    if (item?.kind === "mockup" && isPersonMockupLabel(item.label)) {
+      stickAopPersonGalleryRef.current = true;
+    }
+  }, [selectedMockupIndex, postGenGalleryItems]);
+
+  // Place ↔ Pattern / Front ↔ Back: always return to the live mesh editor
+  // (not Printers Mockup). Front/Back also call `engageAopLiveEditor` so
+  // re-clicking the already-selected view still clears a person shot.
+  const prevHoodieAopModeRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const mode = hoodieAopPlacerState?.mode;
+    if (!mode) return;
+    if (prevHoodieAopModeRef.current === undefined) {
+      prevHoodieAopModeRef.current = mode;
+      return;
+    }
+    if (prevHoodieAopModeRef.current === mode) return;
+    prevHoodieAopModeRef.current = mode;
+    stickAopPersonGalleryRef.current = false;
+    setSelectedMockupIndex(0);
+  }, [hoodieAopPlacerState?.mode]);
+
+  const engageAopLiveEditor = useCallback(() => {
+    stickAopPersonGalleryRef.current = false;
+    setSelectedMockupIndex(0);
+  }, []);
 
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
@@ -2140,6 +2503,157 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (selectable === "all") return deduped;
     return deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
   }, [stylePresets, productTypeConfig, pageStyleConfig]);
+
+  const activeStyleHasOrientationChoices = useMemo(() => {
+    const active = filteredStylePresets.find((p) => p.id === selectedPreset);
+    return styleChoicesIncludeCanvasOrientation(active?.options?.choices);
+  }, [filteredStylePresets, selectedPreset]);
+
+  const styleHasSquareOrientationChoice = useMemo(() => {
+    const active = filteredStylePresets.find((p) => p.id === selectedPreset);
+    return (active?.options?.choices || []).some(
+      (c) =>
+        parseCanvasOrientationFromLabel(c.name) === "square" ||
+        parseCanvasOrientationFromLabel(c.id) === "square",
+    );
+  }, [filteredStylePresets, selectedPreset]);
+
+  // Size-driven H/V/Square when style has no Orientation choices. If style already
+  // has H/V, still offer Square when the catalog includes a square size (comforter).
+  const showSizeDrivenOrientationPills =
+    hasMixedCanvasOrientation && !activeStyleHasOrientationChoices;
+  const showSquareOrientationPillOnly =
+    hasMixedCanvasOrientation &&
+    activeStyleHasOrientationChoices &&
+    availableCanvasOrientations.includes("square") &&
+    !styleHasSquareOrientationChoice;
+
+  const sizeCanvasOrientation = useMemo((): CanvasOrientation | null => {
+    if (!hasMixedCanvasOrientation || !selectedSize) return null;
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (!sizeConfig) return null;
+    return canvasOrientationFromAspect(
+      resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio),
+    );
+  }, [
+    hasMixedCanvasOrientation,
+    selectedSize,
+    printSizes,
+    productTypeConfig?.aspectRatio,
+  ]);
+
+  const orientationFilteredSizes = useMemo(() => {
+    if (!hasMixedCanvasOrientation || !sizeCanvasOrientation) return printSizes;
+    const filtered = filterSizesByCanvasOrientation(
+      printSizes,
+      sizeCanvasOrientation,
+      productTypeConfig?.aspectRatio,
+    ) as typeof printSizes;
+    return filtered.length > 0 ? filtered : printSizes;
+  }, [
+    hasMixedCanvasOrientation,
+    sizeCanvasOrientation,
+    printSizes,
+    productTypeConfig?.aspectRatio,
+  ]);
+
+  const orientationBlankOverride = useMemo(() => {
+    if (!hasMixedCanvasOrientation || !sizeCanvasOrientation || !selectedSize) {
+      return null;
+    }
+    const manifest = productTypeConfig?.flatCalibration;
+    // Framed posters harvest `size:color` blanks — never pin a static catalog photo
+    // over the frame-colour blank (that kept White selection showing a Black frame).
+    if (manifest?.decorPerSize) {
+      const sizeNorm = normalizeFlatColorKey(selectedSize);
+      const hasSizeColorBlank = Object.keys(manifest.blanks || {}).some((k) => {
+        if (k === "default" || !k.includes(":")) return false;
+        const sizePart = k.slice(0, k.indexOf(":"));
+        return (
+          sizePart === selectedSize || normalizeFlatColorKey(sizePart) === sizeNorm
+        );
+      });
+      if (hasSizeColorBlank) return null;
+    }
+    if (manifest?.blanks) {
+      const sizeNorm = normalizeFlatColorKey(selectedSize);
+      const hasOrientationBlank = Object.keys(manifest.blanks).some((k) => {
+        if (k === "default") return false;
+        if (k === selectedSize || normalizeFlatColorKey(k) === sizeNorm) return true;
+        if (!k.includes(":")) return false;
+        const sizePart = k.slice(0, k.indexOf(":"));
+        return (
+          sizePart === selectedSize || normalizeFlatColorKey(sizePart) === sizeNorm
+        );
+      });
+      if (hasOrientationBlank) return null;
+    }
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    const bySize = resolveBlankUrlForSize(
+      productTypeConfig?.baseMockupImages,
+      sizeConfig || { id: selectedSize, name: selectedSize },
+      productTypeConfig?.aspectRatio,
+    );
+    return (
+      bySize ||
+      catalogBlankByOrientation[sizeCanvasOrientation] ||
+      (sizeCanvasOrientation === "horizontal" && catalogPreviewImages[1]) ||
+      null
+    );
+  }, [
+    hasMixedCanvasOrientation,
+    sizeCanvasOrientation,
+    selectedSize,
+    printSizes,
+    productTypeConfig?.flatCalibration,
+    productTypeConfig?.baseMockupImages,
+    productTypeConfig?.aspectRatio,
+    catalogBlankByOrientation,
+    catalogPreviewImages,
+  ]);
+
+  const applyCanvasOrientation = useCallback(
+    (orientation: CanvasOrientation) => {
+      if (!hasMixedCanvasOrientation) return;
+      const next = pickSizeForCanvasOrientation(
+        printSizes,
+        orientation,
+        selectedSize || null,
+        productTypeConfig?.aspectRatio,
+      );
+      // Keep style Orientation choice in sync when present (e.g. Vintage Poster).
+      const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+      const styleMatch = activePreset?.options?.choices?.find(
+        (c) =>
+          parseCanvasOrientationFromLabel(c.name) === orientation ||
+          parseCanvasOrientationFromLabel(c.id) === orientation,
+      );
+      if (styleMatch) setSelectedStyleOption(styleMatch.id);
+
+      if (!next || next.id === selectedSize) return;
+      setSelectedSize(next.id);
+      if (frameOptionsRedundantWithSizes) {
+        const matched = resolveFrameColorForSize(next, frameColorObjects);
+        if (matched) setSelectedFrameColor(matched);
+      }
+      if (!usesFlatOnTheFlyPreview) {
+        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+      }
+      setCatalogPreviewIndex(0);
+    },
+    [
+      hasMixedCanvasOrientation,
+      printSizes,
+      selectedSize,
+      productTypeConfig?.aspectRatio,
+      frameOptionsRedundantWithSizes,
+      frameColorObjects,
+      usesFlatOnTheFlyPreview,
+      defaultZoom,
+      filteredStylePresets,
+      selectedPreset,
+    ],
+  );
 
   useEffect(() => {
     const blueprintId = productTypeConfig?.printifyBlueprintId;
@@ -2562,6 +3076,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // Log if the backend resolved to a different productTypeId (fallback)
           if (designerConfig.resolvedProductTypeId && designerConfig.requestedProductTypeId !== designerConfig.resolvedProductTypeId) {
             console.warn(`[EmbedDesign] ⚠️ Backend resolved productTypeId: requested=${designerConfig.requestedProductTypeId} → resolved=${designerConfig.resolvedProductTypeId} reason=${designerConfig.resolutionReason}`);
+          }
+
+          // Generator Tester + storefront designer: use the same merchant-scoped,
+          // page-filtered styles the live store embeds (not global /api/config).
+          if (designerConfig.styleConfig !== undefined) {
+            setPageStyleConfig(parseCustomizerPageStyleConfig(designerConfig.styleConfig));
+          }
+          if (Array.isArray(designerConfig.stylePresets) && designerConfig.stylePresets.length > 0) {
+            setStylePresets(designerConfig.stylePresets);
           }
 
           setProductTypeConfig({
@@ -3203,7 +3726,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
   useEffect(() => {
-    const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+    const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
     const clearOnExit = () => {
       try { sessionStorage.removeItem(stateKey); } catch (_) {}
     };
@@ -3214,18 +3737,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       window.removeEventListener('pagehide', clearOnExit);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopDomain, productHandle]);
+  }, [shopDomain, productHandle, productTypeId]);
 
-  // Restore design state from sessionStorage on load (survives hard refresh only)
+  // Restore design state from sessionStorage on load (survives hard refresh only).
+  // Generator Tester: never restore — art from HFP must not land on VFP (wrong AR).
   useEffect(() => {
+    if (isAdminTester) return;
     // Don't restore if we already have a design (e.g., from shared link) or are loading one
     // Also skip if loadDesignId is present — the saved design restore will handle it instead
     if (generatedDesign || sharedDesignId || isLoadingSharedDesign || effectiveLoadDesignId) return;
     try {
-      const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+      const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
       const saved = sessionStorage.getItem(stateKey);
       if (!saved) return;
       const state = JSON.parse(saved);
+      // Reject restores from a different product type (stale keys / ratio mismatches).
+      if (
+        state.productTypeId != null &&
+        String(state.productTypeId) !== String(productTypeId)
+      ) {
+        sessionStorage.removeItem(stateKey);
+        return;
+      }
       // Only restore if saved within the last 5 minutes (hard refresh window only)
       if (state.savedAt && Date.now() - state.savedAt < 5 * 60 * 1000 && state.imageUrl) {
         console.log('[Design Studio] Restoring design from sessionStorage:', state.designId);
@@ -3476,12 +4009,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     patternUrl?: string,
     mirrorLegs?: boolean,
     panelUrls?: { position: string; dataUrl: string }[],
-    printPlacementOverride?: "front" | "back" | "both"
-  ) => {
+    printPlacementOverride?: "front" | "back" | "both",
+    bgColorOverride?: string,
+    fetchOpts?: {
+      mergeContextOnly?: boolean;
+      mergeProductMockups?: boolean;
+      mergePersonViews?: boolean;
+    },
+  ): Promise<{ ok: boolean; contextCount?: number; error?: string }> => {
+    const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
+    const mergeProductMockups = !!fetchOpts?.mergeProductMockups;
+    const mergePersonViews = !!fetchOpts?.mergePersonViews;
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
-      return;
+      return { ok: false, error: "Missing design image" };
     }
 
     // AOP preflight: validate per-panel data URLs before sending to the server.
@@ -3509,7 +4051,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (runtimeMode !== 'standalone') {
           window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
         }
-        return;
+        return { ok: false, error: msg };
       }
       console.log(`[EmbedDesign] AOP preflight OK: ${panelUrls.length} panel(s) — sizes: ${panelUrls.map(p => `${p.position}:${(p.dataUrl.length / 1024).toFixed(0)}KB`).join(', ')}`);
     }
@@ -3528,19 +4070,35 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       y: clampedY,
       printPlacement: printPlacementOverride ?? printPlacement,
       panelHash: panelUrls?.map((p) => `${p.position}:${p.dataUrl.length}`).join("|") ?? "",
+      mergeContextOnly,
+      mergeProductMockups,
+      mergePersonViews,
     });
+
+    // On-demand merges (lifestyle / tapestry / AOP person) must not cancel a primary mockup job.
+    const isOnDemandMerge =
+      mergeContextOnly || mergeProductMockups || mergePersonViews;
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
-      return;
+      return { ok: false, error: "Mockup already in progress" };
     }
-    activeMockupJobKeyRef.current = mockupJobKey;
-    const requestSeq = ++mockupRequestSeqRef.current;
-    setMockupLoading(true);
-    setMockupsStale(false);
-    // Notify parent page so it can show the "Artwork Generating" overlay
-    if (runtimeMode !== 'standalone') {
-      window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
+
+    let contextMergeOutcome: { ok: boolean; contextCount?: number; error?: string } | null =
+      isOnDemandMerge ? null : { ok: true };
+    if (!isOnDemandMerge) {
+      activeMockupJobKeyRef.current = mockupJobKey;
+    }
+    const requestSeq = isOnDemandMerge
+      ? mockupRequestSeqRef.current
+      : ++mockupRequestSeqRef.current;
+    if (!isOnDemandMerge) {
+      setMockupLoading(true);
+      setMockupsStale(false);
+      // Notify parent page so it can show the "Artwork Generating" overlay
+      if (runtimeMode !== 'standalone') {
+        window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
+      }
     }
 
     try {
@@ -3560,14 +4118,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // server uses it to fill any blueprint placeholder the client doesn't
       // render — e.g. inner hood / collar yoke / placket trim on zip hoodies
       // — so those regions don't show the default white garment template.
-      const aopBgColor = useAopCustomizer
-        ? (() => {
-            const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
-            return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
-              ? candidate
-              : undefined;
-          })()
-        : undefined;
+      const aopBgColor = (() => {
+        if (
+          typeof bgColorOverride === "string" &&
+          /^#[0-9a-fA-F]{6}$/.test(bgColorOverride)
+        ) {
+          return bgColorOverride;
+        }
+        if (!useAopCustomizer) return undefined;
+        const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
+        return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
+          ? candidate
+          : undefined;
+      })();
       const mockupPrintPlacement = useAopCustomizer
         ? undefined
         : supportsPrintPlacementSelection
@@ -3588,6 +4151,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         y: clampedY,
         shop: shopDomain,
         bgColor: aopBgColor,
+        preferContextViews: mergeContextOnly || undefined,
+        preferPersonViews: mergePersonViews || undefined,
       } : isShopify ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -3603,6 +4168,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         shop: shopDomain,
         sessionToken,
         bgColor: aopBgColor,
+        preferContextViews: mergeContextOnly || undefined,
+        preferPersonViews: mergePersonViews || undefined,
       } : {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -3616,6 +4183,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         x: clampedX,
         y: clampedY,
         bgColor: aopBgColor,
+        preferContextViews: mergeContextOnly || undefined,
+        preferPersonViews: mergePersonViews || undefined,
       };
 
       setMockupError(null);
@@ -3636,7 +4205,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       const handleMockupSuccess = (result: any) => {
-        if (requestSeq !== mockupRequestSeqRef.current) {
+        if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
           console.log('[Mockups] Ignoring stale mockup response', requestSeq);
           return;
         }
@@ -3645,13 +4214,165 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           ...img,
           url: toAbsoluteImageUrl(img.url),
         }));
-        setPrintifyMockups(absUrls);
-        setPrintifyMockupImages(absImages);
-        setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
-        sendMockupsToParent(absUrls);
+
+        // Flat / AOP: keep local front raster(s), append Printify on-demand shots.
+        if (mergeContextOnly || mergeProductMockups || mergePersonViews) {
+          let extras: Array<{ url: string; label: string }> = [];
+          if (mergePersonViews) {
+            extras = absImages
+              .filter((img: { label: string }) => isPersonMockupLabel(img.label))
+              .sort(
+                (a: { label: string }, b: { label: string }) =>
+                  personMockupPreferenceRank(a.label) -
+                  personMockupPreferenceRank(b.label),
+              )
+              .slice(0, 3);
+            if (extras.length === 0) {
+              console.log(
+                "[Mockups] Person merge: no Front/Side/Back Person from Printify",
+                absImages.map((i: { label: string }) => i.label),
+              );
+              contextMergeOutcome = {
+                ok: false,
+                error:
+                  "Printify returned no Front Person mockup for this product. Try again in a moment.",
+              };
+              return;
+            }
+          } else if (mergeProductMockups) {
+            // Tapestry: take Printify product cameras (woven photo), not lifestyle-only.
+            extras = absImages.slice(0, 2);
+            if (extras.length === 0) {
+              console.log("[Mockups] Product merge: no Printify mockups returned");
+              contextMergeOutcome = {
+                ok: false,
+                error: "Printify returned no mockups",
+              };
+              return;
+            }
+          } else {
+            // Strict: only real lifestyle/context/room cameras — never flatlay fallback.
+            // Prefer On Person over Context 1 (tote table flatlay).
+            const contextImgs = absImages
+              .filter((img: { label: string }) => isPrintifyContextMockupLabel(img.label))
+              .sort(
+                (a: { label: string }, b: { label: string }) =>
+                  lifestyleMockupPreferenceRank(a.label) -
+                  lifestyleMockupPreferenceRank(b.label),
+              );
+            const hasOnPerson = contextImgs.some((img: { label: string }) =>
+              isOnPersonMockupLabel(img.label),
+            );
+            extras = contextImgs
+              .filter(
+                (img: { label: string }) =>
+                  !(hasOnPerson && isContext1MockupLabel(img.label)),
+              )
+              .slice(0, 2);
+            if (extras.length === 0) {
+              console.log(
+                "[Mockups] Context merge: no lifestyle/context views from Printify",
+                absImages.map((i: { label: string }) => i.label),
+              );
+              contextMergeOutcome = {
+                ok: false,
+                error:
+                  "Printify returned no lifestyle/context views for this product. Try again in a moment, or use Artwork / catalog views.",
+              };
+              return;
+            }
+          }
+          const fronts = mergePersonViews
+            ? aopBaseMockupsRef.current.length > 0
+              ? aopBaseMockupsRef.current
+              : []
+            : flatFrontMockupsRef.current.length > 0
+              ? flatFrontMockupsRef.current
+              : [];
+          const mergedImages: Array<{ url: string; label: string }> = [...fronts];
+          const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
+          for (const extra of extras) {
+            const key = mockupImageUrlKey(extra.url);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const label = mergePersonViews
+              ? extra.label
+              : mergeProductMockups
+                ? "printers"
+                : isOnPersonMockupLabel(extra.label)
+                  ? "on-person"
+                  : /lifestyle/i.test(extra.label)
+                    ? "lifestyle"
+                    : /context/i.test(extra.label)
+                      ? extra.label
+                      : "context";
+            mergedImages.push({ url: extra.url, label });
+          }
+          if (mergePersonViews) {
+            aopPersonMockupsRef.current = extras.map((e) => ({
+              url: e.url,
+              label: e.label,
+            }));
+            stickAopPersonGalleryRef.current = true;
+          }
+          const mergedUrls = mergedImages.map((m) => m.url);
+          setPrintifyMockupImages(mergedImages);
+          setPrintifyMockups(mergedUrls);
+          sendMockupsToParent(mergedUrls);
+          // Jump to on-demand shot in post-gen gallery (Artwork is index 0).
+          const firstOnDemandIdx = mergedImages.findIndex((m) =>
+            mergePersonViews
+              ? isPersonMockupLabel(m.label)
+              : isPrintifyOnDemandMockupLabel(m.label),
+          );
+          if (firstOnDemandIdx >= 0) {
+            setSelectedMockupIndex(1 + firstOnDemandIdx);
+          }
+          console.log(
+            '[Mockups] Merged',
+            extras.length,
+            mergePersonViews
+              ? "person mockup(s)"
+              : mergeProductMockups
+                ? "printers mockup(s)"
+                : "context shot(s)",
+            "onto",
+            fronts.length,
+            mergePersonViews ? "AOP base view(s)" : "flat front(s)",
+          );
+          contextMergeOutcome = { ok: true, contextCount: extras.length };
+          return;
+        }
+
+        const finalImages =
+          useAopCustomizer && aopPersonMockupsRef.current.length > 0
+            ? (() => {
+                const seen = new Set(absImages.map((m: { url: string }) => mockupImageUrlKey(m.url)));
+                const merged = [...absImages];
+                for (const person of aopPersonMockupsRef.current) {
+                  const key = mockupImageUrlKey(person.url);
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  merged.push(person);
+                }
+                return merged;
+              })()
+            : absImages;
+        const finalUrls = finalImages.map((m: { url: string }) => m.url);
+        setPrintifyMockups(finalUrls);
+        setPrintifyMockupImages(finalImages);
+        if (stickAopPersonGalleryRef.current) {
+          const personIdx = finalImages.findIndex((m: { label: string }) =>
+            isPersonMockupLabel(m.label),
+          );
+          setSelectedMockupIndex(personIdx >= 0 ? 1 + personIdx : 1);
+        } else {
+          setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
+        }
+        sendMockupsToParent(finalUrls);
         const cacheKey = mockupCacheKey(sizeId, colorId);
         currentMockupColorRef.current = cacheKey;
-        mockupColorCacheRef.current[cacheKey] = { urls: absUrls, images: absImages };
+        mockupColorCacheRef.current[cacheKey] = { urls: finalUrls, images: finalImages };
         console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for', cacheKey);
         // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups.
         // Also pass base product/variant info so the server can pre-create the shadow product
@@ -3713,7 +4434,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         let pollIndex = 0;
 
         while (Date.now() - started < MAX_POLL_MS) {
-          if (requestSeq !== mockupRequestSeqRef.current) {
+          if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
             console.log('[Mockups] Stopping stale mockup poll', requestSeq);
             return;
           }
@@ -3764,9 +4485,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
       }
     } catch (error) {
-      if (requestSeq !== mockupRequestSeqRef.current) {
+      if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
         console.log('[Mockups] Ignoring stale mockup error', requestSeq);
-        return;
+        return { ok: false, error: "Stale mockup request" };
+      }
+      if (isOnDemandMerge) {
+        // Flat front is already good — on-demand Printify is best-effort;
+        // Lifestyle / Printify Mockup button surfaces this via the return value.
+        const msg = error instanceof Error ? error.message : "Printify mockup failed";
+        console.warn("[Mockups] On-demand merge failed (non-fatal):", error);
+        contextMergeOutcome = { ok: false, error: msg };
+        return contextMergeOutcome;
       }
       console.error("Failed to generate Printify mockups:", error);
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
@@ -3774,11 +4503,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Keep mockupsStale so the UI surfaces an error rather than silently
       // showing a stale mockup from a previous size/color combination.
       setMockupsStale(true);
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Failed to generate product preview",
+      };
     } finally {
-      if (activeMockupJobKeyRef.current === mockupJobKey) {
+      if (!isOnDemandMerge && activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
       }
-      if (requestSeq === mockupRequestSeqRef.current) {
+      if (!isOnDemandMerge && requestSeq === mockupRequestSeqRef.current) {
         setMockupLoading(false);
         setMockupTriggered(false);
         // Clear the "Artwork Generating" overlay on the parent page
@@ -3787,6 +4520,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
     }
+    if (isOnDemandMerge) {
+      return (
+        contextMergeOutcome ?? {
+          ok: false,
+          error: mergePersonViews
+            ? "Printify returned no Front Person mockup"
+            : mergeProductMockups
+              ? "Printify returned no mockups"
+              : "Printify returned no lifestyle/context views",
+        }
+      );
+    }
+    return { ok: true };
   }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
@@ -3871,23 +4617,173 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
 
-  // Mark mockups as stale when transform changes and mockups already exist
-  useEffect(() => {
-    if (!printifyTransformEligible) return;
-    if (usesFlatOnTheFlyPreview) {
-      return;
+  /**
+   * Admin tester (Printify zoom products): persist scale/position/size for the
+   * Printify test-order bake. Not the same as "Save to My Designs".
+   */
+  const persistAdminTesterPrintifyDesign = useCallback(async () => {
+    if (!isAdminTester || useAopCustomizer || usesFlatOnTheFlyPreview) return false;
+    const jobId = savedJobIdRef.current;
+    const shop =
+      shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    if (!jobId || !shop || !generatedDesign?.imageUrl) return false;
+    emitTesterDesignStatus({ jobId, aopPanels: "saving" });
+    try {
+      const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          shop,
+          designState: {
+            scale: transform.scale,
+            x: transform.x,
+            y: transform.y,
+            selectedSize: selectedSizeRef.current || selectedSize || null,
+            selectedFrameColor:
+              selectedFrameColorRef.current || selectedFrameColor || undefined,
+            artworkUrl: toAbsoluteImageUrl(generatedDesign.imageUrl),
+            stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : null,
+            prompt,
+          },
+        }),
+      });
+      if (!res.ok) throw new Error(`save-state ${res.status}`);
+      emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+      return true;
+    } catch (e) {
+      console.warn("[AdminTester] Printify design persist failed:", e);
+      emitTesterDesignStatus({ jobId, aopPanels: "error" });
+      return false;
     }
+  }, [
+    isAdminTester,
+    useAopCustomizer,
+    usesFlatOnTheFlyPreview,
+    shopDomain,
+    generatedDesign?.imageUrl,
+    transform.scale,
+    transform.x,
+    transform.y,
+    selectedSize,
+    selectedFrameColor,
+    selectedPreset,
+    prompt,
+    emitTesterDesignStatus,
+  ]);
+
+  const testerPrintifyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Mark mockups as stale when transform changes and mockups already exist.
+  // Admin tester Printify products auto-persist placement in the background
+  // (test order readiness) instead of demanding a manual "Save design" click.
+  useEffect(() => {
+    if (!printifyTransformEligible && !usesFlatOnTheFlyPreview) return;
     if (suppressMockupStaleRef.current) {
       // Transform changed during design load — mockups are already correct, don't mark stale
       suppressMockupStaleRef.current = false;
       return;
     }
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (hasMockups && !mockupLoading) {
+    const hasFlatDesign = !!(usesFlatOnTheFlyPreview && generatedDesign?.imageUrl);
+    if ((hasMockups || hasFlatDesign) && !mockupLoading) {
       setMockupsStale(true);
+      setFlatPlacementDirty(true);
+      if (
+        isAdminTester &&
+        savedJobIdRef.current &&
+        !usesFlatOnTheFlyPreview &&
+        !useAopCustomizer
+      ) {
+        if (testerPrintifyPersistTimerRef.current) {
+          clearTimeout(testerPrintifyPersistTimerRef.current);
+        }
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "saving",
+        });
+        testerPrintifyPersistTimerRef.current = setTimeout(() => {
+          void persistAdminTesterPrintifyDesign();
+        }, 400);
+      } else if (
+        isAdminTester &&
+        savedJobIdRef.current &&
+        testerDesignStatusRef.current.aopPanels !== "saving"
+      ) {
+        // Flat/AOP: Apply / panel upload owns the "saved" transition.
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "none",
+        });
+      }
     }
+    return () => {
+      if (testerPrintifyPersistTimerRef.current) {
+        clearTimeout(testerPrintifyPersistTimerRef.current);
+        testerPrintifyPersistTimerRef.current = null;
+      }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
+
+  // Admin tester Printify path: after mockups finish (or load), sync placement so
+  // "Send a Test Order" is ready without a separate Save click.
+  useEffect(() => {
+    if (!isAdminTester || usesFlatOnTheFlyPreview || useAopCustomizer) return;
+    if (mockupLoading || mockupsStale) return;
+    if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
+    if (testerDesignStatusRef.current.aopPanels === "saved") return;
+    void persistAdminTesterPrintifyDesign();
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    useAopCustomizer,
+    mockupLoading,
+    mockupsStale,
+    printifyMockups.length,
+    printifyMockupImages.length,
+    generatedDesign?.imageUrl,
+    persistAdminTesterPrintifyDesign,
+  ]);
+
+  const testerAutoMockupKeyRef = useRef("");
+  // Admin tester: auto-refresh Printify mockups when zoom/placement goes stale
+  // so merchants aren't stuck clicking Refresh Mockups to continue.
+  useEffect(() => {
+    if (!isAdminTester || usesFlatOnTheFlyPreview || useAopCustomizer) return;
+    if (!mockupsStale || mockupLoading || !generatedDesign?.imageUrl) return;
+    if (!productTypeConfig?.hasPrintifyMockups || !selectedSize) return;
+    const key = `${selectedSize}|${selectedFrameColor || ""}|${transform.scale}|${transform.x}|${transform.y}|${generatedDesign.imageUrl}`;
+    if (testerAutoMockupKeyRef.current === key) return;
+    const t = window.setTimeout(() => {
+      testerAutoMockupKeyRef.current = key;
+      void fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor || "default",
+        transform.scale,
+        transform.x,
+        transform.y,
+      );
+    }, 700);
+    return () => window.clearTimeout(t);
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    useAopCustomizer,
+    mockupsStale,
+    mockupLoading,
+    generatedDesign?.imageUrl,
+    productTypeConfig?.hasPrintifyMockups,
+    productTypeConfig?.id,
+    selectedSize,
+    selectedFrameColor,
+    transform.scale,
+    transform.x,
+    transform.y,
+    fetchPrintifyMockups,
+  ]);
 
   // Keep frame colour aligned with the variant map. We only auto-switch when
   // the selected color has NO mapping at any size — not just the current size.
@@ -4152,6 +5048,110 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return '';
   }, [printifyMockups, printifyMockupImages]);
 
+  /** Admin Generator Tester: persist the on-screen design to the merchant's My Designs library. */
+  const saveDesignToMyLibrary = useCallback(async () => {
+    if (!isAdminTester) return;
+
+    if (!canSaveMerchantDesignsRef.current) {
+      throw new Error("Upgrade to Starter or above to save designs to My Designs.");
+    }
+
+    const jobId = savedJobIdRef.current;
+    const shop = savedJobShopRef.current || adminTesterShopRef.current;
+    const customerId = storefrontCustomerId;
+
+    if (!jobId || !shop || !customerId) {
+      throw new Error("Generate a design first, then save it to My Designs.");
+    }
+    if (!generatedDesign?.imageUrl) {
+      throw new Error("No artwork on screen to save.");
+    }
+
+    const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-design`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ jobId, customerId, shop }),
+    });
+    const saveData = await saveRes.json().catch(() => ({}));
+    if (!saveRes.ok) {
+      if (saveData.error === 'PLAN_UPGRADE_REQUIRED') {
+        throw new Error(saveData.message || "Upgrade to Starter or above to save designs to My Designs.");
+      }
+      if (saveData.error === 'GALLERY_FULL') {
+        throw new Error(
+          saveData.message ||
+            `Your saved designs library is full (${saveData.limit ?? galleryLimit} max). Delete some in My Designs first.`,
+        );
+      }
+      throw new Error(saveData.message || saveData.error || 'Failed to save design');
+    }
+
+    await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId,
+        shop,
+        designState: {
+          scale: transform.scale,
+          x: transform.x,
+          y: transform.y,
+          selectedSize,
+          selectedFrameColor,
+          stylePreset: selectedPreset && selectedPreset !== '' ? selectedPreset : null,
+          prompt,
+        },
+      }),
+    }).catch((e) => console.error('[AdminTester Save] save-state failed:', e));
+
+    const mockupUrls: string[] = [];
+    for (const img of printifyMockupImages) {
+      const abs = toAbsoluteMockupUrlForSave(img.url);
+      if (abs && !mockupUrls.includes(abs)) mockupUrls.push(abs);
+    }
+    for (const u of printifyMockups) {
+      const abs = toAbsoluteMockupUrlForSave(u);
+      if (abs && !mockupUrls.includes(abs)) mockupUrls.push(abs);
+    }
+    const preferred = toAbsoluteMockupUrlForSave(getPreferredMockupUrl());
+    if (preferred && !mockupUrls.includes(preferred)) mockupUrls.unshift(preferred);
+
+    if (mockupUrls.length > 0) {
+      await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, shop, mockupUrls }),
+      }).catch((e) => console.error('[AdminTester Save] save-mockups failed:', e));
+    }
+
+    queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+  }, [
+    isAdminTester,
+    generatedDesign?.imageUrl,
+    storefrontCustomerId,
+    transform,
+    selectedSize,
+    selectedFrameColor,
+    selectedPreset,
+    prompt,
+    printifyMockupImages,
+    printifyMockups,
+    getPreferredMockupUrl,
+    galleryLimit,
+  ]);
+
+  useEffect(() => {
+    if (embeddedContext?.mode !== 'admin-tester') return;
+    const ref = embeddedContext.saveDesignRef;
+    if (!ref) return;
+    ref.current = saveDesignToMyLibrary;
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, saveDesignToMyLibrary]);
+
   // Sync cart state with the parent page's Add to Cart button (storefront mode only)
   useEffect(() => {
     if (!isStorefront) return;
@@ -4235,12 +5235,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !flatRenderFailed &&
       flatPlacerEditOpen
     );
-    const flatSaveBlocking = !!(flatPlacerOn && flatApplyStatus === "saving");
-    const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
+    const flatSaveBlocking = !!(
+      flatPlacerOn &&
+      (flatApplyStatus === "saving" || flatPlacementDirty)
+    );
+    const mockupsStaleBlocksCart = mockupsStale;
     const shouldDisable =
       waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || flatSaveBlocking;
     const label = flatSaveBlocking
-      ? "Saving design\u2026"
+      ? flatApplyStatus === "saving"
+        ? "Saving design\u2026"
+        : "Refresh Mockups to Continue"
       : waitingForMockups
         ? "Generating preview\u2026"
         : mockupLoading
@@ -4261,14 +5266,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
       prompt: string;
       userPrompt?: string;
       size: string;
-      frameColor: string;
+      frameColor?: string;
       stylePreset?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
@@ -4393,7 +5398,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setLoginError("Please log in to your account to create designs.");
         } else if (data.requiresCredits) {
           setLoginError("No credits remaining. Please purchase more credits to continue.");
-        } else if (data.error === 'GALLERY_FULL') {
+        } else if (data.error === 'GALLERY_FULL' || data.galleryFull) {
           setShowGalleryFullModal(true);
           throw new Error('GALLERY_FULL');
         }
@@ -4444,8 +5449,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           freeGenerationsUsed: nextFreeUsed,
           isLoggedIn: customer?.isLoggedIn ?? !!storefrontCustomerId,
         };
-        setCustomer(updatedCust);
-        try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
+          setCustomer(updatedCust);
+          try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
 
         if (remaining > 0) {
           const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
@@ -4488,18 +5493,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Keep the finished result in view on mobile after generation completes.
       scrollArtworkIntoViewOnMobile(300);
 
-      // Persist design state to sessionStorage so refresh doesn't lose it
-      try {
-        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
-        sessionStorage.setItem(stateKey, JSON.stringify({
-          designId,
-          imageUrl,
-          prompt,
-          selectedSize,
-          selectedFrameColor,
-          savedAt: Date.now(),
-        }));
-      } catch (e) { /* sessionStorage may be unavailable */ }
+      // Persist design state to sessionStorage so refresh doesn't lose it.
+      // Skip in Generator Tester — product switches must start blank (no AR carryover).
+      if (!isAdminTester) {
+        try {
+          const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+          sessionStorage.setItem(stateKey, JSON.stringify({
+            designId,
+            imageUrl,
+            prompt,
+            selectedSize,
+            selectedFrameColor,
+            productTypeId,
+            savedAt: Date.now(),
+          }));
+        } catch (e) { /* sessionStorage may be unavailable */ }
+      }
 
       // Auto-save design to account if user is logged in (storefront mode)
       // Use variables.customerId (from the mutation payload) to avoid stale closure issues
@@ -4507,12 +5516,88 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      savedJobShopRef.current = data.jobShop || null;
+      // New artwork — seed framed default scale into placer (110% → 1.1) so bake
+      // matches what the gallery used to show as Zoom; clear stale fronts.
+      flatFrontMockupsRef.current = [];
+      lastTesterFlatAutoFlushJobRef.current = null;
+      testerVariantSyncSkipRef.current = true;
+      lastSyncedVariantKeyRef.current = null;
+      setFlatPlacementDirty(false);
+      setMockupsStale(false);
+      // Generate sets transform — don't treat that as a merchant zoom edit.
+      suppressMockupStaleRef.current = true;
+      if (usesFlatOnTheFlyPreview) {
+        // Apparel chest prints default to 85% (slider max 100%). Decor/phone keep zoomDefault.
+        const seedScale = flatDefaultPlacementScale({
+          edgeWrapMode: flatEdgeWrapMode,
+          decorMode: flatDecorMode,
+          fabricWeave: !!flatFabricWeave,
+          zoomPercent: zoomDefault,
+        });
+        const artworkAbs = toAbsoluteImageUrl(imageUrl);
+        // Honor Print Side dropdown — do not force back off when "both" is selected.
+        setFlatPlacerState({
+          view: "front",
+          placements: {
+            front: { scale: seedScale, offsetX: 0, offsetY: 0 },
+            back: { scale: seedScale, offsetX: 0, offsetY: 0 },
+          },
+          enabled: {
+            front:
+              !supportsPrintPlacementSelection ||
+              printPlacement === "front" ||
+              printPlacement === "both",
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : false,
+          },
+          linkSides: true,
+          artworkUrl: artworkAbs,
+        });
+      } else {
+        setFlatPlacerState(null);
+      }
+      // AOP needs panel upload; flat/mesh auto-Applies in tester (status → saved).
+      // Other Printify products can mark saved immediately after generate.
+      emitTesterDesignStatus({
+        jobId: data.jobId || null,
+        aopPanels: useAopCustomizer
+          ? "none"
+          : usesFlatOnTheFlyPreview
+            ? "saving"
+            : "saved",
+      });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
+
+      // Admin tester: persist size/colour/artwork immediately (do NOT send a partial
+      // flatPlacerState — shallow merge used to wipe placements from a later Apply).
+      if (isAdminTester && data.jobId) {
+        const panelSaveShop =
+          saveShop || data.jobShop || adminTesterShopRef.current || shopDomain;
+        if (panelSaveShop) {
+          const artworkAbs = toAbsoluteImageUrl(imageUrl);
+          void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId: data.jobId,
+              shop: panelSaveShop,
+              designState: {
+                selectedSize: selectedSize ?? null,
+                selectedFrameColor: selectedFrameColor || undefined,
+                artworkUrl: artworkAbs,
+              },
+            }),
+          }).catch((e) => console.warn("[AdminTester] early save-state failed:", e));
+        }
+      }
       console.log('[AutoSave] isStorefront:', isStorefront, 'customerId:', saveCustomerId, 'jobId:', data.jobId);
-      if (isStorefront && saveCustomerId && data.jobId) {
+      const merchantStudioSaveAllowed = !isMerchantStudio || canSaveMerchantDesignsRef.current;
+      if (isStorefront && saveCustomerId && data.jobId && merchantStudioSaveAllowed) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4533,6 +5618,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   setSavedDesigns(d.designs);
                   // Notify parent to refresh its gallery view
                   window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                }
+                if (isMerchantStudio) {
+                  // The admin "My Designs" page caches this same query (staleTime: Infinity) —
+                  // without invalidating, a newly saved design won't appear until a hard refresh.
+                  queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+                  queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
                 }
               })
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
@@ -4705,8 +5796,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     window.setTimeout(() => setCreditsPurchaseLoading(false), 8000);
   };
 
-  const handleGenerate = async () => {
-    const activePresetForCheck = filteredStylePresets.find(p => p.id === selectedPreset);
+  const handleGenerate = async (options?: {
+    skipStyleMismatchCheck?: boolean;
+    overridePresetId?: string;
+  }) => {
+    const effectivePresetId = options?.overridePresetId ?? selectedPreset;
+    if (options?.overridePresetId) {
+      setSelectedPreset(options.overridePresetId);
+    }
+
+    const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
@@ -4736,10 +5835,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     // Validate required style sub-option
-    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    const activePreset = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (activePreset?.options?.required && selectedStyleOption === "") {
       alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
       return;
+    }
+
+    if (!options?.skipStyleMismatchCheck && activePreset && prompt.trim()) {
+      const mismatch = detectStylePromptMismatch(
+        prompt,
+        activePreset.promptSuffix,
+        activePreset.name,
+      );
+      if (mismatch) {
+        setStyleMismatchDialog({
+          reasons: mismatch.reasons,
+          suggestions: resolveSuggestedStylePresets(
+            filteredStylePresets,
+            mismatch.suggestedStyleNames,
+            activePreset.id,
+          ),
+          currentStyleName: activePreset.name,
+        });
+        return;
+      }
     }
 
     // Build the prompt: prepend selected option fragment if present
@@ -4755,8 +5874,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!resolvedBaseImageUrl && (activePreset as any)?.baseImageUrl) {
       resolvedBaseImageUrl = (activePreset as any).baseImageUrl;
     }
-    if (selectedPreset && selectedPreset !== "") {
-      const preset = filteredStylePresets.find((p) => p.id === selectedPreset);
+    if (!shouldUseStyleReferenceImage(prompt, referenceImages.length > 0)) {
+      resolvedBaseImageUrl = undefined;
+    }
+    if (effectivePresetId && effectivePresetId !== "") {
+      const preset = filteredStylePresets.find((p) => p.id === effectivePresetId);
       if (preset?.promptSuffix) {
         fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
       }
@@ -4800,8 +5922,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         prompt: fullPrompt,
         userPrompt: prompt, // raw user text — stored separately so it can be restored cleanly
         size: selectedSize,
-        frameColor: selectedFrameColor || "black",
-        stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
+        // Prefer the live Colour selection — never silently force "black" (that
+        // sent Black frames to Printify after the merchant picked White).
+        frameColor:
+          selectedFrameColor ||
+          (productTypeConfig?.frameColors?.length
+            ? productTypeConfig.frameColors[0]?.id
+            : undefined),
+        stylePreset: effectivePresetId && effectivePresetId !== "" ? effectivePresetId : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
@@ -4917,19 +6045,53 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (arW && arH && arW > arH) zoomDefault = 110;
       }
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
-      
-      // Persist design state to sessionStorage so refresh doesn't lose it
-      try {
-        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
-        sessionStorage.setItem(stateKey, JSON.stringify({
-          designId: crypto.randomUUID(),
-          imageUrl: importedImageUrl,
-          prompt: source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`,
-          selectedSize,
-          selectedFrameColor,
-          savedAt: Date.now(),
-        }));
-      } catch (e) { /* sessionStorage may be unavailable */ }
+      flatFrontMockupsRef.current = [];
+      if (usesFlatOnTheFlyPreview) {
+        const seedScale = flatDefaultPlacementScale({
+          edgeWrapMode: flatEdgeWrapMode,
+          decorMode: flatDecorMode,
+          fabricWeave: !!flatFabricWeave,
+          zoomPercent: zoomDefault,
+        });
+        const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
+        // Honor Print Side dropdown — do not force back off when "both" is selected.
+        setFlatPlacerState({
+          view: "front",
+          placements: {
+            front: { scale: seedScale, offsetX: 0, offsetY: 0 },
+            back: { scale: seedScale, offsetX: 0, offsetY: 0 },
+          },
+          enabled: {
+            front:
+              !supportsPrintPlacementSelection ||
+              printPlacement === "front" ||
+              printPlacement === "both",
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : false,
+          },
+          linkSides: true,
+          artworkUrl: artworkAbs,
+        });
+      } else {
+        setFlatPlacerState(null);
+      }
+
+      // Persist design state to sessionStorage so refresh doesn't lose it.
+      if (!isAdminTester) {
+        try {
+          const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+          sessionStorage.setItem(stateKey, JSON.stringify({
+            designId: crypto.randomUUID(),
+            imageUrl: importedImageUrl,
+            prompt: source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`,
+            selectedSize,
+            selectedFrameColor,
+            productTypeId,
+            savedAt: Date.now(),
+          }));
+        } catch (e) { /* sessionStorage may be unavailable */ }
+      }
 
       // Clear any existing mockups. For AOP: show Pattern Customizer; else fetch Printify mockups.
       setPrintifyMockups([]);
@@ -5005,7 +6167,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (variantsFetchingKeyRef.current === fetchKey) {
       return;
     }
-
+    
     const needsColorOptions = showFrameColorSelector;
     const catalogUsable =
       variantCatalogIsUsable(shopifyVariants.length > 0 ? shopifyVariants : variants, needsColorOptions);
@@ -5073,7 +6235,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
 
-    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam,
+    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
                 'variants:', variants.length, 'shopifyVariants:', shopifyVariants.length,
                 'selectedSize:', selectedSize, 'selectedFrameColor:', selectedFrameColor,
                 'hasColors:', hasColors);
@@ -5144,7 +6306,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Keep baseVariantForShadowRef current so fetchPrintifyMockups (with limited deps) can
   // read the latest resolved variant for shadow-product pre-creation without closure staleness.
   useEffect(() => {
-    const matched = findVariantId();
+      const matched = findVariantId();
     baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
@@ -5242,10 +6404,108 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     });
   };
 
-  const flushFlatPlacer = useCallback(async () => {
-    if (!flatPlacerRef.current) return;
-    await flatPlacerRef.current.applyIfNeeded();
+  const flushFlatPlacer = useCallback(async (opts?: { force?: boolean }) => {
+    if (!flatPlacerRef.current) return false;
+    return flatPlacerRef.current.applyIfNeeded(opts);
   }, []);
+
+  const flushDesignForTester = useCallback(async () => {
+    if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
+      // Printify zoom products: placement is persisted in the background; flush now.
+      if (isAdminTester && !useAopCustomizer) {
+        const ok = await persistAdminTesterPrintifyDesign();
+        if (!ok && testerDesignStatusRef.current.aopPanels !== "saved") {
+          throw new Error(
+            "Could not sync placement for the test order — try adjusting zoom once, then send again.",
+          );
+        }
+      } else if (mockupsStale) {
+        throw new Error("Refresh mockups before sending a test order.");
+      }
+      return;
+    }
+    if (flatApplyInFlightRef.current) {
+      for (let i = 0; i < 60; i++) {
+        if (!flatApplyInFlightRef.current) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    if (mockupsStale || flatPlacementDirty || flatPlacerRef.current?.hasPendingChanges()) {
+      emitTesterDesignStatus({
+        jobId: savedJobIdRef.current,
+        aopPanels: "saving",
+      });
+      flatApplyInFlightRef.current = true;
+      try {
+        const nextScale = Math.max(0.05, Math.min(2.5, transform.scale / 100));
+        setFlatPlacerState((prev) => {
+          if (!prev) return prev;
+          const front = prev.placements?.front ?? { scale: 1, offsetX: 0, offsetY: 0 };
+          const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
+          return {
+            ...prev,
+            placements: prev.linkSides
+              ? {
+                  front: { ...front, scale: nextScale },
+                  back: { ...back, scale: nextScale },
+                }
+              : {
+                  ...prev.placements,
+                  [prev.view]: {
+                    ...(prev.placements?.[prev.view] ?? front),
+                    scale: nextScale,
+                  },
+                },
+          };
+        });
+        await new Promise((r) => setTimeout(r, 100));
+        let applied = false;
+        for (let i = 0; i < 30; i++) {
+          if (flatPlacerRef.current) {
+            applied = !!(await flushFlatPlacer({ force: true }));
+            if (applied) break;
+          }
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        setMockupsStale(false);
+        setFlatPlacementDirty(false);
+        if (!applied && savedJobIdRef.current) {
+          emitTesterDesignStatus({
+            jobId: savedJobIdRef.current,
+            aopPanels: "saved",
+          });
+        }
+      } finally {
+        flatApplyInFlightRef.current = false;
+      }
+    }
+    if (testerDesignStatusRef.current.aopPanels !== "saved") {
+      throw new Error(
+        "Design is not saved yet — wait for Design saved, then send the test order.",
+      );
+    }
+  }, [
+    usesFlatOnTheFlyPreview,
+    generatedDesign?.imageUrl,
+    mockupsStale,
+    flatPlacementDirty,
+    transform.scale,
+    emitTesterDesignStatus,
+    flushFlatPlacer,
+    isAdminTester,
+    useAopCustomizer,
+    persistAdminTesterPrintifyDesign,
+  ]);
+
+  useEffect(() => {
+    if (embeddedContext?.mode !== "admin-tester") return;
+    const ref = embeddedContext.flushDesignRef;
+    if (!ref) return;
+    ref.current = flushDesignForTester;
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, flushDesignForTester]);
 
   useEffect(() => {
     const onHide = () => {
@@ -5260,6 +6520,136 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
   }, [flatPlacerEditOpen, flushFlatPlacer]);
 
+  // Generator Tester has no ATC — auto-Apply flat placement after generate so
+  // test orders get current size/colour/artwork and status reaches "saved".
+  useEffect(() => {
+    if (!isAdminTester || !usesFlatOnTheFlyPreview) return;
+    if (!flatPlacerEditOpen || !generatedDesign?.imageUrl) return;
+    const jobId = savedJobIdRef.current;
+    if (!jobId || lastTesterFlatAutoFlushJobRef.current === jobId) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < 30 && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        if (cancelled) return;
+        if (!flatPlacerRef.current) continue;
+        lastTesterFlatAutoFlushJobRef.current = jobId;
+        try {
+          await flushFlatPlacer();
+        } catch (e) {
+          lastTesterFlatAutoFlushJobRef.current = null;
+          console.warn("[AdminTester] auto flat Apply failed:", e);
+          emitTesterDesignStatus({ jobId, aopPanels: "error" });
+        }
+        return;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    flatPlacerEditOpen,
+    generatedDesign?.imageUrl,
+    generatedDesign?.id,
+    flushFlatPlacer,
+    emitTesterDesignStatus,
+  ]);
+
+  // Every size/colour change after generate must re-persist credentials + re-Apply
+  // before a test order can send (status → saving → saved).
+  useEffect(() => {
+    if (!isAdminTester || !usesFlatOnTheFlyPreview) return;
+    const jobId = savedJobIdRef.current;
+    const shop =
+      shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    if (!jobId || !shop || !generatedDesign?.imageUrl) return;
+    if (!selectedSize) return;
+
+    // First bind after generate — initial auto-Apply owns the save.
+    if (testerVariantSyncSkipRef.current) {
+      testerVariantSyncSkipRef.current = false;
+      lastSyncedVariantKeyRef.current = `${jobId}|${selectedSize}|${selectedFrameColor || ""}`;
+      return;
+    }
+
+    const variantKey = `${jobId}|${selectedSize}|${selectedFrameColor || ""}`;
+    if (lastSyncedVariantKeyRef.current === variantKey) return;
+    lastSyncedVariantKeyRef.current = variantKey;
+
+    let cancelled = false;
+    emitTesterDesignStatus({ jobId, aopPanels: "saving" });
+    const t = window.setTimeout(() => {
+      void (async () => {
+        if (flatApplyInFlightRef.current) return;
+        flatApplyInFlightRef.current = true;
+        const artworkAbs = toAbsoluteImageUrl(generatedDesign.imageUrl);
+        const liveColor = selectedFrameColorRef.current;
+        const phoneColor =
+          isPhoneCaseProduct && !frameColorsArePhoneModels
+            ? "default"
+            : liveColor || selectedFrameColorRef.current || "";
+        try {
+          const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop,
+              designState: {
+                selectedSize: selectedSizeRef.current || selectedSize,
+                selectedFrameColor: phoneColor || undefined,
+                artworkUrl: artworkAbs,
+              },
+            }),
+          });
+          if (!res.ok) throw new Error(`save-state ${res.status}`);
+          if (cancelled) return;
+          // Retry until placer assets are ready — applyIfNeeded returns false while loading.
+          let applied = false;
+          for (let i = 0; i < 40 && !cancelled; i++) {
+            if (flatPlacerRef.current) {
+              applied = !!(await flushFlatPlacer({ force: true }));
+              if (applied) break;
+            }
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          if (cancelled) return;
+          setFlatPlacementDirty(false);
+          setMockupsStale(false);
+          if (!applied) {
+            // Size/colour are on the job; bake can still use default placement.
+            emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+          }
+        } catch (e) {
+          if (cancelled) return;
+          console.warn("[AdminTester] size/colour re-Apply failed:", e);
+          emitTesterDesignStatus({ jobId, aopPanels: "error" });
+        } finally {
+          flatApplyInFlightRef.current = false;
+        }
+      })();
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [
+    isAdminTester,
+    usesFlatOnTheFlyPreview,
+    selectedSize,
+    selectedFrameColor,
+    generatedDesign?.imageUrl,
+    shopDomain,
+    isPhoneCaseProduct,
+    frameColorsArePhoneModels,
+    flushFlatPlacer,
+  ]);
+
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
@@ -5270,9 +6660,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !flatRenderFailed &&
       flatPlacerEditOpen
     );
-    if (flatEditorOpen) {
+    if (flatEditorOpen || flatPlacementDirty) {
       try {
-        await flushFlatPlacer();
+        await flushFlatPlacer({ force: true });
+        setFlatPlacementDirty(false);
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         return;
@@ -5280,15 +6671,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     if (mockupsStale) {
-      const flatOnTheFly = !!(
-        usesFlatOnTheFlyPreview &&
-        generatedDesign?.imageUrl &&
-        !flatRenderFailed
+      setVariantError(
+        "Please refresh mockups before adding to cart — zoom or colour changed since the last preview.",
       );
-      if (!flatOnTheFly) {
-        setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
-        return;
-      }
+      return;
     }
 
     const variantId = findVariantId();
@@ -5527,7 +6913,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setSelectedSize('');
             setSelectedFrameColor('');
             try {
-              const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
               sessionStorage.removeItem(stateKey);
             } catch (_) { /* sessionStorage may be unavailable */ }
             const url = new URL(window.location.href);
@@ -5605,12 +6991,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
    * raster as `printifyMockupImages[front]` so `getPreferredMockupUrl()`
    * returns it (cart `_mockup_url` line property, ATC enabled state, etc).
    *
-   * Stage 5 will layer in the per-panel reverse-mesh-warp print files and
-   * the optional Printify "Printers Mockup" background-fire on top of this
-   * — for now we deliberately ship without it because (a) the user already
-   * gets a high-fidelity local preview that matches what Printify will
-   * produce, and (b) Printify mockup generation needs the per-panel print
-   * files we don't compute yet.
+   * Stage 5: also fires Printify mockup generation with per-panel print rasters
+   * and garment bgColor so blueprint-only placeholders (collar, trim) render
+   * correctly — same path as legacy PatternCustomizer AOP apply.
    */
   const handleHoodieAopApply = useCallback(async (
     result: HoodieAopPlacerApplyResult,
@@ -5631,6 +7014,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     const frontDataUrl = frontCanvas.toDataURL("image/png");
     const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+    const panelSaveShop = shopDomain || savedJobShopRef.current;
+    const willPersistPanels =
+      (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
+    if (willPersistPanels) {
+      emitTesterDesignStatus({
+        jobId: savedJobIdRef.current,
+        aopPanels: "saving",
+      });
+    }
+    const mockupPanels = result.renderPrintPanels({
+      maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+    });
+    const fullPrintPanels = result.renderPrintPanels();
 
     setMockupLoading(true);
     setMockupTriggered(true);
@@ -5644,11 +7040,26 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         { url: frontHosted, label: "front" },
       ];
       if (backHosted) images.push({ url: backHosted, label: "back" });
-      const urls = images.map((i) => i.url);
 
-      setPrintifyMockupImages(images);
-      setPrintifyMockups(urls);
-      setSelectedMockupIndex(0);
+      aopBaseMockupsRef.current = images;
+      const withPerson = [...images, ...aopPersonMockupsRef.current];
+      const withPersonUrls = withPerson.map((i) => i.url);
+      setPrintifyMockupImages(withPerson);
+      setPrintifyMockups(withPersonUrls);
+      setSelectedMockupIndex((prev) => {
+        // Stick keeps Printers Mockup after placement edits; mode switch clears
+        // stick first so apply lands on Artwork / live editor.
+        if (
+          !stickAopPersonGalleryRef.current ||
+          aopPersonMockupsRef.current.length === 0
+        ) {
+          return 0;
+        }
+        const personIdx = withPerson.findIndex((m) =>
+          isPersonMockupLabel(m.label),
+        );
+        return personIdx >= 0 ? 1 + personIdx : prev;
+      });
       // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
       // ATC. The hoodie placer has no separate "pattern" — the local
       // composite IS the artwork — so we point it at the front raster.
@@ -5656,6 +7067,87 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupFailed(false);
       setMockupError(null);
       setMockupsStale(false);
+
+      if (
+        productTypeConfig?.hasPrintifyMockups &&
+        selectedSize &&
+        mockupPanels?.length
+      ) {
+        lastAopPanelUrlsRef.current = mockupPanels;
+        void fetchPrintifyMockups(
+          frontHosted,
+          productTypeConfig.id,
+          selectedSize,
+          selectedFrameColor || "default",
+          transform.scale,
+          50,
+          50,
+          frontHosted,
+          undefined,
+          mockupPanels,
+          undefined,
+          result.state.backgroundColor,
+        );
+      }
+
+      // Persist the flat per-panel PRINT files on the job's designState
+      // (aopPrintPanelUrls). This is what order fulfillment, the admin
+      // test-order flow, and permanent design-product publishing submit to
+      // Printify as print_areas — without it a placer-designed AOP product
+      // can never be auto-fulfilled. Runs non-blocking so the mockup upload
+      // (which gates ATC) isn't delayed by the heavier panel bake.
+      const panelSaveShopInner = shopDomain || savedJobShopRef.current;
+      if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShopInner) {
+        const panelJobId = savedJobIdRef.current;
+        // Versioned capture: bump the sequence for this apply; if a newer apply
+        // starts while this one is still baking/uploading, abort before the write
+        // so stale panels can never overwrite the latest state.
+        const seq = ++aopPanelPersistSeqRef.current;
+        const isStale = () => seq !== aopPanelPersistSeqRef.current;
+        const panelCaptureSignature = JSON.stringify({
+          mode: result.state.mode,
+          artworkUrl: result.state.artworkUrl,
+          backgroundColor: result.state.backgroundColor,
+          tileSettings: result.state.tileSettings,
+          pocketsEnabled: result.state.pocketsEnabled,
+          placements: result.state.placements,
+          enabled: result.state.enabled,
+          sleevesMirrored: result.state.sleevesMirrored,
+          legsSynced: result.state.legsSynced,
+          legsMirrored: result.state.legsMirrored,
+        });
+        void (async () => {
+          try {
+            const panelsForSave = fullPrintPanels ?? result.renderPrintPanels();
+            if (!panelsForSave?.length || isStale()) return;
+            const aopPrintPanelUrls = await Promise.all(
+              panelsForSave.map(async ({ position, dataUrl }) => ({
+                position,
+                url: await ensureHostedUrl(dataUrl),
+              })),
+            );
+            if (isStale()) return;
+            await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId: panelJobId,
+                shop: panelSaveShopInner,
+                designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
+              }),
+            });
+            console.log(
+              "[HoodieAopApply] Saved aopPrintPanelUrls on job",
+              panelJobId,
+              aopPrintPanelUrls.map((p) => p.position).join(","),
+            );
+            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
+          } catch (e) {
+            console.error("[HoodieAopApply] Failed to persist print panels:", e);
+            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
+          }
+        })();
+      }
 
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
@@ -5760,7 +7252,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, shopDomain, storefrontCustomerId]);
+  }, [
+    isStorefront,
+    isAdminTester,
+    shopDomain,
+    storefrontCustomerId,
+    emitTesterDesignStatus,
+    productTypeConfig,
+    selectedSize,
+    selectedFrameColor,
+    transform.scale,
+    fetchPrintifyMockups,
+  ]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
   const persistFlatMockupsForGallery = useCallback(
@@ -5847,58 +7350,137 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
+    const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    const shouldPersist =
+      (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
+    if (shouldPersist) {
+      emitTesterDesignStatus({
+        jobId: savedJobIdRef.current,
+        aopPanels: "saving",
+      });
+    }
+
     try {
       const [frontHosted, backHosted] = await Promise.all([
         ensureHostedUrl(frontDataUrl),
         backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
       ]);
 
-      const images: { url: string; label: string }[] = [
+      const frontImages: { url: string; label: string }[] = [
         { url: frontHosted, label: "front" },
       ];
-      if (backHosted) images.push({ url: backHosted, label: "back" });
-      const urls = images.map((i) => i.url);
+      if (backHosted) frontImages.push({ url: backHosted, label: "back" });
+      flatFrontMockupsRef.current = frontImages;
 
-      setPrintifyMockupImages(images);
-      setPrintifyMockups(urls);
-      setSelectedMockupIndex(0);
+      // Keep any previously merged lifestyle/context shots (Horizontal-style gallery).
+      setPrintifyMockupImages((prev) => {
+        const seen = new Set(frontImages.map((i) => mockupImageUrlKey(i.url)));
+        const extras = prev.filter(
+          (img) =>
+            isPrintifyOnDemandMockupLabel(img.label) ||
+            (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
+              !seen.has(mockupImageUrlKey(img.url))),
+        );
+        return [...frontImages, ...extras].slice(0, 4);
+      });
+      setPrintifyMockups((prev) => {
+        const next = frontImages.map((i) => i.url);
+        const seen = new Set(next.map(mockupImageUrlKey));
+        for (const url of prev) {
+          const key = mockupImageUrlKey(url);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          next.push(url);
+          if (next.length >= 4) break;
+        }
+        return next;
+      });
+      setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
       setMockupFailed(false);
       setMockupError(null);
       setMockupsStale(false);
-      currentMockupColorRef.current = flatBlankColorId;
+      // Match the gallery raster cache key shape (defined later in this component).
+      currentMockupColorRef.current = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
 
-      if (isStorefront && savedJobIdRef.current && shopDomain) {
+      if (shouldPersist && savedJobIdRef.current && panelSaveShop) {
         const jobId = savedJobIdRef.current;
-        await safeFetch(`${API_BASE}/api/storefront/save-state`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId,
-            shop: shopDomain,
-            designState: {
-              flatPlacerState: result.state,
-              flatMockups: { front: frontHosted, back: backHosted },
-            },
-          }),
-        }).catch((e) => {
-          console.error("[FlatApply] Failed to persist designState:", e);
-        });
+        const artworkUrl = generatedDesign?.imageUrl
+          ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+          : result.state.artworkUrl;
+        const liveColor = selectedFrameColorRef.current || selectedFrameColor;
+        const phoneColor =
+          isPhoneCaseProduct && !frameColorsArePhoneModels
+            ? "default"
+            : liveColor || undefined;
+        try {
+          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop: panelSaveShop,
+              designState: {
+                flatPlacerState: { ...result.state, artworkUrl },
+                flatMockups: { front: frontHosted, back: backHosted },
+                selectedSize: selectedSizeRef.current || selectedSize || null,
+                selectedFrameColor: phoneColor ?? null,
+                artworkUrl: artworkUrl || null,
+              },
+            }),
+          });
 
-        const mockupUrls = [frontHosted, backHosted].filter((u): u is string => !!u);
-        if (mockupUrls.length > 0) {
-          await persistFlatMockupsForGallery(
-            mockupUrls,
-            `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
-          );
+          const mockupUrls = [frontHosted, backHosted].filter((u): u is string => !!u);
+          if (mockupUrls.length > 0) {
+            await persistFlatMockupsForGallery(
+              mockupUrls,
+              `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
+            );
+          }
+          setFlatPlacementDirty(false);
+          setMockupsStale(false);
+          emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+        } catch (e) {
+          console.error("[FlatApply] Failed to persist designState:", e);
+          emitTesterDesignStatus({ aopPanels: "error" });
         }
+      } else if (isAdminTester && savedJobIdRef.current) {
+        // Placement ready even if shop persist is unavailable — allow test order bake from job+state.
+        setFlatPlacementDirty(false);
+        setMockupsStale(false);
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "saved",
+        });
       }
+
+      // Lifestyle/context is on-demand via Lifestyle Shot — do not auto-create
+      // Printify "Mockup Preview" products on every apply.
     } catch (err: any) {
       console.error("[FlatApply] Upload failed:", err);
       setMockupError(err?.message || "Failed to apply design");
       setMockupFailed(true);
+      if (shouldPersist) emitTesterDesignStatus({ aopPanels: "error" });
       throw err;
     }
-  }, [isStorefront, shopDomain, selectedFrameColor, flatBlankColorId, selectedSize, persistFlatMockupsForGallery]);
+  }, [
+    isStorefront,
+    isAdminTester,
+    shopDomain,
+    selectedFrameColor,
+    flatBlankColorId,
+    flatFabricWeave,
+    selectedSize,
+    persistFlatMockupsForGallery,
+    emitTesterDesignStatus,
+    flatDecorMode,
+    isPhoneCaseProduct,
+    frameColorsArePhoneModels,
+  ]);
+
+  const handleFlatPlacerViewChange = useCallback(() => {
+    // Leave Lifestyle / catalog override — show the live editor blank again.
+    setSelectedMockupIndex(0);
+  }, []);
 
   const handleFlatPlacerChange = useCallback(
     (s: FlatProductPlacerState) => {
@@ -5906,8 +7488,76 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ? toAbsoluteImageUrl(generatedDesign.imageUrl)
         : s.artworkUrl;
       setFlatPlacerState({ ...s, artworkUrl });
+      // Keep Print Side dropdown aligned with PRINT ON FRONT/BACK toggles.
+      if (supportsPrintPlacementSelection) {
+        const derived: "front" | "back" | "both" =
+          s.enabled.front && s.enabled.back
+            ? "both"
+            : s.enabled.back && !s.enabled.front
+              ? "back"
+              : "front";
+        setPrintPlacement((prev) => (prev === derived ? prev : derived));
+      }
+      setFlatPlacementDirty(true);
+      if (isAdminTester && savedJobIdRef.current) {
+        emitTesterDesignStatus({
+          jobId: savedJobIdRef.current,
+          aopPanels: "none",
+        });
+      }
+      // Debounced auto-Apply so scale/position reach the job before test order.
+      if (flatPlacementDebounceRef.current) {
+        clearTimeout(flatPlacementDebounceRef.current);
+      }
+      flatPlacementDebounceRef.current = setTimeout(() => {
+        void (async () => {
+          if (flatApplyInFlightRef.current) return;
+          // No force — skip if placer already matches last Apply (avoids save loop).
+          if (flatPlacerRef.current && !flatPlacerRef.current.hasPendingChanges()) {
+            setFlatPlacementDirty(false);
+            if (isAdminTester && savedJobIdRef.current) {
+              emitTesterDesignStatus({
+                jobId: savedJobIdRef.current,
+                aopPanels: "saved",
+              });
+            }
+            return;
+          }
+          flatApplyInFlightRef.current = true;
+          try {
+            if (isAdminTester && savedJobIdRef.current) {
+              emitTesterDesignStatus({
+                jobId: savedJobIdRef.current,
+                aopPanels: "saving",
+              });
+            }
+            const applied = await flushFlatPlacer();
+            if (applied) {
+              setFlatPlacementDirty(false);
+              setMockupsStale(false);
+            } else if (isAdminTester && savedJobIdRef.current) {
+              emitTesterDesignStatus({
+                jobId: savedJobIdRef.current,
+                aopPanels: "saved",
+              });
+              setFlatPlacementDirty(false);
+            }
+          } catch (e) {
+            console.warn("[FlatPlacer] debounced Apply failed:", e);
+            if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+          } finally {
+            flatApplyInFlightRef.current = false;
+          }
+        })();
+      }, 700);
     },
-    [generatedDesign?.imageUrl],
+    [
+      generatedDesign?.imageUrl,
+      isAdminTester,
+      emitTesterDesignStatus,
+      flushFlatPlacer,
+      supportsPrintPlacementSelection,
+    ],
   );
 
   const handleFlatAssetsFailed = useCallback((reason: string) => {
@@ -6454,7 +8104,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
-      const target = e.target as Element | null;
+        const target = e.target as Element | null;
 
       // Let Radix portaled overlays scroll internally when the pointer is over them.
       if (
@@ -6496,7 +8146,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // toggle resizes the same iframe without a reload), even though
       // overflow/CSS have already switched correctly. See
       // docs/iframe-scroll-architecture.md before changing this.
-      const scrollEl = document.scrollingElement || document.documentElement;
+        const scrollEl = document.scrollingElement || document.documentElement;
       const maxScrollTop = scrollEl.scrollHeight - scrollEl.clientHeight;
       const maxScrollLeft = scrollEl.scrollWidth - scrollEl.clientWidth;
       const atBottom = scrollEl.scrollTop >= maxScrollTop - 1;
@@ -6507,13 +8157,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const pinnedX = e.deltaX === 0 || (e.deltaX > 0 && atRight) || (e.deltaX < 0 && atLeft);
 
       if (pinnedY && pinnedX) {
-        window.parent.postMessage({
-          type: 'ai-art-studio:wheel',
+            window.parent.postMessage({
+              type: 'ai-art-studio:wheel',
           deltaX: e.deltaX,
           deltaY: e.deltaY,
           deltaZ: e.deltaZ,
           deltaMode: e.deltaMode,
-        }, '*');
+            }, '*');
         return;
       }
 
@@ -6818,17 +8468,323 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
+  // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
+  useEffect(() => {
+    if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
+    const item = postGenGalleryItems[selectedMockupIndex];
+    if (!item || isFlatPlacerGalleryReachable(item)) return;
+    setSelectedMockupIndex((i) =>
+      stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
+    );
+  }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
+
+  // Framed decor + catalog blanks + tapestry + folded/flat totes share on-demand Printify.
+  const canRequestLifestyleShot = !!(
+    (flatDecorMode ||
+      isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
+      flatFabricWeave ||
+      toteFoldedLayout ||
+      (flatPlacerEligible && !isApparel && !flatEdgeWrapMode)) &&
+    flatPlacerEligible &&
+    productTypeConfig?.hasPrintifyMockups &&
+    selectedSize &&
+    !useAopCustomizer
+  );
+  const hasLifestyleShot = printifyMockupImages.some((img) =>
+    isPrintifyOnDemandMockupLabel(img.label),
+  );
+  /** Shimmer/clickable only after generate + placement settled; dims when dirty. */
+  const lifestyleShotActive = !!(
+    canRequestLifestyleShot &&
+    generatedDesign?.imageUrl &&
+    !lifestyleShotLoading &&
+    !flatPlacementDirty &&
+    flatApplyStatus !== "saving" &&
+    flatApplyStatus !== "error"
+  );
+  const selectedPostGenItem = postGenGalleryItems[selectedMockupIndex] ?? null;
+  const flatCanvasOverrideUrl =
+    flatPlacerActive &&
+    selectedPostGenItem &&
+    ((selectedPostGenItem.kind === "mockup" &&
+      isPrintifyOnDemandMockupLabel(selectedPostGenItem.label)) ||
+      selectedPostGenItem.kind === "catalog")
+      ? selectedPostGenItem.url
+      : null;
+  const flatCanvasOverrideLabel = flatCanvasOverrideUrl
+    ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Context")
+    : null;
+  const hoodieCanvasOverrideUrl =
+    showPatternStep &&
+    !!productTypeConfig?.panelMappingTemplate &&
+    selectedPostGenItem?.kind === "mockup" &&
+    isPersonMockupLabel(selectedPostGenItem.label)
+      ? selectedPostGenItem.url
+      : null;
+  const hoodieCanvasOverrideLabel = hoodieCanvasOverrideUrl
+    ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Front Person")
+    : null;
+
+  /** Mesh AOP on-demand Front Person (Printers Mockup). */
+  const canRequestAopPrintersMockup = !!(
+    useAopCustomizer &&
+    productTypeConfig?.panelMappingTemplate &&
+    productTypeConfig?.hasPrintifyMockups &&
+    selectedSize &&
+    generatedDesign?.imageUrl
+  );
+  const hasAopPersonMockup = printifyMockupImages.some((img) =>
+    isPersonMockupLabel(img.label),
+  );
+  const aopPrintersMockupActive = !!(
+    canRequestAopPrintersMockup &&
+    !lifestyleShotLoading &&
+    !mockupLoading &&
+    (!!aopPatternUrl ||
+      printifyMockupImages.some((img) => img.label === "front"))
+  );
+
+  const requestAopPrintersMockup = useCallback(
+    async (panels: Array<{ position: string; dataUrl: string }>) => {
+      if (
+        !canRequestAopPrintersMockup ||
+        !productTypeConfig?.id ||
+        !generatedDesign?.imageUrl ||
+        lifestyleShotLoading ||
+        !panels?.length
+      ) {
+        return;
+      }
+      setLifestyleShotLoading(true);
+      setLifestyleShotError(null);
+      lastAopPanelUrlsRef.current = panels;
+      try {
+        const designUrl =
+          aopPatternUrl ||
+          aopBaseMockupsRef.current[0]?.url ||
+          toAbsoluteImageUrl(generatedDesign.imageUrl);
+        const result = await fetchPrintifyMockups(
+          designUrl,
+          productTypeConfig.id,
+          selectedSize!,
+          selectedFrameColor || "default",
+          100,
+          50,
+          50,
+          designUrl,
+          undefined,
+          panels,
+          undefined,
+          hoodieAopPlacerState?.backgroundColor,
+          { mergePersonViews: true },
+        );
+        if (!result.ok) {
+          const msg = result.error || "Printers mockup failed";
+          setLifestyleShotError(msg);
+          toast({
+            title: "Printers mockup unavailable",
+            description: msg,
+            variant: "destructive",
+          });
+          return;
+        }
+        toast({
+          title: "Printers mockup ready",
+          description:
+            "Showing Front Person — use the arrows under the preview to switch views.",
+        });
+      } finally {
+        setLifestyleShotLoading(false);
+      }
+    },
+    [
+      canRequestAopPrintersMockup,
+      productTypeConfig?.id,
+      generatedDesign?.imageUrl,
+      lifestyleShotLoading,
+      fetchPrintifyMockups,
+      selectedSize,
+      selectedFrameColor,
+      aopPatternUrl,
+      hoodieAopPlacerState?.backgroundColor,
+      toast,
+    ],
+  );
+
+  const requestLifestyleShot = useCallback(async () => {
+    if (
+      !canRequestLifestyleShot ||
+      !lifestyleShotActive ||
+      !productTypeConfig?.id ||
+      !generatedDesign?.imageUrl ||
+      lifestyleShotLoading
+    ) {
+      return;
+    }
+    // Persist latest placement first so Printify scale matches what they see.
+    if (flatPlacerRef.current?.hasPendingChanges()) {
+      await flushFlatPlacer({ force: true });
+    }
+    const front = flatPlacerState?.placements?.front;
+    const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
+    // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
+    const scalePct = Math.round(
+      coverScale * FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR * 100,
+    );
+    const xPct = Math.round(
+      Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
+    );
+    const yPct = Math.round(
+      Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)),
+    );
+    setLifestyleShotLoading(true);
+    setLifestyleShotError(null);
+    const isTapestryPrinters = flatFabricWeave;
+    try {
+      const result = await fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize!,
+        selectedFrameColor || "default",
+        scalePct,
+        xPct,
+        yPct,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        isTapestryPrinters
+          ? { mergeProductMockups: true }
+          : { mergeContextOnly: true },
+      );
+      if (!result.ok) {
+        const msg =
+          result.error ||
+          (isTapestryPrinters ? "Printers mockup failed" : "Lifestyle shot failed");
+        setLifestyleShotError(msg);
+        toast({
+          title: isTapestryPrinters
+            ? "Printers mockup unavailable"
+            : "Lifestyle shot unavailable",
+          description: msg,
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({
+        title: isTapestryPrinters ? "Printers mockup ready" : "Lifestyle shot ready",
+        description: isTapestryPrinters
+          ? "Showing the printer’s woven mockup — use the dots or arrows to switch views."
+          : "Showing On Person — use the dots or arrows under the preview to switch views. Front/Back returns to the editor.",
+      });
+    } finally {
+      setLifestyleShotLoading(false);
+    }
+  }, [
+    canRequestLifestyleShot,
+    lifestyleShotActive,
+    productTypeConfig?.id,
+    generatedDesign?.imageUrl,
+    lifestyleShotLoading,
+    flushFlatPlacer,
+    flatPlacerState?.placements?.front,
+    fetchPrintifyMockups,
+    selectedSize,
+    selectedFrameColor,
+    flatFabricWeave,
+    toast,
+  ]);
+
+  // Dim lifestyle when the customer nudges/scales after a ready state.
+  useEffect(() => {
+    if (flatPlacementDirty) setLifestyleShotError(null);
+  }, [flatPlacementDirty]);
+
   const flatPlacerSaveBlocking = !!(
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
+  // Stable identity for keeping on-demand Printers/Context slides across re-rasters.
+  // Refresh nonce must NOT be part of this — Apply used to set identity without nonce,
+  // so `…::weave` !== `…::weave::r0` wiped Printers Mockup right after it landed.
+  const flatMockupBlankIdentity = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
+  const flatMockupBlankKey = `${flatMockupBlankIdentity}::r${flatMockupRefreshNonce}`;
 
-  // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
+  // Force mockup re-raster when blank / size changes (apparel + framed decor — same auto path as HFP Printify).
   useEffect(() => {
     if (!flatPlacerEligible) return;
     currentMockupColorRef.current = "";
-  }, [flatPlacerEligible, flatBlankColorId]);
+    lastFlatGalleryMockupKeyRef.current = "";
+    if (flatDecorMode && generatedDesign?.imageUrl) {
+      setFlatMockupRefreshing(true);
+    }
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize, flatDecorMode, generatedDesign?.imageUrl]);
+
+  const handleRefreshFlatMockups = useCallback(() => {
+    setMockupError(null);
+    setMockupFailed(false);
+    setFlatRenderFailed(false);
+    currentMockupColorRef.current = "";
+    lastFlatGalleryMockupKeyRef.current = "";
+    setFlatMockupRefreshing(true);
+
+    // Map gallery zoom into placer placement so bake matches what the merchant sees.
+    const nextScale = Math.max(0.05, Math.min(2.5, transform.scale / 100));
+    setFlatPlacerState((prev) => {
+      if (!prev) return prev;
+      const front = prev.placements?.front ?? { scale: 1, offsetX: 0, offsetY: 0 };
+      const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
+      const placements = prev.linkSides
+        ? {
+            front: { ...front, scale: nextScale },
+            back: { ...back, scale: nextScale },
+          }
+        : {
+            ...prev.placements,
+            [prev.view]: { ...(prev.placements?.[prev.view] ?? front), scale: nextScale },
+          };
+      return { ...prev, placements };
+    });
+
+    setFlatMockupRefreshNonce((n) => n + 1);
+
+    void (async () => {
+      if (flatApplyInFlightRef.current) {
+        setMockupsStale(false);
+        return;
+      }
+      flatApplyInFlightRef.current = true;
+      try {
+        if (isAdminTester && savedJobIdRef.current) {
+          emitTesterDesignStatus({
+            jobId: savedJobIdRef.current,
+            aopPanels: "saving",
+          });
+        }
+        // Allow placer remount after nonce bump.
+        for (let i = 0; i < 25; i++) {
+          if (flatPlacerRef.current) break;
+          await new Promise((r) => setTimeout(r, 120));
+        }
+        const applied = await flushFlatPlacer({ force: true });
+        setMockupsStale(false);
+        setFlatPlacementDirty(false);
+        if (!applied && isAdminTester && savedJobIdRef.current) {
+          emitTesterDesignStatus({
+            jobId: savedJobIdRef.current,
+            aopPanels: "saved",
+          });
+        }
+      } catch (e) {
+        console.warn("[RefreshMockups] flat Apply failed:", e);
+        if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+      } finally {
+        flatApplyInFlightRef.current = false;
+        setFlatMockupRefreshing(false);
+      }
+    })();
+  }, [transform.scale, isAdminTester, emitTesterDesignStatus, flushFlatPlacer]);
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
@@ -6848,13 +8804,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             back: { scale: 1, offsetX: 0, offsetY: 0 },
             ...(flatPlacerState?.placements ?? {}),
           },
+          // Print Side dropdown is source of truth when available — do not let a
+          // stale enabled.back:false (e.g. from an older generate seed) win via ??.
           enabled: {
-            front:
-              flatPlacerState?.enabled?.front ??
-              (printPlacement === "front" || printPlacement === "both"),
-            back:
-              flatPlacerState?.enabled?.back ??
-              (printPlacement === "back" || printPlacement === "both"),
+            front: supportsPrintPlacementSelection
+              ? printPlacement === "front" || printPlacement === "both"
+              : (flatPlacerState?.enabled?.front ?? true),
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : (flatPlacerState?.enabled?.back ?? false),
           },
           linkSides: flatPlacerState?.linkSides ?? true,
           artworkUrl,
@@ -6862,10 +8820,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const views = flatViewsForColor(manifest, flatBlankColorId);
         if (
           flatMockupBlankKey === currentMockupColorRef.current &&
-          printifyMockupImages.length >= views.length
+          flatFrontMockupsRef.current.length >= views.length
         ) {
+          setFlatMockupRefreshing(false);
+          // Front already cached — lifestyle/context is on-demand (Lifestyle Shot).
           return;
         }
+        if (flatDecorMode) setFlatMockupRefreshing(true);
         const images: { url: string; label: string }[] = [];
         for (const view of views) {
           const dataUrl = await renderFlatMockupDataUrl(
@@ -6874,7 +8835,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             stateForRender,
             view,
             artworkUrl,
-            { decorMode: flatDecorMode, fabricWeave: flatFabricWeave },
+            {
+              decorMode: flatDecorMode,
+              fabricWeave: flatFabricWeave,
+              landscapeOrientation: flatLandscapeOrientation,
+              blankUrlOverride: flatDecorMode ? null : orientationBlankOverride,
+              catalogSizeAspectRatio:
+                !flatDecorMode && orientationBlankOverride
+                  ? catalogSizeAspectRatio
+                  : null,
+            },
           );
           if (cancelled || !dataUrl) continue;
           let hostedUrl = dataUrl;
@@ -6890,19 +8860,53 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (cancelled) return;
         if (images.length === 0) {
           console.warn('[Mockups] Flat mockup raster failed for', flatBlankColorId);
+          // Do not keep showing the previous colour/size mockup after a failed swap.
+          flatFrontMockupsRef.current = [];
+          setPrintifyMockupImages([]);
+          setPrintifyMockups([]);
           setFlatRenderFailed(true);
           setMockupsStale(true);
+          setFlatMockupRefreshing(false);
           return;
         }
         setFlatRenderFailed(false);
-        setPrintifyMockupImages(images);
-        setPrintifyMockups(images.map((i) => i.url));
+        flatFrontMockupsRef.current = images;
+        // Keep Printers/Context across placement re-rasters.
+        // Only drop on size/colour/artwork identity change — not refresh-nonce bumps.
+        const blankKeyChanged =
+          flatMockupBlankIdentity !== currentMockupColorRef.current;
+        setPrintifyMockupImages((prev) => {
+          if (blankKeyChanged) return images.slice(0, 4);
+          const seen = new Set(images.map((i) => mockupImageUrlKey(i.url)));
+          const extras = prev.filter(
+            (img) =>
+              isPrintifyOnDemandMockupLabel(img.label) ||
+              (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
+                !seen.has(mockupImageUrlKey(img.url))),
+          );
+          return [...images, ...extras].slice(0, 4);
+        });
+        setPrintifyMockups((prev) => {
+          if (blankKeyChanged) return images.map((i) => i.url);
+          const next = images.map((i) => i.url);
+          const seen = new Set(next.map(mockupImageUrlKey));
+          for (const url of prev) {
+            const key = mockupImageUrlKey(url);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            next.push(url);
+            if (next.length >= 4) break;
+          }
+          return next;
+        });
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
-        currentMockupColorRef.current = flatMockupBlankKey;
+        setLifestyleShotError(null);
+        currentMockupColorRef.current = flatMockupBlankIdentity;
+        setFlatMockupRefreshing(false);
         void persistFlatMockupsForGallery(
           images.map((i) => i.url),
-          flatMockupBlankKey,
+          flatMockupBlankIdentity,
         );
       })();
     }, 200);
@@ -6918,14 +8922,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     generatedDesign?.imageUrl,
     flatBlankColorId,
     flatMockupBlankKey,
-    selectedSize,
+    flatMockupBlankIdentity,
     printPlacement,
+    supportsPrintPlacementSelection,
     flatDecorMode,
     flatFabricWeave,
+    flatLandscapeOrientation,
+    orientationBlankOverride,
+    catalogSizeAspectRatio,
     persistFlatMockupsForGallery,
+    flatMockupRefreshNonce,
   ]);
 
-  // Flat tier: model/colour swap uses local canvas — never gate on Printify refresh.
+  // Flat tier: colour/size swap is local — never gate ATC on Printify refresh.
   useEffect(() => {
     if (!flatPlacerEligible) return;
     setMockupsStale(false);
@@ -6935,7 +8944,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
-
+    
     const hasColors = showFrameColorSelector;
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
@@ -7200,7 +9209,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
   const showingMockupAtArtworkSlot = !!(
-    (isShopify || isStorefront) &&
+    showsPrintifyMockupPreview &&
     generatedDesign?.imageUrl &&
     selectedMockupIndex === 0 &&
     resolvePostGenMockupUrl(0, postGenGalleryItems, getPreferredMockupUrl())
@@ -7369,7 +9378,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 setSelectedSize('');
                 setSelectedFrameColor('');
                 try {
-                  const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                  const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                   sessionStorage.removeItem(stateKey);
                 } catch (_) {}
                 const url = new URL(window.location.href);
@@ -7395,7 +9404,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onClick={() => setCreditsPopoverOpen(true)}
                 >
                   <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                </button>
+            </button>
               </div>
             )}
           </div>
@@ -7409,8 +9418,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 aria-label="Pricing info"
                 onClick={() => setCreditsPopoverOpen(true)}
               >
-                <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-              </button>
+                    <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
             </div>
           )
         )}
@@ -7419,31 +9428,83 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   };
 
   return (
-    <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+    <div className={`p-2 sm:p-3 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+      <Dialog open={!!styleMismatchDialog} onOpenChange={(open) => !open && setStyleMismatchDialog(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>This style may not match your description</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 pt-1 text-sm text-muted-foreground">
+                <p>
+                  <span className="font-medium text-foreground">{styleMismatchDialog?.currentStyleName}</span>{" "}
+                  has fixed rules that can override what you typed.
+                </p>
+                <ul className="list-disc space-y-1 pl-5">
+                  {styleMismatchDialog?.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+                {styleMismatchDialog && styleMismatchDialog.suggestions.length > 0 && (
+                  <p>Try one of these styles instead — they follow your description more closely:</p>
+                )}
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-2 sm:flex-col sm:space-x-0">
+            {styleMismatchDialog?.suggestions.map((preset) => (
+              <Button
+                key={preset.id}
+                type="button"
+                className="w-full"
+                onClick={() => {
+                  void handleGenerate({
+                    skipStyleMismatchCheck: true,
+                    overridePresetId: preset.id,
+                  });
+                  setStyleMismatchDialog(null);
+                }}
+              >
+                Use {preset.name}
+              </Button>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setStyleMismatchDialog(null);
+                void handleGenerate({ skipStyleMismatchCheck: true });
+              }}
+            >
+              Generate anyway with {styleMismatchDialog?.currentStyleName}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
         <DialogContent className="text-sm space-y-3 sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Artwork Credits</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">You get {STOREFRONT_FREE_GENERATION_LIMIT} free AI-generated artworks to try.</p>
-          <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-          <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-          <Button
-            type="button"
-            size="sm"
-            className="w-full"
-            onClick={handleBuyMoreCredits}
-            disabled={creditsPurchaseLoading}
-          >
-            {creditsPurchaseLoading ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Opening Checkout...
-              </>
-            ) : (
-              "More Credits"
-            )}
-          </Button>
+                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleBuyMoreCredits}
+                    disabled={creditsPurchaseLoading}
+                  >
+                    {creditsPurchaseLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Opening Checkout...
+                      </>
+                    ) : (
+                      "More Credits"
+                    )}
+                  </Button>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
@@ -7475,13 +9536,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
 
       `}</style>
-      <div
-        className={
+        <div
+          className={
           (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-            ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-3 space-y-3"
-            : "max-w-6xl mx-auto space-y-3"
-        }
-      >
+            ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-2 space-y-2"
+            : "max-w-6xl mx-auto space-y-2"
+          }
+        >
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
@@ -7563,7 +9624,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         )}
 
         <div
-          className={`grid grid-cols-1 gap-4 sm:gap-6 ${
+          className={`grid grid-cols-1 gap-3 sm:gap-4 ${
             (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
               ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
               : "md:grid-cols-2"
@@ -7571,7 +9632,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div
-            className={`space-y-4 order-1 ${
+            className={`space-y-2.5 order-1 ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3"
                 : "md:order-2"
@@ -7680,7 +9741,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         {otpStep === 'email' ? (
                           <div className="space-y-2">
                             <p className="text-xs text-muted-foreground">Continue with email</p>
-                            <div className="flex gap-2">
+                          <div className="flex gap-2">
                             <input
                               type="email"
                               placeholder="Enter your email"
@@ -7970,6 +10031,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
                                         // Notify parent to refresh its gallery view
                                         window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                                        if (isMerchantStudio) {
+                                          queryClient.invalidateQueries({ queryKey: ["/api/storefront/customizer/my-designs"] });
+                                          queryClient.invalidateQueries({ queryKey: ["/api/appai/design-studio/identity"] });
+                                        }
                                       }
                                     } catch {}
                                   }}
@@ -8058,9 +10123,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
             {/* Product title + price */}
             {(isStorefront || isShopify) && (
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <h1
-                  className="text-xl font-bold leading-tight"
+                  className="text-lg font-bold leading-tight"
                   data-testid="text-product-title"
                 >
                   {productTypeConfig?.name || displayName || productTitle}
@@ -8070,14 +10135,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
                   if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
                   return (
-                    <p className="text-lg font-semibold text-muted-foreground" data-testid="text-product-price">
+                    <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
                       ${parseFloat(selected.price).toFixed(2)}
                     </p>
                   );
                 })()}
               </div>
             )}
-            <div className="space-y-4 mt-4">
+            <div className="space-y-2.5 mt-2">
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
@@ -8236,7 +10301,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           setSelectedSize('');
                           setSelectedFrameColor('');
                           try {
-                            const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                            const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                             sessionStorage.removeItem(stateKey);
                           } catch (_) {}
                           const url = new URL(window.location.href);
@@ -8262,7 +10327,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onClick={() => setCreditsPopoverOpen(true)}
                           >
                             <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                          </button>
+                      </button>
                         </div>
                       )}
                     </div>
@@ -8271,7 +10336,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
                         {artworksRemainingLabel}
                         <button
-                          type="button"
+                              type="button"
                           className="inline-flex items-center"
                           aria-label="Pricing info"
                           onClick={() => setCreditsPopoverOpen(true)}
@@ -8356,28 +10421,145 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </div>
               </div>
 
-              {/* Art Style + Size side-by-side on desktop, stacked on mobile */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Style Selection */}
+              {/* Art Style | Orientation (or Size), then Size | Color when orientation pills show */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-start">
                 {showPresetsParam && filteredStylePresets.length > 0 && (
-                  <div className="space-y-1" data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
+                  <div data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
                     <StyleSelector
                       stylePresets={filteredStylePresets}
                       selectedStyle={selectedPreset}
                       onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
                     />
-                    {selectedPreset === "" && (
-                      <p className="text-xs text-muted-foreground">Please select an art style before generating</p>
-                    )}
+                    {/* Reserve helper-line height so Art Style / Size triggers stay aligned. */}
+                    <div className="mt-0.5 min-h-[1rem]">
+                      {selectedPreset === "" && (
+                        <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {/* Size Selector */}
-                {printSizes.length > 0 && (
-                  <div className="space-y-1" data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) ? (
+                  <div className="space-y-1" data-testid="container-size-orientation-pills">
+                    <Label className="text-xs">Orientation</Label>
+                    <div className="flex flex-wrap gap-1.5 min-h-9 items-center">
+                      {(
+                        [
+                          { id: "horizontal" as const, name: "Horizontal" },
+                          { id: "vertical" as const, name: "Vertical" },
+                          { id: "square" as const, name: "Square" },
+                        ] as const
+                      )
+                        .filter((choice) => {
+                          if (!availableCanvasOrientations.includes(choice.id)) return false;
+                          if (showSquareOrientationPillOnly) return choice.id === "square";
+                          return true;
+                        })
+                        .map((choice) => {
+                          const isSelected = sizeCanvasOrientation === choice.id;
+                          return (
+                            <button
+                              key={choice.id}
+                              type="button"
+                              onClick={() => applyCanvasOrientation(choice.id)}
+                              data-testid={`button-size-orientation-${choice.id}`}
+                              style={
+                                isSelected
+                                  ? {
+                                      backgroundColor: "#111827",
+                                      color: "#ffffff",
+                                      border: "2px solid #111827",
+                                      borderRadius: "9999px",
+                                      padding: "5px 14px",
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      outline: "none",
+                                    }
+                                  : {
+                                      backgroundColor: "transparent",
+                                      color: "#374151",
+                                      border: "1px solid #9ca3af",
+                                      borderRadius: "9999px",
+                                      padding: "5px 14px",
+                                      fontSize: "12px",
+                                      fontWeight: 500,
+                                      cursor: "pointer",
+                                      outline: "none",
+                                    }
+                              }
+                            >
+                              {choice.name}
+                            </button>
+                          );
+                        })}
+                    </div>
+                    <div className="mt-0.5 min-h-[1rem]" />
+                  </div>
+                ) : (
+                  printSizes.length > 0 && (
+                    <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+                      <SizeSelector
+                        sizes={orientationFilteredSizes}
+                        selectedSize={selectedSize}
+                        label={isPhoneCaseProduct ? "Model" : "Size"}
+                        onSizeChange={(sizeId) => {
+                          const prevSize = printSizes.find((s) => s.id === selectedSize);
+                          const nextSize = printSizes.find((s) => s.id === sizeId);
+                          if (
+                            generatedDesign?.imageUrl &&
+                            prevSize &&
+                            nextSize &&
+                            prevSize.id !== nextSize.id
+                          ) {
+                            const prevAr = resolveSizeAspectRatio(
+                              prevSize,
+                              productTypeConfig?.aspectRatio,
+                            );
+                            const nextAr = resolveSizeAspectRatio(
+                              nextSize,
+                              productTypeConfig?.aspectRatio,
+                            );
+                            if (prevAr !== nextAr) {
+                              toast({
+                                title: isPhoneCaseProduct
+                                  ? "Model proportions changed"
+                                  : "Size proportions changed",
+                                description:
+                                  "Generate new artwork so it matches this size's aspect ratio.",
+                              });
+                            }
+                          }
+                          setSelectedSize(sizeId);
+                          if (frameOptionsRedundantWithSizes) {
+                            const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
+                            if (matched) setSelectedFrameColor(matched);
+                          }
+                          const flatOnTheFly = usesFlatOnTheFlyPreview;
+                          if (!flatOnTheFly) {
+                            setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                          }
+                        }}
+                        prices={buildPriceMap()}
+                      />
+                      <div className="mt-0.5 min-h-[1rem]">
+                        {selectedSize === "" && (
+                          <p className="text-[11px] text-muted-foreground leading-tight">
+                            {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )
+                )}
+
+                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) &&
+                  printSizes.length > 0 && (
+                  <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                     <SizeSelector
-                      sizes={printSizes}
+                      sizes={orientationFilteredSizes}
                       selectedSize={selectedSize}
+                      label={isPhoneCaseProduct ? "Model" : "Size"}
                       onSizeChange={(sizeId) => {
                         const prevSize = printSizes.find((s) => s.id === selectedSize);
                         const nextSize = printSizes.find((s) => s.id === sizeId);
@@ -8397,7 +10579,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           );
                           if (prevAr !== nextAr) {
                             toast({
-                              title: "Size proportions changed",
+                              title: isPhoneCaseProduct
+                                ? "Model proportions changed"
+                                : "Size proportions changed",
                               description:
                                 "Generate new artwork so it matches this size's aspect ratio.",
                             });
@@ -8415,83 +10599,81 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       }}
                       prices={buildPriceMap()}
                     />
-                    {selectedSize === "" && (
-                      <p className="text-xs text-muted-foreground mt-1">Please select a size</p>
-                    )}
+                    <div className="mt-0.5 min-h-[1rem]">
+                      {selectedSize === "" && (
+                        <p className="text-[11px] text-muted-foreground leading-tight">
+                          {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {(showFrameColorSelector || supportsPrintPlacementSelection) && (
-                  <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {showFrameColorSelector && (
-                        <FrameColorSelector
-                          frameColors={frameColorObjects}
-                          selectedFrameColor={selectedFrameColor}
-                          onFrameColorChange={setSelectedFrameColor}
-                          colorLabel={productTypeConfig?.colorLabel || "Color"}
-                          variantMap={productTypeConfig?.variantMap}
-                          selectedSize={selectedSize}
-                        />
-                      )}
-                      {supportsPrintPlacementSelection && (
-                        <div className="space-y-2">
-                          <Label htmlFor="print-placement-select" className="uppercase">
-                            Print Side
-                          </Label>
-                          <Select
-                            value={printPlacement}
-                            onValueChange={(value) => {
-                              const nextPlacement = value as "front" | "back" | "both";
-                              setPrintPlacement(nextPlacement);
-                              if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
-                                return;
-                              }
-                              const flatOnTheFly = usesFlatOnTheFlyPreview;
-                              if (flatOnTheFly) {
-                                setFlatPlacerState((prev) => ({
-                                  view: prev?.view ?? "front",
-                                  placements: prev?.placements ?? {
-                                    front: { scale: 1, offsetX: 0, offsetY: 0 },
-                                    back: { scale: 1, offsetX: 0, offsetY: 0 },
-                                  },
-                                  artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
-                                  enabled: {
-                                    front: nextPlacement === "front" || nextPlacement === "both",
-                                    back: nextPlacement === "back" || nextPlacement === "both",
-                                  },
-                                }));
-                                currentMockupColorRef.current = "";
-                                lastFlatGalleryMockupKeyRef.current = "";
-                                return;
-                              }
-                              fetchPrintifyMockups(
-                                toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                productTypeConfig.id,
-                                selectedSize,
-                                selectedFrameColor || "default",
-                                transform.scale,
-                                transform.x,
-                                transform.y,
-                                undefined,
-                                undefined,
-                                undefined,
-                                nextPlacement,
-                              );
-                            }}
-                          >
-                            <SelectTrigger id="print-placement-select" className="h-11">
-                              <SelectValue placeholder="Select print side" />
-                            </SelectTrigger>
-                            <SelectContent position="popper">
-                              <SelectItem value="front">Print on Front Only</SelectItem>
-                              <SelectItem value="back">Print on Back Only</SelectItem>
-                              <SelectItem value="both">Print on Both Sides</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-                    </div>
+                {showFrameColorSelector && (
+                  <FrameColorSelector
+                    frameColors={frameColorObjects}
+                    selectedFrameColor={selectedFrameColor}
+                    onFrameColorChange={setSelectedFrameColor}
+                    colorLabel={productTypeConfig?.colorLabel || "Color"}
+                    variantMap={productTypeConfig?.variantMap}
+                    selectedSize={selectedSize}
+                  />
+                )}
+
+                {supportsPrintPlacementSelection && (
+                  <div className="space-y-1">
+                    <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
+                    <Select
+                      value={printPlacement}
+                      onValueChange={(value) => {
+                        const nextPlacement = value as "front" | "back" | "both";
+                        setPrintPlacement(nextPlacement);
+                        if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
+                          return;
+                        }
+                        const flatOnTheFly = usesFlatOnTheFlyPreview;
+                        if (flatOnTheFly) {
+                          setFlatPlacerState((prev) => ({
+                            view: prev?.view ?? "front",
+                            placements: prev?.placements ?? {
+                              front: { scale: 1, offsetX: 0, offsetY: 0 },
+                              back: { scale: 1, offsetX: 0, offsetY: 0 },
+                            },
+                            artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
+                            enabled: {
+                              front: nextPlacement === "front" || nextPlacement === "both",
+                              back: nextPlacement === "back" || nextPlacement === "both",
+                            },
+                            linkSides: prev?.linkSides ?? true,
+                          }));
+                          currentMockupColorRef.current = "";
+                          lastFlatGalleryMockupKeyRef.current = "";
+                          return;
+                        }
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || "default",
+                          transform.scale,
+                          transform.x,
+                          transform.y,
+                          undefined,
+                          undefined,
+                          undefined,
+                          nextPlacement,
+                        );
+                      }}
+                    >
+                      <SelectTrigger id="print-placement-select" className="h-9">
+                        <SelectValue placeholder="Select print side" />
+                      </SelectTrigger>
+                      <SelectContent position="popper">
+                        <SelectItem value="front">Print on Front Only</SelectItem>
+                        <SelectItem value="back">Print on Back Only</SelectItem>
+                        <SelectItem value="both">Print on Both Sides</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
               </div>
@@ -8511,7 +10693,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           <button
                             key={choice.id}
                             type="button"
-                            onClick={() => setSelectedStyleOption(choice.id)}
+                            onClick={() => {
+                              setSelectedStyleOption(choice.id);
+                              const orient =
+                                parseCanvasOrientationFromLabel(choice.name) ||
+                                parseCanvasOrientationFromLabel(choice.id);
+                              if (orient) applyCanvasOrientation(orient);
+                            }}
+                            data-testid={`button-style-option-${choice.id}`}
                             style={isSelected
                               ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
                               : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
@@ -8552,11 +10741,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
                 const _descOptional = !!_activePresetForLabel?.descriptionOptional;
                 return (
-              <div className="space-y-2" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
-                <Label htmlFor="prompt" data-testid="label-prompt">
+              <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
+                <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
                   Describe your artwork
                   {_descOptional && (
-                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">(optional)</span>
+                    <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional)</span>
                   )}
                 </Label>
                 <Textarea
@@ -8584,7 +10773,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       setPrintifyMockupImages([]);
                       setSelectedMockupIndex(0);
                       try {
-                        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                        const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                         sessionStorage.removeItem(stateKey);
                       } catch (_) {}
                       const url = new URL(window.location.href);
@@ -8598,7 +10787,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     }
                     setPrompt(e.target.value);
                   }}
-                  className="min-h-[80px]"
+                  className="min-h-[64px] text-sm"
                 />
                 {renderPrimaryAction("md:hidden", "mobile")}
               </div>
@@ -8634,7 +10823,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
               productTypeConfig?.panelMappingTemplate ? (
-                <div className="flex flex-col gap-2 min-h-0">
+                <div className="relative flex flex-col gap-2 min-h-0">
                   {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
                       The placer auto-saves on every change (no Apply button) —
                       handleHoodieAopApply is fired ~1.5 s after the customer's
@@ -8680,6 +10869,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // back in via initialState below.
                     key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
                     templateName={productTypeConfig.panelMappingTemplate}
+                    placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
                       ...(hoodieAopPlacerState ?? {}),
                       // Always seed the latest AI-generated motif as the
@@ -8687,7 +10877,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       // an older one — fresh generations should take over.
                       artworkUrl: aopPendingMotifUrl,
                     }}
-                    onChange={(s) => setHoodieAopPlacerState(s)}
+                    onChange={(s) => {
+                      if (
+                        isAdminTester &&
+                        hoodieAopPlacerState?.artworkUrl &&
+                        s.artworkUrl !== hoodieAopPlacerState.artworkUrl
+                      ) {
+                        emitTesterDesignStatus({ aopPanels: "none" });
+                      }
+                      setHoodieAopPlacerState(s);
+                    }}
                     onApply={handleHoodieAopApply}
                     // Resuming a saved design (we have a restored placer
                     // state) → don't re-render + re-upload on open. The saved
@@ -8701,7 +10900,81 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // repaired server-side at read time, so we no longer need
                     // to heal-on-open.
                     skipInitialAutoApply={!!hoodieAopPlacerState}
+                    canvasOverrideUrl={hoodieCanvasOverrideUrl}
+                    canvasOverrideLabel={hoodieCanvasOverrideLabel}
+                    onEngageLiveEditor={engageAopLiveEditor}
+                    printersMockupAction={
+                      canRequestAopPrintersMockup
+                        ? {
+                            onClick: (panels) =>
+                              void requestAopPrintersMockup(panels),
+                            loading: lifestyleShotLoading,
+                            active: aopPrintersMockupActive,
+                            label: hasAopPersonMockup
+                              ? "Refresh Printers Mockup"
+                              : "Printers Mockup",
+                            loadingLabel: "Generating printers mockup…",
+                            idleHint:
+                              "Finish placement (or generate artwork) to enable Printers Mockup",
+                            error: lifestyleShotError,
+                          }
+                        : null
+                    }
                   />
+                  {showsPrintifyMockupPreview &&
+                    generatedDesign?.imageUrl &&
+                    postGenGalleryItems.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="Previous"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) => {
+                            const next = stepPostGenGalleryIndex(
+                              i,
+                              -1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                            const item = postGenGalleryItems[next];
+                            stickAopPersonGalleryRef.current = !!(
+                              item?.kind === "mockup" &&
+                              isPersonMockupLabel(item.label)
+                            );
+                            return next;
+                          })
+                        }
+                        className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                        data-testid="button-hoodie-gallery-prev"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) => {
+                            const next = stepPostGenGalleryIndex(
+                              i,
+                              1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                            const item = postGenGalleryItems[next];
+                            stickAopPersonGalleryRef.current = !!(
+                              item?.kind === "mockup" &&
+                              isPersonMockupLabel(item.label)
+                            );
+                            return next;
+                          })
+                        }
+                        className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
+                        data-testid="button-hoodie-gallery-next"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
                 </div>
               ) : (
               <PatternCustomizer
@@ -8785,14 +11058,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     options.panelUrls
                   );
 
-                  // Persist the same panel rasters used for the mockup. The previous
-                  // high-res background render could exceed the upload body limit and
-                  // compete with the active Printify mockup request.
-                  if (isStorefront && savedJobIdRef.current && shopDomain) {
+                  // Persist panel rasters for fulfillment. Customer storefront flow keeps the
+                  // same mockup-resolution rasters used for the live preview (fast applies).
+                  // Merchant studio designs are the source of a permanent Printify product's
+                  // print files, so they lazily build print-resolution (9000px) panels instead
+                  // — the extra render only happens once per apply, off the mockup request path.
+                  // The admin Generator Tester also persists print-resolution panels (its job
+                  // shop comes from the generate response) so "Send a Test Order to Printify"
+                  // submits the same print files a real order would.
+                  const panelSaveShop = shopDomain || savedJobShopRef.current;
+                  if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
+                    const panelJobId = savedJobIdRef.current;
+                    // Versioned capture — see handleHoodieAopApply for the rationale.
+                    const seq = ++aopPanelPersistSeqRef.current;
+                    const isStale = () => seq !== aopPanelPersistSeqRef.current;
+                    emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
                     void (async () => {
                       try {
-                        const printPanels = options.printPanelUrls || options.panelUrls;
-                        if (!printPanels?.length) return;
+                        const printPanels = (isMerchantStudio || isAdminTester) && options.getPrintPanelUrls
+                          ? await options.getPrintPanelUrls()
+                          : (options.printPanelUrls || options.panelUrls);
+                        if (!printPanels?.length || isStale()) return;
 
                         const aopPrintPanelUrls = await Promise.all(
                           printPanels.map(async ({ position, dataUrl }) => ({
@@ -8800,13 +11086,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             url: await ensureHostedUrl(dataUrl),
                           }))
                         );
+                        if (isStale()) return;
 
                         await safeFetch(`${API_BASE}/api/storefront/save-state`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
-                            jobId: savedJobIdRef.current,
-                            shop: shopDomain,
+                            jobId: panelJobId,
+                            shop: panelSaveShop,
                             designState: {
                               aopPrintPanelUrls,
                               aopPlacementSettings: nextPlacement,
@@ -8814,9 +11101,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             },
                           }),
                         });
-                        console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
+                        console.log("[AOP] Saved aopPrintPanelUrls on job", panelJobId, aopPrintPanelUrls.length);
+                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
                       } catch (e) {
                         console.error("[AOP] Failed to persist print panel URLs:", e);
+                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
                       }
                     })();
                   }
@@ -8895,46 +11184,182 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
-                <FlatProductPlacer
-                  ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
-                  manifest={productTypeConfig.flatCalibration}
-                  colorId={flatBlankColorId}
-                  placementGeometryKey={flatPlacerGeometryKey}
-                  artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
-                  initialState={{
-                    ...(flatPlacerState ?? {}),
-                    artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
-                  }}
-                  onChange={handleFlatPlacerChange}
-                  onApply={handleFlatApply}
-                  onApplyStatusChange={setFlatApplyStatus}
-                  onAssetsFailed={handleFlatAssetsFailed}
-                  edgeWrapMode={flatEdgeWrapMode}
-                  decorMode={flatDecorMode}
-                  fabricWeave={flatFabricWeave}
-                  landscapeOrientation={flatLandscapeOrientation}
-                  blankUrlOverride={orientationBlankOverride}
-                  skipInitialAutoApply={!!flatPlacerState}
-                />
+                <div className="relative min-h-0">
+                  {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
+                    <div
+                      className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20"
+                      data-testid="overlay-flat-mockups-updating"
+                    >
+                      <button
+                        type="button"
+                        className="pointer-events-auto text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1.5 animate-pulse"
+                        onClick={handleRefreshFlatMockups}
+                      >
+                        {flatMockupRefreshing ? "Updating mockups…" : "Refresh your Mockups"}
+                      </button>
+                    </div>
+                  )}
+                  <FlatProductPlacer
+                    ref={flatPlacerRef}
+                    key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
+                    manifest={productTypeConfig.flatCalibration}
+                    colorId={flatBlankColorId}
+                    placementGeometryKey={flatPlacerGeometryKey}
+                    artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
+                    initialState={{
+                      ...(flatPlacerState ?? {}),
+                      artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
+                      // Keep PRINT ON BACK / front in sync with Print Side dropdown.
+                      enabled: {
+                        front:
+                          !supportsPrintPlacementSelection ||
+                          printPlacement === "front" ||
+                          printPlacement === "both",
+                        back:
+                          supportsPrintPlacementSelection
+                            ? printPlacement === "back" || printPlacement === "both"
+                            : (flatPlacerState?.enabled?.back ?? false),
+                      },
+                    }}
+                    onChange={handleFlatPlacerChange}
+                    onViewChange={handleFlatPlacerViewChange}
+                    onApply={handleFlatApply}
+                    onApplyStatusChange={setFlatApplyStatus}
+                    onAssetsFailed={handleFlatAssetsFailed}
+                    edgeWrapMode={flatEdgeWrapMode}
+                    decorMode={flatDecorMode}
+                    fabricWeave={flatFabricWeave}
+                    landscapeOrientation={flatLandscapeOrientation}
+                    // Never pin catalog orientation photos over decorPerSize frame-colour blanks.
+                    blankUrlOverride={flatDecorMode ? null : orientationBlankOverride}
+                    catalogSizeAspectRatio={
+                      !flatDecorMode && orientationBlankOverride
+                        ? catalogSizeAspectRatio
+                        : null
+                    }
+                    // Tester auto-flushes Apply after generate; never seed "saved"
+                    // from onChange alone or flush becomes a no-op.
+                    skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
+                    canvasOverrideUrl={flatCanvasOverrideUrl}
+                    canvasOverrideLabel={flatCanvasOverrideLabel}
+                    lifestyleAction={
+                      canRequestLifestyleShot
+                        ? {
+                            onClick: () => void requestLifestyleShot(),
+                            loading: lifestyleShotLoading,
+                            active: lifestyleShotActive,
+                            label: flatFabricWeave
+                              ? hasLifestyleShot
+                                ? "Refresh Printers Mockup"
+                                : "Printers Mockup"
+                              : hasLifestyleShot
+                                ? "Refresh Lifestyle Shot"
+                                : "Lifestyle Shot",
+                            loadingLabel: flatFabricWeave
+                              ? "Generating printers mockup…"
+                              : "Generating lifestyle…",
+                            idleHint: flatFabricWeave
+                              ? "Finish placement (or generate artwork) to enable Printers Mockup"
+                              : "Finish placement (or generate artwork) to enable Lifestyle Shot",
+                            error: lifestyleShotError,
+                          }
+                        : null
+                    }
+                  />
+                  {/* Gallery arrows while placer is open (ProductMockup arrows are hidden). */}
+                  {showsPrintifyMockupPreview &&
+                    generatedDesign?.imageUrl &&
+                    postGenGalleryItems.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="Previous"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) =>
+                            stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
+                          )
+                        }
+                        className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                        data-testid="button-flat-gallery-prev"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) =>
+                            stepPostGenGalleryIndex(i, 1, postGenGalleryItems, true),
+                          )
+                        }
+                        className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
+                        data-testid="button-flat-gallery-next"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                </div>
+                {/* Dots while placer is open. lg:pr-80 centers under canvas (not controls). */}
+                {showsPrintifyMockupPreview &&
+                  generatedDesign?.imageUrl &&
+                  postGenGalleryItems.length > 1 && (
+                  <div className="flex justify-center gap-3 mt-1 lg:pr-80" data-testid="flat-placer-gallery-dots">
+                    {postGenGalleryItems.map((item, idx) => {
+                      if (!isFlatPlacerGalleryReachable(item)) return null;
+                      return (
+                        <button
+                          key={`${item.kind}-${idx}`}
+                          type="button"
+                          onClick={() => setSelectedMockupIndex(idx)}
+                          aria-label={item.label}
+                          className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                            selectedMockupIndex === idx
+                              ? "opacity-100"
+                              : "opacity-40 hover:opacity-70"
+                          }`}
+                        >
+                          <span
+                            className={`rounded-full transition-all duration-200 ${
+                              selectedMockupIndex === idx
+                                ? "w-4 h-2 bg-foreground"
+                                : "w-2 h-2 bg-foreground/60"
+                            }`}
+                          />
+                          <span
+                            className={`text-[10px] leading-tight font-medium ${
+                              selectedMockupIndex === idx
+                                ? "text-foreground"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            {item.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               ref={previewLandingRef}
-              className="w-full rounded-md overflow-hidden relative"
+              className="mx-auto rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
                   // Mugs/tumblers: the blank product photo is a tall portrait shot.
                   // The DB aspectRatio for mugs is the wrap-around print area (wide),
                   // but the container should be portrait so the full tumbler is visible.
                   if (productTypeConfig?.designerType === "mug") return "3/4";
-                  // For product types with dimensional sizes (width/height > 0), use those
-                  if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
-                    return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
-                  }
-                  if (selectedSizeConfig?.aspectRatio) {
-                    return selectedSizeConfig.aspectRatio.replace(":", "/");
+                  // Prefer resolved size AR (id/name inch tokens) so landscape sizes
+                  // like 24×18 / 88×68 update the blank box even if width/height are stale.
+                  if (selectedSizeConfig) {
+                    const ar = resolveSizeAspectRatio(
+                      selectedSizeConfig,
+                      productTypeConfig?.aspectRatio,
+                    );
+                    if (ar) return ar.replace(":", "/");
                   }
                   // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
                   // but each printable face is 1:1 — keep the placeholder square before size pick.
@@ -8946,19 +11371,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       if (ar.replace("/", ":") === "2:1") return "1/1";
                     }
                   }
-                  // Before a size is chosen, prefer the first size's dimensions over product AR
+                  // Before a size is chosen, prefer the first size's resolved AR
                   const firstSize = printSizes[0];
-                  if (firstSize && firstSize.width > 0 && firstSize.height > 0) {
-                    return `${firstSize.width}/${firstSize.height}`;
+                  if (firstSize) {
+                    const ar = resolveSizeAspectRatio(
+                      firstSize,
+                      productTypeConfig?.aspectRatio,
+                    );
+                    if (ar) return ar.replace(":", "/");
                   }
-                  // Otherwise use the product type's aspectRatio string (e.g., "4:3" for mugs/tumblers)
                   const ar = productTypeConfig?.aspectRatio || "3:4";
                   return ar.replace(":", "/");
                 })(),
-                // Cap height so tall/portrait products (phone cases, body pillows, etc.)
-                // don't push the form controls off-screen. The aspect-ratio still governs
-                // the natural proportions; maxHeight just prevents extreme cases.
+                // Cap height without forcing full width — otherwise maxHeight + w-full
+                // shortens the box and object-cover chops the top (frame hangers).
                 maxHeight: "520px",
+                width: "auto",
+                maxWidth: "100%",
+                height: "auto",
               }}
               data-testid="container-mockup"
               data-appai-wheel-forward="true"
@@ -8966,13 +11396,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="absolute inset-0">
                 {(() => {
                   const isGeneratingArtwork = generateMutation.isPending;
-                  // mockupTriggered bridges the gap between isPending=false and mockupLoading=true
-                  const isGeneratingMockups = isStorefront && (mockupLoading || mockupTriggered) && !getPreferredMockupUrl();
+                  // mockupTriggered bridges the gap between isPending=false and mockupLoading=true.
+                  // Use showsPrintifyMockupPreview (storefront + Shopify + admin-tester) so the
+                  // Generator Tester keeps the Loading Mockups overlay over raw artwork until
+                  // Printify composites arrive — not storefront-only.
+                  const isGeneratingMockups =
+                    showsPrintifyMockupPreview &&
+                    (mockupLoading || mockupTriggered) &&
+                    !getPreferredMockupUrl();
                   const isAopProduct = !!(useAopCustomizer);
                   // isAopReapplying: AOP product is regenerating mockups after a pattern re-apply.
                   // Unlike the first apply, getPreferredMockupUrl() returns the OLD mockup URL so
                   // isGeneratingMockups is false — but we still need to show the blue shimmer.
-                  const isAopReapplying = isStorefront && isAopProduct && (mockupLoading || mockupTriggered) && !!aopPatternUrl;
+                  const isAopReapplying =
+                    showsPrintifyMockupPreview &&
+                    isAopProduct &&
+                    (mockupLoading || mockupTriggered) &&
+                    !!aopPatternUrl;
                   // isLoadingSaved: true while a shared design OR a saved design (loadDesignId) is
                   // being restored and generatedDesign hasn't been set yet — shows skeleton shimmer
                   // instead of the blank product mockup.
@@ -8992,13 +11432,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
                   // Unified post-gen gallery: artwork + Printify mockups + merchant catalog extras.
                   const selectedPreviewMockupUrl =
-                    (isShopify || isStorefront) && generatedDesign?.imageUrl
+                    showsPrintifyMockupPreview && generatedDesign?.imageUrl
                       ? resolvePostGenMockupUrl(
                           selectedMockupIndex,
                           postGenGalleryItems,
                           getPreferredMockupUrl(),
                         )
-                      : null;
+                        : null;
 
                   return (
                     <ProductMockup
@@ -9033,6 +11473,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         if (browsingCatalog && catalogPreviewIndex > 0) {
                           return catalogPreviewImages[catalogPreviewIndex] || null;
                         }
+                        // Size-keyed catalog blanks (comforter / wall decals) beat a
+                        // shared Shopify lifestyle image that does not change with size.
                         return (
                           orientationBlankOverride ||
                           flatCalibrationBlankUrl ||
@@ -9043,10 +11485,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         );
                       })()}
                       aspectRatio={
+                        (selectedSizeConfig
+                          ? resolveSizeAspectRatio(
+                              selectedSizeConfig,
+                              productTypeConfig?.aspectRatio,
+                            )
+                          : null) ||
                         selectedSizeConfig?.aspectRatio ||
                         productTypeConfig?.aspectRatio
                       }
-                      mockupFit={flatEdgeWrapMode ? "contain" : "cover"}
+                      // Cover crops framed mockups (hangers / landscape) against the box.
+                      mockupFit={
+                        flatEdgeWrapMode ||
+                        flatDecorMode ||
+                        productTypeConfig?.designerType === "framed-print"
+                          ? "contain"
+                          : "cover"
+                      }
                     />
                   );
                 })()}
@@ -9081,49 +11536,86 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               )}
 
               {/* Left/right arrow navigation — after artwork exists */}
-              {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    aria-label="Previous"
+              {showsPrintifyMockupPreview && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Previous"
                     onClick={() =>
-                      setSelectedMockupIndex(
-                        (i) => (i - 1 + postGenGalleryItems.length) % postGenGalleryItems.length,
+                      setSelectedMockupIndex((i) =>
+                        stepPostGenGalleryIndex(i, -1, postGenGalleryItems, false),
                       )
                     }
-                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                  >
-                    <ChevronLeft className="w-5 h-5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Next"
+                      className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Next"
                     onClick={() =>
-                      setSelectedMockupIndex((i) => (i + 1) % postGenGalleryItems.length)
+                      setSelectedMockupIndex((i) =>
+                        stepPostGenGalleryIndex(i, 1, postGenGalleryItems, false),
+                      )
                     }
-                    className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                  >
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
-                </>
+                      className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </>
               )}
 
-              {/* Stale mockups overlay */}
-              {atcHasMockups && atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
+              {/* Stale / updating mockups overlay (Printify + flat framed decor) */}
+              {generatedDesign?.imageUrl &&
+                ((atcHasMockups && atcMockupsStaleBlocks && !mockupLoading) ||
+                  flatMockupRefreshing ||
+                  (flatDecorMode && mockupsStale)) && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
-                  <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
-                    Refresh your Mockups
-                  </span>
+                  <button
+                    type="button"
+                    className="pointer-events-auto text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse"
+                    onClick={() => {
+                      if (flatPlacerEligible) {
+                        handleRefreshFlatMockups();
+                      } else if (
+                        generatedDesign?.imageUrl &&
+                        productTypeConfig &&
+                        selectedSize
+                      ) {
+                        setMockupError(null);
+                        setMockupFailed(false);
+                        setPrintifyMockups([]);
+                        setPrintifyMockupImages([]);
+                        setSelectedMockupIndex(0);
+                        setMockupsStale(false);
+                        mockupColorCacheRef.current = {};
+                        currentMockupColorRef.current = "";
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || "default",
+                          transform.scale,
+                          transform.x,
+                          transform.y,
+                        );
+                      }
+                    }}
+                  >
+                    {flatMockupRefreshing || mockupLoading
+                      ? "Updating mockups…"
+                      : "Refresh your Mockups"}
+                  </button>
                 </div>
               )}
             </div>
 
             {/* Catalog placeholder indicators — before artwork exists */}
             {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
-              <div className="flex justify-center gap-3 mt-1">
+                <div className="flex justify-center gap-3 mt-1">
                 {catalogPreviewImages.map((_, idx) => (
-                  <button
-                    key={idx}
+                    <button
+                      key={idx}
                     type="button"
                     onClick={() => setCatalogPreviewIndex(idx)}
                     aria-label={`Placeholder image ${idx + 1}`}
@@ -9151,18 +11643,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {/* Post-generation carousel indicators — artwork, mockups, merchant gallery */}
-            {(isShopify || isStorefront) && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
+            {showsPrintifyMockupPreview && generatedDesign?.imageUrl && postGenGalleryItems.length > 1 && (
               <div className="flex justify-center gap-3 mt-1">
                 {postGenGalleryItems.map((item, idx) => (
                   <button
                     key={`${item.kind}-${idx}`}
-                    type="button"
-                    onClick={() => setSelectedMockupIndex(idx)}
+                      type="button"
+                      onClick={() => setSelectedMockupIndex(idx)}
                     aria-label={item.label}
-                    className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                      selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
-                    }`}
-                  >
+                      className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                        selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                      }`}
+                    >
                     <span
                       className={`rounded-full transition-all duration-200 ${
                         selectedMockupIndex === idx
@@ -9177,9 +11669,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     >
                       {item.label}
                     </span>
-                  </button>
-                ))}
-              </div>
+                    </button>
+                  ))}
+                </div>
             )}
 
             {generatedDesign?.imageUrl && !useAopCustomizer && !flatPlacerEligible && (
@@ -9190,7 +11682,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 showDragHint={canShowDragHint}
                 extraActions={
                   <div className="flex items-center gap-2">
-                    {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
+                    {showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -9269,7 +11761,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {generatedDesign?.imageUrl && flatPlacerEligible && !flatPlacerEditOpen && (
-              <div className="flex items-center justify-between pt-2 border-t gap-2">
+              <div className="flex items-center justify-between pt-2 border-t gap-2 flex-wrap">
                 <Button
                   variant="outline"
                   size="sm"
@@ -9360,7 +11852,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {/* Mockup error status */}
-            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
+            {showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
                   <span className="text-sm text-destructive flex-1">

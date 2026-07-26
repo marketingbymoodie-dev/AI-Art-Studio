@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   extractDimensionalKey,
+  filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
   isOrientationSizeProduct,
+  parseCanvasOrientationFromLabel,
+  pickSizeForCanvasOrientation,
   resolveFrameColorForSize,
   resolveSizeAspectRatio,
+  sizesHaveMixedCanvasOrientation,
+  looksLikePhoneModelName,
+  sizeIdLooksLandscape,
+  swapDecorSizeDimensionId,
+  productLooksLikeFramedDecor,
+  sizesLookLikePhoneModels,
+  sortDimensionalSizesAscending,
+  styleChoicesIncludeCanvasOrientation,
 } from "./productVariantOptions";
 
 describe("productVariantOptions", () => {
@@ -15,6 +26,70 @@ describe("productVariantOptions", () => {
     expect(extractDimensionalKey("26''_×_36''")).toBe("26x36");
     expect(extractDimensionalKey("36''_×_26''")).toBe("36x26");
     expect(extractDimensionalKey("104''_x_88\"")).toBe("104x88");
+  });
+
+  it("sizeIdLooksLandscape detects WxH orientation", () => {
+    expect(sizeIdLooksLandscape("36x24")).toBe(true);
+    expect(sizeIdLooksLandscape('20" x 16"')).toBe(true);
+    expect(sizeIdLooksLandscape("16x20")).toBe(false);
+    expect(sizeIdLooksLandscape("m")).toBe(false);
+  });
+
+  it("swapDecorSizeDimensionId flips WxH and keeps colour suffix", () => {
+    expect(swapDecorSizeDimensionId("24x18")).toBe("18x24");
+    expect(swapDecorSizeDimensionId("24x18:black")).toBe("18x24:black");
+    expect(swapDecorSizeDimensionId("16x16")).toBeNull();
+    expect(swapDecorSizeDimensionId("m")).toBeNull();
+  });
+
+  it("productLooksLikeFramedDecor matches HFP/VFP names and designerType", () => {
+    expect(
+      productLooksLikeFramedDecor({ designerType: "framed-print", name: "Anything" }),
+    ).toBe(true);
+    expect(
+      productLooksLikeFramedDecor({
+        designerType: "generic",
+        name: "Horizontal Framed Poster",
+      }),
+    ).toBe(true);
+    expect(
+      productLooksLikeFramedDecor({ designerType: "generic", name: "Zip Hoodie" }),
+    ).toBe(false);
+    expect(productLooksLikeFramedDecor({ decorPerSize: true })).toBe(true);
+  });
+
+  it("detects phone model size lists", () => {
+    expect(looksLikePhoneModelName("iPhone 13")).toBe(true);
+    expect(looksLikePhoneModelName("Galaxy S23")).toBe(true);
+    expect(looksLikePhoneModelName("Model")).toBe(false);
+    expect(
+      sizesLookLikePhoneModels([
+        { id: "iphone-13", name: "iPhone 13" },
+        { id: "iphone-14", name: "iPhone 14" },
+        { id: "iphone-15-pro", name: "iPhone 15 Pro" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("sortDimensionalSizesAscending orders by first number then second", () => {
+    const sizes = [
+      { id: "14x11", name: '14" x 11"', width: 14, height: 11 },
+      { id: "18x12", name: '18" x 12"', width: 18, height: 12 },
+      { id: "24x18", name: '24" x 18"', width: 24, height: 18 },
+      { id: "36x24", name: '36" x 24"', width: 36, height: 24 },
+      { id: "11x8", name: '11" x 8"', width: 11, height: 8 },
+      { id: "20x16", name: '20" x 16"', width: 20, height: 16 },
+      { id: "30x20", name: '30" x 20"', width: 30, height: 20 },
+    ];
+    expect(sortDimensionalSizesAscending(sizes).map((s) => s.id)).toEqual([
+      "11x8",
+      "14x11",
+      "18x12",
+      "20x16",
+      "24x18",
+      "30x20",
+      "36x24",
+    ]);
   });
 
   it("resolveSizeAspectRatio from Shopify-style size id when width/height missing", () => {
@@ -88,5 +163,47 @@ describe("productVariantOptions", () => {
     ];
     expect(isOrientationSizeProduct(sizes, frameColors, "Option")).toBe(true);
     expect(isLandscapeSizeAspect("18:13")).toBe(true);
+  });
+
+  it("prefers size label dims over swapped width/height fields", () => {
+    expect(
+      resolveSizeAspectRatio({
+        id: "24''_×_18''",
+        name: '24" x 18"',
+        width: 18,
+        height: 24,
+      }),
+    ).toBe("4:3");
+  });
+
+  it("parses orientation labels and picks swapped comforter sizes", () => {
+    expect(parseCanvasOrientationFromLabel("Horizontal")).toBe("horizontal");
+    expect(parseCanvasOrientationFromLabel("vertical")).toBe("vertical");
+    expect(parseCanvasOrientationFromLabel("Square")).toBe("square");
+    expect(parseCanvasOrientationFromLabel("Pet")).toBe(null);
+    expect(
+      styleChoicesIncludeCanvasOrientation([
+        { id: "h", name: "Horizontal" },
+        { id: "v", name: "Vertical" },
+      ]),
+    ).toBe(true);
+
+    const sizes = [
+      { id: "68x88", name: '68" x 88"', width: 68, height: 88 },
+      { id: "88x68", name: '88" x 68"', width: 88, height: 68 },
+      { id: "104x88", name: '104" x 88"', width: 104, height: 88 },
+      { id: "88x88", name: '88" x 88"', width: 88, height: 88 },
+    ];
+    expect(sizesHaveMixedCanvasOrientation(sizes)).toBe(true);
+    expect(pickSizeForCanvasOrientation(sizes, "horizontal", "68x88")?.id).toBe("88x68");
+    expect(pickSizeForCanvasOrientation(sizes, "vertical", "88x68")?.id).toBe("68x88");
+    expect(pickSizeForCanvasOrientation(sizes, "horizontal", "104x88")?.id).toBe("104x88");
+    expect(pickSizeForCanvasOrientation(sizes, "square", "68x88")?.id).toBe("88x88");
+    expect(
+      filterSizesByCanvasOrientation(sizes, "vertical").map((s) => s.id),
+    ).toEqual(["68x88"]);
+    expect(
+      filterSizesByCanvasOrientation(sizes, "horizontal").map((s) => s.id),
+    ).toEqual(["88x68", "104x88"]);
   });
 });

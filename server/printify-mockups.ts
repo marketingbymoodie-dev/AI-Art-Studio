@@ -2,6 +2,30 @@ import sharp from "sharp";
 import pRetry from "p-retry";
 import crypto from "crypto";
 import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
+import {
+  expandHoodPanelImageIdsWithSiblingFallback,
+  expandPanelImageIdsWithPocketAliases,
+  isPocketLikePrintifyPosition,
+  resolvePocketFallbackImageId,
+  expandPanelImageIdsWithCollarAliases,
+  resolvePrintifyPanelImageId,
+} from "@shared/pulloverPocketPrintMerge";
+import {
+  isContext1MockupLabel,
+  isContextLikeMockupLabel,
+  isOnPersonMockupLabel,
+  isPersonMockupLabel,
+  lifestyleMockupPreferenceRank,
+  normalizeMockupCameraLabel,
+  personMockupPreferenceRank,
+} from "@shared/printifyMockupLabels";
+
+export {
+  isContextLikeMockupLabel,
+  isOnPersonMockupLabel,
+  isPersonMockupLabel,
+  normalizeMockupCameraLabel,
+} from "@shared/printifyMockupLabels";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -20,6 +44,7 @@ const LEGGINGS_STYLE_PRIORITY = [
   "room",
   "duvet",
   "home",
+  "wall",
   "back",
   "front side",
   "front-side",
@@ -82,6 +107,17 @@ export interface MockupRequest {
   onPrintifyProductCreated?: (productId: string) => void;
   /** When true, build 2650×5250 folded print canvas before upload (fulfillment only). */
   toteFoldedFulfillment?: boolean;
+  /**
+   * Lifestyle Shot: keep polling until a context/lifestyle-like camera appears
+   * (or short timeout), and do not drop non-exact context labels in view selection.
+   */
+  preferContextViews?: boolean;
+  /**
+   * AOP Printers Mockup: prefer Front Person / Side Person / Back Person cameras
+   * (leggings-style). Separate from Lifestyle context filtering, which excludes
+   * front person.
+   */
+  preferPersonViews?: boolean;
 }
 
 export interface MockupImage {
@@ -136,7 +172,7 @@ type CachedPlaceholders = { positions: BlueprintPlaceholder[]; ts: number };
 const BLUEPRINT_PLACEHOLDER_TTL_MS = 24 * 60 * 60 * 1000;
 const blueprintPlaceholderCache = new Map<string, CachedPlaceholders>();
 
-async function getBlueprintVariantPlaceholders(
+export async function getBlueprintVariantPlaceholders(
   blueprintId: number,
   providerId: number,
   variantId: number,
@@ -302,7 +338,7 @@ async function getOrCreateSolidColorImageId(
   return result.id;
 }
 
-async function uploadImageToPrintify(
+export async function uploadImageToPrintify(
   imageUrlOrBuffer: string | Buffer,
   apiToken: string
 ): Promise<PrintifyImage | null> {
@@ -454,8 +490,18 @@ async function createTemporaryProduct(
     for (const pos of aopPositions) {
       const isRightPanel = pos.position.startsWith("right");
       let useImageId: string;
-      if (panelImageIds && panelImageIds.has(pos.position)) {
-        useImageId = panelImageIds.get(pos.position)!;
+      const resolvedPanelId =
+        panelImageIds && panelImageIds.size > 0
+          ? resolvePrintifyPanelImageId(pos.position, panelImageIds)
+          : undefined;
+      if (resolvedPanelId) {
+        // Collar strips from the client were sometimes ~160×14 (solid-panel
+        // downscale of a ~11:1 placeholder). Printify ignores those and the
+        // neck rib stays white — prefer the 1024² bgColor solid when present.
+        useImageId =
+          inactivePanelFillImageId && /collar/i.test(pos.position)
+            ? inactivePanelFillImageId
+            : resolvedPanelId;
         // Per-panel images are already correctly sized for the panel.
         // Printify scale uses 0-2 range where 1 = 100%. Using scale=1
         // so the image fills the panel at its native resolution.
@@ -474,6 +520,45 @@ async function createTemporaryProduct(
         // strips on zip hoodies. If the user picked a bgColor we fill those
         // missing placeholders with a solid bgColor PNG so the mockup doesn't
         // expose the default white garment template through them.
+        //
+        // Kangaroo pocket is special: solid white/bg looks like a blank overlay.
+        // Prefer reusing the front-body panel art when the client omitted pocket.
+        if (isPocketLikePrintifyPosition(pos.position)) {
+          const frontFallback = resolvePocketFallbackImageId(panelImageIds);
+          if (frontFallback) {
+            console.warn(
+              `[Printify AOP] Pocket placeholder "${pos.position}" unmatched — ` +
+                `reusing front panel image (keys=[${Array.from(panelImageIds.keys()).join(", ")}]).`,
+            );
+            placeholders.push({
+              position: pos.position,
+              images: [{ id: frontFallback, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+            });
+            continue;
+          }
+          console.warn(
+            `[Printify AOP] Blank pocket fill: placeholder "${pos.position}" unmatched. ` +
+              `panelImageIds keys=[${Array.from(panelImageIds.keys()).join(", ")}]. ` +
+              `Solid bgColor will cover the kangaroo pocket on the mockup.`,
+          );
+        }
+        // Hood halves: never solid-fill one side when the sibling has art.
+        if (pos.position === "left_hood" || pos.position === "right_hood") {
+          const sibling =
+            pos.position === "left_hood"
+              ? panelImageIds.get("right_hood")
+              : panelImageIds.get("left_hood");
+          if (sibling) {
+            console.warn(
+              `[Printify AOP] Hood placeholder "${pos.position}" unmatched — reusing sibling hood image.`,
+            );
+            placeholders.push({
+              position: pos.position,
+              images: [{ id: sibling, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+            });
+            continue;
+          }
+        }
         if (inactivePanelFillImageId) {
           const fillEntry = {
             id: inactivePanelFillImageId,
@@ -587,7 +672,7 @@ function extractMockupImagesFromProduct(product: any): MockupImage[] {
     .filter((img: any) => img && typeof img.src === "string" && img.src.length > 0)
     .map((img: any) => ({
       url: img.src,
-      label: extractCameraLabel(img.src),
+      label: extractCameraLabel(img.src, img),
     }));
 }
 
@@ -617,34 +702,55 @@ async function getProductMockups(
   }
 }
 
-function extractCameraLabel(url: string): string {
-  const match = url.match(/camera_label=([^&]+)/);
-  if (!match) return "front";
-  try {
-    return decodeURIComponent(match[1].replace(/\+/g, " "));
-  } catch {
-    return match[1].replace(/\+/g, " ");
+function extractCameraLabel(
+  url: string,
+  img?: { camera_label?: string; label?: string; position?: string },
+): string {
+  const match = url.match(/[?&]camera_label=([^&]+)/i);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1].replace(/\+/g, " "));
+    } catch {
+      return match[1].replace(/\+/g, " ");
+    }
   }
+  const fromObj =
+    (typeof img?.camera_label === "string" && img.camera_label) ||
+    (typeof img?.label === "string" && img.label) ||
+    (typeof img?.position === "string" && img.position) ||
+    "";
+  return fromObj.trim() || "front";
 }
 
-/** True when inline create-product images are likely incomplete (e.g. decor lifestyle views). */
-export function shouldSupplementInlineMockups(images: MockupImage[], isAop: boolean): boolean {
-  if (isAop || images.length === 0) return false;
-  if (images.length >= 2) {
-    const norms = images.map((img) => normalizeMockupCameraLabel(img.label));
-    return !norms.some(
-      (n) =>
-        n.includes("lifestyle") ||
-        n.includes("context") ||
-        n.includes("room") ||
-        n.includes("bed") ||
-        n.includes("bedroom") ||
-        n.includes("duvet") ||
-        n.includes("home") ||
-        n.includes("side person"),
-    );
+/**
+ * True when inline create-product images are likely incomplete.
+ * Default: only wait when we have a single view — ≥2 images is enough for
+ * storefront carousels. Blocking on lifestyle/context often burns ~2 minutes
+ * for blueprints (e.g. tumbler) that never return those camera labels.
+ *
+ * Lifestyle Shot (`preferContextViews`): also wait when we have multiple images
+ * but none look like context/lifestyle yet.
+ * AOP Printers Mockup (`preferPersonViews`): wait until a Front/Side/Back Person
+ * camera appears.
+ */
+export function shouldSupplementInlineMockups(
+  images: MockupImage[],
+  isAop: boolean,
+  preferContextViews = false,
+  preferPersonViews = false,
+): boolean {
+  if (images.length === 0) return false;
+  // Lifestyle Shot must wait even when the blueprint is AOP-titled but using
+  // flat placer (e.g. shoulder tote) — otherwise we never see Context / On Person.
+  if (preferContextViews) {
+    return !images.some((img) => isContextLikeMockupLabel(img.label));
   }
-  return true;
+  if (preferPersonViews) {
+    return !images.some((img) => isPersonMockupLabel(img.label));
+  }
+  if (isAop) return false;
+  if (images.length < 2) return true;
+  return false;
 }
 
 function mergeMockupImages(
@@ -662,16 +768,6 @@ function mergeMockupImages(
     }
   }
   return { urls: images.map((img) => img.url), images };
-}
-
-/** Normalize Printify camera_label for comparison (spaces, + / %20, case). */
-export function normalizeMockupCameraLabel(raw: string): string {
-  const s = raw.replace(/\+/g, " ").replace(/_/g, " ").trim();
-  try {
-    return decodeURIComponent(s).trim().toLowerCase();
-  } catch {
-    return s.trim().toLowerCase();
-  }
 }
 
 function labelMatchesPrintPlacement(norm: string, placement: "front" | "back" | "both"): boolean {
@@ -697,10 +793,27 @@ export function isWrapOnlyPlaceholder(
   return positions.length > 0 && !hasBack;
 }
 
+/**
+ * Exact match, or numbered suffixes like `context-1` / `lifestyle 2`.
+ * Does NOT treat `front side` as a match for `front` (those have their own preferred tokens).
+ */
+function labelMatchesPreferredToken(norm: string, prefNorm: string): boolean {
+  if (!norm || !prefNorm) return false;
+  if (norm === prefNorm) return true;
+  let rest: string | null = null;
+  if (norm.startsWith(`${prefNorm}-`)) rest = norm.slice(prefNorm.length + 1);
+  else if (norm.startsWith(`${prefNorm} `)) rest = norm.slice(prefNorm.length + 1);
+  else if (norm.startsWith(`${prefNorm}_`)) rest = norm.slice(prefNorm.length + 1);
+  if (rest === null) return false;
+  return /^\d+$/.test(rest.trim());
+}
+
 function selectPreferredViews(
   images: MockupImage[],
   frontBackOnly = false,
   printPlacement?: "front" | "back" | "both",
+  preferContextViews = false,
+  preferPersonViews = false,
 ): MockupImage[] {
   const selected: MockupImage[] = [];
   const seenUrls = new Set<string>();
@@ -708,19 +821,42 @@ function selectPreferredViews(
     ...img,
     norm: normalizeMockupCameraLabel(img.label),
   }));
-  const preferredLabels = frontBackOnly ? AOP_FLAT_LAY_LABELS : PREFERRED_LABELS;
+  // Lifestyle Shot: On Person first (tote), then Context 2 — not Context 1 flatlay.
+  // AOP Printers Mockup: Front Person → Side Person → Back Person.
+  // Do not fall through to flat "front"/"back" from PREFERRED_LABELS.
+  const preferredLabels = frontBackOnly
+    ? AOP_FLAT_LAY_LABELS
+    : preferPersonViews
+      ? (["front person", "side person", "back person"] as const)
+      : preferContextViews
+        ? ([
+            "on person",
+            "lifestyle",
+            "context 2",
+            "context",
+            "bedroom",
+            "bed",
+            "room",
+            "home",
+            "wall",
+          ] as const)
+        : PREFERRED_LABELS;
   const maxViews = frontBackOnly
     ? AOP_FLAT_LAY_LABELS.length
-    : printPlacement === "front" || printPlacement === "back"
-      ? 1
-      : MAX_MOCKUP_VIEWS;
+    : preferPersonViews
+      ? 3
+      : preferContextViews
+        ? 2
+        : printPlacement === "front" || printPlacement === "back"
+          ? 1
+          : MAX_MOCKUP_VIEWS;
 
   for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
     if (printPlacement && !labelMatchesPrintPlacement(prefNorm, printPlacement)) continue;
     const match = annotated.find(
       (img) =>
-        img.norm === prefNorm &&
+        labelMatchesPreferredToken(img.norm, prefNorm) &&
         !seenUrls.has(img.url) &&
         (!printPlacement || labelMatchesPrintPlacement(img.norm, printPlacement)),
     );
@@ -732,12 +868,58 @@ function selectPreferredViews(
   }
 
   if (selected.length === 0 && images.length > 0) {
+    if (preferPersonViews) {
+      const personOnly = annotated
+        .filter((img) => isPersonMockupLabel(img.label))
+        .sort(
+          (a, b) =>
+            personMockupPreferenceRank(a.label) - personMockupPreferenceRank(b.label),
+        );
+      return personOnly
+        .slice(0, maxViews)
+        .map((img) => ({ url: img.url, label: img.label }));
+    }
     const fallback = printPlacement
       ? annotated.filter((img) => labelMatchesPrintPlacement(img.norm, printPlacement))
       : annotated;
     return (fallback.length > 0 ? fallback : annotated)
       .slice(0, maxViews)
       .map((img) => ({ url: img.url, label: img.label }));
+  }
+
+  // Keep remaining unique cameras (e.g. wall / context-N) so Lifestyle Shot
+  // is not left with only the preferred `front` match.
+  if (!frontBackOnly && selected.length < maxViews) {
+    for (const img of annotated) {
+      if (seenUrls.has(img.url)) continue;
+      if (printPlacement && !labelMatchesPrintPlacement(img.norm, printPlacement)) continue;
+      // When asking for lifestyle, skip extra flatlay/on-model sides.
+      if (preferContextViews && !isContextLikeMockupLabel(img.label)) continue;
+      if (preferPersonViews && !isPersonMockupLabel(img.label)) continue;
+      selected.push({ url: img.url, label: img.label });
+      seenUrls.add(img.url);
+      if (selected.length >= maxViews) break;
+    }
+  }
+
+  if (preferPersonViews && selected.length > 0) {
+    return selected
+      .sort(
+        (a, b) =>
+          personMockupPreferenceRank(a.label) - personMockupPreferenceRank(b.label),
+      )
+      .slice(0, maxViews);
+  }
+
+  if (preferContextViews && selected.length > 0) {
+    const hasOnPerson = selected.some((img) => isOnPersonMockupLabel(img.label));
+    const ranked = selected
+      .filter((img) => !(hasOnPerson && isContext1MockupLabel(img.label)))
+      .sort(
+        (a, b) =>
+          lifestyleMockupPreferenceRank(a.label) - lifestyleMockupPreferenceRank(b.label),
+      );
+    return ranked.slice(0, maxViews);
   }
 
   return selected;
@@ -748,20 +930,42 @@ export function pickPreferredMockupViews(
   images: { url: string; label: string }[],
   frontBackOnly = false,
   printPlacement?: "front" | "back" | "both",
+  preferContextViews = false,
+  preferPersonViews = false,
 ): { url: string; label: string }[] {
-  return selectPreferredViews(images, frontBackOnly, printPlacement);
+  return selectPreferredViews(
+    images,
+    frontBackOnly,
+    printPlacement,
+    preferContextViews,
+    preferPersonViews,
+  );
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
-  try {
-    await fetch(
-      `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`,
-      {
+  const url = `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetch(url, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      if (response.ok || response.status === 404) {
+        return;
       }
-    );
-  } catch (error) {}
+      const body = await response.text().catch(() => "");
+      console.warn(
+        `[Printify Mockup] Failed to delete temp product ${productId} (attempt ${attempt}/2): ${response.status} ${body.slice(0, 160)}`,
+      );
+      if (attempt < 2) await sleep(500 * attempt);
+    } catch (error) {
+      console.warn(
+        `[Printify Mockup] Delete temp product ${productId} threw (attempt ${attempt}/2):`,
+        error,
+      );
+      if (attempt < 2) await sleep(500 * attempt);
+    }
+  }
 }
 
 export async function generatePrintifyMockup(
@@ -1005,8 +1209,17 @@ export async function generatePrintifyMockup(
         }
       }
 
+      // Pullover kangaroo may upload as front_pocket while Printify discovers
+      // "pocket" / "kangaroo_pocket" — register the same image under all aliases.
+      expandPanelImageIdsWithPocketAliases(panelImageIds);
+      // bp 449 uses title-case `Collar`; client may still upload `collar`.
+      expandPanelImageIdsWithCollarAliases(panelImageIds);
+      // Blank true-left/true-right hood when one half never arrived.
+      expandHoodPanelImageIdsWithSiblingFallback(panelImageIds);
+
       console.log(
-        `[Printify AOP] Upload summary: ${panelImageIds.size}/${request.panelUrls.length} panels uploaded successfully.`
+        `[Printify AOP] Upload summary: ${panelImageIds.size}/${request.panelUrls.length} panels uploaded successfully` +
+          ` (keys: ${Array.from(panelImageIds.keys()).join(", ")})`,
       );
 
       // If client supplied panels for an AOP product but every upload failed, return an
@@ -1089,23 +1302,25 @@ export async function generatePrintifyMockup(
 
     // Merge the DB's placeholderPositions list with Printify's actual variant
     // placeholders. The DB list can be incomplete (e.g. zip hoodie missing
-    // waistband_external / *_cuff_external / inner hood positions), and any
-    // placeholder we don't include in print_areas[].placeholders renders the
-    // default white garment template — which is what produces the visible
-    // white bands. Discovering the live list and filling the missing ones with
-    // the bgColor solid PNG closes that gap.
+    // waistband_external / *_cuff_external / inner hood positions, sweatshirt
+    // missing collar), and any placeholder we don't include in
+    // print_areas[].placeholders renders the default white garment template —
+    // which is what produces the visible white bands. Discovering the live
+    // list and filling the missing ones with the bgColor solid PNG closes that
+    // gap. Also merge any position the client already uploaded (e.g. solid
+    // collar) so panelUrls aren't dropped when the DB list is incomplete.
     let effectiveAopPositions = request.aopPositions;
-    if (isAop && inactivePanelFillImageId) {
+    if (isAop && (inactivePanelFillImageId || panelImageIds.size > 0)) {
       const discovered = await getBlueprintVariantPlaceholders(
         blueprintId,
         providerId,
         variantId,
         printifyApiToken,
       );
+      const seen = new Set((request.aopPositions ?? []).map((p) => p.position));
+      const merged = [...(request.aopPositions ?? [])];
+      const added: string[] = [];
       if (discovered && discovered.length > 0) {
-        const seen = new Set((request.aopPositions ?? []).map((p) => p.position));
-        const merged = [...(request.aopPositions ?? [])];
-        const added: string[] = [];
         for (const p of discovered) {
           if (!seen.has(p.position)) {
             merged.push(p);
@@ -1113,13 +1328,25 @@ export async function generatePrintifyMockup(
             added.push(p.position);
           }
         }
-        if (added.length > 0) {
-          console.log(
-            `[Printify AOP] Augmented aopPositions with ${added.length} blueprint-only placeholder(s): ${added.join(", ")}`,
-          );
-        }
-        effectiveAopPositions = merged;
       }
+      for (const position of panelImageIds.keys()) {
+        if (!seen.has(position)) {
+          const ref = panelImageRefs.get(position);
+          merged.push({
+            position,
+            width: ref?.width ?? 0,
+            height: ref?.height ?? 0,
+          });
+          seen.add(position);
+          added.push(position);
+        }
+      }
+      if (added.length > 0) {
+        console.log(
+          `[Printify AOP] Augmented aopPositions with ${added.length} placeholder(s): ${added.join(", ")}`,
+        );
+      }
+      effectiveAopPositions = merged;
     }
 
     let effectivePrintPlacement = printPlacement ?? (doubleSided ? "both" : "front");
@@ -1242,13 +1469,27 @@ export async function generatePrintifyMockup(
       };
     }
 
+    const preferContextViews = !!request.preferContextViews;
+    const preferPersonViews = !!request.preferPersonViews;
     const supplementInline = mockupData
-      ? shouldSupplementInlineMockups(mockupData.images, isAop)
+      ? shouldSupplementInlineMockups(
+          mockupData.images,
+          isAop,
+          preferContextViews,
+          preferPersonViews,
+        )
       : false;
 
     if (!mockupData || supplementInline) {
       const pollStarted = Date.now();
-      const pollRetries = supplementInline && mockupData ? 50 : 60;
+      // Single-view / lifestyle / person supplement: short budget. Full poll when create returned nothing.
+      // Lifestyle / person shots get a longer short-poll so those cameras can arrive.
+      const pollRetries =
+        supplementInline && mockupData
+          ? preferContextViews || preferPersonViews
+            ? 28
+            : 5
+          : 60;
       try {
         const polled = await pRetry(
           async (attemptNumber) => {
@@ -1258,11 +1499,24 @@ export async function generatePrintifyMockup(
               throw new Error("Mockups not ready yet");
             }
             const merged = mergeMockupImages(mockupData, data);
-            if (supplementInline && shouldSupplementInlineMockups(merged.images, isAop)) {
+            if (
+              supplementInline &&
+              shouldSupplementInlineMockups(
+                merged.images,
+                isAop,
+                preferContextViews,
+                preferPersonViews,
+              )
+            ) {
               console.log(
-                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for lifestyle/context`,
+                `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for additional views` +
+                  (preferContextViews
+                    ? " (prefer context)"
+                    : preferPersonViews
+                      ? " (prefer person)"
+                      : ""),
               );
-              throw new Error("Lifestyle mockups not ready yet");
+              throw new Error("Additional mockup views not ready yet");
             }
             return data;
           },
@@ -1299,8 +1553,34 @@ export async function generatePrintifyMockup(
       }
     }
 
-    const placementForViews = isAop ? effectivePrintPlacement : undefined;
-    const selected = selectPreferredViews(mockupData.images, isAop, placementForViews);
+    // Lifestyle / person shots: never use AOP front/back-only trimming.
+    // Also skip printPlacement filtering (e.g. "front" would drop "front person").
+    const frontBackOnly =
+      preferContextViews || preferPersonViews ? false : isAop;
+    const placementForViews =
+      preferContextViews || preferPersonViews || !isAop
+        ? undefined
+        : effectivePrintPlacement;
+    const selected = selectPreferredViews(
+      mockupData.images,
+      frontBackOnly,
+      placementForViews,
+      preferContextViews,
+      preferPersonViews,
+    );
+
+    if (preferContextViews) {
+      console.log(
+        `[Printify Mockup] Lifestyle selection: ${selected.map((s) => s.label).join(", ") || "(none)"} ` +
+          `from ${mockupData.images.length} camera(s): ${mockupData.images.map((i) => i.label).join(", ")}`,
+      );
+    }
+    if (preferPersonViews) {
+      console.log(
+        `[Printify Mockup] Person selection: ${selected.map((s) => s.label).join(", ") || "(none)"} ` +
+          `from ${mockupData.images.length} camera(s): ${mockupData.images.map((i) => i.label).join(", ")}`,
+      );
+    }
 
     return {
       success: true,

@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOMBER_BACK_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_ASPECT_X_SCALE,
+  BOMBER_FRONT_BODY_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PLACEMENT_SCALE,
+  BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE,
+  BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC,
+  BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
+  BOMBER_JACKET_BLUEPRINT_ID,
+  BOMBER_PATTERN_BACK_PRINT_TILE_SCALE,
+  BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE,
+  BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE,
+  BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  bomberPatternPrintTileScaleForPanel,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  LEGGINGS_CASUAL_BLUEPRINT_ID,
+  LEGGINGS_CAPRI_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
   PILLOW_WRAP_BLUEPRINT_ID,
@@ -14,6 +29,7 @@ import {
   designGroupsForBlueprint,
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
+  isBomberJacketBlueprint,
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
@@ -23,13 +39,23 @@ import {
   resolvePrintFileLayout,
   resolveGarmentLayout,
   usesJumperNoHoodGarmentUi,
+  shouldForceSolidSweatshirtCollar,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
   normalizeHoodieTemplate,
   panelsEligibleForView,
+  SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   SWEATSHIRT_TRIM_PANEL_KEYS,
+  mergeFrontBodyPanelPlacementBias,
+  mergePanelPlacementBiasPercent,
+  migrateFrontPocketOutOfTrimGroup,
+  findGroupForPanel,
+  resolveFrontBodyPanelBias,
+  FRONT_CHEST_PANEL_KEYS,
+  FRONT_POCKET_PANEL_KEYS,
+  ZERO_PANEL_PLACEMENT_BIAS,
 } from "./hoodieTemplate";
 
 describe("createFreshAopTemplate", () => {
@@ -49,7 +75,10 @@ describe("createFreshAopTemplate", () => {
   it("uses pullover defaults for bp 450", () => {
     const t = createFreshAopTemplate({ name: "pullover-hoodie-aop-L", blueprintId: 450 });
     expect(t.hoodieType).toBe("pullover-hoodie-aop");
-    expect(t.designGroups.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+    expect(t.designGroups.find((g) => g.id === "front-body")?.panelKeys).toEqual([
+      "front",
+      "front_pocket",
+    ]);
   });
 
   it("uses sweatshirt defaults for bp 449", () => {
@@ -174,7 +203,90 @@ describe("defaultHoodieTypeForBlueprint", () => {
   it("maps known blueprints", () => {
     expect(defaultHoodieTypeForBlueprint(450)).toBe("pullover-hoodie-aop");
     expect(defaultHoodieTypeForBlueprint(451)).toBe("zip-hoodie-aop");
+    expect(defaultHoodieTypeForBlueprint(LEGGINGS_CASUAL_BLUEPRINT_ID)).toBe("leggings-aop");
     expect(defaultHoodieTypeForBlueprint(1604)).toBe("aop-bp-1604");
+  });
+});
+
+describe("leggings panels (bp 256 / 1050)", () => {
+  it("offers only left/right side (waistband is part of the leg print file)", () => {
+    const front = panelsEligibleForView("front", LEGGINGS_CASUAL_BLUEPRINT_ID, "hoodie");
+    const back = panelsEligibleForView("back", LEGGINGS_CASUAL_BLUEPRINT_ID, "hoodie");
+    expect(front).toEqual(["left_side", "right_side"]);
+    expect(back).toEqual(["left_side", "right_side"]);
+    expect(front).not.toContain("front_waistband");
+    expect(front).not.toContain("front");
+  });
+
+  it("capri matches casual print panels", () => {
+    const front = panelsEligibleForView("front", LEGGINGS_CAPRI_BLUEPRINT_ID, "hoodie");
+    expect(front).toEqual(["left_side", "right_side"]);
+  });
+
+  it("hides leggings keys from hoodie blueprints", () => {
+    const zip = panelsEligibleForView("front", ZIP_HOODIE_BLUEPRINT_ID);
+    expect(zip).not.toContain("left_side");
+    expect(zip).not.toContain("front_waistband");
+  });
+
+  it("seeds left-leg/right-leg design groups and heals pillow-style saves", () => {
+    const fresh = createFreshAopTemplate({
+      name: "leggings-aop-L",
+      blueprintId: LEGGINGS_CASUAL_BLUEPRINT_ID,
+    });
+    expect(fresh.hoodieType).toBe("leggings-aop");
+    expect(fresh.placerEditor).toBe("hoodie");
+    expect(fresh.designGroups?.map((g) => g.id)).toEqual(["right-leg", "left-leg"]);
+    expect(fresh.designGroups?.find((g) => g.id === "right-leg")?.panelKeys).toEqual([
+      "right_side",
+    ]);
+    expect(fresh.designGroups?.find((g) => g.id === "left-leg")?.panelKeys).toEqual([
+      "left_side",
+    ]);
+
+    const healed = normalizeHoodieTemplate({
+      ...fresh,
+      placerEditor: "front-back-face",
+      designGroups: [
+        {
+          id: "front-face",
+          name: "Front face",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ],
+    });
+    expect(healed.placerEditor).toBe("hoodie");
+    expect(healed.designGroups?.map((g) => g.id)).toEqual(["right-leg", "left-leg"]);
+    expect(hoodiePanelKeyToPrintifyPosition("left_side")).toBe("left_side");
+  });
+
+  it("heals unified legs group into left-leg/right-leg", () => {
+    const healed = normalizeHoodieTemplate({
+      name: "leggings-unified",
+      blueprintId: LEGGINGS_CASUAL_BLUEPRINT_ID,
+      designGroups: [
+        {
+          id: "legs",
+          name: "Legs",
+          panelKeys: ["left_side", "right_side"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ],
+    });
+    expect(healed.designGroups?.map((g) => g.id)).toEqual(["right-leg", "left-leg"]);
   });
 });
 
@@ -196,15 +308,73 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(eligible).toContain("front_right");
   });
 
-  it("front-body design group is a single front panel", () => {
+  it("front-body design group is the front panel plus kangaroo pocket", () => {
     const groups = defaultPulloverDesignGroups();
     const frontBody = groups.find((g) => g.id === "front-body");
-    expect(frontBody?.panelKeys).toEqual(["front"]);
+    // Pocket rides with front-body (like zip hoodie pocket halves) so toggling
+    // Pockets on actually shows artwork — `trim` is always force-disabled.
+    expect(frontBody?.panelKeys).toEqual(["front", "front_pocket"]);
+    expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
   });
 
   it("designGroupsForBlueprint picks pullover defaults for 450", () => {
     const groups = designGroupsForBlueprint(PULOVER_HOODIE_BLUEPRINT_ID);
-    expect(groups.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+    expect(groups.find((g) => g.id === "front-body")?.panelKeys).toEqual([
+      "front",
+      "front_pocket",
+    ]);
+  });
+
+  it("normalizeHoodieTemplate migrates stale pullover templates with front_pocket in trim", () => {
+    const raw = createFreshAopTemplate({
+      name: "pullover-pocket-migration-test",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    // Simulate a pre-fix persisted template: pocket still in `trim`.
+    const staleGroups = raw.designGroups!.map((g) => {
+      if (g.id === "front-body") return { ...g, panelKeys: ["front"] };
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] };
+      return g;
+    });
+    const stale = { ...raw, designGroups: staleGroups };
+    const normalized = normalizeHoodieTemplate(stale);
+    expect(normalized.designGroups?.find((g) => g.id === "front-body")?.panelKeys).toEqual([
+      "front",
+      "front_pocket",
+    ]);
+    expect(normalized.designGroups?.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      "waistband",
+    ]);
+  });
+
+  it("migrateFrontPocketOutOfTrimGroup runs without a blueprint id (stale Supabase JSON)", () => {
+    const groups = defaultPulloverDesignGroups().map((g) => {
+      if (g.id === "front-body") return { ...g, panelKeys: ["front"] as const };
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] as const };
+      return g;
+    });
+    const migrated = migrateFrontPocketOutOfTrimGroup(groups);
+    expect(migrated.find((g) => g.id === "front-body")?.panelKeys).toContain("front_pocket");
+    expect(migrated.find((g) => g.id === "trim")?.panelKeys).not.toContain("front_pocket");
+  });
+
+  it("migrateFrontPocketOutOfTrimGroup strips trim duplicate when front-body already has pocket", () => {
+    const groups = defaultPulloverDesignGroups().map((g) => {
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] as const };
+      return g;
+    });
+    const migrated = migrateFrontPocketOutOfTrimGroup(groups);
+    expect(migrated.find((g) => g.id === "front-body")?.panelKeys).toContain("front_pocket");
+    expect(migrated.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
+  });
+
+  it("findGroupForPanel prefers front-body over trim for front_pocket", () => {
+    const groups = defaultPulloverDesignGroups().map((g) => {
+      if (g.id === "trim") return { ...g, panelKeys: ["waistband", "front_pocket"] as const };
+      return g;
+    });
+    const group = findGroupForPanel(groups, "front_pocket");
+    expect(group?.id).toBe("front-body");
   });
 
   it("mockupDrawRect applies x/y/scale", () => {
@@ -330,12 +500,70 @@ describe("sweatshirt hoodie panel keys (bp 449)", () => {
   });
 });
 
+describe("bomber jacket blueprint", () => {
+  it("registers bp 433 — preview may use split fronts; Printify catalog is single front", () => {
+    expect(BOMBER_JACKET_BLUEPRINT_ID).toBe(433);
+    expect(isBomberJacketBlueprint(433)).toBe(true);
+    expect(isBomberJacketBlueprint(451)).toBe(false);
+    expect(defaultHoodieTypeForBlueprint(433)).toBe("bomber-jacket-aop");
+    expect(BOMBER_FRONT_BODY_ASPECT_X_SCALE).toBe(1);
+    expect(BOMBER_FRONT_BODY_PLACEMENT_SCALE).toBe(1.42);
+    expect(BOMBER_FRONT_BODY_OFFSET_Y_FRAC).toBe(-0.18);
+    expect(BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE).toBe(1.07);
+    expect(BOMBER_FRONT_BODY_PREVIEW_OFFSET_Y_FRAC).toBe(0.045);
+    expect(BOMBER_FRONT_BODY_PREVIEW_HEIGHT_SCALE).toBe(0.95);
+    expect(BOMBER_BACK_PREVIEW_PLACEMENT_SCALE).toBe(1.144);
+    expect(BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE).toBe(1.7505);
+    expect(BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE).toBe(5.25);
+    expect(BOMBER_PATTERN_BACK_PRINT_TILE_SCALE).toBe(0.947625);
+    expect(BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE).toBe(0.64);
+    expect(bomberPatternPrintTileScaleForPanel("front")).toBe(5.25);
+    expect(bomberPatternPrintTileScaleForPanel("back")).toBe(0.947625);
+    expect(bomberPatternPrintTileScaleForPanel("left_sleeve")).toBe(0.64);
+    // Mapper/preview templates still use zip-style L/R meshes; export composites to `front`.
+    const eligible = panelsEligibleForView("front", BOMBER_JACKET_BLUEPRINT_ID);
+    expect(eligible).not.toContain("front");
+    expect(eligible).toContain("front_left");
+    expect(eligible).toContain("front_right");
+    const groups = designGroupsForBlueprint(BOMBER_JACKET_BLUEPRINT_ID);
+    expect(groups.some((g) => g.id === "front-body")).toBe(true);
+  });
+});
+
 describe("hoodiePanelKeyToPrintifyPosition", () => {
   it("maps cuff and collar keys to Printify placeholder names", () => {
     expect(hoodiePanelKeyToPrintifyPosition("left_cuff")).toBe("left_cuff_panel");
-    expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("collar");
-    expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("collar");
+    expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("Collar");
+    expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("Collar");
     expect(hoodiePanelKeyToPrintifyPosition("front")).toBe("front");
+  });
+
+  it("forces solid collar fill for sweatshirt / jumper-no-hood", () => {
+    expect(SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE).toBe(0.9765);
+    expect(
+      shouldForceSolidSweatshirtCollar({
+        blueprintId: SWEATSHIRT_BLUEPRINT_ID,
+        placerEditor: "hoodie",
+      }),
+    ).toBe(true);
+    expect(
+      shouldForceSolidSweatshirtCollar({
+        blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+        garmentLayout: "jumper-no-hood",
+        placerEditor: "hoodie",
+      }),
+    ).toBe(true);
+    expect(
+      shouldForceSolidSweatshirtCollar({
+        blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+        garmentLayout: "hoodie",
+        placerEditor: "hoodie",
+      }),
+    ).toBe(false);
+  });
+
+  it("maps pullover kangaroo front_pocket to Printify pocket", () => {
+    expect(hoodiePanelKeyToPrintifyPosition("front_pocket")).toBe("pocket");
   });
 });
 
@@ -346,5 +574,46 @@ describe("mesh grid limits", () => {
     expect(mesh.cols).toBe(24);
     expect(mesh.rows).toBe(3);
     expect(mesh.targetPoints).toHaveLength(72);
+  });
+});
+
+describe("front-body panel placement bias", () => {
+  it("merges stored and override bias per chest/pocket subset", () => {
+    const merged = mergeFrontBodyPanelPlacementBias(
+      { chest: { offsetXPercent: 1, offsetYPercent: 2 } },
+      { pocket: { offsetXPercent: -3, offsetYPercent: 4 } },
+    );
+    expect(merged.chest).toEqual({ offsetXPercent: 1, offsetYPercent: 2 });
+    expect(merged.pocket).toEqual({ offsetXPercent: -3, offsetYPercent: 4 });
+  });
+
+  it("override wins for the same subset field", () => {
+    const merged = mergePanelPlacementBiasPercent(
+      { offsetXPercent: 1, offsetYPercent: 2 },
+      { offsetYPercent: 5 },
+    );
+    expect(merged).toEqual({ offsetXPercent: 1, offsetYPercent: 5 });
+  });
+
+  it("resolves chest vs pocket panel keys from front-body group", () => {
+    const group = {
+      panelPlacementBias: {
+        chest: { offsetXPercent: 0.5, offsetYPercent: 1.5 },
+        pocket: { offsetXPercent: -0.5, offsetYPercent: -1.5 },
+      },
+    };
+    expect(resolveFrontBodyPanelBias(group, FRONT_CHEST_PANEL_KEYS[0])).toEqual({
+      offsetXPercent: 0.5,
+      offsetYPercent: 1.5,
+    });
+    expect(resolveFrontBodyPanelBias(group, FRONT_POCKET_PANEL_KEYS[1])).toEqual({
+      offsetXPercent: -0.5,
+      offsetYPercent: -1.5,
+    });
+    expect(resolveFrontBodyPanelBias(group, "back")).toBeNull();
+  });
+
+  it("falls back to zero bias when group has no stored defaults", () => {
+    expect(resolveFrontBodyPanelBias({}, "front_left")).toEqual(ZERO_PANEL_PLACEMENT_BIAS);
   });
 });

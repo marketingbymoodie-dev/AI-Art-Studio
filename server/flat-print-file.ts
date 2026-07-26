@@ -33,7 +33,13 @@ import {
   isSupabaseFlatCalibrationConfigured,
 } from "./supabaseFlatCalibration";
 
-export type FlatPlacement = { scale: number; offsetX: number; offsetY: number };
+export type FlatPlacement = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  /** Clockwise degrees (matches client Place rotate handle). */
+  rotationDeg?: number;
+};
 export type Rect = { x: number; y: number; width: number; height: number };
 export type PrintFileDims = { width: number; height: number };
 
@@ -114,16 +120,36 @@ export async function bakeFlatPrintFile(
 
   const drawW = Math.max(1, Math.round(box.width));
   const drawH = Math.max(1, Math.round(box.height));
-  const left = Math.round(box.x);
-  const top = Math.round(box.y);
+  const rotationDeg = Number(placement.rotationDeg ?? 0) || 0;
 
-  // Resize the artwork to its on-canvas draw box, then crop to the portion that
-  // actually lands inside the print canvas (replicates canvas drawImage clip).
-  const resized = await sharp(artworkBuffer)
+  // Resize the artwork to its on-canvas draw box, then optionally rotate
+  // around the box centre (sharp expands the canvas for non-90° angles).
+  let overlayRaw = await sharp(artworkBuffer)
     .resize(drawW, drawH, { fit: "fill" })
     .ensureAlpha()
     .png()
     .toBuffer();
+
+  let left = Math.round(box.x);
+  let top = Math.round(box.y);
+  let placedW = drawW;
+  let placedH = drawH;
+
+  if (rotationDeg !== 0) {
+    overlayRaw = await sharp(overlayRaw)
+      .rotate(rotationDeg, {
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
+    const rotMeta = await sharp(overlayRaw).metadata();
+    placedW = Math.max(1, rotMeta.width ?? drawW);
+    placedH = Math.max(1, rotMeta.height ?? drawH);
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    left = Math.round(cx - placedW / 2);
+    top = Math.round(cy - placedH / 2);
+  }
 
   const base = sharp({
     create: { width: printW, height: printH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
@@ -134,8 +160,8 @@ export async function bakeFlatPrintFile(
   const sy = top < 0 ? -top : 0;
   const destLeft = Math.max(0, left);
   const destTop = Math.max(0, top);
-  const visibleW = Math.min(drawW - sx, printW - destLeft);
-  const visibleH = Math.min(drawH - sy, printH - destTop);
+  const visibleW = Math.min(placedW - sx, printW - destLeft);
+  const visibleH = Math.min(placedH - sy, printH - destTop);
 
   if (visibleW <= 0 || visibleH <= 0) {
     // Artwork is entirely off-canvas — emit a transparent print file.
@@ -143,9 +169,9 @@ export async function bakeFlatPrintFile(
     return { buffer, width: printW, height: printH };
   }
 
-  let overlay = resized;
-  if (sx > 0 || sy > 0 || visibleW < drawW || visibleH < drawH) {
-    overlay = await sharp(resized)
+  let overlay = overlayRaw;
+  if (sx > 0 || sy > 0 || visibleW < placedW || visibleH < placedH) {
+    overlay = await sharp(overlayRaw)
       .extract({ left: sx, top: sy, width: visibleW, height: visibleH })
       .png()
       .toBuffer();
@@ -157,6 +183,43 @@ export async function bakeFlatPrintFile(
     .toBuffer();
 
   return { buffer, width: printW, height: printH };
+}
+
+/** Soft target before upload — stay under common 30MB project defaults even if updateBucket fails. */
+const BAKE_UPLOAD_SOFT_MAX_BYTES = 28 * 1024 * 1024;
+/** Hard fail after compression — matches raised flat-calibration bucket limit. */
+const BAKE_UPLOAD_HARD_MAX_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Compress oversized bake PNGs so Supabase upload does not hit object-size limits.
+ * Exported for unit tests.
+ */
+export async function prepareBakeUploadBuffer(
+  buffer: Buffer,
+): Promise<{ buffer: Buffer; contentType: string; ext: string }> {
+  if (buffer.length <= BAKE_UPLOAD_SOFT_MAX_BYTES) {
+    return { buffer, contentType: "image/png", ext: "png" };
+  }
+  console.warn(
+    `[flat-print-file] bake PNG ${buffer.length} bytes exceeds ${BAKE_UPLOAD_SOFT_MAX_BYTES}; compressing`,
+  );
+  let out = await sharp(buffer).png({ compressionLevel: 9 }).toBuffer();
+  if (out.length <= BAKE_UPLOAD_SOFT_MAX_BYTES) {
+    return { buffer: out, contentType: "image/png", ext: "png" };
+  }
+  out = await sharp(buffer).jpeg({ quality: 92, mozjpeg: true }).toBuffer();
+  if (out.length <= BAKE_UPLOAD_SOFT_MAX_BYTES) {
+    console.warn(`[flat-print-file] compressed bake to JPEG ${out.length} bytes`);
+    return { buffer: out, contentType: "image/jpeg", ext: "jpg" };
+  }
+  out = await sharp(buffer).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
+  if (out.length > BAKE_UPLOAD_HARD_MAX_BYTES) {
+    throw new Error(
+      `Baked print file still too large after compression (${Math.round(out.length / (1024 * 1024))}MB). Try a smaller print size.`,
+    );
+  }
+  console.warn(`[flat-print-file] compressed bake to JPEG q80 ${out.length} bytes`);
+  return { buffer: out, contentType: "image/jpeg", ext: "jpg" };
 }
 
 /**
@@ -171,9 +234,10 @@ export async function persistBakedPrintFile(
 ): Promise<string | null> {
   if (!isSupabaseFlatCalibrationConfigured()) return null;
   await ensureFlatCalibrationBucket();
+  const prepared = await prepareBakeUploadBuffer(buffer);
   const safeDesign = String(designId).replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-  const path = `print-files/${productTypeId}/${safeDesign}-${view}.png`;
-  return uploadToFlatCalibrationBucket(path, buffer, "image/png");
+  const path = `print-files/${productTypeId}/${safeDesign}-${view}.${prepared.ext}`;
+  return uploadToFlatCalibrationBucket(path, prepared.buffer, prepared.contentType);
 }
 
 /**

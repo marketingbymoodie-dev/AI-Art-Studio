@@ -101,12 +101,24 @@ async function urlToBase64(
   return { mimeType: contentType, data: buf.toString("base64") };
 }
 
+import {
+  buildDecorNoTextUnlessAskedShortConstraint,
+  buildDecorTextSafeMarginShortConstraint,
+  decorAllowsGeneratedText,
+  styleAllowsGeneratedText,
+  userPromptRequestsMonochrome,
+} from "@shared/generationPromptHints";
+
 export type GenerateImageParams = {
   prompt: string;
   aspectRatio?: string;
   inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
   isAllOverPrint?: boolean;
+  isPatternStyle?: boolean;
+  userPrompt?: string | null;
+  /** Tumbler/mug wrap — keep content away from edges. Not for framed art / wall decals. */
+  cylindricalWrap?: boolean;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -144,39 +156,88 @@ const PROMPT_MAX_LENGTH = 900;
  * For apparel: strips the verbose block and prepends a compact chroma-key constraint.
  * For non-apparel (wall art / decor): strips and prepends a compact full-bleed constraint.
  */
-function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolean): string {
+/**
+ * Remove every verbose requirements block a route handler may have injected,
+ * regardless of which product path built the prompt. Leaving any of them in
+ * blows past PROMPT_MAX_LENGTH and the hard truncate then chops off the user's
+ * description at the end (symptom: generations follow only the style, ignoring
+ * what the user typed).
+ */
+function stripVerboseRequirementBlocks(raw: string): string {
+  return raw
+    .replace(
+      /\n*MANDATORY IMAGE REQUIREMENTS FOR (?:ALL-OVER PRINT \(AOP\)(?: PATTERN)?|APPAREL PRINTING)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
+      ""
+    )
+    .replace(/=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/, "")
+    .replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|=== ARTWORK DESCRIPTION|$)/g, "")
+    .replace(/=== ARTWORK DESCRIPTION ===\s*/g, "")
+    .trim();
+}
+
+/** Compact orientation lock that survives prompt compression (verbose ORIENTATION LOCK is stripped). */
+export function buildDecorOrientationShortConstraint(aspectRatio?: string | null): string {
+  const mapped = mapToSupportedAspectRatio(aspectRatio || undefined);
+  const [w, h] = mapped.split(":").map(Number);
+  if (!(w > 0 && h > 0)) return "";
+  const ratio = w / h;
+  if (ratio > 1.05) {
+    return (
+      "CANVAS IS LANDSCAPE (wider than tall). Fill the FULL width edge-to-edge. " +
+      "Do NOT compose a tall/portrait poster panel. Do NOT leave white or empty bars on the left or right. "
+    );
+  }
+  if (ratio < 0.95) {
+    return (
+      "CANVAS IS PORTRAIT (taller than wide). Fill the FULL height edge-to-edge. " +
+      "Do NOT compose a wide landscape panel with empty bars on the top or bottom. "
+    );
+  }
+  return "CANVAS IS SQUARE. Fill edge-to-edge with no blank margins. ";
+}
+
+function compressPrompt(
+  raw: string,
+  isApparel: boolean,
+  isAllOverPrint?: boolean,
+  userPrompt?: string | null,
+  isPatternStyle?: boolean,
+  aspectRatio?: string | null,
+  cylindricalWrap?: boolean,
+): string {
+  const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
+  const artworkSection = artworkMatch?.[1]?.trim() || "";
+
+  const monoHint = userPromptRequestsMonochrome(userPrompt)
+    ? "Black/white/grey palette only — no green or other colors unless the user requested them. "
+    : "";
+
   let compressed: string;
 
   if (isApparel && isAllOverPrint) {
-    // Strip the verbose AOP sizing block
-    compressed = raw.replace(
-      /\n*MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT \(AOP\)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
-      ""
-    );
-    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-    compressed = compressed.trim();
+    compressed = stripVerboseRequirementBlocks(raw);
 
-    // Compact AOP constraint: isolated motif on a chroma-key background so the
-    // server can reliably remove it before building AOP mockup tiles.
-    const shortAopConstraints =
-      "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
-      "Every pixel not part of the design must be exactly #FF00FF. " +
-      "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
-      "Do NOT use hot pink or magenta anywhere in the design itself. " +
-      "Clean hard edges, no gradients into background, no rectangular frames. " +
-      "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
+    const shortAopConstraints = isPatternStyle
+      ? monoHint +
+        "Seamless tileable repeating pattern unit on SOLID HOT PINK (#FF00FF). " +
+        "Must repeat seamlessly when tiled — NOT a single isolated centered icon. " +
+        "Every pixel not part of the pattern must be exactly #FF00FF. " +
+        "Do NOT use hot pink or magenta inside the pattern itself. " +
+        "Clean hard edges, no rectangular frames. " +
+        "Do NOT add text unless the user explicitly requested it. "
+      : monoHint +
+        "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
+        "Every pixel not part of the design must be exactly #FF00FF. " +
+        "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
+        "Do NOT use hot pink or magenta anywhere in the design itself. " +
+        "Clean hard edges, no gradients into background, no rectangular frames. " +
+        "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortAopConstraints + compressed;
   } else if (isApparel) {
-    // Strip the verbose apparel sizing block
-    compressed = raw.replace(
-      /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
-      ""
-    );
-    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-    compressed = compressed.trim();
+    compressed = stripVerboseRequirementBlocks(raw);
 
-    // Compact apparel constraint with chroma key background + no-added-text rule
     const shortApparelConstraints =
+      monoHint +
       "Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
       "NO white mat, NO white rectangle, NO card behind subject — background must be pure #FF00FF to all four edges. " +
@@ -185,23 +246,45 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortApparelConstraints + compressed;
   } else {
-    compressed = raw.replace(
-      /=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/,
-      ""
-    );
-    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-    compressed = compressed.replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|$)/g, "");
-    compressed = compressed.trim();
+    compressed = stripVerboseRequirementBlocks(raw);
 
-    const shortConstraints =
-      "Full-bleed, edge-to-edge, no borders, no blank margins. " +
-      "Keep important elements away from edges (wraparound safe area). ";
+    // Verbose CRITICAL CANVAS / ORIENTATION LOCK blocks are stripped above — re-inject
+    // a compact orientation rule from the requested aspect ratio so landscape framed
+    // art and wall decals don't get portrait vignettes with white side bars.
+    const orient = buildDecorOrientationShortConstraint(aspectRatio);
+    // Full-bleed for paint/scene. Text only for Vintage Poster or explicit user ask —
+    // otherwise Watercolor/etc. invent slogans (and the text-safe margin would invite text).
+    const allowText = decorAllowsGeneratedText({
+      promptBlob: raw,
+      userPrompt,
+    });
+    const textRule = allowText
+      ? buildDecorTextSafeMarginShortConstraint()
+      : buildDecorNoTextUnlessAskedShortConstraint();
+    const shortConstraints = cylindricalWrap
+      ? orient +
+        "Full-bleed background to all edges. Keep text and focal subjects in the center 60% (cylindrical wrap safe area). "
+      : orient +
+        "Full-bleed, edge-to-edge, no borders, no blank margins, no letterboxing — paint to all four edges. " +
+        textRule;
     compressed = shortConstraints + compressed;
   }
 
-  // Hard truncate — but preserve the end of the prompt (user's description) over the middle
+  // Apparel text styles (Opinionated / Quotes) still need a safe margin when text is expected.
+  if (
+    isApparel &&
+    !isAllOverPrint &&
+    styleAllowsGeneratedText(null, raw)
+  ) {
+    compressed = buildDecorTextSafeMarginShortConstraint() + compressed;
+  }
+
+  // Hard truncate — preserve the user's artwork description over verbose constraints
   if (compressed.length > PROMPT_MAX_LENGTH) {
-    compressed = compressed.substring(0, PROMPT_MAX_LENGTH);
+    const artMax = artworkSection ? Math.min(artworkSection.length, 380) : 0;
+    const headMax = PROMPT_MAX_LENGTH - artMax - (artMax > 0 ? 4 : 0);
+    const head = compressed.substring(0, Math.max(0, headMax));
+    compressed = artMax > 0 ? `${head} ... ${artworkSection.substring(0, artMax)}` : head;
   }
 
   return compressed;
@@ -293,7 +376,15 @@ export async function generateImageBase64(
   const token = getReplicateToken();
   const version = getReplicateModelVersion();
 
-  const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false, params.isAllOverPrint ?? false);
+  const compressedPrompt = compressPrompt(
+    params.prompt,
+    params.isApparel ?? false,
+    params.isAllOverPrint ?? false,
+    params.userPrompt,
+    params.isPatternStyle,
+    params.aspectRatio,
+    params.cylindricalWrap,
+  );
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 
   // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4

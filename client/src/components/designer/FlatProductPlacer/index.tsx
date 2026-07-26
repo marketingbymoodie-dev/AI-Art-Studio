@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import { Eye, EyeOff, ImagePlus, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
 import {
   FinePositionNudge,
   mockupDeltaFromScreenNudge,
@@ -19,6 +19,8 @@ import {
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
+  flatCalibrationSwappedToLandscape,
+  orientFlatHarvestPixelsForLandscape,
   resolveFlatBlank,
   resolveFlatViewCalibration,
   resolveCalibratorLayerAdjust,
@@ -28,6 +30,7 @@ import {
   flatArtBox,
   flatCovers,
   flatOverflows,
+  flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
@@ -87,8 +90,11 @@ export type FlatProductPlacerApplyResult = {
 export type FlatApplyStatus = "idle" | "saving" | "saved" | "error";
 
 export type FlatProductPlacerHandle = {
-  /** Upload + persist when placement or colour changed since last apply. */
-  applyIfNeeded: () => Promise<void>;
+  /**
+   * Upload + persist. Pass `{ force: true }` to re-save after size/colour changes.
+   * Returns false when skipped (assets still loading / nothing to do).
+   */
+  applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
 };
 
@@ -106,6 +112,8 @@ export type FlatProductPlacerProps = {
   initialState?: Partial<FlatProductPlacerState> | null;
   onApply?: (result: FlatProductPlacerApplyResult) => void | Promise<void>;
   onChange?: (state: FlatProductPlacerState) => void;
+  /** Fired when the customer clicks Front / Back (not on every placement edit). */
+  onViewChange?: (view: ViewName) => void;
   /** Fired when an explicit persist starts / finishes (for ATC gating). */
   onApplyStatusChange?: (status: FlatApplyStatus) => void;
   /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
@@ -122,6 +130,28 @@ export type FlatProductPlacerProps = {
   landscapeOrientation?: boolean;
   /** Fallback blank photo when manifest lacks per-orientation blanks (tapestry). */
   blankUrlOverride?: string | null;
+  /**
+   * Selected size aspect (`3:4`, `4:3`, …). Required when `blankUrlOverride` is a
+   * square catalog size blank so the dashed guide matches that size (wall decals).
+   */
+  catalogSizeAspectRatio?: string | null;
+  /**
+   * On-demand lifestyle/context action under "Placement ready".
+   * `active` = shimmer + clickable; inactive = dimmed, no shimmer.
+   */
+  lifestyleAction?: {
+    onClick: () => void;
+    loading?: boolean;
+    active?: boolean;
+    label: string;
+    loadingLabel?: string;
+    idleHint?: string;
+    error?: string | null;
+  } | null;
+  /** When set, canvas shows this image (e.g. Printify Context) instead of live placer. */
+  canvasOverrideUrl?: string | null;
+  /** Badge text when showing a Lifestyle / catalog override (e.g. "On Person"). */
+  canvasOverrideLabel?: string | null;
 };
 
 type LoadedAssets = {
@@ -170,13 +200,14 @@ function applyPlacementToState(
 function buildInitialState(
   availableViews: ViewName[],
   saved?: Partial<FlatProductPlacerState> | null,
+  defaultPlacement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
 ): FlatProductPlacerState {
   const canLink = availableViews.includes("front") && availableViews.includes("back");
   const base: FlatProductPlacerState = {
     view: "front",
     placements: {
-      front: { ...DEFAULT_ARTWORK_PLACEMENT },
-      back: { ...DEFAULT_ARTWORK_PLACEMENT },
+      front: { ...defaultPlacement },
+      back: { ...defaultPlacement },
     },
     enabled: {
       front: availableViews.includes("front"),
@@ -193,7 +224,7 @@ function buildInitialState(
   if (linkSides && canLink) {
     const sourceView: ViewName =
       saved.view === "back" && placements.back ? "back" : "front";
-    const source = placements[sourceView] ?? DEFAULT_ARTWORK_PLACEMENT;
+    const source = placements[sourceView] ?? defaultPlacement;
     placements = {
       ...placements,
       [sourceView]: { ...source },
@@ -219,6 +250,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       initialState,
       onApply,
       onChange,
+      onViewChange,
       onApplyStatusChange,
       onAssetsFailed,
       skipInitialAutoApply = false,
@@ -227,15 +259,33 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       fabricWeave = false,
       landscapeOrientation = false,
       blankUrlOverride = null,
+      catalogSizeAspectRatio = null,
+      lifestyleAction = null,
+      canvasOverrideUrl = null,
+      canvasOverrideLabel = null,
     },
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
+  const refitCatalogSizeGuide = !!blankUrlOverride && !!catalogSizeAspectRatio;
   const calibOpts = useMemo(
-    () => ({ landscapeOrientation }),
-    [landscapeOrientation],
+    () => ({
+      landscapeOrientation,
+      sizeAspectRatio: catalogSizeAspectRatio,
+      refitCatalogSizeGuide,
+    }),
+    [landscapeOrientation, catalogSizeAspectRatio, refitCatalogSizeGuide],
+  );
+  const defaultPlacement = useMemo<ArtworkPlacement>(
+    () => ({
+      ...DEFAULT_ARTWORK_PLACEMENT,
+      scale: flatDefaultPlacementScale({ edgeWrapMode, decorMode, fabricWeave }),
+    }),
+    [edgeWrapMode, decorMode, fabricWeave],
   );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
+  /** View-only zoom of the editor canvas (does not change print placement). */
+  const [previewZoom, setPreviewZoom] = useState(1);
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -264,13 +314,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         back: EMPTY_ASSETS,
       };
       for (const v of availableViews) {
-        const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
+        // Use colorId (e.g. 20x30:white) for mask/geometry — size-only geometryKey
+        // misses decorPerSize geometryByBlank and falls back to the shared 11×14 mask.
+        const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
         const blankUrl =
           v === "front" && blankUrlOverride ? blankUrlOverride : blank[v];
         if (!calib || !blankUrl) continue;
         const [b, m, s] = await Promise.all([
           loadFlatImage(blankUrl),
-          calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
+          !refitCatalogSizeGuide && calib.maskUrl
+            ? loadFlatImage(calib.maskUrl)
+            : Promise.resolve(null),
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
@@ -278,7 +332,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
-        next[v] = { blank: b, mask: m, shading: s };
+        if (
+          !refitCatalogSizeGuide &&
+          flatCalibrationSwappedToLandscape(manifest, colorId, v, landscapeOrientation)
+        ) {
+          const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+          next[v] = { blank: b, mask: oriented.mask, shading: oriented.shading };
+        } else {
+          next[v] = { blank: b, mask: m, shading: s };
+        }
       }
       if (cancelled) return;
       setAssets(next);
@@ -322,7 +384,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           saved &&
           Object.keys(saved).some((k) => k !== "artworkUrl")
         );
-        return buildInitialState(availableViews, saved);
+        return buildInitialState(availableViews, saved, defaultPlacement);
       }
       if (artworkSourceUrl && prev.artworkUrl !== artworkSourceUrl) {
         return { ...prev, artworkUrl: artworkSourceUrl };
@@ -331,7 +393,23 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     });
     // initialState consumed on first seed; artworkSourceUrl kept in sync after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableViews, artworkSourceUrl]);
+  }, [availableViews, artworkSourceUrl, defaultPlacement]);
+
+  // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
+  const parentEnabledFront = initialState?.enabled?.front;
+  const parentEnabledBack = initialState?.enabled?.back;
+  useEffect(() => {
+    if (parentEnabledFront === undefined && parentEnabledBack === undefined) return;
+    setState((prev) => {
+      if (!prev) return prev;
+      const front =
+        typeof parentEnabledFront === "boolean" ? parentEnabledFront : prev.enabled.front;
+      const back =
+        typeof parentEnabledBack === "boolean" ? parentEnabledBack : prev.enabled.back;
+      if (prev.enabled.front === front && prev.enabled.back === back) return prev;
+      return { ...prev, enabled: { ...prev.enabled, front, back } };
+    });
+  }, [parentEnabledFront, parentEnabledBack]);
 
   useEffect(() => {
     if (state) onChangeRef.current?.(state);
@@ -351,11 +429,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!prev) return prev;
       const placements = { ...prev.placements };
       for (const v of availableViews) {
-        placements[v] = { ...DEFAULT_ARTWORK_PLACEMENT };
+        placements[v] = { ...defaultPlacement };
       }
       return { ...prev, placements };
     });
-  }, [geometryKey, availableViews]);
+  }, [geometryKey, availableViews, defaultPlacement]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -404,15 +482,44 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [applyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
-  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode });
+  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode, fabricWeave });
+
+  const clampPlacementScale = useCallback(
+    (scale: number) => Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, scale)),
+    [scaleMax],
+  );
+
+  // Heal legacy seeds that stored >100% for apparel (old 135% Printify zoom).
+  useEffect(() => {
+    setState((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const placements = { ...prev.placements };
+      for (const v of ["front", "back"] as ViewName[]) {
+        const p = placements[v];
+        if (!p) continue;
+        const scale = clampPlacementScale(p.scale);
+        if (scale !== p.scale) {
+          placements[v] = { ...p, scale };
+          changed = true;
+        }
+      }
+      return changed ? { ...prev, placements } : prev;
+    });
+  }, [clampPlacementScale]);
 
   const renderInto = useCallback(
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, geometryKey, v, calibOpts);
+      const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
+      const rawPlacement = state.placements[v] ?? defaultPlacement;
+      const placement = {
+        ...rawPlacement,
+        scale: clampPlacementScale(rawPlacement.scale),
+      };
       try {
         renderFlatView({
           target: canvas,
@@ -421,7 +528,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           shading: a.shading,
           artwork: enabled ? artworkImg : null,
           view: calib,
-          placement: state.placements[v],
+          placement,
           tier: manifest.tier,
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
@@ -430,7 +537,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           fabricWeave,
           cropToBackFace: false,
           sizeId: colorId,
-          layerAdjust: resolveCalibratorLayerAdjust(manifest, geometryKey, v),
+          layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
         });
         return true;
       } catch (e) {
@@ -439,7 +546,20 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode, fabricWeave],
+    [
+      state,
+      assets,
+      manifest,
+      colorId,
+      artworkImg,
+      artworkCorsClean,
+      edgeWrapMode,
+      decorMode,
+      fabricWeave,
+      calibOpts,
+      clampPlacementScale,
+      defaultPlacement,
+    ],
   );
 
   // ---------- Live canvas ----------
@@ -468,9 +588,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     return outputSignature(state) !== lastAppliedSignatureRef.current;
   }, [state, artworkImg, colorId]);
 
-  const applyIfNeeded = useCallback(async () => {
-    if (!onApply || !state || !artworkImg || assetsLoading) return;
-    if (!hasPendingChanges()) return;
+  const applyIfNeeded = useCallback(async (opts?: { force?: boolean }): Promise<boolean> => {
+    if (!onApply || !state || !artworkImg || assetsLoading) return false;
+    if (!opts?.force && !hasPendingChanges()) return false;
 
     setApplyStatus("saving");
     try {
@@ -480,6 +600,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       lastAppliedSignatureRef.current = outputSignature(state);
       lastAppliedColorRef.current = colorId;
       setApplyStatus("saved");
+      return true;
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("[FlatProductPlacer] apply error:", e);
@@ -513,8 +634,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [state, artworkImg, assetsLoading, skipInitialAutoApply, colorId]);
 
   // ---------- Mutators ----------
+  const onViewChangeRef = useRef(onViewChange);
+  onViewChangeRef.current = onViewChange;
   const setView = useCallback((view: ViewName) => {
-    setState((prev) => (prev ? { ...prev, view } : prev));
+    setState((prev) => {
+      if (!prev) return prev;
+      // Always leave lifestyle/catalog override — including re-clicking the
+      // already-selected Front/Back while a person shot is on screen.
+      queueMicrotask(() => onViewChangeRef.current?.(view));
+      if (prev.view === view) return prev;
+      return { ...prev, view };
+    });
   }, []);
 
   const setEnabled = useCallback((view: ViewName, on: boolean) => {
@@ -542,27 +672,28 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const updatePlacement = useCallback(
     (view: ViewName, next: ArtworkPlacement) => {
+      const clamped = { ...next, scale: clampPlacementScale(next.scale) };
       setState((prev) =>
-        prev ? applyPlacementToState(prev, view, next, availableViews) : prev,
+        prev ? applyPlacementToState(prev, view, clamped, availableViews) : prev,
       );
     },
-    [availableViews],
+    [availableViews, clampPlacementScale],
   );
 
   const setScale = useCallback(
     (view: ViewName, scale: number) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cur = prev.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        const cur = prev.placements[view] ?? defaultPlacement;
         return applyPlacementToState(
           prev,
           view,
-          { ...cur, scale },
+          { ...cur, scale: clampPlacementScale(scale) },
           availableViews,
         );
       });
     },
-    [availableViews],
+    [availableViews, clampPlacementScale, defaultPlacement],
   );
 
   const resetView = useCallback(
@@ -572,19 +703,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return applyPlacementToState(
           prev,
           view,
-          { ...DEFAULT_ARTWORK_PLACEMENT },
+          { ...defaultPlacement },
           availableViews,
         );
       });
     },
-    [availableViews],
+    [availableViews, defaultPlacement],
   );
 
   const nudgePlacement = useCallback(
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, geometryKey, view, calibOpts);
+        const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -622,7 +753,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return applyPlacementToState(prev, view, next, availableViews);
       });
     },
-    [manifest, geometryKey, assets, edgeWrapMode, decorMode, availableViews],
+    [manifest, colorId, assets, edgeWrapMode, decorMode, availableViews, calibOpts],
   );
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
@@ -646,7 +777,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view, calibOpts);
+  const calib = resolveFlatViewCalibration(manifest, colorId, state.view, calibOpts);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
@@ -684,15 +815,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   if (calib && artworkImg && viewEnabled && placementRect) {
     const box = flatArtBox(
       placementRect,
-      placement,
+      { ...placement, scale: clampPlacementScale(placement.scale) },
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
-    if (edgeWrapMode) {
-      if (!flatCovers(placementRect, box)) {
-        coverageWarning = "edge-gap";
-      }
-    } else if (decorMode) {
+    if (edgeWrapMode || decorMode || fabricWeave) {
+      // Tapestry / decor / phone: warn when art leaves the print area uncovered.
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
@@ -708,15 +836,26 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     !!calib &&
     !!viewAssets.blank;
 
+  const displayScale = clampPlacementScale(placement.scale);
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
-      {/* Live canvas + overlay */}
+      {/* Live canvas + overlay (or lifestyle/context override) */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
-          className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
+          className={
+            // Phone cases are tall — square crop clips the bottom.
+            // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
+            edgeWrapMode
+              ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 pb-12 lg:max-h-[90vh] lg:p-3 lg:pb-12"
+              : decorMode
+                ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
+                : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
+          }
           onClick={() => {
+            if (canvasOverrideUrl) return;
             if (canvasDragRef.current) {
               canvasDragRef.current = false;
               return;
@@ -725,44 +864,104 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           }}
           data-testid="flat-placer-canvas-area"
         >
-          <div className="relative max-h-full max-w-full">
+          <div
+            className="relative flex max-h-full max-w-full items-center justify-center overflow-hidden"
+            style={{
+              transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
+              transformOrigin: "center center",
+            }}
+          >
             <canvas
               ref={canvasRef}
-              className="block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+              className={
+                canvasOverrideUrl
+                  ? "hidden"
+                  : edgeWrapMode
+                    ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
+                    : decorMode
+                      ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                      : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+              }
               data-testid="flat-placer-canvas"
             />
-            {showOverlay && calib && viewAssets.blank && artworkImg && (
-              <FlatDesignRectOverlay
-                canvasRef={canvasRef}
-                view={calib}
-                artwork={artworkImg}
-                placement={placement}
-                edgeWrapMode={edgeWrapMode}
-                innerGuideRect={displayEdgeGuides?.inner ?? null}
-                outerGuideRect={displayEdgeGuides?.outer ?? null}
-                placementRect={placementRect}
-                scaleMax={scaleMax}
-                onChange={(next) => updatePlacement(state.view, next)}
-                onDragActivity={() => {
-                  canvasDragRef.current = true;
-                }}
+            {canvasOverrideUrl ? (
+              <img
+                src={canvasOverrideUrl}
+                alt="Lifestyle context"
+                className={
+                  decorMode
+                    ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
+                    : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
+                }
+                data-testid="flat-placer-context-preview"
               />
+            ) : (
+              showOverlay &&
+              calib &&
+              viewAssets.blank &&
+              artworkImg && (
+                <FlatDesignRectOverlay
+                  canvasRef={canvasRef}
+                  view={calib}
+                  artwork={artworkImg}
+                  placement={{ ...placement, scale: displayScale }}
+                  edgeWrapMode={edgeWrapMode}
+                  innerGuideRect={displayEdgeGuides?.inner ?? null}
+                  outerGuideRect={displayEdgeGuides?.outer ?? null}
+                  placementRect={placementRect}
+                  scaleMax={scaleMax}
+                  onChange={(next) => updatePlacement(state.view, next)}
+                  onDragActivity={() => {
+                    canvasDragRef.current = true;
+                  }}
+                />
+              )
             )}
-            {!artworkImg && !artworkLoading && (
+            {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
                 Create a design to preview it on the product →
               </div>
             )}
-            {artworkLoading && (
+            {!canvasOverrideUrl && artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
               </div>
             )}
-            {assetsLoading && hasDisplayableAssets && (
+            {!canvasOverrideUrl && assetsLoading && hasDisplayableAssets && (
               <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
                 <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
               </div>
             )}
+            {canvasOverrideUrl && (
+              <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
+                {canvasOverrideLabel?.trim() || "Context"}
+              </div>
+            )}
+          </div>
+          {/* View zoom only — does not change artwork print scale / Apply payload. */}
+          <div
+            className="absolute bottom-2 left-2 right-2 z-10 flex items-center gap-2 rounded-md bg-background/90 px-2.5 py-1.5 shadow-sm border border-border/60"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            data-testid="flat-placer-preview-zoom"
+          >
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Zoom
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={2}
+              step={0.05}
+              value={previewZoom}
+              onChange={(e) => setPreviewZoom(Number(e.target.value))}
+              className="min-w-0 flex-1"
+              style={{ accentColor: "hsl(var(--primary))" }}
+              aria-label="Preview zoom"
+            />
+            <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+              {Math.round(previewZoom * 100)}%
+            </span>
           </div>
         </div>
       </div>
@@ -845,7 +1044,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 )}
               </span>
               <span className="text-muted-foreground/80">
-                {Math.round(placement.scale * 100)}%
+                {Math.round(displayScale * 100)}%
               </span>
             </div>
             <input
@@ -853,7 +1052,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               min={FLAT_SCALE_MIN}
               max={scaleMax}
               step={0.01}
-              value={placement.scale}
+              value={displayScale}
               onChange={(e) => setScale(state.view, Number(e.target.value))}
               className="w-full"
               style={{ accentColor: "hsl(var(--primary))" }}
@@ -872,6 +1071,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 outline on all four sides.
               </p>
             )}
+            {fabricWeave && !edgeWrapMode && !decorMode && (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Fill the dashed outline edge-to-edge — any gap shows the raw
+                tapestry weave under your design.
+              </p>
+            )}
             <div className="mt-2">
               <FinePositionNudge
                 onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
@@ -881,7 +1086,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {viewEnabled && artworkImg && coverageWarning === "trim" && (
+        {viewEnabled && artworkImg && coverageWarning === "trim" && !fabricWeave && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
@@ -892,12 +1097,24 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && (
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && fabricWeave && !edgeWrapMode && (
+          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Artwork doesn&apos;t fully cover the tapestry — raw weave will show
+              around the edges. Scale up or reposition so your design fills the
+              printable area.
+            </span>
+          </div>
+        )}
+
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && !fabricWeave && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork doesn&apos;t fully cover the mat opening — scale up or
-              reposition so the design fills the dashed outline.
+              reposition the design to fill to the dashed outline if you want
+              full coverage.
             </span>
           </div>
         )}
@@ -942,6 +1159,53 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
           </div>
         )}
+
+        {lifestyleAction && (
+          <div className="flex flex-col gap-1 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (!lifestyleAction.active || lifestyleAction.loading) return;
+                lifestyleAction.onClick();
+              }}
+              disabled={!lifestyleAction.active || !!lifestyleAction.loading}
+              data-testid="button-lifestyle-shot-placer"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
+                lifestyleAction.active && !lifestyleAction.loading
+                  ? "border-foreground/80 bg-foreground text-background"
+                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
+              }`}
+            >
+              {lifestyleAction.loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className={
+                  lifestyleAction.active && !lifestyleAction.loading
+                    ? "shimmer-text-white"
+                    : undefined
+                }
+              >
+                {lifestyleAction.loading
+                  ? lifestyleAction.loadingLabel || "Generating…"
+                  : lifestyleAction.label}
+              </span>
+            </button>
+            {lifestyleAction.error ? (
+              <p className="text-center text-[11px] text-destructive" data-testid="text-lifestyle-shot-error-placer">
+                {lifestyleAction.error}
+              </p>
+            ) : !lifestyleAction.active && !lifestyleAction.loading ? (
+              <p className="text-center text-[10px] text-muted-foreground">
+                {lifestyleAction.idleHint ||
+                  "Finish placement (or generate artwork) to enable Lifestyle Shot"}
+              </p>
+            ) : null}
+          </div>
+        )}
+
       </div>
     </div>
   );

@@ -39,11 +39,14 @@ import {
   type VariantMap,
 } from "@shared/variantMapResolve";
 import {
+  aspectRatioFromFlatCalibration,
   computeAspectRatioFromPixelDims,
   normalizeStandardApparelAspectRatio,
   pickPrimaryPrintPlaceholderDims,
+  resolveLeggingsAopAspectRatio,
   resolveStandardApparelAspectRatioFromPlaceholders,
 } from "@shared/apparelAspectRatio";
+import { isLeggingsBlueprint } from "@shared/hoodieTemplate";
 import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
 import {
   cacheCoversVariantIds,
@@ -65,12 +68,30 @@ import {
   usesToteFoldedFulfillment,
 } from "@shared/productLayoutPolicy";
 import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
+import {
+  apparelMotifDesignColors,
+  buildAopPatternSizingRequirements,
+  buildAopSizingRequirements,
+  buildDecorTextEdgeRestrictions,
+  buildOrientationCompositionExtra,
+  filterStyleReferenceUrls,
+  styleIsPatternMaker,
+  useCylindricalWrapPrompt,
+} from "@shared/generationPromptHints";
+import { resolveSizeAspectRatio, sortDimensionalSizesAscending } from "@shared/productVariantOptions";
+import {
+  applyCatalogSizeBlanks,
+  isCatalogSizeBlankBlueprint,
+  resolveCatalogSizeBlankUrlMap,
+} from "@shared/catalogSizeBlanks";
+import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
+import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -146,6 +167,7 @@ import {
   submitFlatOrderToPrintify,
   normalizeShopifyOrderLine,
 } from "./flat-order-fulfillment";
+import { createPersistentPrintifyProduct } from "./design-product-publish";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -549,11 +571,45 @@ const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
   return "9:16";
 };
 
+function parsePlaceholderPositionsForAspect(
+  raw: unknown,
+): Array<{ position: string; width: number; height: number }> | null {
+  try {
+    const arr = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+    if (!Array.isArray(arr)) return null;
+    return arr
+      .map((p: any) => ({
+        position: String(p?.position ?? ""),
+        width: Number(p?.width) || 0,
+        height: Number(p?.height) || 0,
+      }))
+      .filter((p) => p.position && p.width > 0 && p.height > 0);
+  } catch {
+    return null;
+  }
+}
+
 function resolveGenerationAspectRatio(
   aspectRatioStr: string,
-  opts: { isApparel?: boolean; isAllOverPrint?: boolean },
+  opts: {
+    isApparel?: boolean;
+    isAllOverPrint?: boolean;
+    flatCalibration?: unknown;
+    printifyBlueprintId?: number | null;
+    placeholderPositions?: unknown;
+  },
 ): string {
+  // Leggings AOP: tall single-leg panel AR (not product 1:1).
+  if (opts.isAllOverPrint && isLeggingsBlueprint(opts.printifyBlueprintId)) {
+    return resolveLeggingsAopAspectRatio(
+      parsePlaceholderPositionsForAspect(opts.placeholderPositions),
+    );
+  }
   if (opts.isApparel && !opts.isAllOverPrint) {
+    // Flat-calibrated tees/etc.: use harvested dashed-guide AR (probed on blank).
+    // Other apparel: keep import-time per-size placeholder ratios (only fix landscape).
+    const fromFlat = aspectRatioFromFlatCalibration(opts.flatCalibration);
+    if (fromFlat) return normalizeStandardApparelAspectRatio(fromFlat);
     return normalizeStandardApparelAspectRatio(aspectRatioStr);
   }
   return aspectRatioStr;
@@ -563,7 +619,14 @@ function designerDisplayAspectRatio(productType: {
   aspectRatio?: string | null;
   designerType?: string | null;
   isAllOverPrint?: boolean | null;
+  printifyBlueprintId?: number | null;
+  placeholderPositions?: unknown;
 }): string {
+  if (productType.isAllOverPrint && isLeggingsBlueprint(productType.printifyBlueprintId)) {
+    return resolveLeggingsAopAspectRatio(
+      parsePlaceholderPositionsForAspect(productType.placeholderPositions),
+    );
+  }
   const stored = productType.aspectRatio || "1:1";
   if (productType.designerType === "apparel" && !productType.isAllOverPrint) {
     return normalizeStandardApparelAspectRatio(stored);
@@ -834,14 +897,31 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     if (matting.qa.softAlphaRatio > 0.03 || matting.qa.cornerBgOpaqueRatio > 0.5) {
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
-  } else if (targetDims && targetDims.width !== targetDims.height) {
-    const outputFormat =
-      actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
-        ? "jpeg"
-        : "png";
-    buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
-    extension = outputFormat === "jpeg" ? "jpg" : "png";
-    actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
+  } else {
+    // Vintage Poster (and similar) often paints cream letterbox bars inside an
+    // already-correct landscape/portrait canvas — strip those so flat placement
+    // fills the dashed print rect edge-to-edge.
+    try {
+      const stripped = await stripLetterboxBars(buffer);
+      if (stripped.changed) {
+        buffer = stripped.buffer;
+        console.log(
+          `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
+        );
+      }
+    } catch (err) {
+      console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
+    }
+
+    if (targetDims && targetDims.width !== targetDims.height) {
+      const outputFormat =
+        actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
+          ? "jpeg"
+          : "png";
+      buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
+      extension = outputFormat === "jpeg" ? "jpg" : "png";
+      actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
+    }
   }
 
   const filename = `${imageId}.${extension}`;
@@ -2285,13 +2365,53 @@ export async function registerRoutes(
         });
       }
 
-      // Check design gallery limit (50 max)
-      const designCount = await storage.getDesignCountByCustomer(customer.id);
-      if (designCount >= 50) {
-        return res.status(400).json({ 
-          error: "Your design gallery is full (50 designs max). Please delete some designs to save new ones.",
-          galleryFull: true 
-        });
+      // Gallery limit — two different stores:
+      //   • Legacy /designs page → `designs` table (50 cap)
+      //   • Shop-connected admin generate (Art Generator Tester) → generation_jobs
+      //     saved via "Save to My Designs" — same counter the UI shows (30 cap).
+      // The tester previously checked the legacy table, so merchants with 4 saved
+      // studio designs but 50+ old tester rows hit a false "gallery full" error.
+      const genShopDomain = (req as any).shopDomain as string | undefined;
+      if (genShopDomain && !isOwner) {
+        const genInstall = await getAuthorizedInstallation(
+          genShopDomain.toLowerCase().replace(/^https?:\/\//, ""),
+        );
+        if (genInstall?.merchantId) {
+          const jobShop = genShopDomain.toLowerCase().replace(/^https?:\/\//, "");
+          const studioCustomer = await resolveMerchantStudioCustomer(
+            String(genInstall.merchantId),
+            jobShop,
+          );
+          const GALLERY_LIMIT = await getGalleryLimitForCustomer(studioCustomer.id);
+          const savedCountRows = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(generationJobs)
+            .where(
+              and(
+                eq(generationJobs.shop, jobShop),
+                eq(generationJobs.customerId, studioCustomer.id),
+                eq(generationJobs.status, "complete"),
+              ),
+            );
+          const currentCount = Number(savedCountRows[0]?.count ?? 0);
+          if (currentCount >= GALLERY_LIMIT) {
+            return res.status(400).json({
+              error: "GALLERY_FULL",
+              message: `Your saved designs gallery is full (${GALLERY_LIMIT} max). Please delete some designs to generate new ones.`,
+              galleryFull: true,
+              count: currentCount,
+              limit: GALLERY_LIMIT,
+            });
+          }
+        }
+      } else if (!isOwner) {
+        const designCount = await storage.getDesignCountByCustomer(customer.id);
+        if (designCount >= 50) {
+          return res.status(400).json({
+            error: "Your design gallery is full (50 designs max). Please delete some designs to save new ones.",
+            galleryFull: true,
+          });
+        }
       }
 
       const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
@@ -2303,7 +2423,6 @@ export async function registerRoutes(
       // Per-merchant monthly plan quota. The admin "Art Generator Tester" counts
       // against the merchant's own plan allotment. Fail-open if we can't resolve
       // the shop (e.g. non-Shopify dev auth) so local testing isn't blocked.
-      const genShopDomain = (req as any).shopDomain as string | undefined;
       if (genShopDomain) {
         const genInstall = await getAuthorizedInstallation(
           genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
@@ -2366,17 +2485,15 @@ export async function registerRoutes(
       }
 
 
-      // Find size config - check product type sizes first, then fall back to PRINT_SIZES
-      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
-      
-
-
-      if (!sizeConfig && productType) {
-        // Try to find size in product type's sizes (for apparel, etc.)
+      // Prefer product-type sizes (per-blueprint AR) over hardcoded PRINT_SIZES ids.
+      let sizeConfig: (typeof PRINT_SIZES)[number] | any | undefined;
+      if (productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
         if (productSize) {
-          let aspectRatioStr = productSize.aspectRatio || productType.aspectRatio || "3:4";
+          let aspectRatioStr =
+            productSize.aspectRatio ||
+            resolveSizeAspectRatio(productSize, productType.aspectRatio);
 
           // For double-sided products, convert combined ratio to per-side ratio
           if (productType.doubleSidedPrint) {
@@ -2402,6 +2519,9 @@ export async function registerRoutes(
             genHeight: genDims.genHeight,
           } as any;
         }
+      }
+      if (!sizeConfig) {
+        sizeConfig = PRINT_SIZES.find(s => s.id === size);
       }
       
       if (!sizeConfig) {
@@ -2447,7 +2567,13 @@ export async function registerRoutes(
       // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
 
-      aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, { isApparel, isAllOverPrint });
+      aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, {
+        isApparel,
+        isAllOverPrint,
+        flatCalibration: (productType as any)?.flatCalibration,
+        printifyBlueprintId: productType?.printifyBlueprintId,
+        placeholderPositions: (productType as any)?.placeholderPositions,
+      });
       if (sizeConfig && (sizeConfig as any).aspectRatio !== aspectRatioStr) {
         const genDims = calculateGenDimensions(aspectRatioStr);
         sizeConfig = {
@@ -2457,7 +2583,7 @@ export async function registerRoutes(
           genHeight: genDims.genHeight,
         };
       }
-      
+
       if (isApparel && frameColor) {
         // Look up the color's hex value from product type's frameColors
         let colorHex = "#f5f5f5"; // Default to white/light
@@ -2504,9 +2630,14 @@ export async function registerRoutes(
       // Different requirements for apparel vs wall art
       let sizingRequirements: string;
       
-      if (isApparel) {
+      if (isApparel && isAllOverPrint) {
+        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
+        sizingRequirements = usePatternAop
+          ? buildAopPatternSizingRequirements(userDescAdmin)
+          : buildAopSizingRequirements(userDescAdmin);
+      } else if (isApparel) {
         sizingRequirements = buildApparelChromaSizingRequirements(
-          "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.",
+          apparelMotifDesignColors(userDescAdmin, colorTier === "dark"),
         );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -2547,19 +2678,15 @@ RECTANGULAR PRINT AREA:
           orientationDescription = `SQUARE`;
         }
         
-        // For wrap-around products like tumblers, add specific guidance
-        const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
-        const textEdgeRestrictions = isWrapAround 
-          ? `
-TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
-- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
-- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
-- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-          : `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+        const cylindricalWrap = useCylindricalWrapPrompt({
+          designerType: productType?.designerType,
+          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+        });
+        const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+        const orientationExtra = buildOrientationCompositionExtra(
+          aspectRatioValue,
+          productType?.designerType,
+        );
         
         sizingRequirements = `
 
@@ -2568,6 +2695,7 @@ CANVAS: ${orientationDescription} format
 FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
 ${shapeInstructions}
 ${textEdgeRestrictions}
+${orientationExtra}
 
 === IMAGE CONTENT REQUIREMENTS ===
 1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
@@ -2611,10 +2739,14 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Build image input array: all style base images + customer reference image
+      // Build image input array: style base images (when no user subject) + customer reference
       const imageInputUrls: string[] = [];
-      const allStyleBaseUrls: string[] = (req as any)._styleBaseImageUrls ||
-        (styleBaseImageUrl ? [styleBaseImageUrl] : []);
+      const allStyleBaseUrls: string[] = filterStyleReferenceUrls(
+        (req as any)._styleBaseImageUrls || (styleBaseImageUrl ? [styleBaseImageUrl] : []),
+        userDescAdmin,
+        !!customerImageUrl,
+      );
+      const effectiveStyleBaseUrl = allStyleBaseUrls[0];
       imageInputUrls.push(...allStyleBaseUrls);
       if (customerImageUrl) imageInputUrls.push(customerImageUrl);
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
@@ -2622,7 +2754,7 @@ ${textEdgeRestrictions}
       // When reference images are provided, instruct the model how to use them
       if (imageInputUrls.length > 0) {
         let refInstruction: string;
-        if (styleBaseImageUrl && customerImageUrl) {
+        if (effectiveStyleBaseUrl && customerImageUrl) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
         } else if (customerImageUrl) {
           const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
@@ -2636,12 +2768,20 @@ ${textEdgeRestrictions}
       }
 
       // Generate image using Replicate
+      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+
       const { mimeType, data } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
         isApparel,
         isAllOverPrint,
+        isPatternStyle: usePatternAopAdmin,
+        userPrompt: userDescAdmin || null,
+        cylindricalWrap: useCylindricalWrapPrompt({
+          designerType: productType?.designerType,
+          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+        }),
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -2700,20 +2840,24 @@ console.log("[api/shopify/generate] saved image", result);
         generatedImageUrl = `data:${mimeType};base64,${data}`;
       }
 
-      // Create design record
-      const design = await storage.createDesign({
-        customerId: customer.id,
-        prompt,
-        stylePreset: stylePreset || null,
-        referenceImageUrl: referenceImage ? "uploaded" : null,
-        generatedImageUrl,
-        thumbnailImageUrl,
-        size,
-        frameColor: frameColor || "black",
-        aspectRatio: aspectRatioStr,
-        colorTier: isApparel ? colorTier : null,
-        status: "completed",
-      });
+      // Legacy /designs rows are only for the old standalone designer. Shop-connected
+      // admin generate (Art Generator Tester) uses generation_jobs instead.
+      let design: Awaited<ReturnType<typeof storage.createDesign>> | null = null;
+      if (!genShopDomain) {
+        design = await storage.createDesign({
+          customerId: customer.id,
+          prompt,
+          stylePreset: stylePreset || null,
+          referenceImageUrl: referenceImage ? "uploaded" : null,
+          generatedImageUrl,
+          thumbnailImageUrl,
+          size,
+          frameColor: frameColor || "black",
+          aspectRatio: aspectRatioStr,
+          colorTier: isApparel ? colorTier : null,
+          status: "completed",
+        });
+      }
 
       // Merchant plan quota — consume only after successful generation.
       if (genShopDomain) {
@@ -2740,7 +2884,7 @@ console.log("[api/shopify/generate] saved image", result);
       // Log generation
       await storage.createGenerationLog({
         customerId: customer.id,
-        designId: design.id,
+        designId: design?.id ?? null,
         promptLength: prompt.length,
         hadReferenceImage: !!referenceImage,
         stylePreset,
@@ -2758,9 +2902,45 @@ console.log("[api/shopify/generate] saved image", result);
         });
       }
 
+      // Generator Tester test-order support: test orders resolve print files from
+      // generation_jobs.designState (AOP panels / flat placements saved on apply via
+      // /api/storefront/save-state). The tester renders the same designer client, so
+      // give it a completed job row (+ shop) to land those saves on.
+      let testerJobId: string | undefined;
+      let testerJobShop: string | undefined;
+      if (productType && genShopDomain) {
+        try {
+          const jobShop = genShopDomain.toLowerCase().replace(/^https?:\/\//, "");
+          const testerJob = await storage.createGenerationJob({
+            shop: jobShop,
+            sessionId: null,
+            customerId: null,
+            status: "complete",
+            prompt,
+            userPrompt: rawUserPromptAdmin ?? null,
+            stylePreset: stylePreset ?? null,
+            size: size ?? null,
+            frameColor: frameColor ?? null,
+            productTypeId: String(productType.id),
+            referenceImageUrl: null,
+            designImageUrl: generatedImageUrl,
+            thumbnailUrl: thumbnailImageUrl ?? null,
+            billingMode: "merchant",
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          });
+          testerJobId = testerJob.id;
+          testerJobShop = jobShop;
+        } catch (jobErr) {
+          console.warn("[/api/generate] Failed to create tester generation job (test orders from this generation won't work):", jobErr);
+        }
+      }
+
       res.json({
-        design,
+        design: design ?? undefined,
+        imageUrl: generatedImageUrl,
         creditsRemaining: isOwner ? 999999 : customer.credits - 1,
+        jobId: testerJobId,
+        jobShop: testerJobShop,
       });
     } catch (error: any) {
       console.error("Error generating artwork:", error);
@@ -3250,29 +3430,31 @@ console.log("[shopify/session] installation ok", {
       
 
 
-      // Find size config - check product type first, then fall back to PRINT_SIZES
-      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
-      
-      if (!sizeConfig && productType) {
-        // Use size-specific or product type's aspect ratio to calculate proper generation dimensions
+      // Prefer product-type sizes (per-blueprint AR) over hardcoded PRINT_SIZES ids.
+      let sizeConfig: (typeof PRINT_SIZES)[number] | any | undefined;
+      if (productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
-        const aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
-        const genDims = calculateGenDimensions(aspectRatioStr);
-        
-        sizeConfig = {
-          id: productSize?.id || size,
-          name: productSize?.name || size,
-          width: productSize?.width || 12,
-          height: productSize?.height || 16,
-          aspectRatio: aspectRatioStr,
-          genWidth: genDims.genWidth,
-          genHeight: genDims.genHeight,
-        } as any;
+        if (productSize) {
+          const aspectRatioStr =
+            productSize.aspectRatio ||
+            resolveSizeAspectRatio(productSize, productType.aspectRatio);
+          const genDims = calculateGenDimensions(aspectRatioStr);
+          sizeConfig = {
+            id: productSize.id,
+            name: productSize.name,
+            width: productSize.width || 12,
+            height: productSize.height || 16,
+            aspectRatio: aspectRatioStr,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          } as any;
+        }
       }
-      
       if (!sizeConfig) {
-        // Default fallback
+        sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      }
+      if (!sizeConfig) {
         sizeConfig = PRINT_SIZES[0];
       }
 
@@ -3319,10 +3501,17 @@ RECTANGULAR PRINT AREA:
       }
 
       // Determine aspect ratio and orientation
-      if (productType?.designerType === "apparel" && !productType?.isAllOverPrint) {
+      if (
+        (embedIsApparelEarly && !embedIsAllOverPrintEarly) ||
+        (embedIsAllOverPrintEarly &&
+          isLeggingsBlueprint(productType?.printifyBlueprintId))
+      ) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
-          isApparel: true,
-          isAllOverPrint: false,
+          isApparel: embedIsApparelEarly,
+          isAllOverPrint: embedIsAllOverPrintEarly,
+          flatCalibration: (productType as any)?.flatCalibration,
+          printifyBlueprintId: productType?.printifyBlueprintId,
+          placeholderPositions: (productType as any)?.placeholderPositions,
         });
         if (normalized !== sizeConfig.aspectRatio) {
           const genDims = calculateGenDimensions(normalized);
@@ -3346,19 +3535,15 @@ RECTANGULAR PRINT AREA:
         orientationDescription = `SQUARE`;
       }
       
-      // For wrap-around products like tumblers, add specific guidance
-      const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
-      const textEdgeRestrictions = isWrapAround 
-        ? `
-TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
-- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
-- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
-- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-        : `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+      const cylindricalWrap = useCylindricalWrapPrompt({
+        designerType: productType?.designerType,
+        isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+      });
+      const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+      const orientationExtra = buildOrientationCompositionExtra(
+        aspectRatioValue,
+        productType?.designerType,
+      );
       
       const sizingRequirements = `
 
@@ -3367,6 +3552,7 @@ CANVAS: ${orientationDescription} format
 FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
 ${shapeInstructions}
 ${textEdgeRestrictions}
+${orientationExtra}
 
 === IMAGE CONTENT REQUIREMENTS ===
 1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
@@ -3414,14 +3600,19 @@ ${textEdgeRestrictions}
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
-      // Push all style base images (up to 5), not just the first one
-      for (const u of embedStyleBaseImageUrls) embedImageInputUrls.push(u);
+      const embedStyleRefs = filterStyleReferenceUrls(
+        embedStyleBaseImageUrls,
+        userDescEmbed,
+        embedCustomerImageUrls.length > 0,
+      );
+      const effectiveEmbedStyleBaseUrl = embedStyleRefs[0];
+      for (const u of embedStyleRefs) embedImageInputUrls.push(u);
       for (const u of embedCustomerImageUrls) embedImageInputUrls.push(u);
       const inputImageUrl: string | string[] | null = embedImageInputUrls.length > 1 ? embedImageInputUrls : embedImageInputUrls[0] || null;
 
       if (embedImageInputUrls.length > 0) {
         let refInstruction: string;
-        if (embedStyleBaseImageUrl && embedCustomerImageUrls.length > 0) {
+        if (effectiveEmbedStyleBaseUrl && embedCustomerImageUrls.length > 0) {
           refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The remaining image(s) are the customer's subject(s) — incorporate them into the design as focal elements. Do NOT duplicate or repeat subjects.`;
         } else if (embedCustomerImageUrls.length > 1) {
           refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
@@ -3443,6 +3634,8 @@ ${textEdgeRestrictions}
         inputImageUrl,
         isApparel,
         isAllOverPrint,
+        userPrompt: userDescEmbed || null,
+        cylindricalWrap,
       });
 
       if (!base64Data) {
@@ -5550,7 +5743,7 @@ ${textEdgeRestrictions}
         setTimeout(() => reject(new Error('Database query timeout after 5s')), 5000)
       );
 
-      const productType = await Promise.race([
+      let productType = await Promise.race([
         storage.getProductType(id),
         timeoutPromise
       ]);
@@ -5560,6 +5753,22 @@ ${textEdgeRestrictions}
         // Prevent caching of 404 responses
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Same as storefront: pull published Platform Catalog AOP/flat metadata onto the
+      // product type so Test Generator gets panelMappingTemplate without a separate
+      // storefront hit or re-import.
+      {
+        const prepared = await prepareProductTypeForDesigner(productType, {
+          allowUnpublishedHarvest: true,
+        });
+        if (prepared && prepared !== productType) {
+          console.log(
+            `[Designer API] Synced catalog metadata onto pt ${id}` +
+              ` (panelMappingTemplate=${(prepared as any).panelMappingTemplate ?? "null"})`,
+          );
+          productType = prepared;
+        }
       }
 
       const sizes = typeof productType.sizes === 'string' 
@@ -5587,6 +5796,8 @@ ${textEdgeRestrictions}
 
       // Determine sizeType (dimensional vs label-only)
       const sizeType = (productType as any).sizeType || "dimensional";
+      const orderedSizes =
+        sizeType === "dimensional" ? sortDimensionalSizesAscending(sizes) : sizes;
 
       // Parse base mockup images if available
       const baseMockupImages = typeof productType.baseMockupImages === 'string'
@@ -5620,7 +5831,7 @@ ${textEdgeRestrictions}
         baseMockupImages,
         primaryMockupIndex: productType.primaryMockupIndex || 0,
         doubleSidedPrint: productType.doubleSidedPrint || false,
-        sizes: sizes.map((s: any) => {
+        sizes: orderedSizes.map((s: any) => {
           // Calculate aspect ratio from dimensions if available
           let sizeAspectRatio = s.aspectRatio || productType.aspectRatio;
           if (sizeType === "dimensional" && s.width && s.height) {
@@ -5807,7 +6018,17 @@ ${textEdgeRestrictions}
         })(),
       };
 
-      console.log(`[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
+      // Match storefront: same merchant styles + page allow-list (not /api/config).
+      const { styleConfig: pageStyleConfig, stylePresets: pageStylePresets } =
+        await resolveStylePresetsForProductType(productType as any);
+      (designerConfig as any).styleConfig = pageStyleConfig;
+      (designerConfig as any).stylePresets = pageStylePresets;
+
+      console.log(
+        `[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}` +
+          `, styleConfig=${JSON.stringify(pageStyleConfig)}` +
+          `, stylePresets=${pageStylePresets.length}`,
+      );
       // Prevent browser caching to ensure fresh data
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.set('Pragma', 'no-cache');
@@ -5875,6 +6096,95 @@ ${textEdgeRestrictions}
 
     console.warn(`${logPrefix} FALLBACK RESOLVED: requested=${requestedId ?? "none"} → resolved=${resolved.id} (${resolved.name}) reason=${resolvedFrom}`);
     return { productType: resolved, resolvedFrom };
+  }
+
+  /**
+   * Style allow-list for a product type — same source as the storefront
+   * customizer page. Generator Tester must use this so its Art Style dropdown
+   * matches what customers see on the store.
+   */
+  async function resolveStyleConfigForProductType(
+    productTypeId: number,
+    designerType?: string | null,
+  ): Promise<CustomizerPageStyleConfig> {
+    try {
+      const pages = await storage.listCustomizerPagesByProductTypeId(productTypeId);
+      // Prefer active pages; newest first (list is createdAt ascending).
+      const ordered = [
+        ...pages.filter((p) => p.status === "active").reverse(),
+        ...pages.filter((p) => p.status !== "active").reverse(),
+      ];
+      for (const page of ordered) {
+        const cfg = parseCustomizerPageStyleConfig(page.styleConfig);
+        if (cfg) return cfg;
+      }
+    } catch (e) {
+      console.warn(
+        `[styleConfig] Failed to load customizer pages for pt ${productTypeId}:`,
+        e,
+      );
+    }
+    return defaultStyleConfigForDesignerType(designerType);
+  }
+
+  /** Map DB style rows the same way `/api/proxy/customizer-page` does. */
+  function mapDbStylesForDesigner(dbStyles: any[]) {
+    return dbStyles.map((s: any) => {
+      const hardcoded = STYLE_PRESETS.find(
+        (h) => h.id === s.id.toString() || h.name === s.name,
+      );
+      return {
+        id: s.id.toString(),
+        name: s.name,
+        promptSuffix: s.promptPrefix,
+        promptPrefix: s.promptPrefix,
+        category: s.category || "all",
+        promptPlaceholder:
+          s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
+        options: s.options || (hardcoded as any)?.options,
+        baseImageUrl:
+          s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+        descriptionOptional: !!s.descriptionOptional,
+      };
+    });
+  }
+
+  /**
+   * Merchant-scoped + page-filtered styles — identical set to the live store
+   * for this product type. Never use getAllActiveStylePresets here (cross-tenant
+   * name dedupe drops the merchant's Watercolor/Abstract IDs).
+   */
+  async function resolveStylePresetsForProductType(productType: {
+    id: number;
+    merchantId?: string | null;
+    designerType?: string | null;
+  }): Promise<{
+    styleConfig: CustomizerPageStyleConfig;
+    stylePresets: ReturnType<typeof mapDbStylesForDesigner>;
+  }> {
+    const styleConfig = await resolveStyleConfigForProductType(
+      productType.id,
+      productType.designerType,
+    );
+    let stylePresets: ReturnType<typeof mapDbStylesForDesigner> = [];
+    try {
+      const merchantId = productType.merchantId;
+      if (merchantId) {
+        const dbStyles = await storage.getActiveStylePresetsByMerchant(merchantId);
+        stylePresets = mapDbStylesForDesigner(dbStyles);
+      }
+    } catch (e) {
+      console.warn(
+        `[stylePresets] Failed to load merchant styles for pt ${productType.id}:`,
+        e,
+      );
+    }
+    stylePresets = filterStylePresetsForPage(
+      stylePresets,
+      styleConfig,
+      productType.designerType,
+    ) as ReturnType<typeof mapDbStylesForDesigner>;
+    return { styleConfig, stylePresets };
   }
 
   /**
@@ -6288,7 +6598,11 @@ ${textEdgeRestrictions}
           const sizeChart = productTypeForConfig!.printifyBlueprintId
             ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
             : null;
-          return res.json(buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart));
+          const fastConfig = buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart);
+          const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
+          (fastConfig as any).styleConfig = fastStyles.styleConfig;
+          (fastConfig as any).stylePresets = fastStyles.stylePresets;
+          return res.json(fastConfig);
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
       }
@@ -6438,6 +6752,9 @@ ${textEdgeRestrictions}
         ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
         : null;
       const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
+      const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
+      (designerConfig as any).styleConfig = sfStyles.styleConfig;
+      (designerConfig as any).stylePresets = sfStyles.stylePresets;
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
@@ -7290,43 +7607,46 @@ ${textEdgeRestrictions}
 
 
 
-      // Find size config
-      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
-
-      if (!sizeConfig && productType) {
+      // Prefer product-type sizes (per-blueprint AR) over hardcoded PRINT_SIZES ids.
+      let sizeConfig: (typeof PRINT_SIZES)[number] | any | undefined;
+      if (productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
-        let aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
+        if (productSize) {
+          let aspectRatioStr =
+            productSize.aspectRatio ||
+            resolveSizeAspectRatio(productSize, productType.aspectRatio);
 
-        // For double-sided products, the stored ratio may be the combined front+back ratio.
-        // Convert to per-side ratio so the AI generates artwork for one side only.
-        if (productType.doubleSidedPrint) {
-          const [arW, arH] = aspectRatioStr.split(":").map(Number);
-          if (arW && arH && !isNaN(arW) && !isNaN(arH)) {
-            const ratio = arW / arH;
-            if (ratio >= 1.9) {
-              // Likely a combined ratio (e.g. 2:1 for square pillow front+back).
-              // Halve the width to get per-side ratio.
-              const perSideW = arW / 2;
-              const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
-              const d = gcdFn(Math.round(perSideW), arH);
-              aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
-              console.log(P, reqId, `Double-sided ratio override: ${arW}:${arH} → ${aspectRatioStr} (per-side)`);
+          // For double-sided products, the stored ratio may be the combined front+back ratio.
+          // Convert to per-side ratio so the AI generates artwork for one side only.
+          if (productType.doubleSidedPrint) {
+            const [arW, arH] = aspectRatioStr.split(":").map(Number);
+            if (arW && arH && !isNaN(arW) && !isNaN(arH)) {
+              const ratio = arW / arH;
+              if (ratio >= 1.9) {
+                const perSideW = arW / 2;
+                const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+                const d = gcdFn(Math.round(perSideW), arH);
+                aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
+                console.log(P, reqId, `Double-sided ratio override: ${arW}:${arH} → ${aspectRatioStr} (per-side)`);
+              }
             }
           }
+
+          const genDims = calculateGenDimensions(aspectRatioStr);
+          sizeConfig = {
+            id: productSize.id,
+            name: productSize.name,
+            width: productSize.width || 12,
+            height: productSize.height || 16,
+            aspectRatio: aspectRatioStr,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          } as any;
         }
-
-        const genDims = calculateGenDimensions(aspectRatioStr);
-
-        sizeConfig = {
-          id: productSize?.id || size,
-          name: productSize?.name || size,
-          width: productSize?.width || 12,
-          height: productSize?.height || 16,
-          aspectRatio: aspectRatioStr,
-          genWidth: genDims.genWidth,
-          genHeight: genDims.genHeight,
-        } as any;
+      }
+      if (!sizeConfig) {
+        sizeConfig = PRINT_SIZES.find(s => s.id === size);
       }
 
       if (!sizeConfig) {
@@ -7368,7 +7688,11 @@ ${textEdgeRestrictions}
         `matting flags isApparel=${isApparel} designerType=${productType?.designerType ?? "none"} isAOP=${isAllOverPrint} styleCat=${sfStyleCategory}`,
       );
       if (sizeConfig && isApparel && !isAllOverPrint) {
-        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
+        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
+          isApparel,
+          isAllOverPrint,
+          flatCalibration: (productType as any)?.flatCalibration,
+        });
         if (normalized !== sizeConfig.aspectRatio) {
           const genDims = calculateGenDimensions(normalized);
           sizeConfig = {
@@ -7396,20 +7720,10 @@ ${textEdgeRestrictions}
       let sizingRequirements: string;
 
       if (isApparel && isAllOverPrint) {
-        // AOP: hot pink chroma key — stripped server-side after generation
-        sizingRequirements = `
-MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
-1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
-2. SOLID HOT PINK CHROMA KEY BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any hot pink/magenta pixels in the main subject — #FF00FF is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean hot pink space around it.
-5. CLEAN EDGES: The design must have crisp, hard vector-like edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
-7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        const usePatternAopSf = styleIsPatternMaker(styleName, stylePromptPrefix);
+        sizingRequirements = usePatternAopSf
+          ? buildAopPatternSizingRequirements(userDescSf)
+          : buildAopSizingRequirements(userDescSf);
       } else if (isApparel) {
         // Apparel: #FF00FF chroma key background for precise removal
         const frameColor = req.body.frameColor;
@@ -7422,9 +7736,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           }
         }
         const isDarkTier = colorTier === "dark";
-        const designColors = isDarkTier
-          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-          : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
+        const designColors = apparelMotifDesignColors(userDescSf, isDarkTier);
 
         // Use dark tier prompt variant if available
         if (sfStyleCategory === "apparel" && isDarkTier && stylePreset) {
@@ -7472,18 +7784,15 @@ RECTANGULAR PRINT AREA:
           orientationDescription = `SQUARE`;
         }
 
-        const isWrapAround = aspectRatioValue >= 1.2;
-        const textEdgeRestrictions = isWrapAround
-          ? `
-TEXT AND ELEMENT PLACEMENT - CRITICAL:
-- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
-- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
-- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
-- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-          : `
-TEXT AND ELEMENT PLACEMENT:
-- Keep all text and important elements within the central 75% of the image
-- Avoid placing critical content near the edges where it may be cut off during printing`;
+        const cylindricalWrap = useCylindricalWrapPrompt({
+          designerType: productType?.designerType,
+          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+        });
+        const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+        const orientationExtra = buildOrientationCompositionExtra(
+          aspectRatioValue,
+          productType?.designerType,
+        );
 
         sizingRequirements = `
 
@@ -7492,6 +7801,7 @@ CANVAS: ${orientationDescription} format
 FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
 ${shapeInstructions}
 ${textEdgeRestrictions}
+${orientationExtra}
 
 === IMAGE CONTENT REQUIREMENTS ===
 1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
@@ -7575,13 +7885,19 @@ ${textEdgeRestrictions}
 
           // Build image input array: all style base images (up to 5) + customer reference(s)
           const sfImageInputUrls: string[] = [];
-          for (const u of sfStyleBaseImageUrls) sfImageInputUrls.push(u);
+          const sfStyleRefs = filterStyleReferenceUrls(
+            sfStyleBaseImageUrls,
+            userDescSf,
+            sfCustomerImageUrls.length > 0,
+          );
+          const effectiveSfStyleBaseUrl = sfStyleRefs[0];
+          for (const u of sfStyleRefs) sfImageInputUrls.push(u);
           for (const u of sfCustomerImageUrls) sfImageInputUrls.push(u);
           const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
 
           if (sfImageInputUrls.length > 0) {
             let refInstruction: string;
-            if (sfStyleBaseImageUrl && sfCustomerImageUrls.length > 0) {
+            if (effectiveSfStyleBaseUrl && sfCustomerImageUrls.length > 0) {
               refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The remaining image(s) are the customer's subject(s) — incorporate them as focal elements. Do NOT duplicate subjects.`;
             } else if (sfCustomerImageUrls.length > 1) {
               refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
@@ -7599,12 +7915,19 @@ ${textEdgeRestrictions}
           // Call AI image generation
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
+          const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
             isApparel,
             isAllOverPrint,
+            isPatternStyle: usePatternAopSf,
+            userPrompt: userDescSf || null,
+            cylindricalWrap: useCylindricalWrapPrompt({
+              designerType: productType?.designerType,
+              isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+            }),
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
@@ -7886,13 +8209,27 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Design generation is not complete yet" });
       }
 
+      const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
+      const isMerchantStudioSave = aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE);
+
+      // Merchant My Designs saves require Starter or above — trial merchants can generate
+      // in the tester but cannot persist to the saved-design library.
+      if (isMerchantStudioSave) {
+        const plan = getEffectivePlan(installation as any, shop);
+        if (!canSaveMerchantDesigns(plan.planName, plan.planStatus)) {
+          return res.status(403).json({
+            error: "PLAN_UPGRADE_REQUIRED",
+            message: "Upgrade to Starter or above to save designs to My Designs.",
+          });
+        }
+      }
+
       // Merchant design-studio identities skip the generate-time GALLERY_FULL check (their
       // generate call omits customerId to preserve shop-plan billing), so enforce the cap
       // here instead, at the point the job actually becomes "saved". Real customer identities
       // are unaffected — they were already capped before this job could complete.
       if (job.customerId !== customerId) {
-        const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
-        if (aliases.some((a) => a.aliasType === MERCHANT_STUDIO_ALIAS_TYPE)) {
+        if (isMerchantStudioSave) {
           const savedCount = await db
             .select({ count: sql<number>`count(*)` })
             .from(generationJobs)
@@ -8106,8 +8443,44 @@ ${textEdgeRestrictions}
         job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
           ? (job.designState as Record<string, unknown>)
           : {};
-      const mergedDesignState = { ...prevState, ...designState };
-      await storage.updateGenerationJob(jobId, { designState: mergedDesignState } as any);
+      const mergedDesignState: Record<string, unknown> = { ...prevState, ...designState };
+      // Deep-merge placer state so a partial patch (e.g. artworkUrl-only) cannot
+      // wipe placements / enabled flags from a prior Apply.
+      if (
+        designState.flatPlacerState &&
+        typeof designState.flatPlacerState === "object" &&
+        !Array.isArray(designState.flatPlacerState) &&
+        prevState.flatPlacerState &&
+        typeof prevState.flatPlacerState === "object" &&
+        !Array.isArray(prevState.flatPlacerState)
+      ) {
+        mergedDesignState.flatPlacerState = {
+          ...(prevState.flatPlacerState as Record<string, unknown>),
+          ...(designState.flatPlacerState as Record<string, unknown>),
+        };
+      }
+      // Sync size / colour / artwork onto job columns so test orders and
+      // fulfillment prefer the merchant's current Apply selection.
+      const jobPatch: Record<string, unknown> = { designState: mergedDesignState };
+      if (typeof designState.selectedSize === "string" && designState.selectedSize.trim()) {
+        jobPatch.size = designState.selectedSize.trim();
+      }
+      if (typeof designState.selectedFrameColor === "string" && designState.selectedFrameColor.trim()) {
+        jobPatch.frameColor = designState.selectedFrameColor.trim();
+      }
+      const placerArt =
+        designState.flatPlacerState &&
+        typeof designState.flatPlacerState === "object" &&
+        typeof (designState.flatPlacerState as { artworkUrl?: unknown }).artworkUrl === "string"
+          ? String((designState.flatPlacerState as { artworkUrl: string }).artworkUrl).trim()
+          : "";
+      const topArt =
+        typeof designState.artworkUrl === "string" ? designState.artworkUrl.trim() : "";
+      const nextArt = placerArt || topArt;
+      if (nextArt && (nextArt.startsWith("http") || nextArt.startsWith("/"))) {
+        jobPatch.designImageUrl = nextArt;
+      }
+      await storage.updateGenerationJob(jobId, jobPatch as any);
       void captureAopCustomerFlowSnapshot({ jobId, designState: mergedDesignState });
       console.log(`[SaveState] jobId=${jobId} merged designState keys=${Object.keys(mergedDesignState).join(",")}`);
       return res.json({ saved: true });
@@ -8192,7 +8565,7 @@ ${textEdgeRestrictions}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -8392,9 +8765,18 @@ ${textEdgeRestrictions}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        preferContextViews: !!preferContextViews,
+        preferPersonViews: !!preferPersonViews,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: {
+          shop,
+          productTypeId: productType.id,
+          sizeId,
+          printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front"),
+          preferContextViews: !!preferContextViews,
+          preferPersonViews: !!preferPersonViews,
+        },
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -8447,7 +8829,10 @@ ${textEdgeRestrictions}
 
   app.get("/api/storefront/mockup-status", handleMockupStatus);
   app.get("/api/shopify/mockup-status", handleMockupStatus);
-  app.get("/api/mockup/status", isAuthenticated, handleMockupStatus);
+  // No isAuthenticated: App Bridge session JWTs expire ~60s, and tumbler/Printify
+  // jobs often poll longer. Storefront/shopify status are already public by jobId
+  // (unguessable UUID). Generate still requires auth.
+  app.get("/api/mockup/status", handleMockupStatus);
 
   // ==================== STOREFRONT VARIANT IMAGE (FOR CHECKOUT) ====================
   // Updates the Shopify variant image so checkout displays the custom mockup.
@@ -12859,7 +13244,25 @@ ${textEdgeRestrictions}
       available,
     };
     delete next.lifestyle;
+    // Preserve size-keyed catalog blanks (comforter / wall decals).
+    if (
+      currentImages.blanksBySize &&
+      typeof currentImages.blanksBySize === "object" &&
+      !Array.isArray(currentImages.blanksBySize)
+    ) {
+      next.blanksBySize = currentImages.blanksBySize;
+    }
     return next;
+  }
+
+  function mergeCatalogSizeBlanksIfNeeded(
+    blueprintId: number | null | undefined,
+    images: Record<string, any>,
+  ): Record<string, any> {
+    if (!isCatalogSizeBlankBlueprint(blueprintId)) return images;
+    const blanks = resolveCatalogSizeBlankUrlMap(blueprintId, getSupabaseDesignPublicUrl);
+    if (!blanks) return images;
+    return applyCatalogSizeBlanks(images, blanks) as Record<string, any>;
   }
 
   // GET available placeholder images before importing a Printify product.
@@ -13586,11 +13989,15 @@ ${textEdgeRestrictions}
       const selectedPrimaryUrl = typeof placeholderPrimaryUrl === "string" ? placeholderPrimaryUrl : undefined;
       const selectedGalleryUrls = Array.isArray(placeholderGalleryUrls) ? placeholderGalleryUrls.map(String) : undefined;
       const selectedCustomUrls = Array.isArray(customPlaceholderUrls) ? customPlaceholderUrls.map(String) : undefined;
-      const baseMockupImages = buildBaseMockupImagesFromOptions(
+      let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
         selectedPrimaryUrl,
         selectedGalleryUrls,
         selectedCustomUrls,
+      );
+      baseMockupImages = mergeCatalogSizeBlanksIfNeeded(
+        parseInt(String(blueprintId), 10),
+        baseMockupImages,
       );
 
       // Detect product type FIRST to determine sizeType
@@ -13994,7 +14401,9 @@ ${textEdgeRestrictions}
           fulfillmentLayout: (productType as any).fulfillmentLayout,
           printifyBlueprintId: productType.printifyBlueprintId,
         });
-        if (!toteFolded) {
+        // AOP products are also eligible — their per-panel print files (captured on
+        // apply) are submitted directly as the order's print_areas.
+        if (!toteFolded && !productType.isAllOverPrint) {
           return res.status(400).json({
             error: `This product is not a flat/mesh on-the-fly product (tier=${productType.onTheFlyTier ?? "none"}). Calibrate it first.`,
           });
@@ -14247,11 +14656,23 @@ ${textEdgeRestrictions}
         productType.printifyBlueprintId,
         productType.printifyProviderId,
       );
-      const baseMockupImages = buildBaseMockupImagesFromOptions(
+      let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
         existingImages.primary,
         existingImages.gallery,
         existingImages.custom,
+      );
+      // Keep existing size blanks if refresh ran before shared assets were uploaded.
+      if (
+        existingImages.blanksBySize &&
+        typeof existingImages.blanksBySize === "object" &&
+        !baseMockupImages.blanksBySize
+      ) {
+        baseMockupImages.blanksBySize = existingImages.blanksBySize;
+      }
+      baseMockupImages = mergeCatalogSizeBlanksIfNeeded(
+        productType.printifyBlueprintId,
+        baseMockupImages,
       );
 
       // Check if we found any images
@@ -15772,7 +16193,7 @@ ${textEdgeRestrictions}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -15868,9 +16289,18 @@ ${textEdgeRestrictions}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        preferContextViews: !!preferContextViews,
+        preferPersonViews: !!preferPersonViews,
       }, {
         correlationId,
-        cacheParts: { userId, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: {
+          userId,
+          productTypeId: productType.id,
+          sizeId,
+          printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front"),
+          preferContextViews: !!preferContextViews,
+          preferPersonViews: !!preferPersonViews,
+        },
       });
 
       console.log("[Mockup Generate] Result:", { jobId, queued: !cached, success: cached?.success, mockups: cached?.mockupImages?.length });
@@ -15886,7 +16316,7 @@ ${textEdgeRestrictions}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -16011,9 +16441,18 @@ ${textEdgeRestrictions}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        preferContextViews: !!preferContextViews,
+        preferPersonViews: !!preferPersonViews,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: {
+          shop,
+          productTypeId: productType.id,
+          sizeId,
+          printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front"),
+          preferContextViews: !!preferContextViews,
+          preferPersonViews: !!preferPersonViews,
+        },
       });
 
       console.log("[Shopify Mockup] Generated result:", { jobId, queued: !cached, success: cached?.success, mockupCount: cached?.mockupUrls?.length });
@@ -16174,12 +16613,14 @@ ${textEdgeRestrictions}
         ),
       );
     const savedCount = Number(savedCountRows[0]?.count ?? 0);
+    const plan = getEffectivePlan(installation as any, shop);
 
     res.json({
       shop,
       customerId: customer.id,
       savedCount,
       savedLimit: MERCHANT_STUDIO_GALLERY_LIMIT,
+      canSaveDesigns: canSaveMerchantDesigns(plan.planName, plan.planStatus),
     });
   }));
 
@@ -16236,12 +16677,16 @@ ${textEdgeRestrictions}
     productOptions: Array<{ name: string; values: string[] }>;
   } {
     const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+    const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
     const variantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
     const savedSizeIds: string[] = typeof productType.selectedSizeIds === "string" ? JSON.parse(productType.selectedSizeIds || "[]") : productType.selectedSizeIds || [];
     const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
     const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
 
-    const jobColorId = job.frameColor || null;
+    // Size-only / AOP products have no colour options — never fabricate one (SKUs/variant
+    // resolution use the plain "{sizeId}:default" key only).
+    const productHasColors = Array.isArray(allColors) && allColors.length > 0;
+    const jobColorId = productHasColors ? (job.frameColor || null) : null;
 
     const shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
     const variantMeta: Array<{ sizeId: string; colorId: string }> = [];
@@ -16255,7 +16700,7 @@ ${textEdgeRestrictions}
       shopifyVariants.push({
         option1: size.name,
         price: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice.toFixed(2) : "0.00",
-        sku: `DP-${productType.id}-${size.id}-${jobColorId || "default"}`,
+        sku: productHasColors ? `DP-${productType.id}-${size.id}-${jobColorId || "default"}` : `DP-${productType.id}-${size.id}`,
         inventory_management: null,
         inventory_policy: "continue",
       });
@@ -16270,11 +16715,124 @@ ${textEdgeRestrictions}
     return { shopifyVariants, variantMeta, productOptions };
   }
 
+  function escapeDesignProductHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  /** Strip script/style tags and inline event handlers from Printify's blueprint description, keeping <p> structure. */
+  function sanitizeDesignProductDescriptionHtml(html: string): string {
+    return html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+      .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+      .replace(/javascript:/gi, "");
+  }
+
+  /** Mirrors client/src/components/SizeChartTable.tsx's inch→cm conversion so the standalone
+   *  product description shows the same numbers as the customizer's metric toggle. */
+  function sizeChartLabelUsesInches(label: string): boolean {
+    return /,\s*in\b/i.test(label);
+  }
+  function sizeChartRowValuesAreNumeric(values: string[]): boolean {
+    return values.length > 0 && values.every((v) => !v?.trim() || !Number.isNaN(Number(v)));
+  }
+  function convertSizeChartInchesToCm(value: string): string {
+    if (!value?.trim()) return value;
+    const num = Number(value);
+    return Number.isNaN(num) ? value : (num * 2.54).toFixed(1);
+  }
+  function convertSizeChartLabelToMetric(label: string): string {
+    return label.replace(/,\s*in\b/i, ", cm");
+  }
+
+  function buildDesignProductSizeChartHtml(chart: Record<string, any> | null): string {
+    if (!chart || !Array.isArray(chart.sizes) || !Array.isArray(chart.rows) || chart.rows.length === 0) return "";
+
+    const renderTable = (rows: Array<{ label: string; values: string[] }>) => {
+      const headerCells = ["", ...chart.sizes]
+        .map((h: string) => `<th style="padding:6px 10px;border:1px solid #ddd;text-align:left;">${escapeDesignProductHtml(String(h ?? ""))}</th>`)
+        .join("");
+      const bodyRows = rows
+        .map((row) => {
+          const cells = [row.label, ...row.values]
+            .map((v, idx) => `<td style="padding:6px 10px;border:1px solid #ddd;${idx === 0 ? "font-weight:600;" : ""}">${escapeDesignProductHtml(String(v ?? ""))}</td>`)
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `<table style="border-collapse:collapse;width:100%;max-width:640px;margin-top:8px;"><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+    };
+
+    const hasImperialRows = chart.rows.some((row: { label: string }) => sizeChartLabelUsesInches(row.label));
+    const unitSuffix = chart.unit ? ` (${escapeDesignProductHtml(String(chart.unit))})` : "";
+
+    if (!hasImperialRows) {
+      // Data isn't in the "<label>, in" format we know how to convert — show as-is (rare).
+      return `<h4>Size Chart${unitSuffix}</h4>${renderTable(chart.rows)}`;
+    }
+
+    const metricRows = chart.rows.map((row: { label: string; values: string[] }) => {
+      if (sizeChartLabelUsesInches(row.label) && sizeChartRowValuesAreNumeric(row.values)) {
+        return { label: convertSizeChartLabelToMetric(row.label), values: row.values.map(convertSizeChartInchesToCm) };
+      }
+      return row;
+    });
+
+    // Random suffix keeps IDs unique if a theme renders this description more than once on a
+    // page (e.g. quick-view + main product template both hydrated at once).
+    const scopeId = `aiart-sc-${Math.random().toString(36).slice(2, 10)}`;
+
+    return `<div class="${scopeId}">
+<h4 style="margin-bottom:6px;">Size Chart</h4>
+<input type="radio" id="${scopeId}-imp" name="${scopeId}-unit" class="${scopeId}-r" checked>
+<input type="radio" id="${scopeId}-met" name="${scopeId}-unit" class="${scopeId}-r">
+<div style="margin-bottom:8px;font-size:13px;">
+<label for="${scopeId}-imp" style="margin-right:14px;cursor:pointer;">Imperial (in)</label>
+<label for="${scopeId}-met" style="cursor:pointer;">Metric (cm)</label>
+</div>
+<div class="${scopeId}-imperial">${renderTable(chart.rows)}</div>
+<div class="${scopeId}-metric">${renderTable(metricRows)}</div>
+<style>
+.${scopeId}-r{display:none;}
+.${scopeId}-metric{display:none;}
+#${scopeId}-met:checked ~ .${scopeId}-imperial{display:none;}
+#${scopeId}-met:checked ~ .${scopeId}-metric{display:block;}
+</style>
+</div>`;
+  }
+
+  /** Printify's marketing paragraphs (sanitized) + an appended size-chart table when available. */
+  function buildDesignProductBodyHtml(
+    productType: { description?: string | null },
+    sizeChartHtml: string,
+    userPrompt?: string | null,
+  ): string {
+    const rawDescription = typeof productType.description === "string" ? productType.description.trim() : "";
+    const baseHtml = rawDescription
+      ? sanitizeDesignProductDescriptionHtml(rawDescription)
+      : userPrompt
+        ? `<p>${escapeDesignProductHtml(userPrompt)}</p>`
+        : "";
+    return [baseHtml, sizeChartHtml].filter(Boolean).join("\n");
+  }
+
+  /** ~60-char title-cased short form of the design's prompt + the product name, e.g. "Neon Cyberpunk Skyline Tapestry". */
+  function buildDefaultDesignProductTitle(userPrompt: string | null | undefined, productTypeName: string): string {
+    const prompt = (userPrompt || "").trim();
+    if (!prompt) return `Custom ${productTypeName}`;
+    const short = prompt.length > 60 ? `${prompt.slice(0, 57).trim()}…` : prompt;
+    const titleCased = short.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    return `${titleCased} ${productTypeName}`.slice(0, 250);
+  }
+
   /**
    * POST /api/appai/design-products
    * Publish a saved My Designs studio design (generation_jobs row) as a permanent,
-   * browsable Shopify product. Plan-gated: at the active-product-design limit, the
-   * Shopify product is still created but as a draft (status "inactive").
+   * browsable Shopify product. Always created as a DRAFT (unpublished) — the
+   * merchant reviews it and activates via the PATCH endpoint (plan-limit gated).
+   * Also creates a persistent Printify product holding the print-ready artwork,
+   * which is the order-time fulfillment target (see server/design-product-publish.ts).
    */
   app.post("/api/appai/design-products", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveInstallation(req);
@@ -16301,13 +16859,7 @@ ${textEdgeRestrictions}
     if (!productType) return res.status(404).json({ error: "Product type not found" });
 
     const plan = getEffectivePlan(installation as any, shop);
-    const activeCountRows = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(designProducts)
-      .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
-    const activeCount = Number(activeCountRows[0]?.count ?? 0);
-    const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
-    const initialStatus: "active" | "inactive" = allowed ? "active" : "inactive";
+    const limit = getDesignProductLimit(plan.planName);
 
     const priceMap = await fetchCustomizerPagePriceMap(shop, installation, productType);
     const { shopifyVariants, variantMeta, productOptions } = buildDesignProductVariants(productType, job, priceMap);
@@ -16319,26 +16871,36 @@ ${textEdgeRestrictions}
       return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
     }
 
-    const imageUrl: string | null =
-      (Array.isArray(job.mockupUrls) && (job.mockupUrls as string[])[0]) ||
-      (job as any).thumbnailUrl ||
-      job.designImageUrl ||
-      null;
-    const rawTitle = (titleOverride && titleOverride.trim()) || job.userPrompt || `Custom ${productType.name}`;
-    const cleanTitle = rawTitle.slice(0, 250);
+    // All saved mockup views (front, back, …) become the listing's images, deduped by URL.
+    const jobMockupUrls: string[] = Array.isArray(job.mockupUrls)
+      ? Array.from(new Set((job.mockupUrls as string[]).filter((u) => typeof u === "string" && u.startsWith("http"))))
+      : [];
+    const productImageUrls: string[] = jobMockupUrls.length > 0
+      ? jobMockupUrls
+      : [((job as any).thumbnailUrl || job.designImageUrl) as string].filter(Boolean);
+    const cleanTitle = ((titleOverride && titleOverride.trim()) || buildDefaultDesignProductTitle(job.userPrompt, productType.name)).slice(0, 250);
 
+    const sizeChart = productType.printifyBlueprintId
+      ? await getNormalizedSizeChartWithTimeout(Number(productType.printifyBlueprintId))
+      : null;
+    const bodyHtml = buildDesignProductBodyHtml(productType, buildDesignProductSizeChartHtml(sizeChart), job.userPrompt);
+
+    // Always created as a DRAFT — the merchant reviews/edits in Shopify, then activates
+    // via PATCH (which enforces the plan's active-product-design limit with a 402).
     const shopifyProductPayload = {
       product: {
         title: cleanTitle,
-        body_html: job.userPrompt ? `<p>${String(job.userPrompt).replace(/</g, "&lt;")}</p>` : undefined,
+        body_html: bodyHtml || undefined,
         vendor: merchant.storeName || "AI Art Studio",
         product_type: productType.name,
-        status: initialStatus === "active" ? "active" : "draft",
-        published: initialStatus === "active",
+        status: "draft",
+        published: false,
         tags: ["ai-art-studio-design", "design-product"],
         options: productOptions.length > 0 ? productOptions : undefined,
         variants: shopifyVariants,
-        images: imageUrl ? [{ src: imageUrl, alt: cleanTitle }] : undefined,
+        images: productImageUrls.length > 0
+          ? productImageUrls.map((src, i) => ({ src, alt: cleanTitle, position: i + 1 }))
+          : undefined,
       },
     };
 
@@ -16357,18 +16919,44 @@ ${textEdgeRestrictions}
     const shopifyHandle = created.product.handle as string;
     const createdVariants: any[] = created.product.variants || [];
 
+    // Default publications to Online Store only (draft stays invisible until activated, but
+    // the merchant's "Manage publishing" panel shouldn't show Point of Sale on for these).
+    try {
+      await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId), { hideFromSearch: false });
+    } catch (e: any) {
+      console.warn("[design-products] Failed to set default sales channel:", e?.message);
+    }
+
     const variantMapOut: Record<string, { sizeId: string; colorId: string }> = {};
     createdVariants.forEach((v: any, idx: number) => {
       const meta = variantMeta[idx];
       if (meta) variantMapOut[String(v.id)] = meta;
     });
 
-    if (initialStatus === "active") {
-      try {
-        await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId));
-      } catch (e: any) {
-        console.warn("[design-products] publish to online store failed:", e.message);
+    // Persistent Printify product: holds the print-ready artwork in the merchant's own
+    // Printify account and is the order-time fulfillment target (Phase 3). A failure here
+    // does not block the Shopify draft — it's flagged in the response so it can be retried
+    // (e.g. via the "Add Printify mockups" action once Printify creds/setup are fixed).
+    let printifyProductId: string | null = null;
+    let printifyWarning: string | undefined;
+    try {
+      const printifyResult = await createPersistentPrintifyProduct({
+        job,
+        productType,
+        merchant,
+        variantMeta,
+        title: `${productType.name} — ${cleanTitle}`,
+        tags: ["appai-design-product"],
+      });
+      if (printifyResult.ok) {
+        printifyProductId = printifyResult.printifyProductId;
+      } else {
+        printifyWarning = printifyResult.error;
+        console.warn("[design-products] Persistent Printify product creation failed:", printifyResult.error);
       }
+    } catch (e: any) {
+      printifyWarning = e?.message || String(e);
+      console.warn("[design-products] Persistent Printify product creation threw:", printifyWarning);
     }
 
     const [row] = await db
@@ -16379,11 +16967,12 @@ ${textEdgeRestrictions}
         jobId: job.id,
         productTypeId,
         shopifyProductId,
+        printifyProductId,
         handle: shopifyHandle,
         title: cleanTitle,
-        status: initialStatus,
+        status: "inactive",
         variantMap: variantMapOut,
-        mockupUrls: imageUrl ? [imageUrl] : [],
+        mockupUrls: productImageUrls,
       })
       .returning();
 
@@ -16392,8 +16981,9 @@ ${textEdgeRestrictions}
       designProduct: row,
       shopifyProductId,
       shopifyAdminUrl: `https://${shop}/admin/products/${shopifyProductId}`,
-      status: initialStatus,
-      limitReached: !allowed,
+      status: "inactive",
+      printifyProductId,
+      printifyWarning,
       limit,
     });
   }));
@@ -16559,7 +17149,9 @@ ${textEdgeRestrictions}
           }),
         });
         if (status === "active") {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId));
+          // Standalone design products should stay discoverable in search/collections —
+          // only the shadow checkout SKUs use hideFromSearch (the default).
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId), { hideFromSearch: false });
         }
       } catch (e: any) {
         console.warn("[design-products] Shopify status update failed:", e.message);
@@ -16623,8 +17215,13 @@ ${textEdgeRestrictions}
     if (!productType) return res.status(404).json({ error: "Product type not found" });
 
     const variantMapData: VariantMap = typeof productType.variantMap === "string" ? JSON.parse(productType.variantMap || "{}") : productType.variantMap || {};
+    const productColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
+    const productHasColors = Array.isArray(productColors) && productColors.length > 0;
     const sizeId = job.size || "default";
-    const colorId = job.frameColor || "default";
+    // Size-only / AOP products (or stale legacy jobs) can carry a bogus job.frameColor —
+    // only trust it when the product actually has colour options, matching the storefront
+    // mockup flow's variant resolution.
+    const colorId = productHasColors ? (job.frameColor || "default") : "default";
     const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
     const printifyVariantId = resolvedVariant?.entry?.printifyVariantId;
     const blueprintId = Number(productType.printifyBlueprintId);
@@ -17837,7 +18434,13 @@ ${textEdgeRestrictions}
    * Tries GraphQL publishablePublish first (requires write_publications scope),
    * then always falls back to REST published_at (uses write_products scope).
    */
-  async function ensureProductPublishedToOnlineStore(shop: string, accessToken: string, productId: number) {
+  async function ensureProductPublishedToOnlineStore(
+    shop: string,
+    accessToken: string,
+    productId: number,
+    opts: { hideFromSearch?: boolean } = {},
+  ) {
+    const hideFromSearch = opts.hideFromSearch !== false;
     const gqlEndpoint = `https://${shop}/admin/api/2025-10/graphql.json`;
     const gqlHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
     const productGid = `gid://shopify/Product/${productId}`;
@@ -17922,32 +18525,35 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections)
-      try {
-        console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
-        const metafieldRes = await fetch(
-          `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
-          {
-            method: "POST",
-            headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "seo",
-                key: "hidden",
-                value: 1,
-                type: "integer"
-              }
-            }),
+      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections).
+      // Skipped for standalone design products, which should stay discoverable.
+      if (hideFromSearch) {
+        try {
+          console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
+          const metafieldRes = await fetch(
+            `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
+            {
+              method: "POST",
+              headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                metafield: {
+                  namespace: "seo",
+                  key: "hidden",
+                  value: 1,
+                  type: "integer"
+                }
+              }),
+            }
+          );
+          if (metafieldRes.ok) {
+            console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
+          } else {
+            const errText = await metafieldRes.text().catch(() => "");
+            console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
           }
-        );
-        if (metafieldRes.ok) {
-          console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
-        } else {
-          const errText = await metafieldRes.text().catch(() => "");
-          console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
+        } catch (metaErr: any) {
+          console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
         }
-      } catch (metaErr: any) {
-        console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
       }
 
     } catch (err: any) {

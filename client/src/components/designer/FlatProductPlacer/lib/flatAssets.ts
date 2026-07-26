@@ -1,4 +1,9 @@
 import { API_BASE } from "@/lib/urlBase";
+import {
+  printFileDimsForAspectRatio,
+  visibleRectForCatalogSizeAspect,
+} from "@shared/catalogSizeBlanks";
+import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
 import type { CalibratorLayerAdjust, FlatRenderInput } from "./flatRender";
 
@@ -54,6 +59,54 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
 }
 
 /**
+ * Resolve a geometryByBlank / blank key for calibration lookup.
+ *
+ * decorPerSize harvests store geometry under `size:color` (e.g. `20x30:white`),
+ * while FlatProductPlacer passes a size-only placement key (`20x30`). Without a
+ * prefix match we fall back to the shared 11×14 mask and white mat bars appear.
+ */
+export function findGeometryBlankKey(
+  manifest: FlatCalibrationManifest,
+  id: string,
+  opts?: { allowDimensionSwap?: boolean },
+): string | null {
+  if (!id) return null;
+  const geo = (manifest as FlatCalibrationManifestWithGeometry).geometryByBlank || {};
+  if (geo[id]) return id;
+  const blankHit = findBlankKey(manifest, id);
+  if (blankHit && geo[blankHit]) return blankHit;
+  if (blankHit) return blankHit;
+
+  const norm = normalizeFlatColorKey(id);
+  // Prefer an exact size:color geometry key whose size prefix matches.
+  const geoKeys = Object.keys(geo);
+  for (const k of geoKeys) {
+    const kn = normalizeFlatColorKey(k);
+    if (kn === norm) return k;
+  }
+  for (const k of geoKeys) {
+    const kn = normalizeFlatColorKey(k);
+    // `20x30-white` starts with `20x30-` when id is size-only `20x30`
+    if (kn.startsWith(`${norm}-`)) return k;
+  }
+  // Same prefix scan on blank keys (geometry may share ids).
+  for (const k of Object.keys(manifest.blanks || {})) {
+    if (!flatBlankHasViews(manifest.blanks?.[k])) continue;
+    const kn = normalizeFlatColorKey(k);
+    if (kn === norm || kn.startsWith(`${norm}-`)) return k;
+  }
+
+  // Landscape HFP size with only portrait harvest (24x18 → try 18x24:*).
+  if (opts?.allowDimensionSwap !== false) {
+    const swapped = swapDecorSizeDimensionId(id);
+    if (swapped && swapped !== id) {
+      return findGeometryBlankKey(manifest, swapped, { allowDimensionSwap: false });
+    }
+  }
+  return null;
+}
+
+/**
  * Pick the blank photo set for `colorId`, with graceful fallback: exact key →
  * normalized-key match → first entry with usable URLs.
  *
@@ -104,7 +157,11 @@ export function resolveCalibratorLayerAdjust(
   geometryKey: string,
   view: FlatViewName,
 ): FlatRenderInput["layerAdjust"] | undefined {
-  const entry = manifest.calibratorGeometry?.models?.[geometryKey]?.[view];
+  const resolvedKey =
+    findGeometryBlankKey(manifest, geometryKey) || geometryKey;
+  const entry =
+    manifest.calibratorGeometry?.models?.[resolvedKey]?.[view] ||
+    manifest.calibratorGeometry?.models?.[geometryKey]?.[view];
   if (!entry) return undefined;
   const hasMask =
     entry.mask.offsetX !== 0 || entry.mask.offsetY !== 0 || entry.mask.scale !== 1;
@@ -123,16 +180,24 @@ export function resolveCalibratorLayerAdjust(
 /**
  * Merge shared view calibration with optional per-blank-key overrides.
  * Falls back to shared `manifest.views[view]` when no override exists.
+ *
+ * `refitCatalogSizeGuide` + `sizeAspectRatio`: when the blank is a square
+ * catalog size PNG (wall decals) but harvest only stored one shared 2:3 guide,
+ * synthesize the dashed print rect for the selected size AR (3:4 / 4:3 / …).
  */
 export function resolveFlatViewCalibration(
   manifest: FlatCalibrationManifest,
   colorId: string,
   view: FlatViewName,
-  opts?: { landscapeOrientation?: boolean },
+  opts?: {
+    landscapeOrientation?: boolean;
+    sizeAspectRatio?: string | null;
+    refitCatalogSizeGuide?: boolean;
+  },
 ): FlatViewCalibration | undefined {
   const base = manifest.views[view];
   if (!base) return undefined;
-  const blankKey = findBlankKey(manifest, colorId);
+  const blankKey = findGeometryBlankKey(manifest, colorId);
   const override = blankKey ? manifest.geometryByBlank?.[blankKey]?.[view] : undefined;
   let merged: FlatViewCalibration;
   if (!override) {
@@ -160,6 +225,28 @@ export function resolveFlatViewCalibration(
       coverage: base.coverage,
     };
   }
+
+  // Square catalog blanks (wall decals): harvest often only stored one shared
+  // 2:3 guide. When the blank PNG is size-specific, rebuild the dashed rect
+  // from the selected size AR so 18×24 / 24×18 aren't stuck on 2:3 / 3:2.
+  if (opts?.refitCatalogSizeGuide && opts.sizeAspectRatio) {
+    const rect = visibleRectForCatalogSizeAspect(opts.sizeAspectRatio);
+    const dims = printFileDimsForAspectRatio(opts.sizeAspectRatio);
+    if (rect) {
+      return {
+        ...merged,
+        visibleRectNormalized: rect,
+        printBoundsNormalized: rect,
+        ...(dims ? { printFileDims: dims } : {}),
+        mockupDims:
+          merged.mockupDims?.width &&
+          merged.mockupDims.width === merged.mockupDims.height
+            ? merged.mockupDims
+            : { width: 1024, height: 1024 },
+      };
+    }
+  }
+
   if (!opts?.landscapeOrientation) return merged;
   const pf = merged.printFileDims;
   if (!pf?.width || !pf?.height || pf.width >= pf.height) return merged;
@@ -174,10 +261,13 @@ export function resolveFlatBlank(
   const hit = colorId ? findBlankKey(manifest, colorId) : null;
   if (hit && flatBlankHasViews(blanks[hit])) return blanks[hit];
   if (colorId) {
-    if (!manifestHasMultipleColorBlanks(manifest)) {
-      const fallbackKey = firstUsableBlankKey(manifest);
-      if (fallbackKey && flatBlankHasViews(blanks[fallbackKey])) return blanks[fallbackKey];
+    // decorPerSize / multi-colour: never silently swap in another frame colour's blank
+    // (that is what made White selection keep showing a Black frame).
+    if (manifest.decorPerSize || manifestHasMultipleColorBlanks(manifest)) {
+      return {};
     }
+    const fallbackKey = firstUsableBlankKey(manifest);
+    if (fallbackKey && flatBlankHasViews(blanks[fallbackKey])) return blanks[fallbackKey];
     return {};
   }
   for (const k of Object.keys(blanks)) {
@@ -235,14 +325,93 @@ export async function loadFlatImageRelaxed(url: string): Promise<HTMLImageElemen
   return loadFlatImage(url, { cors: false });
 }
 
+function imagePixelSize(img: HTMLImageElement): { w: number; h: number } {
+  return { w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
+}
+
+/** 90° clockwise — used when landscape sizes reuse a portrait harvest mask. */
+export async function rotateFlatImage90Cw(img: HTMLImageElement): Promise<HTMLImageElement> {
+  const { w, h } = imagePixelSize(img);
+  if (w <= 0 || h <= 0) return img;
+  const canvas = document.createElement("canvas");
+  canvas.width = h;
+  canvas.height = w;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return img;
+  ctx.translate(h, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(img, 0, 0, w, h);
+  const dataUrl = canvas.toDataURL("image/png");
+  return new Promise((resolve) => {
+    const out = new Image();
+    out.onload = () => resolve(out);
+    out.onerror = () => resolve(img);
+    out.src = dataUrl;
+  });
+}
+
+/**
+ * True when landscapeOrientation remapped portrait printFileDims → landscape.
+ * Harvest masks are usually square (mockup px) with a tall opaque silhouette —
+ * pixel aspect alone cannot detect that, so callers use this geometry check.
+ */
+export function flatCalibrationSwappedToLandscape(
+  manifest: FlatCalibrationManifest,
+  colorId: string,
+  view: FlatViewName,
+  landscapeOrientation: boolean,
+): boolean {
+  if (!landscapeOrientation) return false;
+  const base = resolveFlatViewCalibration(manifest, colorId, view);
+  if (!base?.printFileDims?.width || !base.printFileDims.height) return false;
+  if (base.printFileDims.width >= base.printFileDims.height) return false;
+  const oriented = resolveFlatViewCalibration(manifest, colorId, view, {
+    landscapeOrientation: true,
+  });
+  if (!oriented?.printFileDims) return false;
+  return oriented.printFileDims.width > oriented.printFileDims.height;
+}
+
+/**
+ * When print geometry is swapped to landscape but mask/shading still encode a
+ * portrait silhouette (often on a square mockup canvas), rotate 90° so
+ * destination-in clip matches the wide placement box. Without this, blank white
+ * shows as fixed side bars while art pans underneath.
+ */
+export async function orientFlatHarvestPixelsForLandscape(
+  mask: HTMLImageElement | null,
+  shading: HTMLImageElement | null,
+): Promise<{ mask: HTMLImageElement | null; shading: HTMLImageElement | null }> {
+  if (!mask && !shading) return { mask, shading };
+  const [nextMask, nextShading] = await Promise.all([
+    mask ? rotateFlatImage90Cw(mask) : Promise.resolve(null),
+    shading ? rotateFlatImage90Cw(shading) : Promise.resolve(null),
+  ]);
+  return { mask: nextMask, shading: nextShading };
+}
+
 export async function loadFlatViewAssets(
   manifest: FlatCalibrationManifest,
   colorId: string,
   view: FlatViewName,
+  opts?: {
+    landscapeOrientation?: boolean;
+    blankUrlOverride?: string | null;
+    sizeAspectRatio?: string | null;
+    refitCatalogSizeGuide?: boolean;
+  },
 ): Promise<FlatLoadedViewAssets | null> {
   const blank = resolveFlatBlank(manifest, colorId);
-  const blankUrl = blank[view];
-  const calib = resolveFlatViewCalibration(manifest, colorId, view);
+  const blankUrl =
+    view === "front" && opts?.blankUrlOverride ? opts.blankUrlOverride : blank[view];
+  const landscapeOrientation = !!opts?.landscapeOrientation;
+  const refitCatalogSizeGuide =
+    opts?.refitCatalogSizeGuide === true || !!opts?.blankUrlOverride;
+  const calib = resolveFlatViewCalibration(manifest, colorId, view, {
+    landscapeOrientation,
+    sizeAspectRatio: opts?.sizeAspectRatio,
+    refitCatalogSizeGuide,
+  });
   if (!blankUrl || !calib) return null;
 
   const shouldLoadShading =
@@ -253,9 +422,21 @@ export async function loadFlatViewAssets(
 
   const [b, m, s] = await Promise.all([
     loadFlatImage(blankUrl),
-    calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
+    // Shared harvest masks are 2:3-shaped — drop them when the guide was
+    // rebuilt for the catalog size AR or they clip the wrong silhouette.
+    !refitCatalogSizeGuide && calib.maskUrl
+      ? loadFlatImage(calib.maskUrl)
+      : Promise.resolve(null),
     shouldLoadShading ? loadFlatImage(calib.shadingUrl!) : Promise.resolve(null),
   ]);
   if (!b) return null;
+  // Catalog-blank refit already has the correct AR — don't rotate harvest masks.
+  if (
+    !refitCatalogSizeGuide &&
+    flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)
+  ) {
+    const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+    return { blank: b, mask: oriented.mask, shading: oriented.shading };
+  }
   return { blank: b, mask: m, shading: s };
 }

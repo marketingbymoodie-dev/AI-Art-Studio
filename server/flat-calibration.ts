@@ -21,9 +21,16 @@
 import sharp from "sharp";
 import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import {
+  isCatalogSizeBlankBlueprint,
+  printFileDimsForAspectRatio,
+} from "@shared/catalogSizeBlanks";
+import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
+  looksLikePhoneModelName,
+  sizeIdLooksLandscape,
 } from "@shared/productVariantOptions";
+export { looksLikePhoneModelName };
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 import {
   uploadToFlatCalibrationBucket,
@@ -790,7 +797,8 @@ export function resolveFlatBlankColorId(
     for (const k of Object.keys(manifest.blanks || {})) {
       if (!blankKeyMatchesManifest(manifest, k)) continue;
       const kn = normalizeBlankKey(k);
-      if (kn === colorNorm || kn.endsWith(`:${colorNorm}`)) return k;
+      // normalizeBlankKey turns `16x20:white` into `16x20-white` — match `-color` suffix.
+      if (kn === colorNorm || kn.endsWith(`-${colorNorm}`)) return k;
     }
   }
 
@@ -821,45 +829,53 @@ export function resolveFlatBlankColorId(
 export function resolveFlatPrintFileDims(
   manifest: FlatCalibrationManifest,
   view: ViewName,
-  opts: { sizeId?: string; frameColorId?: string },
+  opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): { width: number; height: number } | null {
+  // Wall decals / comforterters: harvest often stores one shared 2:3 printFileDims.
+  // Axis-swapping that for landscape yields 3:2 — wrong for 24×18 (4:3). Prefer
+  // the selected size's inch aspect so bake matches the storefront guide.
+  if (isCatalogSizeBlankBlueprint(manifest.blueprintId) && opts.sizeId) {
+    const dim = extractDimensionalKey(opts.sizeId);
+    if (dim) {
+      const [w, h] = dim.split("x").map(Number);
+      if (w > 0 && h > 0) {
+        const fromSize = printFileDimsForAspectRatio(`${w}:${h}`);
+        if (fromSize) return fromSize;
+      }
+    }
+  }
+
   const blankKey = resolveFlatBlankColorId(manifest, opts);
   const override = manifest.geometryByBlank?.[blankKey]?.[view]?.printFileDims;
   const base = manifest.views[view]?.printFileDims;
   const dims = override ?? base;
   if (!dims?.width || !dims.height) return null;
-  return { width: dims.width, height: dims.height };
+  let width = dims.width;
+  let height = dims.height;
+  // HFP: harvest may store portrait printFileDims; client orients for landscape sizes.
+  // Bake must match so cover-fit does not letterbox.
+  const wantLandscape =
+    opts.landscapeOrientation === true ||
+    (opts.landscapeOrientation !== false && sizeIdLooksLandscape(opts.sizeId));
+  if (wantLandscape && width < height) {
+    return { width: height, height: width };
+  }
+  return { width, height };
 }
 
-/** Placement anchor for print-file bake — matches client preview semantics. */
+/**
+ * Placement anchor for print-file bake.
+ * Framed decor: full print canvas (Printify submits bake at scale=1 full-bleed).
+ * Do NOT inset mockup-space visibleRect into printFileDims — that letterboxed art.
+ */
 export function resolveFlatBakePlacementRect(
   manifest: FlatCalibrationManifest,
   view: ViewName,
-  opts: { sizeId?: string; frameColorId?: string },
+  opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): Rect | null {
   const dims = resolveFlatPrintFileDims(manifest, view, opts);
   if (!dims) return null;
   const { width: printW, height: printH } = dims;
-
-  if (manifest.edgeWrap) {
-    return { x: 0, y: 0, width: printW, height: printH };
-  }
-
-  if (manifest.decorPerSize) {
-    const blankKey = resolveFlatBlankColorId(manifest, opts);
-    const base = manifest.views[view];
-    const override = manifest.geometryByBlank?.[blankKey]?.[view];
-    const nr = override?.visibleRectNormalized ?? base?.visibleRectNormalized;
-    if (nr) {
-      return {
-        x: nr.x * printW,
-        y: nr.y * printH,
-        width: nr.width * printW,
-        height: nr.height * printH,
-      };
-    }
-  }
-
   return { x: 0, y: 0, width: printW, height: printH };
 }
 
@@ -951,18 +967,6 @@ function parseJsonRecord(raw: unknown): Record<string, any> {
     }
   }
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {};
-}
-
-export function looksLikePhoneModelName(name: string): boolean {
-  const lower = (name || "").toLowerCase().trim();
-  return (
-    /^iphone[-\s](\d|x|xs|xr|se|pro|plus|max|air)/i.test(lower) ||
-    /^galaxy[-\s](s\d|a\d|note|z\s*(fold|flip)|ultra)/i.test(lower) ||
-    /^pixel[-\s](\d|fold|pro)/i.test(lower) ||
-    /^samsung[-\s](galaxy|note)/i.test(lower) ||
-    /^oneplus[-\s]\d/i.test(lower) ||
-    /^for[-\s](iphone|galaxy|pixel|samsung)/i.test(lower)
-  );
 }
 
 /** Detect phone-case / edge-print products for harvest + storefront guides. */
