@@ -26,7 +26,8 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 |---------|---------|
 | Mode / view / part | Place / Front / Right leg |
 | Design groups | `right-leg` + `left-leg` (per-panel place) |
-| Place scale / offsets | Max **300%**. Defaults (Link on): right `scale=3 ox=-43.3 oy=8.4`, left `scale=3 ox=-72.2 oy=8.4`. Reset restores these. TEMP coords overlay kept for QA. |
+| Place scale / offsets | Max **300%**. Defaults (Link on): right `scale=3 ox=-113.2 oy=25.2`, left `scale=3 ox=7.3 oy=25.2` (X gap ≈ 120.5). Reset restores these. TEMP coords overlay kept for QA. |
+| Link sides | Preserve **X gap** (+same dx); hard-sync **Y** (and scale). Mirror while linked = art flip only (no placement copy). |
 | Link sides | **ON** (hood-link style — toggle does not rewrite placements) |
 | Mirror | **OFF** (can combine with Link) |
 | Gen AR | Tall single-leg panel AR (fallback `2:3`) |
@@ -37,7 +38,7 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 | Control | Behavior |
 |---------|----------|
 | Place | Full motif contain-fit **per leg** (not continuous mural) |
-| Link sides | Like hood↔front link: toggle on/off **keeps** current L/R placements; while on, edits propagate as **same** dx/dy/scale ratio; union bounding box; both Left/Right toggles look on; Artwork enabled / Reset act on **both** legs |
+| Link sides | Toggle keeps L/R **offsetX** gap; while on, same **dx** + hard-sync **Y**/scale; union box; both Left/Right on; Artwork enabled / Reset act on both legs |
 | Mirror | Left art horizontally flipped; optionally copies right placement when turned on |
 | Place → Pattern | Link + Mirror forced **off** for clean tile symmetry; Place session (placements + toggles + enabled) snapshotted |
 | Pattern → Place | Restores last Place session Link/Mirror/placements/enabled |

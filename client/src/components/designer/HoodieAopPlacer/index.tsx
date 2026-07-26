@@ -159,8 +159,9 @@ export type HoodieAopPlacerState = {
    */
   sleevesMirrored: boolean;
   /**
-   * Leggings Link sides (hood-link style): when on, edits propagate as deltas
-   * to the other leg without rewriting placements on toggle. Default ON.
+   * Leggings Link sides: when on, moves preserve the L/R X gap (+same dx) and
+   * hard-sync Y (heights). Toggle on snaps Y/scale without rewriting offsetX.
+   * Default ON.
    */
   legsSynced: boolean;
   /**
@@ -277,18 +278,19 @@ const SCALE_MAX = 3;
 /** Leggings open at full Place scale so motifs can span the hip/crotch. */
 const LEGGINGS_DEFAULT_PLACE_SCALE = 3;
 /**
- * Locked Place defaults (customer open + Reset). Tuned for tiger/motif flow
- * across the crotch with Link sides on. TEMP coords overlay still shows live values.
+ * Locked Place defaults (customer open + Reset). Tuned so L/R visual flow
+ * matches Printify (Link on). X gap ≈ 120.5 px must be preserved while linked.
+ * TEMP coords overlay still shows live values.
  */
 const LEGGINGS_DEFAULT_RIGHT_PLACE: ArtworkPlacement = {
   scale: LEGGINGS_DEFAULT_PLACE_SCALE,
-  offsetX: -43.3,
-  offsetY: 8.4,
+  offsetX: -113.2,
+  offsetY: 25.2,
 };
 const LEGGINGS_DEFAULT_LEFT_PLACE: ArtworkPlacement = {
   scale: LEGGINGS_DEFAULT_PLACE_SCALE,
-  offsetX: -72.2,
-  offsetY: 8.4,
+  offsetX: 7.3,
+  offsetY: 25.2,
 };
 
 function leggingsDefaultPlacementForGroup(groupId: string): ArtworkPlacement {
@@ -618,7 +620,8 @@ function buildInitialState(
         },
         saved.sleevesMirrored ?? base.sleevesMirrored,
       ),
-      legsMirrored,
+      // Mirror + Link: art flip only — keep independent ox gap.
+      legsMirrored && !legsSynced,
     ),
     enabled: mergeSavedCustomerEnabled(baseWithGroups.enabled, saved.enabled),
     tileSettings: { ...baseWithGroups.tileSettings, ...(saved.tileSettings ?? {}) },
@@ -637,6 +640,30 @@ function buildInitialState(
       : pillow
         ? "front-face"
         : (saved.activeGroupId ?? baseWithGroups.activeGroupId),
+  };
+}
+
+/**
+ * When enabling Link sides: keep each leg's offsetX (gap), hard-sync Y (and
+ * optionally scale) from the canonical right leg so heights match immediately.
+ */
+function snapLegLinkHeights(
+  placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
+): Record<string, Record<HoodieView, ArtworkPlacement>> {
+  const right = placements["right-leg"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
+  const left = placements["left-leg"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
+  const leftNext: ArtworkPlacement = {
+    ...left,
+    offsetY: right.offsetY,
+    scale: right.scale,
+  };
+  return {
+    ...placements,
+    "left-leg": { front: { ...leftNext }, back: { ...leftNext } },
+    "right-leg": {
+      front: { ...right },
+      back: { ...right },
+    },
   };
 }
 
@@ -665,12 +692,19 @@ function propagateLinkedDeltas(
     const dx = nextSource.offsetX - prevSource.offsetX;
     const dy = nextSource.offsetY - prevSource.offsetY;
     const ratio = prevSource.scale > 0 ? nextSource.scale / prevSource.scale : 1;
-    const nextPartner: ArtworkPlacement = {
-      scale: partnerCur.scale * ratio,
-      offsetX: partnerCur.offsetX + dx,
-      offsetY: partnerCur.offsetY + dy,
-    };
     const isLegs = a === "left-leg" || a === "right-leg";
+    // Legs: preserve X gap (+dx), hard-sync Y to source (heights stay locked).
+    const nextPartner: ArtworkPlacement = isLegs
+      ? {
+          scale: partnerCur.scale * ratio,
+          offsetX: partnerCur.offsetX + dx,
+          offsetY: nextSource.offsetY,
+        }
+      : {
+          scale: partnerCur.scale * ratio,
+          offsetX: partnerCur.offsetX + dx,
+          offsetY: partnerCur.offsetY + dy,
+        };
     result = {
       ...result,
       [partner]: {
@@ -727,7 +761,7 @@ function buildEffectiveRenderConfig(
 } {
   const placements = syncLegPlacementsForMirror(
     { ...state.placements },
-    state.legsMirrored,
+    state.legsMirrored && !state.legsSynced,
   );
   let enabled: Record<string, boolean> = { ...state.enabled, trim: false };
 
@@ -1422,7 +1456,8 @@ export default function HoodieAopPlacer({
               back: { ...next },
             },
           };
-          // Link sides: propagate same dx/dy/scale ratio (hood-link style).
+          // Link: preserve X gap (+dx), hard-sync Y. Mirror = art flip only
+          // while linked — do not copy absolute placement onto the other leg.
           placements = applyLinkedPlacements(
             prev,
             placements,
@@ -1431,7 +1466,7 @@ export default function HoodieAopPlacer({
             prevPrimary,
             next,
           );
-          if (prev.legsMirrored) {
+          if (prev.legsMirrored && !prev.legsSynced) {
             placements = syncLegPlacementsForMirror(placements, true);
           }
         } else if (pillowDup) {
@@ -1515,7 +1550,7 @@ export default function HoodieAopPlacer({
           cur,
           next,
         );
-        if (prev.legsMirrored) {
+        if (prev.legsMirrored && !prev.legsSynced) {
           placements = syncLegPlacementsForMirror(placements, true);
         }
       } else if (pillowDup) {
@@ -2187,15 +2222,24 @@ export default function HoodieAopPlacer({
                   <button
                     type="button"
                     onClick={() =>
-                      setState((prev) =>
-                        prev ? { ...prev, legsSynced: !prev.legsSynced } : prev,
-                      )
+                      setState((prev) => {
+                        if (!prev) return prev;
+                        const legsSynced = !prev.legsSynced;
+                        return {
+                          ...prev,
+                          legsSynced,
+                          // Enabling Link: keep X gap, snap Y/scale to right leg.
+                          placements: legsSynced
+                            ? snapLegLinkHeights(prev.placements)
+                            : prev.placements,
+                        };
+                      })
                     }
                     aria-pressed={state.legsSynced}
                     title={
                       state.legsSynced
                         ? "Legs linked — click to unlink (placements kept)"
-                        : "Link legs — edits move both without rewriting placements"
+                        : "Link legs — move together; X gap and matching height preserved"
                     }
                     className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
                       state.legsSynced,
@@ -2217,10 +2261,11 @@ export default function HoodieAopPlacer({
                         return {
                           ...prev,
                           legsMirrored,
-                          placements: syncLegPlacementsForMirror(
-                            prev.placements,
-                            legsMirrored,
-                          ),
+                          // While Link is on, Mirror only flips art (renderer).
+                          placements:
+                            legsMirrored && !prev.legsSynced
+                              ? syncLegPlacementsForMirror(prev.placements, true)
+                              : prev.placements,
                         };
                       })
                     }
@@ -2234,9 +2279,11 @@ export default function HoodieAopPlacer({
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   {state.legsMirrored
-                    ? "Left leg art is flipped; Link still propagates move/scale."
+                    ? state.legsSynced
+                      ? "Mirror flips left art; Link keeps X gap and matching height."
+                      : "Left leg art is flipped; placement copied from right."
                     : state.legsSynced
-                      ? "Legs linked — drag either side; both move together. Toggle off keeps placements."
+                      ? "Linked — both move together; X gap and matching height are preserved."
                       : "Left and right legs can be placed independently. Click artwork to switch."}
                 </div>
               </div>
@@ -2256,9 +2303,17 @@ export default function HoodieAopPlacer({
               <button
                 type="button"
                 onClick={() =>
-                  setState((prev) =>
-                    prev ? { ...prev, legsSynced: !prev.legsSynced } : prev,
-                  )
+                  setState((prev) => {
+                    if (!prev) return prev;
+                    const legsSynced = !prev.legsSynced;
+                    return {
+                      ...prev,
+                      legsSynced,
+                      placements: legsSynced
+                        ? snapLegLinkHeights(prev.placements)
+                        : prev.placements,
+                    };
+                  })
                 }
                 aria-pressed={state.legsSynced}
                 className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
@@ -2281,10 +2336,10 @@ export default function HoodieAopPlacer({
                     return {
                       ...prev,
                       legsMirrored,
-                      placements: syncLegPlacementsForMirror(
-                        prev.placements,
-                        legsMirrored,
-                      ),
+                      placements:
+                        legsMirrored && !prev.legsSynced
+                          ? syncLegPlacementsForMirror(prev.placements, true)
+                          : prev.placements,
                     };
                   })
                 }
@@ -2300,7 +2355,7 @@ export default function HoodieAopPlacer({
               {state.legsMirrored
                 ? "Left leg pattern is flipped relative to the right."
                 : state.legsSynced
-                  ? "Linked — left pattern is mirrored so tiles meet at the crotch seam."
+                  ? "Linked — both move together; X gap and matching height are preserved."
                   : "Left and right pattern placement can differ."}
             </div>
           </div>
