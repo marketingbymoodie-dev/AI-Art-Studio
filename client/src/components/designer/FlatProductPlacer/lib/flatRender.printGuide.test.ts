@@ -1,42 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { expandPrintGuideToPrintFileAspect } from "./flatRender";
+import {
+  expandPrintGuideToPrintFileAspect,
+  FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
+} from "./flatRender";
 
 describe("expandPrintGuideToPrintFileAspect", () => {
   const canvasW = 1000;
   const canvasH = 1200;
 
-  it("grows a short magenta AABB to printFileDims aspect (keep width/X)", () => {
-    // Harvested chest box: wider than tall; Printify placeholder is taller.
-    const rect = { x: 300, y: 400, width: 400, height: 280 };
-    const pf = { width: 4500, height: 5400 }; // AR 0.833 → targetH = 400 * 1.2 = 480
+  it("grows height by overscan boost even when printFileDims AR already matches", () => {
+    // AABB already matches print AR — previous fix was a no-op; boost still grows.
+    const rect = { x: 300, y: 400, width: 400, height: 480 };
+    const pf = { width: 4500, height: 5400 }; // same AR as 400×480
     const next = expandPrintGuideToPrintFileAspect(rect, pf, canvasW, canvasH);
     expect(next.width).toBe(400);
     expect(next.x).toBe(300);
-    expect(next.height).toBeCloseTo(480, 5);
-    expect(next.y + next.height / 2).toBeCloseTo(400 + 140, 5);
+    expect(next.height).toBeCloseTo(480 * FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST, 5);
+    // Most of the growth goes upward (smaller y).
+    expect(next.y).toBeLessThan(rect.y);
   });
 
-  it("is a no-op when AABB is already tall enough", () => {
-    const rect = { x: 300, y: 200, width: 400, height: 500 };
-    const pf = { width: 4500, height: 5400 }; // targetH = 480 < 500
-    expect(expandPrintGuideToPrintFileAspect(rect, pf, canvasW, canvasH)).toEqual(
-      rect,
-    );
+  it("uses the taller of boost vs printFileDims aspect", () => {
+    const rect = { x: 300, y: 400, width: 400, height: 280 };
+    const pf = { width: 4500, height: 5400 }; // aspect → 480; boost → 280*1.18
+    const next = expandPrintGuideToPrintFileAspect(rect, pf, canvasW, canvasH);
+    expect(next.height).toBeCloseTo(480, 5);
   });
 
   it("clamps to mockup when expanded height would leave the canvas", () => {
     const rect = { x: 300, y: 50, width: 400, height: 200 };
-    const pf = { width: 1000, height: 3000 }; // targetH = 1200 = full canvas
+    const pf = { width: 1000, height: 3000 };
     const next = expandPrintGuideToPrintFileAspect(rect, pf, canvasW, canvasH);
     expect(next.y).toBe(0);
     expect(next.height).toBe(canvasH);
     expect(next.width).toBe(400);
   });
 
-  it("returns input when printFileDims missing", () => {
+  it("still boosts when printFileDims missing", () => {
     const rect = { x: 10, y: 20, width: 100, height: 50 };
-    expect(expandPrintGuideToPrintFileAspect(rect, null, canvasW, canvasH)).toEqual(
-      rect,
-    );
+    const next = expandPrintGuideToPrintFileAspect(rect, null, canvasW, canvasH);
+    expect(next.height).toBeCloseTo(50 * FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST, 5);
+    expect(next.y).toBeLessThan(rect.y);
   });
 });

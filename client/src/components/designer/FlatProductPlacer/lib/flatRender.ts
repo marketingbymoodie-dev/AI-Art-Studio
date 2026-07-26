@@ -215,32 +215,43 @@ export function flatVisibleRectPx(
 }
 
 /**
+ * Match harvest `REG_VERTICAL_OVERSCAN` (1.12). Printify clips that overscan
+ * out of the mockup magenta AABB but still accepts art in the taller print
+ * file — so the dashed guide must grow or it reads short at the collar.
+ */
+export const FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST = 1.18;
+
+/**
  * Magenta harvest AABB often understates Printify printable height: at
- * scale=1 Printify width-fills the print area and clips vertical overscan,
- * so the detected rect can be shorter than `printFileDims`. Grow height from
- * centre to match print-file aspect (keep width + X); clamp to the mockup.
- * No-op when the AABB is already as tall or taller, or dims are missing.
+ * scale=1 Printify width-fills and clips vertical overscan, so the detected
+ * rect can be shorter than the real print area. Grow height (keep width + X),
+ * preferring expansion toward the collar; clamp to the mockup.
  */
 export function expandPrintGuideToPrintFileAspect(
   rect: Rect,
   printFileDims: { width: number; height: number } | null | undefined,
   canvasW: number,
   canvasH: number,
+  heightBoost: number = FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
 ): Rect {
+  if (!(rect.width > 0) || !(rect.height > 0) || !(canvasH > 0)) return rect;
+
   const pfW = printFileDims?.width ?? 0;
   const pfH = printFileDims?.height ?? 0;
-  if (!(pfW > 0) || !(pfH > 0) || !(rect.width > 0) || !(canvasH > 0)) {
-    return rect;
+  // Tallest of: current height, printFileDims aspect, harvest overscan boost.
+  let targetH = rect.height * Math.max(1, heightBoost);
+  if (pfW > 0 && pfH > 0) {
+    targetH = Math.max(targetH, rect.width * (pfH / pfW));
   }
-  const targetH = rect.width * (pfH / pfW);
   if (!(targetH > rect.height + 0.5)) return rect;
 
   if (targetH >= canvasH - 0.5) {
     return { x: rect.x, y: 0, width: rect.width, height: canvasH };
   }
 
-  const cy = rect.y + rect.height / 2;
-  let y = cy - targetH / 2;
+  // ~70% of the extra height goes upward (collar / neckline side).
+  const extra = targetH - rect.height;
+  let y = rect.y - extra * 0.7;
   if (y < 0) y = 0;
   if (y + targetH > canvasH) y = canvasH - targetH;
   return { x: rect.x, y, width: rect.width, height: targetH };
