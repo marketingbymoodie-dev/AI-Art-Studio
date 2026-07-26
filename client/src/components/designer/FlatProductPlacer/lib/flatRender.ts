@@ -559,11 +559,41 @@ export function flatPrintCanvasLayout(
 
 export { PRINT_CANVAS_GREY };
 
+/** Map a rect from one pixel space into another (uniform per-axis scale). */
+export function scaleRectToCanvas(
+  rect: Rect,
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number,
+): Rect {
+  const sx = dstW / Math.max(1, srcW);
+  const sy = dstH / Math.max(1, srcH);
+  return {
+    x: rect.x * sx,
+    y: rect.y * sy,
+    width: rect.width * sx,
+    height: rect.height * sy,
+  };
+}
+
+const maskAlphaBoundsCache = new WeakMap<HTMLImageElement, Rect | null>();
+
+/** Cached alpha AABB of a mask image (native mask pixels). */
+export function flatMaskAlphaBoundsCached(
+  mask: HTMLImageElement,
+): Rect | null {
+  if (maskAlphaBoundsCache.has(mask)) return maskAlphaBoundsCache.get(mask)!;
+  const bounds = flatImageAlphaBounds(mask);
+  maskAlphaBoundsCache.set(mask, bounds);
+  return bounds;
+}
+
 /**
  * Coordinate system for placement + print-file bake.
- * Edge-wrap: full print canvas. Apparel: visible print rect on mockup,
- * height expanded to printFileDims aspect so the dashed guide matches
- * what Printify actually accepts (bake already uses full printFileDims).
+ * Edge-wrap: full print canvas. Apparel: prefer the live mask alpha AABB so the
+ * dashed guide matches destination-in clipping (harvest magenta AABB is often
+ * much shorter than the mask silhouette customers actually see).
  */
 export function flatPlacementRectPx(
   view: FlatViewCalibration,
@@ -575,11 +605,24 @@ export function flatPlacementRectPx(
   if (opts.edgeWrapMode) {
     return flatPrintCanvasLayout(view).printCanvas;
   }
-  const base = flatVisibleRectPx(view, canvasW, canvasH);
+  const harvest = flatVisibleRectPx(view, canvasW, canvasH);
   // Decor / wall-decal guides are mat openings — do not stretch to print AR.
-  if (opts.decorMode) return base;
+  if (opts.decorMode) return harvest;
+
+  if (mask) {
+    const mw = mask.naturalWidth || mask.width;
+    const mh = mask.naturalHeight || mask.height;
+    const bounds = mw > 0 && mh > 0 ? flatMaskAlphaBoundsCached(mask) : null;
+    if (bounds && bounds.width > 0 && bounds.height > 0) {
+      // Guide = where preview actually clips. Do not inflate above the mask or
+      // the dashed box reads short while art still paints in the mask.
+      return scaleRectToCanvas(bounds, mw, mh, canvasW, canvasH);
+    }
+  }
+
+  // No usable mask — fall back to harvest AABB + Printify overscan boost.
   return expandPrintGuideToPrintFileAspect(
-    base,
+    harvest,
     view.printFileDims,
     canvasW,
     canvasH,
@@ -1257,10 +1300,8 @@ function solidifyMaskForClip(
  * Prefer the pixel mask when present; otherwise hard-clip to `rect` (wall-decal
  * catalog blanks skip the shared harvest mask but still need side/top trim).
  *
- * When a mask is present, also hard-clip to `rect` (the dashed guide). Soft
- * mask silhouettes / AABB drift can otherwise paint past the guide while the
- * UI still shows the smaller harvest rectangle — customers see "art outside
- * the dashed line" with no matching clip edge.
+ * Note: do not follow mask clip with destination-in + fillRect(rect) — fillRect
+ * only touches pixels inside the rect, so outside pixels are left unchanged.
  */
 export function clipFlatArtToPrintArea(
   actx: CanvasRenderingContext2D,
@@ -1271,7 +1312,7 @@ export function clipFlatArtToPrintArea(
     canvasH: number;
     fabricWeave?: boolean;
   },
-): "mask" | "rect" | "mask+rect" {
+): "mask" | "rect" {
   const { mask, rect, canvasW, canvasH, fabricWeave } = opts;
   actx.globalCompositeOperation = "destination-in";
   if (mask) {
@@ -1279,13 +1320,6 @@ export function clipFlatArtToPrintArea(
       actx.drawImage(solidifyMaskForClip(mask, canvasW, canvasH), 0, 0);
     } else {
       actx.drawImage(mask, 0, 0, canvasW, canvasH);
-    }
-    if (rect.width > 0 && rect.height > 0) {
-      // Second pass: keep only pixels inside the dashed placement guide.
-      actx.fillStyle = "#fff";
-      actx.fillRect(rect.x, rect.y, rect.width, rect.height);
-      actx.globalCompositeOperation = "source-over";
-      return "mask+rect";
     }
     actx.globalCompositeOperation = "source-over";
     return "mask";

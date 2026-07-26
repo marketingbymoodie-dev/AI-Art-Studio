@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   expandPrintGuideToPrintFileAspect,
+  scaleRectToCanvas,
   FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
 } from "./flatRender";
+
+describe("scaleRectToCanvas", () => {
+  it("maps mask-native bounds into blank/canvas pixels", () => {
+    const native = { x: 100, y: 200, width: 400, height: 600 };
+    const next = scaleRectToCanvas(native, 1000, 1000, 2000, 2000);
+    expect(next).toEqual({ x: 200, y: 400, width: 800, height: 1200 });
+  });
+});
 
 describe("expandPrintGuideToPrintFileAspect", () => {
   const canvasW = 1000;

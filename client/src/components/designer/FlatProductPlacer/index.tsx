@@ -29,8 +29,7 @@ import {
 import {
   flatCovers,
   flatArtBoxAxisAligned,
-  flatApparelTrimRectPx,
-  flatApparelArtworkTrimmed,
+  flatOverflows,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -826,13 +825,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else {
-      // Apparel: dashed guide is Printify-overscan (taller); mask clip still
-      // follows the harvest AABB — warn if either is overflowed.
-      const trimRect = flatApparelTrimRectPx(calib, mockupW, mockupH);
-      if (flatApparelArtworkTrimmed(trimRect, placementRect, box)) {
-        coverageWarning = "trim";
-      }
+    } else if (flatOverflows(placementRect, box)) {
+      // Apparel guide = live mask AABB (same space as destination-in clip).
+      coverageWarning = "trim";
     }
   }
 
