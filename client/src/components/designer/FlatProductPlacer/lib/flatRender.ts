@@ -214,6 +214,38 @@ export function flatVisibleRectPx(
   );
 }
 
+/**
+ * Magenta harvest AABB often understates Printify printable height: at
+ * scale=1 Printify width-fills the print area and clips vertical overscan,
+ * so the detected rect can be shorter than `printFileDims`. Grow height from
+ * centre to match print-file aspect (keep width + X); clamp to the mockup.
+ * No-op when the AABB is already as tall or taller, or dims are missing.
+ */
+export function expandPrintGuideToPrintFileAspect(
+  rect: Rect,
+  printFileDims: { width: number; height: number } | null | undefined,
+  canvasW: number,
+  canvasH: number,
+): Rect {
+  const pfW = printFileDims?.width ?? 0;
+  const pfH = printFileDims?.height ?? 0;
+  if (!(pfW > 0) || !(pfH > 0) || !(rect.width > 0) || !(canvasH > 0)) {
+    return rect;
+  }
+  const targetH = rect.width * (pfH / pfW);
+  if (!(targetH > rect.height + 0.5)) return rect;
+
+  if (targetH >= canvasH - 0.5) {
+    return { x: rect.x, y: 0, width: rect.width, height: canvasH };
+  }
+
+  const cy = rect.y + rect.height / 2;
+  let y = cy - targetH / 2;
+  if (y < 0) y = 0;
+  if (y + targetH > canvasH) y = canvasH - targetH;
+  return { x: rect.x, y, width: rect.width, height: targetH };
+}
+
 /** Full print silhouette from manifest (harvested mask bbox). */
 export function flatPrintBoundsRectPx(
   view: FlatViewCalibration,
@@ -518,7 +550,9 @@ export { PRINT_CANVAS_GREY };
 
 /**
  * Coordinate system for placement + print-file bake.
- * Edge-wrap: full print canvas. Apparel: visible print rect on mockup.
+ * Edge-wrap: full print canvas. Apparel: visible print rect on mockup,
+ * height expanded to printFileDims aspect so the dashed guide matches
+ * what Printify actually accepts (bake already uses full printFileDims).
  */
 export function flatPlacementRectPx(
   view: FlatViewCalibration,
@@ -530,7 +564,15 @@ export function flatPlacementRectPx(
   if (opts.edgeWrapMode) {
     return flatPrintCanvasLayout(view).printCanvas;
   }
-  return flatVisibleRectPx(view, canvasW, canvasH);
+  const base = flatVisibleRectPx(view, canvasW, canvasH);
+  // Decor / wall-decal guides are mat openings — do not stretch to print AR.
+  if (opts.decorMode) return base;
+  return expandPrintGuideToPrintFileAspect(
+    base,
+    view.printFileDims,
+    canvasW,
+    canvasH,
+  );
 }
 
 /** Edge-wrap overlay guides: outer = print canvas, inner = safe zone. */

@@ -466,19 +466,16 @@ export function ProductMockup({
       };
       const showBlankUnderArt = !!blankImageUrl && designerType === "apparel";
       if (showBlankUnderArt) {
-        const blankScale = isLandscape ? "scale(1.1)" : undefined;
         return (
           <>
             <img
               key={blankImageUrl}
               src={blankImageUrl}
               alt="Product blank"
-              className="absolute inset-0 w-full h-full object-cover"
+              className="absolute inset-0 w-full h-full object-contain"
               style={{
                 pointerEvents: "none",
                 opacity: 0.92,
-                transform: blankScale,
-                transformOrigin: "center center",
               }}
               draggable={false}
               data-testid="img-blank"
@@ -509,8 +506,11 @@ export function ProductMockup({
     }
 
     if (blankImageUrl) {
-      // Framed posters include hangers/moulding above the print — cover crops the top.
+      // Apparel / mug / framed / shaped pillows: contain so tall blanks
+      // (hoodies) are not cropped by object-cover in the square preview.
+      // Framed posters still prefer contain so hangers stay visible.
       const useContainBlank =
+        designerType === "apparel" ||
         designerType === "mug" ||
         designerType === "framed-print" ||
         (designerType === "pillow" &&

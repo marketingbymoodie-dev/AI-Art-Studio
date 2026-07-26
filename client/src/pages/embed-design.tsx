@@ -11494,11 +11494,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         selectedSizeConfig?.aspectRatio ||
                         productTypeConfig?.aspectRatio
                       }
-                      // Cover crops framed mockups (hangers / landscape) against the box.
+                      // Contain for apparel/framed so tall hoodie blanks fit;
+                      // cover only for remaining lifestyle composites.
                       mockupFit={
                         flatEdgeWrapMode ||
                         flatDecorMode ||
-                        productTypeConfig?.designerType === "framed-print"
+                        productTypeConfig?.designerType === "framed-print" ||
+                        productTypeConfig?.designerType === "apparel"
                           ? "contain"
                           : "cover"
                       }
