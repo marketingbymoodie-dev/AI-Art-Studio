@@ -12,6 +12,7 @@ Per-product **signed-off** pins on `production`. Each entry records the commit (
 | Pullover hoodie | 450 | 2026-07-17 | `e636838` | [pullover-hoodie-bp450.md](./pullover-hoodie-bp450.md) |
 | Unisex sweatshirt | 449 | 2026-07-18 | `0c010e5` | [sweatshirt-bp449.md](./sweatshirt-bp449.md) |
 | Men's bomber jacket | 433 | 2026-07-20 (Place on item + Pattern) | `088fd23` | [bomber-jacket-bp433.md](./bomber-jacket-bp433.md) |
+| Women's Casual Leggings | 256 | 2026-07-27 | `2fec216` | [womens-leggings-bp256.md](./womens-leggings-bp256.md) |
 
 *Add a row when a product gets merchant sign-off.*
 
