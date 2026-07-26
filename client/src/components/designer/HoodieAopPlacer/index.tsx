@@ -272,7 +272,10 @@ const FIXED_PALETTE: PaletteSwatch[] = [
 ];
 
 const SCALE_MIN = 0.2;
-const SCALE_MAX = 2.5;
+/** Place-on-item scale cap (300%). */
+const SCALE_MAX = 3;
+/** Leggings open at full Place scale so motifs can span the hip/crotch. */
+const LEGGINGS_DEFAULT_PLACE_SCALE = 3;
 const TILE_SIZE_MIN = 0.5;
 const TILE_SIZE_MAX = 8;
 
@@ -537,14 +540,24 @@ function buildInitialState(
   const pillow = isPillowWrapTemplate(template);
   const defaultPlacement: ArtworkPlacement = pillow
     ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: 1.1 }
-    : DEFAULT_ARTWORK_PLACEMENT;
+    : leggings
+      ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: LEGGINGS_DEFAULT_PLACE_SCALE }
+      : DEFAULT_ARTWORK_PLACEMENT;
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
   for (const g of groups) {
-    placements[g.id] = {
-      front: { ...(g.placement?.front ?? defaultPlacement) },
-      back: { ...(g.placement?.back ?? defaultPlacement) },
-    };
+    const front = { ...(g.placement?.front ?? defaultPlacement) };
+    const back = { ...(g.placement?.back ?? defaultPlacement) };
+    // Template blanks still store scale:1 — bump leggings to the Place default.
+    if (leggings) {
+      if (!g.placement?.front || front.scale === 1) {
+        front.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
+      }
+      if (!g.placement?.back || back.scale === 1) {
+        back.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
+      }
+    }
+    placements[g.id] = { front, back };
     enabled[g.id] = customerGroupEnabledByDefault(g.id, template, g);
   }
   const base: HoodieAopPlacerState = {
@@ -1574,12 +1587,23 @@ export default function HoodieAopPlacer({
       );
       const placements = { ...prev.placements };
       const enabled = { ...prev.enabled };
+      const leggings = isLeggingsBlueprint(data.template.blueprintId);
+      const blank: ArtworkPlacement = leggings
+        ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: LEGGINGS_DEFAULT_PLACE_SCALE }
+        : DEFAULT_ARTWORK_PLACEMENT;
       for (const id of ids) {
         const g = groups.find((x) => x.id === id);
-        placements[id] = {
-          front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
-          back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
-        };
+        const front = { ...(g?.placement?.front ?? blank) };
+        const back = { ...(g?.placement?.back ?? blank) };
+        if (leggings) {
+          if (!g?.placement?.front || front.scale === 1) {
+            front.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
+          }
+          if (!g?.placement?.back || back.scale === 1) {
+            back.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
+          }
+        }
+        placements[id] = { front, back };
         // Reset must bring artwork back — previously only cleared offsets,
         // so a disabled leg stayed stuck off.
         enabled[id] = true;
@@ -1904,6 +1928,27 @@ export default function HoodieAopPlacer({
           >
             {state.view === "front" ? "Front View" : "Back View"}
           </div>
+          {/* TEMP: report these coords so we can lock leggings Place defaults, then remove. */}
+          {isLeggings && state.mode === "place" && (
+            <div
+              className="pointer-events-none absolute right-3 top-3 z-20 max-w-[min(100%,280px)] rounded bg-amber-500/95 px-2 py-1.5 font-mono text-[10px] leading-snug text-black shadow"
+              data-testid="hoodie-aop-temp-coords"
+            >
+              <div className="font-sans text-[9px] font-bold uppercase tracking-wide">
+                TEMP placement coords
+              </div>
+              {(["right-leg", "left-leg"] as const).map((id) => {
+                const pl =
+                  state.placements[id]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+                return (
+                  <div key={id}>
+                    {id}: scale={pl.scale.toFixed(3)} ox={pl.offsetX.toFixed(1)} oy=
+                    {pl.offsetY.toFixed(1)}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div className="relative max-h-full max-w-full overflow-hidden">
             <canvas
               ref={canvasRef}

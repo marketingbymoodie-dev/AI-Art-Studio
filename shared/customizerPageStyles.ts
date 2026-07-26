@@ -98,13 +98,18 @@ export function dedupeStylePresets<T extends { id: string; name?: string }>(
   });
 }
 
-/** Styles shown in admin "choose specific styles" for a product's designer type. */
+/**
+ * Styles shown in admin "choose specific styles" multi-select.
+ * Merchants may pick any preset (Decor / Apparel / Graphics) regardless of
+ * product designer type — e.g. leggings AOP can use Graphics or Decor motifs.
+ * Category *bundles* ("All Apparel styles") still use designer-type defaults.
+ */
 export function stylesForCustomizerPagePicker<T extends { category?: string | null }>(
   presets: T[],
-  designerType?: string | null,
+  _designerType?: string | null,
 ): T[] {
-  const selectable = selectableCategoriesForDesignerType(designerType);
-  return presets.filter((p) => styleMatchesSelectableCategories(p, selectable));
+  void _designerType;
+  return presets;
 }
 
 export function filterStylePresetsForPage<T extends { id: string; category?: string | null }>(

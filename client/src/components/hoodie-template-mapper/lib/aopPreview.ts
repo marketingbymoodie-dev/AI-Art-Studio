@@ -1737,21 +1737,18 @@ function renderTiledFlatPanel(
   if (!ctx) return null;
 
   // Anchor strategy.
-  //   - Default: flat-canvas center → pattern symmetric about each
-  //     panel's own centerline. Right for centered panels (back body,
-  //     waistband, kangaroo pocket).
-  //   - Seam panels: when the panel polygon has an edge that sits on
-  //     the mockup canvas X-center (within ~4% tolerance), that edge
-  //     is a seam (front zip, hood opening, pocket halves). Anchor the
-  //     tile grid at the flat-canvas edge that maps onto that seam
-  //     edge so a tile boundary lands EXACTLY at the seam — both
-  //     paired panels' patterns then mirror outward from the seam,
-  //     which is what the customer visually expects (and matches how
-  //     Printify-printed garments look when the print is symmetric
-  //     about the seams).
+  //   - Default: flat-canvas center → pattern grows/shrinks about the
+  //     panel centerline when tile size changes.
+  //   - Seam panels (zip / hood): when the polygon hugs mockup X-center,
+  //     pin a tile edge to the seam so L/R halves mirror outward.
+  //   - Leggings left_side/right_side: always center. Seam-edge anchoring
+  //     made tile size feel like it scaled from the crotch/corner; Mirror
+  //     / Link already handle crotch symmetry via sourceFlipX.
   let anchorX = flatW / 2;
   const cx = canvasW / 2;
+  const forceCenterAnchor = isLeggingsSidePanelKey(layer.panelKey);
   if (
+    !forceCenterAnchor &&
     polyBb &&
     layer.mesh.cols >= 2 &&
     layer.mesh.rows >= 1 &&
@@ -2132,6 +2129,63 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         layerSrc.naturalHeight || layerSrc.height,
         layer.mesh,
       );
+    } else if (
+      view === "back" &&
+      mode === "tile" &&
+      tileSettings &&
+      artwork &&
+      layer.mesh &&
+      isLeggingsSidePanelKey(layer.panelKey)
+    ) {
+      // Leggings Pattern + Back: bake the tiled flat from the FRONT mesh
+      // (same sheet Front uses), then warp through the back mesh so Mirror /
+      // Link flips match what the customer already sees on Front.
+      const frontLayer = findFrontLayerByPanelKey(template, layer.panelKey);
+      const tileSrc = frontLayer?.mesh ? frontLayer : layer;
+      const flatTile = renderTiledFlatPanel(
+        tileSrc,
+        artwork,
+        tileSettings,
+        ppi,
+        W,
+        {
+          meshOverscanCompensation: false,
+          mockupToFlatScaleOverride: patternTileScaleOverrideForPanel(
+            layer.panelKey,
+            {
+              frontMatched: frontMatchedTileScale,
+              bomberUniform: bomberUniformTileScale,
+            },
+          ),
+          template,
+          view: frontLayer?.mesh ? "front" : view,
+        },
+      );
+      if (flatTile) {
+        drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
+          ...layer.mesh,
+          sourceRect: {
+            x: 0,
+            y: 0,
+            width: flatTile.width,
+            height: flatTile.height,
+          },
+          sourceRotation: 0,
+          sourceFlipX: meshSourceFlipXForPanel(
+            layer.panelKey,
+            false,
+            params.sleevesMirrored,
+            params.legsMirrored,
+            Boolean(params.legsLinked),
+          ),
+          sourceFlipY: false,
+        });
+      } else if (layerBb) {
+        drawTileFlat(pctx, artwork, layerBb, tileSettings, ppi, {
+          x: W / 2,
+          y: H / 2,
+        });
+      }
     } else if (
       view === "back" &&
       mode === "single-sheet" &&

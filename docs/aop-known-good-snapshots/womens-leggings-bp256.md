@@ -26,6 +26,7 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 |---------|---------|
 | Mode / view / part | Place / Front / Right leg |
 | Design groups | `right-leg` + `left-leg` (per-panel place) |
+| Place scale | Max **300%**; default open at **300%** (offsets TBD — TEMP coords overlay on storefront) |
 | Link sides | **ON** (hood-link style — toggle does not rewrite placements) |
 | Mirror | **OFF** (can combine with Link) |
 | Gen AR | Tall single-leg panel AR (fallback `2:3`) |
@@ -43,7 +44,8 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 | Viewer | Top-left label: **Front View** / **Back View** |
 | Left / Right | Select which leg to edit; click artwork on a leg to switch (Link: either side activates the shared box) |
 | Drag X | Inverted vs raw offset so mouse left → art moves left on-body (Printify flat flip) |
-| Pattern + Link | Extra flip on left_side tile so patterns meet symmetrically at the crotch |
+| Pattern + Link / Mirror | Extra flip on left_side; Back view bridges tiled flats from Front mesh so Mirror matches |
+| Pattern tile size | Leg panels anchor tile grid at panel **center** (not crotch seam edge) |
 
 ## Critical implementation
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterStylePresetsForPage,
   parseCustomizerPageStyleConfig,
+  stylesForCustomizerPagePicker,
 } from "./customizerPageStyles";
 import {
   selectableCategoriesForDesignerType,
@@ -47,5 +48,18 @@ describe("filterStylePresetsForPage", () => {
     const cfg = parseCustomizerPageStyleConfig({ mode: "category", category: "graphics" });
     expect(cfg).toEqual({ mode: "category", category: "graphics" });
     expect(filterStylePresetsForPage(presets, cfg)).toEqual([presets[1]]);
+  });
+});
+
+describe("stylesForCustomizerPagePicker", () => {
+  const presets = [
+    { id: "w", name: "Watercolor", category: "decor" },
+    { id: "g", name: "Motif", category: "graphics" },
+    { id: "a", name: "Quotes", category: "apparel" },
+  ];
+
+  it("lists every category for apparel / AOP custom selections", () => {
+    expect(stylesForCustomizerPagePicker(presets, "apparel")).toEqual(presets);
+    expect(stylesForCustomizerPagePicker(presets, "all-over-print")).toEqual(presets);
   });
 });
