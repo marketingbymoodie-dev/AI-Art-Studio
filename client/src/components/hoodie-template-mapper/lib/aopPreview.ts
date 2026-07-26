@@ -2612,6 +2612,76 @@ export function renderAopPreviewToCanvas(params: AopPreviewParams): HTMLCanvasEl
 const PRINT_PANEL_TARGET_LONG_EDGE_PX = 3200;
 /** Hard cap on exported panel long edge (memory / upload safety). */
 const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
+
+/**
+ * Scale factor so a flat canvas whose pre-scale long edge is `baseLongEdge`
+ * lands near {@link PRINT_PANEL_TARGET_LONG_EDGE_PX}, never above `maxLongEdgePx`.
+ *
+ * `baseLongEdge` MUST be the size `renderHoodFlatPanel` / `renderTiledFlatPanel`
+ * actually use (mesh `sourceRect` / mesh bbox) — not Printify placeholder px.
+ * Placeholders are often 8–12k; feeding those into the scale while the mesh
+ * base stayed ~hundreds crushed exports to ~7 DPI (leggings bp 256).
+ */
+export function printPanelOutputScale(
+  baseLongEdge: number,
+  maxLongEdgePx: number = PRINT_PANEL_MAX_LONG_EDGE_PX,
+): number {
+  const long = Math.max(1, baseLongEdge);
+  const maxEdge = Math.max(1, maxLongEdgePx);
+  return Math.min(
+    Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / long),
+    maxEdge / long,
+  );
+}
+
+/** Pre-scale flat size for Place-mode mesh export (mirrors `renderHoodFlatPanel`). */
+function hoodFlatPanelBaseDims(
+  layer: MaskLayer,
+  fallback: { width: number; height: number } | null,
+  artwork: HTMLImageElement | null,
+): { width: number; height: number } {
+  const src = layer.mesh?.sourceRect;
+  if (src && src.width > 0 && src.height > 0) {
+    return { width: Math.round(src.width), height: Math.round(src.height) };
+  }
+  if (fallback && fallback.width > 0 && fallback.height > 0) {
+    return {
+      width: Math.round(fallback.width),
+      height: Math.round(fallback.height),
+    };
+  }
+  if (artwork) {
+    return {
+      width: Math.max(1, artwork.naturalWidth || artwork.width),
+      height: Math.max(1, artwork.naturalHeight || artwork.height),
+    };
+  }
+  return { width: 1, height: 1 };
+}
+
+/** Pre-scale flat size for Pattern-mode mesh export (mirrors `renderTiledFlatPanel`). */
+function tiledFlatPanelBaseDims(
+  layer: MaskLayer,
+  template: HoodieTemplate | null | undefined,
+  view: HoodieView | undefined,
+  fallback: { width: number; height: number },
+): { width: number; height: number } {
+  const src = resolveLayerSourceRect(template ?? null, layer, view);
+  if (src && src.width > 0 && src.height > 0) {
+    return { width: Math.round(src.width), height: Math.round(src.height) };
+  }
+  if (layer.mesh) {
+    const tb = meshTargetBbox(layer.mesh);
+    if (tb) {
+      return { width: Math.round(tb.width), height: Math.round(tb.height) };
+    }
+  }
+  return {
+    width: Math.round(fallback.width),
+    height: Math.round(fallback.height),
+  };
+}
+
 /** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
 export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
 /** Solid background-only panels compress to almost nothing; Printify scales
@@ -3214,15 +3284,19 @@ export function renderFlatPrintPanels(
       continue;
     }
 
-    const longEdge = Math.max(dims.width, dims.height, 1);
     let artCanvas: HTMLCanvasElement | null = null;
 
     if (mode === "tile" && tileSettings) {
       // Density target: one tile ≈ the artwork's native resolution, capped
       // by the max canvas edge. Below-1 scales are clamped (never shrink).
+      // Cap against the *mesh flat base*, not Printify placeholder px.
+      const tileBase = layer.mesh
+        ? tiledFlatPanelBaseDims(layer, template, view, dims)
+        : dims;
+      const scaleBaseLong = Math.max(tileBase.width, tileBase.height, 1);
       const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
       const wanted = artworkLongEdge / tilePxBase;
-      const capped = Math.min(wanted, panelMaxLongEdge / longEdge);
+      const capped = Math.min(wanted, panelMaxLongEdge / scaleBaseLong);
       const outputScale = Math.max(1, capped);
       artCanvas = layer.mesh
         ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
@@ -3279,10 +3353,6 @@ export function renderFlatPrintPanels(
         }
       }
     } else if (rect && rect.effective.width > 0 && rect.effective.height > 0) {
-      const outputScale = Math.min(
-        Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / longEdge),
-        panelMaxLongEdge / longEdge,
-      );
       // Place-on-item hood/sleeve bridge: bake from the front layer when
       // exporting a back-view mesh so both sides share one flat UV.
       let bakeLayer = layer;
@@ -3303,6 +3373,13 @@ export function renderFlatPrintPanels(
           bakeRect = frontRect;
         }
       }
+      const scaleBase = bakeLayer.mesh
+        ? hoodFlatPanelBaseDims(bakeLayer, dims, artwork)
+        : dims;
+      const outputScale = printPanelOutputScale(
+        Math.max(scaleBase.width, scaleBase.height, 1),
+        panelMaxLongEdge,
+      );
       if (bakeLayer.mesh) {
         const panelBias = group
           ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])

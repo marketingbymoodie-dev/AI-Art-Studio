@@ -2,10 +2,32 @@ import { describe, expect, it } from "vitest";
 import {
   buildFlatMeshTargetPoints,
   meshSourceFlipXForPanel,
+  printPanelOutputScale,
   sleevePanelHalfSourceRect,
   synthesiseLeggingsMirroredSourceRect,
   type DesignRectInfo,
 } from "./aopPreview";
+
+describe("printPanelOutputScale", () => {
+  it("upscales mockup-sized sourceRect toward 3200 (not placeholder 12k)", () => {
+    // Leggings bug: scale was computed from Printify 12441px, then applied to
+    // ~750px sourceRect → ~290px (~7 DPI). Scale must use the mesh base.
+    const sourceRectLong = 750;
+    const placeholderLong = 12441;
+    const broken = printPanelOutputScale(placeholderLong);
+    const fixed = printPanelOutputScale(sourceRectLong);
+    expect(Math.round(sourceRectLong * broken)).toBeLessThan(400);
+    expect(Math.round(sourceRectLong * fixed)).toBe(3200);
+  });
+
+  it("caps above-target bases at maxLongEdge", () => {
+    expect(Math.round(5000 * printPanelOutputScale(5000))).toBe(4800);
+  });
+
+  it("leaves mid-size bases (≥3200, ≤4800) at scale 1", () => {
+    expect(printPanelOutputScale(4000)).toBe(1);
+  });
+});
 
 describe("buildFlatMeshTargetPoints", () => {
   it("maps mesh corners to the full flat canvas", () => {

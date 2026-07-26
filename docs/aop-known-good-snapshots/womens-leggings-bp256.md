@@ -65,6 +65,7 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 - [ ] Pattern + Link: symmetrical tile meeting at crotch
 - [ ] Mapper mirror-map → symmetrical meshes; publish → storefront
 - [ ] Print export orientations vs Printify (check seam / bleed visually — no 70px UV yet)
+- [ ] Print panel DPI: Place export long edge ~3200 (not ~290 / “7 DPI ↦ 300”) — scale uses mesh `sourceRect`, not placeholder 12k
 - [ ] ATC → checkout ok
 
 ## Pin commit (production)
