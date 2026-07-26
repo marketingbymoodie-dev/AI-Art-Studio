@@ -83,6 +83,8 @@ export type DesignRectHandlesOverlayProps = {
    * (e.g. union of both legs when Link sides is on).
    */
   rectOverride?: DesignRectInfo | null;
+  /** Cap for corner-drag scale (matches Place slider). Omit = no max. */
+  maxScale?: number;
   /** Patch the active group's placement (caller handles propagation). */
   onChange: (next: ArtworkPlacement) => void;
 };
@@ -103,6 +105,7 @@ export default function DesignRectHandlesOverlay({
   snapPx = 3,
   invertOffsetX = false,
   rectOverride = null,
+  maxScale,
   onChange,
 }: DesignRectHandlesOverlayProps) {
   const info: DesignRectInfo | null = useMemo(() => {
@@ -227,7 +230,12 @@ export default function DesignRectHandlesOverlay({
           newW = baseW * minScale;
           newH = baseH * minScale;
         }
-        const newScale = newW / baseW;
+        let newScale = newW / baseW;
+        if (typeof maxScale === "number" && maxScale > 0 && newScale > maxScale) {
+          newScale = maxScale;
+          newW = baseW * newScale;
+          newH = baseH * newScale;
+        }
         onChange({
           scale: newScale,
           offsetX: drag.startPlacement.offsetX,
@@ -255,7 +263,7 @@ export default function DesignRectHandlesOverlay({
     // we wire it via a stable ref above by re-binding the listener
     // on each change. Using state setter from props is fine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mockupW, mockupH, onChange]);
+  }, [mockupW, mockupH, onChange, maxScale]);
 
   if (!info) return null;
 

@@ -30,6 +30,31 @@ export function isContext1MockupLabel(label: string): boolean {
   return n === "context1" || /^context\s*1\b/.test(n);
 }
 
+/** Leggings-style on-model: Front Person / Side Person / Back Person. */
+export function isFrontPersonMockupLabel(label: string): boolean {
+  const n = normalizeMockupCameraLabel(label);
+  return /\bfront\s*person\b/.test(n);
+}
+
+export function isPersonMockupLabel(label: string): boolean {
+  const n = normalizeMockupCameraLabel(label);
+  if (!n) return false;
+  // Flatlay "front side" / "back side" are not on-model person cameras.
+  if (/\b(front|back)\s*side\b/.test(n)) return false;
+  return /\b(front|side|back)\s*person\b/.test(n);
+}
+
+/**
+ * Lower = better for AOP Printers Mockup (Front Person first).
+ */
+export function personMockupPreferenceRank(label: string): number {
+  const n = normalizeMockupCameraLabel(label);
+  if (/\bfront\s*person\b/.test(n)) return 0;
+  if (/\bside\s*person\b/.test(n)) return 1;
+  if (/\bback\s*person\b/.test(n)) return 2;
+  return 40;
+}
+
 /**
  * True when a Printify camera_label looks like a room/lifestyle/context shot.
  * Includes Printify UI names like "Context 2" and "On Person".

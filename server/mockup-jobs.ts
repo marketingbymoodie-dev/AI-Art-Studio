@@ -76,8 +76,9 @@ function buildRequestCacheKey(request: MockupRequest, cacheParts?: Record<string
     // requests with identical panelUrls but different bgColor must not share
     // a cached mockup result.
     bgColor: request.bgColor,
-    // Lifestyle Shot must not reuse a front-only cached result.
+    // Lifestyle / person shots must not reuse a front-only cached result.
     preferContextViews: !!request.preferContextViews,
+    preferPersonViews: !!request.preferPersonViews,
     panelHashes,
     cacheParts,
   };

@@ -26,7 +26,7 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 |---------|---------|
 | Mode / view / part | Place / Front / Right leg |
 | Design groups | `right-leg` + `left-leg` (per-panel place) |
-| Place scale / offsets | Max **300%**. Defaults (Link on): right `scale=3 ox=-113.2 oy=25.2`, left `scale=3 ox=7.3 oy=25.2` (X gap ≈ 120.5). Reset restores these. TEMP coords overlay kept for QA. |
+| Place scale / offsets | Max **500%** (slider + bbox). Defaults (Link on): right `scale=3 ox=-113.2 oy=25.2`, left `scale=3 ox=7.3 oy=25.2` (X gap ≈ 120.5). Reset restores these. TEMP coords overlay kept for QA. |
 | Link sides | Preserve **X gap** (+same dx); hard-sync **Y** (and scale). Mirror while linked = art flip only (no placement copy). |
 | Link sides | **ON** (hood-link style — toggle does not rewrite placements) |
 | Mirror | **OFF** (can combine with Link) |
@@ -66,6 +66,8 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 - [ ] Mapper mirror-map → symmetrical meshes; publish → storefront
 - [ ] Print export orientations vs Printify (check seam / bleed visually — no 70px UV yet)
 - [ ] Print panel DPI: Place export long edge ~3200 (not ~290 / “7 DPI ↦ 300”) — scale uses mesh `sourceRect`, not placeholder 12k
+- [ ] Place scale slider + bbox both cap at **500%**
+- [ ] Printers Mockup → Front Person on-demand (gallery arrows switch views)
 - [ ] ATC → checkout ok
 
 ## Pin commit (production)

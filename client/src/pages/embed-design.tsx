@@ -103,8 +103,11 @@ import {
   FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR,
   isContext1MockupLabel,
   isContextLikeMockupLabel,
+  isFrontPersonMockupLabel,
   isOnPersonMockupLabel,
+  isPersonMockupLabel,
   lifestyleMockupPreferenceRank,
+  personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
@@ -1103,6 +1106,9 @@ function formatPostGenMockupLabel(raw: string, fallback: string): string {
   if (l === "front" || l === "mockup 1") return "Front";
   if (l === "back" || l === "mockup 2") return "Back";
   if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
+  if (isFrontPersonMockupLabel(raw)) return "Front Person";
+  if (/\bside[\s-]*person\b/i.test(l)) return "Side Person";
+  if (/\bback[\s-]*person\b/i.test(l)) return "Back Person";
   if (/\bon[\s-]*person\b/i.test(l)) return "On Person";
   if (/lifestyle/i.test(l)) return "Lifestyle";
   if (/(context|room|home|bedroom|wall)/i.test(l)) return "Context";
@@ -1114,11 +1120,12 @@ function isPrintifyContextMockupLabel(label: string): boolean {
   return isContextLikeMockupLabel(label);
 }
 
-/** On-demand slides: lifestyle/context OR tapestry Printers Mockup. */
+/** On-demand slides: lifestyle/context, tapestry Printers Mockup, or AOP person. */
 function isPrintifyOnDemandMockupLabel(label: string): boolean {
   const l = String(label || "").toLowerCase();
   if (!l) return false;
   if (l.startsWith("printers") || l.startsWith("printify")) return true;
+  if (isPersonMockupLabel(label)) return true;
   return isPrintifyContextMockupLabel(label);
 }
 
@@ -2087,6 +2094,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
   /** Latest flat front URLs — Printify lifestyle merge keeps these. */
   const flatFrontMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /** Mesh AOP local front/back — Printers Mockup (person) merge keeps these. */
+  const aopBaseMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /** Last AOP Front/Side/Back Person shots — re-attached after placer auto-apply. */
+  const aopPersonMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -3930,10 +3941,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     panelUrls?: { position: string; dataUrl: string }[],
     printPlacementOverride?: "front" | "back" | "both",
     bgColorOverride?: string,
-    fetchOpts?: { mergeContextOnly?: boolean; mergeProductMockups?: boolean },
+    fetchOpts?: {
+      mergeContextOnly?: boolean;
+      mergeProductMockups?: boolean;
+      mergePersonViews?: boolean;
+    },
   ): Promise<{ ok: boolean; contextCount?: number; error?: string }> => {
     const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
     const mergeProductMockups = !!fetchOpts?.mergeProductMockups;
+    const mergePersonViews = !!fetchOpts?.mergePersonViews;
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
@@ -3986,10 +4002,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       panelHash: panelUrls?.map((p) => `${p.position}:${p.dataUrl.length}`).join("|") ?? "",
       mergeContextOnly,
       mergeProductMockups,
+      mergePersonViews,
     });
 
-    // On-demand merges (lifestyle / tapestry Printify) must not cancel a primary mockup job.
-    const isOnDemandMerge = mergeContextOnly || mergeProductMockups;
+    // On-demand merges (lifestyle / tapestry / AOP person) must not cancel a primary mockup job.
+    const isOnDemandMerge =
+      mergeContextOnly || mergeProductMockups || mergePersonViews;
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
@@ -4064,6 +4082,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         shop: shopDomain,
         bgColor: aopBgColor,
         preferContextViews: mergeContextOnly || undefined,
+        preferPersonViews: mergePersonViews || undefined,
       } : isShopify ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -4080,6 +4099,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         sessionToken,
         bgColor: aopBgColor,
         preferContextViews: mergeContextOnly || undefined,
+        preferPersonViews: mergePersonViews || undefined,
       } : {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -4094,6 +4114,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         y: clampedY,
         bgColor: aopBgColor,
         preferContextViews: mergeContextOnly || undefined,
+        preferPersonViews: mergePersonViews || undefined,
       };
 
       setMockupError(null);
@@ -4124,10 +4145,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           url: toAbsoluteImageUrl(img.url),
         }));
 
-        // Flat products: keep local front raster, append Printify on-demand shots.
-        if (mergeContextOnly || mergeProductMockups) {
+        // Flat / AOP: keep local front raster(s), append Printify on-demand shots.
+        if (mergeContextOnly || mergeProductMockups || mergePersonViews) {
           let extras: Array<{ url: string; label: string }> = [];
-          if (mergeProductMockups) {
+          if (mergePersonViews) {
+            extras = absImages
+              .filter((img: { label: string }) => isPersonMockupLabel(img.label))
+              .sort(
+                (a: { label: string }, b: { label: string }) =>
+                  personMockupPreferenceRank(a.label) -
+                  personMockupPreferenceRank(b.label),
+              )
+              .slice(0, 3);
+            if (extras.length === 0) {
+              console.log(
+                "[Mockups] Person merge: no Front/Side/Back Person from Printify",
+                absImages.map((i: { label: string }) => i.label),
+              );
+              contextMergeOutcome = {
+                ok: false,
+                error:
+                  "Printify returned no Front Person mockup for this product. Try again in a moment.",
+              };
+              return;
+            }
+          } else if (mergeProductMockups) {
             // Tapestry: take Printify product cameras (woven photo), not lifestyle-only.
             extras = absImages.slice(0, 2);
             if (extras.length === 0) {
@@ -4170,8 +4212,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               return;
             }
           }
-          const fronts =
-            flatFrontMockupsRef.current.length > 0
+          const fronts = mergePersonViews
+            ? aopBaseMockupsRef.current.length > 0
+              ? aopBaseMockupsRef.current
+              : []
+            : flatFrontMockupsRef.current.length > 0
               ? flatFrontMockupsRef.current
               : [];
           const mergedImages: Array<{ url: string; label: string }> = [...fronts];
@@ -4180,16 +4225,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             const key = mockupImageUrlKey(extra.url);
             if (seen.has(key)) continue;
             seen.add(key);
-            const label = mergeProductMockups
-              ? "printers"
-              : isOnPersonMockupLabel(extra.label)
-                ? "on-person"
-                : /lifestyle/i.test(extra.label)
-                  ? "lifestyle"
-                  : /context/i.test(extra.label)
-                    ? extra.label
-                    : "context";
+            const label = mergePersonViews
+              ? extra.label
+              : mergeProductMockups
+                ? "printers"
+                : isOnPersonMockupLabel(extra.label)
+                  ? "on-person"
+                  : /lifestyle/i.test(extra.label)
+                    ? "lifestyle"
+                    : /context/i.test(extra.label)
+                      ? extra.label
+                      : "context";
             mergedImages.push({ url: extra.url, label });
+          }
+          if (mergePersonViews) {
+            aopPersonMockupsRef.current = extras.map((e) => ({
+              url: e.url,
+              label: e.label,
+            }));
           }
           const mergedUrls = mergedImages.map((m) => m.url);
           setPrintifyMockupImages(mergedImages);
@@ -4197,28 +4250,49 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           sendMockupsToParent(mergedUrls);
           // Jump to on-demand shot in post-gen gallery (Artwork is index 0).
           const firstOnDemandIdx = mergedImages.findIndex((m) =>
-            isPrintifyOnDemandMockupLabel(m.label),
+            mergePersonViews
+              ? isPersonMockupLabel(m.label)
+              : isPrintifyOnDemandMockupLabel(m.label),
           );
           if (firstOnDemandIdx >= 0) setSelectedMockupIndex(1 + firstOnDemandIdx);
           console.log(
             '[Mockups] Merged',
             extras.length,
-            mergeProductMockups ? "printers mockup(s)" : "context shot(s)",
+            mergePersonViews
+              ? "person mockup(s)"
+              : mergeProductMockups
+                ? "printers mockup(s)"
+                : "context shot(s)",
             "onto",
             fronts.length,
-            "flat front(s)",
+            mergePersonViews ? "AOP base view(s)" : "flat front(s)",
           );
           contextMergeOutcome = { ok: true, contextCount: extras.length };
           return;
         }
 
-        setPrintifyMockups(absUrls);
-        setPrintifyMockupImages(absImages);
+        const finalImages =
+          useAopCustomizer && aopPersonMockupsRef.current.length > 0
+            ? (() => {
+                const seen = new Set(absImages.map((m: { url: string }) => mockupImageUrlKey(m.url)));
+                const merged = [...absImages];
+                for (const person of aopPersonMockupsRef.current) {
+                  const key = mockupImageUrlKey(person.url);
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  merged.push(person);
+                }
+                return merged;
+              })()
+            : absImages;
+        const finalUrls = finalImages.map((m: { url: string }) => m.url);
+        setPrintifyMockups(finalUrls);
+        setPrintifyMockupImages(finalImages);
         setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
-        sendMockupsToParent(absUrls);
+        sendMockupsToParent(finalUrls);
         const cacheKey = mockupCacheKey(sizeId, colorId);
         currentMockupColorRef.current = cacheKey;
-        mockupColorCacheRef.current[cacheKey] = { urls: absUrls, images: absImages };
+        mockupColorCacheRef.current[cacheKey] = { urls: finalUrls, images: finalImages };
         console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for', cacheKey);
         // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups.
         // Also pass base product/variant info so the server can pre-create the shadow product
@@ -4370,9 +4444,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return (
         contextMergeOutcome ?? {
           ok: false,
-          error: mergeProductMockups
-            ? "Printify returned no mockups"
-            : "Printify returned no lifestyle/context views",
+          error: mergePersonViews
+            ? "Printify returned no Front Person mockup"
+            : mergeProductMockups
+              ? "Printify returned no mockups"
+              : "Printify returned no lifestyle/context views",
         }
       );
     }
@@ -6884,10 +6960,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         { url: frontHosted, label: "front" },
       ];
       if (backHosted) images.push({ url: backHosted, label: "back" });
-      const urls = images.map((i) => i.url);
 
-      setPrintifyMockupImages(images);
-      setPrintifyMockups(urls);
+      aopBaseMockupsRef.current = images;
+      const withPerson = [...images, ...aopPersonMockupsRef.current];
+      const withPersonUrls = withPerson.map((i) => i.url);
+      setPrintifyMockupImages(withPerson);
+      setPrintifyMockups(withPersonUrls);
       setSelectedMockupIndex(0);
       // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
       // ATC. The hoodie placer has no separate "pattern" — the local
@@ -8343,11 +8421,103 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatCanvasOverrideLabel = flatCanvasOverrideUrl
     ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Context")
     : null;
+  const hoodieCanvasOverrideUrl =
+    showPatternStep &&
+    !!productTypeConfig?.panelMappingTemplate &&
+    selectedPostGenItem?.kind === "mockup" &&
+    isPersonMockupLabel(selectedPostGenItem.label)
+      ? selectedPostGenItem.url
+      : null;
+  const hoodieCanvasOverrideLabel = hoodieCanvasOverrideUrl
+    ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Front Person")
+    : null;
 
-  /**
-   * On-demand Printify for framed/catalog flats (lifestyle) and tapestry (product weave).
-   * Avoids creating a Mockup Preview product until the customer asks.
-   */
+  /** Mesh AOP on-demand Front Person (Printers Mockup). */
+  const canRequestAopPrintersMockup = !!(
+    useAopCustomizer &&
+    productTypeConfig?.panelMappingTemplate &&
+    productTypeConfig?.hasPrintifyMockups &&
+    selectedSize &&
+    generatedDesign?.imageUrl
+  );
+  const hasAopPersonMockup = printifyMockupImages.some((img) =>
+    isPersonMockupLabel(img.label),
+  );
+  const aopPrintersMockupActive = !!(
+    canRequestAopPrintersMockup &&
+    !lifestyleShotLoading &&
+    !mockupLoading &&
+    (!!aopPatternUrl ||
+      printifyMockupImages.some((img) => img.label === "front"))
+  );
+
+  const requestAopPrintersMockup = useCallback(
+    async (panels: Array<{ position: string; dataUrl: string }>) => {
+      if (
+        !canRequestAopPrintersMockup ||
+        !productTypeConfig?.id ||
+        !generatedDesign?.imageUrl ||
+        lifestyleShotLoading ||
+        !panels?.length
+      ) {
+        return;
+      }
+      setLifestyleShotLoading(true);
+      setLifestyleShotError(null);
+      lastAopPanelUrlsRef.current = panels;
+      try {
+        const designUrl =
+          aopPatternUrl ||
+          aopBaseMockupsRef.current[0]?.url ||
+          toAbsoluteImageUrl(generatedDesign.imageUrl);
+        const result = await fetchPrintifyMockups(
+          designUrl,
+          productTypeConfig.id,
+          selectedSize!,
+          selectedFrameColor || "default",
+          100,
+          50,
+          50,
+          designUrl,
+          undefined,
+          panels,
+          undefined,
+          hoodieAopPlacerState?.backgroundColor,
+          { mergePersonViews: true },
+        );
+        if (!result.ok) {
+          const msg = result.error || "Printers mockup failed";
+          setLifestyleShotError(msg);
+          toast({
+            title: "Printers mockup unavailable",
+            description: msg,
+            variant: "destructive",
+          });
+          return;
+        }
+        toast({
+          title: "Printers mockup ready",
+          description:
+            "Showing Front Person — use the arrows under the preview to switch views.",
+        });
+      } finally {
+        setLifestyleShotLoading(false);
+      }
+    },
+    [
+      canRequestAopPrintersMockup,
+      productTypeConfig?.id,
+      generatedDesign?.imageUrl,
+      lifestyleShotLoading,
+      fetchPrintifyMockups,
+      selectedSize,
+      selectedFrameColor,
+      aopPatternUrl,
+      hoodieAopPlacerState?.backgroundColor,
+      toast,
+    ],
+  );
+
   const requestLifestyleShot = useCallback(async () => {
     if (
       !canRequestLifestyleShot ||
@@ -10560,7 +10730,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
               productTypeConfig?.panelMappingTemplate ? (
-                <div className="flex flex-col gap-2 min-h-0">
+                <div className="relative flex flex-col gap-2 min-h-0">
                   {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
                       The placer auto-saves on every change (no Apply button) —
                       handleHoodieAopApply is fired ~1.5 s after the customer's
@@ -10637,7 +10807,58 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // repaired server-side at read time, so we no longer need
                     // to heal-on-open.
                     skipInitialAutoApply={!!hoodieAopPlacerState}
+                    canvasOverrideUrl={hoodieCanvasOverrideUrl}
+                    canvasOverrideLabel={hoodieCanvasOverrideLabel}
+                    printersMockupAction={
+                      canRequestAopPrintersMockup
+                        ? {
+                            onClick: (panels) =>
+                              void requestAopPrintersMockup(panels),
+                            loading: lifestyleShotLoading,
+                            active: aopPrintersMockupActive,
+                            label: hasAopPersonMockup
+                              ? "Refresh Printers Mockup"
+                              : "Printers Mockup",
+                            loadingLabel: "Generating printers mockup…",
+                            idleHint:
+                              "Finish placement (or generate artwork) to enable Printers Mockup",
+                            error: lifestyleShotError,
+                          }
+                        : null
+                    }
                   />
+                  {showsPrintifyMockupPreview &&
+                    generatedDesign?.imageUrl &&
+                    postGenGalleryItems.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="Previous"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) =>
+                            stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
+                          )
+                        }
+                        className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                        data-testid="button-hoodie-gallery-prev"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) =>
+                            stepPostGenGalleryIndex(i, 1, postGenGalleryItems, true),
+                          )
+                        }
+                        className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
+                        data-testid="button-hoodie-gallery-next"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
                 </div>
               ) : (
               <PatternCustomizer

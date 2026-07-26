@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   isContext1MockupLabel,
   isContextLikeMockupLabel,
+  isFrontPersonMockupLabel,
   isOnPersonMockupLabel,
+  isPersonMockupLabel,
   lifestyleMockupPreferenceRank,
   normalizeMockupCameraLabel,
+  personMockupPreferenceRank,
 } from "./printifyMockupLabels";
 
 describe("isContextLikeMockupLabel", () => {
@@ -50,5 +53,21 @@ describe("normalizeMockupCameraLabel", () => {
   it("normalizes plus and underscores", () => {
     expect(normalizeMockupCameraLabel("Front+Side")).toBe("front side");
     expect(normalizeMockupCameraLabel("context_1")).toBe("context 1");
+  });
+});
+
+describe("person mockup labels", () => {
+  it("accepts Front / Side / Back Person and ranks Front first", () => {
+    expect(isFrontPersonMockupLabel("Front Person")).toBe(true);
+    expect(isPersonMockupLabel("front-person")).toBe(true);
+    expect(isPersonMockupLabel("Side Person")).toBe(true);
+    expect(isPersonMockupLabel("back person")).toBe(true);
+    expect(isPersonMockupLabel("front side")).toBe(false);
+    expect(personMockupPreferenceRank("Front Person")).toBeLessThan(
+      personMockupPreferenceRank("Side Person"),
+    );
+    expect(personMockupPreferenceRank("Side Person")).toBeLessThan(
+      personMockupPreferenceRank("Back Person"),
+    );
   });
 });

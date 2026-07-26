@@ -9,6 +9,7 @@ import {
   Eye,
   EyeOff,
   Check,
+  ImagePlus,
 } from "lucide-react";
 import {
   FinePositionNudgeInline,
@@ -42,6 +43,7 @@ import {
   renderFlatPrintPanels,
   computeGroupRects,
   DEFAULT_ARTWORK_PLACEMENT,
+  MOCKUP_PANEL_MAX_LONG_EDGE_PX,
   type ArtworkPlacement,
   type DesignRectInfo,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
@@ -111,6 +113,24 @@ export type HoodieAopPlacerProps = {
     width: number;
     height: number;
   }>;
+  /**
+   * On-demand Printify Front Person (Printers Mockup). Placer bakes mockup-sized
+   * panels and passes them to `onClick` so embed can merge person cameras.
+   */
+  printersMockupAction?: {
+    onClick: (
+      panels: Array<{ position: string; dataUrl: string }>,
+    ) => void;
+    loading?: boolean;
+    active?: boolean;
+    label: string;
+    loadingLabel?: string;
+    idleHint?: string;
+    error?: string | null;
+  } | null;
+  /** When set, preview shows this Printify shot instead of the live canvas. */
+  canvasOverrideUrl?: string | null;
+  canvasOverrideLabel?: string | null;
 };
 
 /**
@@ -273,8 +293,12 @@ const FIXED_PALETTE: PaletteSwatch[] = [
 ];
 
 const SCALE_MIN = 0.2;
-/** Place-on-item scale cap (300%). */
-const SCALE_MAX = 3;
+/** Place-on-item scale cap (500%) — slider and bounding-box handles share this. */
+const SCALE_MAX = 5;
+
+function clampPlaceScale(scale: number): number {
+  return Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale));
+}
 /** Leggings open at full Place scale so motifs can span the hip/crotch. */
 const LEGGINGS_DEFAULT_PLACE_SCALE = 3;
 /**
@@ -847,6 +871,9 @@ export default function HoodieAopPlacer({
   onChange,
   skipInitialAutoApply = false,
   placeholderPositions,
+  printersMockupAction = null,
+  canvasOverrideUrl = null,
+  canvasOverrideLabel = null,
 }: HoodieAopPlacerProps) {
   // ---------- Template fetch ----------
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -1423,6 +1450,10 @@ export default function HoodieAopPlacer({
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev || !data) return prev;
+        const clampedNext: ArtworkPlacement = {
+          ...next,
+          scale: clampPlaceScale(next.scale),
+        };
         const pillowDup = pillowDuplicateLinked(prev, data.template);
         const primaryId = pillowDup
           ? "front-face"
@@ -1442,7 +1473,7 @@ export default function HoodieAopPlacer({
               ...placements,
               "left-sleeve": {
                 ...(placements["left-sleeve"] ?? {}),
-                front: { ...next },
+                front: { ...clampedNext },
               },
             },
             prev.sleevesMirrored,
@@ -1452,8 +1483,8 @@ export default function HoodieAopPlacer({
             ...placements,
             [primaryId]: {
               ...(placements[primaryId] ?? {}),
-              front: { ...next },
-              back: { ...next },
+              front: { ...clampedNext },
+              back: { ...clampedNext },
             },
           };
           // Link: preserve X gap (+dx), hard-sync Y. Mirror = art flip only
@@ -1464,13 +1495,13 @@ export default function HoodieAopPlacer({
             primaryId,
             view,
             prevPrimary,
-            next,
+            clampedNext,
           );
           if (prev.legsMirrored && !prev.legsSynced) {
             placements = syncLegPlacementsForMirror(placements, true);
           }
         } else if (pillowDup) {
-          placements = mirrorPillowDuplicatePlacements(placements, next);
+          placements = mirrorPillowDuplicatePlacements(placements, clampedNext);
         } else {
           const ids = resolveEditGroupIds(prev.activeGroupId, data.template, prev.hoodLinked);
           const views = viewsForPlacementEdit(prev.activeGroupId, view);
@@ -1480,7 +1511,7 @@ export default function HoodieAopPlacer({
             };
             for (const v of views) {
               if (v === view) {
-                perView[v] = { ...next };
+                perView[v] = { ...clampedNext };
               }
             }
             placements = {
@@ -1496,7 +1527,7 @@ export default function HoodieAopPlacer({
             primaryId,
             view,
             prevPrimary,
-            next,
+            clampedNext,
           );
         }
         return { ...prev, placements };
@@ -1520,7 +1551,7 @@ export default function HoodieAopPlacer({
             prev.legsMirrored,
           );
       const cur = prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
-      const next: ArtworkPlacement = { ...cur, scale };
+      const next: ArtworkPlacement = { ...cur, scale: clampPlaceScale(scale) };
       let placements = { ...prev.placements };
       if (isSleevesPart(prev.activeGroupId)) {
         placements = syncSleevePlacements(
@@ -1979,7 +2010,11 @@ export default function HoodieAopPlacer({
             className="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] font-semibold tracking-wide text-white"
             data-testid="hoodie-aop-view-label"
           >
-            {state.view === "front" ? "Front View" : "Back View"}
+            {canvasOverrideLabel
+              ? canvasOverrideLabel
+              : state.view === "front"
+                ? "Front View"
+                : "Back View"}
           </div>
           {/* TEMP: report these coords so we can lock leggings Place defaults, then remove. */}
           {isLeggings && state.mode === "place" && (
@@ -2003,13 +2038,26 @@ export default function HoodieAopPlacer({
             </div>
           )}
           <div className="relative max-h-full max-w-full overflow-hidden">
-            <canvas
-              ref={canvasRef}
-              className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
-              data-testid="hoodie-aop-placer-canvas"
-              data-appai-wheel-forward="true"
-            />
-            {showOverlay && overlayVisible && mockup && artworkImg && (
+            {canvasOverrideUrl ? (
+              <img
+                src={canvasOverrideUrl}
+                alt={canvasOverrideLabel || "Printers mockup"}
+                className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
+                data-testid="hoodie-aop-canvas-override"
+              />
+            ) : (
+              <canvas
+                ref={canvasRef}
+                className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
+                data-testid="hoodie-aop-placer-canvas"
+                data-appai-wheel-forward="true"
+              />
+            )}
+            {!canvasOverrideUrl &&
+              showOverlay &&
+              overlayVisible &&
+              mockup &&
+              artworkImg && (
               <DesignRectHandlesOverlay
                 canvasRef={canvasRef}
                 template={effectiveRender.template}
@@ -2023,20 +2071,21 @@ export default function HoodieAopPlacer({
                 snapMode={snapMode}
                 invertOffsetX={isLeggings}
                 rectOverride={legsUnionRect}
+                maxScale={SCALE_MAX}
                 onChange={(next) => updateActiveGroupPlacement(state.view, next)}
               />
             )}
-            {!mockup && data && (
+            {!canvasOverrideUrl && !mockup && data && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading mockup…
               </div>
             )}
-            {!artworkImg && !artworkLoading && (
+            {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
                 Upload an artwork to start placing it →
               </div>
             )}
-            {artworkLoading && (
+            {!canvasOverrideUrl && artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
               </div>
@@ -2523,14 +2572,16 @@ export default function HoodieAopPlacer({
                   </button>
                 )}
               </span>
-              <span className="text-muted-foreground/80">{Math.round(placement.scale * 100)}%</span>
+              <span className="text-muted-foreground/80">
+                {Math.round(clampPlaceScale(placement.scale) * 100)}%
+              </span>
             </div>
             <input
               type="range"
               min={SCALE_MIN}
               max={SCALE_MAX}
               step={0.01}
-              value={placement.scale}
+              value={clampPlaceScale(placement.scale)}
               onChange={(e) =>
                 setActiveScale(state.view, Number(e.target.value))
               }
@@ -2605,6 +2656,63 @@ export default function HoodieAopPlacer({
         >
           <RotateCcw className="h-3 w-3" /> Reset
         </button>
+
+        {printersMockupAction && (
+          <div className="flex flex-col gap-1 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (!printersMockupAction.active || printersMockupAction.loading) {
+                  return;
+                }
+                const panels = renderPrintPanelsToDataUrls({
+                  maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+                });
+                if (!panels?.length) return;
+                printersMockupAction.onClick(panels);
+              }}
+              disabled={
+                !printersMockupAction.active || !!printersMockupAction.loading
+              }
+              data-testid="button-aop-printers-mockup"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
+                printersMockupAction.active && !printersMockupAction.loading
+                  ? "border-foreground/80 bg-foreground text-background"
+                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
+              }`}
+            >
+              {printersMockupAction.loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className={
+                  printersMockupAction.active && !printersMockupAction.loading
+                    ? "shimmer-text-white"
+                    : undefined
+                }
+              >
+                {printersMockupAction.loading
+                  ? printersMockupAction.loadingLabel || "Generating…"
+                  : printersMockupAction.label}
+              </span>
+            </button>
+            {printersMockupAction.error ? (
+              <p
+                className="text-center text-[11px] text-destructive"
+                data-testid="text-aop-printers-mockup-error"
+              >
+                {printersMockupAction.error}
+              </p>
+            ) : !printersMockupAction.active && !printersMockupAction.loading ? (
+              <p className="text-center text-[10px] text-muted-foreground">
+                {printersMockupAction.idleHint ||
+                  "Finish placement (or generate artwork) to enable Printers Mockup"}
+              </p>
+            ) : null}
+          </div>
+        )}
 
         {/* Auto-save indicator (replaces the old "Apply to product" button —
             the cart preview is now kept in sync automatically, debounced

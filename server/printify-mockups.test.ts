@@ -522,6 +522,55 @@ describe("Mockup camera_label preference", () => {
     expect(picked).not.toContain("front side");
   });
 
+  it("preferPersonViews surfaces Front Person for AOP leggings cameras", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/fs.png", label: "front side" },
+      { url: "https://x.example/fp.png", label: "Front Person" },
+      { url: "https://x.example/sp.png", label: "Side Person" },
+      { url: "https://x.example/bp.png", label: "Back Person" },
+    ];
+    const aopTrimmed = pickPreferredMockupViews(images, true, undefined, false, false).map(
+      (p) => p.label,
+    );
+    expect(aopTrimmed).toEqual(["front", "back"]);
+
+    const person = pickPreferredMockupViews(images, false, undefined, false, true).map(
+      (p) => p.label,
+    );
+    expect(person[0]).toBe("Front Person");
+    expect(person).toContain("Side Person");
+    expect(person).toContain("Back Person");
+    expect(person).not.toContain("front");
+    expect(person).not.toContain("front side");
+  });
+
+  it("preferPersonViews waits until a person camera appears", () => {
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/b.png", label: "back" },
+        ],
+        true,
+        false,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSupplementInlineMockups(
+        [
+          { url: "https://x.example/f.png", label: "front" },
+          { url: "https://x.example/fp.png", label: "Front Person" },
+        ],
+        true,
+        false,
+        true,
+      ),
+    ).toBe(false);
+  });
+
   it("preferContextViews prefers tote On Person and drops Context 1", () => {
     // Real Printify create-product labels for Shoulder Tote bp 836.
     const images = [

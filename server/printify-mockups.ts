@@ -14,13 +14,16 @@ import {
   isContext1MockupLabel,
   isContextLikeMockupLabel,
   isOnPersonMockupLabel,
+  isPersonMockupLabel,
   lifestyleMockupPreferenceRank,
   normalizeMockupCameraLabel,
+  personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 
 export {
   isContextLikeMockupLabel,
   isOnPersonMockupLabel,
+  isPersonMockupLabel,
   normalizeMockupCameraLabel,
 } from "@shared/printifyMockupLabels";
 
@@ -109,6 +112,12 @@ export interface MockupRequest {
    * (or short timeout), and do not drop non-exact context labels in view selection.
    */
   preferContextViews?: boolean;
+  /**
+   * AOP Printers Mockup: prefer Front Person / Side Person / Back Person cameras
+   * (leggings-style). Separate from Lifestyle context filtering, which excludes
+   * front person.
+   */
+  preferPersonViews?: boolean;
 }
 
 export interface MockupImage {
@@ -721,17 +730,23 @@ function extractCameraLabel(
  *
  * Lifestyle Shot (`preferContextViews`): also wait when we have multiple images
  * but none look like context/lifestyle yet.
+ * AOP Printers Mockup (`preferPersonViews`): wait until a Front/Side/Back Person
+ * camera appears.
  */
 export function shouldSupplementInlineMockups(
   images: MockupImage[],
   isAop: boolean,
   preferContextViews = false,
+  preferPersonViews = false,
 ): boolean {
   if (images.length === 0) return false;
   // Lifestyle Shot must wait even when the blueprint is AOP-titled but using
   // flat placer (e.g. shoulder tote) — otherwise we never see Context / On Person.
   if (preferContextViews) {
     return !images.some((img) => isContextLikeMockupLabel(img.label));
+  }
+  if (preferPersonViews) {
+    return !images.some((img) => isPersonMockupLabel(img.label));
   }
   if (isAop) return false;
   if (images.length < 2) return true;
@@ -798,6 +813,7 @@ function selectPreferredViews(
   frontBackOnly = false,
   printPlacement?: "front" | "back" | "both",
   preferContextViews = false,
+  preferPersonViews = false,
 ): MockupImage[] {
   const selected: MockupImage[] = [];
   const seenUrls = new Set<string>();
@@ -806,29 +822,34 @@ function selectPreferredViews(
     norm: normalizeMockupCameraLabel(img.label),
   }));
   // Lifestyle Shot: On Person first (tote), then Context 2 — not Context 1 flatlay.
+  // AOP Printers Mockup: Front Person → Side Person → Back Person.
   // Do not fall through to flat "front"/"back" from PREFERRED_LABELS.
   const preferredLabels = frontBackOnly
     ? AOP_FLAT_LAY_LABELS
-    : preferContextViews
-      ? ([
-          "on person",
-          "lifestyle",
-          "context 2",
-          "context",
-          "bedroom",
-          "bed",
-          "room",
-          "home",
-          "wall",
-        ] as const)
-      : PREFERRED_LABELS;
+    : preferPersonViews
+      ? (["front person", "side person", "back person"] as const)
+      : preferContextViews
+        ? ([
+            "on person",
+            "lifestyle",
+            "context 2",
+            "context",
+            "bedroom",
+            "bed",
+            "room",
+            "home",
+            "wall",
+          ] as const)
+        : PREFERRED_LABELS;
   const maxViews = frontBackOnly
     ? AOP_FLAT_LAY_LABELS.length
-    : preferContextViews
-      ? 2
-      : printPlacement === "front" || printPlacement === "back"
-        ? 1
-        : MAX_MOCKUP_VIEWS;
+    : preferPersonViews
+      ? 3
+      : preferContextViews
+        ? 2
+        : printPlacement === "front" || printPlacement === "back"
+          ? 1
+          : MAX_MOCKUP_VIEWS;
 
   for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
@@ -847,6 +868,17 @@ function selectPreferredViews(
   }
 
   if (selected.length === 0 && images.length > 0) {
+    if (preferPersonViews) {
+      const personOnly = annotated
+        .filter((img) => isPersonMockupLabel(img.label))
+        .sort(
+          (a, b) =>
+            personMockupPreferenceRank(a.label) - personMockupPreferenceRank(b.label),
+        );
+      return personOnly
+        .slice(0, maxViews)
+        .map((img) => ({ url: img.url, label: img.label }));
+    }
     const fallback = printPlacement
       ? annotated.filter((img) => labelMatchesPrintPlacement(img.norm, printPlacement))
       : annotated;
@@ -863,10 +895,20 @@ function selectPreferredViews(
       if (printPlacement && !labelMatchesPrintPlacement(img.norm, printPlacement)) continue;
       // When asking for lifestyle, skip extra flatlay/on-model sides.
       if (preferContextViews && !isContextLikeMockupLabel(img.label)) continue;
+      if (preferPersonViews && !isPersonMockupLabel(img.label)) continue;
       selected.push({ url: img.url, label: img.label });
       seenUrls.add(img.url);
       if (selected.length >= maxViews) break;
     }
+  }
+
+  if (preferPersonViews && selected.length > 0) {
+    return selected
+      .sort(
+        (a, b) =>
+          personMockupPreferenceRank(a.label) - personMockupPreferenceRank(b.label),
+      )
+      .slice(0, maxViews);
   }
 
   if (preferContextViews && selected.length > 0) {
@@ -889,8 +931,15 @@ export function pickPreferredMockupViews(
   frontBackOnly = false,
   printPlacement?: "front" | "back" | "both",
   preferContextViews = false,
+  preferPersonViews = false,
 ): { url: string; label: string }[] {
-  return selectPreferredViews(images, frontBackOnly, printPlacement, preferContextViews);
+  return selectPreferredViews(
+    images,
+    frontBackOnly,
+    printPlacement,
+    preferContextViews,
+    preferPersonViews,
+  );
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
@@ -1421,17 +1470,26 @@ export async function generatePrintifyMockup(
     }
 
     const preferContextViews = !!request.preferContextViews;
+    const preferPersonViews = !!request.preferPersonViews;
     const supplementInline = mockupData
-      ? shouldSupplementInlineMockups(mockupData.images, isAop, preferContextViews)
+      ? shouldSupplementInlineMockups(
+          mockupData.images,
+          isAop,
+          preferContextViews,
+          preferPersonViews,
+        )
       : false;
 
     if (!mockupData || supplementInline) {
       const pollStarted = Date.now();
-      // Single-view / lifestyle supplement: short budget. Full poll when create returned nothing.
-      // Lifestyle Shot gets a longer short-poll so context cameras can arrive.
-      // Lifestyle: wait longer — tote/decor blueprints often emit context after front.
+      // Single-view / lifestyle / person supplement: short budget. Full poll when create returned nothing.
+      // Lifestyle / person shots get a longer short-poll so those cameras can arrive.
       const pollRetries =
-        supplementInline && mockupData ? (preferContextViews ? 28 : 5) : 60;
+        supplementInline && mockupData
+          ? preferContextViews || preferPersonViews
+            ? 28
+            : 5
+          : 60;
       try {
         const polled = await pRetry(
           async (attemptNumber) => {
@@ -1443,11 +1501,20 @@ export async function generatePrintifyMockup(
             const merged = mergeMockupImages(mockupData, data);
             if (
               supplementInline &&
-              shouldSupplementInlineMockups(merged.images, isAop, preferContextViews)
+              shouldSupplementInlineMockups(
+                merged.images,
+                isAop,
+                preferContextViews,
+                preferPersonViews,
+              )
             ) {
               console.log(
                 `[Printify Mockup] Poll attempt ${attemptNumber}: ${merged.images.length} image(s), still waiting for additional views` +
-                  (preferContextViews ? " (prefer context)" : ""),
+                  (preferContextViews
+                    ? " (prefer context)"
+                    : preferPersonViews
+                      ? " (prefer person)"
+                      : ""),
               );
               throw new Error("Additional mockup views not ready yet");
             }
@@ -1486,22 +1553,31 @@ export async function generatePrintifyMockup(
       }
     }
 
-    // Lifestyle Shot: never use AOP front/back-only trimming — tote bags are
-    // often isAllOverPrint in the DB but Printify still emits on-person/context-*.
-    // Also skip printPlacement filtering (e.g. "front" would drop "on-person").
-    const frontBackOnly = preferContextViews ? false : isAop;
+    // Lifestyle / person shots: never use AOP front/back-only trimming.
+    // Also skip printPlacement filtering (e.g. "front" would drop "front person").
+    const frontBackOnly =
+      preferContextViews || preferPersonViews ? false : isAop;
     const placementForViews =
-      preferContextViews || !isAop ? undefined : effectivePrintPlacement;
+      preferContextViews || preferPersonViews || !isAop
+        ? undefined
+        : effectivePrintPlacement;
     const selected = selectPreferredViews(
       mockupData.images,
       frontBackOnly,
       placementForViews,
       preferContextViews,
+      preferPersonViews,
     );
 
     if (preferContextViews) {
       console.log(
         `[Printify Mockup] Lifestyle selection: ${selected.map((s) => s.label).join(", ") || "(none)"} ` +
+          `from ${mockupData.images.length} camera(s): ${mockupData.images.map((i) => i.label).join(", ")}`,
+      );
+    }
+    if (preferPersonViews) {
+      console.log(
+        `[Printify Mockup] Person selection: ${selected.map((s) => s.label).join(", ") || "(none)"} ` +
           `from ${mockupData.images.length} camera(s): ${mockupData.images.map((i) => i.label).join(", ")}`,
       );
     }
