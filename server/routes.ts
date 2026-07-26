@@ -6018,17 +6018,16 @@ ${orientationExtra}
         })(),
       };
 
-      // Match storefront: attach the customizer page's style allow-list so
-      // Generator Tester filters Art Style the same way as the live store.
-      const pageStyleConfig = await resolveStyleConfigForProductType(
-        productType.id,
-        designerConfig.designerType,
-      );
+      // Match storefront: same merchant styles + page allow-list (not /api/config).
+      const { styleConfig: pageStyleConfig, stylePresets: pageStylePresets } =
+        await resolveStylePresetsForProductType(productType as any);
       (designerConfig as any).styleConfig = pageStyleConfig;
+      (designerConfig as any).stylePresets = pageStylePresets;
 
       console.log(
         `[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}` +
-          `, styleConfig=${JSON.stringify(pageStyleConfig)}`,
+          `, styleConfig=${JSON.stringify(pageStyleConfig)}` +
+          `, stylePresets=${pageStylePresets.length}`,
       );
       // Prevent browser caching to ensure fresh data
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -6126,6 +6125,66 @@ ${orientationExtra}
       );
     }
     return defaultStyleConfigForDesignerType(designerType);
+  }
+
+  /** Map DB style rows the same way `/api/proxy/customizer-page` does. */
+  function mapDbStylesForDesigner(dbStyles: any[]) {
+    return dbStyles.map((s: any) => {
+      const hardcoded = STYLE_PRESETS.find(
+        (h) => h.id === s.id.toString() || h.name === s.name,
+      );
+      return {
+        id: s.id.toString(),
+        name: s.name,
+        promptSuffix: s.promptPrefix,
+        promptPrefix: s.promptPrefix,
+        category: s.category || "all",
+        promptPlaceholder:
+          s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
+        options: s.options || (hardcoded as any)?.options,
+        baseImageUrl:
+          s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+        descriptionOptional: !!s.descriptionOptional,
+      };
+    });
+  }
+
+  /**
+   * Merchant-scoped + page-filtered styles — identical set to the live store
+   * for this product type. Never use getAllActiveStylePresets here (cross-tenant
+   * name dedupe drops the merchant's Watercolor/Abstract IDs).
+   */
+  async function resolveStylePresetsForProductType(productType: {
+    id: number;
+    merchantId?: string | null;
+    designerType?: string | null;
+  }): Promise<{
+    styleConfig: CustomizerPageStyleConfig;
+    stylePresets: ReturnType<typeof mapDbStylesForDesigner>;
+  }> {
+    const styleConfig = await resolveStyleConfigForProductType(
+      productType.id,
+      productType.designerType,
+    );
+    let stylePresets: ReturnType<typeof mapDbStylesForDesigner> = [];
+    try {
+      const merchantId = productType.merchantId;
+      if (merchantId) {
+        const dbStyles = await storage.getActiveStylePresetsByMerchant(merchantId);
+        stylePresets = mapDbStylesForDesigner(dbStyles);
+      }
+    } catch (e) {
+      console.warn(
+        `[stylePresets] Failed to load merchant styles for pt ${productType.id}:`,
+        e,
+      );
+    }
+    stylePresets = filterStylePresetsForPage(
+      stylePresets,
+      styleConfig,
+      productType.designerType,
+    ) as ReturnType<typeof mapDbStylesForDesigner>;
+    return { styleConfig, stylePresets };
   }
 
   /**
@@ -6540,10 +6599,9 @@ ${orientationExtra}
             ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
             : null;
           const fastConfig = buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart);
-          (fastConfig as any).styleConfig = await resolveStyleConfigForProductType(
-            productTypeForConfig!.id,
-            fastConfig.designerType,
-          );
+          const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
+          (fastConfig as any).styleConfig = fastStyles.styleConfig;
+          (fastConfig as any).stylePresets = fastStyles.stylePresets;
           return res.json(fastConfig);
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
@@ -6694,11 +6752,9 @@ ${orientationExtra}
         ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
         : null;
       const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
-      // Same style allow-list as customizer pages / Generator Tester.
-      (designerConfig as any).styleConfig = await resolveStyleConfigForProductType(
-        productTypeForConfig.id,
-        designerConfig.designerType,
-      );
+      const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
+      (designerConfig as any).styleConfig = sfStyles.styleConfig;
+      (designerConfig as any).stylePresets = sfStyles.stylePresets;
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE

@@ -2997,10 +2997,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             console.warn(`[EmbedDesign] ⚠️ Backend resolved productTypeId: requested=${designerConfig.requestedProductTypeId} → resolved=${designerConfig.resolvedProductTypeId} reason=${designerConfig.resolutionReason}`);
           }
 
-          // Generator Tester + storefront designer: use the same customizer-page
-          // style allow-list the live store embeds (not designerType apparel-only).
+          // Generator Tester + storefront designer: use the same merchant-scoped,
+          // page-filtered styles the live store embeds (not global /api/config).
           if (designerConfig.styleConfig !== undefined) {
             setPageStyleConfig(parseCustomizerPageStyleConfig(designerConfig.styleConfig));
+          }
+          if (Array.isArray(designerConfig.stylePresets) && designerConfig.stylePresets.length > 0) {
+            setStylePresets(designerConfig.stylePresets);
           }
 
           setProductTypeConfig({

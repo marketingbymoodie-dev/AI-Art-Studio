@@ -276,6 +276,27 @@ const SCALE_MIN = 0.2;
 const SCALE_MAX = 3;
 /** Leggings open at full Place scale so motifs can span the hip/crotch. */
 const LEGGINGS_DEFAULT_PLACE_SCALE = 3;
+/**
+ * Locked Place defaults (customer open + Reset). Tuned for tiger/motif flow
+ * across the crotch with Link sides on. TEMP coords overlay still shows live values.
+ */
+const LEGGINGS_DEFAULT_RIGHT_PLACE: ArtworkPlacement = {
+  scale: LEGGINGS_DEFAULT_PLACE_SCALE,
+  offsetX: -43.3,
+  offsetY: 8.4,
+};
+const LEGGINGS_DEFAULT_LEFT_PLACE: ArtworkPlacement = {
+  scale: LEGGINGS_DEFAULT_PLACE_SCALE,
+  offsetX: -72.2,
+  offsetY: 8.4,
+};
+
+function leggingsDefaultPlacementForGroup(groupId: string): ArtworkPlacement {
+  if (groupId === "left-leg") return { ...LEGGINGS_DEFAULT_LEFT_PLACE };
+  if (groupId === "right-leg") return { ...LEGGINGS_DEFAULT_RIGHT_PLACE };
+  return { ...DEFAULT_ARTWORK_PLACEMENT, scale: LEGGINGS_DEFAULT_PLACE_SCALE };
+}
+
 const TILE_SIZE_MIN = 0.5;
 const TILE_SIZE_MAX = 8;
 
@@ -540,24 +561,19 @@ function buildInitialState(
   const pillow = isPillowWrapTemplate(template);
   const defaultPlacement: ArtworkPlacement = pillow
     ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: 1.1 }
-    : leggings
-      ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: LEGGINGS_DEFAULT_PLACE_SCALE }
-      : DEFAULT_ARTWORK_PLACEMENT;
+    : DEFAULT_ARTWORK_PLACEMENT;
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
   for (const g of groups) {
-    const front = { ...(g.placement?.front ?? defaultPlacement) };
-    const back = { ...(g.placement?.back ?? defaultPlacement) };
-    // Template blanks still store scale:1 — bump leggings to the Place default.
-    if (leggings) {
-      if (!g.placement?.front || front.scale === 1) {
-        front.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
-      }
-      if (!g.placement?.back || back.scale === 1) {
-        back.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
-      }
+    if (leggings && (g.id === "left-leg" || g.id === "right-leg")) {
+      const locked = leggingsDefaultPlacementForGroup(g.id);
+      placements[g.id] = { front: { ...locked }, back: { ...locked } };
+    } else {
+      placements[g.id] = {
+        front: { ...(g.placement?.front ?? defaultPlacement) },
+        back: { ...(g.placement?.back ?? defaultPlacement) },
+      };
     }
-    placements[g.id] = { front, back };
     enabled[g.id] = customerGroupEnabledByDefault(g.id, template, g);
   }
   const base: HoodieAopPlacerState = {
@@ -1588,22 +1604,17 @@ export default function HoodieAopPlacer({
       const placements = { ...prev.placements };
       const enabled = { ...prev.enabled };
       const leggings = isLeggingsBlueprint(data.template.blueprintId);
-      const blank: ArtworkPlacement = leggings
-        ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: LEGGINGS_DEFAULT_PLACE_SCALE }
-        : DEFAULT_ARTWORK_PLACEMENT;
       for (const id of ids) {
-        const g = groups.find((x) => x.id === id);
-        const front = { ...(g?.placement?.front ?? blank) };
-        const back = { ...(g?.placement?.back ?? blank) };
-        if (leggings) {
-          if (!g?.placement?.front || front.scale === 1) {
-            front.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
-          }
-          if (!g?.placement?.back || back.scale === 1) {
-            back.scale = LEGGINGS_DEFAULT_PLACE_SCALE;
-          }
+        if (leggings && (id === "left-leg" || id === "right-leg")) {
+          const locked = leggingsDefaultPlacementForGroup(id);
+          placements[id] = { front: { ...locked }, back: { ...locked } };
+        } else {
+          const g = groups.find((x) => x.id === id);
+          placements[id] = {
+            front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
+            back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+          };
         }
-        placements[id] = { front, back };
         // Reset must bring artwork back — previously only cleared offsets,
         // so a disabled leg stayed stuck off.
         enabled[id] = true;
@@ -1611,6 +1622,13 @@ export default function HoodieAopPlacer({
       if (isLegsPart(prev.activeGroupId) && legsTogether) {
         enabled["left-leg"] = true;
         enabled["right-leg"] = true;
+        if (leggings) {
+          for (const id of LEG_GROUP_IDS) {
+            const locked = leggingsDefaultPlacementForGroup(id);
+            placements[id] = { front: { ...locked }, back: { ...locked } };
+            enabled[id] = true;
+          }
+        }
       }
       return { ...prev, placements, enabled };
     });

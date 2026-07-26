@@ -88,6 +88,8 @@ interface ProductDesignerConfig {
   variantPrices?: Record<string, string>;
   /** From linked customizer page — same allow-list as the storefront. */
   styleConfig?: CustomizerPageStyleConfig | null;
+  /** Merchant-scoped + page-filtered (prefer over /api/config). */
+  stylePresets?: StylePreset[];
 }
 
 export default function DesignPage() {
@@ -925,18 +927,22 @@ export default function DesignPage() {
   const pageStyleConfig =
     parseCustomizerPageStyleConfig(designerConfig?.styleConfig) ?? null;
   const selectableStyleCategories = selectableCategoriesForDesignerType(designerConfig?.designerType);
+  const sourceStyles =
+    designerConfig?.stylePresets && designerConfig.stylePresets.length > 0
+      ? designerConfig.stylePresets
+      : config?.stylePresets || [];
   const filteredStyles = pageStyleConfig
     ? filterStylePresetsForPage(
-        config?.stylePresets || [],
+        sourceStyles,
         pageStyleConfig,
         designerConfig?.designerType,
       )
-    : config?.stylePresets.filter((style) =>
+    : sourceStyles.filter((style) =>
         styleMatchesSelectableCategories(
           style as { category?: string | null },
           selectableStyleCategories,
         ),
-      ) || [];
+      );
 
   const styleCategoryLabel = pageStyleConfig
     ? "Page styles"

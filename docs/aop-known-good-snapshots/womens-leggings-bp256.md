@@ -26,7 +26,7 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 |---------|---------|
 | Mode / view / part | Place / Front / Right leg |
 | Design groups | `right-leg` + `left-leg` (per-panel place) |
-| Place scale | Max **300%**; default open at **300%** (offsets TBD — TEMP coords overlay on storefront) |
+| Place scale / offsets | Max **300%**. Defaults (Link on): right `scale=3 ox=-43.3 oy=8.4`, left `scale=3 ox=-72.2 oy=8.4`. Reset restores these. TEMP coords overlay kept for QA. |
 | Link sides | **ON** (hood-link style — toggle does not rewrite placements) |
 | Mirror | **OFF** (can combine with Link) |
 | Gen AR | Tall single-leg panel AR (fallback `2:3`) |
