@@ -6018,7 +6018,18 @@ ${orientationExtra}
         })(),
       };
 
-      console.log(`[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
+      // Match storefront: attach the customizer page's style allow-list so
+      // Generator Tester filters Art Style the same way as the live store.
+      const pageStyleConfig = await resolveStyleConfigForProductType(
+        productType.id,
+        designerConfig.designerType,
+      );
+      (designerConfig as any).styleConfig = pageStyleConfig;
+
+      console.log(
+        `[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}` +
+          `, styleConfig=${JSON.stringify(pageStyleConfig)}`,
+      );
       // Prevent browser caching to ensure fresh data
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.set('Pragma', 'no-cache');
@@ -6086,6 +6097,35 @@ ${orientationExtra}
 
     console.warn(`${logPrefix} FALLBACK RESOLVED: requested=${requestedId ?? "none"} → resolved=${resolved.id} (${resolved.name}) reason=${resolvedFrom}`);
     return { productType: resolved, resolvedFrom };
+  }
+
+  /**
+   * Style allow-list for a product type — same source as the storefront
+   * customizer page. Generator Tester must use this so its Art Style dropdown
+   * matches what customers see on the store.
+   */
+  async function resolveStyleConfigForProductType(
+    productTypeId: number,
+    designerType?: string | null,
+  ): Promise<CustomizerPageStyleConfig> {
+    try {
+      const pages = await storage.listCustomizerPagesByProductTypeId(productTypeId);
+      // Prefer active pages; newest first (list is createdAt ascending).
+      const ordered = [
+        ...pages.filter((p) => p.status === "active").reverse(),
+        ...pages.filter((p) => p.status !== "active").reverse(),
+      ];
+      for (const page of ordered) {
+        const cfg = parseCustomizerPageStyleConfig(page.styleConfig);
+        if (cfg) return cfg;
+      }
+    } catch (e) {
+      console.warn(
+        `[styleConfig] Failed to load customizer pages for pt ${productTypeId}:`,
+        e,
+      );
+    }
+    return defaultStyleConfigForDesignerType(designerType);
   }
 
   /**
@@ -6499,7 +6539,12 @@ ${orientationExtra}
           const sizeChart = productTypeForConfig!.printifyBlueprintId
             ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
             : null;
-          return res.json(buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart));
+          const fastConfig = buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart);
+          (fastConfig as any).styleConfig = await resolveStyleConfigForProductType(
+            productTypeForConfig!.id,
+            fastConfig.designerType,
+          );
+          return res.json(fastConfig);
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
       }
@@ -6649,6 +6694,11 @@ ${orientationExtra}
         ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
         : null;
       const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
+      // Same style allow-list as customizer pages / Generator Tester.
+      (designerConfig as any).styleConfig = await resolveStyleConfigForProductType(
+        productTypeForConfig.id,
+        designerConfig.designerType,
+      );
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE

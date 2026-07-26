@@ -2997,6 +2997,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             console.warn(`[EmbedDesign] ⚠️ Backend resolved productTypeId: requested=${designerConfig.requestedProductTypeId} → resolved=${designerConfig.resolvedProductTypeId} reason=${designerConfig.resolutionReason}`);
           }
 
+          // Generator Tester + storefront designer: use the same customizer-page
+          // style allow-list the live store embeds (not designerType apparel-only).
+          if (designerConfig.styleConfig !== undefined) {
+            setPageStyleConfig(parseCustomizerPageStyleConfig(designerConfig.styleConfig));
+          }
+
           setProductTypeConfig({
             id: designerConfig.id,
             name: designerConfig.name,
