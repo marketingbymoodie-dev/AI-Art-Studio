@@ -2096,6 +2096,63 @@ export default function HoodieAopPlacer({
         data-hoodie-aop-controls
         className="w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]"
       >
+        {printersMockupAction && (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (!printersMockupAction.active || printersMockupAction.loading) {
+                  return;
+                }
+                const panels = renderPrintPanelsToDataUrls({
+                  maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+                });
+                if (!panels?.length) return;
+                printersMockupAction.onClick(panels);
+              }}
+              disabled={
+                !printersMockupAction.active || !!printersMockupAction.loading
+              }
+              data-testid="button-aop-printers-mockup"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
+                printersMockupAction.active && !printersMockupAction.loading
+                  ? "border-foreground/80 bg-foreground text-background"
+                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
+              }`}
+            >
+              {printersMockupAction.loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className={
+                  printersMockupAction.active && !printersMockupAction.loading
+                    ? "shimmer-text-white"
+                    : undefined
+                }
+              >
+                {printersMockupAction.loading
+                  ? printersMockupAction.loadingLabel || "Generating…"
+                  : printersMockupAction.label}
+              </span>
+            </button>
+            {printersMockupAction.error ? (
+              <p
+                className="text-center text-[11px] text-destructive"
+                data-testid="text-aop-printers-mockup-error"
+              >
+                {printersMockupAction.error}
+              </p>
+            ) : !printersMockupAction.active && !printersMockupAction.loading ? (
+              <p className="text-center text-[10px] text-muted-foreground">
+                {printersMockupAction.idleHint ||
+                  "Finish placement (or generate artwork) to enable Printers Mockup"}
+              </p>
+            ) : null}
+          </div>
+        )}
+
         {/* Pattern / Place segmented toggle */}
         <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
           {(["pattern", "place"] as const).map((m) => (
@@ -2647,63 +2704,6 @@ export default function HoodieAopPlacer({
         >
           <RotateCcw className="h-3 w-3" /> Reset
         </button>
-
-        {printersMockupAction && (
-          <div className="flex flex-col gap-1 pt-1">
-            <button
-              type="button"
-              onClick={() => {
-                if (!printersMockupAction.active || printersMockupAction.loading) {
-                  return;
-                }
-                const panels = renderPrintPanelsToDataUrls({
-                  maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
-                });
-                if (!panels?.length) return;
-                printersMockupAction.onClick(panels);
-              }}
-              disabled={
-                !printersMockupAction.active || !!printersMockupAction.loading
-              }
-              data-testid="button-aop-printers-mockup"
-              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
-                printersMockupAction.active && !printersMockupAction.loading
-                  ? "border-foreground/80 bg-foreground text-background"
-                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
-              }`}
-            >
-              {printersMockupAction.loading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              ) : (
-                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
-              )}
-              <span
-                className={
-                  printersMockupAction.active && !printersMockupAction.loading
-                    ? "shimmer-text-white"
-                    : undefined
-                }
-              >
-                {printersMockupAction.loading
-                  ? printersMockupAction.loadingLabel || "Generating…"
-                  : printersMockupAction.label}
-              </span>
-            </button>
-            {printersMockupAction.error ? (
-              <p
-                className="text-center text-[11px] text-destructive"
-                data-testid="text-aop-printers-mockup-error"
-              >
-                {printersMockupAction.error}
-              </p>
-            ) : !printersMockupAction.active && !printersMockupAction.loading ? (
-              <p className="text-center text-[10px] text-muted-foreground">
-                {printersMockupAction.idleHint ||
-                  "Finish placement (or generate artwork) to enable Printers Mockup"}
-              </p>
-            ) : null}
-          </div>
-        )}
 
         {/* Auto-save indicator (replaces the old "Apply to product" button —
             the cart preview is now kept in sync automatically, debounced
