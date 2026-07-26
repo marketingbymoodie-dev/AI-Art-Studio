@@ -636,6 +636,41 @@ export function flatArtBox(
   return { x: cx - drawW / 2, y: cy - drawH / 2, width: drawW, height: drawH };
 }
 
+/**
+ * Axis-aligned bounds of the (possibly rotated) artwork box — used for
+ * overflow / coverage warnings so a rotated corner past the guide still warns.
+ */
+export function flatArtBoxAxisAligned(
+  rect: Rect,
+  placement: ArtworkPlacement,
+  artW: number,
+  artH: number,
+): Rect {
+  const box = flatArtBox(rect, placement, artW, artH);
+  const deg = Number.isFinite(placement.rotationDeg) ? Number(placement.rotationDeg) : 0;
+  if (!deg) return box;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const bbW = box.width * cos + box.height * sin;
+  const bbH = box.width * sin + box.height * cos;
+  return { x: cx - bbW / 2, y: cy - bbH / 2, width: bbW, height: bbH };
+}
+
+/**
+ * Harvest magenta AABB (unexpanded). Preview mask clip follows this silhouette
+ * more closely than the Printify-overscan guide — use for apparel trim warnings.
+ */
+export function flatApparelTrimRectPx(
+  view: FlatViewCalibration,
+  canvasW: number,
+  canvasH: number,
+): Rect {
+  return flatVisibleRectPx(view, canvasW, canvasH);
+}
+
 /** Draw artwork into `box`, optionally rotated CW around the box centre. */
 export function drawFlatArtwork(
   ctx: CanvasRenderingContext2D,
@@ -677,6 +712,19 @@ export function flatOverflows(rect: Rect, box: Rect): boolean {
     box.x + box.width > rect.x + rect.width + eps ||
     box.y + box.height > rect.y + rect.height + eps
   );
+}
+
+/**
+ * Apparel: warn when art extends past the harvest/mask AABB *or* the (taller)
+ * Printify guide. Expanding the dashed guide for collar overscan must not
+ * silence the trim warning when the mask still clips the design.
+ */
+export function flatApparelArtworkTrimmed(
+  trimRect: Rect,
+  guideRect: Rect,
+  artBox: Rect,
+): boolean {
+  return flatOverflows(trimRect, artBox) || flatOverflows(guideRect, artBox);
 }
 
 /**

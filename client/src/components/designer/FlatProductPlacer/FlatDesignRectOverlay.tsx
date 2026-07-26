@@ -295,14 +295,16 @@ export default function FlatDesignRectOverlay({
         className={`pointer-events-none absolute border-2 border-dashed ${
           edgeWrapMode
             ? "border-amber-300/95"
-            : "border-white/70 mix-blend-difference"
+            : "border-sky-300/95"
         }`}
         style={{
           left: `${innerPct.left}%`,
           top: `${innerPct.top}%`,
           width: `${innerPct.width}%`,
           height: `${innerPct.height}%`,
-          ...(edgeWrapMode ? { boxShadow: "0 0 0 1px rgba(0,0,0,0.35)" } : {}),
+          // Solid contrast outline — mix-blend-difference was eating the top
+          // edge on saturated garment colours so clipping looked "allowed".
+          boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
         }}
         title={
           edgeWrapMode

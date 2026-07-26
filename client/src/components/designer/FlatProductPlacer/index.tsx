@@ -27,9 +27,10 @@ import {
   type FlatViewName,
 } from "./lib/flatAssets";
 import {
-  flatArtBox,
   flatCovers,
-  flatOverflows,
+  flatArtBoxAxisAligned,
+  flatApparelTrimRectPx,
+  flatApparelArtworkTrimmed,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -813,19 +814,25 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled && placementRect) {
-    const box = flatArtBox(
-      placementRect,
-      { ...placement, scale: clampPlacementScale(placement.scale) },
-      artworkImg.naturalWidth,
-      artworkImg.naturalHeight,
-    );
+    const artW = artworkImg.naturalWidth || artworkImg.width || 1;
+    const artH = artworkImg.naturalHeight || artworkImg.height || 1;
+    const placed = {
+      ...placement,
+      scale: clampPlacementScale(placement.scale),
+    };
+    const box = flatArtBoxAxisAligned(placementRect, placed, artW, artH);
     if (edgeWrapMode || decorMode || fabricWeave) {
       // Tapestry / decor / phone: warn when art leaves the print area uncovered.
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatOverflows(placementRect, box)) {
-      coverageWarning = "trim";
+    } else {
+      // Apparel: dashed guide is Printify-overscan (taller); mask clip still
+      // follows the harvest AABB — warn if either is overflowed.
+      const trimRect = flatApparelTrimRectPx(calib, mockupW, mockupH);
+      if (flatApparelArtworkTrimmed(trimRect, placementRect, box)) {
+        coverageWarning = "trim";
+      }
     }
   }
 
