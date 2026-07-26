@@ -54,6 +54,26 @@ describe("stepPostGenGalleryIndex", () => {
     expect(stepPostGenGalleryIndex(0, 1, withPrinters, true)).toBe(2);
     expect(stepPostGenGalleryIndex(2, 1, withPrinters, true)).toBe(3);
   });
+
+  it("reaches Front Person while mesh AOP placer is open", () => {
+    const withPerson: PostGenGalleryNavItem[] = [
+      { kind: "artwork", label: "Artwork" },
+      { kind: "mockup", url: "https://x.example/front.png", label: "front" },
+      { kind: "mockup", url: "https://x.example/back.png", label: "back" },
+      { kind: "mockup", url: "https://x.example/fp.png", label: "Front Person" },
+      { kind: "mockup", url: "https://x.example/sp.png", label: "Side Person" },
+    ];
+    expect(stepPostGenGalleryIndex(0, 1, withPerson, true)).toBe(3);
+    expect(stepPostGenGalleryIndex(3, 1, withPerson, true)).toBe(4);
+    expect(stepPostGenGalleryIndex(4, 1, withPerson, true)).toBe(0);
+    expect(
+      isFlatPlacerGalleryReachable({
+        kind: "mockup",
+        url: "https://x.example/fp.png",
+        label: "Front Person",
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("isFlatPlacerGalleryReachable", () => {

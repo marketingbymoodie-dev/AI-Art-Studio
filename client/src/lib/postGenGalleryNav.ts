@@ -1,4 +1,7 @@
-import { isContextLikeMockupLabel } from "@shared/printifyMockupLabels";
+import {
+  isContextLikeMockupLabel,
+  isPersonMockupLabel,
+} from "@shared/printifyMockupLabels";
 
 export type PostGenGalleryNavItem =
   | { kind: "artwork"; label: string }
@@ -9,6 +12,8 @@ export function isPostGenContextLabel(label: string): boolean {
   const l = String(label || "").toLowerCase();
   if (!l) return false;
   if (l.startsWith("printers") || l.startsWith("printify")) return true;
+  // AOP Printers Mockup: Front/Side/Back Person (excluded from lifestyle context).
+  if (isPersonMockupLabel(label)) return true;
   return isContextLikeMockupLabel(label);
 }
 

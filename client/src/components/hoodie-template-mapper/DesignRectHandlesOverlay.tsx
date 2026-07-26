@@ -200,20 +200,18 @@ export default function DesignRectHandlesOverlay({
         return;
       }
 
-      // Scale: corner handles always grow/shrink the rect around
-      // its centre (the group's anchor + current offset), so the
-      // rect stays seam-aligned and matches what the Scale slider
-      // does. Aspect ratio is locked to the artwork's natural
-      // shape, so we pick whichever axis the pointer pushed
-      // furthest from centre and derive the other.
+      // Scale: corner handles grow/shrink around the rect centre.
+      // Scale is derived from the gesture-start size × start placement
+      // scale — NOT effective/base. Linked leg unions set base=effective
+      // (already scaled), so newW/baseW snapped to ~1 on the first move.
       if (drag.mode === "scale") {
         const start = drag.startInfo.effective;
-        const baseW = drag.startInfo.base.width;
-        const baseH = drag.startInfo.base.height;
-        const aspect = start.width / start.height;
+        const startW = Math.max(1, start.width);
+        const startH = Math.max(1, start.height);
+        const aspect = startW / startH;
         const centre = {
-          x: start.x + start.width / 2,
-          y: start.y + start.height / 2,
+          x: start.x + startW / 2,
+          y: start.y + startH / 2,
         };
         const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
         const halfW = Math.abs(m.x - centre.x);
@@ -225,16 +223,12 @@ export default function DesignRectHandlesOverlay({
         } else {
           newW = newH * aspect;
         }
+        const startScale = Math.max(0.0001, drag.startPlacement.scale || 1);
+        let newScale = startScale * (newW / startW);
         const minScale = 0.05;
-        if (newW / baseW < minScale) {
-          newW = baseW * minScale;
-          newH = baseH * minScale;
-        }
-        let newScale = newW / baseW;
+        if (newScale < minScale) newScale = minScale;
         if (typeof maxScale === "number" && maxScale > 0 && newScale > maxScale) {
           newScale = maxScale;
-          newW = baseW * newScale;
-          newH = baseH * newScale;
         }
         onChange({
           scale: newScale,

@@ -749,18 +749,26 @@ function unionLegDesignRects(
   if (!left && !right) return null;
   if (!left) return right ?? null;
   if (!right) return left;
-  const a = left.effective;
-  const b = right.effective;
-  const x = Math.min(a.x, b.x);
-  const y = Math.min(a.y, b.y);
-  const r = Math.max(a.x + a.width, b.x + b.width);
-  const bot = Math.max(a.y + a.height, b.y + b.height);
-  const effective = { x, y, width: r - x, height: bot - y };
+  const unionOf = (
+    a: { x: number; y: number; width: number; height: number },
+    b: { x: number; y: number; width: number; height: number },
+  ) => {
+    const x = Math.min(a.x, b.x);
+    const y = Math.min(a.y, b.y);
+    const r = Math.max(a.x + a.width, b.x + b.width);
+    const bot = Math.max(a.y + a.height, b.y + b.height);
+    return { x, y, width: r - x, height: bot - y };
+  };
+  const effective = unionOf(left.effective, right.effective);
+  // Keep unscaled bases separate from effective — corner scale uses
+  // startPlacement.scale × (newW/startW); base is for overlay geometry only.
+  const base = unionOf(left.base, right.base);
+  const union = unionOf(left.union, right.union);
   return {
     ...right,
     effective,
-    union: effective,
-    base: { ...effective },
+    union,
+    base,
     hasSeamPair: false,
     anchorIsSeam: false,
     anchor: {
@@ -2038,6 +2046,18 @@ export default function HoodieAopPlacer({
             </div>
           )}
           <div className="relative max-h-full max-w-full overflow-hidden">
+            {/* Keep canvas mounted (hidden) under Printers Mockup so returning
+                to Artwork does not leave a blank canvas + empty bbox. */}
+            <canvas
+              ref={canvasRef}
+              className={
+                canvasOverrideUrl
+                  ? "hidden"
+                  : "max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
+              }
+              data-testid="hoodie-aop-placer-canvas"
+              data-appai-wheel-forward="true"
+            />
             {canvasOverrideUrl ? (
               <img
                 src={canvasOverrideUrl}
@@ -2045,14 +2065,7 @@ export default function HoodieAopPlacer({
                 className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
                 data-testid="hoodie-aop-canvas-override"
               />
-            ) : (
-              <canvas
-                ref={canvasRef}
-                className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
-                data-testid="hoodie-aop-placer-canvas"
-                data-appai-wheel-forward="true"
-              />
-            )}
+            ) : null}
             {!canvasOverrideUrl &&
               showOverlay &&
               overlayVisible &&
