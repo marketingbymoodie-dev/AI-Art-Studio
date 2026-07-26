@@ -304,7 +304,6 @@ const LEGGINGS_DEFAULT_PLACE_SCALE = 3;
 /**
  * Locked Place defaults (customer open + Reset). Tuned so L/R visual flow
  * matches Printify (Link on). X gap ≈ 120.5 px must be preserved while linked.
- * TEMP coords overlay still shows live values.
  */
 const LEGGINGS_DEFAULT_RIGHT_PLACE: ArtworkPlacement = {
   scale: LEGGINGS_DEFAULT_PLACE_SCALE,
@@ -2024,27 +2023,6 @@ export default function HoodieAopPlacer({
                 ? "Front View"
                 : "Back View"}
           </div>
-          {/* TEMP: report these coords so we can lock leggings Place defaults, then remove. */}
-          {isLeggings && state.mode === "place" && (
-            <div
-              className="pointer-events-none absolute right-3 top-3 z-20 max-w-[min(100%,280px)] rounded bg-amber-500/95 px-2 py-1.5 font-mono text-[10px] leading-snug text-black shadow"
-              data-testid="hoodie-aop-temp-coords"
-            >
-              <div className="font-sans text-[9px] font-bold uppercase tracking-wide">
-                TEMP placement coords
-              </div>
-              {(["right-leg", "left-leg"] as const).map((id) => {
-                const pl =
-                  state.placements[id]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
-                return (
-                  <div key={id}>
-                    {id}: scale={pl.scale.toFixed(3)} ox={pl.offsetX.toFixed(1)} oy=
-                    {pl.offsetY.toFixed(1)}
-                  </div>
-                );
-              })}
-            </div>
-          )}
           <div className="relative max-h-full max-w-full overflow-hidden">
             {/* Keep canvas mounted (hidden) under Printers Mockup so returning
                 to Artwork does not leave a blank canvas + empty bbox. */}

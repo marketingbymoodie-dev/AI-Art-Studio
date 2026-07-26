@@ -1138,16 +1138,33 @@ function buildPostGenGalleryItems(
   const items: PostGenGalleryItem[] = [{ kind: "artwork", label: "Artwork" }];
   const seen = new Set<string>();
 
-  const printifyEntries =
-    printifyMockupImages.length > 0
-      ? printifyMockupImages.slice(0, 3).map((img, i) => ({
-          url: img.url,
-          label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
-        }))
-      : printifyMockups.slice(0, 3).map((url, i) => ({
-          url,
-          label: formatPostGenMockupLabel("", i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
-        }));
+  // Prefer front/back first, then always include person cameras (Printers Mockup)
+  // even when that exceeds the old 3-slot cap.
+  let printifyEntries: Array<{ url: string; label: string }> = [];
+  if (printifyMockupImages.length > 0) {
+    const person = printifyMockupImages.filter((img) =>
+      isPersonMockupLabel(img.label),
+    );
+    const rest = printifyMockupImages.filter(
+      (img) => !isPersonMockupLabel(img.label),
+    );
+    const ordered = [...rest.slice(0, 2), ...person, ...rest.slice(2)].slice(
+      0,
+      Math.max(3, 2 + person.length),
+    );
+    printifyEntries = ordered.map((img, i) => ({
+      url: img.url,
+      label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+    }));
+  } else {
+    printifyEntries = printifyMockups.slice(0, 3).map((url, i) => ({
+      url,
+      label: formatPostGenMockupLabel(
+        "",
+        i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`,
+      ),
+    }));
+  }
 
   for (const entry of printifyEntries) {
     if (!entry.url) continue;
@@ -2098,6 +2115,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const aopBaseMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
   /** Last AOP Front/Side/Back Person shots — re-attached after placer auto-apply. */
   const aopPersonMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /**
+   * After Printers Mockup lands, keep selecting Front Person even if placer
+   * auto-apply / primary mockup fetch tries to reset the gallery index.
+   * Cleared when the customer manually steps to Artwork (or a non-person slide).
+   */
+  const stickAopPersonGalleryRef = useRef(false);
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -2367,6 +2390,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       prev >= postGenGalleryItems.length ? 0 : prev,
     );
   }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
+
+  // After Printers Mockup, land on Front Person (and recover if apply/mockup
+  // rebuild resets the index). Keep Side/Back Person if the customer already
+  // stepped there.
+  useEffect(() => {
+    if (!stickAopPersonGalleryRef.current) return;
+    setSelectedMockupIndex((prev) => {
+      const cur = postGenGalleryItems[prev];
+      if (cur?.kind === "mockup" && isPersonMockupLabel(cur.label)) return prev;
+      const idx = postGenGalleryItems.findIndex(
+        (item) =>
+          item.kind === "mockup" && isPersonMockupLabel(item.label),
+      );
+      return idx >= 0 ? idx : prev;
+    });
+  }, [postGenGalleryItems]);
 
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
@@ -4243,6 +4282,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               url: e.url,
               label: e.label,
             }));
+            stickAopPersonGalleryRef.current = true;
           }
           const mergedUrls = mergedImages.map((m) => m.url);
           setPrintifyMockupImages(mergedImages);
@@ -4254,7 +4294,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? isPersonMockupLabel(m.label)
               : isPrintifyOnDemandMockupLabel(m.label),
           );
-          if (firstOnDemandIdx >= 0) setSelectedMockupIndex(1 + firstOnDemandIdx);
+          if (firstOnDemandIdx >= 0) {
+            setSelectedMockupIndex(1 + firstOnDemandIdx);
+          }
           console.log(
             '[Mockups] Merged',
             extras.length,
@@ -4288,7 +4330,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const finalUrls = finalImages.map((m: { url: string }) => m.url);
         setPrintifyMockups(finalUrls);
         setPrintifyMockupImages(finalImages);
-        setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
+        if (stickAopPersonGalleryRef.current) {
+          const personIdx = finalImages.findIndex((m: { label: string }) =>
+            isPersonMockupLabel(m.label),
+          );
+          setSelectedMockupIndex(personIdx >= 0 ? 1 + personIdx : 1);
+        } else {
+          setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
+        }
         sendMockupsToParent(finalUrls);
         const cacheKey = mockupCacheKey(sizeId, colorId);
         currentMockupColorRef.current = cacheKey;
@@ -6966,7 +7015,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const withPersonUrls = withPerson.map((i) => i.url);
       setPrintifyMockupImages(withPerson);
       setPrintifyMockups(withPersonUrls);
-      setSelectedMockupIndex(0);
+      if (stickAopPersonGalleryRef.current && aopPersonMockupsRef.current.length) {
+        const personIdx = withPerson.findIndex((m) =>
+          isPersonMockupLabel(m.label),
+        );
+        setSelectedMockupIndex(personIdx >= 0 ? 1 + personIdx : 0);
+      } else {
+        setSelectedMockupIndex(0);
+      }
       // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
       // ATC. The hoodie placer has no separate "pattern" — the local
       // composite IS the artwork — so we point it at the front raster.
@@ -10835,9 +10891,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Previous"
                         onClick={() =>
-                          setSelectedMockupIndex((i) =>
-                            stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
-                          )
+                          setSelectedMockupIndex((i) => {
+                            const next = stepPostGenGalleryIndex(
+                              i,
+                              -1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                            const item = postGenGalleryItems[next];
+                            if (
+                              !item ||
+                              item.kind !== "mockup" ||
+                              !isPersonMockupLabel(item.label)
+                            ) {
+                              stickAopPersonGalleryRef.current = false;
+                            }
+                            return next;
+                          })
                         }
                         className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                         data-testid="button-hoodie-gallery-prev"
@@ -10848,9 +10918,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Next"
                         onClick={() =>
-                          setSelectedMockupIndex((i) =>
-                            stepPostGenGalleryIndex(i, 1, postGenGalleryItems, true),
-                          )
+                          setSelectedMockupIndex((i) => {
+                            const next = stepPostGenGalleryIndex(
+                              i,
+                              1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                            const item = postGenGalleryItems[next];
+                            if (
+                              !item ||
+                              item.kind !== "mockup" ||
+                              !isPersonMockupLabel(item.label)
+                            ) {
+                              stickAopPersonGalleryRef.current = false;
+                            }
+                            return next;
+                          })
                         }
                         className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
                         data-testid="button-hoodie-gallery-next"
