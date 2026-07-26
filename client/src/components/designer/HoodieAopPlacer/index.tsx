@@ -44,6 +44,7 @@ import {
   computeGroupRects,
   DEFAULT_ARTWORK_PLACEMENT,
   MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+  leggingsArtworkFallingOffUnseenSide,
   type ArtworkPlacement,
   type DesignRectInfo,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
@@ -1949,6 +1950,25 @@ export default function HoodieAopPlacer({
           placeGroupRects.get("right-leg"),
         )
       : null;
+  const showLeggingsOffUnseenSideWarning =
+    isLeggings &&
+    state.mode === "place" &&
+    isLegsPart(state.activeGroupId) &&
+    !!placeGroupRects &&
+    leggingsArtworkFallingOffUnseenSide(
+      state.legsSynced
+        ? [
+            placeGroupRects.get("left-leg"),
+            placeGroupRects.get("right-leg"),
+          ]
+        : [
+            placeGroupRects.get(
+              state.activeGroupId === LEGS_PART_ID
+                ? "right-leg"
+                : state.activeGroupId,
+            ),
+          ],
+    );
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
     isPillow || state.activeGroupId === "back-body" || state.activeGroupId === "back-face" || state.activeGroupId === "collar"
       ? "both"
@@ -2091,6 +2111,17 @@ export default function HoodieAopPlacer({
             className="relative z-10 border-t border-border bg-card px-3 py-2"
             onNudge={nudgePlacement}
           />
+        )}
+        {showLeggingsOffUnseenSideWarning && (
+          <div
+            className="relative z-10 border-t border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-950 dark:text-amber-50"
+            role="status"
+            data-testid="leggings-off-unseen-side-warning"
+          >
+            Artwork is sliding off the side of this leg you can&apos;t see
+            here. Switch to {state.view === "front" ? "Back" : "Front"} to
+            check placement.
+          </div>
         )}
       </div>
 
@@ -2386,6 +2417,15 @@ export default function HoodieAopPlacer({
                       ? "Linked — both move together; X gap and matching height are preserved."
                       : "Left and right legs can be placed independently. Click artwork to switch."}
                 </div>
+                {showLeggingsOffUnseenSideWarning && (
+                  <div
+                    className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-950 dark:text-amber-50"
+                    role="status"
+                  >
+                    Artwork is past the left/right edge of this view — check{" "}
+                    {state.view === "front" ? "Back" : "Front"} before ordering.
+                  </div>
+                )}
               </div>
             )}
           </div>

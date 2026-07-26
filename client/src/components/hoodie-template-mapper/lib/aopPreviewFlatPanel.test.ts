@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFlatMeshTargetPoints,
+  leggingsArtworkFallingOffUnseenSide,
+  leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
   printPanelOutputScale,
   sleevePanelHalfSourceRect,
@@ -72,6 +74,52 @@ describe("meshSourceFlipXForPanel", () => {
   it("Link-sides pattern symmetry XORs left_side the same as Mirror", () => {
     expect(meshSourceFlipXForPanel("left_side", false, false, false, true)).toBe(false);
     expect(meshSourceFlipXForPanel("right_side", false, false, false, true)).toBe(true);
+  });
+});
+
+describe("leggingsPanelHorizontalArtCoverage", () => {
+  const panel = { x: 100, y: 50, width: 200, height: 400 };
+  const centeredBase = { x: 100, y: 150, width: 200, height: 200 };
+
+  function rect(effective: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): DesignRectInfo {
+    return {
+      union: panel,
+      base: centeredBase,
+      effective,
+      anchor: { x: 200, y: 250 },
+      hasSeamPair: false,
+      anchorIsSeam: false,
+      seamAllowance: 0,
+      groupId: "right-leg",
+      enabled: true,
+    };
+  }
+
+  it("stays at 1 when scale is high but art stays centered", () => {
+    // 3× contain-fit centered: panel UV samples ~[0.33, 0.67] of the art.
+    const eff = { x: 200 - 300, y: 250 - 300, width: 600, height: 600 };
+    expect(leggingsPanelHorizontalArtCoverage(rect(eff))).toBeCloseTo(1, 5);
+    expect(leggingsArtworkFallingOffUnseenSide([rect(eff)])).toBe(false);
+  });
+
+  it("drops when art is nudged so a panel edge samples past the art", () => {
+    // At 3×, need a large X shift before a panel edge leaves artwork UV [0,1].
+    const eff = { x: 200 - 300 - 250, y: 250 - 300, width: 600, height: 600 };
+    const coverage = leggingsPanelHorizontalArtCoverage(rect(eff));
+    expect(coverage).toBeLessThan(0.98);
+    expect(leggingsArtworkFallingOffUnseenSide([rect(eff)])).toBe(true);
+  });
+
+  it("ignores disabled legs", () => {
+    const eff = { x: 200 - 300 - 250, y: 250 - 300, width: 600, height: 600 };
+    expect(
+      leggingsArtworkFallingOffUnseenSide([{ ...rect(eff), enabled: false }]),
+    ).toBe(false);
   });
 });
 

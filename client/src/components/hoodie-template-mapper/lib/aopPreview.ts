@@ -946,6 +946,40 @@ function synthesiseSeamAwareSourceRect(
  * Per-leg Place sampling (PatternCustomizer): full artwork fitted into one
  * leg panel with that group's scale/offset — not continuous half-slices.
  */
+/**
+ * Fraction of a leg panel's horizontal span that still samples inside the
+ * artwork UV [0, 1]. At high Place scale a centered motif can overhang the
+ * panel in mockup space while every panel pixel still hits art — coverage
+ * stays 1. Nudging left/right until a panel edge samples past the art edge
+ * drops coverage (art wrapping onto the unseen Front/Back side of the leg).
+ */
+export function leggingsPanelHorizontalArtCoverage(rect: DesignRectInfo): number {
+  const panel = rect.union;
+  const eff = rect.effective;
+  if (!(eff.width > 0) || !(panel.width > 0)) return 0;
+  const uL = (panel.x - eff.x) / eff.width;
+  const uR = (panel.x + panel.width - eff.x) / eff.width;
+  const span = uR - uL;
+  if (!(span > 1e-9)) return 0;
+  const valid = Math.min(uR, 1) - Math.max(uL, 0);
+  return Math.max(0, Math.min(1, valid / span));
+}
+
+/** ~2% of panel width empty before we warn — ignores float noise. */
+export const LEGGINGS_OFF_UNSEEN_SIDE_COVERAGE_MIN = 0.98;
+
+/** True when any enabled leg rect has slid past the left/right panel edge. */
+export function leggingsArtworkFallingOffUnseenSide(
+  rects: Iterable<DesignRectInfo | null | undefined>,
+  minCoverage = LEGGINGS_OFF_UNSEEN_SIDE_COVERAGE_MIN,
+): boolean {
+  for (const rect of rects) {
+    if (!rect?.enabled) continue;
+    if (leggingsPanelHorizontalArtCoverage(rect) < minCoverage) return true;
+  }
+  return false;
+}
+
 export function synthesiseLeggingsMirroredSourceRect(
   panelBb: Aabb,
   groupRect: DesignRectInfo,
