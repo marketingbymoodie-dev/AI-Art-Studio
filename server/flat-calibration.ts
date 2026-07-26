@@ -200,7 +200,9 @@ const PROBE_ROWS = 8;
 const PROBE_MAX_SRC_SIDE = 1600;
 // scale=1 + vertical overscan fills the print area via clip-to-boundary
 // (Printify clamps placement scale at 1.0 and ignores uploaded image px size).
-const REG_VERTICAL_OVERSCAN = 1.12;
+// 1.12 under-filled DTG chest areas on Heavy Blend hoodies (dashed guide short
+// vs real print). 1.20 matches what Printify still accepts after width-fit clip.
+const REG_VERTICAL_OVERSCAN = 1.2;
 /** Harvest blanks for every resolved colour unless caller caps via maxBlankColors. */
 const DEFAULT_MAX_BLANK_COLORS = 64;
 

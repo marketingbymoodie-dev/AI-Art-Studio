@@ -219,7 +219,8 @@ export function flatVisibleRectPx(
  * out of the mockup magenta AABB but still accepts art in the taller print
  * file — so the dashed guide must grow or it reads short at the collar.
  */
-export const FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST = 1.18;
+/** Fallback only when no mask — prefer reharvest with REG_VERTICAL_OVERSCAN 1.2. */
+export const FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST = 1.2;
 
 /**
  * Magenta harvest AABB often understates Printify printable height: at
@@ -614,9 +615,16 @@ export function flatPlacementRectPx(
     const mh = mask.naturalHeight || mask.height;
     const bounds = mw > 0 && mh > 0 ? flatMaskAlphaBoundsCached(mask) : null;
     if (bounds && bounds.width > 0 && bounds.height > 0) {
-      // Guide = where preview actually clips. Do not inflate above the mask or
-      // the dashed box reads short while art still paints in the mask.
-      return scaleRectToCanvas(bounds, mw, mh, canvasW, canvasH);
+      const fromMask = scaleRectToCanvas(bounds, mw, mh, canvasW, canvasH);
+      // Grow height to printFileDims aspect when an old short harvest mask
+      // understates the real DTG chest (reharvest with 1.2 overscan fixes root).
+      return expandPrintGuideToPrintFileAspect(
+        fromMask,
+        view.printFileDims,
+        canvasW,
+        canvasH,
+        1,
+      );
     }
   }
 
