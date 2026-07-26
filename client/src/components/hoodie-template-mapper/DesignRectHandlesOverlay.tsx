@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useRef } from "react";
+import { RotateCw } from "lucide-react";
 import type { HoodieTemplate, HoodieView } from "@shared/hoodieTemplate";
 import {
   computeGroupRects,
+  normalizeRotationDeg,
   type ArtworkPlacement,
   type DesignRectInfo,
 } from "./lib/aopPreview";
 
 /**
- * Reusable design-rect drag/resize overlay for AOP placement UIs.
+ * Reusable design-rect drag/resize/rotate overlay for AOP placement UIs.
  *
  * The overlay sits `inset-0` over the AOP preview canvas and exposes
- * drag-to-translate + corner-drag-to-resize gestures bound to
- * `ArtworkPlacement`. Aspect ratio is locked — the rect always
- * reflects the artwork's natural shape (computed by
+ * drag-to-translate + corner-drag-to-resize + bottom-right rotate
+ * gestures bound to `ArtworkPlacement`. Aspect ratio is locked — the
+ * rect always reflects the artwork's natural shape (computed by
  * `computeDesignRect`), so corner drags only ever scale uniformly,
  * never squish.
  *
@@ -27,6 +29,8 @@ import {
  *     centroid fixed while picking the bigger of the two pointer
  *     deltas to drive width (height is derived from the locked
  *     aspect).
+ *   - Rotate uses atan2 around the rect centre; positive degrees are
+ *     clockwise on screen (matches mesh `sourceRotation` / canvas).
  *
  * Used in two places today:
  *   - The admin AOP Preview Modal (this is where the component lived
@@ -89,6 +93,8 @@ export type DesignRectHandlesOverlayProps = {
   onChange: (next: ArtworkPlacement) => void;
 };
 
+const ROTATION_SNAP_DEG = 4;
+
 export default function DesignRectHandlesOverlay({
   canvasRef,
   template,
@@ -136,13 +142,14 @@ export default function DesignRectHandlesOverlay({
   const dragRef = useRef<
     | null
     | {
-        mode: "translate" | "scale";
+        mode: "translate" | "scale" | "rotate";
         corner?: "nw" | "ne" | "sw" | "se";
         startClientX: number;
         startClientY: number;
         startPlacement: ArtworkPlacement;
         startInfo: DesignRectInfo;
         canvasRect: DOMRect;
+        startAngleRad?: number;
       }
   >(null);
 
@@ -200,6 +207,28 @@ export default function DesignRectHandlesOverlay({
         return;
       }
 
+      if (drag.mode === "rotate") {
+        const start = drag.startInfo.effective;
+        const centre = {
+          x: start.x + start.width / 2,
+          y: start.y + start.height / 2,
+        };
+        const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
+        const angle = Math.atan2(m.y - centre.y, m.x - centre.x);
+        const startAngle = drag.startAngleRad ?? angle;
+        // Screen y-down: atan2 increases clockwise → matches CW rotationDeg.
+        const deltaDeg = ((angle - startAngle) * 180) / Math.PI;
+        let next = normalizeRotationDeg(
+          (drag.startPlacement.rotationDeg ?? 0) + deltaDeg,
+        );
+        if (Math.abs(next) <= ROTATION_SNAP_DEG) next = 0;
+        onChange({
+          ...drag.startPlacement,
+          rotationDeg: next,
+        });
+        return;
+      }
+
       // Scale: corner handles grow/shrink around the rect centre.
       // Scale is derived from the gesture-start size × start placement
       // scale — NOT effective/base. Linked leg unions set base=effective
@@ -231,9 +260,8 @@ export default function DesignRectHandlesOverlay({
           newScale = maxScale;
         }
         onChange({
+          ...drag.startPlacement,
           scale: newScale,
-          offsetX: drag.startPlacement.offsetX,
-          offsetY: drag.startPlacement.offsetY,
         });
         // `lockedScaleAroundAnchor` is now redundant (we always
         // scale around centre), but kept on the API for forward
@@ -263,13 +291,24 @@ export default function DesignRectHandlesOverlay({
 
   const startDrag = (
     e: React.PointerEvent<HTMLDivElement>,
-    mode: "translate" | "scale",
+    mode: "translate" | "scale" | "rotate",
     corner?: "nw" | "ne" | "sw" | "se",
   ) => {
     e.preventDefault();
     e.stopPropagation();
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    let startAngleRad: number | undefined;
+    if (mode === "rotate") {
+      const start = info.effective;
+      const centre = {
+        x: start.x + start.width / 2,
+        y: start.y + start.height / 2,
+      };
+      const m = clientToMockup(e.clientX, e.clientY, canvasRect);
+      startAngleRad = Math.atan2(m.y - centre.y, m.x - centre.x);
+    }
     dragRef.current = {
       mode,
       corner,
@@ -277,7 +316,8 @@ export default function DesignRectHandlesOverlay({
       startClientY: e.clientY,
       startPlacement: placement,
       startInfo: info,
-      canvasRect: canvas.getBoundingClientRect(),
+      canvasRect,
+      startAngleRad,
     };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   };
@@ -288,6 +328,8 @@ export default function DesignRectHandlesOverlay({
     width: (info.effective.width / mockupW) * 100,
     height: (info.effective.height / mockupH) * 100,
   };
+  const rotationDeg =
+    placement.rotationDeg ?? info.rotationDeg ?? 0;
 
   const handleSize = 14;
   const cornerStyle = (
@@ -320,6 +362,8 @@ export default function DesignRectHandlesOverlay({
           top: `${pctRect.top}%`,
           width: `${pctRect.width}%`,
           height: `${pctRect.height}%`,
+          transform: rotationDeg ? `rotate(${rotationDeg}deg)` : undefined,
+          transformOrigin: "50% 50%",
         }}
         // Stop clicks on the rect from bubbling to the canvas backdrop
         // (which uses onClick to toggle overlay visibility in the
@@ -342,6 +386,22 @@ export default function DesignRectHandlesOverlay({
             title="Drag corner to resize (aspect locked)"
           />
         ))}
+        <button
+          type="button"
+          onPointerDown={(e) => startDrag(e, "rotate")}
+          className="absolute flex h-7 w-7 items-center justify-center rounded-full border-2 border-primary/50 bg-background text-primary shadow-md hover:scale-110"
+          style={{
+            right: -handleSize / 2 - 22,
+            bottom: -handleSize / 2 - 22,
+            touchAction: "none",
+            cursor: "grab",
+          }}
+          title="Drag to rotate artwork"
+          aria-label="Rotate artwork"
+          data-testid="design-rect-rotate-handle"
+        >
+          <RotateCw className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );

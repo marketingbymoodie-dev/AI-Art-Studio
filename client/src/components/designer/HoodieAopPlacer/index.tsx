@@ -433,6 +433,7 @@ function oppositeSleevePlacement(left: ArtworkPlacement): ArtworkPlacement {
     scale: left.scale,
     offsetX: -left.offsetX,
     offsetY: left.offsetY,
+    rotationDeg: left.rotationDeg ?? 0,
   };
 }
 
@@ -680,6 +681,7 @@ function snapLegLinkHeights(
     ...left,
     offsetY: right.offsetY,
     scale: right.scale,
+    rotationDeg: right.rotationDeg ?? 0,
   };
   return {
     ...placements,
@@ -723,11 +725,13 @@ function propagateLinkedDeltas(
           scale: partnerCur.scale * ratio,
           offsetX: partnerCur.offsetX + dx,
           offsetY: nextSource.offsetY,
+          rotationDeg: nextSource.rotationDeg ?? 0,
         }
       : {
           scale: partnerCur.scale * ratio,
           offsetX: partnerCur.offsetX + dx,
           offsetY: partnerCur.offsetY + dy,
+          rotationDeg: nextSource.rotationDeg ?? 0,
         };
     result = {
       ...result,

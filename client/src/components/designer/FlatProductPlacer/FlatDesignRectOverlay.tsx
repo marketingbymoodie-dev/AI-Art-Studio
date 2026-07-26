@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
+import { RotateCw } from "lucide-react";
 
 /** Screen-pixel snap radius for centering artwork on the print-area axes. */
 const SNAP_SCREEN_PX = 10;
-import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
+const ROTATION_SNAP_DEG = 4;
+import {
+  normalizeRotationDeg,
+  type ArtworkPlacement,
+} from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   flatArtBox,
-  flatPlacementRectPx,
   flatVisibleRectPx,
   FLAT_SCALE_MIN,
   type Rect,
@@ -13,13 +17,13 @@ import {
 import type { FlatViewCalibration } from "@/pages/embed-design";
 
 /**
- * Self-contained drag/resize overlay for the flat-product placer.
+ * Self-contained drag/resize/rotate overlay for the flat-product placer.
  *
  * Mirrors the UX of the hoodie `DesignRectHandlesOverlay` (corner handles +
- * drag-to-move, aspect locked) but works directly off the flat manifest's
- * visible-print-rect instead of a hoodie template. It also paints a faint
- * dashed guide for the printable area so customers can see when their artwork
- * doesn't fully cover it.
+ * drag-to-move + bottom-right rotate, aspect locked) but works directly off
+ * the flat manifest's visible-print-rect instead of a hoodie template. It also
+ * paints a faint dashed guide for the printable area so customers can see when
+ * their artwork doesn't fully cover it.
  *
  * Placement is stored normalized to the print rect (offset = fraction of rect
  * width/height; scale relative to the "cover" baseline) so it stays reusable
@@ -73,13 +77,14 @@ export default function FlatDesignRectOverlay({
   const dragRef = useRef<
     | null
     | {
-        mode: "translate" | "scale";
+        mode: "translate" | "scale" | "rotate";
         startClientX: number;
         startClientY: number;
         startPlacement: ArtworkPlacement;
         canvasRect: DOMRect;
         rect: Rect;
         center: { x: number; y: number };
+        startAngleRad?: number;
       }
   >(null);
 
@@ -129,10 +134,25 @@ export default function FlatDesignRectOverlay({
         return;
       }
 
-      // Scale around the box centre (matches the slider). Aspect is locked, so
-      // derive the uniform scale from the pointer's distance to the centre.
       const mx = (e.clientX - drag.canvasRect.left) * sx;
       const my = (e.clientY - drag.canvasRect.top) * sy;
+
+      if (drag.mode === "rotate") {
+        const angle = Math.atan2(my - drag.center.y, mx - drag.center.x);
+        const startAngle = drag.startAngleRad ?? angle;
+        const deltaDeg = ((angle - startAngle) * 180) / Math.PI;
+        let rotationDeg = normalizeRotationDeg(
+          (drag.startPlacement.rotationDeg ?? 0) + deltaDeg,
+        );
+        if (Math.abs(rotationDeg) <= ROTATION_SNAP_DEG) rotationDeg = 0;
+        const next = { ...drag.startPlacement, rotationDeg };
+        latestPlacementRef.current = next;
+        onChange(next);
+        return;
+      }
+
+      // Scale around the box centre (matches the slider). Aspect is locked, so
+      // derive the uniform scale from the pointer's distance to the centre.
       const halfW = Math.abs(mx - drag.center.x);
       const halfH = Math.abs(my - drag.center.y);
       const cover = Math.max(
@@ -185,20 +205,31 @@ export default function FlatDesignRectOverlay({
 
   const startDrag = (
     e: React.PointerEvent<HTMLDivElement>,
-    mode: "translate" | "scale",
+    mode: "translate" | "scale" | "rotate",
   ) => {
     e.preventDefault();
     e.stopPropagation();
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    let startAngleRad: number | undefined;
+    if (mode === "rotate") {
+      const sx = mockupW / canvasRect.width;
+      const sy = mockupH / canvasRect.height;
+      const mx = (e.clientX - canvasRect.left) * sx;
+      const my = (e.clientY - canvasRect.top) * sy;
+      startAngleRad = Math.atan2(my - center.y, mx - center.x);
+    }
     dragRef.current = {
       mode,
       startClientX: e.clientX,
       startClientY: e.clientY,
       startPlacement: placement,
-      canvasRect: canvas.getBoundingClientRect(),
+      canvasRect,
       rect,
-      center: { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+      center,
+      startAngleRad,
     };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   };
@@ -281,7 +312,7 @@ export default function FlatDesignRectOverlay({
       />
       )}
 
-      {/* Artwork bounding box with drag + corner-resize handles. */}
+      {/* Artwork bounding box with drag + corner-resize + rotate handles. */}
       <div
         className="pointer-events-auto absolute select-none"
         style={{
@@ -289,6 +320,10 @@ export default function FlatDesignRectOverlay({
           top: `${boxPct.top}%`,
           width: `${boxPct.width}%`,
           height: `${boxPct.height}%`,
+          transform: placement.rotationDeg
+            ? `rotate(${placement.rotationDeg}deg)`
+            : undefined,
+          transformOrigin: "50% 50%",
         }}
         // Stop clicks from toggling the canvas backdrop; drag/resize uses
         // window pointerup (must not stopPropagation on pointerup or capture
@@ -310,6 +345,22 @@ export default function FlatDesignRectOverlay({
             title="Drag corner to resize (aspect locked, max 100%)"
           />
         ))}
+        <button
+          type="button"
+          onPointerDown={(e) => startDrag(e, "rotate")}
+          className="absolute flex h-7 w-7 items-center justify-center rounded-full border-2 border-primary/50 bg-background text-primary shadow-md hover:scale-110"
+          style={{
+            right: -handleSize / 2 - 22,
+            bottom: -handleSize / 2 - 22,
+            touchAction: "none",
+            cursor: "grab",
+          }}
+          title="Drag to rotate artwork"
+          aria-label="Rotate artwork"
+          data-testid="flat-rect-rotate-handle"
+        >
+          <RotateCw className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );

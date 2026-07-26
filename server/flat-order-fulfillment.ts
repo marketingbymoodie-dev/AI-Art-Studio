@@ -555,8 +555,13 @@ export async function resolveDesignForOrderLine(
   for (const v of VIEWS) {
     const p = flatPlacerState?.placements?.[v];
     placements[v] = p && typeof p === "object"
-      ? { scale: Number(p.scale ?? 1), offsetX: Number(p.offsetX ?? 0), offsetY: Number(p.offsetY ?? 0) }
-      : { scale: 1, offsetX: 0, offsetY: 0 };
+      ? {
+          scale: Number(p.scale ?? 1),
+          offsetX: Number(p.offsetX ?? 0),
+          offsetY: Number(p.offsetY ?? 0),
+          rotationDeg: Number((p as { rotationDeg?: number }).rotationDeg ?? 0) || 0,
+        }
+      : { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 };
     if (flatPlacerState?.enabled && typeof flatPlacerState.enabled[v] === "boolean") {
       enabled[v] = flatPlacerState.enabled[v]!;
     }

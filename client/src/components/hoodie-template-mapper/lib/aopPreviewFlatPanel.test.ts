@@ -1,14 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFlatMeshTargetPoints,
+  composeArtworkSourceRotation,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
+  normalizeRotationDeg,
   printPanelOutputScale,
   sleevePanelHalfSourceRect,
   synthesiseLeggingsMirroredSourceRect,
   type DesignRectInfo,
 } from "./aopPreview";
+
+describe("normalizeRotationDeg / composeArtworkSourceRotation", () => {
+  it("normalizes to (-180, 180]", () => {
+    expect(normalizeRotationDeg(270)).toBe(-90);
+    expect(normalizeRotationDeg(-270)).toBe(90);
+    expect(normalizeRotationDeg(180)).toBe(180);
+  });
+
+  it("composes calibration + customer Place rotation", () => {
+    expect(composeArtworkSourceRotation(90, 15)).toBe(105);
+    expect(composeArtworkSourceRotation(0, -10)).toBe(-10);
+  });
+});
 
 describe("printPanelOutputScale", () => {
   it("upscales mockup-sized sourceRect toward 3200 (not placeholder 12k)", () => {
@@ -97,6 +112,7 @@ describe("leggingsPanelHorizontalArtCoverage", () => {
       seamAllowance: 0,
       groupId: "right-leg",
       enabled: true,
+      rotationDeg: 0,
     };
   }
 
@@ -137,6 +153,7 @@ describe("synthesiseLeggingsMirroredSourceRect", () => {
       seamAllowance: 0,
       groupId: "legs",
       enabled: true,
+      rotationDeg: 0,
     };
     // Tall artwork 200×400 — fits the panel exactly.
     const left = synthesiseLeggingsMirroredSourceRect(

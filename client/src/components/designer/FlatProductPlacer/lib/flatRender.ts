@@ -583,6 +583,27 @@ export function flatArtBox(
   return { x: cx - drawW / 2, y: cy - drawH / 2, width: drawW, height: drawH };
 }
 
+/** Draw artwork into `box`, optionally rotated CW around the box centre. */
+export function drawFlatArtwork(
+  ctx: CanvasRenderingContext2D,
+  artwork: CanvasImageSource,
+  box: Rect,
+  rotationDeg = 0,
+): void {
+  const deg = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+  if (!deg) {
+    ctx.drawImage(artwork, box.x, box.y, box.width, box.height);
+    return;
+  }
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(artwork, -box.width / 2, -box.height / 2, box.width, box.height);
+  ctx.restore();
+}
+
 /** True when the artwork box fully covers the print rect (no garment edges). */
 export function flatCovers(rect: Rect, box: Rect): boolean {
   const eps = 0.5;
@@ -1991,7 +2012,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     if (!actx) return;
 
     const box = flatArtBox(rect, placement, artW, artH);
-    actx.drawImage(artwork, box.x, box.y, box.width, box.height);
+    drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
 
     if (mask) {
       clipMaskToDest(actx, maskDraw);
@@ -2100,7 +2121,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     const mesh = buildMeshGrid(view, scaleX, scaleY, printRect);
     if (pctx && mesh) {
       const box = flatArtBox(printRect, placement, artW, artH);
-      pctx.drawImage(artwork, box.x, box.y, box.width, box.height);
+      drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
       drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
       drewMesh = true;
     }
@@ -2108,7 +2129,7 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (!drewMesh) {
     const box = flatArtBox(rect, placement, artW, artH);
-    actx.drawImage(artwork, box.x, box.y, box.width, box.height);
+    drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
   }
 
   clipFlatArtToPrintArea(actx, {

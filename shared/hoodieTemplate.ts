@@ -465,12 +465,15 @@ export type GroupPlacement = {
   scale: number;
   offsetX: number;
   offsetY: number;
+  /** Clockwise degrees on the mockup (0 = upright). Optional for legacy templates. */
+  rotationDeg?: number;
 };
 
 export const DEFAULT_GROUP_PLACEMENT: GroupPlacement = {
   scale: 1,
   offsetX: 0,
   offsetY: 0,
+  rotationDeg: 0,
 };
 
 /** Per-subset UV sampling bias within a design group (% of group design rect). */

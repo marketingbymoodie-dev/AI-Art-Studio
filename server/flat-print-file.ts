@@ -33,7 +33,13 @@ import {
   isSupabaseFlatCalibrationConfigured,
 } from "./supabaseFlatCalibration";
 
-export type FlatPlacement = { scale: number; offsetX: number; offsetY: number };
+export type FlatPlacement = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  /** Clockwise degrees (matches client Place rotate handle). */
+  rotationDeg?: number;
+};
 export type Rect = { x: number; y: number; width: number; height: number };
 export type PrintFileDims = { width: number; height: number };
 
@@ -114,16 +120,36 @@ export async function bakeFlatPrintFile(
 
   const drawW = Math.max(1, Math.round(box.width));
   const drawH = Math.max(1, Math.round(box.height));
-  const left = Math.round(box.x);
-  const top = Math.round(box.y);
+  const rotationDeg = Number(placement.rotationDeg ?? 0) || 0;
 
-  // Resize the artwork to its on-canvas draw box, then crop to the portion that
-  // actually lands inside the print canvas (replicates canvas drawImage clip).
-  const resized = await sharp(artworkBuffer)
+  // Resize the artwork to its on-canvas draw box, then optionally rotate
+  // around the box centre (sharp expands the canvas for non-90° angles).
+  let overlayRaw = await sharp(artworkBuffer)
     .resize(drawW, drawH, { fit: "fill" })
     .ensureAlpha()
     .png()
     .toBuffer();
+
+  let left = Math.round(box.x);
+  let top = Math.round(box.y);
+  let placedW = drawW;
+  let placedH = drawH;
+
+  if (rotationDeg !== 0) {
+    overlayRaw = await sharp(overlayRaw)
+      .rotate(rotationDeg, {
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
+    const rotMeta = await sharp(overlayRaw).metadata();
+    placedW = Math.max(1, rotMeta.width ?? drawW);
+    placedH = Math.max(1, rotMeta.height ?? drawH);
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    left = Math.round(cx - placedW / 2);
+    top = Math.round(cy - placedH / 2);
+  }
 
   const base = sharp({
     create: { width: printW, height: printH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
@@ -134,8 +160,8 @@ export async function bakeFlatPrintFile(
   const sy = top < 0 ? -top : 0;
   const destLeft = Math.max(0, left);
   const destTop = Math.max(0, top);
-  const visibleW = Math.min(drawW - sx, printW - destLeft);
-  const visibleH = Math.min(drawH - sy, printH - destTop);
+  const visibleW = Math.min(placedW - sx, printW - destLeft);
+  const visibleH = Math.min(placedH - sy, printH - destTop);
 
   if (visibleW <= 0 || visibleH <= 0) {
     // Artwork is entirely off-canvas — emit a transparent print file.
@@ -143,9 +169,9 @@ export async function bakeFlatPrintFile(
     return { buffer, width: printW, height: printH };
   }
 
-  let overlay = resized;
-  if (sx > 0 || sy > 0 || visibleW < drawW || visibleH < drawH) {
-    overlay = await sharp(resized)
+  let overlay = overlayRaw;
+  if (sx > 0 || sy > 0 || visibleW < placedW || visibleH < placedH) {
+    overlay = await sharp(overlayRaw)
       .extract({ left: sx, top: sy, width: visibleW, height: visibleH })
       .png()
       .toBuffer();

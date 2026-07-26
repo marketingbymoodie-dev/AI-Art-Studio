@@ -131,13 +131,35 @@ export type ArtworkPlacement = {
   scale: number;
   offsetX: number;
   offsetY: number;
+  /** Clockwise degrees on the mockup (0 = upright). Optional for legacy saves. */
+  rotationDeg?: number;
 };
 
 export const DEFAULT_ARTWORK_PLACEMENT: ArtworkPlacement = {
   scale: 1,
   offsetX: 0,
   offsetY: 0,
+  rotationDeg: 0,
 };
+
+/** Normalize to (-180, 180] for stable compare / snap. */
+export function normalizeRotationDeg(deg: number): number {
+  if (!Number.isFinite(deg)) return 0;
+  let d = deg % 360;
+  if (d > 180) d -= 360;
+  if (d <= -180) d += 360;
+  return d;
+}
+
+/** Compose calibration mesh rotation with customer Place rotation (both CW). */
+export function composeArtworkSourceRotation(
+  meshSourceRotation: number | null | undefined,
+  placementRotationDeg: number | null | undefined,
+): number {
+  return normalizeRotationDeg(
+    (meshSourceRotation ?? 0) + (placementRotationDeg ?? 0),
+  );
+}
 
 export type AopPreviewParams = {
   template: HoodieTemplate;
@@ -430,6 +452,8 @@ export type DesignRectInfo = {
   groupId: string;
   /** Whether the group is enabled (false → background colour only). */
   enabled: boolean;
+  /** Customer Place rotation (CW deg); applied in source UV / draw. */
+  rotationDeg: number;
 };
 
 /**
@@ -561,6 +585,7 @@ function computeGroupRect(
     seamAllowance,
     groupId,
     enabled,
+    rotationDeg: normalizeRotationDeg(placement.rotationDeg ?? 0),
   };
 }
 
@@ -1013,6 +1038,7 @@ export function synthesiseLeggingsMirroredSourceRect(
     seamAllowance: 0,
     groupId: groupRect.groupId,
     enabled: groupRect.enabled,
+    rotationDeg: groupRect.rotationDeg ?? 0,
   };
   return synthesiseSeamAwareSourceRect(panelBb, perPanelRect, aw, ah, "none");
 }
@@ -1180,6 +1206,10 @@ export function renderHoodFlatPanel(
     ...frontLayer.mesh,
     targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
     sourceRect: slice,
+    sourceRotation: composeArtworkSourceRotation(
+      frontLayer.mesh.sourceRotation,
+      frontRect.rotationDeg,
+    ),
     sourceFlipX: meshSourceFlipXForPanel(
       frontLayer.panelKey,
       frontLayer.mesh.sourceFlipX,
@@ -2431,6 +2461,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         drawMeshWarp(pctx, artwork, aw, ah, {
           ...layer.mesh,
           sourceRect: synthSrc,
+          sourceRotation: composeArtworkSourceRotation(
+            layer.mesh.sourceRotation,
+            layerRect?.rotationDeg,
+          ),
           sourceFlipX: meshSourceFlipXForPanel(
             layer.panelKey,
             layer.mesh.sourceFlipX,
@@ -2467,17 +2501,38 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             seamSideForLayer(layer),
             params.legsMirrored,
           );
-          pctx.drawImage(
-            artwork,
-            slice.x,
-            slice.y,
-            slice.width,
-            slice.height,
-            bb.x,
-            bb.y,
-            bb.width,
-            bb.height,
-          );
+          const rot = layerRect.rotationDeg ?? 0;
+          if (!rot) {
+            pctx.drawImage(
+              artwork,
+              slice.x,
+              slice.y,
+              slice.width,
+              slice.height,
+              bb.x,
+              bb.y,
+              bb.width,
+              bb.height,
+            );
+          } else {
+            const cx = bb.x + bb.width / 2;
+            const cy = bb.y + bb.height / 2;
+            pctx.save();
+            pctx.translate(cx, cy);
+            pctx.rotate((rot * Math.PI) / 180);
+            pctx.drawImage(
+              artwork,
+              slice.x,
+              slice.y,
+              slice.width,
+              slice.height,
+              -bb.width / 2,
+              -bb.height / 2,
+              bb.width,
+              bb.height,
+            );
+            pctx.restore();
+          }
         }
       } else {
         const bb = layerBb;
