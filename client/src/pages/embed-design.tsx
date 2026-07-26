@@ -2407,6 +2407,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     });
   }, [postGenGalleryItems]);
 
+  // Place ↔ Pattern auto-apply must not yank off an on-screen Printers Mockup.
+  useEffect(() => {
+    const item = postGenGalleryItems[selectedMockupIndex];
+    if (item?.kind === "mockup" && isPersonMockupLabel(item.label)) {
+      stickAopPersonGalleryRef.current = true;
+    }
+  }, [selectedMockupIndex, postGenGalleryItems]);
+
+  // Mode switch changes placer signature → auto-apply; re-stick if person shots exist
+  // and we were (or still are) on a person gallery slide.
+  useEffect(() => {
+    if (!hoodieAopPlacerState?.mode) return;
+    if (aopPersonMockupsRef.current.length === 0) return;
+    setSelectedMockupIndex((prev) => {
+      const cur = postGenGalleryItems[prev];
+      if (cur?.kind === "mockup" && isPersonMockupLabel(cur.label)) {
+        stickAopPersonGalleryRef.current = true;
+        return prev;
+      }
+      if (!stickAopPersonGalleryRef.current) return prev;
+      const idx = postGenGalleryItems.findIndex(
+        (item) =>
+          item.kind === "mockup" && isPersonMockupLabel(item.label),
+      );
+      return idx >= 0 ? idx : prev;
+    });
+  }, [hoodieAopPlacerState?.mode, postGenGalleryItems]);
+
   // Storefront / theme iframe: land on the product preview box after hard refresh.
   // The parent page often restores scroll at the footer once the iframe auto-resizes.
   useEffect(() => {
@@ -7015,14 +7043,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const withPersonUrls = withPerson.map((i) => i.url);
       setPrintifyMockupImages(withPerson);
       setPrintifyMockups(withPersonUrls);
-      if (stickAopPersonGalleryRef.current && aopPersonMockupsRef.current.length) {
+      // Keep Printers Mockup visible across Place↔Pattern (auto-apply) when
+      // person shots exist and the customer was viewing one / stick is on.
+      setSelectedMockupIndex((prev) => {
+        const keepPerson =
+          stickAopPersonGalleryRef.current &&
+          aopPersonMockupsRef.current.length > 0;
+        if (!keepPerson) return 0;
         const personIdx = withPerson.findIndex((m) =>
           isPersonMockupLabel(m.label),
         );
-        setSelectedMockupIndex(personIdx >= 0 ? 1 + personIdx : 0);
-      } else {
-        setSelectedMockupIndex(0);
-      }
+        return personIdx >= 0 ? 1 + personIdx : prev;
+      });
       // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
       // ATC. The hoodie placer has no separate "pattern" — the local
       // composite IS the artwork — so we point it at the front raster.
@@ -10899,13 +10931,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               true,
                             );
                             const item = postGenGalleryItems[next];
-                            if (
-                              !item ||
-                              item.kind !== "mockup" ||
-                              !isPersonMockupLabel(item.label)
-                            ) {
-                              stickAopPersonGalleryRef.current = false;
-                            }
+                            stickAopPersonGalleryRef.current = !!(
+                              item?.kind === "mockup" &&
+                              isPersonMockupLabel(item.label)
+                            );
                             return next;
                           })
                         }
@@ -10926,13 +10955,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               true,
                             );
                             const item = postGenGalleryItems[next];
-                            if (
-                              !item ||
-                              item.kind !== "mockup" ||
-                              !isPersonMockupLabel(item.label)
-                            ) {
-                              stickAopPersonGalleryRef.current = false;
-                            }
+                            stickAopPersonGalleryRef.current = !!(
+                              item?.kind === "mockup" &&
+                              isPersonMockupLabel(item.label)
+                            );
                             return next;
                           })
                         }

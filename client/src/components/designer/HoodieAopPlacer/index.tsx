@@ -2225,7 +2225,7 @@ export default function HoodieAopPlacer({
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Part
             </div>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
               {placePartGroups.map((g) => {
                 const pressed =
                   g.id === LEGS_PART_ID
@@ -2242,14 +2242,14 @@ export default function HoodieAopPlacer({
                     )}`}
                   >
                     {g.name}
-                    {g.id === LEGS_PART_ID ? (
-                      <span className="ml-1 font-normal text-muted-foreground">
-                        (Wearer&apos;s leg)
-                      </span>
-                    ) : null}
                   </button>
                 );
               })}
+              {isLeggings && (
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  (Wearer&apos;s leg)
+                </span>
+              )}
             </div>
             {hasSleeves && isSleevesPart(state.activeGroupId) && (
               <div className="mt-1.5">
