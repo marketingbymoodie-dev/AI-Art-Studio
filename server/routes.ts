@@ -18285,11 +18285,12 @@ ${orientationExtra}
     const shop: string = installation.shopDomain;
 
     try {
-      const productTypes = isPlatformAdminRequest(req)
-        ? await storage.getActiveProductTypes()
-        : installation.merchantId
-          ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
-          : [];
+      // Always scope to THIS shop's merchant catalog. Platform admins used to
+      // see every merchant's product types here, which made already-published
+      // products look like "(new — will be sent to store)" duplicates.
+      const productTypes = installation.merchantId
+        ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
+        : [];
 
       // Enrich products that are already on Shopify with live variant data.
       // Products not yet on Shopify are included with needsShopifySync: true.

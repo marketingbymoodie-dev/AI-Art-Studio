@@ -929,7 +929,9 @@ export default function AdminCustomizerPages() {
                               return (
                                 <SelectItem key={val} value={val}>
                                   {blank.title}
-                                  {blank.needsShopifySync ? " (new — will be sent to store)" : ""}
+                                  {blank.needsShopifySync
+                                    ? " (not on this store yet — will be created)"
+                                    : ""}
                                 </SelectItem>
                               );
                             })}
@@ -938,7 +940,10 @@ export default function AdminCustomizerPages() {
                       )}
                       {selectedBlank?.needsShopifySync ? (
                         <p className="text-xs text-muted-foreground mt-1">
-                          This product will be automatically created on your store when you finish setting up this page.
+                          This catalog product is not linked to a Shopify product in this store
+                          (or the link is stale). Finishing this page will create/send it to the
+                          store. Having a customizer page elsewhere does not mean it is already
+                          on Shopify here.
                         </p>
                       ) : null}
                       {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
