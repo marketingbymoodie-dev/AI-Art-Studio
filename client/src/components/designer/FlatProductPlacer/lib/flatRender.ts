@@ -591,6 +591,122 @@ export function flatMaskAlphaBoundsCached(
 }
 
 /**
+ * Opaque-content bounds of an artwork image as fractions of its pixel size.
+ * Generated/uploaded PNGs often carry transparent padding; the bounding box
+ * and trim warnings should track the visible pixels, not the padded rect.
+ * Null when unreadable (cross-origin without CORS) or fully transparent —
+ * callers fall back to the full image rect.
+ */
+export type ArtContentFractions = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+const artContentFractionsCache = new WeakMap<
+  HTMLImageElement,
+  ArtContentFractions | null
+>();
+
+export function flatArtContentFractionsCached(
+  artwork: HTMLImageElement,
+): ArtContentFractions | null {
+  if (artContentFractionsCache.has(artwork)) {
+    return artContentFractionsCache.get(artwork)!;
+  }
+  const w = artwork.naturalWidth || artwork.width;
+  const h = artwork.naturalHeight || artwork.height;
+  const bounds = w > 0 && h > 0 ? flatImageAlphaBounds(artwork) : null;
+  const fractions =
+    bounds && bounds.width > 0 && bounds.height > 0
+      ? {
+          left: bounds.x / w,
+          top: bounds.y / h,
+          width: bounds.width / w,
+          height: bounds.height / h,
+        }
+      : null;
+  artContentFractionsCache.set(artwork, fractions);
+  return fractions;
+}
+
+/** Sub-rect of a placed artwork box covering only the opaque content. */
+export function flatArtContentSubRect(
+  fullBox: Rect,
+  content: ArtContentFractions | null,
+): Rect {
+  if (!content) return fullBox;
+  return {
+    x: fullBox.x + content.left * fullBox.width,
+    y: fullBox.y + content.top * fullBox.height,
+    width: content.width * fullBox.width,
+    height: content.height * fullBox.height,
+  };
+}
+
+/** Axis-aligned bounds of `rect` rotated `deg` degrees around (cx, cy). */
+export function flatRotatedAabbAround(
+  rect: Rect,
+  cx: number,
+  cy: number,
+  deg: number,
+): Rect {
+  if (!deg) return rect;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const corners = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x, y: rect.y + rect.height },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+  ];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const c of corners) {
+    const dx = c.x - cx;
+    const dy = c.y - cy;
+    const rx = cx + dx * cos - dy * sin;
+    const ry = cy + dx * sin + dy * cos;
+    if (rx < minX) minX = rx;
+    if (ry < minY) minY = ry;
+    if (rx > maxX) maxX = rx;
+    if (ry > maxY) maxY = ry;
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Axis-aligned bounds of the placed artwork's OPAQUE content (rotation applied
+ * around the full image centre — the true rotation origin). Used for trim /
+ * coverage warnings so transparent PNG padding neither triggers false trim
+ * warnings nor fakes coverage.
+ */
+export function flatVisibleArtBoxAxisAligned(
+  rect: Rect,
+  placement: ArtworkPlacement,
+  artwork: HTMLImageElement,
+): Rect {
+  const artW = artwork.naturalWidth || artwork.width || 1;
+  const artH = artwork.naturalHeight || artwork.height || 1;
+  const fullBox = flatArtBox(rect, placement, artW, artH);
+  const content = flatArtContentFractionsCached(artwork);
+  const sub = flatArtContentSubRect(fullBox, content);
+  const deg = Number.isFinite(placement.rotationDeg)
+    ? Number(placement.rotationDeg)
+    : 0;
+  return flatRotatedAabbAround(
+    sub,
+    fullBox.x + fullBox.width / 2,
+    fullBox.y + fullBox.height / 2,
+    deg,
+  );
+}
+
+/**
  * Coordinate system for placement + print-file bake.
  * Edge-wrap: full print canvas. Apparel: prefer the live mask alpha AABB so the
  * dashed guide matches destination-in clipping (harvest magenta AABB is often

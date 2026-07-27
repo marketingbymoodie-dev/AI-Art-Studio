@@ -28,7 +28,7 @@ import {
 } from "./lib/flatAssets";
 import {
   flatCovers,
-  flatArtBoxAxisAligned,
+  flatVisibleArtBoxAxisAligned,
   flatOverflows,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
@@ -813,13 +813,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled && placementRect) {
-    const artW = artworkImg.naturalWidth || artworkImg.width || 1;
-    const artH = artworkImg.naturalHeight || artworkImg.height || 1;
     const placed = {
       ...placement,
       scale: clampPlacementScale(placement.scale),
     };
-    const box = flatArtBoxAxisAligned(placementRect, placed, artW, artH);
+    // Opaque-content bounds: transparent PNG padding must not trigger false
+    // trim warnings (nothing visible is clipped) nor fake print-area coverage.
+    const box = flatVisibleArtBoxAxisAligned(placementRect, placed, artworkImg);
     if (edgeWrapMode || decorMode || fabricWeave) {
       // Tapestry / decor / phone: warn when art leaves the print area uncovered.
       if (!flatCovers(placementRect, box)) {

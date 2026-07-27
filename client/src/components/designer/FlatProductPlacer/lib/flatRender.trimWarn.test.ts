@@ -4,7 +4,9 @@ import {
   flatApparelArtworkTrimmed,
   flatArtBox,
   flatArtBoxAxisAligned,
+  flatArtContentSubRect,
   flatOverflows,
+  flatRotatedAabbAround,
   FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
 } from "./flatRender";
 
@@ -79,5 +81,41 @@ describe("flatArtBoxAxisAligned", () => {
     const rotated = flatArtBoxAxisAligned(rect, placement, 100, 100);
     expect(rotated.width).toBeGreaterThan(plain.width);
     expect(rotated.height).toBeGreaterThan(plain.height);
+  });
+});
+
+describe("flatArtContentSubRect", () => {
+  const fullBox = { x: 100, y: 200, width: 400, height: 300 };
+
+  it("returns the full box when content fractions are null (CORS fallback)", () => {
+    expect(flatArtContentSubRect(fullBox, null)).toEqual(fullBox);
+  });
+
+  it("maps opaque-content fractions into the placed box", () => {
+    // PNG with 25% padding left, 10% top; content covers 50% x 80%.
+    const sub = flatArtContentSubRect(fullBox, {
+      left: 0.25,
+      top: 0.1,
+      width: 0.5,
+      height: 0.8,
+    });
+    expect(sub).toEqual({ x: 200, y: 230, width: 200, height: 240 });
+  });
+});
+
+describe("flatRotatedAabbAround", () => {
+  it("is identity at 0°", () => {
+    const r = { x: 10, y: 20, width: 30, height: 40 };
+    expect(flatRotatedAabbAround(r, 25, 40, 0)).toEqual(r);
+  });
+
+  it("rotates around an external pivot (full-image centre), not the rect centre", () => {
+    // Content rect sits right of the pivot; 90° rotation should move it below.
+    const r = { x: 100, y: -10, width: 20, height: 20 };
+    const aabb = flatRotatedAabbAround(r, 0, 0, 90);
+    expect(aabb.x).toBeCloseTo(-10, 5);
+    expect(aabb.y).toBeCloseTo(100, 5);
+    expect(aabb.width).toBeCloseTo(20, 5);
+    expect(aabb.height).toBeCloseTo(20, 5);
   });
 });
