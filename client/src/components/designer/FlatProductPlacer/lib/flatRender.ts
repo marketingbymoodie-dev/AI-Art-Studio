@@ -615,20 +615,18 @@ export function flatPlacementRectPx(
     const mh = mask.naturalHeight || mask.height;
     const bounds = mw > 0 && mh > 0 ? flatMaskAlphaBoundsCached(mask) : null;
     if (bounds && bounds.width > 0 && bounds.height > 0) {
-      const fromMask = scaleRectToCanvas(bounds, mw, mh, canvasW, canvasH);
-      // Grow height to printFileDims aspect when an old short harvest mask
-      // understates the real DTG chest (reharvest with 1.2 overscan fixes root).
-      return expandPrintGuideToPrintFileAspect(
-        fromMask,
-        view.printFileDims,
-        canvasW,
-        canvasH,
-        1,
-      );
+      // Exact WYSIWYG: the guide IS the mask AABB — no aspect expansion.
+      // A guide taller than the mask overpromises (art clips inside the line).
+      // Short old harvests are fixed by reharvesting, not by stretching here.
+      return scaleRectToCanvas(bounds, mw, mh, canvasW, canvasH);
     }
+    // Mask pixels unreadable — the harvest AABB was derived from the same
+    // magenta mask, so it matches the destination-in clip. No boost: a boosted
+    // guide would extend past where the mask actually clips.
+    return harvest;
   }
 
-  // No usable mask — fall back to harvest AABB + Printify overscan boost.
+  // No mask at all — clip is fillRect(rect), so the boosted rect stays WYSIWYG.
   return expandPrintGuideToPrintFileAspect(
     harvest,
     view.printFileDims,
@@ -1305,11 +1303,14 @@ function solidifyMaskForClip(
 
 /**
  * Clip the offscreen artwork layer to the printable area.
- * Prefer the pixel mask when present; otherwise hard-clip to `rect` (wall-decal
- * catalog blanks skip the shared harvest mask but still need side/top trim).
+ * Prefer the pixel mask when present, then ALSO erase everything outside the
+ * dashed guide `rect` so artwork can never display past the guide even when a
+ * fallback made the two diverge (e.g. mask pixels unreadable → guide from
+ * harvest AABB). WYSIWYG must hold structurally, not per-path.
  *
- * Note: do not follow mask clip with destination-in + fillRect(rect) — fillRect
- * only touches pixels inside the rect, so outside pixels are left unchanged.
+ * Note: destination-in + fillRect(rect) cannot intersect (fillRect only
+ * touches pixels inside the rect); erasing the four outside margins with
+ * destination-out is a true intersection using only draw calls.
  */
 export function clipFlatArtToPrintArea(
   actx: CanvasRenderingContext2D,
@@ -1320,7 +1321,7 @@ export function clipFlatArtToPrintArea(
     canvasH: number;
     fabricWeave?: boolean;
   },
-): "mask" | "rect" {
+): "mask" | "rect" | "mask+rect" {
   const { mask, rect, canvasW, canvasH, fabricWeave } = opts;
   actx.globalCompositeOperation = "destination-in";
   if (mask) {
@@ -1329,8 +1330,20 @@ export function clipFlatArtToPrintArea(
     } else {
       actx.drawImage(mask, 0, 0, canvasW, canvasH);
     }
+    let mode: "mask" | "mask+rect" = "mask";
+    if (rect.width > 0 && rect.height > 0) {
+      actx.globalCompositeOperation = "destination-out";
+      actx.fillStyle = "#fff";
+      const right = rect.x + rect.width;
+      const bottom = rect.y + rect.height;
+      if (rect.x > 0) actx.fillRect(0, 0, rect.x, canvasH);
+      if (right < canvasW) actx.fillRect(right, 0, canvasW - right, canvasH);
+      if (rect.y > 0) actx.fillRect(0, 0, canvasW, rect.y);
+      if (bottom < canvasH) actx.fillRect(0, bottom, canvasW, canvasH - bottom);
+      mode = "mask+rect";
+    }
     actx.globalCompositeOperation = "source-over";
-    return "mask";
+    return mode;
   }
   actx.fillStyle = "#fff";
   actx.fillRect(rect.x, rect.y, rect.width, rect.height);
