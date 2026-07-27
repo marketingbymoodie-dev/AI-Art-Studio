@@ -287,6 +287,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
   /** View-only zoom of the editor canvas (does not change print placement). */
   const [previewZoom, setPreviewZoom] = useState(1);
+  /**
+   * Canvas CSS box (offsetWidth/Height). The dashed-guide overlay MUST match
+   * this exactly — sizing it via the wrapper's `inset-0` desyncs whenever the
+   * wrapper is max-height constrained shorter than the canvas (aspect-square
+   * + zoom-bar padding), which makes the guide float above/inside the real clip.
+   */
+  const [canvasCssBox, setCanvasCssBox] = useState({ w: 0, h: 0 });
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -578,6 +585,29 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     if (!canvas) return;
     renderInto(canvas, state.view, false);
   }, [state, assets, artworkImg, renderInto]);
+
+  // Keep the guide overlay's CSS box locked to the canvas element (not the
+  // max-height-constrained wrapper — that was drawing the dashed line short).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvasOverrideUrl) {
+      setCanvasCssBox({ w: 0, h: 0 });
+      return;
+    }
+    const sync = () => {
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      setCanvasCssBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(canvas);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg]);
 
   // ---------- Apply hand-off ----------
   const renderViewToCanvas = useCallback(
@@ -875,12 +905,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           data-testid="flat-placer-canvas-area"
         >
           {/*
-            inline-block + leading-none so the overlay's absolute inset-0 matches
-            the canvas CSS box exactly (a flex wrapper can letterbox and desync
-            the dashed guide from where pixels are clipped).
+            Wrapper sizes to the canvas (no max-h-full — that was shorter than
+            the canvas under aspect-square + zoom-bar padding, so inset-0 guides
+            floated away from the real clip). Overlay is explicitly sized to
+            canvas offsetWidth/Height.
           */}
           <div
-            className="relative inline-block max-h-full max-w-full overflow-hidden leading-none"
+            className="relative inline-block max-w-full leading-none"
             style={{
               transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
               transformOrigin: "center center",
@@ -914,22 +945,30 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               showOverlay &&
               calib &&
               viewAssets.blank &&
-              artworkImg && (
-                <FlatDesignRectOverlay
-                  canvasRef={canvasRef}
-                  view={calib}
-                  artwork={artworkImg}
-                  placement={{ ...placement, scale: displayScale }}
-                  edgeWrapMode={edgeWrapMode}
-                  innerGuideRect={displayEdgeGuides?.inner ?? null}
-                  outerGuideRect={displayEdgeGuides?.outer ?? null}
-                  placementRect={placementRect}
-                  scaleMax={scaleMax}
-                  onChange={(next) => updatePlacement(state.view, next)}
-                  onDragActivity={() => {
-                    canvasDragRef.current = true;
-                  }}
-                />
+              artworkImg &&
+              canvasCssBox.w > 0 &&
+              canvasCssBox.h > 0 && (
+                <div
+                  className="pointer-events-none absolute left-0 top-0"
+                  style={{ width: canvasCssBox.w, height: canvasCssBox.h }}
+                  data-testid="flat-rect-overlay-host"
+                >
+                  <FlatDesignRectOverlay
+                    canvasRef={canvasRef}
+                    view={calib}
+                    artwork={artworkImg}
+                    placement={{ ...placement, scale: displayScale }}
+                    edgeWrapMode={edgeWrapMode}
+                    innerGuideRect={displayEdgeGuides?.inner ?? null}
+                    outerGuideRect={displayEdgeGuides?.outer ?? null}
+                    placementRect={placementRect}
+                    scaleMax={scaleMax}
+                    onChange={(next) => updatePlacement(state.view, next)}
+                    onDragActivity={() => {
+                      canvasDragRef.current = true;
+                    }}
+                  />
+                </div>
               )
             )}
             {!canvasOverrideUrl && !artworkImg && !artworkLoading && (

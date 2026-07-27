@@ -311,6 +311,7 @@ export default function FlatDesignRectOverlay({
     } as React.CSSProperties;
   };
 
+  // Root fills host sized to the canvas CSS box (see FlatProductPlacer).
   return (
     <div
       className="pointer-events-none absolute inset-0 overflow-hidden"
