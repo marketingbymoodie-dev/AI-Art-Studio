@@ -24,6 +24,7 @@ import {
   resolveFlatBlank,
   resolveFlatViewCalibration,
   resolveCalibratorLayerAdjust,
+  withFlatAssetVersion,
   type FlatViewName,
 } from "./lib/flatAssets";
 import {
@@ -317,19 +318,26 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         // Use colorId (e.g. 20x30:white) for mask/geometry — size-only geometryKey
         // misses decorPerSize geometryByBlank and falls back to the shared 11×14 mask.
         const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
-        const blankUrl =
-          v === "front" && blankUrlOverride ? blankUrlOverride : blank[v];
+        const isOverrideBlank = v === "front" && !!blankUrlOverride;
+        const blankUrl = isOverrideBlank ? blankUrlOverride : blank[v];
         if (!calib || !blankUrl) continue;
+        // Version-pin harvest assets to the manifest generation — stable
+        // canonical URLs are overwritten on re-harvest and a stale cached
+        // mask silently desyncs the clip from the fresh guide geometry.
         const [b, m, s] = await Promise.all([
-          loadFlatImage(blankUrl),
+          loadFlatImage(
+            isOverrideBlank
+              ? blankUrl
+              : withFlatAssetVersion(blankUrl, manifest.generatedAt),
+          ),
           !refitCatalogSizeGuide && calib.maskUrl
-            ? loadFlatImage(calib.maskUrl)
+            ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
             !!calib.printBoundsNormalized)
-            ? loadFlatImage(calib.shadingUrl)
+            ? loadFlatImage(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
             : Promise.resolve(null),
         ]);
         if (
