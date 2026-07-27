@@ -43,7 +43,18 @@ import FlatProductPlacer, {
   type FlatProductPlacerHandle,
   type FlatProductPlacerState,
   type FlatProductPlacerApplyResult,
+  type FlatTrimStatus,
 } from "@/components/designer/FlatProductPlacer";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
@@ -1040,6 +1051,11 @@ export type TesterDesignStatus = {
    *   error  — the latest capture failed (check console)
    */
   aopPanels: 'none' | 'saving' | 'saved' | 'error';
+  /**
+   * Flat apparel faces currently past the dashed print guide (trim warning).
+   * Tester uses this to confirm before sending a clipped test order.
+   */
+  flatClipSides?: Array<'front' | 'back'>;
 };
 
 export interface EmbedDesignProps {
@@ -2107,6 +2123,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [lifestyleShotLoading, setLifestyleShotLoading] = useState(false);
   const [lifestyleShotError, setLifestyleShotError] = useState<string | null>(null);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
+  const flatTrimStatusRef = useRef<FlatTrimStatus>({
+    front: false,
+    back: false,
+    clippedSides: [],
+  });
+  const [flatClipConfirmOpen, setFlatClipConfirmOpen] = useState(false);
+  const flatClipConfirmProceedRef = useRef(false);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
   /** Latest flat front URLs — Printify lifestyle merge keeps these. */
@@ -5611,7 +5634,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? printPlacement === "back" || printPlacement === "both"
               : false,
           },
-          linkSides: true,
+          linkSides: false,
           artworkUrl: artworkAbs,
         });
       } else {
@@ -5626,6 +5649,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           : usesFlatOnTheFlyPreview
             ? "saving"
             : "saved",
+        flatClipSides: [],
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
@@ -6129,7 +6153,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? printPlacement === "back" || printPlacement === "both"
               : false,
           },
-          linkSides: true,
+          linkSides: false,
           artworkUrl: artworkAbs,
         });
       } else {
@@ -6503,18 +6527,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
           return {
             ...prev,
-            placements: prev.linkSides
-              ? {
-                  front: { ...front, scale: nextScale },
-                  back: { ...back, scale: nextScale },
-                }
-              : {
-                  ...prev.placements,
-                  [prev.view]: {
-                    ...(prev.placements?.[prev.view] ?? front),
-                    scale: nextScale,
-                  },
-                },
+            linkSides: false,
+            placements: {
+              ...prev.placements,
+              [prev.view]: {
+                ...(prev.placements?.[prev.view] ?? front),
+                scale: nextScale,
+              },
+            },
           };
         });
         await new Promise((r) => setTimeout(r, 100));
@@ -6709,9 +6729,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flushFlatPlacer,
   ]);
 
+  const handleFlatTrimStatusChange = useCallback(
+    (status: FlatTrimStatus) => {
+      flatTrimStatusRef.current = status;
+      if (isAdminTester) {
+        emitTesterDesignStatus({ flatClipSides: status.clippedSides });
+      }
+    },
+    [isAdminTester, emitTesterDesignStatus],
+  );
+
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+
+    // Flat apparel: if either enabled face is past the dashed guide, confirm first.
+    if (
+      usesFlatOnTheFlyPreview &&
+      !flatRenderFailed &&
+      !flatClipConfirmProceedRef.current
+    ) {
+      const live = flatPlacerRef.current?.getTrimStatus();
+      const status = live ?? flatTrimStatusRef.current;
+      if (status.clippedSides.length > 0) {
+        setFlatClipConfirmOpen(true);
+        return;
+      }
+    }
+    flatClipConfirmProceedRef.current = false;
 
     const flatEditorOpen = !!(
       usesFlatOnTheFlyPreview &&
@@ -8793,17 +8838,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setFlatPlacerState((prev) => {
       if (!prev) return prev;
       const front = prev.placements?.front ?? { scale: 1, offsetX: 0, offsetY: 0 };
-      const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
-      const placements = prev.linkSides
-        ? {
-            front: { ...front, scale: nextScale },
-            back: { ...back, scale: nextScale },
-          }
-        : {
-            ...prev.placements,
-            [prev.view]: { ...(prev.placements?.[prev.view] ?? front), scale: nextScale },
-          };
-      return { ...prev, placements };
+      return {
+        ...prev,
+        linkSides: false,
+        placements: {
+          ...prev.placements,
+          [prev.view]: { ...(prev.placements?.[prev.view] ?? front), scale: nextScale },
+        },
+      };
     });
 
     setFlatMockupRefreshNonce((n) => n + 1);
@@ -8873,7 +8915,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? printPlacement === "back" || printPlacement === "both"
               : (flatPlacerState?.enabled?.back ?? false),
           },
-          linkSides: flatPlacerState?.linkSides ?? true,
+          linkSides: false,
           artworkUrl,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
@@ -9488,6 +9530,49 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   return (
     <div className={`p-2 sm:p-3 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+      <AlertDialog open={flatClipConfirmOpen} onOpenChange={setFlatClipConfirmOpen}>
+        <AlertDialogContent data-testid="dialog-flat-clip-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Artwork extends past the print area</AlertDialogTitle>
+            <AlertDialogDescription>
+              {(() => {
+                const sides = (
+                  flatPlacerRef.current?.getTrimStatus() ?? flatTrimStatusRef.current
+                ).clippedSides;
+                const label =
+                  sides.length === 2
+                    ? "front and back"
+                    : sides[0] === "back"
+                      ? "the back"
+                      : "the front";
+                return (
+                  <>
+                    Your design on {label} is larger than the printable area and will be
+                    trimmed on the product. Continue only if you are happy with that
+                    cropping.
+                  </>
+                );
+              })()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-flat-clip-cancel">
+              Go back and adjust
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="button-flat-clip-continue"
+              onClick={() => {
+                flatClipConfirmProceedRef.current = true;
+                setFlatClipConfirmOpen(false);
+                void handleAddToCart();
+              }}
+            >
+              Continue with clipped artwork
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={!!styleMismatchDialog} onOpenChange={(open) => !open && setStyleMismatchDialog(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -10703,7 +10788,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               front: nextPlacement === "front" || nextPlacement === "both",
                               back: nextPlacement === "back" || nextPlacement === "both",
                             },
-                            linkSides: prev?.linkSides ?? true,
+                            linkSides: false,
                           }));
                           currentMockupColorRef.current = "";
                           lastFlatGalleryMockupKeyRef.current = "";
@@ -11284,6 +11369,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     onViewChange={handleFlatPlacerViewChange}
                     onApply={handleFlatApply}
                     onApplyStatusChange={setFlatApplyStatus}
+                    onTrimStatusChange={handleFlatTrimStatusChange}
                     onAssetsFailed={handleFlatAssetsFailed}
                     edgeWrapMode={flatEdgeWrapMode}
                     decorMode={flatDecorMode}

@@ -869,14 +869,27 @@ export function flatCovers(rect: Rect, box: Rect): boolean {
 }
 
 /** True when artwork extends past the print rect — mask clip will trim edges. */
-export function flatOverflows(rect: Rect, box: Rect): boolean {
-  const eps = 1;
+export function flatOverflows(rect: Rect, box: Rect, slackPx = 1): boolean {
+  const eps = Math.max(0, slackPx);
   return (
     box.x < rect.x - eps ||
     box.y < rect.y - eps ||
     box.x + box.width > rect.x + rect.width + eps ||
     box.y + box.height > rect.y + rect.height + eps
   );
+}
+
+/**
+ * Apparel trim banner: match the dashed guide only.
+ * Small slack absorbs anti-alias / sub-pixel noise so the warning does not
+ * fire a hairline early while art still looks inside the guide (crewneck /
+ * hoodie false positives). Do not OR with harvest AABB or mask silhouette —
+ * those are often tighter than the dashed rect and warn while art looks safe.
+ */
+export const FLAT_APPAREL_TRIM_WARN_SLACK_PX = 3;
+
+export function flatApparelGuideTrimmed(guideRect: Rect, artBox: Rect): boolean {
+  return flatOverflows(guideRect, artBox, FLAT_APPAREL_TRIM_WARN_SLACK_PX);
 }
 
 /**

@@ -30,9 +30,7 @@ import {
 import {
   flatCovers,
   flatVisibleArtBoxAxisAligned,
-  flatApparelArtworkTrimmed,
-  flatApparelTrimRectPx,
-  flatMaskRejectsArtBox,
+  flatApparelGuideTrimmed,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -75,8 +73,9 @@ export type FlatProductPlacerState = {
   /** Per-view enabled flag. Back defaults false. */
   enabled: Record<ViewName, boolean>;
   /**
-   * When true (and both views exist), edits to scale/position on either side
-   * update the other: same scale + offsetY, mirrored offsetX.
+   * Legacy field — always treated as false. Front/back placements are
+   * independent (the old "Link sides" toggle was removed; it silently
+   * overscaled the other face into the trim zone).
    */
   linkSides: boolean;
   /** The artwork (the customer's generated/uploaded design). */
@@ -92,6 +91,14 @@ export type FlatProductPlacerApplyResult = {
 /** Explicit persist lifecycle — parent flushes on ATC / leave editor / page hide. */
 export type FlatApplyStatus = "idle" | "saving" | "saved" | "error";
 
+/** Per-face trim status for ATC / test-order confirmation. */
+export type FlatTrimStatus = {
+  front: boolean;
+  back: boolean;
+  /** Enabled faces currently past the dashed guide. */
+  clippedSides: Array<"front" | "back">;
+};
+
 export type FlatProductPlacerHandle = {
   /**
    * Upload + persist. Pass `{ force: true }` to re-save after size/colour changes.
@@ -99,6 +106,8 @@ export type FlatProductPlacerHandle = {
    */
   applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
+  /** Live trim status for enabled faces (dashed-guide overflow). */
+  getTrimStatus: () => FlatTrimStatus;
 };
 
 export type FlatProductPlacerProps = {
@@ -119,6 +128,8 @@ export type FlatProductPlacerProps = {
   onViewChange?: (view: ViewName) => void;
   /** Fired when an explicit persist starts / finishes (for ATC gating). */
   onApplyStatusChange?: (status: FlatApplyStatus) => void;
+  /** Fired when either face's trim-warning status changes. */
+  onTrimStatusChange?: (status: FlatTrimStatus) => void;
   /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
   onAssetsFailed?: (reason: string) => void;
   /** Skip the first auto-apply when resuming an already-saved design. */
@@ -174,30 +185,14 @@ function outputSignature(s: FlatProductPlacerState): string {
   });
 }
 
-/** Mirror horizontal offset so left/right stay visually consistent across faces. */
-function mirrorLinkedPlacement(source: ArtworkPlacement): ArtworkPlacement {
-  return {
-    scale: source.scale,
-    offsetX: -source.offsetX,
-    offsetY: source.offsetY,
-  };
-}
-
-function otherView(view: ViewName): ViewName {
-  return view === "front" ? "back" : "front";
-}
-
 function applyPlacementToState(
   prev: FlatProductPlacerState,
   view: ViewName,
   next: ArtworkPlacement,
-  availableViews: ViewName[],
+  _availableViews: ViewName[],
 ): FlatProductPlacerState {
-  const placements = { ...prev.placements, [view]: next };
-  if (prev.linkSides && availableViews.includes(otherView(view))) {
-    placements[otherView(view)] = mirrorLinkedPlacement(next);
-  }
-  return { ...prev, placements };
+  // Front/back are always independent — never mirror/scale the other face.
+  return { ...prev, linkSides: false, placements: { ...prev.placements, [view]: next } };
 }
 
 function buildInitialState(
@@ -205,7 +200,6 @@ function buildInitialState(
   saved?: Partial<FlatProductPlacerState> | null,
   defaultPlacement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
 ): FlatProductPlacerState {
-  const canLink = availableViews.includes("front") && availableViews.includes("back");
   const base: FlatProductPlacerState = {
     view: "front",
     placements: {
@@ -216,30 +210,16 @@ function buildInitialState(
       front: availableViews.includes("front"),
       back: false,
     },
-    // Double-sided products default to linked so front/back stay matched.
-    linkSides: canLink,
+    linkSides: false,
     artworkUrl: saved?.artworkUrl ?? null,
   };
   if (!saved) return base;
-  const linkSides =
-    typeof saved.linkSides === "boolean" ? saved.linkSides : base.linkSides;
-  let placements = { ...base.placements, ...(saved.placements ?? {}) };
-  if (linkSides && canLink) {
-    const sourceView: ViewName =
-      saved.view === "back" && placements.back ? "back" : "front";
-    const source = placements[sourceView] ?? defaultPlacement;
-    placements = {
-      ...placements,
-      [sourceView]: { ...source },
-      [otherView(sourceView)]: mirrorLinkedPlacement(source),
-    };
-  }
   return {
     ...base,
     ...saved,
-    placements,
+    placements: { ...base.placements, ...(saved.placements ?? {}) },
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
-    linkSides,
+    linkSides: false,
   };
 }
 
@@ -255,6 +235,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       onChange,
       onViewChange,
       onApplyStatusChange,
+      onTrimStatusChange,
       onAssetsFailed,
       skipInitialAutoApply = false,
       edgeWrapMode = false,
@@ -657,11 +638,69 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     colorId,
   ]);
 
+  const computeTrimStatus = useCallback((): FlatTrimStatus => {
+    const empty: FlatTrimStatus = { front: false, back: false, clippedSides: [] };
+    if (!state || !artworkImg || edgeWrapMode || decorMode || fabricWeave) {
+      return empty;
+    }
+    const clippedSides: Array<"front" | "back"> = [];
+    for (const view of availableViews) {
+      if (!state.enabled[view]) continue;
+      const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+      if (!cal) continue;
+      const va = assets[view];
+      const mW = va.blank?.naturalWidth || cal.mockupDims?.width || 1;
+      const mH = va.blank?.naturalHeight || cal.mockupDims?.height || 1;
+      const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
+        edgeWrapMode,
+        decorMode,
+      });
+      const placed = {
+        ...(state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT),
+        scale: clampPlacementScale(
+          (state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT).scale,
+        ),
+      };
+      const box = flatVisibleArtBoxAxisAligned(pRect, placed, artworkImg);
+      if (flatApparelGuideTrimmed(pRect, box)) {
+        clippedSides.push(view);
+      }
+    }
+    return {
+      front: clippedSides.includes("front"),
+      back: clippedSides.includes("back"),
+      clippedSides,
+    };
+  }, [
+    state,
+    artworkImg,
+    edgeWrapMode,
+    decorMode,
+    fabricWeave,
+    availableViews,
+    manifest,
+    colorId,
+    calibOpts,
+    assets,
+    clampPlacementScale,
+  ]);
+
   useImperativeHandle(
     ref,
-    () => ({ applyIfNeeded, hasPendingChanges }),
-    [applyIfNeeded, hasPendingChanges],
+    () => ({ applyIfNeeded, hasPendingChanges, getTrimStatus: computeTrimStatus }),
+    [applyIfNeeded, hasPendingChanges, computeTrimStatus],
   );
+
+  const onTrimStatusChangeRef = useRef(onTrimStatusChange);
+  onTrimStatusChangeRef.current = onTrimStatusChange;
+  const lastTrimSigRef = useRef("");
+  useEffect(() => {
+    const status = computeTrimStatus();
+    const sig = status.clippedSides.join(",");
+    if (sig === lastTrimSigRef.current) return;
+    lastTrimSigRef.current = sig;
+    onTrimStatusChangeRef.current?.(status);
+  }, [computeTrimStatus]);
 
   // Seed baseline when resuming a saved design (no upload on open).
   useEffect(() => {
@@ -692,23 +731,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       prev ? { ...prev, enabled: { ...prev.enabled, [view]: on } } : prev,
     );
   }, []);
-
-  const setLinkSides = useCallback(
-    (on: boolean) => {
-      setState((prev) => {
-        if (!prev) return prev;
-        if (!on) return { ...prev, linkSides: false };
-        const source = prev.placements[prev.view] ?? DEFAULT_ARTWORK_PLACEMENT;
-        const placements = {
-          ...prev.placements,
-          [prev.view]: { ...source },
-          [otherView(prev.view)]: mirrorLinkedPlacement(source),
-        };
-        return { ...prev, linkSides: true, placements };
-      });
-    },
-    [],
-  );
 
   const updatePlacement = useCallback(
     (view: ViewName, next: ArtworkPlacement) => {
@@ -865,16 +887,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else {
-      // Apparel: warn on AABB overflow OR mask-silhouette clip inside the guide
-      // (destination-in can trim inside the dashed rect).
-      const harvest = flatApparelTrimRectPx(calib, mockupW, mockupH);
-      if (
-        flatApparelArtworkTrimmed(harvest, placementRect, box) ||
-        flatMaskRejectsArtBox(viewAssets.mask, box, mockupW, mockupH)
-      ) {
-        coverageWarning = "trim";
-      }
+    } else if (flatApparelGuideTrimmed(placementRect, box)) {
+      // Apparel: dashed guide is the only warning trigger (must match WYSIWYG).
+      coverageWarning = "trim";
     }
   }
 
@@ -1091,21 +1106,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                       <EyeOff className="h-3.5 w-3.5" />
                     )}
                   </button>
-                )}
-                {availableViews.length > 1 && (
-                  <label
-                    className="flex cursor-pointer items-center gap-1.5 normal-case tracking-normal text-muted-foreground"
-                    title="Keep front and back scale matched, with mirrored left/right placement"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!state.linkSides}
-                      onChange={(e) => setLinkSides(e.target.checked)}
-                      className="h-3.5 w-3.5 rounded border-border accent-[hsl(var(--primary))]"
-                      aria-label="Link sides"
-                    />
-                    <span className="text-[11px] font-medium">Link sides</span>
-                  </label>
                 )}
               </span>
               <span className="text-muted-foreground/80">

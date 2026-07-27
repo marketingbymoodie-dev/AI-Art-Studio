@@ -2,14 +2,47 @@ import { describe, expect, it } from "vitest";
 import {
   expandPrintGuideToPrintFileAspect,
   flatApparelArtworkTrimmed,
+  flatApparelGuideTrimmed,
   flatArtBox,
   flatArtBoxAxisAligned,
   flatArtContentSubRect,
-  flatMaskRejectsArtBox,
   flatOverflows,
   flatRotatedAabbAround,
   FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
+  FLAT_APPAREL_TRIM_WARN_SLACK_PX,
 } from "./flatRender";
+
+describe("flatApparelGuideTrimmed", () => {
+  const guide = { x: 100, y: 100, width: 200, height: 300 };
+
+  it("stays quiet when art is inside the dashed guide", () => {
+    expect(
+      flatApparelGuideTrimmed(guide, { x: 110, y: 120, width: 180, height: 260 }),
+    ).toBe(false);
+  });
+
+  it("stays quiet for a hairline overhang within slack", () => {
+    expect(
+      flatApparelGuideTrimmed(guide, {
+        x: guide.x - (FLAT_APPAREL_TRIM_WARN_SLACK_PX - 1),
+        y: 120,
+        width: 180,
+        height: 260,
+      }),
+    ).toBe(false);
+  });
+
+  it("warns when art clearly extends past the dashed guide", () => {
+    expect(
+      flatApparelGuideTrimmed(guide, {
+        x: guide.x - (FLAT_APPAREL_TRIM_WARN_SLACK_PX + 2),
+        y: 120,
+        width: 180,
+        height: 260,
+      }),
+    ).toBe(true);
+  });
+});
 
 describe("flatApparelArtworkTrimmed", () => {
   const harvest = { x: 300, y: 400, width: 400, height: 480 };
@@ -32,7 +65,6 @@ describe("flatApparelArtworkTrimmed", () => {
   });
 
   it("warns when art sits between harvest top and expanded guide top", () => {
-    // Art top is above harvest (mask clip) but still inside the taller guide.
     const artBox = {
       x: 320,
       y: guide.y + 4,
@@ -63,14 +95,6 @@ describe("flatApparelArtworkTrimmed", () => {
       height: 200,
     };
     expect(flatApparelArtworkTrimmed(harvest, guide, artBox)).toBe(false);
-  });
-});
-
-describe("flatMaskRejectsArtBox", () => {
-  it("returns false when mask is missing", () => {
-    expect(
-      flatMaskRejectsArtBox(null, { x: 10, y: 10, width: 80, height: 80 }, 100, 100),
-    ).toBe(false);
   });
 });
 describe("flatArtBoxAxisAligned", () => {
