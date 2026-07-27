@@ -3297,7 +3297,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
-    setFlatPlacerEditOpen(false);
+    // Keep flat placer open in the admin tester so dashed print guides + trim
+    // warnings stay visible after opening a saved design (merchant QA).
+    // Elsewhere close it so the customer lands on mockups immediately.
+    setFlatPlacerEditOpen(Boolean(isAdminTester && usesFlatOnTheFlyPreview));
+    if (isAdminTester && designId) {
+      const designPt = String(topLevel.productTypeId || "").trim();
+      const currentPt = String(productTypeId || "").trim();
+      if (!designPt || !currentPt || designPt === currentPt) {
+        emitTesterDesignStatus({ jobId: designId, aopPanels: "none" });
+      }
+    }
     // Immediately poll for a pre-existing shadow product for this design.
     // If the shadow product was created within the last 7 days, it will be returned
     // instantly and the Add to Cart will be instant without calling resolve-design-variant.
@@ -3682,6 +3692,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [effectiveLoadDesignId]);
 
+  /** Drop sticky loadDesignId from the URL so a remount can't revive the wrong design. */
+  const clearLoadDesignIdFromUrl = useCallback(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has("loadDesignId") && !url.searchParams.has("loadMockup")) {
+        return;
+      }
+      url.searchParams.delete("loadDesignId");
+      url.searchParams.delete("loadMockup");
+      url.searchParams.delete("loadProductName");
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      /* ignore */
+    }
+    setBridgeLoadDesignId("");
+  }, []);
+
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
     if (!effectiveLoadDesignId || loadDesignAppliedRef.current) return;
@@ -3693,11 +3720,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       console.warn('[LoadDesign] Design not found in savedDesigns list! loadDesignId:', effectiveLoadDesignId);
       return;
     }
+    // Admin tester: never apply a saved design onto a different product type.
+    if (
+      isAdminTester &&
+      d.productTypeId != null &&
+      String(d.productTypeId) !== String(productTypeId)
+    ) {
+      console.warn(
+        "[LoadDesign] Refusing saved design for different productTypeId",
+        d.productTypeId,
+        "current",
+        productTypeId,
+      );
+      loadDesignAppliedRef.current = true;
+      clearLoadDesignIdFromUrl();
+      emitTesterDesignStatus({ jobId: null, aopPanels: "none" });
+      return;
+    }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, savedDesigns, configLoading]);
+  }, [effectiveLoadDesignId, savedDesigns, configLoading, isAdminTester, productTypeId]);
 
   // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
   // fetch the job status directly from the server
@@ -3714,6 +3758,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         .then(status => {
           if (!status || status.status !== 'complete') return;
           if (loadDesignAppliedRef.current) return; // list restored it in the meantime
+          if (
+            isAdminTester &&
+            status.productTypeId != null &&
+            String(status.productTypeId) !== String(productTypeId)
+          ) {
+            console.warn(
+              "[LoadDesign] Fallback refused: job productTypeId mismatch",
+              status.productTypeId,
+              productTypeId,
+            );
+            loadDesignAppliedRef.current = true;
+            clearLoadDesignIdFromUrl();
+            emitTesterDesignStatus({ jobId: null, aopPanels: "none" });
+            return;
+          }
           loadDesignAppliedRef.current = true;
           applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
         })
@@ -3721,7 +3780,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }, 2000);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, shopDomain, configLoading]);
+  }, [effectiveLoadDesignId, shopDomain, configLoading, isAdminTester, productTypeId]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).

@@ -311,6 +311,19 @@ export default function AdminCreateProduct() {
                 } catch {
                   /* sessionStorage may be unavailable */
                 }
+                // Strip loadDesignId / loadMockup — otherwise EmbedDesign remounts
+                // onto the new product and immediately re-applies the previous
+                // saved design (wrong product, wrong test-order target).
+                try {
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete("loadDesignId");
+                  url.searchParams.delete("loadMockup");
+                  url.searchParams.delete("loadProductName");
+                  url.searchParams.set("productTypeId", v);
+                  window.history.replaceState({}, "", url.toString());
+                } catch {
+                  /* ignore */
+                }
                 setSelectedProductTypeId(parseInt(v));
               }}
             >

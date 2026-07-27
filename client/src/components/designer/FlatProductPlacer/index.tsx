@@ -30,7 +30,9 @@ import {
 import {
   flatCovers,
   flatVisibleArtBoxAxisAligned,
-  flatOverflows,
+  flatApparelArtworkTrimmed,
+  flatApparelTrimRectPx,
+  flatMaskRejectsArtBox,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -863,9 +865,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatOverflows(placementRect, box)) {
-      // Apparel guide = live mask AABB (same space as destination-in clip).
-      coverageWarning = "trim";
+    } else {
+      // Apparel: warn on AABB overflow OR mask-silhouette clip inside the guide
+      // (destination-in can trim inside the dashed rect).
+      const harvest = flatApparelTrimRectPx(calib, mockupW, mockupH);
+      if (
+        flatApparelArtworkTrimmed(harvest, placementRect, box) ||
+        flatMaskRejectsArtBox(viewAssets.mask, box, mockupW, mockupH)
+      ) {
+        coverageWarning = "trim";
+      }
     }
   }
 
@@ -945,12 +954,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               showOverlay &&
               calib &&
               viewAssets.blank &&
-              artworkImg &&
-              canvasCssBox.w > 0 &&
-              canvasCssBox.h > 0 && (
+              artworkImg && (
                 <div
                   className="pointer-events-none absolute left-0 top-0"
-                  style={{ width: canvasCssBox.w, height: canvasCssBox.h }}
+                  style={
+                    canvasCssBox.w > 0 && canvasCssBox.h > 0
+                      ? { width: canvasCssBox.w, height: canvasCssBox.h }
+                      : { right: 0, bottom: 0 }
+                  }
                   data-testid="flat-rect-overlay-host"
                 >
                   <FlatDesignRectOverlay

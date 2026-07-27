@@ -1144,12 +1144,24 @@ export async function submitFlatTestOrder(args: {
     );
   }
 
+  // Bake always resolves the Printify product from job.productTypeId — never
+  // silently order product A when the tester UI is on product B.
+  const jobForProductCheck = await storage.getGenerationJob(designId);
+  if (!jobForProductCheck) {
+    throw new Error("Design job not found. Generate artwork on this product, then send a test order.");
+  }
+  if (String(jobForProductCheck.productTypeId) !== String(args.productType.id)) {
+    throw new Error(
+      `That artwork belongs to a different product (job productTypeId=${jobForProductCheck.productTypeId}, selected=${args.productType.id}). Switch back to that product, or generate a new design on the product currently selected.`,
+    );
+  }
+
   const idempotencyKey = `flat-test-order:${args.productType.id}:${designId}:${Date.now()}`;
   // Build a synthetic single-line order keyed by the design id so the standard
   // resolution path (line.properties._appai_job_id → generation_jobs) is used.
   // Carry Size/Color from the latest designState (Apply) so bake doesn't rely
   // only on generate-time job columns.
-  const job = await storage.getGenerationJob(designId);
+  const job = jobForProductCheck;
   const designState = parseJson<Record<string, any>>(job?.designState, {});
   const { sizeId, colorId } = pickFlatOrderSizeColor({
     designStateSize: designState?.selectedSize,

@@ -5,6 +5,7 @@ import {
   flatArtBox,
   flatArtBoxAxisAligned,
   flatArtContentSubRect,
+  flatMaskRejectsArtBox,
   flatOverflows,
   flatRotatedAabbAround,
   FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
@@ -65,6 +66,13 @@ describe("flatApparelArtworkTrimmed", () => {
   });
 });
 
+describe("flatMaskRejectsArtBox", () => {
+  it("returns false when mask is missing", () => {
+    expect(
+      flatMaskRejectsArtBox(null, { x: 10, y: 10, width: 80, height: 80 }, 100, 100),
+    ).toBe(false);
+  });
+});
 describe("flatArtBoxAxisAligned", () => {
   const rect = { x: 0, y: 0, width: 200, height: 200 };
 

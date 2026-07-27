@@ -893,6 +893,73 @@ export function flatApparelArtworkTrimmed(
 }
 
 /**
+ * True when the axis-aligned art box sits inside the dashed guide AABB but
+ * still overlaps transparent mask pixels (silhouette / print-window clip).
+ * Samples the art-box perimeter in mask space — cheap and catches the common
+ * "clipped inside the dashed line, Placement ready" failure mode.
+ */
+export function flatMaskRejectsArtBox(
+  mask: HTMLImageElement | null,
+  artBox: Rect,
+  canvasW: number,
+  canvasH: number,
+  alphaThreshold = 16,
+): boolean {
+  if (!mask || artBox.width <= 0 || artBox.height <= 0) return false;
+  const mw = mask.naturalWidth || mask.width;
+  const mh = mask.naturalHeight || mask.height;
+  if (mw <= 0 || mh <= 0 || canvasW <= 0 || canvasH <= 0) return false;
+
+  const c = document.createElement("canvas");
+  c.width = mw;
+  c.height = mh;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return false;
+  let data: Uint8ClampedArray;
+  try {
+    ctx.drawImage(mask, 0, 0, mw, mh);
+    data = ctx.getImageData(0, 0, mw, mh).data;
+  } catch {
+    return false;
+  }
+
+  const sx = mw / canvasW;
+  const sy = mh / canvasH;
+  const steps = 24;
+  const samples: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    samples.push(
+      { x: artBox.x + artBox.width * t, y: artBox.y },
+      { x: artBox.x + artBox.width * t, y: artBox.y + artBox.height },
+      { x: artBox.x, y: artBox.y + artBox.height * t },
+      { x: artBox.x + artBox.width, y: artBox.y + artBox.height * t },
+    );
+  }
+  // Mid-edge insets — catches hard rect clips a few px inside the AABB.
+  const insetX = Math.min(6, artBox.width * 0.05);
+  const insetY = Math.min(6, artBox.height * 0.05);
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    samples.push(
+      { x: artBox.x + artBox.width * t, y: artBox.y + insetY },
+      { x: artBox.x + artBox.width * t, y: artBox.y + artBox.height - insetY },
+      { x: artBox.x + insetX, y: artBox.y + artBox.height * t },
+      { x: artBox.x + artBox.width - insetX, y: artBox.y + artBox.height * t },
+    );
+  }
+
+  for (const p of samples) {
+    if (p.x < 0 || p.y < 0 || p.x >= canvasW || p.y >= canvasH) return true;
+    const mx = Math.min(mw - 1, Math.max(0, Math.floor(p.x * sx)));
+    const my = Math.min(mh - 1, Math.max(0, Math.floor(p.y * sy)));
+    const a = data[(my * mw + mx) * 4 + 3];
+    if (a <= alphaThreshold) return true;
+  }
+  return false;
+}
+
+/**
  * Edge-wrap products: artwork must extend past the safe back-face zone so edges
  * receive print. True when any edge of the artwork box stops short of the safe zone.
  */
