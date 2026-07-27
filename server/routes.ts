@@ -14342,14 +14342,25 @@ ${orientationExtra}
         return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
+      const forceFromCanonical = req.body?.forceFromCanonical === true;
       const synced = await syncProductTypeFromCanonicalCalibration(productType!, {
         allowUnpublishedHarvest: true,
+        forceOverwrite: forceFromCanonical,
       });
       if (synced.synced) {
         return res.status(200).json({
           status: "ready",
           productTypeId: productType.id,
           syncedFromCanonical: true,
+          forceFromCanonical,
+        });
+      }
+
+      if (forceFromCanonical) {
+        return res.status(404).json({
+          error:
+            "No usable platform canonical calibration for this blueprint. Harvest (and preferably Publish) it in Platform Catalog first.",
+          code: "CANONICAL_MISSING",
         });
       }
 

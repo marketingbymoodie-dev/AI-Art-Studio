@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical, DollarSign } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical, DollarSign, Crosshair } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -142,6 +142,7 @@ export default function AdminProducts() {
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
   const [layoutPolicyMutatingId, setLayoutPolicyMutatingId] = useState<number | null>(null);
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
+  const [pullCanonicalMutatingId, setPullCanonicalMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
@@ -480,6 +481,31 @@ export default function AdminProducts() {
       toast({ title: "Failed to update layout policy", description: error.message, variant: "destructive" });
     },
     onSettled: () => setLayoutPolicyMutatingId(null),
+  });
+
+  const pullCanonicalCalibrationMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setPullCanonicalMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/calibrate-flat`, {
+        forceFromCanonical: true,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({
+        title: "Canonical calibration pulled",
+        description: "Storefront / Generator Tester will use the platform harvest after a hard refresh.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not pull canonical calibration",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => setPullCanonicalMutatingId(null),
   });
 
   // Send a DRAFT test order to Printify
@@ -1066,7 +1092,21 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
-                      {/* Calibration lives in Platform Catalog (Flat calibrator) — not shown here. */}
+                      {/* Calibration harvest lives in Platform Catalog; pull overwrites stale merchant harvest. */}
+                      {showOperatorCalibrationTools &&
+                        (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => pullCanonicalCalibrationMutation.mutate(pt.id)}
+                          disabled={pullCanonicalMutatingId === pt.id}
+                          title="Replace this product's flatCalibration with the platform canonical harvest (e.g. after reharvesting blueprint 77)."
+                          data-testid={`button-pull-canonical-${pt.id}`}
+                        >
+                          <Crosshair className={`h-3 w-3 mr-1 ${pullCanonicalMutatingId === pt.id ? "animate-pulse" : ""}`} />
+                          Pull canonical calibration
+                        </Button>
+                      )}
                       {showOperatorCalibrationTools && productSupportsTestPrintifyOrder(pt) && (
                         <Button
                           variant="outline"
