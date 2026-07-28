@@ -1150,12 +1150,26 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
-    <div className="flex w-full flex-col gap-4 lg:flex-row">
+    <div
+      className={
+        edgeWrapMode
+          ? "flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start"
+          : "flex w-full flex-col gap-4 lg:flex-row"
+      }
+    >
       {/* Live canvas + overlay (or lifestyle/context override) */}
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
+      <div
+        className={
+          // Phone cases: do NOT flex-stretch to the taller controls column —
+          // that left a white dead zone under the zoom bar.
+          edgeWrapMode
+            ? "relative w-full self-start overflow-hidden rounded-lg border border-border bg-card"
+            : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
+        }
+      >
         {edgeWrapMode ? (
           // Fixed-height column: clipped preview fills space above; zoom bar
-          // is in normal flow at the very bottom (never absolute / floating).
+          // is in normal flow at the very bottom of this card (no trailing gap).
           <div
             ref={canvasAreaRef}
             className="flex h-[min(50vh,520px)] max-h-[50vh] w-full flex-col bg-zinc-100"
