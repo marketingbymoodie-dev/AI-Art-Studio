@@ -9,7 +9,6 @@ import {
   flatOverflows,
   flatRotatedAabbAround,
   FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
-  FLAT_APPAREL_TRIM_WARN_SLACK_PX,
 } from "./flatRender";
 
 describe("flatApparelGuideTrimmed", () => {
@@ -21,26 +20,26 @@ describe("flatApparelGuideTrimmed", () => {
     ).toBe(false);
   });
 
-  it("stays quiet for a hairline overhang within slack", () => {
+  it("warns on any overhang past the dashed guide (slack is 0)", () => {
     expect(
       flatApparelGuideTrimmed(guide, {
-        x: guide.x - (FLAT_APPAREL_TRIM_WARN_SLACK_PX - 1),
-        y: 120,
-        width: 180,
-        height: 260,
-      }),
-    ).toBe(false);
-  });
-
-  it("warns when art clearly extends past the dashed guide", () => {
-    expect(
-      flatApparelGuideTrimmed(guide, {
-        x: guide.x - (FLAT_APPAREL_TRIM_WARN_SLACK_PX + 2),
+        x: guide.x - 1,
         y: 120,
         width: 180,
         height: 260,
       }),
     ).toBe(true);
+  });
+
+  it("stays quiet when art is flush with the guide edge", () => {
+    expect(
+      flatApparelGuideTrimmed(guide, {
+        x: guide.x,
+        y: guide.y,
+        width: guide.width,
+        height: guide.height,
+      }),
+    ).toBe(false);
   });
 });
 

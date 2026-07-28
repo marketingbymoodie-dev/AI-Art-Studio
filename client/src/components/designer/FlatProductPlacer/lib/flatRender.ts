@@ -617,7 +617,10 @@ export function flatArtContentFractionsCached(
   }
   const w = artwork.naturalWidth || artwork.width;
   const h = artwork.naturalHeight || artwork.height;
-  const bounds = w > 0 && h > 0 ? flatImageAlphaBounds(artwork) : null;
+  // Alpha ≥ 1: soft motif edges that still paint/clip in the preview must count
+  // as content — threshold 10 was missing brim/barrel tips so trim warnings
+  // stayed off while the canvas clearly clipped them at the dashed guide.
+  const bounds = w > 0 && h > 0 ? flatImageAlphaBounds(artwork, 1) : null;
   const fractions =
     bounds && bounds.width > 0 && bounds.height > 0
       ? {
@@ -880,13 +883,12 @@ export function flatOverflows(rect: Rect, box: Rect, slackPx = 1): boolean {
 }
 
 /**
- * Apparel trim banner: match the dashed guide only.
- * Small slack absorbs anti-alias / sub-pixel noise so the warning does not
- * fire a hairline early while art still looks inside the guide (crewneck /
- * hoodie false positives). Do not OR with harvest AABB or mask silhouette —
- * those are often tighter than the dashed rect and warn while art looks safe.
+ * Apparel trim banner: match the dashed guide only (same rect the overlay
+ * paints). Slack is 0 — any opaque content past the guide is clipped in the
+ * preview and must warn. Do not OR with harvest AABB or mask silhouette;
+ * those are often tighter than the dashed rect and false-positive.
  */
-export const FLAT_APPAREL_TRIM_WARN_SLACK_PX = 3;
+export const FLAT_APPAREL_TRIM_WARN_SLACK_PX = 0;
 
 export function flatApparelGuideTrimmed(guideRect: Rect, artBox: Rect): boolean {
   return flatOverflows(guideRect, artBox, FLAT_APPAREL_TRIM_WARN_SLACK_PX);

@@ -45,6 +45,13 @@ export type FlatDesignRectOverlayProps = {
   outerGuideRect?: Rect | null;
   /** Placement coordinate rect in mockup px (defaults to visible print rect). */
   placementRect?: Rect | null;
+  /**
+   * Canvas bitmap size (blank px). Prefer this over reading canvasRef.width
+   * during render — internal canvas resize does not re-render the overlay, so
+   * falling back to mockupDims can desync guide % vs warning math.
+   */
+  mockupWidth?: number;
+  mockupHeight?: number;
   /** Max placement scale (decor / edge-wrap allow zoom past 100%). */
   scaleMax?: number;
   /** Amber safe-zone guide (edge-wrap inner line). Default true. */
@@ -65,6 +72,8 @@ export default function FlatDesignRectOverlay({
   innerGuideRect = null,
   outerGuideRect = null,
   placementRect = null,
+  mockupWidth,
+  mockupHeight,
   scaleMax = 1,
   showInnerGuide = true,
   showOuterGuide,
@@ -94,9 +103,17 @@ export default function FlatDesignRectOverlay({
       }
   >(null);
 
-  // Mockup-px dimensions of the canvas (set by the renderer).
-  const mockupW = canvasRef.current?.width || view.mockupDims?.width || 1;
-  const mockupH = canvasRef.current?.height || view.mockupDims?.height || 1;
+  // Prefer parent-provided blank/canvas bitmap size (stable across renders).
+  const mockupW =
+    (mockupWidth && mockupWidth > 0 ? mockupWidth : 0) ||
+    canvasRef.current?.width ||
+    view.mockupDims?.width ||
+    1;
+  const mockupH =
+    (mockupHeight && mockupHeight > 0 ? mockupHeight : 0) ||
+    canvasRef.current?.height ||
+    view.mockupDims?.height ||
+    1;
 
   const artW = artwork.naturalWidth || artwork.width;
   const artH = artwork.naturalHeight || artwork.height;

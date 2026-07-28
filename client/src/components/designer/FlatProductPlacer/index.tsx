@@ -988,6 +988,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                     innerGuideRect={displayEdgeGuides?.inner ?? null}
                     outerGuideRect={displayEdgeGuides?.outer ?? null}
                     placementRect={placementRect}
+                    mockupWidth={displayMockupW}
+                    mockupHeight={displayMockupH}
                     scaleMax={scaleMax}
                     onChange={(next) => updatePlacement(state.view, next)}
                     onDragActivity={() => {
@@ -1152,7 +1154,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {viewEnabled && artworkImg && coverageWarning === "trim" && !fabricWeave && (
-          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-trim-warning"
+          >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork extends past the printable area — edges will be trimmed by
@@ -1215,6 +1220,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </>
             ) : applyStatus === "error" ? (
               <span className="text-destructive">Couldn't save — try add to cart again</span>
+            ) : coverageWarning === "trim" && !fabricWeave ? (
+              <span className="font-medium text-amber-700" data-testid="flat-trim-status">
+                Edges will be trimmed — scale down or reposition
+              </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">
                 Unsaved changes — saved when you add to cart or leave the editor
