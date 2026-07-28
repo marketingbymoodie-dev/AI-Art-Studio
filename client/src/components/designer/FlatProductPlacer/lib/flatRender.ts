@@ -883,68 +883,19 @@ export function flatOverflows(rect: Rect, box: Rect, slackPx = 1): boolean {
 }
 
 /**
- * Apparel trim banner: match the dashed guide the overlay paints.
- *
- * Merchants judge safety by the black handle box. That box is the opaque
- * content plus CSS ring/handles (~8–10 CSS px outside the content rect). At
- * preview zoom those pixels map to many mockup px — so content-only math can
- * say "inside" while the box clearly crosses the dashed line (and Printify
- * clips). Expand the art box by that visual pad, and require art to stay
- * strictly inside a slightly inset guide.
+ * Apparel trim banner: opaque artwork vs the dashed print guide only.
+ * Transparent PNG padding does not count. Ring/handles are UI chrome and must
+ * not trigger the warning. Fires when any opaque edge touches or crosses the
+ * guide (flush with the line = will be clipped).
  */
-export const FLAT_APPAREL_TRIM_WARN_SLACK_PX = 0;
-/** CSS px of ring (~2) + half corner-handle (~7) outside the content box. */
-export const FLAT_APPAREL_HANDLE_VISUAL_PAD_CSS_PX = 10;
-/** Extra inset so art flush with the dashed line still warns (strictly inside). */
-export const FLAT_APPAREL_TRIM_SAFE_INSET_PX = 2;
-
-export function outsetRect(rect: Rect, padPx: number): Rect {
-  const p = Math.max(0, padPx);
-  return {
-    x: rect.x - p,
-    y: rect.y - p,
-    width: rect.width + 2 * p,
-    height: rect.height + 2 * p,
-  };
-}
-
-export function insetRect(rect: Rect, insetPx: number): Rect {
-  const i = Math.max(0, insetPx);
-  return {
-    x: rect.x + i,
-    y: rect.y + i,
-    width: Math.max(1, rect.width - 2 * i),
-    height: Math.max(1, rect.height - 2 * i),
-  };
-}
-
-/** Mockup-px pad matching overlay ring/handles for a given CSS canvas width. */
-export function flatApparelVisualPadMockupPx(
-  mockupW: number,
-  canvasCssW: number,
-): number {
-  if (mockupW <= 0) return FLAT_APPAREL_TRIM_SAFE_INSET_PX;
-  if (canvasCssW > 0) {
-    return Math.max(
-      FLAT_APPAREL_TRIM_SAFE_INSET_PX,
-      (FLAT_APPAREL_HANDLE_VISUAL_PAD_CSS_PX * mockupW) / canvasCssW,
-    );
-  }
-  // No CSS box yet — ~0.8% of mockup width (same order as a typical handle pad).
-  return Math.max(FLAT_APPAREL_TRIM_SAFE_INSET_PX, Math.round(mockupW * 0.008));
-}
-
-export function flatApparelGuideTrimmed(
-  guideRect: Rect,
-  artBox: Rect,
-  opts?: { visualPadMockupPx?: number },
-): boolean {
-  const pad = Math.max(0, opts?.visualPadMockupPx ?? 0);
-  const visualBox = pad > 0 ? outsetRect(artBox, pad) : artBox;
-  const safeGuide = insetRect(guideRect, FLAT_APPAREL_TRIM_SAFE_INSET_PX);
+export function flatApparelGuideTrimmed(guideRect: Rect, artBox: Rect): boolean {
+  // Sub-pixel tolerance so "comfortably inside" stays quiet; flush/touch warns.
+  const touchEps = 0.5;
   return (
-    flatOverflows(safeGuide, artBox, FLAT_APPAREL_TRIM_WARN_SLACK_PX) ||
-    flatOverflows(guideRect, visualBox, FLAT_APPAREL_TRIM_WARN_SLACK_PX)
+    artBox.x <= guideRect.x + touchEps ||
+    artBox.y <= guideRect.y + touchEps ||
+    artBox.x + artBox.width >= guideRect.x + guideRect.width - touchEps ||
+    artBox.y + artBox.height >= guideRect.y + guideRect.height - touchEps
   );
 }
 

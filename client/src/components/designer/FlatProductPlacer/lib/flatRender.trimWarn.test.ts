@@ -14,14 +14,13 @@ import {
 describe("flatApparelGuideTrimmed", () => {
   const guide = { x: 100, y: 100, width: 200, height: 300 };
 
-  it("stays quiet when art is comfortably inside the dashed guide", () => {
+  it("stays quiet when opaque art is inside the dashed guide with a gap", () => {
     expect(
-      flatApparelGuideTrimmed(guide, { x: 120, y: 120, width: 160, height: 260 }),
+      flatApparelGuideTrimmed(guide, { x: 110, y: 120, width: 180, height: 260 }),
     ).toBe(false);
   });
 
-  it("warns when art is flush with the guide (strictly-inside inset)", () => {
-    // Flush with the dashed line is not safe — Printify can clip hairline edges.
+  it("warns when opaque art is flush with the guide (touching the line)", () => {
     expect(
       flatApparelGuideTrimmed(guide, {
         x: guide.x,
@@ -32,16 +31,7 @@ describe("flatApparelGuideTrimmed", () => {
     ).toBe(true);
   });
 
-  it("warns when only the visual handle pad crosses the guide", () => {
-    // Content sits 4px inside; 8px handle pad makes the merchant-visible box cross.
-    const art = { x: 104, y: 120, width: 180, height: 260 };
-    expect(flatApparelGuideTrimmed(guide, art)).toBe(false);
-    expect(
-      flatApparelGuideTrimmed(guide, art, { visualPadMockupPx: 8 }),
-    ).toBe(true);
-  });
-
-  it("warns on clear overhang past the dashed guide", () => {
+  it("warns when opaque art crosses the guide", () => {
     expect(
       flatApparelGuideTrimmed(guide, {
         x: guide.x - 10,
@@ -50,6 +40,17 @@ describe("flatApparelGuideTrimmed", () => {
         height: 260,
       }),
     ).toBe(true);
+  });
+
+  it("does not treat a small interior margin as touching", () => {
+    expect(
+      flatApparelGuideTrimmed(guide, {
+        x: guide.x + 3,
+        y: guide.y + 3,
+        width: guide.width - 6,
+        height: guide.height - 6,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -106,6 +107,7 @@ describe("flatApparelArtworkTrimmed", () => {
     expect(flatApparelArtworkTrimmed(harvest, guide, artBox)).toBe(false);
   });
 });
+
 describe("flatArtBoxAxisAligned", () => {
   const rect = { x: 0, y: 0, width: 200, height: 200 };
 
@@ -133,7 +135,6 @@ describe("flatArtContentSubRect", () => {
   });
 
   it("maps opaque-content fractions into the placed box", () => {
-    // PNG with 25% padding left, 10% top; content covers 50% x 80%.
     const sub = flatArtContentSubRect(fullBox, {
       left: 0.25,
       top: 0.1,
@@ -151,7 +152,6 @@ describe("flatRotatedAabbAround", () => {
   });
 
   it("rotates around an external pivot (full-image centre), not the rect centre", () => {
-    // Content rect sits right of the pivot; 90° rotation should move it below.
     const r = { x: 100, y: -10, width: 20, height: 20 };
     const aabb = flatRotatedAabbAround(r, 0, 0, 90);
     expect(aabb.x).toBeCloseTo(-10, 5);
