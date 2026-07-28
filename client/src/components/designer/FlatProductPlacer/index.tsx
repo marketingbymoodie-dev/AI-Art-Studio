@@ -278,11 +278,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
    */
   const [canvasCssBox, setCanvasCssBox] = useState({ w: 0, h: 0 });
   /**
-   * Phone cases: explicit CSS width×height for the preview so the full print
-   * canvas (blue dashed box) fits with ~10px pad — never stretch/squash via
-   * max-height-only (canvas/img ignore aspect when only one axis is capped).
+   * Phone cases: preview viewport above the zoom bar. Fit size is computed from
+   * this box (not the outer card) so the blue print canvas fills available
+   * height with 10px pad; zoom uses transform inside overflow:hidden.
    */
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const edgeWrapViewportRef = useRef<HTMLDivElement | null>(null);
   const [edgeWrapFitSize, setEdgeWrapFitSize] = useState<{
     w: number;
     h: number;
@@ -830,37 +831,29 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
 
-  // Phone cases: hug-content viewer — scale preview by BOTH axes so the full
-  // blue print box (or printers mockup) fits with 10px pad and never squashes.
+  // Phone cases: fit preview into the clipped viewport above the zoom bar.
   useEffect(() => {
     if (!edgeWrapMode) {
       setEdgeWrapFitSize(null);
       return;
     }
-    const area = canvasAreaRef.current;
-    if (!area) return;
+    const viewport = edgeWrapViewportRef.current;
+    if (!viewport) return;
 
     const EDGE_WRAP_PAD_PX = 10;
-    const ZOOM_BAR_RESERVE_PX = 56; // ~3.5rem zoom strip
     const sync = () => {
-      const style = getComputedStyle(area);
+      const style = getComputedStyle(viewport);
       const padL = parseFloat(style.paddingLeft) || EDGE_WRAP_PAD_PX;
       const padR = parseFloat(style.paddingRight) || EDGE_WRAP_PAD_PX;
-      const availW = Math.max(80, area.clientWidth - padL - padR);
-      // Whole pane (pads + preview + zoom) ~half viewport; content gets the rest.
-      const maxViewerH = Math.min(
-        Math.floor(window.innerHeight * 0.5),
-        520,
-      );
-      const maxContentH = Math.max(
-        140,
-        maxViewerH - EDGE_WRAP_PAD_PX * 2 - ZOOM_BAR_RESERVE_PX,
-      );
+      const padT = parseFloat(style.paddingTop) || EDGE_WRAP_PAD_PX;
+      const padB = parseFloat(style.paddingBottom) || EDGE_WRAP_PAD_PX;
+      const availW = Math.max(80, viewport.clientWidth - padL - padR);
+      const availH = Math.max(100, viewport.clientHeight - padT - padB);
 
       let srcW = 900;
       let srcH = 1524;
       if (canvasOverrideUrl) {
-        const img = area.querySelector(
+        const img = viewport.querySelector(
           '[data-testid="flat-placer-context-preview"]',
         ) as HTMLImageElement | null;
         if (img?.naturalWidth && img.naturalHeight) {
@@ -887,7 +880,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         }
       }
 
-      const scale = Math.min(availW / srcW, maxContentH / srcH);
+      const scale = Math.min(availW / srcW, availH / srcH);
       const w = Math.max(1, Math.floor(srcW * scale));
       const h = Math.max(1, Math.floor(srcH * scale));
       setEdgeWrapFitSize((prev) =>
@@ -897,9 +890,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
     sync();
     const ro = new ResizeObserver(sync);
-    ro.observe(area);
+    ro.observe(viewport);
     window.addEventListener("resize", sync);
-    const img = area.querySelector(
+    const img = viewport.querySelector(
       '[data-testid="flat-placer-context-preview"]',
     ) as HTMLImageElement | null;
     if (img && !img.complete) {
@@ -1005,178 +998,200 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const displayScale = clampPlacementScale(placement.scale);
 
+  const onCanvasAreaClick = () => {
+    if (canvasOverrideUrl) return;
+    if (canvasDragRef.current) {
+      canvasDragRef.current = false;
+      return;
+    }
+    setOverlayVisible((v) => !v);
+  };
+
+  const previewZoomBar = (
+    <div
+      className={
+        edgeWrapMode
+          ? "z-10 flex shrink-0 items-center gap-2 border-t border-border/50 bg-background px-2.5 py-1.5"
+          : "absolute bottom-2 left-2 right-2 z-10 flex items-center gap-2 rounded-md border border-border/60 bg-background/90 px-2.5 py-1.5 shadow-sm"
+      }
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      data-testid="flat-placer-preview-zoom"
+    >
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Zoom
+      </span>
+      <input
+        type="range"
+        min={1}
+        max={2}
+        step={0.05}
+        value={previewZoom}
+        onChange={(e) => setPreviewZoom(Number(e.target.value))}
+        className="min-w-0 flex-1"
+        style={{ accentColor: "hsl(var(--primary))" }}
+        aria-label="Preview zoom"
+      />
+      <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+        {Math.round(previewZoom * 100)}%
+      </span>
+    </div>
+  );
+
+  const previewMedia = (
+    <div
+      className="relative inline-block max-w-full leading-none"
+      style={{
+        transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
+        transformOrigin: "center center",
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        className={
+          canvasOverrideUrl
+            ? "hidden"
+            : edgeWrapMode
+              ? "block rounded"
+              : decorMode
+                ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+        }
+        style={
+          edgeWrapMode && !canvasOverrideUrl && edgeWrapFitSize
+            ? {
+                width: edgeWrapFitSize.w,
+                height: edgeWrapFitSize.h,
+                maxWidth: "100%",
+              }
+            : undefined
+        }
+        data-testid="flat-placer-canvas"
+      />
+      {canvasOverrideUrl ? (
+        <img
+          src={canvasOverrideUrl}
+          alt="Lifestyle context"
+          className={
+            edgeWrapMode
+              ? "block rounded object-contain"
+              : decorMode
+                ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
+                : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
+          }
+          style={
+            edgeWrapMode && edgeWrapFitSize
+              ? {
+                  width: edgeWrapFitSize.w,
+                  height: edgeWrapFitSize.h,
+                  maxWidth: "100%",
+                }
+              : undefined
+          }
+          data-testid="flat-placer-context-preview"
+        />
+      ) : (
+        showOverlay &&
+        calib &&
+        viewAssets.blank &&
+        artworkImg && (
+          <div
+            className="pointer-events-none absolute left-0 top-0"
+            style={
+              canvasCssBox.w > 0 && canvasCssBox.h > 0
+                ? { width: canvasCssBox.w, height: canvasCssBox.h }
+                : { right: 0, bottom: 0 }
+            }
+            data-testid="flat-rect-overlay-host"
+          >
+            <FlatDesignRectOverlay
+              canvasRef={canvasRef}
+              view={calib}
+              artwork={artworkImg}
+              placement={{ ...placement, scale: displayScale }}
+              edgeWrapMode={edgeWrapMode}
+              innerGuideRect={displayEdgeGuides?.inner ?? null}
+              outerGuideRect={displayEdgeGuides?.outer ?? null}
+              placementRect={placementRect}
+              mockupWidth={displayMockupW}
+              mockupHeight={displayMockupH}
+              scaleMax={scaleMax}
+              onChange={(next) => updatePlacement(state.view, next)}
+              onDragActivity={() => {
+                canvasDragRef.current = true;
+              }}
+            />
+          </div>
+        )
+      )}
+      {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
+          Create a design to preview it on the product →
+        </div>
+      )}
+      {!canvasOverrideUrl && artworkLoading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
+        </div>
+      )}
+      {!canvasOverrideUrl && assetsLoading && hasDisplayableAssets && (
+        <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
+          <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
+        </div>
+      )}
+      {canvasOverrideUrl && (
+        <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
+          {canvasOverrideLabel?.trim() || "Context"}
+        </div>
+      )}
+    </div>
+  );
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
       {/* Live canvas + overlay (or lifestyle/context override) */}
-      <div
-        className={
-          edgeWrapMode
-            ? "relative flex-1 overflow-visible rounded-lg border border-border bg-card"
-            : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
-        }
-      >
-        <div
-          ref={canvasAreaRef}
-          className={
-            // Phone cases: hug the scaled preview (no fixed empty tower).
-            // 10px pad above/below the blue print box; zoom bar sits in pb.
-            // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
-            edgeWrapMode
-              ? "relative flex w-full items-center justify-center bg-zinc-100 px-2.5 pt-[10px] pb-[calc(3.5rem+10px)]"
-              : decorMode
+      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
+        {edgeWrapMode ? (
+          // Fixed-height column: clipped preview fills space above; zoom bar
+          // is in normal flow at the very bottom (never absolute / floating).
+          <div
+            ref={canvasAreaRef}
+            className="flex h-[min(50vh,520px)] max-h-[50vh] w-full flex-col bg-zinc-100"
+            data-testid="flat-placer-canvas-area"
+          >
+            <div
+              ref={edgeWrapViewportRef}
+              className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-[10px]"
+              onClick={onCanvasAreaClick}
+            >
+              {previewMedia}
+            </div>
+            {previewZoomBar}
+          </div>
+        ) : (
+          <div
+            ref={canvasAreaRef}
+            className={
+              // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
+              decorMode
                 ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
                 : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
-          }
-          onClick={() => {
-            if (canvasOverrideUrl) return;
-            if (canvasDragRef.current) {
-              canvasDragRef.current = false;
-              return;
             }
-            setOverlayVisible((v) => !v);
-          }}
-          data-testid="flat-placer-canvas-area"
-        >
-          {/*
-            Wrapper sizes to the canvas (no max-h-full — that was shorter than
-            the canvas under aspect-square + zoom-bar padding, so inset-0 guides
-            floated away from the real clip). Overlay is explicitly sized to
-            canvas offsetWidth/Height.
-          */}
-          <div
-            className="relative inline-block max-w-full leading-none"
-            style={{
-              transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
-              transformOrigin: "center center",
-            }}
+            onClick={onCanvasAreaClick}
+            data-testid="flat-placer-canvas-area"
           >
-            <canvas
-              ref={canvasRef}
-              className={
-                canvasOverrideUrl
-                  ? "hidden"
-                  : edgeWrapMode
-                    ? "block rounded"
-                    : decorMode
-                      ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
-                      : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
-              }
-              style={
-                edgeWrapMode && !canvasOverrideUrl && edgeWrapFitSize
-                  ? {
-                      width: edgeWrapFitSize.w,
-                      height: edgeWrapFitSize.h,
-                      maxWidth: "100%",
-                    }
-                  : undefined
-              }
-              data-testid="flat-placer-canvas"
-            />
-            {canvasOverrideUrl ? (
-              <img
-                src={canvasOverrideUrl}
-                alt="Lifestyle context"
-                className={
-                  edgeWrapMode
-                    ? "block rounded object-contain"
-                    : decorMode
-                      ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
-                      : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
-                }
-                style={
-                  edgeWrapMode && edgeWrapFitSize
-                    ? {
-                        width: edgeWrapFitSize.w,
-                        height: edgeWrapFitSize.h,
-                        maxWidth: "100%",
-                      }
-                    : undefined
-                }
-                data-testid="flat-placer-context-preview"
-              />
-            ) : (
-              showOverlay &&
-              calib &&
-              viewAssets.blank &&
-              artworkImg && (
-                <div
-                  className="pointer-events-none absolute left-0 top-0"
-                  style={
-                    canvasCssBox.w > 0 && canvasCssBox.h > 0
-                      ? { width: canvasCssBox.w, height: canvasCssBox.h }
-                      : { right: 0, bottom: 0 }
-                  }
-                  data-testid="flat-rect-overlay-host"
-                >
-                  <FlatDesignRectOverlay
-                    canvasRef={canvasRef}
-                    view={calib}
-                    artwork={artworkImg}
-                    placement={{ ...placement, scale: displayScale }}
-                    edgeWrapMode={edgeWrapMode}
-                    innerGuideRect={displayEdgeGuides?.inner ?? null}
-                    outerGuideRect={displayEdgeGuides?.outer ?? null}
-                    placementRect={placementRect}
-                    mockupWidth={displayMockupW}
-                    mockupHeight={displayMockupH}
-                    scaleMax={scaleMax}
-                    onChange={(next) => updatePlacement(state.view, next)}
-                    onDragActivity={() => {
-                      canvasDragRef.current = true;
-                    }}
-                  />
-                </div>
-              )
-            )}
-            {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
-                Create a design to preview it on the product →
-              </div>
-            )}
-            {!canvasOverrideUrl && artworkLoading && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
-              </div>
-            )}
-            {!canvasOverrideUrl && assetsLoading && hasDisplayableAssets && (
-              <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
-                <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
-              </div>
-            )}
-            {canvasOverrideUrl && (
-              <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
-                {canvasOverrideLabel?.trim() || "Context"}
-              </div>
-            )}
+            {/*
+              Wrapper sizes to the canvas (no max-h-full — that was shorter than
+              the canvas under aspect-square + zoom-bar padding, so inset-0 guides
+              floated away from the real clip). Overlay is explicitly sized to
+              canvas offsetWidth/Height.
+            */}
+            {previewMedia}
+            {previewZoomBar}
           </div>
-          {/* View zoom only — does not change artwork print scale / Apply payload. */}
-          <div
-            className="absolute bottom-2 left-2 right-2 z-10 flex items-center gap-2 rounded-md bg-background/90 px-2.5 py-1.5 shadow-sm border border-border/60"
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            data-testid="flat-placer-preview-zoom"
-          >
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Zoom
-            </span>
-            <input
-              type="range"
-              min={1}
-              max={2}
-              step={0.05}
-              value={previewZoom}
-              onChange={(e) => setPreviewZoom(Number(e.target.value))}
-              className="min-w-0 flex-1"
-              style={{ accentColor: "hsl(var(--primary))" }}
-              aria-label="Preview zoom"
-            />
-            <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
-              {Math.round(previewZoom * 100)}%
-            </span>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
