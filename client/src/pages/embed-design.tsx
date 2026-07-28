@@ -10967,7 +10967,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             ref={artworkColumnRef}
             className={`order-2 min-w-0 w-full ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-                ? "lg:order-1 lg:col-span-2 flex flex-col min-h-0"
+                ? "lg:order-1 lg:col-span-2 flex h-full min-h-0 flex-col"
                 : "space-y-3 md:order-1"
             }`}
           >
@@ -11302,9 +11302,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               // On-the-fly flat/mesh local mockup placer (replaces the Printify
               // mockup flow for calibrated flat/mesh products). Falls back to
               // the Printify flow automatically if the renderer/assets fail.
-              <div className="flex flex-col gap-2 min-h-0">
+              <div
+                className={
+                  flatEdgeWrapMode
+                    ? "flex h-full min-h-0 flex-col gap-2"
+                    : "flex min-h-0 flex-col gap-2"
+                }
+              >
                 {(isStorefront || isShopify) && (
-                  <div className="flex w-full gap-2 justify-stretch">
+                  <div className="flex w-full shrink-0 gap-2 justify-stretch">
                     <Button
                       type="button"
                       variant="outline"
@@ -11336,7 +11342,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
-                <div className="relative min-h-0">
+                <div
+                  className={
+                    flatEdgeWrapMode
+                      ? "relative flex min-h-0 flex-1 flex-col"
+                      : "relative min-h-0"
+                  }
+                >
                   {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
                     <div
                       className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20"
@@ -11460,7 +11472,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 {showsPrintifyMockupPreview &&
                   generatedDesign?.imageUrl &&
                   postGenGalleryItems.length > 1 && (
-                  <div className="flex justify-center gap-3 mt-1 lg:pr-80" data-testid="flat-placer-gallery-dots">
+                  <div
+                    className={`flex justify-center gap-3 mt-1 lg:pr-80${
+                      flatEdgeWrapMode ? " shrink-0" : ""
+                    }`}
+                    data-testid="flat-placer-gallery-dots"
+                  >
                     {postGenGalleryItems.map((item, idx) => {
                       if (!isFlatPlacerGalleryReachable(item)) return null;
                       return (

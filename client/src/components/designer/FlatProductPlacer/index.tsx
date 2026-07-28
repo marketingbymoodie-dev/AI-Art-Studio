@@ -1153,26 +1153,26 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     <div
       className={
         edgeWrapMode
-          ? "flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start"
+          ? "flex h-full min-h-0 w-full flex-col items-stretch gap-4 lg:flex-row"
           : "flex w-full flex-col gap-4 lg:flex-row"
       }
     >
       {/* Live canvas + overlay (or lifestyle/context override) */}
       <div
         className={
-          // Phone cases: do NOT flex-stretch to the taller controls column —
-          // that left a white dead zone under the zoom bar.
+          // Phone cases: stretch with the embed row (prompt column height) so
+          // Zoom can sit on the true bottom of the viewing window.
           edgeWrapMode
-            ? "relative w-full self-start overflow-hidden rounded-lg border border-border bg-card"
+            ? "relative flex h-full min-h-[280px] w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card"
             : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
         }
       >
         {edgeWrapMode ? (
-          // Fixed-height column: clipped preview fills space above; zoom bar
-          // is in normal flow at the very bottom of this card (no trailing gap).
+          // Fill the card: preview uses all space above; zoom bar pinned to
+          // the card bottom (normal flow, not absolute).
           <div
             ref={canvasAreaRef}
-            className="flex h-[min(50vh,520px)] max-h-[50vh] w-full flex-col bg-zinc-100"
+            className="flex h-full min-h-0 w-full flex-1 flex-col bg-zinc-100"
             data-testid="flat-placer-canvas-area"
           >
             <div
@@ -1209,7 +1209,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       </div>
 
       {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
-      <div className="w-full shrink-0 space-y-4 lg:w-80">
+      <div
+        className={
+          edgeWrapMode
+            ? "w-full shrink-0 space-y-4 lg:w-80 lg:self-start"
+            : "w-full shrink-0 space-y-4 lg:w-80"
+        }
+      >
         {/* View row: Front always; Back only when available */}
         {availableViews.length > 1 && (
           <div>
