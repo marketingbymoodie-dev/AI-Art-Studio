@@ -278,11 +278,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
    */
   const [canvasCssBox, setCanvasCssBox] = useState({ w: 0, h: 0 });
   /**
-   * Phone cases: max CSS height so the full print canvas (blue dashed box)
-   * fits in the preview pane with ~10px pad above and below (above the zoom bar).
+   * Phone cases: explicit CSS width×height for the preview so the full print
+   * canvas (blue dashed box) fits with ~10px pad — never stretch/squash via
+   * max-height-only (canvas/img ignore aspect when only one axis is capped).
    */
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
-  const [edgeWrapFitMaxH, setEdgeWrapFitMaxH] = useState<number | null>(null);
+  const [edgeWrapFitSize, setEdgeWrapFitSize] = useState<{
+    w: number;
+    h: number;
+  } | null>(null);
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -596,36 +600,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       ro.disconnect();
       window.removeEventListener("resize", sync);
     };
-  }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg, edgeWrapFitMaxH]);
-
-  // Phone cases: size the live canvas so the blue print box fits inside the
-  // padded content box (10px top + 10px above the zoom bar).
-  useEffect(() => {
-    if (!edgeWrapMode) {
-      setEdgeWrapFitMaxH(null);
-      return;
-    }
-    const area = canvasAreaRef.current;
-    if (!area) return;
-    const sync = () => {
-      const style = getComputedStyle(area);
-      const padTop = parseFloat(style.paddingTop) || 0;
-      const padBottom = parseFloat(style.paddingBottom) || 0;
-      // border-box height includes padding — subtract it for the drawable area.
-      const contentH = area.clientHeight - padTop - padBottom;
-      // 2px safety so subpixel rounding never clips the blue dashed edges.
-      const fit = Math.max(100, Math.floor(contentH) - 2);
-      setEdgeWrapFitMaxH((prev) => (prev === fit ? prev : fit));
-    };
-    sync();
-    const ro = new ResizeObserver(sync);
-    ro.observe(area);
-    window.addEventListener("resize", sync);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", sync);
-    };
-  }, [edgeWrapMode, canvasOverrideUrl]);
+  }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg, edgeWrapFitSize]);
 
   // ---------- Apply hand-off ----------
   const renderViewToCanvas = useCallback(
@@ -855,6 +830,99 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
 
+  // Phone cases: hug-content viewer — scale preview by BOTH axes so the full
+  // blue print box (or printers mockup) fits with 10px pad and never squashes.
+  useEffect(() => {
+    if (!edgeWrapMode) {
+      setEdgeWrapFitSize(null);
+      return;
+    }
+    const area = canvasAreaRef.current;
+    if (!area) return;
+
+    const EDGE_WRAP_PAD_PX = 10;
+    const ZOOM_BAR_RESERVE_PX = 56; // ~3.5rem zoom strip
+    const sync = () => {
+      const style = getComputedStyle(area);
+      const padL = parseFloat(style.paddingLeft) || EDGE_WRAP_PAD_PX;
+      const padR = parseFloat(style.paddingRight) || EDGE_WRAP_PAD_PX;
+      const availW = Math.max(80, area.clientWidth - padL - padR);
+      // Whole pane (pads + preview + zoom) ~half viewport; content gets the rest.
+      const maxViewerH = Math.min(
+        Math.floor(window.innerHeight * 0.5),
+        520,
+      );
+      const maxContentH = Math.max(
+        140,
+        maxViewerH - EDGE_WRAP_PAD_PX * 2 - ZOOM_BAR_RESERVE_PX,
+      );
+
+      let srcW = 900;
+      let srcH = 1524;
+      if (canvasOverrideUrl) {
+        const img = area.querySelector(
+          '[data-testid="flat-placer-context-preview"]',
+        ) as HTMLImageElement | null;
+        if (img?.naturalWidth && img.naturalHeight) {
+          srcW = img.naturalWidth;
+          srcH = img.naturalHeight;
+        }
+      } else {
+        const canvas = canvasRef.current;
+        if (canvas?.width && canvas?.height) {
+          srcW = canvas.width;
+          srcH = canvas.height;
+        } else if (state) {
+          const cal = resolveFlatViewCalibration(
+            manifest,
+            colorId,
+            state.view,
+            calibOpts,
+          );
+          if (cal) {
+            const dims = flatPrintCanvasPreviewDims(cal);
+            srcW = dims.width;
+            srcH = dims.height;
+          }
+        }
+      }
+
+      const scale = Math.min(availW / srcW, maxContentH / srcH);
+      const w = Math.max(1, Math.floor(srcW * scale));
+      const h = Math.max(1, Math.floor(srcH * scale));
+      setEdgeWrapFitSize((prev) =>
+        prev && prev.w === w && prev.h === h ? prev : { w, h },
+      );
+    };
+
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(area);
+    window.addEventListener("resize", sync);
+    const img = area.querySelector(
+      '[data-testid="flat-placer-context-preview"]',
+    ) as HTMLImageElement | null;
+    if (img && !img.complete) {
+      img.addEventListener("load", sync);
+    }
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+      img?.removeEventListener("load", sync);
+    };
+  }, [
+    edgeWrapMode,
+    canvasOverrideUrl,
+    assetsLoading,
+    state?.view,
+    assets,
+    artworkImg,
+    manifest,
+    colorId,
+    calibOpts,
+    state,
+  ]);
+
   // ---------- Render guards ----------
   if (!state || (assetsLoading && !hasDisplayableAssets)) {
     return (
@@ -942,15 +1010,21 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
       {/* Live canvas + overlay (or lifestyle/context override) */}
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
+      <div
+        className={
+          edgeWrapMode
+            ? "relative flex-1 overflow-visible rounded-lg border border-border bg-card"
+            : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
+        }
+      >
         <div
           ref={canvasAreaRef}
           className={
-            // Phone cases are tall — keep the viewer ~half page height so the
-            // full blue print box fits with 10px pad above/below (above zoom).
+            // Phone cases: hug the scaled preview (no fixed empty tower).
+            // 10px pad above/below the blue print box; zoom bar sits in pb.
             // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
             edgeWrapMode
-              ? "relative box-border flex h-[min(42vh,400px)] max-h-[42vh] items-center justify-center overflow-hidden bg-zinc-100 px-2.5 pt-[10px] pb-[calc(3.5rem+10px)] lg:h-[min(44vh,420px)] lg:max-h-[44vh]"
+              ? "relative flex w-full items-center justify-center bg-zinc-100 px-2.5 pt-[10px] pb-[calc(3.5rem+10px)]"
               : decorMode
                 ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
                 : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
@@ -984,14 +1058,18 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 canvasOverrideUrl
                   ? "hidden"
                   : edgeWrapMode
-                    ? "block max-w-full h-auto w-auto rounded"
+                    ? "block rounded"
                     : decorMode
                       ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
                       : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
               }
               style={
-                edgeWrapMode && !canvasOverrideUrl && edgeWrapFitMaxH
-                  ? { maxHeight: edgeWrapFitMaxH }
+                edgeWrapMode && !canvasOverrideUrl && edgeWrapFitSize
+                  ? {
+                      width: edgeWrapFitSize.w,
+                      height: edgeWrapFitSize.h,
+                      maxWidth: "100%",
+                    }
                   : undefined
               }
               data-testid="flat-placer-canvas"
@@ -1002,14 +1080,18 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 alt="Lifestyle context"
                 className={
                   edgeWrapMode
-                    ? "block max-w-full h-auto w-auto rounded object-contain"
+                    ? "block rounded object-contain"
                     : decorMode
                       ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
                       : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
                 }
                 style={
-                  edgeWrapMode && edgeWrapFitMaxH
-                    ? { maxHeight: edgeWrapFitMaxH }
+                  edgeWrapMode && edgeWrapFitSize
+                    ? {
+                        width: edgeWrapFitSize.w,
+                        height: edgeWrapFitSize.h,
+                        maxWidth: "100%",
+                      }
                     : undefined
                 }
                 data-testid="flat-placer-context-preview"
