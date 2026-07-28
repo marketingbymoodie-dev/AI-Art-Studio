@@ -14,24 +14,14 @@ import {
 describe("flatApparelGuideTrimmed", () => {
   const guide = { x: 100, y: 100, width: 200, height: 300 };
 
-  it("stays quiet when art is inside the dashed guide", () => {
+  it("stays quiet when art is comfortably inside the dashed guide", () => {
     expect(
-      flatApparelGuideTrimmed(guide, { x: 110, y: 120, width: 180, height: 260 }),
+      flatApparelGuideTrimmed(guide, { x: 120, y: 120, width: 160, height: 260 }),
     ).toBe(false);
   });
 
-  it("warns on any overhang past the dashed guide (slack is 0)", () => {
-    expect(
-      flatApparelGuideTrimmed(guide, {
-        x: guide.x - 1,
-        y: 120,
-        width: 180,
-        height: 260,
-      }),
-    ).toBe(true);
-  });
-
-  it("stays quiet when art is flush with the guide edge", () => {
+  it("warns when art is flush with the guide (strictly-inside inset)", () => {
+    // Flush with the dashed line is not safe — Printify can clip hairline edges.
     expect(
       flatApparelGuideTrimmed(guide, {
         x: guide.x,
@@ -39,7 +29,27 @@ describe("flatApparelGuideTrimmed", () => {
         width: guide.width,
         height: guide.height,
       }),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("warns when only the visual handle pad crosses the guide", () => {
+    // Content sits 4px inside; 8px handle pad makes the merchant-visible box cross.
+    const art = { x: 104, y: 120, width: 180, height: 260 };
+    expect(flatApparelGuideTrimmed(guide, art)).toBe(false);
+    expect(
+      flatApparelGuideTrimmed(guide, art, { visualPadMockupPx: 8 }),
+    ).toBe(true);
+  });
+
+  it("warns on clear overhang past the dashed guide", () => {
+    expect(
+      flatApparelGuideTrimmed(guide, {
+        x: guide.x - 10,
+        y: 120,
+        width: 180,
+        height: 260,
+      }),
+    ).toBe(true);
   });
 });
 

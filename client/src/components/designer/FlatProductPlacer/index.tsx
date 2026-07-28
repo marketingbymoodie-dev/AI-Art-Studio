@@ -31,6 +31,7 @@ import {
   flatCovers,
   flatVisibleArtBoxAxisAligned,
   flatApparelGuideTrimmed,
+  flatApparelVisualPadMockupPx,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -662,7 +663,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         ),
       };
       const box = flatVisibleArtBoxAxisAligned(pRect, placed, artworkImg);
-      if (flatApparelGuideTrimmed(pRect, box)) {
+      const visualPad = flatApparelVisualPadMockupPx(mW, canvasCssBox.w);
+      if (flatApparelGuideTrimmed(pRect, box, { visualPadMockupPx: visualPad })) {
         clippedSides.push(view);
       }
     }
@@ -683,6 +685,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     calibOpts,
     assets,
     clampPlacementScale,
+    canvasCssBox.w,
   ]);
 
   useImperativeHandle(
@@ -887,9 +890,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatApparelGuideTrimmed(placementRect, box)) {
-      // Apparel: dashed guide is the only warning trigger (must match WYSIWYG).
-      coverageWarning = "trim";
+    } else {
+      // Apparel: warn when content (or the visible handle box) leaves the
+      // dashed guide — must match what merchants see / Printify clips.
+      const visualPad = flatApparelVisualPadMockupPx(mockupW, canvasCssBox.w);
+      if (
+        flatApparelGuideTrimmed(placementRect, box, {
+          visualPadMockupPx: visualPad,
+        })
+      ) {
+        coverageWarning = "trim";
+      }
     }
   }
 
