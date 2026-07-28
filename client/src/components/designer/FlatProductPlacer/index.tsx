@@ -598,7 +598,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     };
   }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg, edgeWrapFitMaxH]);
 
-  // Phone cases: size the live canvas so the blue print box fits with 10px pad.
+  // Phone cases: size the live canvas so the blue print box fits inside the
+  // padded content box (10px top + 10px above the zoom bar).
   useEffect(() => {
     if (!edgeWrapMode) {
       setEdgeWrapFitMaxH(null);
@@ -610,9 +611,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const style = getComputedStyle(area);
       const padTop = parseFloat(style.paddingTop) || 0;
       const padBottom = parseFloat(style.paddingBottom) || 0;
-      // Area uses 10px top + (zoom bar + 10px) bottom padding — fill the content box.
+      // border-box height includes padding — subtract it for the drawable area.
       const contentH = area.clientHeight - padTop - padBottom;
-      const fit = Math.max(120, Math.floor(contentH));
+      // 2px safety so subpixel rounding never clips the blue dashed edges.
+      const fit = Math.max(100, Math.floor(contentH) - 2);
       setEdgeWrapFitMaxH((prev) => (prev === fit ? prev : fit));
     };
     sync();
@@ -944,11 +946,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         <div
           ref={canvasAreaRef}
           className={
-            // Phone cases are tall — square crop clips the bottom.
+            // Phone cases are tall — keep the viewer ~half page height so the
+            // full blue print box fits with 10px pad above/below (above zoom).
             // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
-            // Edge-wrap: 10px pad above the blue print box and 10px above the zoom bar.
             edgeWrapMode
-              ? "relative flex h-[min(85vh,820px)] max-h-[85vh] items-center justify-center bg-zinc-100 px-2.5 pt-[10px] pb-[calc(3.5rem+10px)] lg:h-[min(90vh,860px)] lg:max-h-[90vh]"
+              ? "relative box-border flex h-[min(42vh,400px)] max-h-[42vh] items-center justify-center overflow-hidden bg-zinc-100 px-2.5 pt-[10px] pb-[calc(3.5rem+10px)] lg:h-[min(44vh,420px)] lg:max-h-[44vh]"
               : decorMode
                 ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
                 : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
