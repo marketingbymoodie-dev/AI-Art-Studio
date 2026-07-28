@@ -7602,6 +7602,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : "front";
         setPrintPlacement((prev) => (prev === derived ? prev : derived));
       }
+      // Any edit while viewing Printers/Context → jump back to the live editor.
+      setSelectedMockupIndex(0);
       setFlatPlacementDirty(true);
       if (isAdminTester && savedJobIdRef.current) {
         emitTesterDesignStatus({
@@ -8582,13 +8584,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
 
-  // Framed decor + catalog blanks + tapestry + folded/flat totes share on-demand Printify.
+  // Framed decor + catalog blanks + tapestry + phone cases + folded/flat totes share on-demand Printify.
   const canRequestLifestyleShot = !!(
     (flatDecorMode ||
       isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
       flatFabricWeave ||
+      flatEdgeWrapMode ||
       toteFoldedLayout ||
-      (flatPlacerEligible && !isApparel && !flatEdgeWrapMode)) &&
+      (flatPlacerEligible && !isApparel)) &&
     flatPlacerEligible &&
     productTypeConfig?.hasPrintifyMockups &&
     selectedSize &&
@@ -8743,7 +8746,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
     setLifestyleShotLoading(true);
     setLifestyleShotError(null);
-    const isTapestryPrinters = flatFabricWeave;
+    const isPrintersMockup = flatFabricWeave || flatEdgeWrapMode;
     try {
       const result = await fetchPrintifyMockups(
         toAbsoluteImageUrl(generatedDesign.imageUrl),
@@ -8758,17 +8761,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         undefined,
         undefined,
         undefined,
-        isTapestryPrinters
+        isPrintersMockup
           ? { mergeProductMockups: true }
           : { mergeContextOnly: true },
       );
       if (!result.ok) {
         const msg =
           result.error ||
-          (isTapestryPrinters ? "Printers mockup failed" : "Lifestyle shot failed");
+          (isPrintersMockup ? "Printers mockup failed" : "Lifestyle shot failed");
         setLifestyleShotError(msg);
         toast({
-          title: isTapestryPrinters
+          title: isPrintersMockup
             ? "Printers mockup unavailable"
             : "Lifestyle shot unavailable",
           description: msg,
@@ -8777,9 +8780,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         return;
       }
       toast({
-        title: isTapestryPrinters ? "Printers mockup ready" : "Lifestyle shot ready",
-        description: isTapestryPrinters
-          ? "Showing the printer’s woven mockup — use the dots or arrows to switch views."
+        title: isPrintersMockup ? "Printers mockup ready" : "Lifestyle shot ready",
+        description: isPrintersMockup
+          ? flatEdgeWrapMode
+            ? "Showing the printer’s mockup — use the dots or arrows to switch views. Editing returns to Front."
+            : "Showing the printer’s woven mockup — use the dots or arrows to switch views."
           : "Showing On Person — use the dots or arrows under the preview to switch views. Front/Back returns to the editor.",
       });
     } finally {
@@ -8797,6 +8802,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize,
     selectedFrameColor,
     flatFabricWeave,
+    flatEdgeWrapMode,
     toast,
   ]);
 
@@ -8820,6 +8826,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!flatPlacerEligible) return;
     currentMockupColorRef.current = "";
     lastFlatGalleryMockupKeyRef.current = "";
+    // Model/size/colour change leaves Printers/Context — back to live Front editor.
+    setSelectedMockupIndex(0);
     if (flatDecorMode && generatedDesign?.imageUrl) {
       setFlatMockupRefreshing(true);
     }
@@ -11393,19 +11401,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onClick: () => void requestLifestyleShot(),
                             loading: lifestyleShotLoading,
                             active: lifestyleShotActive,
-                            label: flatFabricWeave
-                              ? hasLifestyleShot
-                                ? "Refresh Printers Mockup"
-                                : "Printers Mockup"
-                              : hasLifestyleShot
-                                ? "Refresh Lifestyle Shot"
-                                : "Lifestyle Shot",
-                            loadingLabel: flatFabricWeave
-                              ? "Generating printers mockup…"
-                              : "Generating lifestyle…",
-                            idleHint: flatFabricWeave
-                              ? "Finish placement (or generate artwork) to enable Printers Mockup"
-                              : "Finish placement (or generate artwork) to enable Lifestyle Shot",
+                            label:
+                              flatFabricWeave || flatEdgeWrapMode
+                                ? hasLifestyleShot
+                                  ? "Refresh Printers Mockup"
+                                  : "Printers Mockup"
+                                : hasLifestyleShot
+                                  ? "Refresh Lifestyle Shot"
+                                  : "Lifestyle Shot",
+                            loadingLabel:
+                              flatFabricWeave || flatEdgeWrapMode
+                                ? "Generating printers mockup…"
+                                : "Generating lifestyle…",
+                            idleHint:
+                              flatFabricWeave || flatEdgeWrapMode
+                                ? "Finish placement (or generate artwork) to enable Printers Mockup"
+                                : "Finish placement (or generate artwork) to enable Lifestyle Shot",
                             error: lifestyleShotError,
                           }
                         : null
@@ -11457,7 +11468,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           key={`${item.kind}-${idx}`}
                           type="button"
                           onClick={() => setSelectedMockupIndex(idx)}
-                          aria-label={item.label}
+                          aria-label={
+                            item.kind === "artwork" && flatEdgeWrapMode
+                              ? "Front"
+                              : item.label
+                          }
                           className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
                             selectedMockupIndex === idx
                               ? "opacity-100"
@@ -11478,7 +11493,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 : "text-muted-foreground"
                             }`}
                           >
-                            {item.label}
+                            {item.kind === "artwork" && flatEdgeWrapMode
+                              ? "Front"
+                              : item.label}
                           </span>
                         </button>
                       );

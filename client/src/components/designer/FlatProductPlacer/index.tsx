@@ -277,6 +277,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
    * + zoom-bar padding), which makes the guide float above/inside the real clip.
    */
   const [canvasCssBox, setCanvasCssBox] = useState({ w: 0, h: 0 });
+  /**
+   * Phone cases: max CSS height so the full print canvas (blue dashed box)
+   * fits in the preview pane with ~10px pad above and below (above the zoom bar).
+   */
+  const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const [edgeWrapFitMaxH, setEdgeWrapFitMaxH] = useState<number | null>(null);
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -590,7 +596,34 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       ro.disconnect();
       window.removeEventListener("resize", sync);
     };
-  }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg]);
+  }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg, edgeWrapFitMaxH]);
+
+  // Phone cases: size the live canvas so the blue print box fits with 10px pad.
+  useEffect(() => {
+    if (!edgeWrapMode) {
+      setEdgeWrapFitMaxH(null);
+      return;
+    }
+    const area = canvasAreaRef.current;
+    if (!area) return;
+    const sync = () => {
+      const style = getComputedStyle(area);
+      const padTop = parseFloat(style.paddingTop) || 0;
+      const padBottom = parseFloat(style.paddingBottom) || 0;
+      // Area uses 10px top + (zoom bar + 10px) bottom padding — fill the content box.
+      const contentH = area.clientHeight - padTop - padBottom;
+      const fit = Math.max(120, Math.floor(contentH));
+      setEdgeWrapFitMaxH((prev) => (prev === fit ? prev : fit));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(area);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [edgeWrapMode, canvasOverrideUrl]);
 
   // ---------- Apply hand-off ----------
   const renderViewToCanvas = useCallback(
@@ -909,11 +942,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       {/* Live canvas + overlay (or lifestyle/context override) */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
+          ref={canvasAreaRef}
           className={
             // Phone cases are tall — square crop clips the bottom.
             // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
+            // Edge-wrap: 10px pad above the blue print box and 10px above the zoom bar.
             edgeWrapMode
-              ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 pb-12 lg:max-h-[90vh] lg:p-3 lg:pb-12"
+              ? "relative flex h-[min(85vh,820px)] max-h-[85vh] items-center justify-center bg-zinc-100 px-2.5 pt-[10px] pb-[calc(3.5rem+10px)] lg:h-[min(90vh,860px)] lg:max-h-[90vh]"
               : decorMode
                 ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
                 : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
@@ -947,10 +982,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 canvasOverrideUrl
                   ? "hidden"
                   : edgeWrapMode
-                    ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
+                    ? "block max-w-full h-auto w-auto rounded"
                     : decorMode
                       ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
                       : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+              }
+              style={
+                edgeWrapMode && !canvasOverrideUrl && edgeWrapFitMaxH
+                  ? { maxHeight: edgeWrapFitMaxH }
+                  : undefined
               }
               data-testid="flat-placer-canvas"
             />
@@ -959,9 +999,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 src={canvasOverrideUrl}
                 alt="Lifestyle context"
                 className={
-                  decorMode
-                    ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
-                    : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
+                  edgeWrapMode
+                    ? "block max-w-full h-auto w-auto rounded object-contain"
+                    : decorMode
+                      ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
+                      : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
+                }
+                style={
+                  edgeWrapMode && edgeWrapFitMaxH
+                    ? { maxHeight: edgeWrapFitMaxH }
+                    : undefined
                 }
                 data-testid="flat-placer-context-preview"
               />
@@ -1075,16 +1122,65 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {/* Artwork enabled — per current view */}
-        <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Print on {state.view === "front" ? "front" : "back"}
-          </span>
-          <Toggle
-            checked={viewEnabled}
-            onChange={(on) => setEnabled(state.view, on)}
-          />
-        </div>
+        {/* Artwork enabled — skip for phone cases (single print side only). */}
+        {!edgeWrapMode && (
+          <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Print on {state.view === "front" ? "front" : "back"}
+            </span>
+            <Toggle
+              checked={viewEnabled}
+              onChange={(on) => setEnabled(state.view, on)}
+            />
+          </div>
+        )}
+
+        {/* Phone cases: Printers Mockup replaces the Print-on-front toggle slot. */}
+        {edgeWrapMode && lifestyleAction && (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (!lifestyleAction.active || lifestyleAction.loading) return;
+                lifestyleAction.onClick();
+              }}
+              disabled={!lifestyleAction.active || !!lifestyleAction.loading}
+              data-testid="button-lifestyle-shot-placer"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
+                lifestyleAction.active && !lifestyleAction.loading
+                  ? "border-foreground/80 bg-foreground text-background"
+                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
+              }`}
+            >
+              {lifestyleAction.loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className={
+                  lifestyleAction.active && !lifestyleAction.loading
+                    ? "shimmer-text-white"
+                    : undefined
+                }
+              >
+                {lifestyleAction.loading
+                  ? lifestyleAction.loadingLabel || "Generating…"
+                  : lifestyleAction.label}
+              </span>
+            </button>
+            {lifestyleAction.error ? (
+              <p className="text-[10px] text-destructive leading-snug">
+                {lifestyleAction.error}
+              </p>
+            ) : !lifestyleAction.active && !lifestyleAction.loading ? (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                {lifestyleAction.idleHint ||
+                  "Finish placement (or generate artwork) to enable"}
+              </p>
+            ) : null}
+          </div>
+        )}
 
         {/* Scale slider (capped at 1.0) */}
         {viewEnabled && (
@@ -1234,7 +1330,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {lifestyleAction && (
+        {/* Non-phone: lifestyle / printers action stays under placement status. */}
+        {lifestyleAction && !edgeWrapMode && (
           <div className="flex flex-col gap-1 pt-1">
             <button
               type="button"
