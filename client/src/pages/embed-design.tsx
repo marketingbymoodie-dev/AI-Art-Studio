@@ -1467,6 +1467,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Ref for the artwork column — used to auto-scroll on mobile after generation
   const artworkColumnRef = useRef<HTMLDivElement | null>(null);
+  /** Form/prompt column — phone viewer height is matched to this. */
+  const formColumnRef = useRef<HTMLDivElement | null>(null);
+  const [phoneViewerHeightPx, setPhoneViewerHeightPx] = useState<number | null>(
+    null,
+  );
   const scrollArtworkIntoViewOnMobile = useCallback((delayMs = 0) => {
     if (typeof window === 'undefined' || window.innerWidth >= 768) return;
     window.setTimeout(() => {
@@ -8574,6 +8579,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
+  // Phone cases: match viewing-card height to the form/prompt column so Zoom
+  // lands on the same baseline as the describe box (not viewport-tall).
+  useEffect(() => {
+    if (!flatEdgeWrapMode || !flatPlacerActive) {
+      setPhoneViewerHeightPx(null);
+      return;
+    }
+    const form = formColumnRef.current;
+    if (!form) return;
+    const sync = () => {
+      const h = Math.round(form.getBoundingClientRect().height);
+      if (h >= 200) {
+        setPhoneViewerHeightPx((prev) => (prev === h ? prev : h));
+      }
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(form);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [flatEdgeWrapMode, flatPlacerActive]);
+
   // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
   useEffect(() => {
     if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
@@ -9784,6 +9814,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div
+            ref={formColumnRef}
             className={`space-y-2.5 order-1 ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3"
@@ -10967,7 +10998,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             ref={artworkColumnRef}
             className={`order-2 min-w-0 w-full ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-                ? "lg:order-1 lg:col-span-2 flex h-full min-h-0 flex-col"
+                ? "lg:order-1 lg:col-span-2 flex min-h-0 flex-col"
                 : "space-y-3 md:order-1"
             }`}
           >
@@ -11302,15 +11333,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               // On-the-fly flat/mesh local mockup placer (replaces the Printify
               // mockup flow for calibrated flat/mesh products). Falls back to
               // the Printify flow automatically if the renderer/assets fail.
-              <div
-                className={
-                  flatEdgeWrapMode
-                    ? "flex h-full min-h-0 flex-col gap-2"
-                    : "flex min-h-0 flex-col gap-2"
-                }
-              >
+              <div className="flex min-h-0 flex-col gap-2">
                 {(isStorefront || isShopify) && (
-                  <div className="flex w-full shrink-0 gap-2 justify-stretch">
+                  <div className="flex w-full gap-2 justify-stretch">
                     <Button
                       type="button"
                       variant="outline"
@@ -11342,13 +11367,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
-                <div
-                  className={
-                    flatEdgeWrapMode
-                      ? "relative flex min-h-0 flex-1 flex-col"
-                      : "relative min-h-0"
-                  }
-                >
+                <div className="relative min-h-0">
                   {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
                     <div
                       className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20"
@@ -11407,6 +11426,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
                     canvasOverrideUrl={flatCanvasOverrideUrl}
                     canvasOverrideLabel={flatCanvasOverrideLabel}
+                    viewerHeightPx={
+                      flatEdgeWrapMode ? phoneViewerHeightPx : null
+                    }
                     lifestyleAction={
                       canRequestLifestyleShot
                         ? {

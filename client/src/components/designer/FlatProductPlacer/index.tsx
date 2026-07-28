@@ -166,6 +166,11 @@ export type FlatProductPlacerProps = {
   canvasOverrideUrl?: string | null;
   /** Badge text when showing a Lifestyle / catalog override (e.g. "On Person"). */
   canvasOverrideLabel?: string | null;
+  /**
+   * Phone cases: explicit viewing-card height (px), matched to the embed form
+   * column (prompt box). Zoom sits at the bottom of this card.
+   */
+  viewerHeightPx?: number | null;
 };
 
 type LoadedAssets = {
@@ -247,6 +252,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       lifestyleAction = null,
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
+      viewerHeightPx = null,
     },
     ref,
   ) {
@@ -1147,32 +1153,48 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     </div>
   );
 
+  const edgeWrapCardHeight =
+    edgeWrapMode && viewerHeightPx && viewerHeightPx > 0
+      ? viewerHeightPx
+      : edgeWrapMode
+        ? Math.min(
+            typeof window !== "undefined"
+              ? Math.floor(window.innerHeight * 0.5)
+              : 480,
+            520,
+          )
+        : null;
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div
       className={
         edgeWrapMode
-          ? "flex h-full min-h-0 w-full flex-col items-stretch gap-4 lg:flex-row"
+          ? "flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start"
           : "flex w-full flex-col gap-4 lg:flex-row"
       }
     >
       {/* Live canvas + overlay (or lifestyle/context override) */}
       <div
         className={
-          // Phone cases: stretch with the embed row (prompt column height) so
-          // Zoom can sit on the true bottom of the viewing window.
+          // Phone cases: height is matched to the form/prompt column (px), not
+          // viewport stretch — Zoom stays on the bottom of that card.
           edgeWrapMode
-            ? "relative flex h-full min-h-[280px] w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card"
+            ? "relative flex w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card self-start"
             : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
+        }
+        style={
+          edgeWrapCardHeight
+            ? { height: edgeWrapCardHeight, maxHeight: edgeWrapCardHeight }
+            : undefined
         }
       >
         {edgeWrapMode ? (
-          // Fill the card: preview uses all space above; zoom bar pinned to
-          // the card bottom (normal flow, not absolute).
+          // Fill the matched-height card; zoom bar pinned to card bottom.
           <div
             ref={canvasAreaRef}
-            className="flex h-full min-h-0 w-full flex-1 flex-col bg-zinc-100"
+            className="flex h-full min-h-0 w-full flex-col bg-zinc-100"
             data-testid="flat-placer-canvas-area"
           >
             <div
