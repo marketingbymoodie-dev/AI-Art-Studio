@@ -2331,15 +2331,11 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
-    // Step 1: Print-canvas fill — customer bg covers out to the blue dashed
-    // box; otherwise Printify grey guide chrome (non-printing).
+    // Step 1: Printify grey guide chrome for the print canvas (blue dashed).
+    // Customer background is NOT painted here — it belongs on the masked print
+    // layer (phone face + wrap) so it doesn't flood the grey box as a rectangle.
     ctx.clearRect(0, 0, outW, outH);
-    const bg =
-      typeof printCanvasBackgroundColor === "string" &&
-      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
-        ? printCanvasBackgroundColor.trim()
-        : PRINT_CANVAS_GREY;
-    ctx.fillStyle = bg;
+    ctx.fillStyle = PRINT_CANVAS_GREY;
     ctx.fillRect(0, 0, outW, outH);
 
     // Step 2: Blank phone photo, clipped to the phone silhouette so the JPEG
@@ -2379,6 +2375,45 @@ export function renderFlatView(input: FlatRenderInput): void {
         drawAssetScaled,
       );
     };
+
+    const customerBg =
+      typeof printCanvasBackgroundColor === "string" &&
+      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
+        ? printCanvasBackgroundColor.trim()
+        : null;
+
+    // Step 2b: Customer bg on the printable phone (mask), covering the full
+    // print-canvas rect then clipped — matches bake (full canvas) while keeping
+    // grey guide margins outside the silhouette.
+    if (customerBg) {
+      const bgLayer = document.createElement("canvas");
+      bgLayer.width = outW;
+      bgLayer.height = outH;
+      const bgCtx = bgLayer.getContext("2d");
+      if (bgCtx) {
+        bgCtx.fillStyle = customerBg;
+        bgCtx.fillRect(
+          layout.printCanvas.x,
+          layout.printCanvas.y,
+          layout.printCanvas.width,
+          layout.printCanvas.height,
+        );
+        if (mask) {
+          clipMaskToDest(bgCtx, maskDraw);
+        } else {
+          const pb = layout.phoneBack;
+          bgCtx.save();
+          bgCtx.beginPath();
+          bgCtx.rect(pb.x, pb.y, pb.width, pb.height);
+          bgCtx.clip();
+          bgCtx.globalCompositeOperation = "destination-in";
+          bgCtx.fillStyle = "#fff";
+          bgCtx.fillRect(pb.x, pb.y, pb.width, pb.height);
+          bgCtx.restore();
+        }
+        ctx.drawImage(bgLayer, 0, 0);
+      }
+    }
 
     if (!showArtLayer || !artwork) {
       punchBlankHardware();
