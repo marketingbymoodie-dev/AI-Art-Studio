@@ -2337,14 +2337,15 @@ export function renderFlatView(input: FlatRenderInput): void {
         ? printCanvasBackgroundColor.trim()
         : null;
 
-    // Step 1: Print canvas fill out to the blue dashed box — customer bg when
-    // set (matches Printify bake), otherwise Printify grey guide chrome.
+    // Step 1: Always Printify grey guide chrome for the print canvas (blue
+    // dashed). Customer bg is mask-clipped in step 2b so the outer grey box
+    // never floods with colour — bake still fills the full print file.
     ctx.clearRect(0, 0, outW, outH);
-    ctx.fillStyle = customerBg || PRINT_CANVAS_GREY;
+    ctx.fillStyle = PRINT_CANVAS_GREY;
     ctx.fillRect(0, 0, outW, outH);
 
     // Step 2: Blank phone photo, clipped to the phone silhouette so the JPEG
-    // white background never bleeds over the print-canvas margins.
+    // white background never bleeds over the grey margins.
     if (showBlankLayer) {
       const blankLayer = document.createElement("canvas");
       blankLayer.width = outW;
@@ -2381,8 +2382,7 @@ export function renderFlatView(input: FlatRenderInput): void {
       );
     };
 
-    // Step 2b: Customer bg on the masked phone face/edges under cutout art
-    // (step 1 already painted the print-canvas margins out to the blue dashed).
+    // Step 2b: Customer bg on the masked phone (face + wrap edges under art).
     if (customerBg) {
       const bgLayer = document.createElement("canvas");
       bgLayer.width = outW;
