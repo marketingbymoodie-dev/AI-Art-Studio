@@ -141,6 +141,11 @@ export type FlatRenderInput = {
   forceShadingMap?: boolean;
   /** Edge-print phone cases — placement uses full print bounds, not safe zone. */
   edgeWrapMode?: boolean;
+  /**
+   * Phone cases: customer fill under artwork out to the blue dashed print
+   * canvas. When unset, preview keeps Printify grey guide chrome only.
+   */
+  printCanvasBackgroundColor?: string | null;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
   /** Woven fabric procedural texture (tapestry only unless admin-enabled). */
@@ -2235,6 +2240,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     artworkCorsClean = true,
     forceShadingMap = false,
     edgeWrapMode = false,
+    printCanvasBackgroundColor = null,
     decorMode = false,
     fabricWeave = false,
     layerAdjust,
@@ -2325,9 +2331,15 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
-    // Step 1: Grey print-canvas fill (the "Printify grey box" bleed area).
+    // Step 1: Print-canvas fill — customer bg covers out to the blue dashed
+    // box; otherwise Printify grey guide chrome (non-printing).
     ctx.clearRect(0, 0, outW, outH);
-    ctx.fillStyle = PRINT_CANVAS_GREY;
+    const bg =
+      typeof printCanvasBackgroundColor === "string" &&
+      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
+        ? printCanvasBackgroundColor.trim()
+        : PRINT_CANVAS_GREY;
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, outW, outH);
 
     // Step 2: Blank phone photo, clipped to the phone silhouette so the JPEG

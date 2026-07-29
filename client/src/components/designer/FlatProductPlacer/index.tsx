@@ -7,7 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye, EyeOff, ImagePlus, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import { Eye, EyeOff, ImagePlus, Loader2, Pipette, RotateCcw, AlertTriangle } from "lucide-react";
+import {
+  extractArtworkPalette,
+  type PaletteSwatch,
+} from "@/components/designer/HoodieAopPlacer/extractPalette";
 import {
   FinePositionNudge,
   mockupDeltaFromScreenNudge,
@@ -49,10 +53,9 @@ import type {
  * Customer-facing placer for "on-the-fly" flat / mesh products.
  *
  * Structurally modelled on `HoodieAopPlacer`: a left live-canvas + right
- * controls column, a hideable bounding box, a debounced auto-apply that hands
- * a `renderView(view)` callback back to the parent (which uploads the PNG and
- * pins it as the cart / checkout mockup). Unlike the hoodie placer this draws a
- * single design onto a calibrated blank (no panel template, no AOP tiling).
+ * controls column, a hideable bounding box. Persist is parent-driven (ATC /
+ * leave editor / test order) — not on every nudge. Unlike the hoodie placer
+ * this draws a single design onto a calibrated blank (no panel template).
  *
  * Invariants enforced here:
  *   - Front + back placements are independent unless `linkSides` is on.
@@ -61,6 +64,8 @@ import type {
  *     (and the selected colour's blank) actually has a back view.
  *   - Placement scale is capped at 1.0 (Printify clamps placement scale), so
  *     the UI never implies more coverage than the print file provides.
+ *   - Phone cases (`edgeWrapMode`): optional `backgroundColor` fills the blue
+ *     dashed print canvas under cutout artwork.
  */
 
 type ViewName = FlatViewName;
@@ -80,6 +85,11 @@ export type FlatProductPlacerState = {
   linkSides: boolean;
   /** The artwork (the customer's generated/uploaded design). */
   artworkUrl: string | null;
+  /**
+   * Phone cases: opaque fill under artwork out to the blue dashed print canvas.
+   * `null` = no customer fill (grey guide chrome in preview; transparent bake).
+   */
+  backgroundColor: string | null;
 };
 
 export type FlatProductPlacerApplyResult = {
@@ -187,8 +197,22 @@ function outputSignature(s: FlatProductPlacerState): string {
     placements: s.placements,
     enabled: s.enabled,
     linkSides: s.linkSides,
+    backgroundColor: s.backgroundColor ?? null,
   });
 }
+
+function normalizeBgHex(raw: string): string | null {
+  const s = raw.trim();
+  if (!s || /^(none|transparent)$/i.test(s)) return null;
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(s);
+  if (!m) return null;
+  return `#${m[1].toUpperCase()}`;
+}
+
+const EDGE_WRAP_FIXED_SWATCHES: PaletteSwatch[] = [
+  { hex: "#FFFFFF", weight: 1 },
+  { hex: "#000000", weight: 1 },
+];
 
 function applyPlacementToState(
   prev: FlatProductPlacerState,
@@ -217,6 +241,7 @@ function buildInitialState(
     },
     linkSides: false,
     artworkUrl: saved?.artworkUrl ?? null,
+    backgroundColor: normalizeBgHex(String(saved?.backgroundColor ?? "")) ?? null,
   };
   if (!saved) return base;
   return {
@@ -225,6 +250,7 @@ function buildInitialState(
     placements: { ...base.placements, ...(saved.placements ?? {}) },
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
     linkSides: false,
+    backgroundColor: normalizeBgHex(String(saved.backgroundColor ?? "")) ?? null,
   };
 }
 
@@ -454,12 +480,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
   const [artworkLoading, setArtworkLoading] = useState(false);
   const [artworkCorsClean, setArtworkCorsClean] = useState(true);
+  const [artPalette, setArtPalette] = useState<PaletteSwatch[]>([]);
   useEffect(() => {
     const url = artworkSourceUrl?.trim() || null;
     if (!url) {
       setArtworkImg(null);
       setArtworkCorsClean(true);
       setArtworkLoading(false);
+      setArtPalette([]);
       return;
     }
     let cancelled = false;
@@ -471,6 +499,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         setArtworkCorsClean(true);
         setArtworkImg(withCors);
         setArtworkLoading(false);
+        if (edgeWrapMode) {
+          try {
+            setArtPalette(extractArtworkPalette(withCors, 4));
+          } catch {
+            setArtPalette([]);
+          }
+        }
         return;
       }
       const displayOnly = await loadFlatImage(url, { cors: false });
@@ -478,13 +513,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (displayOnly) {
         setArtworkCorsClean(false);
         setArtworkImg(displayOnly);
+        setArtPalette([]);
       }
       setArtworkLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [artworkSourceUrl]);
+  }, [artworkSourceUrl, edgeWrapMode]);
 
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);
@@ -548,6 +584,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
+          printCanvasBackgroundColor: edgeWrapMode
+            ? state.backgroundColor
+            : null,
           decorMode,
           fabricWeave,
           cropToBackFace: false,
@@ -775,6 +814,29 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     [availableViews, clampPlacementScale, defaultPlacement],
   );
 
+  const setBgColor = useCallback((hex: string | null) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const next = hex == null ? null : normalizeBgHex(hex);
+      if ((prev.backgroundColor ?? null) === next) return prev;
+      return { ...prev, backgroundColor: next };
+    });
+  }, []);
+
+  const triggerEyedropper = useCallback(async () => {
+    const W = window as unknown as {
+      EyeDropper?: new () => { open: () => Promise<{ sRGBHex?: string }> };
+    };
+    if (!W.EyeDropper) return;
+    try {
+      const ed = new W.EyeDropper();
+      const r = await ed.open();
+      if (r?.sRGBHex) setBgColor(r.sRGBHex);
+    } catch {
+      /* cancelled */
+    }
+  }, [setBgColor]);
+
   const resetView = useCallback(
     (view: ViewName) => {
       setState((prev) => {
@@ -984,8 +1046,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     // Opaque-content bounds: transparent PNG padding must not trigger false
     // trim warnings (nothing visible is clipped) nor fake print-area coverage.
     const box = flatVisibleArtBoxAxisAligned(placementRect, placed, artworkImg);
-    if (edgeWrapMode || decorMode || fabricWeave) {
-      // Tapestry / decor / phone: warn when art leaves the print area uncovered.
+    if (edgeWrapMode) {
+      // Phone: gap warn only when no customer bg fills the blue canvas.
+      if (!state.backgroundColor && !flatCovers(placementRect, box)) {
+        coverageWarning = "edge-gap";
+      }
+    } else if (decorMode || fabricWeave) {
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
@@ -1323,6 +1389,85 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
+        {/* Phone cases: fill under cutout art out to the blue dashed print canvas. */}
+        {edgeWrapMode && (
+          <div data-testid="flat-edge-wrap-background">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Background
+            </div>
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => setBgColor(null)}
+                className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                  !state.backgroundColor
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-card text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                None
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={state.backgroundColor || "#FFFFFF"}
+                onChange={(e) => setBgColor(e.target.value)}
+                className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
+                aria-label="Background colour"
+              />
+              <input
+                type="text"
+                value={state.backgroundColor || ""}
+                placeholder="None"
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  if (!v) {
+                    setBgColor(null);
+                    return;
+                  }
+                  const n = normalizeBgHex(v);
+                  if (n) setBgColor(n);
+                }}
+                className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
+                spellCheck={false}
+              />
+              {typeof window !== "undefined" && "EyeDropper" in window && (
+                <button
+                  type="button"
+                  onClick={() => void triggerEyedropper()}
+                  className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
+                  title="Pick a colour from anywhere on screen"
+                  aria-label="Eyedropper"
+                >
+                  <Pipette className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[...artPalette.slice(0, 4), ...EDGE_WRAP_FIXED_SWATCHES].map((s) => (
+                <button
+                  key={s.hex}
+                  type="button"
+                  onClick={() => setBgColor(s.hex)}
+                  title={s.hex}
+                  aria-label={`Use ${s.hex} as background`}
+                  className={`h-6 w-6 rounded border-2 transition ${
+                    (state.backgroundColor || "").toUpperCase() === s.hex.toUpperCase()
+                      ? "border-primary ring-2 ring-primary/40"
+                      : "border-border hover:border-foreground/40"
+                  }`}
+                  style={{ backgroundColor: s.hex }}
+                />
+              ))}
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground leading-snug">
+              Fills the blue dashed print canvas under your artwork. Use None for
+              floating cutout designs with no fill.
+            </p>
+          </div>
+        )}
+
         {/* Scale slider (capped at 1.0) */}
         {viewEnabled && (
           <div>
@@ -1370,9 +1515,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
             {edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Blue dashed line = full print canvas (Printify grey box). Amber
-                line = safe visible back face. Scale artwork to cover the blue
-                outline on all four sides.
+                Blue dashed line = full print canvas. Amber line = safe visible
+                back face. For full-bleed art, scale to cover the blue outline on
+                all four sides — or pick a background colour to fill uncovered
+                areas under cutout artwork.
               </p>
             )}
             {fabricWeave && !edgeWrapMode && !decorMode && (
@@ -1427,12 +1573,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {viewEnabled && artworkImg && coverageWarning === "edge-gap" && edgeWrapMode && (
-          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-edge-gap-warning"
+          >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Artwork doesn&apos;t fully cover the print canvas — scale up or
-              reposition so the design reaches all four edges of the blue
-              outline. Uncovered edges may not print.
+              Artwork doesn&apos;t reach all four edges of the blue print canvas.
+              Scale up for a full-bleed design, or choose a background colour to
+              fill the uncovered area under cutout art. Transparent gaps may not
+              print as expected.
             </span>
           </div>
         )}
@@ -1463,7 +1613,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">
-                Unsaved changes — saved when you add to cart or leave the editor
+                Unsaved changes — saved when you add to cart, send a test order, or leave the editor
               </span>
             ) : (
               <span className="opacity-60">Placement ready</span>

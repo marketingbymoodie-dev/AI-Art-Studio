@@ -151,6 +151,8 @@ export type ResolvedFlatDesign = {
   artworkUrl: string;
   sizeId: string;
   colorId: string;
+  /** Phone cases: opaque print-canvas fill under cutout art (`#RRGGBB` or null). */
+  backgroundColor?: string | null;
   /** Design product's persistent Printify product (if any) — bake-failure fallback (Phase 3). */
   printifyProductId?: string | null;
 };
@@ -373,7 +375,12 @@ export async function resolveDesignForOrderLine(
 
   const designState = parseJson<Record<string, any>>(job.designState, {});
   const flatPlacerState = designState?.flatPlacerState as
-    | { placements?: Partial<Record<ViewName, FlatPlacement>>; enabled?: Partial<Record<ViewName, boolean>>; artworkUrl?: string }
+    | {
+        placements?: Partial<Record<ViewName, FlatPlacement>>;
+        enabled?: Partial<Record<ViewName, boolean>>;
+        artworkUrl?: string;
+        backgroundColor?: string | null;
+      }
     | undefined;
 
   const artworkUrl = pickFlatOrderArtworkUrl({
@@ -578,6 +585,12 @@ export async function resolveDesignForOrderLine(
     jobColor: job.frameColor,
   });
 
+  const rawBg = flatPlacerState?.backgroundColor;
+  const backgroundColor =
+    typeof rawBg === "string" && /^#[0-9a-fA-F]{6}$/.test(rawBg.trim())
+      ? rawBg.trim()
+      : null;
+
   return {
     ok: true,
     kind: "flat",
@@ -594,6 +607,7 @@ export async function resolveDesignForOrderLine(
       artworkUrl,
       sizeId,
       colorId,
+      backgroundColor,
       printifyProductId: designProductOverride?.printifyProductId ?? null,
     },
   };
@@ -682,6 +696,7 @@ async function buildPrintAreasForDesign(
       placement,
       printFileDims: { width: dims.width, height: dims.height },
       placementRect: placementRect ?? undefined,
+      backgroundColor: design.backgroundColor ?? null,
     });
     const url = await persistBakedPrintFile(design.productType.id, design.designId, view, baked.buffer);
     if (!url) {

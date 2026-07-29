@@ -83,7 +83,26 @@ export type BakeFlatPrintFileArgs = {
   printFileDims: PrintFileDims;
   /** Placement anchor in print-file px (defaults to full canvas). */
   placementRect?: Rect;
+  /**
+   * Phone cases: opaque fill under artwork out to the print canvas.
+   * When unset, the bake stays transparent (floating cutout art).
+   */
+  backgroundColor?: string | null;
 };
+
+function parseBakeBackground(
+  hex: string | null | undefined,
+): { r: number; g: number; b: number; alpha: number } {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || "").trim());
+  if (!m) return { r: 0, g: 0, b: 0, alpha: 0 };
+  const n = parseInt(m[1], 16);
+  return {
+    r: (n >> 16) & 255,
+    g: (n >> 8) & 255,
+    b: n & 255,
+    alpha: 1,
+  };
+}
 
 export type BakeFlatPrintFileResult = {
   buffer: Buffer;
@@ -152,7 +171,12 @@ export async function bakeFlatPrintFile(
   }
 
   const base = sharp({
-    create: { width: printW, height: printH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    create: {
+      width: printW,
+      height: printH,
+      channels: 4,
+      background: parseBakeBackground(args.backgroundColor),
+    },
   });
 
   // Source-crop offsets (how much of the resized art is off the left/top edge).

@@ -2119,7 +2119,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   /** Local placement/zoom changed since last Apply — blocks ATC / test order. */
   const [flatPlacementDirty, setFlatPlacementDirty] = useState(false);
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
-  const flatPlacementDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Bumps to force flat gallery re-raster / placer remount. */
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   /** True while framed flat decor is re-rastering after size/colour change. */
@@ -7616,57 +7615,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           aopPanels: "none",
         });
       }
-      // Debounced auto-Apply so scale/position reach the job before test order.
-      if (flatPlacementDebounceRef.current) {
-        clearTimeout(flatPlacementDebounceRef.current);
-      }
-      flatPlacementDebounceRef.current = setTimeout(() => {
-        void (async () => {
-          if (flatApplyInFlightRef.current) return;
-          // No force — skip if placer already matches last Apply (avoids save loop).
-          if (flatPlacerRef.current && !flatPlacerRef.current.hasPendingChanges()) {
-            setFlatPlacementDirty(false);
-            if (isAdminTester && savedJobIdRef.current) {
-              emitTesterDesignStatus({
-                jobId: savedJobIdRef.current,
-                aopPanels: "saved",
-              });
-            }
-            return;
-          }
-          flatApplyInFlightRef.current = true;
-          try {
-            if (isAdminTester && savedJobIdRef.current) {
-              emitTesterDesignStatus({
-                jobId: savedJobIdRef.current,
-                aopPanels: "saving",
-              });
-            }
-            const applied = await flushFlatPlacer();
-            if (applied) {
-              setFlatPlacementDirty(false);
-              setMockupsStale(false);
-            } else if (isAdminTester && savedJobIdRef.current) {
-              emitTesterDesignStatus({
-                jobId: savedJobIdRef.current,
-                aopPanels: "saved",
-              });
-              setFlatPlacementDirty(false);
-            }
-          } catch (e) {
-            console.warn("[FlatPlacer] debounced Apply failed:", e);
-            if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
-          } finally {
-            flatApplyInFlightRef.current = false;
-          }
-        })();
-      }, 700);
+      // Persist only on ATC / test order / leave editor / Printers Mockup —
+      // not on every nudge (that flashed "Saving design…" constantly).
     },
     [
       generatedDesign?.imageUrl,
       isAdminTester,
       emitTesterDesignStatus,
-      flushFlatPlacer,
       supportsPrintPlacementSelection,
     ],
   );
@@ -8643,11 +8598,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     isPrintifyOnDemandMockupLabel(img.label),
   );
   /** Shimmer/clickable only after generate + placement settled; dims when dirty. */
+  // Allow click while dirty — requestLifestyleShot flushes placement first.
+  // (Dirty no longer auto-clears on nudge; blocking here would strand Printers Mockup.)
   const lifestyleShotActive = !!(
     canRequestLifestyleShot &&
     generatedDesign?.imageUrl &&
     !lifestyleShotLoading &&
-    !flatPlacementDirty &&
     flatApplyStatus !== "saving" &&
     flatApplyStatus !== "error"
   );
