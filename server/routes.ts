@@ -19751,6 +19751,14 @@ ${orientationExtra}
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
+  const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");
+  registerBakeFlatPrintRoutes(app, {
+    storage,
+    isAuthenticated,
+    getAuthorizedInstallation,
+    resolveStorefrontProductType,
+    adminProductTypeAccessError,
+  });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);

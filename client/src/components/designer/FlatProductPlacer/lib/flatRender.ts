@@ -2331,15 +2331,20 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
-    // Step 1: Printify grey guide chrome for the print canvas (blue dashed).
-    // Customer background is NOT painted here — it belongs on the masked print
-    // layer (phone face + wrap) so it doesn't flood the grey box as a rectangle.
+    const customerBg =
+      typeof printCanvasBackgroundColor === "string" &&
+      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
+        ? printCanvasBackgroundColor.trim()
+        : null;
+
+    // Step 1: Print canvas fill out to the blue dashed box — customer bg when
+    // set (matches Printify bake), otherwise Printify grey guide chrome.
     ctx.clearRect(0, 0, outW, outH);
-    ctx.fillStyle = PRINT_CANVAS_GREY;
+    ctx.fillStyle = customerBg || PRINT_CANVAS_GREY;
     ctx.fillRect(0, 0, outW, outH);
 
     // Step 2: Blank phone photo, clipped to the phone silhouette so the JPEG
-    // white background never bleeds over the grey margins.
+    // white background never bleeds over the print-canvas margins.
     if (showBlankLayer) {
       const blankLayer = document.createElement("canvas");
       blankLayer.width = outW;
@@ -2376,15 +2381,8 @@ export function renderFlatView(input: FlatRenderInput): void {
       );
     };
 
-    const customerBg =
-      typeof printCanvasBackgroundColor === "string" &&
-      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
-        ? printCanvasBackgroundColor.trim()
-        : null;
-
-    // Step 2b: Customer bg on the printable phone (mask), covering the full
-    // print-canvas rect then clipped — matches bake (full canvas) while keeping
-    // grey guide margins outside the silhouette.
+    // Step 2b: Customer bg on the masked phone face/edges under cutout art
+    // (step 1 already painted the print-canvas margins out to the blue dashed).
     if (customerBg) {
       const bgLayer = document.createElement("canvas");
       bgLayer.width = outW;

@@ -8731,23 +8731,74 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       await flushFlatPlacer({ force: true });
     }
     const front = flatPlacerState?.placements?.front;
-    const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
-    // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
-    const scalePct = Math.round(
-      coverScale * FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR * 100,
-    );
-    const xPct = Math.round(
-      Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
-    );
-    const yPct = Math.round(
-      Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)),
-    );
     setLifestyleShotLoading(true);
     setLifestyleShotError(null);
     const isPrintersMockup = flatFabricWeave || flatEdgeWrapMode;
     try {
+      let designUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+      let scalePct: number;
+      let xPct: number;
+      let yPct: number;
+
+      // Phone cases: bake full print canvas (bg + placement) like order
+      // fulfillment, then ask Printify at scale=1 center — raw art + approximate
+      // scale omitted the background and mismatched artwork size.
+      if (flatEdgeWrapMode) {
+        const bakeEndpoint = isStorefront
+          ? `${API_BASE}/api/storefront/bake-flat-print`
+          : `${API_BASE}/api/mockup/bake-flat-print`;
+        const phoneColor =
+          isPhoneCaseProduct && !frameColorsArePhoneModels
+            ? "default"
+            : selectedFrameColor || "default";
+        const bakeRes = await safeFetch(bakeEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(isStorefront ? { shop: shopDomain } : {}),
+            productTypeId: productTypeConfig.id,
+            artworkUrl: designUrl,
+            sizeId: selectedSize,
+            colorId: phoneColor,
+            placement: front ?? { scale: 1, offsetX: 0, offsetY: 0 },
+            backgroundColor: flatPlacerState?.backgroundColor ?? null,
+            view: "front",
+          }),
+        }, 120_000);
+        const bakeJson = await bakeRes.json().catch(() => ({}));
+        if (!bakeRes.ok || !bakeJson?.url) {
+          const msg =
+            typeof bakeJson?.error === "string"
+              ? bakeJson.error
+              : "Could not bake print file for printers mockup";
+          setLifestyleShotError(msg);
+          toast({
+            title: "Printers mockup unavailable",
+            description: msg,
+            variant: "destructive",
+          });
+          return;
+        }
+        designUrl = toAbsoluteImageUrl(String(bakeJson.url));
+        scalePct = 100;
+        xPct = 50;
+        yPct = 50;
+      } else {
+        const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
+        // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
+        scalePct = Math.round(
+          coverScale * FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR * 100,
+        );
+        xPct = Math.round(
+          Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
+        );
+        yPct = Math.round(
+          Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)),
+        );
+      }
+
       const result = await fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        designUrl,
         productTypeConfig.id,
         selectedSize!,
         selectedFrameColor || "default",
@@ -8796,11 +8847,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     lifestyleShotLoading,
     flushFlatPlacer,
     flatPlacerState?.placements?.front,
+    flatPlacerState?.backgroundColor,
     fetchPrintifyMockups,
     selectedSize,
     selectedFrameColor,
     flatFabricWeave,
     flatEdgeWrapMode,
+    isStorefront,
+    shopDomain,
+    isPhoneCaseProduct,
+    frameColorsArePhoneModels,
     toast,
   ]);
 

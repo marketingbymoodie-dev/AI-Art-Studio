@@ -1462,9 +1462,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               ))}
             </div>
             <p className="mt-1.5 text-[10px] text-muted-foreground leading-snug">
-              Fills the printable phone (including case edges out to the blue
-              dashed print area) under your artwork. Use None for floating
-              cutout designs with no fill.
+              Fills the full print canvas (blue dashed area, including case
+              edges) under your artwork. Use None for floating cutout designs
+              with no fill.
             </p>
           </div>
         )}
