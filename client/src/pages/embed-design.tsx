@@ -8579,8 +8579,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
-  // Phone cases: match viewing-card height to the form/prompt column so Zoom
-  // lands on the same baseline as the describe box (not viewport-tall).
+  // Phone cases: match viewing-card height to the form column's CONTENT
+  // (prompt baseline). Do not use getBoundingClientRect on the column itself —
+  // grid stretch inflates that and feedback-loops into a giant empty card.
   useEffect(() => {
     if (!flatEdgeWrapMode || !flatPlacerActive) {
       setPhoneViewerHeightPx(null);
@@ -8589,14 +8590,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const form = formColumnRef.current;
     if (!form) return;
     const sync = () => {
-      const h = Math.round(form.getBoundingClientRect().height);
-      if (h >= 200) {
-        setPhoneViewerHeightPx((prev) => (prev === h ? prev : h));
-      }
+      const kids = Array.from(form.children) as HTMLElement[];
+      if (kids.length === 0) return;
+      const first = kids[0];
+      const last = kids[kids.length - 1];
+      const style = getComputedStyle(form);
+      const padTop = parseFloat(style.paddingTop) || 0;
+      const padBottom = parseFloat(style.paddingBottom) || 0;
+      const contentH =
+        last.offsetTop + last.offsetHeight - first.offsetTop + padTop + padBottom;
+      const capped = Math.min(
+        Math.max(200, Math.round(contentH)),
+        Math.floor(window.innerHeight * 0.9),
+      );
+      setPhoneViewerHeightPx((prev) => (prev === capped ? prev : capped));
     };
     sync();
     const ro = new ResizeObserver(sync);
     ro.observe(form);
+    for (const kid of Array.from(form.children)) ro.observe(kid);
     window.addEventListener("resize", sync);
     return () => {
       ro.disconnect();
@@ -9567,7 +9579,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   };
 
   return (
-    <div className={`p-2 sm:p-3 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+    <div
+      className={`p-2 sm:p-3 ${
+        isEmbedded || isStorefront || isAdminTester || isMerchantStudio
+          ? "bg-transparent"
+          : "bg-background min-h-screen"
+      }`}
+    >
       <AlertDialog open={flatClipConfirmOpen} onOpenChange={setFlatClipConfirmOpen}>
         <AlertDialogContent data-testid="dialog-flat-clip-confirm">
           <AlertDialogHeader>
@@ -9808,7 +9826,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         <div
           className={`grid grid-cols-1 gap-3 sm:gap-4 ${
             (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-              ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
+              ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)] lg:items-start"
               : "md:grid-cols-2"
           }`}
         >
@@ -9817,7 +9835,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             ref={formColumnRef}
             className={`space-y-2.5 order-1 ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-                ? "lg:order-3 lg:col-start-3"
+                ? "lg:order-3 lg:col-start-3 lg:self-start"
                 : "md:order-2"
             }`}
           >
