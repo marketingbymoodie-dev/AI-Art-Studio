@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '2.9';
+  var CART_IMG_VERSION = '3.0';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -9,10 +9,18 @@
 
   var hushMutations = false;
 
+  /** Customizer/AppAI cart lines — image + title must not open native/shadow PDPs. */
+  var customizerState = {
+    keys: new Set(),
+    handles: new Set(),
+    urlPaths: new Set(),
+    variants: new Set(),
+  };
+
   /**
-   * Rule: cart line IMAGE links are never navigable.
-   * Titles / other product links are left alone.
-   * CSS covers Horizon (media-container) + common Dawn/OS2 patterns.
+   * Rules:
+   * 1) All cart line IMAGE links are inert (every line).
+   * 2) Customizer line TITLE (+ other product) links are inert (AppAI lines only).
    * pointer-events must include descendants — it is not inherited.
    */
   function ensureStyles() {
@@ -29,7 +37,7 @@
       '.appai-cart-loading cart-items img:not([data-appai-mockup]),' +
       '.appai-cart-loading form[action^="/cart"] img:not([data-appai-mockup]) { opacity:0 !important; }' +
       '.cart-item img,[id*="CartItem"] img,cart-items img,form[action^="/cart"] img{transition:opacity 120ms ease;}' +
-      /* Cart thumbnail anchors only (not titles). */ +
+      /* All cart thumbnails */ +
       'a.cart-items__media-container,' +
       'a.cart-items__media-container *,' +
       '.cart-items__media > a,' +
@@ -39,7 +47,14 @@
       '.cart-item__image-container > a,' +
       '.cart-item__image-container > a *,' +
       'td.cart-items__media a,' +
-      'td.cart-items__media a *{' +
+      'td.cart-items__media a *,' +
+      /* Customizer rows: image + title + any product PDP link */ +
+      '.appai-cart-line-locked a[href*="/products/"],' +
+      '.appai-cart-line-locked a[href*="/products/"] *,' +
+      '.appai-cart-line-locked a.cart-items__title,' +
+      '.appai-cart-line-locked a.cart-items__title *,' +
+      '.appai-cart-line-locked a[data-appai-original-href],' +
+      '.appai-cart-line-locked a[data-appai-original-href] *{' +
       'cursor:default!important;pointer-events:none!important;text-decoration:none!important;' +
       '}';
   }
@@ -78,6 +93,80 @@
     var u = props._mockup_url || props.mockup_url;
     if (u && String(u).indexOf('https://') === 0) return String(u);
     return null;
+  }
+
+  function propEntries(props) {
+    if (!props) return [];
+    if (Array.isArray(props)) return props;
+    return Object.keys(props).map(function (k) {
+      return { name: k, value: props[k] };
+    });
+  }
+
+  function lineIsCustomizer(it) {
+    if (!it) return false;
+    if (mockupUrlFromLineProperties(it.properties)) return true;
+    var entries = propEntries(it.properties);
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      if (!e) continue;
+      var n = String(e.name || e.key || '');
+      var val = e.value;
+      if (val == null || String(val).trim() === '') continue;
+      if (
+        n === '_mockup_url' ||
+        n === 'mockup_url' ||
+        n === '_design_id' ||
+        n === '_appai_job_id' ||
+        n === '_artwork_url' ||
+        n === 'Artwork' ||
+        n === 'artwork'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function productPathFromHref(href) {
+    if (!href) return '';
+    try {
+      var u = new URL(href, window.location.origin);
+      var p = u.pathname || '';
+      var idx = p.indexOf('/products/');
+      if (idx === -1) return '';
+      return p.slice(idx).replace(/\/$/, '');
+    } catch (_) {
+      var m = String(href).match(/\/products\/[^?#/]+/);
+      return m ? m[0] : '';
+    }
+  }
+
+  function handleFromPath(path) {
+    if (!path) return '';
+    var m = String(path).match(/\/products\/([^/?#]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  function rememberCustomizerItem(it) {
+    if (!it) return;
+    if (it.key) customizerState.keys.add(String(it.key));
+    if (it.variant_id != null) customizerState.variants.add(String(it.variant_id));
+    if (it.handle) customizerState.handles.add(String(it.handle));
+    var path = productPathFromHref(it.url || '');
+    if (path) {
+      customizerState.urlPaths.add(path);
+      var h = handleFromPath(path);
+      if (h) customizerState.handles.add(h);
+    }
+  }
+
+  function hrefIsCustomizerProduct(href) {
+    if (!href || customizerState.handles.size === 0) return false;
+    var path = productPathFromHref(href);
+    if (path && customizerState.urlPaths.has(path)) return true;
+    var handle = handleFromPath(path || href);
+    return !!(handle && customizerState.handles.has(handle));
   }
 
   function isLikelyProductImg(img) {
@@ -192,6 +281,17 @@
     return false;
   }
 
+  function neutralizeAnchor(a) {
+    if (!a || a.getAttribute('data-appai-media-nolink') === '1') return;
+    var href = a.getAttribute('href');
+    if (href) a.setAttribute('data-appai-original-href', href);
+    a.removeAttribute('href');
+    a.setAttribute('data-appai-media-nolink', '1');
+    a.setAttribute('role', 'presentation');
+    a.setAttribute('tabindex', '-1');
+    a.setAttribute('aria-disabled', 'true');
+  }
+
   function stripCartMediaHrefs() {
     if (hushMutations) return;
     hushMutations = true;
@@ -200,15 +300,65 @@
         document.documentElement,
         'a.cart-items__media-container, .cart-items__media > a, .cart-item__media > a, td.cart-items__media a',
       );
-      for (var i = 0; i < links.length; i++) {
-        var a = links[i];
-        if (!a || a.getAttribute('data-appai-media-nolink') === '1') continue;
-        var href = a.getAttribute('href');
-        if (href) a.setAttribute('data-appai-original-href', href);
-        a.removeAttribute('href');
-        a.setAttribute('data-appai-media-nolink', '1');
-        a.setAttribute('role', 'presentation');
-        a.setAttribute('tabindex', '-1');
+      for (var i = 0; i < links.length; i++) neutralizeAnchor(links[i]);
+    } finally {
+      hushMutations = false;
+    }
+  }
+
+  function lockCustomizerRows() {
+    if (!customizerState.keys.size && !customizerState.handles.size) return;
+    if (hushMutations) return;
+    hushMutations = true;
+    try {
+      customizerState.keys.forEach(function (key) {
+        var nodes = [];
+        try {
+          if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+            nodes = deepQueryAll(document.documentElement, '#CartItem-' + CSS.escape(String(key)));
+          }
+        } catch (_) {}
+        if (!nodes.length) {
+          try {
+            nodes = deepQueryAll(
+              document.documentElement,
+              '[data-key="' + String(key).replace(/"/g, '\\"') + '"]',
+            );
+          } catch (_) {}
+        }
+        for (var i = 0; i < nodes.length; i++) {
+          var row = nodes[i];
+          if (row.classList) row.classList.add('appai-cart-line-locked');
+          var rowLinks = deepQueryAll(
+            row,
+            'a[href*="/products/"], a.cart-items__title, a.cart-items__media-container, a[data-appai-original-href]',
+          );
+          for (var r = 0; r < rowLinks.length; r++) neutralizeAnchor(rowLinks[r]);
+        }
+      });
+
+      // Also neutralize any cart title/media whose href matches a customizer handle.
+      var cartLinks = deepQueryAll(
+        document.documentElement,
+        'a.cart-items__title[href*="/products/"], a.cart-items__media-container[href*="/products/"], .cart-items a[href*="/products/"], form[action*="/cart"] a[href*="/products/"]',
+      );
+      for (var c = 0; c < cartLinks.length; c++) {
+        var a = cartLinks[c];
+        var href = a.getAttribute('href') || a.getAttribute('data-appai-original-href') || '';
+        if (hrefIsCustomizerProduct(href) || isCartMediaAnchor(a)) {
+          var row =
+            (a.closest &&
+              (a.closest('.cart-items__table-row') ||
+                a.closest('[data-key]') ||
+                a.closest('[id*="CartItem"]') ||
+                a.closest('.cart-item') ||
+                a.closest('[class*="cart-item"]'))) ||
+            null;
+          if (row && row.classList && hrefIsCustomizerProduct(href)) {
+            row.classList.add('appai-cart-line-locked');
+          }
+          if (hrefIsCustomizerProduct(href) || isCartMediaAnchor(a)) neutralizeAnchor(a);
+        }
       }
     } finally {
       hushMutations = false;
@@ -222,7 +372,15 @@
     return false;
   }
 
-  function onMediaNavIntercept(e) {
+  function pathHasLockedRow(path) {
+    for (var i = 0; i < path.length; i++) {
+      var el = path[i];
+      if (el && el.classList && el.classList.contains('appai-cart-line-locked')) return true;
+    }
+    return false;
+  }
+
+  function onCartProductNavIntercept(e) {
     var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
     if (!path || !path.length) {
       var t = e.target;
@@ -233,7 +391,18 @@
       }
     }
     for (var i = 0; i < path.length; i++) {
-      if (isCartMediaAnchor(path[i])) {
+      var el = path[i];
+      if (!el || el.tagName !== 'A') continue;
+      if (isCartMediaAnchor(el)) {
+        blockNavEvent(e);
+        return;
+      }
+      var href = el.getAttribute('href') || el.getAttribute('data-appai-original-href') || '';
+      if (pathHasLockedRow(path) && String(href).indexOf('/products/') !== -1) {
+        blockNavEvent(e);
+        return;
+      }
+      if (hrefIsCustomizerProduct(href)) {
         blockNavEvent(e);
         return;
       }
@@ -241,7 +410,7 @@
   }
 
   ['click', 'auxclick', 'pointerdown'].forEach(function (type) {
-    document.addEventListener(type, onMediaNavIntercept, true);
+    document.addEventListener(type, onCartProductNavIntercept, true);
   });
 
   function cartUiRoots() {
@@ -283,10 +452,17 @@
           varMap = new Map(),
           indexed = [];
 
+        customizerState.keys = new Set();
+        customizerState.handles = new Set();
+        customizerState.urlPaths = new Set();
+        customizerState.variants = new Set();
+
         for (var i = 0; i < items.length; i++) {
           var it = items[i];
+          if (lineIsCustomizer(it)) rememberCustomizerItem(it);
           var url = mockupUrlFromLineProperties(it && it.properties);
           if (!url) continue;
+          rememberCustomizerItem(it);
           keyMap.set(it.key, url);
           varMap.set(String(it.variant_id), url);
           indexed.push({
@@ -391,6 +567,7 @@
           window.AppAI.hideInternalCartProperties();
         }
         stripCartMediaHrefs();
+        lockCustomizerRows();
       })
       .catch(function () {
         hushMutations = false;
@@ -422,5 +599,9 @@
   document.addEventListener('cart:update', schedule);
   document.addEventListener('shopify:section:load', schedule);
   window.addEventListener('pageshow', schedule);
-  console.log('[AppAI Cart Image] installed ' + CART_IMG_VERSION + ' (media links disabled)');
+  console.log(
+    '[AppAI Cart Image] installed ' +
+      CART_IMG_VERSION +
+      ' (media always off; customizer titles off)',
+  );
 })();
