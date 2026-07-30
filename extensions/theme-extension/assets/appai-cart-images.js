@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '2.6';
+  var CART_IMG_VERSION = '2.7';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -21,30 +21,46 @@
   var shadowHandleCache = new Map();
 
   function ensureStyles() {
-    if (document.getElementById('appai-cart-noflash-style')) return;
-    var s = document.createElement('style');
-    s.id = 'appai-cart-noflash-style';
+    var s = document.getElementById('appai-cart-noflash-style');
+    if (!s) {
+      s = document.createElement('style');
+      s.id = 'appai-cart-noflash-style';
+      document.head.appendChild(s);
+    }
+    // Always refresh — prior versions omitted descendant `*` so img clicks still hit the <a>.
+    s.setAttribute('data-appai-ver', CART_IMG_VERSION);
     s.textContent =
       '.appai-cart-loading .cart-item img:not([data-appai-mockup]),' +
       '.appai-cart-loading [id*="CartItem"] img:not([data-appai-mockup]),' +
       '.appai-cart-loading cart-items img:not([data-appai-mockup]),' +
       '.appai-cart-loading form[action^="/cart"] img:not([data-appai-mockup]) { opacity:0 !important; }' +
       '.cart-item img,[id*="CartItem"] img,cart-items img,form[action^="/cart"] img{transition:opacity 120ms ease;}' +
-      /* Kill pointer + clicks on disabled PDP links (UA styles a[href] as pointer). */ +
-      'a[data-appai-link-disabled="1"],' +
-      'a[data-appai-link-disabled="1"] *,' +
-      '.appai-cart-line-locked a[href*="/products/"],' +
-      '.appai-cart-line-locked a[href*="/products/"] *,' +
+      /* Descendants MUST be included: pointer-events is not inherited; img would stay clickable. */ +
+      'a[data-appai-link-disabled="1"],a[data-appai-link-disabled="1"] *,' +
+      '.appai-cart-line-locked a,.appai-cart-line-locked a *,' +
+      '.appai-cart-line-locked .cart-items__media,' +
+      '.appai-cart-line-locked .cart-items__media *,' +
+      '.appai-cart-line-locked .cart-items__title,' +
+      '.appai-cart-line-locked .cart-items__details a,' +
+      '.appai-cart-line-locked .cart-items__details a *,' +
+      'html.appai-block-cart-pdp a.cart-items__media-container,' +
+      'html.appai-block-cart-pdp a.cart-items__media-container *,' +
+      'html.appai-block-cart-pdp a.cart-items__title,' +
+      'html.appai-block-cart-pdp a.cart-items__title *,' +
       'html.appai-block-cart-pdp cart-drawer-component a[href*="/products/"],' +
+      'html.appai-block-cart-pdp cart-drawer-component a[href*="/products/"] *,' +
       'html.appai-block-cart-pdp cart-items-component a[href*="/products/"],' +
-      'html.appai-block-cart-pdp cart-drawer a[href*="/products/"],' +
+      'html.appai-block-cart-pdp cart-items-component a[href*="/products/"] *,' +
       'html.appai-block-cart-pdp .cart-drawer a[href*="/products/"],' +
+      'html.appai-block-cart-pdp .cart-drawer a[href*="/products/"] *,' +
       'html.appai-block-cart-pdp .cart-items a[href*="/products/"],' +
+      'html.appai-block-cart-pdp .cart-items a[href*="/products/"] *,' +
       'html.appai-block-cart-pdp [class*="cart-items"] a[href*="/products/"],' +
-      'html.appai-block-cart-pdp form[action*="/cart"] a[href*="/products/"]{' +
+      'html.appai-block-cart-pdp [class*="cart-items"] a[href*="/products/"] *,' +
+      'html.appai-block-cart-pdp form[action*="/cart"] a[href*="/products/"],' +
+      'html.appai-block-cart-pdp form[action*="/cart"] a[href*="/products/"] *{' +
       'cursor:default!important;pointer-events:none!important;text-decoration:none!important;' +
       '}';
-    document.head.appendChild(s);
   }
 
   function ensureNoFlash() {
@@ -315,8 +331,8 @@
     for (var i = 0; i < path.length; i++) {
       var el = path[i];
       if (!el || el.tagName !== 'A') continue;
-      var href = el.getAttribute('href') || el.href || el.getAttribute('data-appai-original-href') || '';
-      if (String(href).indexOf('/products/') !== -1) {
+      var href = el.getAttribute('href') || el.getAttribute('data-appai-original-href') || el.href || '';
+      if (isProductLikeAnchor(el) || String(href).indexOf('/products/') !== -1) {
         return { a: el, href: href, path: path };
       }
     }
@@ -386,13 +402,15 @@
   );
 
   function neutralizeAnchor(a) {
-    if (!a) return;
-    var href = a.getAttribute('href') || a.href || '';
-    if (href && href.indexOf('/products/') !== -1 && !a.getAttribute('data-appai-original-href')) {
+    if (!a || a.getAttribute('data-appai-link-disabled') === '1') return false;
+    var href = a.getAttribute('href') || '';
+    if (!href && a.href && String(a.href) !== window.location.href) href = a.href;
+    if (href && !a.getAttribute('data-appai-original-href')) {
       a.setAttribute('data-appai-original-href', href);
     }
     a.setAttribute('data-appai-link-disabled', '1');
     a.removeAttribute('href');
+    a.setAttribute('tabindex', '-1');
     a.setAttribute('role', 'presentation');
     a.setAttribute('aria-disabled', 'true');
     a.style.cursor = 'default';
@@ -400,6 +418,19 @@
     a.addEventListener('click', blockNavEvent, true);
     a.addEventListener('auxclick', blockNavEvent, true);
     a.addEventListener('pointerdown', blockNavEvent, true);
+    return true;
+  }
+
+  function isProductLikeAnchor(a) {
+    if (!a || a.tagName !== 'A') return false;
+    var cls = typeof a.className === 'string' ? a.className : '';
+    if (cls.indexOf('cart-items__media-container') !== -1) return true;
+    if (cls.indexOf('cart-items__title') !== -1) return true;
+    var href = a.getAttribute('href') || a.getAttribute('data-appai-original-href') || a.href || '';
+    if (String(href).indexOf('/products/') !== -1) return true;
+    var handle = handleFromPath(productPathFromHref(href));
+    if (handle && appAiState.handles.has(handle)) return true;
+    return false;
   }
 
   function lockCartLineEl(el) {
@@ -423,6 +454,7 @@
       '[id*="CartDrawer"]',
       '[id*="cart-drawer"]',
       '[id*="CartItem"]',
+      '.cart-items__table-row',
     ];
     for (var i = 0; i < sels.length; i++) {
       var nodes = deepQueryAll(document.documentElement, sels[i]);
@@ -433,53 +465,97 @@
     return roots;
   }
 
-  function disableProductLinksInTree(root) {
+  function lockRowsByAppAiKeys() {
+    var locked = 0;
+    appAiState.keys.forEach(function (key) {
+      var sels = [
+        '#CartItem-' + CSS.escape(String(key)),
+        '[data-key="' + String(key).replace(/"/g, '\\"') + '"]',
+        '[id="CartItem-' + String(key).replace(/"/g, '\\"') + '"]',
+      ];
+      // CSS.escape may be missing in very old browsers — fallback without it.
+      if (typeof CSS === 'undefined' || typeof CSS.escape !== 'function') {
+        sels = [
+          '[data-key="' + String(key).replace(/"/g, '\\"') + '"]',
+          '[id="CartItem-' + String(key).replace(/"/g, '\\"') + '"]',
+        ];
+      }
+      for (var s = 0; s < sels.length; s++) {
+        var nodes;
+        try {
+          nodes = deepQueryAll(document.documentElement, sels[s]);
+        } catch (_) {
+          continue;
+        }
+        for (var i = 0; i < nodes.length; i++) {
+          lockCartLineEl(nodes[i]);
+          locked++;
+        }
+      }
+    });
+    return locked;
+  }
+
+  function disableProductLinksInTree(root, seen) {
     if (!root) return 0;
     var count = 0;
-    var links = deepQueryAll(root, 'a[href*="/products/"], a[data-appai-original-href*="/products/"]');
+    if (!seen) seen = new Set();
+    // Horizon: image + title are separate anchors (media-container / title).
+    var links = deepQueryAll(
+      root,
+      'a[href*="/products/"], a[data-appai-original-href*="/products/"], a.cart-items__media-container, a.cart-items__title',
+    );
     for (var i = 0; i < links.length; i++) {
-      // Inside cart UI, with AppAI armed: neutralize every product link.
-      neutralizeAnchor(links[i]);
-      count++;
+      var a = links[i];
+      if (seen.has(a)) continue;
+      if (!isProductLikeAnchor(a) && a.getAttribute('data-appai-link-disabled') !== '1') continue;
+      seen.add(a);
+      if (neutralizeAnchor(a)) count++;
       var row =
-        (links[i].closest &&
-          (links[i].closest('.cart-items__table-row') ||
-            links[i].closest('[class*="cart-item"]') ||
-            links[i].closest('[data-cart-item]') ||
-            links[i].closest('tr') ||
-            links[i].closest('li'))) ||
+        (a.closest &&
+          (a.closest('.cart-items__table-row') ||
+            a.closest('[class*="cart-item"]') ||
+            a.closest('[data-cart-item]') ||
+            a.closest('[data-key]') ||
+            a.closest('tr') ||
+            a.closest('li'))) ||
         null;
       if (row) lockCartLineEl(row);
     }
-    var mockImgs = deepQueryAll(root, 'img[data-appai-mockup]');
+
+    // Inside already-locked rows: strip every product-like anchor (image + title).
+    var lockedRows = deepQueryAll(root, '.appai-cart-line-locked');
+    for (var lr = 0; lr < lockedRows.length; lr++) {
+      var rowLinks = deepQueryAll(lockedRows[lr], 'a');
+      for (var r = 0; r < rowLinks.length; r++) {
+        var ra = rowLinks[r];
+        if (seen.has(ra)) continue;
+        if (!isProductLikeAnchor(ra)) continue;
+        seen.add(ra);
+        if (neutralizeAnchor(ra)) count++;
+      }
+    }
+
+    var mockImgs = deepQueryAll(root, 'img[data-appai-mockup], .cart-items__media-image');
     for (var m = 0; m < mockImgs.length; m++) {
       var img = mockImgs[m];
       var wrap = img.closest ? img.closest('a') : null;
-      if (wrap) {
-        neutralizeAnchor(wrap);
-        count++;
+      if (wrap && !seen.has(wrap)) {
+        seen.add(wrap);
+        if (neutralizeAnchor(wrap)) count++;
       }
       var row2 =
         (img.closest &&
           (img.closest('.cart-items__table-row') ||
             img.closest('[data-cart-item]') ||
+            img.closest('[data-key]') ||
             img.closest('[id*="CartItem"]') ||
             img.closest('.cart-item') ||
             img.closest('tr') ||
             img.closest('li') ||
             img.closest('[class*="cart-item"]'))) ||
         img.parentElement;
-      if (row2) {
-        lockCartLineEl(row2);
-        var rowLinks = deepQueryAll(row2, 'a');
-        for (var r = 0; r < rowLinks.length; r++) {
-          var rh = rowLinks[r].getAttribute('href') || rowLinks[r].getAttribute('data-appai-original-href') || '';
-          if (String(rh).indexOf('/products/') !== -1 || rowLinks[r].getAttribute('data-appai-link-disabled') === '1') {
-            neutralizeAnchor(rowLinks[r]);
-            count++;
-          }
-        }
-      }
+      if (row2) lockCartLineEl(row2);
     }
     return count;
   }
@@ -542,11 +618,20 @@
       setBlockClass(false);
       return;
     }
+    ensureStyles();
     setBlockClass(true);
+    var rowsLocked = lockRowsByAppAiKeys();
     var roots = cartUiRoots();
+    var seen = new Set();
     var total = 0;
     // Never fall back to documentElement — that would disable PDP links on the storefront.
-    for (var i = 0; i < roots.length; i++) total += disableProductLinksInTree(roots[i]);
+    for (var i = 0; i < roots.length; i++) total += disableProductLinksInTree(roots[i], seen);
+
+    var liveLeft = deepQueryAll(
+      document.documentElement,
+      'a.cart-items__media-container[href], a.cart-items__title[href], .cart-items a[href*="/products/"], form[action*="/cart"] a[href*="/products/"]',
+    ).length;
+
     console.log(
       '[AppAI Cart Image] link-block',
       CART_IMG_VERSION,
@@ -554,8 +639,14 @@
       appAiState.variants.size,
       'handles=',
       appAiState.handles.size,
+      'keys=',
+      appAiState.keys.size,
+      'rowsLocked=',
+      rowsLocked,
       'neutralized=',
       total,
+      'liveLeft=',
+      liveLeft,
     );
   }
 
