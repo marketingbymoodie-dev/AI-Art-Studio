@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.0';
+  var CART_IMG_VERSION = '3.1';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -17,11 +17,22 @@
     variants: new Set(),
   };
 
+  // cursor only — do NOT use pointer-events:none (clicks fall through and bypass our interceptor).
+  var MEDIA_KILL_CSS =
+    'a.cart-items__media-container,a.cart-items__media-container *,' +
+    '.cart-items__media a,.cart-items__media a *,' +
+    '.cart-item__media a,.cart-item__media a *,' +
+    'td.cart-items__media a,td.cart-items__media a *,' +
+    'img.cart-items__media-image,img.cart-item__image,' +
+    'a[data-appai-media-nolink],a[data-appai-media-nolink] *,' +
+    '.appai-cart-line-locked a,.appai-cart-line-locked a *{' +
+    'cursor:default!important;text-decoration:none!important;}';
+
   /**
    * Rules:
    * 1) All cart line IMAGE links are inert (every line).
    * 2) Customizer line TITLE (+ other product) links are inert (AppAI lines only).
-   * pointer-events must include descendants — it is not inherited.
+   * Inline styles + shadow-root CSS — document stylesheets do not pierce Horizon shadows.
    */
   function ensureStyles() {
     var s = document.getElementById('appai-cart-noflash-style');
@@ -37,26 +48,23 @@
       '.appai-cart-loading cart-items img:not([data-appai-mockup]),' +
       '.appai-cart-loading form[action^="/cart"] img:not([data-appai-mockup]) { opacity:0 !important; }' +
       '.cart-item img,[id*="CartItem"] img,cart-items img,form[action^="/cart"] img{transition:opacity 120ms ease;}' +
-      /* All cart thumbnails */ +
-      'a.cart-items__media-container,' +
-      'a.cart-items__media-container *,' +
-      '.cart-items__media > a,' +
-      '.cart-items__media > a *,' +
-      '.cart-item__media > a,' +
-      '.cart-item__media > a *,' +
-      '.cart-item__image-container > a,' +
-      '.cart-item__image-container > a *,' +
-      'td.cart-items__media a,' +
-      'td.cart-items__media a *,' +
-      /* Customizer rows: image + title + any product PDP link */ +
-      '.appai-cart-line-locked a[href*="/products/"],' +
-      '.appai-cart-line-locked a[href*="/products/"] *,' +
-      '.appai-cart-line-locked a.cart-items__title,' +
-      '.appai-cart-line-locked a.cart-items__title *,' +
-      '.appai-cart-line-locked a[data-appai-original-href],' +
-      '.appai-cart-line-locked a[data-appai-original-href] *{' +
-      'cursor:default!important;pointer-events:none!important;text-decoration:none!important;' +
-      '}';
+      MEDIA_KILL_CSS;
+
+    // Horizon cart components may use open shadow roots — inject the same rules there.
+    var trees = [];
+    collectElementTrees(document.documentElement, trees);
+    for (var i = 0; i < trees.length; i++) {
+      var root = trees[i];
+      if (!root || !root.shadowRoot) continue;
+      var sr = root.shadowRoot;
+      var existing = sr.getElementById('appai-cart-media-style');
+      if (!existing) {
+        existing = document.createElement('style');
+        existing.id = 'appai-cart-media-style';
+        sr.appendChild(existing);
+      }
+      existing.textContent = MEDIA_KILL_CSS;
+    }
   }
 
   function ensureNoFlash() {
@@ -233,56 +241,57 @@
     return matches;
   }
 
+  function elInCartUi(el) {
+    var path = el;
+    while (path) {
+      if (!path.tagName) {
+        path = path.parentNode;
+        continue;
+      }
+      var tag = String(path.tagName).toLowerCase();
+      var id = String(path.id || '').toLowerCase();
+      var c =
+        typeof path.className === 'string'
+          ? path.className.toLowerCase()
+          : String(path.className && path.className.baseVal ? path.className.baseVal : '').toLowerCase();
+      if (
+        tag.indexOf('cart') !== -1 ||
+        id.indexOf('cart') !== -1 ||
+        c.indexOf('cart-item') !== -1 ||
+        c.indexOf('cart-drawer') !== -1 ||
+        c.indexOf('cart-items') !== -1 ||
+        c.indexOf('cart-page') !== -1
+      ) {
+        return true;
+      }
+      if (path.getAttribute && (path.getAttribute('action') || '').indexOf('/cart') !== -1) return true;
+      path = path.parentNode;
+    }
+    return window.location.pathname.indexOf('/cart') !== -1;
+  }
+
   function isCartMediaAnchor(a) {
     if (!a || a.tagName !== 'A') return false;
+    if (a.getAttribute('data-appai-media-nolink') === '1') return true;
     var cls = typeof a.className === 'string' ? a.className : '';
+    if (cls.indexOf('cart-items__title') !== -1) return false;
     if (cls.indexOf('cart-items__media-container') !== -1) return true;
-    if (cls.indexOf('cart-item__image') !== -1) return true;
-    var parent = a.parentElement;
-    if (!parent) return false;
-    var pcls =
-      typeof parent.className === 'string'
-        ? parent.className
-        : String(parent.className && parent.className.baseVal ? parent.className.baseVal : '');
-    if (pcls.indexOf('cart-items__media') !== -1) return true;
-    if (pcls.indexOf('cart-item__media') !== -1) return true;
-    if (pcls.indexOf('cart-item__image') !== -1) return true;
-    // Anchor whose only meaningful child is a product thumb.
-    if (a.querySelector('img.cart-items__media-image, img.cart-item__image, img')) {
-      var path = a;
-      while (path) {
-        var tag = path.tagName ? String(path.tagName).toLowerCase() : '';
-        var id = String(path.id || '').toLowerCase();
-        var c =
-          typeof path.className === 'string'
-            ? path.className.toLowerCase()
-            : '';
-        if (
-          tag.indexOf('cart') !== -1 ||
-          id.indexOf('cart') !== -1 ||
-          c.indexOf('cart-item') !== -1 ||
-          c.indexOf('cart-drawer') !== -1 ||
-          c.indexOf('cart-items') !== -1
-        ) {
-          // Prefer media cells over title links.
-          if (c.indexOf('title') !== -1 || cls.indexOf('title') !== -1) return false;
-          if (
-            c.indexOf('media') !== -1 ||
-            c.indexOf('image') !== -1 ||
-            cls.indexOf('media') !== -1 ||
-            a.querySelector('img')
-          ) {
-            return c.indexOf('details') === -1 && cls.indexOf('cart-items__title') === -1;
-          }
-        }
-        path = path.parentElement;
-      }
-    }
-    return false;
+    if (!a.querySelector('img')) return false;
+    if (!elInCartUi(a)) return false;
+    // Any cart <a> that wraps a product thumb is a media link (not a text title).
+    var text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 80) return false;
+    return true;
+  }
+
+  function forceInert(el) {
+    if (!el || !el.style) return;
+    el.style.setProperty('cursor', 'default', 'important');
+    el.style.setProperty('text-decoration', 'none', 'important');
   }
 
   function neutralizeAnchor(a) {
-    if (!a || a.getAttribute('data-appai-media-nolink') === '1') return;
+    if (!a) return;
     var href = a.getAttribute('href');
     if (href) a.setAttribute('data-appai-original-href', href);
     a.removeAttribute('href');
@@ -290,17 +299,41 @@
     a.setAttribute('role', 'presentation');
     a.setAttribute('tabindex', '-1');
     a.setAttribute('aria-disabled', 'true');
+    forceInert(a);
+    var kids = a.querySelectorAll('*');
+    for (var i = 0; i < kids.length; i++) forceInert(kids[i]);
   }
 
+  /** Primary kill path: find cart thumbnails, then kill their wrapping <a>. */
   function stripCartMediaHrefs() {
     if (hushMutations) return;
     hushMutations = true;
     try {
+      ensureStyles();
+      var imgs = deepQueryAll(
+        document.documentElement,
+        'img.cart-items__media-image, img.cart-item__image, .cart-items__media img, .cart-item__media img, td.cart-items__media img, a.cart-items__media-container img',
+      );
+      var seen = new Set();
+      for (var i = 0; i < imgs.length; i++) {
+        var img = imgs[i];
+        if (!elInCartUi(img)) continue;
+        forceInert(img);
+        var a = img.closest ? img.closest('a') : null;
+        if (a && !seen.has(a)) {
+          seen.add(a);
+          neutralizeAnchor(a);
+        }
+      }
+      // Class-based fallback
       var links = deepQueryAll(
         document.documentElement,
-        'a.cart-items__media-container, .cart-items__media > a, .cart-item__media > a, td.cart-items__media a',
+        'a.cart-items__media-container, .cart-items__media a, .cart-item__media a, td.cart-items__media a',
       );
-      for (var i = 0; i < links.length; i++) neutralizeAnchor(links[i]);
+      for (var L = 0; L < links.length; L++) {
+        if (seen.has(links[L])) continue;
+        neutralizeAnchor(links[L]);
+      }
     } finally {
       hushMutations = false;
     }
@@ -390,26 +423,43 @@
         t = t.parentNode;
       }
     }
+    // Block clicks on cart thumbnail images even when theme CSS sets cursor:pointer on the img.
+    for (var p = 0; p < path.length; p++) {
+      var node = path[p];
+      if (!node || node.tagName !== 'IMG') continue;
+      if (!elInCartUi(node)) continue;
+      var wrap = node.closest ? node.closest('a') : null;
+      if (wrap || (node.className && String(node.className).indexOf('media-image') !== -1)) {
+        blockNavEvent(e);
+        if (wrap) neutralizeAnchor(wrap);
+        forceInert(node);
+        return;
+      }
+    }
     for (var i = 0; i < path.length; i++) {
       var el = path[i];
       if (!el || el.tagName !== 'A') continue;
       if (isCartMediaAnchor(el)) {
         blockNavEvent(e);
+        neutralizeAnchor(el);
         return;
       }
       var href = el.getAttribute('href') || el.getAttribute('data-appai-original-href') || '';
       if (pathHasLockedRow(path) && String(href).indexOf('/products/') !== -1) {
         blockNavEvent(e);
+        neutralizeAnchor(el);
         return;
       }
       if (hrefIsCustomizerProduct(href)) {
         blockNavEvent(e);
+        neutralizeAnchor(el);
         return;
       }
     }
   }
 
-  ['click', 'auxclick', 'pointerdown'].forEach(function (type) {
+  ['click', 'auxclick', 'pointerdown', 'mousedown'].forEach(function (type) {
+    window.addEventListener(type, onCartProductNavIntercept, true);
     document.addEventListener(type, onCartProductNavIntercept, true);
   });
 
@@ -602,6 +652,6 @@
   console.log(
     '[AppAI Cart Image] installed ' +
       CART_IMG_VERSION +
-      ' (media always off; customizer titles off)',
+      ' (kill cart imgs + customizer titles)',
   );
 })();
