@@ -51,9 +51,13 @@ It is the companion to the implementation in code; see also **`.cursor/rules/sha
 | `server/routes.ts` | `POST /api/storefront/resolve-design-variant`, `normalizeMyshopifyShopDomain`, `getAuthorizedInstallation`, `markShopTokenInvalid` on Admin API 401/403. |
 | `server/shopify.ts` | OAuth `GET /shopify/callback` stores token; **`app/uninstall` webhook** must not clobber a **fresh** reinstall (stale-uninstall skip within ~90s of `installedAt`). |
 | `extensions/theme-extension/.../ai-art-embed.liquid` | Calls `resolveDesignSku` / API with **normalized** shop; ATC uses returned shadow **variant_id**. |
+| `extensions/theme-extension/assets/appai-art-embed.js` | ATC: prefer iframe’s already-resolved shadow when `variantId !== baseVariantId`; **re-resolve from base only** if cart add fails (expired / unpublished). Always requires HTTPS `_mockup_url` for shadow image. |
 | `extensions/theme-extension/assets/appai-cart-guard.js` | Injects **`_mockup_url`**; keeps buyer-visible `mockup_url` / `image` props out. |
-| `client/src/pages/embed-design.tsx` | `resolveShopDomain`, add-to-cart payload, coordinates with theme. |
+| `extensions/theme-extension/assets/appai-cart-images.js` | Replaces cart thumbs from `_mockup_url`; **blocks** `/products/` navigation on AppAI lines (image + title). Pierce shadow DOM. |
+| `client/src/pages/embed-design.tsx` | `resolveShopDomain`, add-to-cart payload, PreShadow after flat/Printify mockup save, coordinates with theme. |
 | `extensions/checkout-ui` (optional) | UI extension for extra mockup copy; **not required** if the shadow variant image is correct. Bundle lines may need `collectCartLineAttributes` for attributes on child line components. |
+
+**Cart/checkout image invariant:** the line must add a **shadow variant** whose product image is the current design mockup (HTTPS). Line props alone do not drive native checkout thumbnails. AppAI cart lines must **not** navigate to the native/shadow PDP from cart image or title.
 
 **Operational requirement:** the shop’s **installation** row must have a **valid Admin API token**. Reinstall or refresh OAuth if Admin API returns 401. **Shop domain** must match DB (`store.myshopify.com`).
 
@@ -87,6 +91,8 @@ You **still** need the **shadow product** (or an equivalent that creates a **rea
 2. New ATC line: **line.variant_id** is the **shadow** variant, not the base.
 3. Checkout: line image matches custom mockup; multiple lines with same base product keep **distinct** images.
 4. **Saved designs** / storefront: `POST /api/storefront/customizer/my-designs` is **200** (not `Shop not authorized`).
+5. Flat ATC: after Apply, wait for PreShadow (console `[PreShadow] Shadow variant ready`) → ATC should skip a second Admin create; cart/checkout still show **this** design’s mockup.
+6. Cart `/cart` + drawer: click image and title on an AppAI line — **no** navigation to `/products/…` (console `[AppAI Cart Image] installed 2.4`).
 
 ---
 

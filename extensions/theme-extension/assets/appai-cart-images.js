@@ -1,6 +1,6 @@
 ;(function () {
   'use strict';
-  var CART_IMG_VERSION = '2.3';
+  var CART_IMG_VERSION = '2.4';
   if (window.__APPAI_CART_IMG_REPLACER_V2__) return;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
   window.__APPAI_CART_IMG_REPLACER__ = true;
@@ -42,6 +42,22 @@
     return null;
   }
 
+  function lineIsAppAI(it){
+    if(!it||!it.properties)return false;
+    var props=it.properties;
+    if(Array.isArray(props)){
+      for(var i=0;i<props.length;i++){
+        var e=props[i];if(!e)continue;
+        var n=String(e.name||e.key||'');
+        if(n==='_mockup_url'||n==='mockup_url'||n==='_design_id'||n==='_appai_job_id'||n==='_artwork_url'){
+          var val=e.value;if(val!=null&&String(val).trim()!=='')return true;
+        }
+      }
+      return false;
+    }
+    return !!(props._mockup_url||props.mockup_url||props._design_id||props._appai_job_id||props._artwork_url);
+  }
+
   function isLikelyProductImg(img){
     var src=img.getAttribute('src')||img.getAttribute('data-src')||'';
     if(!src)return false;
@@ -69,63 +85,144 @@
     return null;
   }
 
+  /** Pierce open shadow roots (Horizon / Ritual / modern Dawn cart drawers). */
+  function collectElementTrees(root, out){
+    if(!root||out.indexOf(root)>=0)return;
+    out.push(root);
+    if(root.shadowRoot)collectElementTrees(root.shadowRoot,out);
+    var kids=root.children||[];
+    for(var i=0;i<kids.length;i++)collectElementTrees(kids[i],out);
+  }
+
+  function deepQueryAll(start, selector){
+    var trees=[], matches=[], seen=new Set();
+    collectElementTrees(start||document.documentElement, trees);
+    for(var t=0;t<trees.length;t++){
+      var root=trees[t];
+      if(!root||typeof root.querySelectorAll!=='function')continue;
+      var nodes;
+      try{nodes=root.querySelectorAll(selector);}catch(_){continue;}
+      for(var i=0;i<nodes.length;i++){
+        if(seen.has(nodes[i]))continue;
+        seen.add(nodes[i]);
+        matches.push(nodes[i]);
+      }
+    }
+    return matches;
+  }
+
+  function blockNavEvent(e){
+    e.preventDefault();
+    e.stopPropagation();
+    if(typeof e.stopImmediatePropagation==='function')e.stopImmediatePropagation();
+    return false;
+  }
+
+  function disableProductLinks(root){
+    if(!root||root.getAttribute('data-appai-links-disabled')==='1')return;
+    root.setAttribute('data-appai-links-disabled','1');
+    root.addEventListener('click',function(e){
+      var t=e.target;
+      if(!t)return;
+      var a=t.closest?t.closest('a[href*="/products/"]'):null;
+      if(!a&&t.tagName==='A'&&String(t.getAttribute('href')||'').indexOf('/products/')!==-1)a=t;
+      if(!a)return;
+      blockNavEvent(e);
+    },true);
+    root.addEventListener('auxclick',blockNavEvent,true);
+
+    var links=deepQueryAll(root,'a[href*="/products/"]');
+    for(var ll=0;ll<links.length;ll++){
+      var a=links[ll];
+      if(a.getAttribute('data-appai-link-disabled'))continue;
+      a.setAttribute('data-appai-link-disabled','1');
+      a.setAttribute('href','javascript:void(0)');
+      a.setAttribute('role','link');
+      a.setAttribute('aria-disabled','true');
+      a.style.cursor='default';
+      a.addEventListener('click',blockNavEvent,{capture:true});
+      a.addEventListener('auxclick',blockNavEvent,{capture:true});
+      a.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' ')blockNavEvent(e);
+      },true);
+    }
+  }
+
   function applyMockups(){
     getCart().then(function(cart){
       var items=cart.items||[];
       var keyMap=new Map(),varMap=new Map(),indexed=[];
+      var appAiVariants=new Set();
+      var appAiIndexes=new Set();
       for(var i=0;i<items.length;i++){
-        var it=items[i],url=mockupUrlFromLineProperties(it&&it.properties);
+        var it=items[i];
+        var isApp=lineIsAppAI(it);
+        if(isApp){
+          appAiVariants.add(String(it.variant_id));
+          appAiIndexes.add(i+1);
+        }
+        var url=mockupUrlFromLineProperties(it&&it.properties);
         if(!url)continue;
         keyMap.set(it.key,url);
         varMap.set(String(it.variant_id),url);
         indexed.push({index:i+1,variantId:String(it.variant_id),mockupUrl:url,key:it.key});
       }
-      if(keyMap.size===0){document.documentElement.classList.remove('appai-cart-loading');return;}
 
       var replaced=0;
 
-      var inps=[].slice.call(document.querySelectorAll("input[name^='updates[']"));
-      for(var i=0;i<inps.length;i++){
-        var m=/^updates\[(.+)\]$/.exec(inps[i].getAttribute('name')||'');
-        if(!m)continue;
-        var u=keyMap.get(m[1]);if(!u)continue;
-        var c=inps[i].closest('[data-cart-item]')||inps[i].closest("[id*='CartItem']")||inps[i].closest('tr')||inps[i].closest('li')||inps[i].closest('.cart-item')||inps[i].closest("[class*='cart']")||inps[i].closest('form')||document;
-        var imgs=[].slice.call(c.querySelectorAll('img')).filter(isLikelyProductImg);
-        if(imgs.length){setImg(imgs[0],u);replaced++;}
-      }
-
-      if(replaced===0&&indexed.length>0){
-        var sels=['.cart-item',"[class*='cart-item']","[id*='CartItem']",'cart-items > *',"form[action*='/cart'] li"];
-        for(var s=0;s<sels.length;s++){
-          var nodes=[].slice.call(document.querySelectorAll(sels[s]));
-          if(!nodes.length)continue;
-          var sr=0;
-          for(var n=0;n<nodes.length;n++){
-            var node=nodes[n];
-            var img=[].slice.call(node.querySelectorAll('img')).find(isLikelyProductImg);
-            if(!img)continue;
-            var mu=null;
-            var li=lineIdxFromEl(node);
-            if(li!==null)for(var k=0;k<indexed.length;k++){if(indexed[k].index===li){mu=indexed[k].mockupUrl;break;}}
-            if(!mu){
-              var va=node.getAttribute('data-variant-id')||node.getAttribute('data-variant');
-              if(!va){var vel=node.querySelector('[data-variant-id]');if(vel)va=vel.getAttribute('data-variant-id');}
-              if(va)mu=varMap.get(String(va))||null;
-            }
-            if(!mu){
-              var cnt=0;
-              for(var p=0;p<=n;p++){var pi=[].slice.call(nodes[p].querySelectorAll('img')).find(function(im){return!im.hasAttribute('data-appai-mockup')&&(im.getAttribute('src')||'')!=='';});if(pi)cnt++;}
-              if(cnt>0&&cnt<=indexed.length)mu=indexed[cnt-1].mockupUrl;
-            }
-            if(mu){setImg(img,mu);sr++;}
-          }
-          if(sr>0){replaced+=sr;break;}
+      if(keyMap.size>0){
+        var inps=deepQueryAll(document.documentElement,"input[name^='updates[']");
+        for(var i=0;i<inps.length;i++){
+          var m=/^updates\[(.+)\]$/.exec(inps[i].getAttribute('name')||'');
+          if(!m)continue;
+          var u=keyMap.get(m[1]);if(!u)continue;
+          var c=inps[i].closest('[data-cart-item]')||inps[i].closest("[id*='CartItem']")||inps[i].closest('tr')||inps[i].closest('li')||inps[i].closest('.cart-item')||inps[i].closest("[class*='cart']")||inps[i].closest('form')||document;
+          var imgs=[].slice.call(deepQueryAll(c,'img')).filter(isLikelyProductImg);
+          if(imgs.length){setImg(imgs[0],u);replaced++;}
         }
-      }
 
-      if(replaced===0&&indexed.length===1){
-        var cs=[document.querySelector("form[action^='/cart']"),document.querySelector('cart-drawer'),document.querySelector('cart-items'),document.querySelector('[id*="cart"]')];
-        for(var ci=0;ci<cs.length;ci++){if(!cs[ci])continue;var fi=[].slice.call(cs[ci].querySelectorAll('img')).find(isLikelyProductImg);if(fi){setImg(fi,indexed[0].mockupUrl);replaced++;break;}}
+        if(replaced===0&&indexed.length>0){
+          var sels=['.cart-item',"[class*='cart-item']","[id*='CartItem']",'cart-items > *',"form[action*='/cart'] li"];
+          for(var s=0;s<sels.length;s++){
+            var nodes=deepQueryAll(document.documentElement,sels[s]);
+            if(!nodes.length)continue;
+            var sr=0;
+            for(var n=0;n<nodes.length;n++){
+              var node=nodes[n];
+              var img=[].slice.call(deepQueryAll(node,'img')).find(isLikelyProductImg);
+              if(!img)continue;
+              var mu=null;
+              var li=lineIdxFromEl(node);
+              if(li!==null)for(var k=0;k<indexed.length;k++){if(indexed[k].index===li){mu=indexed[k].mockupUrl;break;}}
+              if(!mu){
+                var va=node.getAttribute('data-variant-id')||node.getAttribute('data-variant');
+                if(!va){var vel=node.querySelector('[data-variant-id]');if(vel)va=vel.getAttribute('data-variant-id');}
+                if(va)mu=varMap.get(String(va))||null;
+              }
+              if(!mu){
+                var cnt=0;
+                for(var p=0;p<=n;p++){
+                  var pi=[].slice.call(deepQueryAll(nodes[p],'img')).find(function(im){
+                    return!im.hasAttribute('data-appai-mockup')&&(im.getAttribute('src')||'')!=='';
+                  });
+                  if(pi)cnt++;
+                }
+                if(cnt>0&&cnt<=indexed.length)mu=indexed[cnt-1].mockupUrl;
+              }
+              if(mu){setImg(img,mu);sr++;}
+            }
+            if(sr>0)replaced+=sr;
+          }
+        }
+
+        if(replaced===0&&indexed.length===1){
+          var cs=[document.querySelector("form[action^='/cart']"),document.querySelector('cart-drawer'),document.querySelector('cart-items'),document.querySelector('[id*="cart"]')];
+          for(var ci=0;ci<cs.length;ci++){
+            if(!cs[ci])continue;
+            var fi=[].slice.call(deepQueryAll(cs[ci],'img')).find(isLikelyProductImg);
+            if(fi){setImg(fi,indexed[0].mockupUrl);replaced++;break;}
+          }
+        }
       }
 
       if(replaced>0)document.documentElement.classList.remove('appai-cart-loading');
@@ -134,30 +231,35 @@
         window.AppAI.hideInternalCartProperties();
       }
 
-      var cartContainerSels=['.cart-item','[class*="cart-item"]','[id*="CartItem"]','cart-items > *','form[action*="/cart"] li'];
-      var linkedVariants=new Set(Array.from(varMap.keys()));
-      for(var ls=0;ls<cartContainerSels.length;ls++){
-        var lnodes=[].slice.call(document.querySelectorAll(cartContainerSels[ls]));
-        if(!lnodes.length)continue;
-        for(var ln=0;ln<lnodes.length;ln++){
-          var lnode=lnodes[ln];
-          var isAppAI=false;
-          var lva=lnode.getAttribute('data-variant-id')||lnode.getAttribute('data-variant');
-          if(!lva){var lvel=lnode.querySelector('[data-variant-id]');if(lvel)lva=lvel.getAttribute('data-variant-id');}
-          if(lva&&linkedVariants.has(String(lva)))isAppAI=true;
-          if(!isAppAI){var lli=lineIdxFromEl(lnode);if(lli!==null){for(var lk=0;lk<indexed.length;lk++){if(indexed[lk].index===lli){isAppAI=true;break;}}}}
-          if(!isAppAI)continue;
-          var links=[].slice.call(lnode.querySelectorAll('a[href*="/products/"]'));
-          for(var ll=0;ll<links.length;ll++){
-            if(links[ll].getAttribute('data-appai-link-disabled'))continue;
-            links[ll].setAttribute('data-appai-link-disabled','1');
-            links[ll].setAttribute('href','javascript:void(0)');
-            links[ll].style.cursor='default';
-            links[ll].style.pointerEvents='none';
-            links[ll].addEventListener('click',function(e){e.preventDefault();e.stopPropagation();},{capture:true});
+      // Block PDP navigation on AppAI / shadow lines (image + title).
+      // Do not require _mockup_url — _design_id / job id is enough.
+      if(appAiVariants.size>0||appAiIndexes.size>0||indexed.length>0){
+        var cartContainerSels=['.cart-item','[class*="cart-item"]','[id*="CartItem"]','cart-items > *','form[action*="/cart"] li'];
+        var linkedVariants=new Set(Array.from(appAiVariants));
+        for(var vk=0;vk<indexed.length;vk++)linkedVariants.add(indexed[vk].variantId);
+        var seenNodes=new Set();
+        for(var ls=0;ls<cartContainerSels.length;ls++){
+          var lnodes=deepQueryAll(document.documentElement,cartContainerSels[ls]);
+          for(var ln=0;ln<lnodes.length;ln++){
+            var lnode=lnodes[ln];
+            if(seenNodes.has(lnode))continue;
+            seenNodes.add(lnode);
+            var isAppAI=false;
+            var lva=lnode.getAttribute('data-variant-id')||lnode.getAttribute('data-variant');
+            if(!lva){var lvel=lnode.querySelector('[data-variant-id]');if(lvel)lva=lvel.getAttribute('data-variant-id');}
+            if(lva&&linkedVariants.has(String(lva)))isAppAI=true;
+            if(!isAppAI){
+              var lli=lineIdxFromEl(lnode);
+              if(lli!==null&&(appAiIndexes.has(lli)||indexed.some(function(x){return x.index===lli;})))isAppAI=true;
+            }
+            // Position fallback when theme omits variant/line attrs but mockup was applied.
+            if(!isAppAI&&lnode.querySelector&&lnode.querySelector('img[data-appai-mockup]'))isAppAI=true;
+            if(!isAppAI)continue;
+            disableProductLinks(lnode);
           }
         }
-        if(lnodes.length>0)break;
+      } else {
+        document.documentElement.classList.remove('appai-cart-loading');
       }
     }).catch(function(){document.documentElement.classList.remove('appai-cart-loading');});
   }

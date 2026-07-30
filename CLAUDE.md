@@ -93,7 +93,11 @@ Fix (`server/replicate-vectorizer.ts`):
 
 ---
 
-## Phone cases (flat calibration) — active problem area
+## Phone cases (flat calibration) — known-good (bp 421)
+
+**Signed off 2026-07-29** — pin `f253677` on `production`. Full lockdown doc: [`docs/framed-known-good-snapshots/slim-phone-cases-bp421.md`](docs/framed-known-good-snapshots/slim-phone-cases-bp421.md).
+
+**Background contract:** bake / Printers Mockup / orders fill the full print canvas (blue dashed); editor preview shows customer colour only on the **masked case** (grey chrome stays grey).
 
 ### What Printify expects
 

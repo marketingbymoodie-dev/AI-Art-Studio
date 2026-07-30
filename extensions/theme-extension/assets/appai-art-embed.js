@@ -1562,56 +1562,81 @@
           atcMockupUrl = '';
         }
         var atcDesignId = (data.properties && data.properties['_design_id']) || '';
-        // Use baseVariantId (the original base product variant) for resolveDesignSku so the
-        // server can look it up on the base product and create a fresh shadow product if needed.
-        // data.variantId may be a pre-created shadow variant ID that has since expired.
+        // Prefer the iframe's already-resolved shadow variant when it differs from
+        // the base catalog variant (avoids a second Shopify Admin create ~5–15s).
+        // If that shadow is expired / not published, fall back to resolveDesignSku
+        // from baseVariantId (same recovery the old always-resolve path provided).
         var atcBaseVariantId = data.baseVariantId || data.variantId;
+        var alreadyShadow = !!(
+          data.baseVariantId &&
+          String(data.variantId) !== String(data.baseVariantId) &&
+          atcMockupUrl &&
+          atcMockupUrl.indexOf('https://') === 0
+        );
 
-        resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl)
-          .then(function(sku) {
-            return addToCart(sku.variantId, data.quantity, data.properties);
-          })
-          .then(function(cart) {
-            console.log(B, 'Cart add SUCCESS for cid:', cid);
-            replyToIframe(event, {
-              type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-              correlationId: cid, ok: true, success: true,
-              cart: cart, result: cart, _bridgeVersion: BRIDGE_VERSION
+        function replyAtcOk(cart) {
+          console.log(B, 'Cart add SUCCESS for cid:', cid);
+          replyToIframe(event, {
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: cid, ok: true, success: true,
+            cart: cart, result: cart, _bridgeVersion: BRIDGE_VERSION
+          });
+          refreshCartUI();
+        }
+
+        function replyAtcFail(msg) {
+          console.error(B, 'Cart add FAILED for cid:', cid, msg);
+          replyToIframe(event, {
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: cid, ok: false, success: false,
+            error: msg || 'Cart add failed', _bridgeVersion: BRIDGE_VERSION
+          });
+        }
+
+        function resolveFromBaseThenAdd() {
+          return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl)
+            .then(function(sku) {
+              return addToCart(sku.variantId, data.quantity, data.properties);
             });
-            refreshCartUI();
-          })
-          .catch(function(err) {
-            // Retry once after 3s if variant not found (product may still be publishing)
-            if (err && err.__retryable) {
+        }
+
+        function addWithPublishRetry(variantId) {
+          return addToCart(variantId, data.quantity, data.properties)
+            .catch(function(err) {
+              if (!(err && err.__retryable)) throw err;
               console.log(B, 'Retrying ATC in 3s for variant', err.variantId);
               return new Promise(function(resolve) { setTimeout(resolve, 3000); })
-                .then(function() { return addToCart(err.variantId, data.quantity, data.properties); })
-                .then(function(cart) {
-                  console.log(B, 'Cart add SUCCESS on retry for cid:', cid);
-                  replyToIframe(event, {
-                    type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-                    correlationId: cid, ok: true, success: true,
-                    cart: cart, result: cart, _bridgeVersion: BRIDGE_VERSION
-                  });
-                  refreshCartUI();
-                })
-                .catch(function(retryErr) {
-                  var msg = (retryErr && retryErr.message) || String(retryErr);
-                  console.error(B, 'Cart add FAILED on retry for cid:', cid, msg);
-                  replyToIframe(event, {
-                    type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-                    correlationId: cid, ok: false, success: false,
-                    error: 'This product is not available for purchase yet. Please refresh the page and try again.',
-                    _bridgeVersion: BRIDGE_VERSION
-                  });
+                .then(function() {
+                  return addToCart(err.variantId, data.quantity, data.properties);
                 });
-            }
-            console.error(B, 'Cart add FAILED for cid:', cid, err.message);
-            replyToIframe(event, {
-              type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-              correlationId: cid, ok: false, success: false,
-              error: err.message || String(err), _bridgeVersion: BRIDGE_VERSION
             });
+        }
+
+        var addPromise;
+        if (alreadyShadow) {
+          console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId);
+          addPromise = addWithPublishRetry(data.variantId).catch(function(err) {
+            console.warn(B, 'Shadow variant unavailable — re-resolving from base:', (err && err.message) || err);
+            return resolveFromBaseThenAdd();
+          });
+        } else {
+          addPromise = resolveFromBaseThenAdd().catch(function(err) {
+            if (err && err.__retryable) {
+              return addWithPublishRetry(err.variantId);
+            }
+            throw err;
+          });
+        }
+
+        addPromise
+          .then(replyAtcOk)
+          .catch(function(err) {
+            var msg = (err && err.message) || String(err);
+            if (err && err.__retryable) {
+              replyAtcFail('This product is not available for purchase yet. Please refresh the page and try again.');
+              return;
+            }
+            replyAtcFail(msg);
           });
         return;
       }

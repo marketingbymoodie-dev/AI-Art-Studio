@@ -6762,13 +6762,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     flatClipConfirmProceedRef.current = false;
 
-    const flatEditorOpen = !!(
+    // Only re-raster/upload when placement actually changed — a clean Apply
+    // already left https mockup URLs ready for shadow SKU + cart.
+    const flatNeedsFlush = !!(
       usesFlatOnTheFlyPreview &&
-      generatedDesign?.imageUrl &&
       !flatRenderFailed &&
-      flatPlacerEditOpen
+      (flatPlacementDirty || flatPlacerRef.current?.hasPendingChanges())
     );
-    if (flatEditorOpen || flatPlacementDirty) {
+    if (flatNeedsFlush) {
       try {
         await flushFlatPlacer({ force: true });
         setFlatPlacementDirty(false);
@@ -7384,17 +7385,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         .filter((u): u is string => !!u);
       if (absUrls.length === 0) return;
 
+      const jobId = savedJobIdRef.current;
+      const baseVariantForShadow = baseVariantForShadowRef.current;
       try {
         await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            jobId: savedJobIdRef.current,
+            jobId,
             shop: shopDomain,
             mockupUrls: absUrls,
+            // Same PreShadow kickoff as Printify mockup save — ATC can use
+            // preShadowVariantId instantly once the poll lands.
+            ...(productId && baseVariantForShadow
+              ? { baseProductId: productId, baseVariantId: baseVariantForShadow }
+              : {}),
           }),
         });
         lastFlatGalleryMockupKeyRef.current = dedupeKey;
+        if (productId && baseVariantForShadow) {
+          startShadowVariantPoll(jobId, shopDomain, 3000);
+        }
         try {
           window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
         } catch {
@@ -7416,7 +7427,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         console.error("[FlatMockups] save-mockups failed:", e);
       }
     },
-    [isStorefront, shopDomain, storefrontCustomerId],
+    [isStorefront, shopDomain, storefrontCustomerId, productId, startShadowVariantPoll],
   );
 
   /**

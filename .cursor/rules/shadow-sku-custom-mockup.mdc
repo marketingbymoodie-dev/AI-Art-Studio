@@ -14,8 +14,10 @@ Per-design images in **cart and checkout** use a **dedicated Shopify variant** w
 - `server/routes.ts` — `POST /api/storefront/resolve-design-variant`, `normalizeMyshopifyShopDomain`, `getAuthorizedInstallation`, `markShopTokenInvalid` (Admin 401/403 handling)
 - `server/shopify.ts` — `/shopify/callback`, `POST /shopify/webhooks/uninstall` (stale-uninstall race vs fresh `installedAt`)
 - `extensions/theme-extension/blocks/ai-art-embed.liquid` — `resolveDesignSku`, shop normalization, add-to-cart / variant swap
+- `extensions/theme-extension/assets/appai-art-embed.js` — ATC prefers iframe shadow when `variantId !== baseVariantId`; re-resolve from base on cart failure only
 - `extensions/theme-extension/assets/appai-cart-guard.js` — only `_mockup_url` (no public `mockup_url` / `image` spam)
-- `client/src/pages/embed-design.tsx` — `resolveShopDomain`, ATC properties
+- `extensions/theme-extension/assets/appai-cart-images.js` — cart thumb replace + block `/products/` links on AppAI lines
+- `client/src/pages/embed-design.tsx` — `resolveShopDomain`, ATC properties, PreShadow after flat/Printify mockup save
 - `extensions/checkout-ui` — optional UI; if touched, keep bundle line attribute merging (`collectCartLineAttributes` pattern)
 
 ## Invariants (regressions users notice immediately)
@@ -23,6 +25,8 @@ Per-design images in **cart and checkout** use a **dedicated Shopify variant** w
 - **Shop** sent to server APIs is **`{handle}.myshopify.com`**, not the bare handle.
 - **Valid OAuth** token for that shop; broken token → 401 on Admin API → no shadow variant → **generic** checkout image.
 - Uninstall **webhook** must not mark the shop uninstalled if OAuth **just** completed (see `shopify.ts` time guard).
+- Cart/checkout thumbnails come from the **shadow variant image** (HTTPS mockup at resolve time) — do not skip resolve when iframe only has the base variant.
+- AppAI cart lines must **not** navigate to the native/shadow PDP from image or title.
 
 ## Deploy note
 
