@@ -1,11 +1,14 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '2.7';
+  var CART_IMG_VERSION = '2.8';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
   window.__APPAI_CART_IMG_REPLACER__ = true;
+
+  /** Prevent MutationObserver ↔ DOM-write feedback loops (v2.7 freeze). */
+  var hushMutations = false;
 
   /** Live AppAI cart lines — used by sync click interceptor (no await). */
   var appAiState = {
@@ -440,6 +443,7 @@
 
   function cartUiRoots() {
     var roots = [];
+    // Keep this list small — overlapping / per-row roots + deep walks freeze the page.
     var sels = [
       'cart-drawer-component',
       'cart-items-component',
@@ -448,16 +452,17 @@
       'cart-items',
       'cart-drawer-items',
       '.cart-drawer',
-      '.cart-items',
-      '[class*="cart-items"]',
       'form[action*="/cart"]',
       '[id*="CartDrawer"]',
       '[id*="cart-drawer"]',
-      '[id*="CartItem"]',
-      '.cart-items__table-row',
     ];
     for (var i = 0; i < sels.length; i++) {
-      var nodes = deepQueryAll(document.documentElement, sels[i]);
+      var nodes;
+      try {
+        nodes = document.querySelectorAll(sels[i]);
+      } catch (_) {
+        continue;
+      }
       for (var n = 0; n < nodes.length; n++) {
         if (roots.indexOf(nodes[n]) === -1) roots.push(nodes[n]);
       }
@@ -618,39 +623,48 @@
       setBlockClass(false);
       return;
     }
-    ensureStyles();
-    setBlockClass(true);
-    var rowsLocked = lockRowsByAppAiKeys();
-    var roots = cartUiRoots();
-    var seen = new Set();
-    var total = 0;
-    // Never fall back to documentElement — that would disable PDP links on the storefront.
-    for (var i = 0; i < roots.length; i++) total += disableProductLinksInTree(roots[i], seen);
+    if (hushMutations) return;
+    hushMutations = true;
+    try {
+      ensureStyles();
+      setBlockClass(true);
+      var rowsLocked = lockRowsByAppAiKeys();
+      var roots = cartUiRoots();
+      var seen = new Set();
+      var total = 0;
+      // Never fall back to documentElement — that would disable PDP links on the storefront.
+      for (var i = 0; i < roots.length; i++) total += disableProductLinksInTree(roots[i], seen);
 
-    var liveLeft = deepQueryAll(
-      document.documentElement,
-      'a.cart-items__media-container[href], a.cart-items__title[href], .cart-items a[href*="/products/"], form[action*="/cart"] a[href*="/products/"]',
-    ).length;
+      var liveLeft = 0;
+      try {
+        liveLeft = document.querySelectorAll(
+          'a.cart-items__media-container[href], a.cart-items__title[href]',
+        ).length;
+      } catch (_) {}
 
-    console.log(
-      '[AppAI Cart Image] link-block',
-      CART_IMG_VERSION,
-      'variants=',
-      appAiState.variants.size,
-      'handles=',
-      appAiState.handles.size,
-      'keys=',
-      appAiState.keys.size,
-      'rowsLocked=',
-      rowsLocked,
-      'neutralized=',
-      total,
-      'liveLeft=',
-      liveLeft,
-    );
+      console.log(
+        '[AppAI Cart Image] link-block',
+        CART_IMG_VERSION,
+        'variants=',
+        appAiState.variants.size,
+        'handles=',
+        appAiState.handles.size,
+        'keys=',
+        appAiState.keys.size,
+        'rowsLocked=',
+        rowsLocked,
+        'neutralized=',
+        total,
+        'liveLeft=',
+        liveLeft,
+      );
+    } finally {
+      hushMutations = false;
+    }
   }
 
   function applyMockups() {
+    if (hushMutations) return;
     seedFromRecentMockup();
     getCart()
       .then(function (cart) {
@@ -688,6 +702,8 @@
 
         return enrichShadowHandles(items).then(function () {
           var replaced = 0;
+          hushMutations = true;
+          try {
 
           if (keyMap.size > 0) {
             var inps = deepQueryAll(document.documentElement, "input[name^='updates[']");
@@ -784,28 +800,34 @@
           }
 
           if (replaced > 0) document.documentElement.classList.remove('appai-cart-loading');
+          // Always clear the no-flash veil — never leave cart images stuck at opacity:0.
+          document.documentElement.classList.remove('appai-cart-loading');
 
           if (window.AppAI && typeof window.AppAI.hideInternalCartProperties === 'function') {
             window.AppAI.hideInternalCartProperties();
+          }
+          } finally {
+            hushMutations = false;
           }
 
           if (appAiState.armed || appAiState.variants.size > 0) {
             applyLinkBlock();
           } else {
             setBlockClass(false);
-            document.documentElement.classList.remove('appai-cart-loading');
           }
         });
       })
       .catch(function () {
+        hushMutations = false;
         document.documentElement.classList.remove('appai-cart-loading');
       });
   }
 
   var t = null;
   function schedule() {
+    if (hushMutations) return;
     clearTimeout(t);
-    t = setTimeout(applyMockups, 150);
+    t = setTimeout(applyMockups, 250);
   }
   window.aiArtFastReplace = applyMockups;
   window.__applyCartMockups = applyMockups;
@@ -814,10 +836,8 @@
   schedule();
   try {
     var ob = new MutationObserver(function () {
-      if (appAiState.armed || appAiState.variants.size > 0) {
-        // Theme re-renders cart HTML with fresh hrefs — re-strip immediately.
-        applyLinkBlock();
-      }
+      // Never mutate synchronously here — that froze the storefront in v2.7.
+      if (hushMutations) return;
       schedule();
     });
     ob.observe(document.documentElement, { childList: true, subtree: true });
