@@ -1,13 +1,15 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.1';
+  var CART_IMG_VERSION = '3.2';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
   window.__APPAI_CART_IMG_REPLACER__ = true;
 
+  var LOG = '[AppAI cart-images]';
   var hushMutations = false;
+  var lastCartMediaGestureAt = 0;
 
   /** Customizer/AppAI cart lines — image + title must not open native/shadow PDPs. */
   var customizerState = {
@@ -24,6 +26,7 @@
     '.cart-item__media a,.cart-item__media a *,' +
     'td.cart-items__media a,td.cart-items__media a *,' +
     'img.cart-items__media-image,img.cart-item__image,' +
+    '[data-appai-demoted],[data-appai-demoted] *,' +
     'a[data-appai-media-nolink],a[data-appai-media-nolink] *,' +
     '.appai-cart-line-locked a,.appai-cart-line-locked a *{' +
     'cursor:default!important;text-decoration:none!important;}';
@@ -241,11 +244,28 @@
     return matches;
   }
 
+  function parentOrHost(node) {
+    if (!node) return null;
+    if (node.parentNode) return node.parentNode;
+    // Cross open shadow roots (ShadowRoot.parentNode is null).
+    if (node.host) return node.host;
+    return null;
+  }
+
+  function closestAnchor(el) {
+    var p = el;
+    while (p) {
+      if (p.tagName === 'A') return p;
+      p = parentOrHost(p);
+    }
+    return null;
+  }
+
   function elInCartUi(el) {
     var path = el;
     while (path) {
       if (!path.tagName) {
-        path = path.parentNode;
+        path = parentOrHost(path);
         continue;
       }
       var tag = String(path.tagName).toLowerCase();
@@ -265,7 +285,7 @@
         return true;
       }
       if (path.getAttribute && (path.getAttribute('action') || '').indexOf('/cart') !== -1) return true;
-      path = path.parentNode;
+      path = parentOrHost(path);
     }
     return window.location.pathname.indexOf('/cart') !== -1;
   }
@@ -288,51 +308,83 @@
     if (!el || !el.style) return;
     el.style.setProperty('cursor', 'default', 'important');
     el.style.setProperty('text-decoration', 'none', 'important');
+    el.style.setProperty('pointer-events', 'auto', 'important');
   }
 
-  function neutralizeAnchor(a) {
-    if (!a) return;
-    var href = a.getAttribute('href');
-    if (href) a.setAttribute('data-appai-original-href', href);
-    a.removeAttribute('href');
-    a.setAttribute('data-appai-media-nolink', '1');
-    a.setAttribute('role', 'presentation');
-    a.setAttribute('tabindex', '-1');
-    a.setAttribute('aria-disabled', 'true');
-    forceInert(a);
-    var kids = a.querySelectorAll('*');
+  /** Turn <a> into <span> so the browser has nothing link-like left. */
+  function demoteAnchor(a) {
+    if (!a || !a.tagName || a.tagName !== 'A') return a;
+    if (a.getAttribute('data-appai-demoted') === '1') return a;
+    var href = a.getAttribute('href') || '';
+    var span = document.createElement('span');
+    span.className = a.className || '';
+    span.setAttribute('data-appai-demoted', '1');
+    if (href) span.setAttribute('data-appai-original-href', href);
+    span.setAttribute('role', 'presentation');
+    if (a.id) span.id = a.id;
+    var style = a.getAttribute('style');
+    if (style) span.setAttribute('style', style);
+    forceInert(span);
+    while (a.firstChild) span.appendChild(a.firstChild);
+    var kids = span.querySelectorAll('*');
     for (var i = 0; i < kids.length; i++) forceInert(kids[i]);
+    if (a.parentNode) a.parentNode.replaceChild(span, a);
+    return span;
   }
 
-  /** Primary kill path: find cart thumbnails, then kill their wrapping <a>. */
+  function isCartMediaZone(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var cls = typeof el.className === 'string' ? el.className : '';
+    if (
+      cls.indexOf('cart-items__media') !== -1 ||
+      cls.indexOf('cart-item__media') !== -1 ||
+      cls.indexOf('cart-items__media-image') !== -1 ||
+      cls.indexOf('cart-item__image') !== -1
+    ) {
+      return elInCartUi(el);
+    }
+    if (el.getAttribute && el.getAttribute('data-appai-demoted') === '1') {
+      return cls.indexOf('media') !== -1 && elInCartUi(el);
+    }
+    return false;
+  }
+
+  /** Primary kill path: demote wrapping <a> around cart thumbs. */
   function stripCartMediaHrefs() {
     if (hushMutations) return;
     hushMutations = true;
+    var demoted = 0;
     try {
       ensureStyles();
       var imgs = deepQueryAll(
         document.documentElement,
-        'img.cart-items__media-image, img.cart-item__image, .cart-items__media img, .cart-item__media img, td.cart-items__media img, a.cart-items__media-container img',
+        'img.cart-items__media-image, img.cart-item__image, .cart-items__media img, .cart-item__media img, td.cart-items__media img, a.cart-items__media-container img, [data-appai-demoted] img',
       );
       var seen = new Set();
       for (var i = 0; i < imgs.length; i++) {
         var img = imgs[i];
         if (!elInCartUi(img)) continue;
         forceInert(img);
-        var a = img.closest ? img.closest('a') : null;
+        var a = closestAnchor(img);
         if (a && !seen.has(a)) {
           seen.add(a);
-          neutralizeAnchor(a);
+          demoteAnchor(a);
+          demoted++;
         }
       }
-      // Class-based fallback
       var links = deepQueryAll(
         document.documentElement,
         'a.cart-items__media-container, .cart-items__media a, .cart-item__media a, td.cart-items__media a',
       );
       for (var L = 0; L < links.length; L++) {
         if (seen.has(links[L])) continue;
-        neutralizeAnchor(links[L]);
+        demoteAnchor(links[L]);
+        demoted++;
+      }
+      if (demoted) {
+        try {
+          console.info(LOG + ' demoted media anchors=' + demoted);
+        } catch (_) {}
       }
     } finally {
       hushMutations = false;
@@ -364,34 +416,32 @@
           if (row.classList) row.classList.add('appai-cart-line-locked');
           var rowLinks = deepQueryAll(
             row,
-            'a[href*="/products/"], a.cart-items__title, a.cart-items__media-container, a[data-appai-original-href]',
+            'a[href*="/products/"], a.cart-items__title, a.cart-items__media-container',
           );
-          for (var r = 0; r < rowLinks.length; r++) neutralizeAnchor(rowLinks[r]);
+          for (var r = 0; r < rowLinks.length; r++) demoteAnchor(rowLinks[r]);
         }
       });
 
-      // Also neutralize any cart title/media whose href matches a customizer handle.
       var cartLinks = deepQueryAll(
         document.documentElement,
         'a.cart-items__title[href*="/products/"], a.cart-items__media-container[href*="/products/"], .cart-items a[href*="/products/"], form[action*="/cart"] a[href*="/products/"]',
       );
       for (var c = 0; c < cartLinks.length; c++) {
         var a = cartLinks[c];
-        var href = a.getAttribute('href') || a.getAttribute('data-appai-original-href') || '';
-        if (hrefIsCustomizerProduct(href) || isCartMediaAnchor(a)) {
-          var row =
-            (a.closest &&
-              (a.closest('.cart-items__table-row') ||
-                a.closest('[data-key]') ||
-                a.closest('[id*="CartItem"]') ||
-                a.closest('.cart-item') ||
-                a.closest('[class*="cart-item"]'))) ||
-            null;
-          if (row && row.classList && hrefIsCustomizerProduct(href)) {
-            row.classList.add('appai-cart-line-locked');
-          }
-          if (hrefIsCustomizerProduct(href) || isCartMediaAnchor(a)) neutralizeAnchor(a);
+        var href = a.getAttribute('href') || '';
+        if (!(hrefIsCustomizerProduct(href) || isCartMediaAnchor(a))) continue;
+        var row =
+          (a.closest &&
+            (a.closest('.cart-items__table-row') ||
+              a.closest('[data-key]') ||
+              a.closest('[id*="CartItem"]') ||
+              a.closest('.cart-item') ||
+              a.closest('[class*="cart-item"]'))) ||
+          null;
+        if (row && row.classList && hrefIsCustomizerProduct(href)) {
+          row.classList.add('appai-cart-line-locked');
         }
+        demoteAnchor(a);
       }
     } finally {
       hushMutations = false;
@@ -413,6 +463,13 @@
     return false;
   }
 
+  function pathHasCartMediaZone(path) {
+    for (var i = 0; i < path.length; i++) {
+      if (isCartMediaZone(path[i])) return true;
+    }
+    return false;
+  }
+
   function onCartProductNavIntercept(e) {
     var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
     if (!path || !path.length) {
@@ -423,45 +480,69 @@
         t = t.parentNode;
       }
     }
-    // Block clicks on cart thumbnail images even when theme CSS sets cursor:pointer on the img.
-    for (var p = 0; p < path.length; p++) {
-      var node = path[p];
-      if (!node || node.tagName !== 'IMG') continue;
-      if (!elInCartUi(node)) continue;
-      var wrap = node.closest ? node.closest('a') : null;
-      if (wrap || (node.className && String(node.className).indexOf('media-image') !== -1)) {
-        blockNavEvent(e);
-        if (wrap) neutralizeAnchor(wrap);
-        forceInert(node);
-        return;
+
+    // Any interaction inside the cart thumbnail cell — never navigate.
+    if (pathHasCartMediaZone(path)) {
+      lastCartMediaGestureAt = Date.now();
+      for (var m = 0; m < path.length; m++) {
+        if (path[m] && path[m].tagName === 'A') demoteAnchor(path[m]);
       }
+      blockNavEvent(e);
+      return;
     }
+
     for (var i = 0; i < path.length; i++) {
       var el = path[i];
       if (!el || el.tagName !== 'A') continue;
       if (isCartMediaAnchor(el)) {
+        demoteAnchor(el);
         blockNavEvent(e);
-        neutralizeAnchor(el);
         return;
       }
       var href = el.getAttribute('href') || el.getAttribute('data-appai-original-href') || '';
       if (pathHasLockedRow(path) && String(href).indexOf('/products/') !== -1) {
+        demoteAnchor(el);
         blockNavEvent(e);
-        neutralizeAnchor(el);
         return;
       }
       if (hrefIsCustomizerProduct(href)) {
+        demoteAnchor(el);
         blockNavEvent(e);
-        neutralizeAnchor(el);
         return;
       }
     }
   }
 
-  ['click', 'auxclick', 'pointerdown', 'mousedown'].forEach(function (type) {
+  ['click', 'auxclick', 'pointerdown', 'mousedown', 'mouseup'].forEach(function (type) {
     window.addEventListener(type, onCartProductNavIntercept, true);
     document.addEventListener(type, onCartProductNavIntercept, true);
   });
+
+  // Client-side navigations (View Transitions / Navigation API).
+  try {
+    if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+      window.navigation.addEventListener('navigate', function (e) {
+        try {
+          var dest = e.destination && e.destination.url ? String(e.destination.url) : '';
+          if (!dest || dest.indexOf('/products/') === -1) return;
+          var path = '';
+          try {
+            path = new URL(dest, location.origin).pathname || '';
+          } catch (_) {
+            path = dest;
+          }
+          var recentMedia = Date.now() - lastCartMediaGestureAt < 800;
+          if (
+            recentMedia ||
+            hrefIsCustomizerProduct(path) ||
+            hrefIsCustomizerProduct(dest)
+          ) {
+            if (typeof e.preventDefault === 'function') e.preventDefault();
+          }
+        } catch (_) {}
+      });
+    }
+  } catch (_) {}
 
   function cartUiRoots() {
     var roots = [];
@@ -649,9 +730,5 @@
   document.addEventListener('cart:update', schedule);
   document.addEventListener('shopify:section:load', schedule);
   window.addEventListener('pageshow', schedule);
-  console.log(
-    '[AppAI Cart Image] installed ' +
-      CART_IMG_VERSION +
-      ' (kill cart imgs + customizer titles)',
-  );
+  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (demote cart media + customizer titles)');
 })();
