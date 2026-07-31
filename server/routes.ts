@@ -18582,8 +18582,27 @@ ${orientationExtra}
         return res.status(401).json({ error: "Invalid proxy signature" });
       }
     }
-    (req as any).proxyShop = query.shop ?? "";
+    // Same normalization as Admin/ATC — bare handles must match DB rows.
+    (req as any).proxyShop = normalizeMyshopifyShopDomain(query.shop ?? "");
     next();
+  }
+
+  /**
+   * List customizer pages for an App Proxy shop. Tries the normalized
+   * `*.myshopify.com` domain first, then the bare handle for legacy rows.
+   */
+  async function listCustomizerPagesForProxyShop(shop: string) {
+    const normalized = normalizeMyshopifyShopDomain(shop);
+    if (!normalized) return [];
+    let pages = await storage.listCustomizerPages(normalized);
+    if (pages.length) return pages;
+    const bare = normalized.endsWith(".myshopify.com")
+      ? normalized.slice(0, -".myshopify.com".length)
+      : "";
+    if (bare && bare !== normalized) {
+      pages = await storage.listCustomizerPages(bare);
+    }
+    return pages;
   }
 
   /**
@@ -18636,7 +18655,7 @@ ${orientationExtra}
     if (!shop) return res.status(400).json({ error: "Missing shop" });
 
     const [allPages, installation] = await Promise.all([
-      storage.listCustomizerPages(shop),
+      listCustomizerPagesForProxyShop(shop),
       storage.getShopifyInstallationByShop(shop),
     ]);
 
@@ -18654,7 +18673,7 @@ ${orientationExtra}
     // Include fallback URL so embed can redirect disabled-page visitors
     const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
 
-    return res.json({ pages, fallbackUrl });
+    return res.json({ pages, fallbackUrl, shop });
   });
 
   /** Rewrites local /objects/... storage paths to go through the App Proxy so storefront can load them */
@@ -18670,7 +18689,13 @@ ${orientationExtra}
     const handle = (req.query.handle as string) || "";
     if (!shop || !handle) return res.status(400).json({ error: "Missing shop or handle" });
 
-    const page = await storage.getCustomizerPageByHandle(shop, handle);
+    let page = await storage.getCustomizerPageByHandle(shop, handle);
+    if (!page) {
+      const bare = shop.endsWith(".myshopify.com")
+        ? shop.slice(0, -".myshopify.com".length)
+        : "";
+      if (bare) page = await storage.getCustomizerPageByHandle(bare, handle);
+    }
     if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
     const installation = await storage.getShopifyInstallationByShop(shop);
