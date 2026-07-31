@@ -157,6 +157,7 @@ vi.mock("./storage", () => ({
     getShopifyInstallation: vi.fn(),
     getMerchantGenerationUsage: vi.fn(),
     consumeMerchantGeneration: vi.fn(),
+    getMerchantByShop: vi.fn(),
   },
 }));
 
@@ -174,6 +175,11 @@ import {
   quotaBlockBody,
 } from "./generation-quota";
 
+// Computed at run time (not hardcoded) so this suite doesn't start failing
+// once the wall-clock month rolls past whatever month it was written in —
+// resolveGenerationQuota() buckets by the real current month.
+const CURRENT_BUCKET_KEY = generationMonthKey(new Date());
+
 const baseInstall = {
   id: 1,
   shopDomain: "test-shop.myshopify.com",
@@ -182,8 +188,8 @@ const baseInstall = {
   overageOptInEnabled: true,
   overageBudgetCents: 1600,
   overageRecurring: false,
-  overageOptInBucketKey: "2026-06",
-  generationMonth: "2026-06",
+  overageOptInBucketKey: CURRENT_BUCKET_KEY,
+  generationMonth: CURRENT_BUCKET_KEY,
 } as any;
 
 describe("merchant quota orchestration", () => {
@@ -196,6 +202,13 @@ describe("merchant quota orchestration", () => {
     currentInstall = baseInstall;
     (storage.syncOverageOptInForBucket as any).mockResolvedValue(undefined);
     (storage.getShopifyInstallation as any).mockImplementation(async () => currentInstall);
+    // Default to a merchant with Printify connected so pre-existing paid-plan
+    // scenarios below aren't downgraded to the trial/tester bucket by the
+    // merchant-setup-rail gate (see resolveQuotaContext).
+    (storage.getMerchantByShop as any).mockResolvedValue({
+      printifyApiToken: "test-token",
+      printifyShopId: "test-shop-id",
+    });
   });
   afterEach(() => {
     if (savedOwner === undefined) delete process.env.OWNER_SHOP_DOMAIN;
@@ -318,5 +331,30 @@ describe("merchant quota orchestration", () => {
     const decision = await peekMerchantGenerationQuota(inst);
     expect(decision.allowed).toBe(true);
     expect(decision.remaining).toBe(450 - 10);
+  });
+
+  it("merchant setup rail: forces the trial/tester bucket for a paid plan until Printify is connected", async () => {
+    (storage.getMerchantByShop as any).mockResolvedValue({
+      printifyApiToken: null,
+      printifyShopId: null,
+    });
+    (storage.getMerchantGenerationUsage as any).mockResolvedValue({ used: 5, overageUsed: 0 });
+    const inst = { ...baseInstall, planName: "starter", planStatus: "active" };
+    const decision = await peekMerchantGenerationQuota(inst);
+    expect(decision.planName).toBe("trial");
+    expect(decision.freeQuota).toBe(20);
+    expect(decision.hardCap).toBe(20);
+  });
+
+  it("merchant setup rail: restores the paid quota once Printify is connected", async () => {
+    (storage.getMerchantByShop as any).mockResolvedValue({
+      printifyApiToken: "tok",
+      printifyShopId: "shop-id",
+    });
+    (storage.getMerchantGenerationUsage as any).mockResolvedValue({ used: 5, overageUsed: 0 });
+    const inst = { ...baseInstall, planName: "starter", planStatus: "active" };
+    const decision = await peekMerchantGenerationQuota(inst);
+    expect(decision.planName).toBe("starter");
+    expect(decision.freeQuota).toBe(250);
   });
 });

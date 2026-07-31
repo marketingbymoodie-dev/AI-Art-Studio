@@ -188,6 +188,8 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   /** Deferred plan change (downgrades take effect at billing period end). */
   pendingPlanName: text("pending_plan_name"),
   pendingPlanEffectiveAt: timestamp("pending_plan_effective_at"),
+  /** Merchant clicked "I've enabled it" on the setup rail's App Embed step. */
+  embedConfirmedAt: timestamp("embed_confirmed_at"),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({

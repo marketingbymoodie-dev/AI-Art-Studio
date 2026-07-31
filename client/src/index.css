@@ -407,6 +407,23 @@
   z-index: 0;
 }
 
+/* ── Lightweight confetti burst (setup rail "See your page") ───────────────
+   Pure-CSS, no external library — a handful of absolutely positioned pieces
+   fall + rotate from the top of a relatively-positioned container. */
+@keyframes appai-confetti-fall {
+  0%   { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(140px) rotate(540deg); opacity: 0; }
+}
+.appai-confetti-piece {
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  pointer-events: none;
+  animation: appai-confetti-fall 1.1s ease-in forwards;
+}
+
 /* ── Radix UI scroll-lock override (iframe context) ─────────────────────── */
 /* Radix UI adds overflow:hidden to body when a Select/Dialog opens.         */
 /* In an iframe this breaks scrolling inside the dropdown AND the parent.    */

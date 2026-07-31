@@ -32,7 +32,9 @@
     if (window.__APPAI_CUSTOMIZER_INIT__ || window.__APPAI_CUSTOMIZER_HANDLED) return;
 
     try {
-      var res = await fetch(PROXY + '/customizer-pages', { credentials: 'same-origin' });
+      var previewMatch = window.location.search.match(/[?&]appai_preview=([^&]+)/);
+      var url = PROXY + '/customizer-pages' + (previewMatch ? '?appai_preview=' + previewMatch[1] : '');
+      var res = await fetch(url, { credentials: 'same-origin' });
       if (!res.ok) return;
       var data = await res.json();
       var pages = data.pages || [];
@@ -43,10 +45,12 @@
         if (pages[i].handle === handle) { page = pages[i]; break; }
       }
 
-      // Only act if the page is explicitly disabled — redirect to the fallback hub.
-      // Active pages are handled by ai-art-embed.liquid; unknown handles are left alone.
-      if (page && page.status !== 'active') {
-        console.log('[AppAI Embed] Page "' + handle + '" is disabled, redirecting to', fallbackUrl);
+      // Redirect when explicitly disabled, or when it's not yet publicly
+      // mountable (Printify not connected and no valid merchant-preview
+      // token for this handle). Active pages are handled by ai-art-embed.liquid;
+      // unknown handles are left alone.
+      if (page && (page.status !== 'active' || page.publiclyMountable === false)) {
+        console.log('[AppAI Embed] Page "' + handle + '" is not publicly mountable, redirecting to', fallbackUrl);
         window.location.replace(fallbackUrl);
       }
     } catch (_) {

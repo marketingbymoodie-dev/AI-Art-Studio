@@ -90,6 +90,7 @@ vi.mock("./storage", () => ({
     getShopifyInstallation: vi.fn(),
     getMerchantGenerationUsage: vi.fn(),
     consumeMerchantGeneration: vi.fn(),
+    getMerchantByShop: vi.fn(),
   },
 }));
 
@@ -98,10 +99,16 @@ vi.mock("./usage-billing", () => ({
 }));
 
 import { storage } from "./storage";
+import { generationMonthKey } from "./customizer-plans";
 import {
   consumeMerchantGenerationQuota,
   peekMerchantGenerationQuota,
 } from "./generation-quota";
+
+// Computed at run time (not hardcoded) so this suite doesn't start failing
+// once the wall-clock month rolls past whatever month it was written in —
+// resolveGenerationQuota() buckets by the real current month.
+const CURRENT_BUCKET_KEY = generationMonthKey(new Date());
 
 const paidInstall = {
   id: 1,
@@ -112,7 +119,7 @@ const paidInstall = {
   overageBudgetCents: null,
   overageRecurring: false,
   overageOptInBucketKey: null,
-  generationMonth: "2026-06",
+  generationMonth: CURRENT_BUCKET_KEY,
 } as any;
 
 describe("opt-in gating", () => {
@@ -124,6 +131,13 @@ describe("opt-in gating", () => {
     currentInstall = paidInstall;
     (storage.syncOverageOptInForBucket as any).mockResolvedValue(undefined);
     (storage.getShopifyInstallation as any).mockImplementation(async () => currentInstall);
+    // Default to a merchant with Printify connected so these paid-plan opt-in
+    // scenarios aren't downgraded to the trial/tester bucket by the
+    // merchant-setup-rail gate (see resolveQuotaContext).
+    (storage.getMerchantByShop as any).mockResolvedValue({
+      printifyApiToken: "test-token",
+      printifyShopId: "test-shop-id",
+    });
   });
 
   it("blocks at included cap without opt-in (OVERAGE_OPT_IN_REQUIRED)", async () => {
@@ -139,7 +153,7 @@ describe("opt-in gating", () => {
       ...paidInstall,
       overageOptInEnabled: true,
       overageBudgetCents: 800,
-      overageOptInBucketKey: "2026-06",
+      overageOptInBucketKey: CURRENT_BUCKET_KEY,
     };
     const decision = await peekMerchantGenerationQuota(currentInstall);
     expect(decision.allowed).toBe(true);
@@ -152,7 +166,7 @@ describe("opt-in gating", () => {
       ...paidInstall,
       overageOptInEnabled: true,
       overageBudgetCents: 800,
-      overageOptInBucketKey: "2026-06",
+      overageOptInBucketKey: CURRENT_BUCKET_KEY,
     };
     const decision = await peekMerchantGenerationQuota(currentInstall);
     expect(decision.allowed).toBe(false);

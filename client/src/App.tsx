@@ -22,6 +22,7 @@ import OperatorCatalogPage from "@/pages/operator-catalog";
 import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import NotFound from "@/pages/not-found";
 
+import AdminSetupPage from "@/pages/admin/setup";
 import AdminDashboard from "@/pages/admin/dashboard";
 import AdminSettings from "@/pages/admin/settings";
 import AdminProducts from "@/pages/admin/products";
@@ -64,6 +65,7 @@ function AppRouter() {
       <Route path="/storefront/google-auth" component={StorefrontGoogleAuthPage} />
 
       {/* Admin */}
+      <Route path="/admin/setup" component={AdminSetupPage} />
       <Route path="/admin/settings" component={AdminSettings} />
       <Route path="/admin/products" component={AdminProducts} />
       <Route path="/admin/styles" component={AdminStyles} />

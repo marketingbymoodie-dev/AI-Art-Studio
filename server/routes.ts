@@ -149,6 +149,13 @@ import {
   listMerchantImportableCatalog,
   listPlatformCatalogByKind,
 } from "./platformCatalogStore";
+import {
+  isPrintifyConnected,
+  ensureTrialStarted,
+  getMerchantSetupStatus,
+  buildPreviewUrl,
+  verifyPreviewToken,
+} from "./merchant-setup";
 import { isPlatformAdminRequest } from "./platformAdmin";
 import {
   adminProductTypeAccessError,
@@ -13286,7 +13293,20 @@ ${orientationExtra}
   });
 
   // Import a Printify blueprint as a product type
-  app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
+  /**
+   * Core Printify blueprint import logic — shared by the merchant-driven
+   * Products admin import AND the setup-rail "activate from platform
+   * catalogue" flow (which supplies a platform Printify token instead of
+   * requiring the merchant's own token — see opts.printifyTokenOverride).
+   *
+   * `req`/`res` only need `.user.claims.sub` / `.body` and `.status().json()`
+   * respectively, so the setup-rail route can pass lightweight shims.
+   */
+  async function handlePrintifyImportRequest(
+    req: any,
+    res: any,
+    opts?: { printifyTokenOverride?: string },
+  ) {
     try {
       const userId = req.user.claims.sub;
       const { blueprintId, name, description, providerId: bodyProviderId, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
@@ -13296,7 +13316,8 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      if (!merchant.printifyApiToken) {
+      const printifyToken = opts?.printifyTokenOverride || merchant.printifyApiToken;
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -13365,7 +13386,7 @@ ${orientationExtra}
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
         {
           headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Authorization": `Bearer ${printifyToken}`,
             "Content-Type": "application/json"
           }
         },
@@ -13407,7 +13428,7 @@ ${orientationExtra}
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`,
         {
           headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Authorization": `Bearer ${printifyToken}`,
             "Content-Type": "application/json"
           }
         },
@@ -13473,7 +13494,7 @@ ${orientationExtra}
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
         {
           headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Authorization": `Bearer ${printifyToken}`,
             "Content-Type": "application/json"
           }
         },
@@ -13978,7 +13999,7 @@ ${orientationExtra}
       let availablePlaceholderImages: PlaceholderImageOption[] = [];
       try {
         availablePlaceholderImages = await fetchPrintifyPlaceholderOptions(
-          merchant.printifyApiToken,
+          printifyToken,
           parseInt(blueprintId),
           providerId,
         );
@@ -14319,6 +14340,10 @@ ${orientationExtra}
       console.error("Error importing Printify blueprint:", error);
       res.status(500).json({ error: "Failed to import blueprint" });
     }
+  }
+
+  app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
+    await handlePrintifyImportRequest(req, res);
   });
 
   // POST /api/admin/product-types/:id/calibrate-flat - (Re)run on-the-fly flat
@@ -18654,11 +18679,17 @@ ${orientationExtra}
     const shop: string = (req as any).proxyShop;
     if (!shop) return res.status(400).json({ error: "Missing shop" });
 
-    const [allPages, installation] = await Promise.all([
+    const [allPages, installation, merchantForGate] = await Promise.all([
       listCustomizerPagesForProxyShop(shop),
       storage.getShopifyInstallationByShop(shop),
+      storage.getMerchantByShop(shop),
     ]);
 
+    // Locked setup-rail rule: pages aren't publicly mountable until Printify is
+    // connected, unless this specific page's signed merchant-preview token is
+    // present (scoped to one handle — doesn't unlock the rest of the shop).
+    const printifyConnected = isPrintifyConnected(merchantForGate);
+    const previewToken = req.query.appai_preview as string | undefined;
     const pages = allPages.map((p) => ({
       id: p.id,
       handle: p.handle,
@@ -18668,6 +18699,8 @@ ${orientationExtra}
       baseVariantTitle: p.baseVariantTitle,
       baseProductPrice: p.baseProductPrice,
       status: p.status,
+      publiclyMountable:
+        p.status === "active" && (printifyConnected || verifyPreviewToken(previewToken, shop, p.handle)),
     }));
 
     // Include fallback URL so embed can redirect disabled-page visitors
@@ -18699,6 +18732,20 @@ ${orientationExtra}
     if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
     const installation = await storage.getShopifyInstallationByShop(shop);
+
+    // Locked setup-rail rule: no public customizer without Printify connected.
+    // A merchant's own signed preview link (appai_preview) bypasses this so
+    // they can see + tester-generate on the page before connecting.
+    const merchantForGate = await storage.getMerchantByShop(shop);
+    const previewOk = verifyPreviewToken(req.query.appai_preview as string | undefined, shop, page.handle);
+    if (!isPrintifyConnected(merchantForGate) && !previewOk) {
+      return res.status(404).json({
+        error: "Customizer page not found",
+        code: "PRINTIFY_NOT_CONNECTED",
+        fallbackUrl: installation?.customizerHubUrl ?? "/",
+      });
+    }
+
     if (installation?.accessToken && page.shopifyPageId) {
       ensureCustomizerBootHtml(shop, installation.accessToken, page.shopifyPageId)
         .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
@@ -19181,6 +19228,215 @@ ${orientationExtra}
     }
 
     return res.json({ success: true });
+  }));
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MERCHANT SETUP RAIL — /api/appai/setup/*
+  // Forced-progression onboarding: silent trial → App Embed → pick a platform
+  // catalogue product → merchant-only preview → Printify connect gate.
+  // See docs/merchant-setup-rail.md.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** GET /api/appai/setup/status — setup rail readiness flags (silently starts the trial). */
+  app.get("/api/appai/setup/status", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const installation = await ensureTrialStarted(resolved.installation);
+    const merchant = await storage.getMerchantByShop(installation.shopDomain);
+    const status = await getMerchantSetupStatus(installation, merchant);
+    return res.json(status);
+  }));
+
+  /** POST /api/appai/setup/confirm-embed — merchant clicked "I've enabled it" on the App Embed step. */
+  app.post("/api/appai/setup/confirm-embed", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    await storage.updateShopifyInstallation(resolved.installation.id, {
+      embedConfirmedAt: new Date(),
+    } as any);
+    return res.json({ success: true });
+  }));
+
+  /** GET /api/appai/setup/catalog — published platform catalogue entries merchants can instantly activate. */
+  app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (_req: Request, res: Response) => {
+    const entries = await listMerchantImportableCatalog();
+    return res.json({
+      entries: entries.map((e) => ({
+        blueprintId: e.printifyBlueprintId,
+        label: e.label,
+        brand: e.brand ?? null,
+        category: e.category ?? null,
+        kind: e.kind,
+      })),
+    });
+  }));
+
+  /** GET /api/appai/setup/preview-url — mint a fresh signed merchant-preview link for an existing page. */
+  app.get("/api/appai/setup/preview-url", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const handle = String(req.query.handle || "");
+    if (!handle) return res.status(400).json({ error: "handle is required" });
+    const page = await storage.getCustomizerPageByHandle(resolved.installation.shopDomain, handle);
+    if (!page) return res.status(404).json({ error: "Page not found" });
+
+    return res.json({ url: buildPreviewUrl(resolved.installation.shopDomain, handle) });
+  }));
+
+  /**
+   * POST /api/appai/setup/activate-product — the setup rail's "instant" product
+   * activation: imports a published platform-catalogue blueprint using the
+   * PLATFORM's Printify token (public catalog reads only — never the
+   * merchant's own account), auto-creates the Shopify product, and creates an
+   * active customizer page — all without requiring the merchant to have
+   * connected Printify yet.
+   */
+  app.post("/api/appai/setup/activate-product", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const installation = await ensureTrialStarted(resolved.installation);
+    const shop = installation.shopDomain;
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const plan = getEffectivePlan(installation as any, shop);
+    if (plan.requiresPlan) {
+      return res.status(402).json({ error: "No active plan. Start a free trial to continue.", requiresPlan: true });
+    }
+
+    const blueprintId = parseInt(req.body?.blueprintId, 10);
+    if (!Number.isFinite(blueprintId)) {
+      return res.status(400).json({ error: "blueprintId is required" });
+    }
+
+    const entry = await getPlatformCatalogEntry(blueprintId);
+    if (!entry || !(await canMerchantImportEntry(entry))) {
+      return res.status(403).json({
+        error: "This product is not available in the AppAI catalog yet.",
+        code: "BLUEPRINT_NOT_ALLOWED",
+      });
+    }
+
+    const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+    let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
+
+    if (!productType) {
+      const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
+      if (!platformPrintifyToken) {
+        console.error("[setup/activate-product] PRINTIFY_API_TOKEN not configured on the platform");
+        return res.status(503).json({ error: "Instant activation isn't available right now. Please try again shortly." });
+      }
+
+      // Auto-select a print provider for this blueprint using the platform
+      // token (public Printify catalog read — no merchant account required).
+      let providerId: number | undefined;
+      try {
+        const providersRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+          { headers: { Authorization: `Bearer ${platformPrintifyToken}` } },
+        );
+        if (providersRes.ok) {
+          const providers = await providersRes.json();
+          providerId = Array.isArray(providers) && providers.length > 0 ? Number(providers[0].id) : undefined;
+        }
+      } catch (e: any) {
+        console.warn("[setup/activate-product] provider lookup failed:", e?.message ?? e);
+      }
+      if (!providerId) {
+        return res.status(502).json({ error: "Could not reach the Printify catalog. Please try again shortly." });
+      }
+
+      const fakeReq: any = {
+        user: { claims: { sub: userId } },
+        shopDomain: shop,
+        body: { blueprintId, name: entry.label, description: undefined, providerId },
+      };
+      let capturedStatus = 200;
+      let capturedBody: any;
+      const fakeRes: any = {
+        status(code: number) { capturedStatus = code; return fakeRes; },
+        json(body: any) { capturedBody = body; return fakeRes; },
+      };
+      await handlePrintifyImportRequest(fakeReq, fakeRes, { printifyTokenOverride: platformPrintifyToken });
+      if (capturedStatus >= 400) {
+        return res.status(capturedStatus).json(capturedBody);
+      }
+      productType = capturedBody;
+    }
+
+    if (!productType) {
+      return res.status(500).json({ error: "Failed to activate product." });
+    }
+
+    // Auto-send the product to Shopify (unlisted) if it isn't there yet.
+    let shopifyProductId: string | undefined = productType.shopifyProductId ?? undefined;
+    if (!shopifyProductId) {
+      try {
+        const created = await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
+        shopifyProductId = created.shopifyProductId;
+      } catch (e: any) {
+        return res.status(400).json({ error: e?.message || "Failed to send product to Shopify." });
+      }
+    }
+
+    const prodResult = await shopifyApiCall(shop, installation.accessToken, `products/${shopifyProductId}.json?fields=id,title,handle,variants`);
+    if (!prodResult.ok || !prodResult.data?.product?.variants?.length) {
+      return res.status(500).json({ error: "Product was created but could not be loaded. Please try again." });
+    }
+    const product = prodResult.data.product;
+    const variant = product.variants[0];
+
+    // Unique customizer page handle derived from the catalog label.
+    const baseHandle = entry.label.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `product-${blueprintId}`;
+    let handle = baseHandle;
+    let suffix = 2;
+    while (await storage.getCustomizerPageByHandle(shop, handle)) {
+      handle = `${baseHandle}-${suffix++}`;
+    }
+
+    const activeCount = await storage.countActiveCustomizerPages(shop);
+    const { allowed: pageAllowed } = canCreatePage(plan.planName, activeCount);
+    const initialStatus = pageAllowed ? "active" : "disabled";
+
+    const pageBody = await shopifyApiCall(shop, installation.accessToken, "pages.json", {
+      method: "POST",
+      body: JSON.stringify({
+        page: { title: entry.label, handle, body_html: buildCustomizerBootHtml(), published: true },
+      }),
+    });
+    if (!pageBody.ok || !pageBody.data?.page?.id) {
+      return res.status(500).json({ error: `Failed to create Shopify page: ${pageBody.error ?? "unknown error"}` });
+    }
+    const shopifyPage = pageBody.data.page;
+
+    const styleConfig = defaultStyleConfigForDesignerType(productType.designerType);
+    const page = await storage.createCustomizerPage({
+      shop,
+      shopifyPageId: String(shopifyPage.id),
+      handle,
+      title: entry.label,
+      baseVariantId: String(variant.id),
+      baseProductId: String(variant.product_id ?? product.id),
+      baseProductHandle: product.handle,
+      baseProductTitle: product.title ?? "",
+      baseVariantTitle: variant.title ?? "",
+      baseProductPrice: variant.price ?? "",
+      productTypeId: productType.id,
+      styleConfig: styleConfig as any,
+      status: initialStatus,
+    });
+
+    return res.status(201).json({
+      page,
+      productTypeId: productType.id,
+      previewUrl: buildPreviewUrl(shop, handle),
+      storefrontUrl: `/pages/${handle}`,
+    });
   }));
 
   // ─────────────────────────────────────────────────────────────────────────

@@ -2440,8 +2440,11 @@
       .finally(function() { if (timer) clearTimeout(timer); });
   }
   function appaiFetchCustomizerConfig(handle, attempt) {
+    var previewMatch = window.location.search.match(/[?&]appai_preview=([^&]+)/);
+    var url = '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle);
+    if (previewMatch) url += '&appai_preview=' + previewMatch[1];
     return appaiFetchWithTimeout(
-      '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle),
+      url,
       { credentials: 'same-origin' },
       10000
     ).catch(function(e) {
@@ -2456,9 +2459,20 @@
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
 
     appaiFetchCustomizerConfig(handle, 0)
-      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(r) {
+        if (r.ok) return r.json();
+        // Read the error body so a Printify-not-connected gate (which always
+        // carries a fallbackUrl) can redirect even if the separate
+        // appai-customizer-embed.js redirect stub lost the init race.
+        return r.json().catch(function() { return null; }).then(function(errBody) {
+          return { __appaiNotFound: true, fallbackUrl: errBody && errBody.fallbackUrl };
+        });
+      })
       .then(function(config) {
-        if (!config) {
+        if (config && config.__appaiNotFound && config.fallbackUrl && !opts.fallbackUrl) {
+          opts = Object.assign({}, opts, { fallbackUrl: config.fallbackUrl });
+        }
+        if (!config || config.__appaiNotFound) {
           var staleBoot = document.getElementById('appai-boot');
           // Only pages the app itself created/hosts carry these markers: the
           // self-bootstrap cover (#appai-boot) or a theme app block container.

@@ -71,6 +71,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
+  { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */

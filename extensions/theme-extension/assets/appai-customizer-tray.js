@@ -165,7 +165,7 @@
             return { ok: false, pages: [] };
           }
           var active = data.pages.filter(function (p) {
-            return p && p.status === 'active' && p.handle;
+            return p && p.status === 'active' && p.publiclyMountable !== false && p.handle;
           });
           return { ok: true, pages: active };
         });
