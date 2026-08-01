@@ -3400,7 +3400,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Restore on-the-fly flat/mesh placer state so the customer resumes
       // their per-view placement mid-edit.
       if (ds.flatPlacerState && typeof ds.flatPlacerState === 'object') {
-        setFlatPlacerState(ds.flatPlacerState as FlatProductPlacerState);
+        const fps = ds.flatPlacerState as FlatProductPlacerState;
+        setFlatPlacerState(fps);
+        // Flat PRINT ON FRONT/BACK toggles are the source of truth for pricing on
+        // flat products (Print Side dropdown is often unused). Sync printPlacement
+        // so front+back retail / ATC surcharge apply to resumed designs.
+        const frontOn = fps.enabled?.front !== false;
+        const backOn = !!fps.enabled?.back;
+        if (frontOn && backOn) setPrintPlacement("both");
+        else if (backOn && !frontOn) setPrintPlacement("back");
+        else setPrintPlacement("front");
       }
       if (ds.flatMockups && typeof ds.flatMockups === "object") {
         const flatImages: { url: string; label: string }[] = [];
@@ -7640,8 +7649,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ? toAbsoluteImageUrl(generatedDesign.imageUrl)
         : s.artworkUrl;
       setFlatPlacerState({ ...s, artworkUrl });
-      // Keep Print Side dropdown aligned with PRINT ON FRONT/BACK toggles.
-      if (supportsPrintPlacementSelection) {
+      // Keep Print Side + pricing tier aligned with PRINT ON FRONT/BACK toggles
+      // (flat crewnecks/hoodies often have no Print Side dropdown).
+      {
         const derived: "front" | "back" | "both" =
           s.enabled.front && s.enabled.back
             ? "both"
@@ -7666,7 +7676,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       generatedDesign?.imageUrl,
       isAdminTester,
       emitTesterDesignStatus,
-      supportsPrintPlacementSelection,
     ],
   );
 
@@ -9149,9 +9158,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const bothPricesMap = productTypeConfig?.variantPricesBoth || {};
   const hasBothRetailPrices = Object.keys(bothPricesMap).length > 0;
-  // Surcharge only when BOTH sides are printed. Back-only is one print area
-  // (blank + back), same retail tier as front-only — not front+back.
-  const printPlacementUsesBoth = printPlacement === "both";
+  // Surcharge when BOTH sides are printed — from Print Side dropdown OR flat
+  // PRINT ON FRONT + PRINT ON BACK toggles (saved designs often only set the latter).
+  const flatBothEnabled =
+    !!flatPlacerEligible &&
+    flatPlacerState?.enabled?.front !== false &&
+    !!flatPlacerState?.enabled?.back;
+  const printPlacementUsesBoth = printPlacement === "both" || flatBothEnabled;
 
   /** Resolve front+back retail ($) for a size/color (or the active Shopify variant). */
   const resolveBothRetailDollars = useCallback(
@@ -9163,13 +9176,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const candidates = [
         vid ? String(vid) : "",
         colorName ? `${sizeName}:${colorName}` : "",
+        colorName ? `${sizeName} / ${colorName}` : "",
         sizeName ? `${sizeName}:default` : "",
         sizeName,
       ].filter(Boolean);
+      const lowerMap = new Map(
+        Object.entries(bothPricesMap).map(([k, v]) => [k.toLowerCase(), v]),
+      );
       for (const key of candidates) {
-        const raw = bothPricesMap[key];
+        const raw = bothPricesMap[key] ?? lowerMap.get(key.toLowerCase());
         const n = raw != null ? parseFloat(String(raw)) : NaN;
         if (Number.isFinite(n) && n > 0) return n;
+      }
+      // Title-style keys from Resync ("XL / ASH") — match size + color loosely.
+      if (sizeName) {
+        const sn = sizeName.toLowerCase();
+        const cn = colorName.toLowerCase();
+        for (const [k, raw] of Object.entries(bothPricesMap)) {
+          const kl = k.toLowerCase();
+          if (!kl.includes(sn)) continue;
+          if (cn && !kl.includes(cn)) continue;
+          const n = parseFloat(String(raw));
+          if (Number.isFinite(n) && n > 0) return n;
+        }
       }
       return null;
     },
