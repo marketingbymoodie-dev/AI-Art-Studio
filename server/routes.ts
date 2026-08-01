@@ -112,6 +112,7 @@ import {
   type GenerationBillingMode,
 } from "./generation-billing";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
+import { runOosCatalogueScan, scanProductTypeStock } from "./oos-catalogue-report";
 import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
@@ -10594,6 +10595,18 @@ ${orientationExtra}
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
 
+  // Daily Printify catalogue OOS scan + email digest. This in-process interval is the
+  // primary trigger (no Railway Cron configured); the secured POST /api/internal/oos-catalogue-scan
+  // endpoint is available if an external scheduler is added later — both share the same
+  // 20h dedupe guard in runOosCatalogueScan, so they never double-run/double-email same-day.
+  // Delayed one-shot so a deploy doesn't wait a full 24h for the first scan.
+  setTimeout(() => {
+    runOosCatalogueScan().catch((e: Error) => console.error("[OOS Catalogue Scan] Startup run error:", e));
+  }, 5 * 60 * 1000);
+  setInterval(() => {
+    runOosCatalogueScan().catch((e: Error) => console.error("[OOS Catalogue Scan] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
   // POST /api/pattern/preview - Generate a tiled AOP pattern
   // Accepts { imageUrl, mode, pattern, scale, width, height, bgColor,
   //           singleScale, singleRotation, singlePosX, singlePosY }
@@ -18604,6 +18617,53 @@ ${orientationExtra}
     });
   }));
 
+  /**
+   * POST /api/admin/product-types/:id/scan-stock — "Scan stock now" button.
+   * Re-checks Printify catalog availability for just this product's active
+   * variants and persists oosStatus/oosAvailableVariants/etc. No email —
+   * the daily catalogue scan (server/oos-catalogue-report.ts) owns that.
+   */
+  app.post("/api/admin/product-types/:id/scan-stock", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const productTypeId = parseInt(req.params.id, 10);
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    if (!merchant.printifyApiToken) {
+      return res.status(400).json({ error: "Printify is not connected for this merchant." });
+    }
+    if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+      return res.status(400).json({ error: "Product is missing a Printify blueprint/provider." });
+    }
+
+    const result = await scanProductTypeStock(productType, merchant.printifyApiToken);
+    return res.json({ success: true, result });
+  }));
+
+  /**
+   * POST /api/internal/oos-catalogue-scan — daily catalogue-wide Printify
+   * stock scan + email digest. Intended for an external scheduler (Railway
+   * Cron Job) hitting production once a day; the in-process daily interval
+   * (registered below) is a backup so the scan still runs without one
+   * configured. Both share the same 20h dedupe guard, so whichever fires
+   * first "wins" for the day. Requires header `x-oos-scan-secret` matching
+   * env `OOS_SCAN_SECRET` (endpoint is a no-op / 404 without that env set).
+   */
+  app.post("/api/internal/oos-catalogue-scan", asyncHandler(async (req: Request, res: Response) => {
+    const secret = process.env.OOS_SCAN_SECRET;
+    if (!secret) return res.status(404).json({ error: "Not found" });
+    if (req.header("x-oos-scan-secret") !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const result = await runOosCatalogueScan({ force: req.query.force === "1" });
+    return res.json({ ok: true, ...result });
+  }));
+
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
   // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
   app.get("/api/appai/blanks", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
@@ -18721,6 +18781,12 @@ ${orientationExtra}
             ? JSON.parse(pt.baseMockupImages || "{}")
             : (pt.baseMockupImages || {}),
           variants: dbVariants,
+          // Daily Printify stock scan (server/oos-catalogue-report.ts) — surfaces
+          // silent full/partial stockouts (e.g. baseball tee) without opening Resync Prices.
+          oosStatus: pt.oosStatus ?? null,
+          oosAvailableVariants: pt.oosAvailableVariants ?? null,
+          oosTotalVariants: pt.oosTotalVariants ?? null,
+          lastOosScanAt: pt.lastOosScanAt ?? null,
         });
       }
       return res.json({ blanks: enriched });

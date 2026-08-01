@@ -88,6 +88,11 @@ interface Blank {
   printifyProviderId?: number | null;
   printifyVariantLabels?: Record<string, string>;
   description?: string | null;
+  /** Daily Printify stock scan (server/oos-catalogue-report.ts) — null until first scan runs. */
+  oosStatus?: "ok" | "critical" | "fully_oos" | "error" | "unknown" | null;
+  oosAvailableVariants?: number | null;
+  oosTotalVariants?: number | null;
+  lastOosScanAt?: string | null;
   baseMockupImages?: {
     primary?: string;
     front?: string;
@@ -293,7 +298,7 @@ export default function AdminCustomizerPages() {
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
-    enabled: createOpen || !!editTarget,
+    // Always on (not just create/edit) — the pages list badge below needs oosStatus per row.
   });
 
   // Open the create wizard as soon as we know a deep-linked product is pending.
@@ -382,6 +387,27 @@ export default function AdminCustomizerPages() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] }),
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const scanStockMutation = useMutation({
+    mutationFn: async (productTypeId: number) => {
+      const res = await apiRequest("POST", `/api/admin/product-types/${productTypeId}/scan-stock`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      const result = data?.result;
+      const status = result?.status;
+      toast({
+        title: status === "fully_oos" ? "Fully out of stock" : status === "critical" ? "Critically low stock" : status === "error" ? "Stock scan failed" : "Stock is OK",
+        description:
+          status === "error"
+            ? (result?.error ?? "Could not reach Printify.")
+            : `${result?.availableSelected ?? 0} of ${result?.totalSelected ?? 0} variants in stock.`,
+        variant: status === "fully_oos" || status === "critical" || status === "error" ? "destructive" : undefined,
+      });
+    },
+    onError: (err: any) => toast({ title: "Stock scan failed", description: err.message, variant: "destructive" }),
   });
 
   const editMutation = useMutation({
@@ -1874,7 +1900,22 @@ export default function AdminCustomizerPages() {
               </Card>
             ) : (
               <div className="space-y-3">
-                {pages.map((page) => (
+                {pages.map((page) => {
+                  const blank = blanksData?.blanks.find((b) => b.productTypeId === page.productTypeId);
+                  const oosStatus = blank?.oosStatus;
+                  const oosBadgeLabel =
+                    oosStatus === "fully_oos"
+                      ? "Out of stock"
+                      : oosStatus === "critical"
+                        ? "Low stock"
+                        : oosStatus === "error"
+                          ? "Stock check failed"
+                          : null;
+                  const oosTooltip =
+                    blank?.lastOosScanAt
+                      ? `Printify stock: ${blank.oosAvailableVariants ?? 0}/${blank.oosTotalVariants ?? 0} variants available (checked ${new Date(blank.lastOosScanAt).toLocaleString()})`
+                      : "Printify stock not scanned yet";
+                  return (
                   <Card key={page.id}>
                     <CardContent className="pt-4 pb-4">
                       <div className="flex items-start justify-between gap-4">
@@ -1884,6 +1925,16 @@ export default function AdminCustomizerPages() {
                             <Badge variant={page.status === "active" ? "default" : "secondary"}>
                               {page.status}
                             </Badge>
+                            {oosBadgeLabel && (
+                              <Badge
+                                variant="destructive"
+                                title={oosTooltip}
+                                className="flex items-center gap-1"
+                              >
+                                <AlertTriangle className="h-3 w-3" />
+                                {oosBadgeLabel}
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-sm text-muted-foreground mt-0.5 font-mono">
                             /pages/{page.handle}
@@ -1947,6 +1998,17 @@ export default function AdminCustomizerPages() {
                           >
                             <DollarSign className="h-4 w-4" />
                           </Button>
+                          {page.productTypeId != null && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title={`Scan Printify stock now — ${oosTooltip}`}
+                              disabled={scanStockMutation.isPending}
+                              onClick={() => scanStockMutation.mutate(page.productTypeId as number)}
+                            >
+                              <RefreshCw className={`h-4 w-4 ${scanStockMutation.isPending && scanStockMutation.variables === page.productTypeId ? "animate-spin" : ""}`} />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
@@ -1960,7 +2022,8 @@ export default function AdminCustomizerPages() {
                       </div>
                     </CardContent>
                   </Card>
-                ))}
+                  );
+                })}
               </div>
             )}
 

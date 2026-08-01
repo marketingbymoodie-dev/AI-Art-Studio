@@ -73,6 +73,11 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
+  { table: "product_types",         column: "last_oos_scan_at",            type: "TIMESTAMP" },
+  { table: "product_types",         column: "oos_available_variants",      type: "INTEGER" },
+  { table: "product_types",         column: "oos_total_variants",          type: "INTEGER" },
+  { table: "product_types",         column: "oos_status",                  type: "TEXT" },
+  { table: "product_types",         column: "oos_detail",                  type: "TEXT DEFAULT '{}'" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -552,6 +557,21 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "shopify_order_id"    TEXT,
         "cart_token"          TEXT,
         "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "oos_catalogue_scans",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "oos_catalogue_scans" (
+        "id"                SERIAL PRIMARY KEY,
+        "ran_at"            TIMESTAMP DEFAULT NOW() NOT NULL,
+        "products_scanned"  INTEGER NOT NULL DEFAULT 0,
+        "fully_oos_count"   INTEGER NOT NULL DEFAULT 0,
+        "critical_count"    INTEGER NOT NULL DEFAULT 0,
+        "error_count"       INTEGER NOT NULL DEFAULT 0,
+        "email_sent"        BOOLEAN NOT NULL DEFAULT FALSE,
+        "created_at"        TIMESTAMP DEFAULT NOW() NOT NULL
       )
     `,
   },

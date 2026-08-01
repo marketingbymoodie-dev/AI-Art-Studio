@@ -23,6 +23,7 @@ import {
   generationJobs, type GenerationJob, type InsertGenerationJob,
   merchantGenerationHealth, type MerchantGenerationHealth,
   founderAlerts,
+  oosCatalogueScans, type OosCatalogueScan,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, asc, inArray, sql, isNull } from "drizzle-orm";
@@ -152,7 +153,17 @@ export interface IStorage {
       lastFailureAt: Date | null;
     }>
   >;
-  
+
+  // Daily Printify catalogue OOS scan (server/oos-catalogue-report.ts)
+  getLastOosCatalogueScan(): Promise<OosCatalogueScan | undefined>;
+  insertOosCatalogueScan(row: {
+    productsScanned: number;
+    fullyOosCount: number;
+    criticalCount: number;
+    errorCount: number;
+    emailSent: boolean;
+  }): Promise<void>;
+
   // Product Types
   getProductType(id: number): Promise<ProductType | undefined>;
   getProductTypes(): Promise<ProductType[]>;
@@ -1216,6 +1227,26 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
         };
       })
       .sort((a, b) => b.failureRate - a.failureRate);
+  }
+
+  // Daily Printify catalogue OOS scan
+  async getLastOosCatalogueScan(): Promise<OosCatalogueScan | undefined> {
+    const [row] = await db
+      .select()
+      .from(oosCatalogueScans)
+      .orderBy(desc(oosCatalogueScans.ranAt))
+      .limit(1);
+    return row;
+  }
+
+  async insertOosCatalogueScan(row: {
+    productsScanned: number;
+    fullyOosCount: number;
+    criticalCount: number;
+    errorCount: number;
+    emailSent: boolean;
+  }): Promise<void> {
+    await db.insert(oosCatalogueScans).values(row);
   }
 
   // Product Types

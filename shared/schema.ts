@@ -262,6 +262,25 @@ export const founderAlerts = pgTable("founder_alerts", {
 
 export type FounderAlert = typeof founderAlerts.$inferSelect;
 
+/**
+ * Audit log + dedupe guard for the daily Printify catalogue OOS scan
+ * (server/oos-catalogue-report.ts). One row per run; `ranAt` is checked
+ * before starting a new scan so the in-process daily interval and an
+ * external cron trigger never double-run (and double-email) on the same day.
+ */
+export const oosCatalogueScans = pgTable("oos_catalogue_scans", {
+  id: serial("id").primaryKey(),
+  ranAt: timestamp("ran_at").defaultNow().notNull(),
+  productsScanned: integer("products_scanned").notNull().default(0),
+  fullyOosCount: integer("fully_oos_count").notNull().default(0),
+  criticalCount: integer("critical_count").notNull().default(0),
+  errorCount: integer("error_count").notNull().default(0),
+  emailSent: boolean("email_sent").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type OosCatalogueScan = typeof oosCatalogueScans.$inferSelect;
+
 export const insertMerchantSchema = createInsertSchema(merchants).omit({
   id: true,
   createdAt: true,
@@ -505,6 +524,16 @@ export const productTypes = pgTable("product_types", {
    */
   fabricWeaveTexture: boolean("fabric_weave_texture"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
+  /**
+   * Daily Printify stock scan results (server/oos-catalogue-report.ts).
+   * oosStatus: "ok" | "critical" | "fully_oos" | "error" | "unknown" (unscanned).
+   * oosDetail: JSON { unavailableLabels: string[], error: string | null }.
+   */
+  lastOosScanAt: timestamp("last_oos_scan_at"),
+  oosAvailableVariants: integer("oos_available_variants"),
+  oosTotalVariants: integer("oos_total_variants"),
+  oosStatus: text("oos_status"),
+  oosDetail: text("oos_detail").default("{}"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
