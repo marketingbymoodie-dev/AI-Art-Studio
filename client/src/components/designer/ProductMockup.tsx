@@ -464,7 +464,11 @@ export function ProductMockup({
         transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
         transformOrigin: "center center",
       };
-      const showBlankUnderArt = !!blankImageUrl && designerType === "apparel";
+      // Blank-under-art is only for Printify drag placement (enableDrag).
+      // Flat/mesh products use a separate placer + composite slides; stacking the
+      // blank under raw Artwork looks like a double-up on saved designs.
+      const showBlankUnderArt =
+        !!blankImageUrl && designerType === "apparel" && !!enableDrag;
       if (showBlankUnderArt) {
         return (
           <>

@@ -11484,7 +11484,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       size="sm"
                       className="flex-1 min-w-0"
                       onClick={() => {
-                        void flushFlatPlacer().finally(() => setFlatPlacerEditOpen(false));
+                        void flushFlatPlacer().finally(() => {
+                          setFlatPlacerEditOpen(false);
+                          // Prefer Front composite over Artwork (avoids blank+art stack).
+                          const frontIdx = postGenGalleryItems.findIndex(
+                            (item) => item.kind === "mockup",
+                          );
+                          if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                        });
                       }}
                       data-testid="button-back-flat-placer"
                     >
