@@ -46,6 +46,8 @@ Free-plan COGS for the token’s account. Premium is still a UI estimate (`×0.8
 
 `GET /api/admin/printify/costs/:productTypeId` now probes front+back when a `back` placeholder exists and returns `costs` + `costsBoth`. Clear cache / Refresh Costs after deploy to populate both tiers on existing product types.
 
+Catalog cost reads use `show-out-of-stock=1` so fully OOS providers (e.g. baseball tee) still return cost fields when Printify includes them. Temp-product probes prefer in-stock variant IDs when the catalog marks availability.
+
 ## Updating existing Customizer Pages / Products
 
 Use **Resync Prices** (Customizer Pages or Products admin):

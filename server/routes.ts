@@ -57,6 +57,7 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
+import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
@@ -15727,28 +15728,36 @@ ${orientationExtra}
       baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
     const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
 
-    // Strategy catalog: production costs from catalog variants.json (no shop product needed)
+    // Strategy catalog: production costs from catalog variants.json (no shop product needed).
+    // Default catalog omits OOS variants — baseball tees etc. can return an empty list when
+    // the provider is fully out of stock. Always request show-out-of-stock=1 for costs.
     console.log(`[Printify Costs] Strategy catalog — reading costs from catalog variants for blueprint ${blueprintId}`);
+    let catalogAvailableVariantIds: number[] = [];
     try {
       const catalogResp = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
         { headers: { Authorization: `Bearer ${apiToken}` } },
       );
       if (catalogResp.ok) {
         const catalogData = await catalogResp.json();
         const catalogVariants = catalogData.variants || catalogData || [];
-        const catalogCosts = extractCostsFromCatalogVariants(
-          Array.isArray(catalogVariants) ? catalogVariants : [],
-        );
+        const list = Array.isArray(catalogVariants) ? catalogVariants : [];
+        catalogAvailableVariantIds = list
+          .filter((v: any) => v?.is_available !== false && v?.id != null)
+          .map((v: any) => Number(v.id))
+          .filter((id: number) => Number.isFinite(id) && id > 0);
+        const catalogCosts = extractCostsFromCatalogVariants(list);
         if (hasCosts(catalogCosts)) {
-          console.log(`[Printify Costs] Strategy catalog succeeded — ${Object.keys(catalogCosts).length} costs`);
+          console.log(
+            `[Printify Costs] Strategy catalog succeeded — ${Object.keys(catalogCosts).length} costs (incl. OOS; available=${catalogAvailableVariantIds.length})`,
+          );
           diagnostics.push({ strategy: "catalog_variants", success: true });
           return { costs: catalogCosts, strategyUsed: "catalog_variants", diagnostics };
         }
         diagnostics.push({
           strategy: "catalog_variants",
           success: false,
-          error: "Catalog variants response had no cost fields",
+          error: "Catalog variants response had no cost fields (even with show-out-of-stock=1)",
         });
       } else {
         diagnostics.push({
@@ -15762,6 +15771,15 @@ ${orientationExtra}
       diagnostics.push({ strategy: "catalog_variants", success: false, error: String(catalogErr) });
       console.warn("[Printify Costs] Strategy catalog error:", catalogErr);
     }
+
+    // Prefer in-stock IDs for temp-product probes when the catalog flagged availability.
+    const probeVariantIds =
+      catalogAvailableVariantIds.length > 0
+        ? variantIds.filter((id) => catalogAvailableVariantIds.includes(id))
+        : variantIds;
+    const effectiveProbeIds = probeVariantIds.length > 0 ? probeVariantIds : variantIds;
+    const availableChunk = effectiveProbeIds.slice(0, VARIANT_CHUNK_SIZE);
+    const availableBulk = effectiveProbeIds.slice(0, 100);
 
     // Strategy 0: read costs from an existing Printify product
     if (!shopId?.trim()) {
@@ -15820,10 +15838,16 @@ ${orientationExtra}
     }
 
     if (probeImageId) {
-      // Strategy A: all variants in one temp product (up to Printify's 100-variant limit)
-      console.log(`[Printify Costs] Strategy A — bulk ${bulkVariantIds.length} variants with probe image`);
+      // Strategy A: available (or all) variants in one temp product (up to Printify's 100 limit).
+      // Using only in-stock IDs avoids create failures when the blueprint is largely OOS.
+      console.log(
+        `[Printify Costs] Strategy A — bulk ${availableBulk.length} variants with probe image` +
+          (availableBulk.length < bulkVariantIds.length
+            ? ` (filtered from ${bulkVariantIds.length}; skipped OOS)`
+            : ""),
+      );
       const sBulk = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, bulkVariantIds, position, imageSpec(probeImageId),
+        shopId, apiToken, blueprintId, providerId, availableBulk, position, imageSpec(probeImageId),
       );
       diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
       if (sBulk.success && hasCosts(sBulk.costs)) {
@@ -15837,7 +15861,7 @@ ${orientationExtra}
     // Strategy 1: smaller chunk with probe image
     if (probeImageId) {
       console.log("[Printify Costs] Strategy 1 — chunk with probe image");
-      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, imageSpec(probeImageId));
       diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
       if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
       console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
@@ -15845,7 +15869,7 @@ ${orientationExtra}
 
     // Strategy 2: print_areas with empty images array
     console.log(`[Printify Costs] Strategy 2 — empty images[] for position "${position}"`);
-    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
+    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, null);
     diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
     if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
 
@@ -15859,13 +15883,14 @@ ${orientationExtra}
       if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
     }
 
-    // Strategy 4: parallel single-variant probe for every variant ID
+    // Strategy 4: parallel single-variant probe (prefer in-stock IDs when catalog flagged OOS)
     if (probeImageId) {
-      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${variantIds.length} variants)`);
+      const singleProbeIds = effectiveProbeIds.length > 0 ? effectiveProbeIds : variantIds;
+      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${singleProbeIds.length} variants)`);
       const probedCosts: Record<string, number> = {};
       const BATCH = 8;
-      for (let i = 0; i < variantIds.length; i += BATCH) {
-        const batch = variantIds.slice(i, i + BATCH);
+      for (let i = 0; i < singleProbeIds.length; i += BATCH) {
+        const batch = singleProbeIds.slice(i, i + BATCH);
         await Promise.all(batch.map(async (vid) => {
           const probe = await tryCreateTempProductForCosts(
             shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
@@ -15879,7 +15904,14 @@ ${orientationExtra}
         diagnostics.push({ strategy: "single_variant_probe", success: true });
         return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
       }
-      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No costs extracted from single-variant probes" });
+      diagnostics.push({
+        strategy: "single_variant_probe",
+        success: false,
+        error:
+          catalogAvailableVariantIds.length === 0 && variantIds.length > 0
+            ? "No costs extracted — catalog shows no in-stock variants (provider may be fully OOS)"
+            : "No costs extracted from single-variant probes",
+      });
     } else {
       diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No probe artwork available" });
     }
@@ -18295,84 +18327,37 @@ ${orientationExtra}
     updated: Array<{ variantId: number; price: string; success: boolean; error?: string }>;
     successCount: number;
     totalCount: number;
+    unresolvedCount: number;
   }> {
     const { shop, accessToken, baseProductId, productType, variantPrices, onBaseVariantUpdated } = args;
 
-    const printifyToShopifyVariantId: Record<string, number> = {};
-    if (productType?.variantMap) {
-      const storedVm = typeof productType.variantMap === "string"
-        ? JSON.parse(productType.variantMap || "{}")
-        : (productType.variantMap || {});
-      const svIds = (typeof productType.shopifyVariantIds === "string"
-        ? JSON.parse(productType.shopifyVariantIds || "{}")
-        : (productType.shopifyVariantIds || {})) as Record<string, number>;
-      const ptSizes = (typeof productType.sizes === "string"
-        ? JSON.parse(productType.sizes || "[]")
-        : (productType.sizes || [])) as Array<{ id: string; name: string }>;
-      const ptColors = (typeof productType.frameColors === "string"
-        ? JSON.parse(productType.frameColors || "[]")
-        : (productType.frameColors || [])) as Array<{ id: string; name: string }>;
+    // Always load live Shopify variants so slash-color / casing mismatches still map.
+    // (Previously title fallback ran only when the id map was completely empty, so
+    // products like 75/96 succeeded partially and left the rest unresolved forever.)
+    let shopifyVariants: Array<{
+      id: number;
+      title?: string;
+      option1?: string;
+      option2?: string;
+    }> = [];
+    const allVariantsResult = await shopifyApiCall(
+      shop,
+      accessToken,
+      `products/${baseProductId}.json?fields=id,variants`,
+    );
+    shopifyVariants = allVariantsResult.data?.product?.variants ?? [];
 
-      const nameToShopifyId: Record<string, number> = {};
-      for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-        nameToShopifyId[mapKey] = shopifyVid as number;
-        const [kSizeId, kColorId] = mapKey.split(":");
-        const sizeName = ptSizes.find((s: any) => String(s.id) === kSizeId)?.name;
-        const colorName = ptColors.find((c: any) => String(c.id) === kColorId)?.name;
-        if (sizeName) {
-          const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
-          nameToShopifyId[nameKey] = shopifyVid as number;
-        }
-      }
+    const printifyToShopifyVariantId = buildPrintifyToShopifyVariantIdMap({
+      variantMap: productType?.variantMap,
+      shopifyVariantIds: productType?.shopifyVariantIds,
+      sizes: productType?.sizes,
+      frameColors: productType?.frameColors,
+      shopifyVariants,
+    });
 
-      for (const [vmKey, entry] of Object.entries(storedVm)) {
-        const e = entry as any;
-        if (!e.printifyVariantId) continue;
-        const [sizeId, colorId] = vmKey.split(":");
-        const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-        const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
-        const candidates = [
-          vmKey,
-          colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`,
-          `${sizeName}:${colorId}`,
-          `${sizeId}:${colorName ?? colorId}`,
-        ];
-        for (const candidate of candidates) {
-          if (nameToShopifyId[candidate]) {
-            printifyToShopifyVariantId[String(e.printifyVariantId)] = nameToShopifyId[candidate];
-            break;
-          }
-        }
-      }
-
-      if (Object.keys(printifyToShopifyVariantId).length === 0) {
-        const allVariantsResult = await shopifyApiCall(
-          shop, accessToken,
-          `products/${baseProductId}.json?fields=id,variants`,
-        );
-        const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-        const titleToShopifyId: Record<string, number> = {};
-        for (const sv of allShopifyVariants) {
-          if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
-          if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
-          if (sv.option1 && sv.option2) titleToShopifyId[`${sv.option1} / ${sv.option2}`.toLowerCase()] = sv.id;
-        }
-        for (const [vmKey, entry] of Object.entries(storedVm)) {
-          const e = entry as any;
-          if (!e.printifyVariantId) continue;
-          const [sizeId, colorId] = vmKey.split(":");
-          const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-          const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
-          const shopifyId = (colorName ? titleToShopifyId[`${sizeName} / ${colorName}`.toLowerCase()] : undefined)
-            ?? titleToShopifyId[sizeName.toLowerCase()];
-          if (shopifyId) {
-            printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
-          }
-        }
-      }
-    }
-
-    console.log(`[sync-prices] printifyToShopifyVariantId: ${JSON.stringify(printifyToShopifyVariantId)}`);
+    console.log(
+      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}`,
+    );
 
     const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
 
@@ -18385,7 +18370,12 @@ ${orientationExtra}
         variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
       }
       if (!variantNum) {
-        updated.push({ variantId: 0, price, success: false, error: `Could not resolve Shopify variant ID for key "${vid}"` });
+        updated.push({
+          variantId: 0,
+          price,
+          success: false,
+          error: `Could not resolve Shopify variant ID for key "${vid}"`,
+        });
         continue;
       }
       const formatted = parseFloat(String(price)).toFixed(2);
@@ -18405,7 +18395,8 @@ ${orientationExtra}
     }
 
     const successCount = updated.filter((u) => u.success).length;
-    return { updated, successCount, totalCount: updated.length };
+    const unresolvedCount = updated.filter((u) => !u.success && u.variantId === 0).length;
+    return { updated, successCount, totalCount: updated.length, unresolvedCount };
   }
 
   app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
@@ -18453,7 +18444,7 @@ ${orientationExtra}
       (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined) ||
       productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId));
 
-    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+    const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken!,
       baseProductId: dbPage.baseProductId,
@@ -18488,6 +18479,7 @@ ${orientationExtra}
       updated,
       successCount,
       totalCount,
+      unresolvedCount,
       bothPricesSaved: !!(ptId && bothKeyCount > 0),
       bothPriceKeyCount: bothKeyCount,
     });
@@ -18545,7 +18537,7 @@ ${orientationExtra}
       }
     }
 
-    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+    const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken,
       baseProductId: productType.shopifyProductId,
@@ -18572,6 +18564,7 @@ ${orientationExtra}
       updated,
       successCount,
       totalCount,
+      unresolvedCount,
       bothPricesSaved: bothKeyCount > 0,
       bothPriceKeyCount: bothKeyCount,
     });

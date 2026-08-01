@@ -50,23 +50,40 @@ function resolveVariantCostCents(
 ): number | undefined {
   let costCents: number | undefined = shopifyCosts?.[v.id];
   if (costCents == null && v.id.startsWith("printify:")) {
-    costCents = costs?.[v.id.slice("printify:".length)];
+    const pid = v.id.slice("printify:".length);
+    costCents = costs?.[pid] ?? costs?.[String(Number(pid))];
   }
   if (costCents == null) costCents = costs?.[v.id];
   if (costCents == null && v.title && byLabel) {
-    costCents = byLabel[normalizeVariantLabelForCostMatch(v.title)];
+    const normTitle = normalizeVariantLabelForCostMatch(v.title);
+    costCents = byLabel[normTitle];
+    // Slash colorways (baseball tees): try without spaces around "/"
+    if (costCents == null) {
+      const compact = normTitle.replace(/\s*\/\s*/g, "/");
+      for (const [label, cost] of Object.entries(byLabel)) {
+        if (label.replace(/\s*\/\s*/g, "/") === compact) {
+          costCents = cost;
+          break;
+        }
+      }
+    }
   }
   if (costCents == null && v.title && printifyVariantLabels && costs) {
     const labelToCost: Record<string, number> = {};
     for (const [printifyVid, label] of Object.entries(printifyVariantLabels)) {
-      const c = costs[printifyVid];
+      const c = costs[printifyVid] ?? costs[String(Number(printifyVid))];
       if (c != null) labelToCost[normalizeVariantLabelForCostMatch(label)] = c;
     }
     const normTitle = normalizeVariantLabelForCostMatch(v.title);
     costCents = labelToCost[normTitle];
     if (costCents == null) {
+      const compactTitle = normTitle.replace(/\s*\/\s*/g, "/");
       for (const [label, cost] of Object.entries(labelToCost)) {
-        if (normTitle.includes(label) || label.includes(normTitle)) {
+        if (
+          normTitle.includes(label) ||
+          label.includes(normTitle) ||
+          label.replace(/\s*\/\s*/g, "/") === compactTitle
+        ) {
           costCents = cost;
           break;
         }
@@ -264,12 +281,24 @@ export default function ResyncPricesDialog({
       queryClient.removeQueries({ queryKey: ["/api/admin/printify/costs", productTypeId] });
       const result = await refetchCosts();
       const data = result.data;
+      const frontCount = data?.costs ? Object.keys(data.costs).length : 0;
       const bothReady = !!(data?.supportsBothSides && data?.costsBoth && Object.keys(data.costsBoth).length > 0);
+      if (frontCount === 0) {
+        toast({
+          title: "No production costs found",
+          description:
+            data && (data as any).error
+              ? String((data as any).error)
+              : "Printify returned no costs. Common causes: Printify Shop ID missing in Settings, or the provider is fully out of stock (temp cost probes can fail). Try again when stock returns, or set prices manually.",
+          variant: "destructive",
+        });
+        return;
+      }
       toast({
         title: bothReady ? "Front + front/back costs loaded" : "Costs refreshed",
         description: bothReady
           ? "Front-only and front+back production costs are ready — Apply All Suggested to fill both columns."
-          : "Front costs updated. If this product has a back print area and you still see one column, check Printify Shop ID in Settings and try again.",
+          : `Loaded ${frontCount} front costs. If this product has a back print area and you still see one column, check Printify Shop ID in Settings and try again.`,
       });
     } catch (err: any) {
       toast({
@@ -334,11 +363,22 @@ export default function ResyncPricesDialog({
         queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
         queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
         queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+        const partial = data.successCount < data.totalCount;
+        const unresolved = Number(data.unresolvedCount || 0);
         if (pricesBoth && !data.bothPricesSaved) {
           toast({
             title: "Front prices updated — front+back not saved",
             description:
               "Shopify front prices synced, but the front+back retail map was not stored. Refresh Costs, Apply All Suggested, and Resync again.",
+            variant: "destructive",
+          });
+        } else if (partial) {
+          toast({
+            title: "Prices partially updated",
+            description:
+              unresolved > 0
+                ? `Updated ${data.successCount} of ${data.totalCount}. ${unresolved} blank rows could not be matched to a Shopify variant (color/size name mismatch or missing on Shopify). Re-send the product to Shopify if colors were changed, then Resync again.`
+                : `Updated ${data.successCount} of ${data.totalCount}. Some Shopify price writes failed — check Railway logs for [sync-prices].`,
             variant: "destructive",
           });
         } else {
@@ -441,6 +481,12 @@ export default function ResyncPricesDialog({
               {!supportsBothSidePricing && costsAvailable && (
                 <p className="text-xs text-muted-foreground shrink-0">
                   No front+back cost tier yet. Click Refresh Costs — this re-probes Printify for a back print area (takes ~15–30s).
+                </p>
+              )}
+
+              {!costsLoading && !costsAvailable && variants.length > 0 && (
+                <p className="text-xs text-amber-700 shrink-0">
+                  No Printify production costs loaded yet. Click Refresh Costs. If the Printify listing is fully out of stock, suggested prices may stay empty — enter retail manually or retry when stock returns.
                 </p>
               )}
 
