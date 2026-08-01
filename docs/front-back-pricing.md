@@ -54,3 +54,7 @@ Use **Resync Prices** (Customizer Pages or Products admin):
 2. Click **Refresh Costs** if Front+back columns don’t appear yet (needs a fresh dual-side COGS probe).
 3. Adjust markup → **Apply All Suggested** (or edit Front only / Front + back).
 4. **Resync Prices** — writes front prices to Shopify and saves `variant_prices_both` on the product type for storefront “from $X” + Both surcharge.
+
+### Keying note
+
+Resync blank rows are keyed `printify:{printifyVariantId}`. On save (and in `buildDesignerConfig`), AppAI expands those into Shopify variant ids + `Size:Color` / `Size / Color` aliases so the storefront can resolve the both-tier price. If the price stays stuck on front-only after a successful Resync, hard-refresh the customizer; a redeploy with key expansion fixes already-saved `printify:`-only maps without another sync.

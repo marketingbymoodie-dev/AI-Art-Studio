@@ -56,6 +56,7 @@ import {
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
+import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
@@ -6465,10 +6466,20 @@ ${orientationExtra}
       },
       variantMap,
       // Front+back retail tier (Shopify base variants stay at front-only prices).
+      // Expand printify: blank keys → Shopify id / size:color so storefront lookups hit
+      // even when Resync originally persisted printify-only keys.
       variantPricesBoth: (() => {
         try {
           const raw = (productTypeToUse as any).variantPricesBoth;
-          return typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
+          const parsed =
+            typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
+          if (!parsed || typeof parsed !== "object") return {};
+          return expandVariantPricesBothMap(parsed as Record<string, string>, {
+            variantMap: (productTypeToUse as any).variantMap,
+            shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
+            sizes: (productTypeToUse as any).sizes,
+            frameColors: (productTypeToUse as any).frameColors,
+          });
         } catch {
           return {};
         }
@@ -17816,8 +17827,18 @@ ${orientationExtra}
           });
         }
       }
+      const ptForBoth =
+        matchedType ||
+        ptForSync ||
+        (await storage.getProductType(resolvedProductTypeId));
+      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+        variantMap: ptForBoth?.variantMap,
+        shopifyVariantIds: ptForBoth?.shopifyVariantIds,
+        sizes: ptForBoth?.sizes,
+        frameColors: ptForBoth?.frameColors,
+      });
       await storage.updateProductType(resolvedProductTypeId, {
-        variantPricesBoth: JSON.stringify(variantPricesBoth),
+        variantPricesBoth: JSON.stringify(expandedBoth),
       } as any);
     }
 
@@ -18424,12 +18445,13 @@ ${orientationExtra}
     }
 
     const productTypes = await storage.getActiveProductTypes();
+    // Prefer the page's productTypeId — shopifyProductId match can hit a stale/wrong row.
     const matchedType =
-      productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)) ||
       (dbPage.productTypeId
         ? productTypes.find((pt: any) => Number(pt.id) === Number(dbPage.productTypeId))
         : undefined) ||
-      (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined);
+      (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined) ||
+      productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId));
 
     const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
       shop,
@@ -18445,10 +18467,19 @@ ${orientationExtra}
     });
 
     // Persist front+back retail on the product type for storefront “from $X” + ATC surcharge.
+    // Expand printify: blank keys so embed lookups by Shopify variant id succeed.
     const ptId = matchedType?.id ?? (dbPage.productTypeId ? Number(dbPage.productTypeId) : null);
+    let bothKeyCount = 0;
     if (ptId && variantPricesBoth && typeof variantPricesBoth === "object") {
+      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+        variantMap: matchedType?.variantMap,
+        shopifyVariantIds: matchedType?.shopifyVariantIds,
+        sizes: matchedType?.sizes,
+        frameColors: matchedType?.frameColors,
+      });
+      bothKeyCount = Object.keys(expandedBoth).length;
       await storage.updateProductType(ptId, {
-        variantPricesBoth: JSON.stringify(variantPricesBoth),
+        variantPricesBoth: JSON.stringify(expandedBoth),
       } as any);
     }
 
@@ -18457,7 +18488,8 @@ ${orientationExtra}
       updated,
       successCount,
       totalCount,
-      bothPricesSaved: !!(ptId && variantPricesBoth && Object.keys(variantPricesBoth).length > 0),
+      bothPricesSaved: !!(ptId && bothKeyCount > 0),
+      bothPriceKeyCount: bothKeyCount,
     });
   }));
 
@@ -18521,9 +18553,17 @@ ${orientationExtra}
       variantPrices,
     });
 
+    let bothKeyCount = 0;
     if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+        variantMap: productType.variantMap,
+        shopifyVariantIds: productType.shopifyVariantIds,
+        sizes: productType.sizes,
+        frameColors: productType.frameColors,
+      });
+      bothKeyCount = Object.keys(expandedBoth).length;
       await storage.updateProductType(productTypeId, {
-        variantPricesBoth: JSON.stringify(variantPricesBoth),
+        variantPricesBoth: JSON.stringify(expandedBoth),
       } as any);
     }
 
@@ -18532,7 +18572,8 @@ ${orientationExtra}
       updated,
       successCount,
       totalCount,
-      bothPricesSaved: !!(variantPricesBoth && Object.keys(variantPricesBoth).length > 0),
+      bothPricesSaved: bothKeyCount > 0,
+      bothPriceKeyCount: bothKeyCount,
     });
   }));
 

@@ -66,6 +66,7 @@ import {
   detectStylePromptMismatch,
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
+import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
   canvasOrientationFromAspect,
@@ -2515,11 +2516,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return proxifyPrintifyPanelUrls(merged);
   }, [productTypeConfig]);
 
-  useEffect(() => {
-    if (productTypeConfig && !supportsPrintPlacementSelection && printPlacement !== "front") {
-      setPrintPlacement("front");
-    }
-  }, [productTypeConfig, supportsPrintPlacementSelection, printPlacement]);
+  // Do not force printPlacement back to "front" when Print Side is hidden.
+  // Flat crewnecks/hoodies drive front/back via PRINT ON FRONT/BACK toggles;
+  // resetting here fought both-tier pricing (and ATC surcharge).
 
   // Filter styles based on designerType and per-page styleConfig
   const filteredStylePresets = useMemo(() => {
@@ -9170,37 +9169,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const resolveBothRetailDollars = useCallback(
     (opts?: { sizeName?: string; colorName?: string; shopifyVariantId?: string | null }) => {
       if (!hasBothRetailPrices) return null;
-      const sizeName = opts?.sizeName ?? "";
-      const colorName = opts?.colorName ?? "";
-      const vid = opts?.shopifyVariantId ?? null;
-      const candidates = [
-        vid ? String(vid) : "",
-        colorName ? `${sizeName}:${colorName}` : "",
-        colorName ? `${sizeName} / ${colorName}` : "",
-        sizeName ? `${sizeName}:default` : "",
-        sizeName,
-      ].filter(Boolean);
-      const lowerMap = new Map(
-        Object.entries(bothPricesMap).map(([k, v]) => [k.toLowerCase(), v]),
-      );
-      for (const key of candidates) {
-        const raw = bothPricesMap[key] ?? lowerMap.get(key.toLowerCase());
-        const n = raw != null ? parseFloat(String(raw)) : NaN;
-        if (Number.isFinite(n) && n > 0) return n;
-      }
-      // Title-style keys from Resync ("XL / ASH") — match size + color loosely.
-      if (sizeName) {
-        const sn = sizeName.toLowerCase();
-        const cn = colorName.toLowerCase();
-        for (const [k, raw] of Object.entries(bothPricesMap)) {
-          const kl = k.toLowerCase();
-          if (!kl.includes(sn)) continue;
-          if (cn && !kl.includes(cn)) continue;
-          const n = parseFloat(String(raw));
-          if (Number.isFinite(n) && n > 0) return n;
-        }
-      }
-      return null;
+      return resolveBothRetailDollarsFromMap(bothPricesMap, {
+        sizeName: opts?.sizeName,
+        colorName: opts?.colorName,
+        shopifyVariantId: opts?.shopifyVariantId,
+      });
     },
     [bothPricesMap, hasBothRetailPrices],
   );

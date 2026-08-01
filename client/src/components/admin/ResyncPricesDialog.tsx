@@ -334,12 +334,21 @@ export default function ResyncPricesDialog({
         queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
         queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
         queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
-        toast({
-          title: "Prices updated",
-          description: pricesBoth
-            ? `Updated ${data.successCount} of ${data.totalCount} Shopify (front) prices and saved front+back retail for the storefront.`
-            : `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.`,
-        });
+        if (pricesBoth && !data.bothPricesSaved) {
+          toast({
+            title: "Front prices updated — front+back not saved",
+            description:
+              "Shopify front prices synced, but the front+back retail map was not stored. Refresh Costs, Apply All Suggested, and Resync again.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Prices updated",
+            description: pricesBoth
+              ? `Updated ${data.successCount} of ${data.totalCount} Shopify (front) prices and saved front+back retail for the storefront.`
+              : `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.`,
+          });
+        }
         onOpenChange(false);
         onSuccess?.();
       } else {
