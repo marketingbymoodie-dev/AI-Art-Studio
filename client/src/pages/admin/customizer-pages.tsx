@@ -86,6 +86,8 @@ interface Blank {
   isAllOverPrint?: boolean;
   printifyBlueprintId?: number | null;
   printifyProviderId?: number | null;
+  /** Resolved from last OOS scan (oosDetail); null until first scan. */
+  printifyProviderName?: string | null;
   printifyVariantLabels?: Record<string, string>;
   description?: string | null;
   /** Daily Printify stock scan (server/oos-catalogue-report.ts) — null until first scan runs. */
@@ -398,12 +400,24 @@ export default function AdminCustomizerPages() {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       const result = data?.result;
       const status = result?.status;
+      const via = result?.providerName
+        ? ` (${result.providerName})`
+        : result?.providerId != null
+          ? ` (provider #${result.providerId})`
+          : "";
       toast({
-        title: status === "fully_oos" ? "Fully out of stock" : status === "critical" ? "Critically low stock" : status === "error" ? "Stock scan failed" : "Stock is OK",
+        title:
+          status === "fully_oos"
+            ? `Fully out of stock${via}`
+            : status === "critical"
+              ? `Critically low stock${via}`
+              : status === "error"
+                ? `Stock scan failed${via}`
+                : `Stock is OK${via}`,
         description:
           status === "error"
             ? (result?.error ?? "Could not reach Printify.")
-            : `${result?.availableSelected ?? 0} of ${result?.totalSelected ?? 0} variants in stock.`,
+            : `${result?.availableSelected ?? 0} of ${result?.totalSelected ?? 0} variants in stock for this product's Printify supplier.`,
         variant: status === "fully_oos" || status === "critical" || status === "error" ? "destructive" : undefined,
       });
     },
@@ -614,8 +628,42 @@ export default function AdminCustomizerPages() {
     retry: false,
   });
 
+  const costsErrorPayload = useMemo(() => {
+    if (!costsFetchError) return null;
+    const text = costsFetchError instanceof Error ? costsFetchError.message : String(costsFetchError);
+    const jsonStart = text.indexOf("{");
+    if (jsonStart === -1) return null;
+    try {
+      return JSON.parse(text.slice(jsonStart)) as {
+        code?: string;
+        error?: string;
+        message?: string;
+        oosStatus?: string;
+        providerName?: string | null;
+      };
+    } catch {
+      return null;
+    }
+  }, [costsFetchError]);
+
+  const selectedBlankFullyOos =
+    selectedBlank?.oosStatus === "fully_oos" || costsErrorPayload?.code === "PRINTIFY_FULLY_OOS";
+  const selectedBlankProviderLabel =
+    costsErrorPayload?.providerName ||
+    selectedBlank?.printifyProviderName ||
+    (selectedBlank?.printifyProviderId != null ? `Provider #${selectedBlank.printifyProviderId}` : null);
+
   useEffect(() => {
     if (formStep !== 2 || !costsError || !costsFetchError) return;
+    if (costsErrorPayload?.code === "PRINTIFY_FULLY_OOS") {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      toast({
+        title: "Printify stock unavailable",
+        description: parseApiErrorMessage(costsFetchError),
+        variant: "destructive",
+      });
+      return;
+    }
     const msg = parseApiErrorMessage(
       costsFetchError instanceof Error ? costsFetchError.message : costsFetchError,
     );
@@ -624,7 +672,7 @@ export default function AdminCustomizerPages() {
       description: msg,
       variant: "destructive",
     });
-  }, [formStep, costsError, costsFetchError, toast]);
+  }, [formStep, costsError, costsFetchError, costsErrorPayload?.code, toast, queryClient]);
 
   // Mutation: clear all cached costs and refetch for current product
   const clearCostsMutation = useMutation({
@@ -849,6 +897,16 @@ export default function AdminCustomizerPages() {
 
   /** Validate prices in Step 2; advance to Step 3 (confirm) */
   function advanceToStep3() {
+    if (selectedBlankFullyOos) {
+      toast({
+        title: "Printify stock unavailable",
+        description: selectedBlankProviderLabel
+          ? `Wait until ${selectedBlankProviderLabel} has stock again (daily OOS report emails when it changes), or pick another product.`
+          : "Wait until Printify has stock again, or pick another product.",
+        variant: "destructive",
+      });
+      return;
+    }
     const errs: Record<string, string> = {};
     for (const v of selectedVariants) {
       const val = variantPrices[v.id] ?? "";
@@ -1523,7 +1581,39 @@ export default function AdminCustomizerPages() {
                       </p>
                     )}
 
-                    {costsError && (
+                    {selectedBlankFullyOos && (
+                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 space-y-2">
+                        <span className="font-medium block">
+                          Printify stock is currently unavailable
+                          {selectedBlankProviderLabel ? ` for ${selectedBlankProviderLabel}` : ""}.
+                        </span>
+                        <span className="block text-destructive/90">
+                          Suggested retail can’t be calculated until variants are back in stock for this supplier.
+                          The daily catalogue stock report will email when status changes — or use Scan stock now on the page list anytime.
+                        </span>
+                        {selectedBlank?.productTypeId != null && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            disabled={scanStockMutation.isPending}
+                            onClick={() => {
+                              scanStockMutation.mutate(selectedBlank.productTypeId, {
+                                onSuccess: () => {
+                                  void refetchCosts();
+                                  queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+                                },
+                              });
+                            }}
+                          >
+                            {scanStockMutation.isPending ? "Scanning…" : "Scan stock now"}
+                          </Button>
+                        )}
+                      </p>
+                    )}
+
+                    {costsError && !selectedBlankFullyOos && (
                       <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
                         <span>
                           {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
@@ -1532,6 +1622,15 @@ export default function AdminCustomizerPages() {
                         <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
                           Retry
                         </Button>
+                      </p>
+                    )}
+
+                    {!costsError && selectedBlank?.oosStatus === "critical" && (
+                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3">
+                        Most variants are out of stock
+                        {selectedBlankProviderLabel ? ` at ${selectedBlankProviderLabel}` : ""}
+                        {" "}({selectedBlank.oosAvailableVariants ?? 0}/{selectedBlank.oosTotalVariants ?? 0} available).
+                        You can still set prices for in-stock options.
                       </p>
                     )}
 
@@ -1625,7 +1724,16 @@ export default function AdminCustomizerPages() {
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(1)}>
                         Back
                       </Button>
-                      <Button className="flex-1" onClick={advanceToStep3}>
+                      <Button
+                        className="flex-1"
+                        onClick={advanceToStep3}
+                        disabled={selectedBlankFullyOos}
+                        title={
+                          selectedBlankFullyOos
+                            ? "Cannot create a customizer page while this Printify supplier has no stock"
+                            : undefined
+                        }
+                      >
                         Review & Create <ChevronRight className="h-4 w-4 ml-1" />
                       </Button>
                     </div>
@@ -1911,10 +2019,17 @@ export default function AdminCustomizerPages() {
                         : oosStatus === "error"
                           ? "Stock check failed"
                           : null;
-                  const oosTooltip =
+                  const providerLabel =
+                    blank?.printifyProviderName ||
+                    (blank?.printifyProviderId != null ? `Provider #${blank.printifyProviderId}` : null);
+                  const oosTooltip = [
+                    providerLabel ? `Printify: ${providerLabel}` : null,
                     blank?.lastOosScanAt
-                      ? `Printify stock: ${blank.oosAvailableVariants ?? 0}/${blank.oosTotalVariants ?? 0} variants available (checked ${new Date(blank.lastOosScanAt).toLocaleString()})`
-                      : "Printify stock not scanned yet";
+                      ? `${blank.oosAvailableVariants ?? 0}/${blank.oosTotalVariants ?? 0} variants available (checked ${new Date(blank.lastOosScanAt).toLocaleString()})`
+                      : "Stock not scanned yet",
+                  ]
+                    .filter(Boolean)
+                    .join(" — ");
                   return (
                   <Card key={page.id}>
                     <CardContent className="pt-4 pb-4">
@@ -1944,6 +2059,11 @@ export default function AdminCustomizerPages() {
                               {page.baseProductTitle}
                               {page.baseVariantTitle && ` — ${page.baseVariantTitle}`}
                               {page.baseProductPrice && ` · $${parseFloat(page.baseProductPrice).toFixed(2)}`}
+                            </p>
+                          )}
+                          {providerLabel && (
+                            <p className="text-xs text-muted-foreground mt-1" title={oosTooltip}>
+                              Printify: {providerLabel}
                             </p>
                           )}
                           <p className="text-xs text-muted-foreground mt-1">

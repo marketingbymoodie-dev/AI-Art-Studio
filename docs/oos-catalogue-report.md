@@ -10,6 +10,30 @@ Code: [`server/oos-catalogue-report.ts`](../server/oos-catalogue-report.ts),
 [`shared/printifyAvailability.ts`](../shared/printifyAvailability.ts),
 [`shared/printifyVariantLabels.ts`](../shared/printifyVariantLabels.ts).
 
+## Provider-scoped (not “any supplier”)
+
+Each product type stores one `printifyProviderId` (chosen at import). The scan
+calls Printify’s **provider-specific** catalog URL:
+
+```
+GET /catalog/blueprints/{bp}/print_providers/{providerId}/variants.json?show-out-of-stock=1
+```
+
+JAMS Designs (USA) and T Shirt and Sons (UK) are never merged. If baseball tee
+looks “in stock” in AppAI while JAMS is fully OOS in Printify, check that the
+product row’s fulfill-by provider matches the supplier you care about (shown
+on Customizer Pages as `Printify: …` and in Scan stock now toasts).
+
+Products Import already documents this:
+
+> One product uses one print provider for fulfilment, costs, and mockup
+> calibration. Import the same blueprint again with a different supplier if
+> you need a separate EU or US listing.
+
+Uniqueness is **blueprint + provider**. You can keep a JAMS listing and import
+the same blueprint again via T Shirt and Sons (e.g. rename to “UK/EU Only”).
+Same blueprint + same provider is still blocked.
+
 ## Status thresholds
 
 - `fully_oos` — 0 of the selected variants are available (Resync Prices /
@@ -23,6 +47,14 @@ Code: [`server/oos-catalogue-report.ts`](../server/oos-catalogue-report.ts),
 A variant that's part of a product's `variantMap` but missing entirely from
 the Printify catalog response (e.g. a delisted option) counts as
 out-of-stock rather than being silently ignored.
+
+## Customizer page create (Pricing step)
+
+When costs fail because the provider is fully OOS, the API returns
+`code: "PRINTIFY_FULLY_OOS"` and the wizard shows **stock unavailable for
+{provider}** (not “Retry — lookup can take a minute”). Review & Create is
+disabled until stock returns. Use **Scan stock now** or wait for the daily
+digest — when `oosStatus` flips back to `ok`, create can proceed.
 
 ## Env vars
 
@@ -66,12 +98,8 @@ skips sending the email.
 ## Admin visibility
 
 - `GET /api/appai/blanks` (admin) includes `oosStatus`, `oosAvailableVariants`,
-  `oosTotalVariants`, and `lastOosScanAt` per product.
-- The Customizer Pages list (`client/src/pages/admin/customizer-pages.tsx`)
-  shows a red "Out of stock" / "Low stock" / "Stock check failed" badge next
-  to a page's status when its linked product isn't `ok`, with a tooltip
-  showing the available/total count and last scan time.
-- Each row also has a "Scan Printify stock now" button
-  (`POST /api/admin/product-types/:id/scan-stock`) that re-checks just that
-  product immediately (no email — that's the daily job's job) and shows the
-  result in a toast.
+  `oosTotalVariants`, `lastOosScanAt`, and `printifyProviderName` (from last scan).
+- The Customizer Pages list shows fulfill-by provider (`Printify: …`), a red
+  “Out of stock” / “Low stock” / “Stock check failed” badge when not `ok`, and
+  a per-row **Scan stock now** button
+  (`POST /api/admin/product-types/:id/scan-stock`).

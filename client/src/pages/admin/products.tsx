@@ -675,10 +675,21 @@ export default function AdminProducts() {
   const handleImportBlueprint = async () => {
     if (!selectedBlueprint || !selectedProvider) return;
     if (!isVariantCountValid) return;
+
+    // Same blueprint may already exist via another supplier — keep titles distinct
+    // (matches server uniqueness on blueprint+provider and the "separate EU/US listing" copy).
+    const otherProviderOwnsBlueprint = (productTypes || []).some(
+      (pt) =>
+        pt.printifyBlueprintId === selectedBlueprint.id &&
+        Number(pt.printifyProviderId) !== Number(selectedProvider.id),
+    );
+    const importName = otherProviderOwnsBlueprint
+      ? `${selectedBlueprint.title} — ${selectedProvider.title}`
+      : selectedBlueprint.title;
     
     importPrintifyMutation.mutate({
       blueprintId: selectedBlueprint.id,
-      name: selectedBlueprint.title,
+      name: importName,
       description: selectedBlueprint.description,
       providerId: selectedProvider?.id,
       selectedSizeIds: Array.from(selectedSizeIds),
@@ -1429,6 +1440,18 @@ export default function AdminProducts() {
                   ) : (
                     <p className="text-sm text-destructive">No supplier selected — go back and pick one.</p>
                   )}
+                  {selectedProvider &&
+                    (productTypes || []).some(
+                      (pt) =>
+                        pt.printifyBlueprintId === selectedBlueprint.id &&
+                        Number(pt.printifyProviderId) !== Number(selectedProvider.id),
+                    ) && (
+                      <p className="text-xs text-amber-800 mt-1">
+                        You already have this blueprint via another supplier. It will import as
+                        {" "}“{selectedBlueprint.title} — {selectedProvider.title}” so the listings stay distinct
+                        (rename after import if you prefer e.g. “UK/EU Only”).
+                      </p>
+                    )}
                 </div>
               )}
               

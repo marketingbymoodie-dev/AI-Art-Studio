@@ -3,10 +3,10 @@
  * per-product-type DB status). Mirrors the founder-generation-alerts.ts
  * pattern (single Resend digest, audit table for cadence/dedupe).
  *
- * Uses the same `show-out-of-stock=1` catalog endpoint as the Resync Prices
- * cost waterfall (server/routes.ts `fetchPrintifyCostsWaterfall`), but only
- * needs a Printify API token (no shop/product creation) since it's reading
- * catalog-level availability, not production costs.
+ * Provider-scoped: each product type's stored `printifyProviderId` is queried
+ * separately (JAMS Designs vs T Shirt and Sons are never merged). Uses the
+ * same `show-out-of-stock=1` catalog endpoint as the Resync Prices cost
+ * waterfall (server/routes.ts `fetchPrintifyCostsWaterfall`).
  */
 import { storage } from "./storage";
 import {
@@ -45,11 +45,56 @@ export type OosScanRowResult = {
   availableSelected: number;
   totalSelected: number;
   unavailableLabels: string[];
+  providerId?: number | null;
+  providerName?: string | null;
   error?: string;
 };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function providerLabel(result: OosScanRowResult): string {
+  if (result.providerName) return result.providerName;
+  if (result.providerId != null) return `Provider #${result.providerId}`;
+  return "unknown provider";
+}
+
+/** Cache blueprint → providerId → title for the duration of one catalogue scan. */
+const providerNameCache = new Map<string, string | null>();
+
+async function resolveProviderName(
+  blueprintId: number,
+  providerId: number,
+  apiToken: string,
+): Promise<string | null> {
+  const cacheKey = `${blueprintId}:${providerId}`;
+  if (providerNameCache.has(cacheKey)) return providerNameCache.get(cacheKey) ?? null;
+
+  try {
+    const resp = await fetch(
+      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+      { headers: { Authorization: `Bearer ${apiToken}` } },
+    );
+    if (!resp.ok) {
+      providerNameCache.set(cacheKey, null);
+      return null;
+    }
+    const providers = await resp.json();
+    const list = Array.isArray(providers) ? providers : [];
+    for (const p of list) {
+      const id = Number(p?.id);
+      const title = typeof p?.title === "string" ? p.title.trim() : "";
+      if (Number.isFinite(id) && title) {
+        providerNameCache.set(`${blueprintId}:${id}`, title);
+      }
+    }
+    if (!providerNameCache.has(cacheKey)) providerNameCache.set(cacheKey, null);
+    return providerNameCache.get(cacheKey) ?? null;
+  } catch {
+    providerNameCache.set(cacheKey, null);
+    return null;
+  }
 }
 
 async function fetchCatalogVariants(
@@ -82,15 +127,23 @@ export async function scanProductTypeStock(
   pt: ProductType,
   apiToken: string,
 ): Promise<OosScanRowResult> {
+  const providerId = pt.printifyProviderId ?? null;
+  let providerName: string | null = null;
+  if (pt.printifyBlueprintId && providerId != null) {
+    providerName = await resolveProviderName(pt.printifyBlueprintId, providerId, apiToken);
+  }
+
   const base = {
     productTypeId: pt.id,
     productTypeName: pt.name,
     merchantId: pt.merchantId ?? null,
+    providerId,
+    providerName,
   };
 
   let result: OosScanRowResult;
 
-  if (!pt.printifyBlueprintId || !pt.printifyProviderId) {
+  if (!pt.printifyBlueprintId || !providerId) {
     result = {
       ...base,
       status: "error",
@@ -105,7 +158,7 @@ export async function scanProductTypeStock(
       .map((id) => Number(id))
       .filter((id) => Number.isFinite(id) && id > 0);
 
-    const catalog = await fetchCatalogVariants(pt.printifyBlueprintId, pt.printifyProviderId, apiToken);
+    const catalog = await fetchCatalogVariants(pt.printifyBlueprintId, providerId, apiToken);
     if (!catalog.ok) {
       result = {
         ...base,
@@ -137,10 +190,27 @@ export async function scanProductTypeStock(
     oosAvailableVariants: result.availableSelected,
     oosTotalVariants: result.totalSelected,
     oosStatus: result.status,
-    oosDetail: JSON.stringify({ unavailableLabels: result.unavailableLabels, error: result.error ?? null }),
+    oosDetail: JSON.stringify({
+      unavailableLabels: result.unavailableLabels,
+      error: result.error ?? null,
+      providerId: result.providerId ?? null,
+      providerName: result.providerName ?? null,
+    }),
   } as Partial<ProductType>);
 
   return result;
+}
+
+/** Parse provider name from a product type's last oosDetail JSON (no Printify call). */
+export function parseOosProviderName(oosDetail: unknown): string | null {
+  if (!oosDetail) return null;
+  try {
+    const parsed = typeof oosDetail === "string" ? JSON.parse(oosDetail || "{}") : oosDetail;
+    const name = (parsed as { providerName?: unknown })?.providerName;
+    return typeof name === "string" && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatDigestBody(results: OosScanRowResult[]): { subject: string; text: string } {
@@ -152,6 +222,8 @@ function formatDigestBody(results: OosScanRowResult[]): { subject: string; text:
   const lines: string[] = [
     `AppAI daily catalogue stock report — ${new Date().toISOString().slice(0, 10)}`,
     "",
+    "Stock is checked per product's stored Printify provider (not merged across suppliers).",
+    "",
   ];
 
   if (fullyOos.length === 0 && critical.length === 0 && errored.length === 0) {
@@ -159,7 +231,9 @@ function formatDigestBody(results: OosScanRowResult[]): { subject: string; text:
   } else {
     if (fullyOos.length > 0) {
       lines.push(`FULLY OUT OF STOCK (${fullyOos.length}) — Resync Prices / customizer will likely fail for these:`);
-      for (const r of fullyOos) lines.push(`  - ${r.productTypeName} (product type ${r.productTypeId})`);
+      for (const r of fullyOos) {
+        lines.push(`  - ${r.productTypeName} via ${providerLabel(r)} (product type ${r.productTypeId})`);
+      }
       lines.push("");
     }
     if (critical.length > 0) {
@@ -167,14 +241,16 @@ function formatDigestBody(results: OosScanRowResult[]): { subject: string; text:
       for (const r of critical) {
         const sample = r.unavailableLabels.slice(0, 3).join(", ");
         lines.push(
-          `  - ${r.productTypeName}: ${r.availableSelected}/${r.totalSelected} variants in stock${sample ? ` (e.g. ${sample})` : ""}`,
+          `  - ${r.productTypeName} via ${providerLabel(r)}: ${r.availableSelected}/${r.totalSelected} variants in stock${sample ? ` (e.g. ${sample})` : ""}`,
         );
       }
       lines.push("");
     }
     if (errored.length > 0) {
       lines.push(`COULD NOT SCAN (${errored.length}) — check Printify token/blueprint:`);
-      for (const r of errored) lines.push(`  - ${r.productTypeName}: ${r.error ?? "unknown error"}`);
+      for (const r of errored) {
+        lines.push(`  - ${r.productTypeName} via ${providerLabel(r)}: ${r.error ?? "unknown error"}`);
+      }
       lines.push("");
     }
     lines.push(`${ok.length} other product(s) OK.`);
@@ -243,6 +319,8 @@ export async function runOosCatalogueScan(
     }
   }
 
+  providerNameCache.clear();
+
   const productTypes = (await storage.getActiveProductTypes()).filter(
     (pt) => pt.printifyBlueprintId != null && pt.printifyProviderId != null && pt.merchantId != null,
   );
@@ -272,6 +350,8 @@ export async function runOosCatalogueScan(
         availableSelected: 0,
         totalSelected: 0,
         unavailableLabels: [],
+        providerId: pt.printifyProviderId ?? null,
+        providerName: null,
         error: err?.message ?? String(err),
       });
     }

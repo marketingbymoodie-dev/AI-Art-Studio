@@ -112,7 +112,7 @@ import {
   type GenerationBillingMode,
 } from "./generation-billing";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
-import { runOosCatalogueScan, scanProductTypeStock } from "./oos-catalogue-report";
+import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
 import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
@@ -13422,18 +13422,6 @@ ${orientationExtra}
         }
       }
 
-      // Check if this blueprint is already imported for this merchant
-      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
-      const alreadyImported = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintIdNum);
-      if (alreadyImported) {
-        return res.status(400).json({
-          error: `This product is already in your catalog as "${alreadyImported.name}". Open Products to edit it, or delete it there before importing again.`,
-          code: "BLUEPRINT_ALREADY_IMPORTED",
-          existingProductTypeId: alreadyImported.id,
-          existingProductName: alreadyImported.name,
-        });
-      }
-
       // Fetch print providers for this blueprint with retry logic
       const providersResponse = await fetchWithRetry(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
@@ -13473,6 +13461,27 @@ ${orientationExtra}
         return res.status(400).json({
           error: "Selected print provider is not available for this blueprint.",
           code: "PROVIDER_INVALID",
+        });
+      }
+
+      // Unique on blueprint + provider (matches Products Import UI: re-import the same
+      // blueprint with a different supplier for a separate EU/US listing).
+      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+      const alreadyImported = existingTypes.find(
+        (pt) =>
+          pt.printifyBlueprintId === blueprintIdNum &&
+          Number(pt.printifyProviderId) === providerId,
+      );
+      if (alreadyImported) {
+        const providerTitle =
+          (providers as Array<{ id: number; title?: string }>).find((p) => Number(p.id) === providerId)?.title ||
+          `provider #${providerId}`;
+        return res.status(400).json({
+          error: `This product is already in your catalog as "${alreadyImported.name}" via ${providerTitle}. Open Products to edit it, or delete it there before importing again. To list the same blueprint with a different supplier, pick that supplier instead.`,
+          code: "BLUEPRINT_ALREADY_IMPORTED",
+          existingProductTypeId: alreadyImported.id,
+          existingProductName: alreadyImported.name,
+          existingProviderId: alreadyImported.printifyProviderId,
         });
       }
 
@@ -16155,11 +16164,34 @@ ${orientationExtra}
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
+        // When the real issue is a fully-OOS provider, say so — not "Retry / wait a minute".
+        let oosStatusHint = productType.oosStatus ?? null;
+        let providerNameHint = parseOosProviderName(productType.oosDetail);
+        try {
+          const scan = await scanProductTypeStock(productType, apiToken);
+          oosStatusHint = scan.status;
+          providerNameHint = scan.providerName ?? providerNameHint;
+        } catch (scanErr: any) {
+          console.warn("[Printify Costs] OOS scan after cost failure:", scanErr?.message ?? scanErr);
+        }
+        if (oosStatusHint === "fully_oos") {
+          const via = providerNameHint ? ` for ${providerNameHint}` : "";
+          return res.status(502).json({
+            error: `Printify stock is currently unavailable${via}. Suggested retail can't be calculated until variants are back in stock.`,
+            code: "PRINTIFY_FULLY_OOS",
+            oosStatus: "fully_oos",
+            providerName: providerNameHint,
+            message: "The daily catalogue stock report will email when status changes. Use Scan stock now anytime.",
+            diagnostics,
+          });
+        }
         const lastErr = diagnostics.find((d) => d.error)?.error?.slice(0, 300);
         return res.status(502).json({
           error: "Failed to fetch production costs from Printify",
           message: lastErr || "All cost lookup strategies failed. Check Railway logs for diagnostics.",
           diagnostics,
+          oosStatus: oosStatusHint,
+          providerName: providerNameHint,
         });
       }
 
@@ -18787,6 +18819,7 @@ ${orientationExtra}
           oosAvailableVariants: pt.oosAvailableVariants ?? null,
           oosTotalVariants: pt.oosTotalVariants ?? null,
           lastOosScanAt: pt.lastOosScanAt ?? null,
+          printifyProviderName: parseOosProviderName(pt.oosDetail) ?? null,
         });
       }
       return res.json({ blanks: enriched });
