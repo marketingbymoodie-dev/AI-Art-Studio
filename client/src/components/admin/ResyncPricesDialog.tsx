@@ -25,6 +25,57 @@ type Blank = {
   variants: BlankVariant[];
 };
 
+type CostsResponse = {
+  costs: Record<string, number>;
+  costsBoth?: Record<string, number>;
+  shopifyVariantCosts: Record<string, number>;
+  shopifyVariantCostsBoth?: Record<string, number>;
+  printifyVariantLabels: Record<string, string>;
+  costsByNormalizedLabel?: Record<string, number>;
+  costsBothByNormalizedLabel?: Record<string, number>;
+  supportsBothSides?: boolean;
+  cached: boolean;
+};
+
+function roundUpTo95(raw: number): number {
+  return Math.ceil(raw) - 0.05;
+}
+
+function resolveVariantCostCents(
+  v: BlankVariant,
+  costs: Record<string, number> | undefined,
+  shopifyCosts: Record<string, number> | undefined,
+  byLabel: Record<string, number> | undefined,
+  printifyVariantLabels: Record<string, string> | undefined,
+): number | undefined {
+  let costCents: number | undefined = shopifyCosts?.[v.id];
+  if (costCents == null && v.id.startsWith("printify:")) {
+    costCents = costs?.[v.id.slice("printify:".length)];
+  }
+  if (costCents == null) costCents = costs?.[v.id];
+  if (costCents == null && v.title && byLabel) {
+    costCents = byLabel[normalizeVariantLabelForCostMatch(v.title)];
+  }
+  if (costCents == null && v.title && printifyVariantLabels && costs) {
+    const labelToCost: Record<string, number> = {};
+    for (const [printifyVid, label] of Object.entries(printifyVariantLabels)) {
+      const c = costs[printifyVid];
+      if (c != null) labelToCost[normalizeVariantLabelForCostMatch(label)] = c;
+    }
+    const normTitle = normalizeVariantLabelForCostMatch(v.title);
+    costCents = labelToCost[normTitle];
+    if (costCents == null) {
+      for (const [label, cost] of Object.entries(labelToCost)) {
+        if (normTitle.includes(label) || label.includes(normTitle)) {
+          costCents = cost;
+          break;
+        }
+      }
+    }
+  }
+  return costCents;
+}
+
 export type ResyncPricesDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -45,6 +96,7 @@ export default function ResyncPricesDialog({
 }: ResyncPricesDialogProps) {
   const { toast } = useToast();
   const [pricesMap, setPricesMap] = useState<Record<string, string>>({});
+  const [pricesBothMap, setPricesBothMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [markupPercent, setMarkupPercent] = useState(60);
 
@@ -71,13 +123,7 @@ export default function ResyncPricesDialog({
     return deduped;
   }, [blank?.variants]);
 
-  const { data: costsData, isLoading: costsLoading } = useQuery<{
-    costs: Record<string, number>;
-    shopifyVariantCosts: Record<string, number>;
-    printifyVariantLabels: Record<string, string>;
-    costsByNormalizedLabel?: Record<string, number>;
-    cached: boolean;
-  }>({
+  const { data: costsData, isLoading: costsLoading, refetch: refetchCosts } = useQuery<CostsResponse>({
     queryKey: ["/api/admin/printify/costs", productTypeId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${productTypeId}`);
@@ -86,52 +132,81 @@ export default function ResyncPricesDialog({
     enabled: open && !!productTypeId,
   });
 
+  /** Existing front+back retail map saved on the product type (if any). */
+  const { data: productTypeRow } = useQuery<{
+    id: number;
+    variantPricesBoth?: string | Record<string, string> | null;
+  }>({
+    queryKey: ["/api/admin/product-types", productTypeId, "resync-both"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/product-types");
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : data.productTypes ?? data ?? [];
+      return (list as any[]).find((pt) => Number(pt.id) === Number(productTypeId)) ?? null;
+    },
+    enabled: open && !!productTypeId,
+  });
+
+  const existingBothPrices = useMemo(() => {
+    const raw = productTypeRow?.variantPricesBoth;
+    if (!raw) return {} as Record<string, string>;
+    if (typeof raw === "object") return raw as Record<string, string>;
+    try {
+      return JSON.parse(raw || "{}") as Record<string, string>;
+    } catch {
+      return {};
+    }
+  }, [productTypeRow?.variantPricesBoth]);
+
   const costsAvailable =
     !!costsData?.costs && Object.keys(costsData.costs).length > 0;
 
+  const supportsBothSidePricing = !!(
+    costsData?.supportsBothSides &&
+    costsData?.costsBoth &&
+    Object.keys(costsData.costsBoth).length > 0
+  );
+
   const recommendedPrices = useMemo(() => {
-    if (!costsAvailable || variants.length === 0) return {};
+    if (!costsAvailable || variants.length === 0 || !costsData) return {};
     const result: Record<string, string> = {};
-    const labelToCost: Record<string, number> = {};
-    if (costsData.printifyVariantLabels && costsData.costs) {
-      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-        const costCents = costsData.costs[printifyVid];
-        if (costCents != null) {
-          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
-        }
-      }
-    }
     for (const v of variants) {
-      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
-      if (costCents == null && v.id.startsWith("printify:")) {
-        costCents = costsData.costs?.[v.id.slice("printify:".length)];
-      }
-      if (costCents == null) costCents = costsData.costs?.[v.id];
-      if (costCents == null && v.title && costsData.costsByNormalizedLabel) {
-        costCents = costsData.costsByNormalizedLabel[normalizeVariantLabelForCostMatch(v.title)];
-      }
-      if (costCents == null && v.title) {
-        const normTitle = normalizeVariantLabelForCostMatch(v.title);
-        costCents = labelToCost[normTitle];
-        if (costCents == null) {
-          for (const [label, cost] of Object.entries(labelToCost)) {
-            if (normTitle.includes(label) || label.includes(normTitle)) {
-              costCents = cost;
-              break;
-            }
-          }
-        }
-      }
+      const costCents = resolveVariantCostCents(
+        v,
+        costsData.costs,
+        costsData.shopifyVariantCosts,
+        costsData.costsByNormalizedLabel,
+        costsData.printifyVariantLabels,
+      );
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
-      result[v.id] = (Math.ceil(raw) - 0.05).toFixed(2);
+      result[v.id] = roundUpTo95(raw).toFixed(2);
     }
     return result;
   }, [costsAvailable, costsData, variants, markupPercent]);
 
+  const recommendedPricesBoth = useMemo(() => {
+    if (!supportsBothSidePricing || variants.length === 0 || !costsData) return {};
+    const result: Record<string, string> = {};
+    for (const v of variants) {
+      const costCents = resolveVariantCostCents(
+        v,
+        costsData.costsBoth,
+        costsData.shopifyVariantCostsBoth,
+        costsData.costsBothByNormalizedLabel,
+        costsData.printifyVariantLabels,
+      );
+      if (costCents == null) continue;
+      const raw = (costCents / 100) * (1 + markupPercent / 100);
+      result[v.id] = roundUpTo95(raw).toFixed(2);
+    }
+    return result;
+  }, [supportsBothSidePricing, costsData, variants, markupPercent]);
+
   useEffect(() => {
     if (!open) {
       setPricesMap({});
+      setPricesBothMap({});
       setMarkupPercent(60);
       return;
     }
@@ -140,7 +215,17 @@ export default function ResyncPricesDialog({
       prefilled[v.id] = v.price && v.price !== "0.00" ? v.price : "";
     }
     setPricesMap(prefilled);
-  }, [open, productTypeId, variants]);
+
+    const prefilledBoth: Record<string, string> = {};
+    for (const v of variants) {
+      const existing =
+        existingBothPrices[v.id] ||
+        existingBothPrices[v.title] ||
+        "";
+      prefilledBoth[v.id] = existing && existing !== "0.00" ? String(existing) : "";
+    }
+    setPricesBothMap(prefilledBoth);
+  }, [open, productTypeId, variants, existingBothPrices]);
 
   useEffect(() => {
     if (!open || Object.keys(recommendedPrices).length === 0) return;
@@ -157,6 +242,35 @@ export default function ResyncPricesDialog({
     });
   }, [recommendedPrices, open]);
 
+  useEffect(() => {
+    if (!open || !supportsBothSidePricing || Object.keys(recommendedPricesBoth).length === 0) return;
+    setPricesBothMap((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [id, price] of Object.entries(recommendedPricesBoth)) {
+        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
+          next[id] = price;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [recommendedPricesBoth, open, supportsBothSidePricing]);
+
+  async function handleRefreshCosts() {
+    try {
+      await apiRequest("POST", "/api/admin/printify/costs/clear-cache");
+      await refetchCosts();
+      toast({ title: "Costs refreshed", description: "Latest Printify production costs loaded." });
+    } catch (err: any) {
+      toast({
+        title: "Could not refresh costs",
+        description: err?.message ?? "Unknown error",
+        variant: "destructive",
+      });
+    }
+  }
+
   async function handleSubmit() {
     const prices = Object.fromEntries(
       Object.entries(pricesMap).filter(([, v]) => v && parseFloat(v) > 0),
@@ -164,10 +278,36 @@ export default function ResyncPricesDialog({
     if (Object.keys(prices).length === 0) {
       toast({
         title: "No prices entered",
-        description: "Please enter at least one price.",
+        description: "Please enter at least one front-only price.",
         variant: "destructive",
       });
       return;
+    }
+
+    let pricesBoth: Record<string, string> | undefined;
+    if (supportsBothSidePricing) {
+      pricesBoth = Object.fromEntries(
+        Object.entries(pricesBothMap).filter(([, v]) => v && parseFloat(v) > 0),
+      );
+      for (const [id, front] of Object.entries(prices)) {
+        const both = pricesBoth[id];
+        if (!both) {
+          toast({
+            title: "Front+back prices required",
+            description: `Enter a front+back price for every variant that has a front price (missing: ${variants.find((v) => v.id === id)?.title ?? id}).`,
+            variant: "destructive",
+          });
+          return;
+        }
+        if (parseFloat(both) < parseFloat(front)) {
+          toast({
+            title: "Invalid front+back price",
+            description: "Front+back should be at least the front-only price.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
     }
 
     setLoading(true);
@@ -175,15 +315,21 @@ export default function ResyncPricesDialog({
       const endpoint = customizerPageId
         ? `/api/appai/customizer-pages/${customizerPageId}/sync-prices`
         : `/api/admin/product-types/${productTypeId}/sync-prices`;
-      const res = await apiRequest("POST", endpoint, { variantPrices: prices });
+      const res = await apiRequest("POST", endpoint, {
+        variantPrices: prices,
+        ...(pricesBoth ? { variantPricesBoth: pricesBoth } : {}),
+      });
       const data = await res.json();
       if (data.success) {
         queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
         queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
         queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
         toast({
           title: "Prices updated",
-          description: `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.`,
+          description: pricesBoth
+            ? `Updated ${data.successCount} of ${data.totalCount} Shopify (front) prices and saved front+back retail for the storefront.`
+            : `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.`,
         });
         onOpenChange(false);
         onSuccess?.();
@@ -201,7 +347,7 @@ export default function ResyncPricesDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className={supportsBothSidePricing ? "max-w-lg" : "max-w-md"}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <DollarSign className="h-5 w-5" />
@@ -211,6 +357,9 @@ export default function ResyncPricesDialog({
         <div className="space-y-4 pt-2">
           <p className="text-sm text-muted-foreground">
             Prices are calculated from Printify production costs. Adjust markup and apply suggested prices, or edit individually.
+            {supportsBothSidePricing
+              ? " Front-only syncs to Shopify; front+back is used when customers choose Print Side = Both."
+              : ""}
           </p>
 
           {needsShopify ? (
@@ -219,8 +368,8 @@ export default function ResyncPricesDialog({
             </p>
           ) : (
             <>
-              <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg border">
-                <div className="flex-1">
+              <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg border flex-wrap">
+                <div className="flex-1 min-w-[120px]">
                   <Label htmlFor="resync-markup" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Markup
                   </Label>
@@ -236,6 +385,16 @@ export default function ResyncPricesDialog({
                   </div>
                 </div>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-10"
+                  onClick={() => void handleRefreshCosts()}
+                  disabled={costsLoading}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${costsLoading ? "animate-spin" : ""}`} />
+                  Refresh Costs
+                </Button>
+                <Button
                   variant="secondary"
                   size="sm"
                   className="h-10"
@@ -246,11 +405,24 @@ export default function ResyncPricesDialog({
                       next[id] = price;
                     }
                     setPricesMap(next);
+                    if (supportsBothSidePricing) {
+                      const nextBoth: Record<string, string> = {};
+                      for (const [id, price] of Object.entries(recommendedPricesBoth)) {
+                        nextBoth[id] = price;
+                      }
+                      setPricesBothMap(nextBoth);
+                    }
                   }}
                 >
                   Apply All Suggested
                 </Button>
               </div>
+
+              {!supportsBothSidePricing && costsAvailable && (
+                <p className="text-xs text-muted-foreground">
+                  No front+back cost tier yet for this product. Click Refresh Costs if it supports a back print area.
+                </p>
+              )}
 
               {blanksLoading || costsLoading ? (
                 <Skeleton className="h-40 w-full" />
@@ -259,27 +431,55 @@ export default function ResyncPricesDialog({
                   No variant data available. Refresh variants on the product first.
                 </p>
               ) : (
-                <div className="space-y-2 overflow-y-auto pr-1" style={{ maxHeight: "240px" }}>
+                <div className="space-y-2 overflow-y-auto pr-1" style={{ maxHeight: "280px" }}>
                   {variants.map((v) => (
                     <div key={v.id} className="space-y-1">
-                      <div className="flex justify-between items-end">
-                        <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                          {v.title}
-                        </Label>
-                        {recommendedPrices[v.id] ? (
-                          <span className="text-[10px] text-muted-foreground">
-                            Suggested: ${recommendedPrices[v.id]}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                        <Input
-                          className="pl-7 text-sm"
-                          placeholder="0.00"
-                          value={pricesMap[v.id] ?? ""}
-                          onChange={(e) => setPricesMap({ ...pricesMap, [v.id]: e.target.value })}
-                        />
+                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        {v.title}
+                      </Label>
+                      <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
+                        <div className="space-y-1">
+                          <div className="flex justify-between items-end gap-2">
+                            <span className="text-[10px] text-muted-foreground">
+                              {supportsBothSidePricing ? "Front only" : "Retail"}
+                            </span>
+                            {recommendedPrices[v.id] ? (
+                              <span className="text-[10px] text-muted-foreground">
+                                Suggested: ${recommendedPrices[v.id]}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                            <Input
+                              className="pl-7 text-sm"
+                              placeholder="0.00"
+                              value={pricesMap[v.id] ?? ""}
+                              onChange={(e) => setPricesMap({ ...pricesMap, [v.id]: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        {supportsBothSidePricing && (
+                          <div className="space-y-1">
+                            <div className="flex justify-between items-end gap-2">
+                              <span className="text-[10px] text-muted-foreground">Front + back</span>
+                              {recommendedPricesBoth[v.id] ? (
+                                <span className="text-[10px] text-muted-foreground">
+                                  Suggested: ${recommendedPricesBoth[v.id]}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                              <Input
+                                className="pl-7 text-sm"
+                                placeholder="0.00"
+                                value={pricesBothMap[v.id] ?? ""}
+                                onChange={(e) => setPricesBothMap({ ...pricesBothMap, [v.id]: e.target.value })}
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}

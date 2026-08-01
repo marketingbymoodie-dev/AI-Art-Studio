@@ -18357,7 +18357,10 @@ ${orientationExtra}
     const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
     if (!dbPage) return res.status(404).json({ error: "Page not found" });
 
-    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    const { variantPrices, variantPricesBoth } = req.body as {
+      variantPrices?: Record<string, string>;
+      variantPricesBoth?: Record<string, string>;
+    };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
@@ -18369,11 +18372,24 @@ ${orientationExtra}
         return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
       }
     }
+    if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      for (const [vid, price] of Object.entries(variantPricesBoth)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid front+back price for variant ${vid}: "${price}". Must be a positive number.`,
+          });
+        }
+      }
+    }
 
     const productTypes = await storage.getActiveProductTypes();
-    const matchedType = productTypes.find(
-      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
-    );
+    const matchedType =
+      productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)) ||
+      (dbPage.productTypeId
+        ? productTypes.find((pt: any) => Number(pt.id) === Number(dbPage.productTypeId))
+        : undefined) ||
+      (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined);
 
     const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
       shop,
@@ -18388,7 +18404,21 @@ ${orientationExtra}
       },
     });
 
-    return res.json({ success: true, updated, successCount, totalCount });
+    // Persist front+back retail on the product type for storefront “from $X” + ATC surcharge.
+    const ptId = matchedType?.id ?? (dbPage.productTypeId ? Number(dbPage.productTypeId) : null);
+    if (ptId && variantPricesBoth && typeof variantPricesBoth === "object") {
+      await storage.updateProductType(ptId, {
+        variantPricesBoth: JSON.stringify(variantPricesBoth),
+      } as any);
+    }
+
+    return res.json({
+      success: true,
+      updated,
+      successCount,
+      totalCount,
+      bothPricesSaved: !!(ptId && variantPricesBoth && Object.keys(variantPricesBoth).length > 0),
+    });
   }));
 
   /** POST /api/admin/product-types/:id/sync-prices — resync Shopify variant prices from Products admin */
@@ -18419,7 +18449,10 @@ ${orientationExtra}
       });
     }
 
-    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    const { variantPrices, variantPricesBoth } = req.body as {
+      variantPrices?: Record<string, string>;
+      variantPricesBoth?: Record<string, string>;
+    };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
@@ -18427,6 +18460,16 @@ ${orientationExtra}
       const num = parseFloat(String(price));
       if (isNaN(num) || num <= 0) {
         return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+      }
+    }
+    if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      for (const [vid, price] of Object.entries(variantPricesBoth)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid front+back price for variant ${vid}: "${price}". Must be a positive number.`,
+          });
+        }
       }
     }
 
@@ -18438,7 +18481,19 @@ ${orientationExtra}
       variantPrices,
     });
 
-    return res.json({ success: true, updated, successCount, totalCount });
+    if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      await storage.updateProductType(productTypeId, {
+        variantPricesBoth: JSON.stringify(variantPricesBoth),
+      } as any);
+    }
+
+    return res.json({
+      success: true,
+      updated,
+      successCount,
+      totalCount,
+      bothPricesSaved: !!(variantPricesBoth && Object.keys(variantPricesBoth).length > 0),
+    });
   }));
 
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */

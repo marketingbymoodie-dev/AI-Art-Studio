@@ -45,3 +45,12 @@ Free-plan COGS for the token’s account. Premium is still a UI estimate (`×0.8
 ## Refreshing live product costs
 
 `GET /api/admin/printify/costs/:productTypeId` now probes front+back when a `back` placeholder exists and returns `costs` + `costsBoth`. Clear cache / Refresh Costs after deploy to populate both tiers on existing product types.
+
+## Updating existing Customizer Pages / Products
+
+Use **Resync Prices** (Customizer Pages or Products admin):
+
+1. Open Resync Prices on the page/product.
+2. Click **Refresh Costs** if Front+back columns don’t appear yet (needs a fresh dual-side COGS probe).
+3. Adjust markup → **Apply All Suggested** (or edit Front only / Front + back).
+4. **Resync Prices** — writes front prices to Shopify and saves `variant_prices_both` on the product type for storefront “from $X” + Both surcharge.
