@@ -6464,6 +6464,15 @@ ${orientationExtra}
         safeZoneMargin,
       },
       variantMap,
+      // Front+back retail tier (Shopify base variants stay at front-only prices).
+      variantPricesBoth: (() => {
+        try {
+          const raw = (productTypeToUse as any).variantPricesBoth;
+          return typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
+        } catch {
+          return {};
+        }
+      })(),
     };
 
     if (resolvedFrom) {
@@ -8969,7 +8978,7 @@ ${orientationExtra}
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
-      const { shop: shopRaw, variantId, designId, mockupUrl } = req.body;
+      const { shop: shopRaw, variantId, designId, mockupUrl, price: priceOverride } = req.body;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
@@ -8977,6 +8986,13 @@ ${orientationExtra}
       if (!mockupUrl.startsWith("https://")) {
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
       }
+      // Optional retail override for front+back (or other surcharge tiers). Validated below.
+      const overridePriceNum =
+        priceOverride != null && String(priceOverride).trim() !== ""
+          ? parseFloat(String(priceOverride))
+          : NaN;
+      const hasPriceOverride = Number.isFinite(overridePriceNum) && overridePriceNum > 0;
+      const overridePriceFormatted = hasPriceOverride ? overridePriceNum.toFixed(2) : null;
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) {
         return res.status(403).json({ success: false, error: "Shop not authorized" });
@@ -8994,6 +9010,18 @@ ${orientationExtra}
         if (!existing.cartAddedAt) {
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
           await storage.updatePublishedProduct(existing.id, { expiresAt: sixHours });
+        }
+        // Keep shadow price in sync when Print Side / surcharge tier changes for the same design.
+        if (overridePriceFormatted && existing.shopifyVariantId) {
+          try {
+            await fetch(`${apiBase}/variants/${existing.shopifyVariantId}.json`, {
+              method: "PUT",
+              headers,
+              body: JSON.stringify({ variant: { id: Number(existing.shopifyVariantId), price: overridePriceFormatted } }),
+            });
+          } catch (priceErr: any) {
+            console.warn(`[ShadowProduct] Failed to update reused shadow price:`, priceErr?.message || priceErr);
+          }
         }
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
@@ -9068,7 +9096,7 @@ ${orientationExtra}
             published: false,
             tags: 'appai-shadow',
             variants: [{
-              price: baseVariant.price,
+              price: overridePriceFormatted || baseVariant.price,
               compare_at_price: baseVariant.compare_at_price || null,
               taxable: baseVariant.taxable,
               requires_shipping: baseVariant.requires_shipping,
@@ -15427,17 +15455,21 @@ ${orientationExtra}
 
   // Helper: attempt to create a Printify temp product and immediately delete it, returning variant costs.
   // Returns { success, costs, tempProductId, error } — always deletes the product if created.
+  // `placeholderPosition` may be a single position or an ordered list (e.g. ["front","back"] for
+  // front+back COGS probes — Printify charges per filled placeholder).
   async function tryCreateTempProductForCosts(
     shopId: string,
     apiToken: string,
     blueprintId: number,
     providerId: number,
     variantIds: number[],
-    placeholderPosition: string,
+    placeholderPosition: string | string[],
     imageSpec: { id: string; x: number; y: number; scale: number; angle: number } | null
   ): Promise<{ success: boolean; costs: Record<string, number>; tempProductId?: string; status?: number; error?: string }> {
-    // Apparel/DTG almost always prints on "front"; catalog placeholder names vary.
-    const printPosition = imageSpec ? "front" : placeholderPosition;
+    const positions = (Array.isArray(placeholderPosition) ? placeholderPosition : [placeholderPosition])
+      .map((p) => String(p || "").trim())
+      .filter(Boolean);
+    const effectivePositions = positions.length > 0 ? positions : ["front"];
     const body: any = {
       title: `_cost_probe_${Date.now()}`,
       description: "Temporary product for cost lookup - will be deleted immediately",
@@ -15446,7 +15478,10 @@ ${orientationExtra}
       variants: variantIds.map((id) => ({ id, price: 2499, is_enabled: true })),
       print_areas: [{
         variant_ids: variantIds,
-        placeholders: [{ position: printPosition, images: imageSpec ? [imageSpec] : [] }],
+        placeholders: effectivePositions.map((position) => ({
+          position,
+          images: imageSpec ? [imageSpec] : [],
+        })),
       }],
     };
     const createResp = await fetch(
@@ -15898,9 +15933,12 @@ ${orientationExtra}
       }
 
       // Use import/refresh cache whenever it covers active variants (no TTL — refresh-variants updates it).
-      const { costs: cachedCostsOnly } = parsePrintifyCostsCache(productType.printifyCosts);
+      const cachedParsed = parsePrintifyCostsCache(productType.printifyCosts);
+      const cachedCostsOnly = cachedParsed.front;
+      const cachedBothOnly = cachedParsed.both;
       if (cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds)) {
         const cachedCosts = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
+        const cachedCostsBoth = filterCostsToPrintifyVariantIds(cachedBothOnly, currentPrintifyVariantIds);
         const svIds = (typeof productType.shopifyVariantIds === "string"
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
@@ -15923,6 +15961,7 @@ ${orientationExtra}
           }
         }
         const cachedShopifyCosts: Record<string, number> = {};
+        const cachedShopifyCostsBoth: Record<string, number> = {};
         for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
           // Try direct lookup first (in case keys happen to match)
           let vmEntry = vm[mapKey] as any;
@@ -15934,12 +15973,19 @@ ${orientationExtra}
           if (vmEntry?.printifyVariantId && cachedCosts[String(vmEntry.printifyVariantId)] !== undefined) {
             cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
           }
+          if (vmEntry?.printifyVariantId && cachedCostsBoth[String(vmEntry.printifyVariantId)] !== undefined) {
+            cachedShopifyCostsBoth[String(shopifyVid)] = cachedCostsBoth[String(vmEntry.printifyVariantId)];
+          }
         }
         return res.json({
           costs: cachedCosts,
+          costsBoth: cachedCostsBoth,
           shopifyVariantCosts: cachedShopifyCosts,
+          shopifyVariantCostsBoth: cachedShopifyCostsBoth,
           printifyVariantLabels: cachedLabels,
           costsByNormalizedLabel: buildCostsByNormalizedLabel(cachedCosts, cachedLabels),
+          costsBothByNormalizedLabel: buildCostsByNormalizedLabel(cachedCostsBoth, cachedLabels),
+          supportsBothSides: Object.keys(cachedCostsBoth).length > 0,
           cached: true,
         });
       }
@@ -15985,9 +16031,6 @@ ${orientationExtra}
           console.log(
             `[Printify Costs] Waterfall failed; serving ${Object.keys(platformCosts).length} costs from platform catalog cache`,
           );
-          await storage.updateProductType(productTypeId, {
-            printifyCosts: serializePrintifyCostsCache(platformCosts),
-          });
           costs = platformCosts;
           strategyUsed = "platform_catalog_cache";
         }
@@ -16005,9 +16048,71 @@ ${orientationExtra}
 
       console.log(`[Printify Costs] Success via "${strategyUsed}", extracted ${Object.keys(costs).length} costs`);
 
-      // Cache costs on the product type
+      // Probe front+back COGS when the blueprint has a separate back placeholder.
+      // Catalog/existing-product strategies usually reflect front-only placement.
+      let costsBoth: Record<string, number> = {};
+      let hasBackPlaceholder = false;
+      try {
+        const positions: { position?: string }[] =
+          typeof productType.placeholderPositions === "string"
+            ? JSON.parse(productType.placeholderPositions || "[]")
+            : (productType.placeholderPositions || []);
+        hasBackPlaceholder = positions.some((p) => String(p?.position || "").toLowerCase() === "back");
+      } catch {
+        hasBackPlaceholder = false;
+      }
+      if (!hasBackPlaceholder && !productType.isAllOverPrint) {
+        const firstVid = printifyVariantIds[0];
+        try {
+          const vResp = await fetch(
+            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
+            { headers: { Authorization: `Bearer ${apiToken}` } },
+          );
+          if (vResp.ok) {
+            const vData = await vResp.json();
+            const variants = Array.isArray(vData.variants) ? vData.variants : [];
+            const sample = variants.find((v: any) => Number(v.id) === Number(firstVid)) || variants[0];
+            const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+            hasBackPlaceholder = ph.some((p: any) => String(p?.position || "").toLowerCase() === "back");
+          }
+        } catch {
+          /* ignore — fall back to hasBackPlaceholder */
+        }
+      }
+
+      if (hasBackPlaceholder && shopId?.trim() && !productType.isAllOverPrint) {
+        const mockupUrl: string | undefined =
+          baseMockupImages.primary ||
+          baseMockupImages.front ||
+          (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
+        const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
+        if (probeImageId) {
+          const chunk = printifyVariantIds.slice(0, 10);
+          const bothProbe = await tryCreateTempProductForCosts(
+            shopId,
+            apiToken,
+            productType.printifyBlueprintId,
+            productType.printifyProviderId,
+            chunk,
+            ["front", "back"],
+            { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 },
+          );
+          if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+            costsBoth = bothProbe.costs;
+            console.log(`[Printify Costs] Front+back probe extracted ${Object.keys(costsBoth).length} costs`);
+          } else {
+            console.warn(
+              `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
+            );
+          }
+        }
+      }
+
+      // Cache front (+ optional both) costs on the product type
       await storage.updateProductType(productTypeId, {
-        printifyCosts: serializePrintifyCostsCache(costs),
+        printifyCosts: serializePrintifyCostsCache(
+          Object.keys(costsBoth).length > 0 ? { front: costs, both: costsBoth } : { front: costs },
+        ),
       });
 
       // Build variant-key → cost mapping
@@ -16054,10 +16159,13 @@ ${orientationExtra}
 
       return res.json({
         costs,
+        costsBoth,
         variantKeyCosts,
         shopifyVariantCosts,
         printifyVariantLabels,
         costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
+        costsBothByNormalizedLabel: buildCostsByNormalizedLabel(costsBoth, printifyVariantLabels),
+        supportsBothSides: Object.keys(costsBoth).length > 0,
         cached: false,
         strategyUsed,
       });
@@ -17418,13 +17526,15 @@ ${orientationExtra}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
       baseProductId?: string;
       productTypeId?: number;
       variantPrices?: Record<string, string>;
+      /** Front+back retail prices keyed like variantPrices — not written to Shopify base variants. */
+      variantPricesBoth?: Record<string, string>;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
       styleConfig?: unknown;
     };
@@ -17650,6 +17760,26 @@ ${orientationExtra}
     );
     const resolvedProductTypeId: number | null =
       matchedType?.id ?? incomingProductTypeId ?? ptForSync?.id ?? null;
+
+    // Persist front+back retail map on the product type (Shopify base variants stay front-only).
+    if (
+      resolvedProductTypeId &&
+      variantPricesBoth &&
+      typeof variantPricesBoth === "object" &&
+      Object.keys(variantPricesBoth).length > 0
+    ) {
+      for (const [vid, price] of Object.entries(variantPricesBoth)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid front+back price for variant ${vid}: "${price}". Must be a positive number.`,
+          });
+        }
+      }
+      await storage.updateProductType(resolvedProductTypeId, {
+        variantPricesBoth: JSON.stringify(variantPricesBoth),
+      } as any);
+    }
 
     // ── Write variant prices to Shopify ──────────────────────────────────────
     if (variantPrices && typeof variantPrices === "object") {

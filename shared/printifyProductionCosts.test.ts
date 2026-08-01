@@ -30,11 +30,30 @@ describe("printifyProductionCosts", () => {
     expect(costs).toEqual({ "55": 400 });
   });
 
-  it("round-trips cache serialization", () => {
+  it("round-trips cache serialization (front-only → tiered shape)", () => {
     const raw = serializePrintifyCostsCache({ "1": 500 });
-    const { costs, fetchedAt } = parsePrintifyCostsCache(raw);
+    const { costs, front, both, fetchedAt } = parsePrintifyCostsCache(raw);
     expect(costs).toEqual({ "1": 500 });
+    expect(front).toEqual({ "1": 500 });
+    expect(both).toEqual({});
     expect(fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("round-trips front + both tiered cache", () => {
+    const raw = serializePrintifyCostsCache({
+      front: { "1": 900 },
+      both: { "1": 1500 },
+    });
+    const parsed = parsePrintifyCostsCache(raw);
+    expect(parsed.front).toEqual({ "1": 900 });
+    expect(parsed.both).toEqual({ "1": 1500 });
+    expect(parsed.costs).toEqual({ "1": 900 });
+  });
+
+  it("reads legacy flat cache as front-only", () => {
+    const parsed = parsePrintifyCostsCache(JSON.stringify({ "9": 111, _fetchedAt: "2026-01-01T00:00:00.000Z" }));
+    expect(parsed.front).toEqual({ "9": 111 });
+    expect(parsed.both).toEqual({});
   });
 
   it("filters cached costs to active variant IDs", () => {

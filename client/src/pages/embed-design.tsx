@@ -276,6 +276,11 @@ interface ProductTypeConfig {
   /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
   fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
+  /**
+   * Front+back retail prices keyed by shopify variant id and/or `sizeName:colorName`.
+   * Base Shopify variant prices remain front-only; this map drives “from $X” + ATC surcharge.
+   */
+  variantPricesBoth?: Record<string, string>;
 }
 
 type ProductInfoSectionsProps = {
@@ -2768,6 +2773,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
+      variantPricesBoth:
+        dc.variantPricesBoth && typeof dc.variantPricesBoth === "object"
+          ? dc.variantPricesBoth
+          : {},
       isAllOverPrint: dc.isAllOverPrint || false,
       useAopCustomizer: dc.useAopCustomizer,
       storefrontMockupMode: dc.storefrontMockupMode ?? null,
@@ -3128,6 +3137,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
+            variantPricesBoth:
+              designerConfig.variantPricesBoth && typeof designerConfig.variantPricesBoth === "object"
+                ? designerConfig.variantPricesBoth
+                : {},
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             useAopCustomizer: designerConfig.useAopCustomizer,
             storefrontMockupMode: designerConfig.storefrontMockupMode ?? null,
@@ -6922,8 +6935,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Resolve the unique design variant before adding to cart.
     // Fast path: use pre-created shadow variant if available (created in background after mockups).
     // Slow path: call resolve-design-variant on demand (creates shadow product synchronously).
+    // When Print Side includes back and a both-tier retail price exists, always resolve (or
+    // re-resolve) so the shadow SKU price matches the surcharge — never silently undercharge.
+    const atcSizeName =
+      printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize ?? "";
+    const atcColorName =
+      frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
+      selectedFrameColor ??
+      "";
+    const bothRetailForAtc =
+      printPlacementUsesBoth
+        ? resolveBothRetailDollars({
+            sizeName: atcSizeName,
+            colorName: atcColorName,
+            shopifyVariantId: normalizedVariant,
+          })
+        : null;
+    const bothPriceOverride =
+      bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
+
     let finalVariantId = normalizedVariant;
-    if (preShadowVariantId) {
+    if (preShadowVariantId && !bothPriceOverride) {
       // Instant — shadow product was pre-created in the background
       finalVariantId = preShadowVariantId;
       console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
@@ -6949,6 +6981,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             variantId: normalizedVariant,
             designId: properties['_design_id'],
             mockupUrl: mockupFullUrl,
+            ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
           }),
           signal: controller.signal,
         });
@@ -9114,7 +9147,37 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setMockupsStale(false);
   }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
 
-  // Build a price map from shopifyVariants, keyed by size id
+  const bothPricesMap = productTypeConfig?.variantPricesBoth || {};
+  const hasBothRetailPrices = Object.keys(bothPricesMap).length > 0;
+  // Surcharge only when BOTH sides are printed. Back-only is one print area
+  // (blank + back), same retail tier as front-only — not front+back.
+  const printPlacementUsesBoth = printPlacement === "both";
+
+  /** Resolve front+back retail ($) for a size/color (or the active Shopify variant). */
+  const resolveBothRetailDollars = useCallback(
+    (opts?: { sizeName?: string; colorName?: string; shopifyVariantId?: string | null }) => {
+      if (!hasBothRetailPrices) return null;
+      const sizeName = opts?.sizeName ?? "";
+      const colorName = opts?.colorName ?? "";
+      const vid = opts?.shopifyVariantId ?? null;
+      const candidates = [
+        vid ? String(vid) : "",
+        colorName ? `${sizeName}:${colorName}` : "",
+        sizeName ? `${sizeName}:default` : "",
+        sizeName,
+      ].filter(Boolean);
+      for (const key of candidates) {
+        const raw = bothPricesMap[key];
+        const n = raw != null ? parseFloat(String(raw)) : NaN;
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      return null;
+    },
+    [bothPricesMap, hasBothRetailPrices],
+  );
+
+  // Build a price map from shopifyVariants, keyed by size id.
+  // When Print Side includes back and both-tier retail exists, show/charge that tier.
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
@@ -9146,7 +9209,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       if (matchedVariant?.price) {
-        const priceNum = parseFloat(matchedVariant.price);
+        let priceNum = parseFloat(matchedVariant.price);
+        if (printPlacementUsesBoth) {
+          const both = resolveBothRetailDollars({
+            sizeName: size.name,
+            colorName: frameName,
+            shopifyVariantId: matchedVariant.id,
+          });
+          if (both != null) priceNum = both;
+        }
         if (priceNum > 0) {
           priceMap[size.id] = Math.round(priceNum * 100);
         }
@@ -9154,7 +9225,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     return priceMap;
-  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor, showFrameColorSelector])
+  }, [
+    shopifyVariants,
+    printSizes,
+    frameColorObjects,
+    selectedFrameColor,
+    showFrameColorSelector,
+    printPlacementUsesBoth,
+    resolveBothRetailDollars,
+  ])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
@@ -10358,9 +10437,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
                   const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
                   if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
+                  const frontPrice = parseFloat(selected.price);
+                  const sizeName =
+                    printSizes.find((s) => s.id === selectedSize)?.name ??
+                    selected.option1 ??
+                    "";
+                  const colorName =
+                    frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
+                    selected.option2 ??
+                    "";
+                  const bothPrice = resolveBothRetailDollars({
+                    sizeName,
+                    colorName,
+                    shopifyVariantId: selected.id,
+                  });
+                  const showFrom =
+                    hasBothRetailPrices &&
+                    !printPlacementUsesBoth &&
+                    bothPrice != null &&
+                    bothPrice > frontPrice;
+                  const display = printPlacementUsesBoth && bothPrice != null ? bothPrice : frontPrice;
                   return (
                     <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                      ${parseFloat(selected.price).toFixed(2)}
+                      {showFrom ? `from $${frontPrice.toFixed(2)}` : `$${display.toFixed(2)}`}
                     </p>
                   );
                 })()}

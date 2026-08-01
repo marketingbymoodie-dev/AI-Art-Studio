@@ -451,6 +451,12 @@ export const productTypes = pgTable("product_types", {
   shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   printifyCosts: text("printify_costs").default("{}"),
+  /**
+   * Retail prices for front+back (or Print Side = both) keyed like shopifyVariantIds
+   * (`sizeName:colorName` or blank variant id). Front-only retail lives on the Shopify
+   * variant price; this map is the surcharge tier used for “from $X” + live ATC.
+   */
+  variantPricesBoth: text("variant_prices_both").default("{}"),
   isAllOverPrint: boolean("is_all_over_print").notNull().default(false),
   placeholderPositions: text("placeholder_positions").default("[]"),
   /**

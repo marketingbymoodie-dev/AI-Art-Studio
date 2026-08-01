@@ -241,6 +241,8 @@ export default function AdminCustomizerPages() {
   // Wizard state
   const [formStep, setFormStep] = useState<1 | 2 | 3 | 4>(1);
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
+  /** Front+back retail prices — only used when Printify costs include a both-sides tier. */
+  const [variantPricesBoth, setVariantPricesBoth] = useState<Record<string, string>>({});
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
@@ -358,6 +360,7 @@ export default function AdminCustomizerPages() {
       baseProductId?: string;
       productTypeId?: number;
       variantPrices: Record<string, string>;
+      variantPricesBoth?: Record<string, string>;
       baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
       styleConfig: CustomizerPageStyleConfig;
     }) => {
@@ -670,6 +673,12 @@ export default function AdminCustomizerPages() {
   const costsAvailable =
     !!costsData?.costs && Object.keys(costsData.costs).length > 0;
 
+  const supportsBothSidePricing = !!(
+    costsData?.supportsBothSides &&
+    costsData?.costsBoth &&
+    Object.keys(costsData.costsBoth).length > 0
+  );
+
   // Recommended retail prices based on production costs + markup
   const recommendedPrices = useMemo(() => {
     if (!costsAvailable || selectedVariants.length === 0) return {};
@@ -694,6 +703,28 @@ export default function AdminCustomizerPages() {
     return result;
   }, [costsAvailable, costsData, selectedVariants, markupPercent]);
 
+  const recommendedPricesBoth = useMemo(() => {
+    if (!supportsBothSidePricing || selectedVariants.length === 0) return {};
+    const result: Record<string, string> = {};
+    const labelToCost: Record<string, number> = {};
+    if (costsData.printifyVariantLabels && costsData.costsBoth) {
+      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+        const costCents = costsData.costsBoth[printifyVid];
+        if (costCents != null) {
+          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
+        }
+      }
+    }
+    const bothCostsData = { ...costsData, costs: costsData.costsBoth || {} };
+    for (const v of selectedVariants) {
+      const costCents = resolveBlankVariantCostCents(v, bothCostsData, labelToCost);
+      if (costCents == null) continue;
+      const raw = (costCents / 100) * (1 + markupPercent / 100);
+      result[v.id] = roundUpTo95(raw).toFixed(2);
+    }
+    return result;
+  }, [supportsBothSidePricing, costsData, selectedVariants, markupPercent]);
+
   // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
   useEffect(() => {
     if (formStep !== 2) return;
@@ -711,6 +742,22 @@ export default function AdminCustomizerPages() {
       return changed ? next : prev;
     });
   }, [recommendedPrices, formStep]);
+
+  useEffect(() => {
+    if (formStep !== 2 || !supportsBothSidePricing) return;
+    if (Object.keys(recommendedPricesBoth).length === 0) return;
+    setVariantPricesBoth((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [id, price] of Object.entries(recommendedPricesBoth)) {
+        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
+          next[id] = price;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [recommendedPricesBoth, formStep, supportsBothSidePricing]);
 
   // Auto-populate page title from product name when product is selected (if title not manually edited)
   useEffect(() => {
@@ -781,7 +828,17 @@ export default function AdminCustomizerPages() {
       const val = variantPrices[v.id] ?? "";
       const num = parseFloat(val);
       if (!val.trim() || isNaN(num) || num <= 0) {
-        errs[v.id] = "Required — enter a price greater than $0.00";
+        errs[v.id] = "Required — enter a front-only price greater than $0.00";
+        continue;
+      }
+      if (supportsBothSidePricing) {
+        const bothVal = variantPricesBoth[v.id] ?? "";
+        const bothNum = parseFloat(bothVal);
+        if (!bothVal.trim() || isNaN(bothNum) || bothNum <= 0) {
+          errs[v.id] = "Required — enter a front+back price greater than $0.00";
+        } else if (bothNum < num) {
+          errs[v.id] = "Front+back price should be at least the front-only price";
+        }
       }
     }
     if (Object.keys(errs).length > 0) {
@@ -817,6 +874,7 @@ export default function AdminCustomizerPages() {
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
+      ...(supportsBothSidePricing ? { variantPricesBoth } : {}),
       styleConfig: formStyleConfig,
       baseMockupImages: curated,
     });
@@ -1190,10 +1248,12 @@ export default function AdminCustomizerPages() {
                               ) : costsData?.costs || costsData?.shopifyVariantCosts ? (
                                 <>
                                   <div className="rounded-md border text-sm">
-                                    <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
+                                    <div className={`grid gap-2 px-3 py-2 bg-muted font-medium ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
                                       <span>Variant</span>
-                                      <span className="text-right">Standard Cost</span>
-                                      <span className="text-right text-emerald-700">Premium Cost</span>
+                                      <span className="text-right">Front cost</span>
+                                      {supportsBothSidePricing && <span className="text-right">Front+back</span>}
+                                      <span className="text-right text-emerald-700">Premium (est.)</span>
+                                      {supportsBothSidePricing && <span className="text-right text-emerald-700">Prem. both</span>}
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
                                       const labelToCost: Record<string, number> = {};
@@ -1204,26 +1264,65 @@ export default function AdminCustomizerPages() {
                                         }
                                       }
                                       const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
+                                      const labelToBoth: Record<string, number> = {};
+                                      if (costsData.printifyVariantLabels && costsData.costsBoth) {
+                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                                          const c = costsData.costsBoth[printifyVid];
+                                          if (c != null) labelToBoth[label.toLowerCase().trim()] = c;
+                                        }
+                                      }
+                                      const bothCents = supportsBothSidePricing
+                                        ? resolveBlankVariantCostCents(v, { ...costsData, costs: costsData.costsBoth || {} }, labelToBoth)
+                                        : null;
                                       return (
-                                        <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                        <div key={v.id} className={`grid gap-2 px-3 py-2 border-t ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
                                           <span className="truncate">{v.title}</span>
                                           <span className="text-right font-mono">
                                             {costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}
                                           </span>
+                                          {supportsBothSidePricing && (
+                                            <span className="text-right font-mono">
+                                              {bothCents != null ? `$${(bothCents / 100).toFixed(2)}` : "—"}
+                                            </span>
+                                          )}
                                           <span className="text-right font-mono text-emerald-600">
                                             {costCents != null ? `$${(costCents * 0.8 / 100).toFixed(2)}` : "—"}
                                           </span>
+                                          {supportsBothSidePricing && (
+                                            <span className="text-right font-mono text-emerald-600">
+                                              {bothCents != null ? `$${(bothCents * 0.8 / 100).toFixed(2)}` : "—"}
+                                            </span>
+                                          )}
                                         </div>
                                       );
                                     }) : Object.entries(costsData.costs).map(([vid, costCents]) => (
-                                      <div key={vid} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                      <div key={vid} className={`grid gap-2 px-3 py-2 border-t ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
                                         <span className="text-muted-foreground">Variant {vid}</span>
                                         <span className="text-right font-mono">${(Number(costCents) / 100).toFixed(2)}</span>
+                                        {supportsBothSidePricing && (
+                                          <span className="text-right font-mono">
+                                            {costsData.costsBoth?.[vid] != null
+                                              ? `$${(Number(costsData.costsBoth[vid]) / 100).toFixed(2)}`
+                                              : "—"}
+                                          </span>
+                                        )}
                                         <span className="text-right font-mono text-emerald-600">${(Number(costCents) * 0.8 / 100).toFixed(2)}</span>
+                                        {supportsBothSidePricing && (
+                                          <span className="text-right font-mono text-emerald-600">
+                                            {costsData.costsBoth?.[vid] != null
+                                              ? `$${(Number(costsData.costsBoth[vid]) * 0.8 / 100).toFixed(2)}`
+                                              : "—"}
+                                          </span>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
-                                  <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.
+                                    {supportsBothSidePricing
+                                      ? " Front+back costs include Printify’s extra print-area charge."
+                                      : ""}
+                                  </p>
                                   {costsData.cached && (
                                     <p className="text-xs text-muted-foreground">Cached data. Use the Refresh button above to fetch the latest costs.</p>
                                   )}
@@ -1379,6 +1478,13 @@ export default function AdminCustomizerPages() {
                             next[id] = price;
                           }
                           setVariantPrices(next);
+                          if (supportsBothSidePricing) {
+                            const nextBoth: Record<string, string> = {};
+                            for (const [id, price] of Object.entries(recommendedPricesBoth)) {
+                              nextBoth[id] = price;
+                            }
+                            setVariantPricesBoth(nextBoth);
+                          }
                         }}
                       >
                         Apply All Suggested
@@ -1429,27 +1535,58 @@ export default function AdminCustomizerPages() {
                       <p className="text-xs font-semibold shimmer-text">
                         Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
                       </p>
+                      {supportsBothSidePricing && (
+                        <p className="text-xs text-muted-foreground">
+                          This product can print front-only or front+back. Set both retail prices — the storefront shows
+                          “from $front” and charges the front+back price when Print on Back is on.
+                        </p>
+                      )}
                       {selectedVariants.map((v) => (
                         <div key={v.id} className="space-y-1.5">
-                          <div className="flex justify-between items-end">
-                            <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
-                            {costsLoading ? (
-                              <div className="flex items-center gap-1">
-                                <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
-                                <span className="text-[10px] text-muted-foreground italic">Calculating...</span>
+                          <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
+                          <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-end gap-2">
+                                <span className="text-[10px] text-muted-foreground">
+                                  {supportsBothSidePricing ? "Front only" : "Retail"}
+                                </span>
+                                {costsLoading ? (
+                                  <div className="flex items-center gap-1">
+                                    <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
+                                  </div>
+                                ) : recommendedPrices[v.id] ? (
+                                  <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
+                                ) : null}
                               </div>
-                            ) : recommendedPrices[v.id] ? (
-                              <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
-                            ) : null}
-                          </div>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                            <Input
-                              className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
-                              placeholder="0.00"
-                              value={variantPrices[v.id] ?? ""}
-                              onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
-                            />
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                <Input
+                                  className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                  placeholder="0.00"
+                                  value={variantPrices[v.id] ?? ""}
+                                  onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
+                                />
+                              </div>
+                            </div>
+                            {supportsBothSidePricing && (
+                              <div className="space-y-1">
+                                <div className="flex justify-between items-end gap-2">
+                                  <span className="text-[10px] text-muted-foreground">Front + back</span>
+                                  {recommendedPricesBoth[v.id] ? (
+                                    <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPricesBoth[v.id]}</span>
+                                  ) : null}
+                                </div>
+                                <div className="relative">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                  <Input
+                                    className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                    placeholder="0.00"
+                                    value={variantPricesBoth[v.id] ?? ""}
+                                    onChange={(e) => setVariantPricesBoth({ ...variantPricesBoth, [v.id]: e.target.value })}
+                                  />
+                                </div>
+                              </div>
+                            )}
                           </div>
                           {priceErrors[v.id] && (
                             <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
@@ -1499,9 +1636,14 @@ export default function AdminCustomizerPages() {
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
                           <div className={selectedVariants.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
                             {selectedVariants.map((v) => (
-                              <div key={v.id} className="flex justify-between">
-                                <span>{v.title}</span>
-                                <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
+                              <div key={v.id} className="flex justify-between gap-3">
+                                <span className="truncate">{v.title}</span>
+                                <span className="font-medium shrink-0 text-right">
+                                  ${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}
+                                  {supportsBothSidePricing && variantPricesBoth[v.id]
+                                    ? ` / $${parseFloat(variantPricesBoth[v.id]).toFixed(2)} both`
+                                    : ""}
+                                </span>
                               </div>
                             ))}
                           </div>

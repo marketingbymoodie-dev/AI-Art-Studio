@@ -54,8 +54,38 @@ export function extractCostsFromPrintifyProduct(product: unknown): Record<string
   return costs;
 }
 
-export function serializePrintifyCostsCache(costs: Record<string, number>): string {
-  return JSON.stringify({ ...costs, _fetchedAt: new Date().toISOString() });
+export type PrintifyCostsTiered = {
+  front: Record<string, number>;
+  both?: Record<string, number>;
+};
+
+function isTieredCostsPayload(value: unknown): value is PrintifyCostsTiered {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "front" in value &&
+    typeof (value as PrintifyCostsTiered).front === "object" &&
+    (value as PrintifyCostsTiered).front != null &&
+    !Array.isArray((value as PrintifyCostsTiered).front)
+  );
+}
+
+/** Serialize front-only (legacy) or front+both cost maps for product_types.printify_costs. */
+export function serializePrintifyCostsCache(
+  costsOrTiered: Record<string, number> | PrintifyCostsTiered,
+): string {
+  const fetchedAt = new Date().toISOString();
+  if (isTieredCostsPayload(costsOrTiered)) {
+    return JSON.stringify({
+      front: costsOrTiered.front,
+      ...(costsOrTiered.both && Object.keys(costsOrTiered.both).length > 0
+        ? { both: costsOrTiered.both }
+        : {}),
+      _fetchedAt: fetchedAt,
+    });
+  }
+  // Always persist the tiered shape going forward so front vs both can coexist.
+  return JSON.stringify({ front: costsOrTiered, _fetchedAt: fetchedAt });
 }
 
 /** Keep only costs for Printify variant IDs in the active variantMap. */
@@ -87,19 +117,54 @@ export function cacheCoversVariantIds(
   return false;
 }
 
-export function parsePrintifyCostsCache(raw: string | null | undefined): {
-  costs: Record<string, number>;
-  fetchedAt: string | null;
-} {
-  const parsed = JSON.parse(raw || "{}") as Record<string, unknown>;
-  const { _fetchedAt, ...rest } = parsed;
+function extractNumericCostMap(raw: Record<string, unknown>): Record<string, number> {
   const costs: Record<string, number> = {};
-  for (const [key, value] of Object.entries(rest)) {
-    if (key === "_fetchedAt") continue;
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "_fetchedAt" || key === "front" || key === "both") continue;
     if (typeof value === "number" && Number.isFinite(value)) costs[key] = value;
   }
-  return {
-    costs,
-    fetchedAt: typeof _fetchedAt === "string" ? _fetchedAt : null,
-  };
+  return costs;
+}
+
+/**
+ * Parse cached Printify costs.
+ * - Legacy flat `{ [variantId]: cents, _fetchedAt }` → treated as front-only
+ * - Tiered `{ front, both?, _fetchedAt }` → `costs` aliases `front` for existing call sites
+ */
+export function parsePrintifyCostsCache(raw: string | null | undefined): {
+  costs: Record<string, number>;
+  front: Record<string, number>;
+  both: Record<string, number>;
+  fetchedAt: string | null;
+} {
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(raw || "{}") as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+
+  const fetchedAt = typeof parsed._fetchedAt === "string" ? parsed._fetchedAt : null;
+
+  if (isTieredCostsPayload(parsed)) {
+    const front = extractNumericCostMap(
+      (parsed.front && typeof parsed.front === "object" ? parsed.front : {}) as Record<string, unknown>,
+    );
+    // Prefer nested both; also accept accidentally-flat numeric keys only on front
+    const bothRaw =
+      parsed.both && typeof parsed.both === "object" && !Array.isArray(parsed.both)
+        ? (parsed.both as Record<string, unknown>)
+        : {};
+    const both = extractNumericCostMap(bothRaw);
+    return { costs: front, front, both, fetchedAt };
+  }
+
+  const flat = extractNumericCostMap(parsed);
+  return { costs: flat, front: flat, both: {}, fetchedAt };
+}
+
+/** True when cached both-side costs exist for at least one variant. */
+export function hasBothSideCosts(raw: string | null | undefined): boolean {
+  const { both } = parsePrintifyCostsCache(raw);
+  return Object.keys(both).length > 0;
 }
