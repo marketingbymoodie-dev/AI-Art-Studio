@@ -15877,13 +15877,26 @@ ${orientationExtra}
   }
 
   // POST /api/admin/printify/costs/clear-cache
-  // Clears cached printify_costs for ALL product types belonging to this merchant,
-  // forcing a fresh fetch next time each product type's costs are requested.
+  // Clears cached printify_costs. Optional body `{ productTypeId }` clears one row
+  // (including platform-owned types the merchant can access); otherwise clears all
+  // of this merchant's product types.
   app.post("/api/admin/printify/costs/clear-cache", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const singleId = parseInt(String(req.body?.productTypeId ?? ""), 10);
+      if (Number.isFinite(singleId) && singleId > 0) {
+        const pt = await storage.getProductType(singleId);
+        const accessErr = adminProductTypeAccessError(req, pt, merchant);
+        if (accessErr) {
+          return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+        }
+        await storage.updateProductType(singleId, { printifyCosts: "{}" });
+        console.log(`[Printify Costs] Cache cleared for product type ${singleId}`);
+        return res.json({ success: true, cleared: 1, productTypeId: singleId });
+      }
 
       const productTypes = await storage.getProductTypesByMerchant(merchant.id);
       let cleared = 0;
@@ -15933,10 +15946,46 @@ ${orientationExtra}
       }
 
       // Use import/refresh cache whenever it covers active variants (no TTL — refresh-variants updates it).
+      // Exception: front-only legacy cache on a product with a back placeholder must still probe both.
       const cachedParsed = parsePrintifyCostsCache(productType.printifyCosts);
       const cachedCostsOnly = cachedParsed.front;
       const cachedBothOnly = cachedParsed.both;
-      if (cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds)) {
+      const frontCacheHits = cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
+      const bothCacheHits = Object.keys(cachedBothOnly).length > 0;
+
+      async function detectHasBackPlaceholder(): Promise<boolean> {
+        if (productType.isAllOverPrint) return false;
+        try {
+          const positions: { position?: string }[] =
+            typeof productType.placeholderPositions === "string"
+              ? JSON.parse(productType.placeholderPositions || "[]")
+              : (productType.placeholderPositions || []);
+          if (positions.some((p) => String(p?.position || "").toLowerCase() === "back")) return true;
+        } catch {
+          /* continue */
+        }
+        if (productType.doubleSidedPrint) return true;
+        try {
+          const vResp = await fetch(
+            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
+            { headers: { Authorization: `Bearer ${apiToken}` } },
+          );
+          if (!vResp.ok) return false;
+          const vData = await vResp.json();
+          const variants = Array.isArray(vData.variants) ? vData.variants : [];
+          for (const sample of variants.slice(0, 8)) {
+            const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+            if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) return true;
+          }
+        } catch {
+          return false;
+        }
+        return false;
+      }
+
+      const needsBothProbe = frontCacheHits && !bothCacheHits && (await detectHasBackPlaceholder());
+
+      if (frontCacheHits && !needsBothProbe) {
         const cachedCosts = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
         const cachedCostsBoth = filterCostsToPrintifyVariantIds(cachedBothOnly, currentPrintifyVariantIds);
         const svIds = (typeof productType.shopifyVariantIds === "string"
@@ -15945,8 +15994,6 @@ ${orientationExtra}
         const vm = JSON.parse(productType.variantMap || "{}");
         const sizes = JSON.parse(productType.sizes || "[]");
         const frameColors = JSON.parse(productType.frameColors || "[]");
-        // Build sizeId:colorId → printifyVariantId label lookup
-        // AND a sizeName:colorName → printifyVariantId bridge for shopifyVariantIds matching
         const nameToVmKey: Record<string, string> = {};
         const cachedLabels: Record<string, string> = {};
         for (const [key, entry] of Object.entries(vm) as [string, any][]) {
@@ -15955,7 +16002,6 @@ ${orientationExtra}
             const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
             const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
             cachedLabels[String(entry.printifyVariantId)] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
-            // Build reverse lookup: sizeName:colorName → variantMap key
             const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
             nameToVmKey[nameKey] = key;
           }
@@ -15963,9 +16009,7 @@ ${orientationExtra}
         const cachedShopifyCosts: Record<string, number> = {};
         const cachedShopifyCostsBoth: Record<string, number> = {};
         for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-          // Try direct lookup first (in case keys happen to match)
           let vmEntry = vm[mapKey] as any;
-          // If no match, try bridging via name → id lookup
           if (!vmEntry?.printifyVariantId) {
             const bridgedKey = nameToVmKey[mapKey];
             if (bridgedKey) vmEntry = vm[bridgedKey] as any;
@@ -16000,27 +16044,44 @@ ${orientationExtra}
         ? JSON.parse(productType.baseMockupImages || "{}")
         : (productType.baseMockupImages || {});
 
-      let shopId = merchant.printifyShopId?.trim() ?? "";
-      if (shopId) {
+      let shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
+      const costApiToken = apiToken || process.env.PRINTIFY_API_TOKEN || "";
+      if (shopId && costApiToken) {
         try {
-          const resolved = await resolvePrintifyShopIdForProducts(apiToken, shopId);
+          const resolved = await resolvePrintifyShopIdForProducts(costApiToken, shopId);
           shopId = resolved.shopId;
-          if (resolved.corrected) {
+          if (resolved.corrected && merchant.printifyShopId?.trim()) {
             await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
           }
         } catch (resolveErr: any) {
           console.warn("[Printify Costs] Shop resolution failed (catalog lookup may still succeed):", resolveErr);
-          shopId = merchant.printifyShopId?.trim() ?? "";
+          shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
         }
       }
 
-      console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
-      let { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
-        shopId ?? "",
-        apiToken,
-        productType.printifyBlueprintId, productType.printifyProviderId,
-        printifyVariantIds, baseMockupImages
-      );
+      let costs: Record<string, number> = {};
+      let strategyUsed: string | null = null;
+      let diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
+
+      if (needsBothProbe) {
+        // Reuse front cache; only the missing both-tier needs probing.
+        costs = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
+        strategyUsed = "front_cache_both_probe";
+        console.log(
+          `[Printify Costs] Front cache hit for blueprint ${productType.printifyBlueprintId} but both-tier missing — probing front+back`,
+        );
+      } else {
+        console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
+        const waterfall = await fetchPrintifyCostsWaterfall(
+          shopId ?? "",
+          costApiToken,
+          productType.printifyBlueprintId, productType.printifyProviderId,
+          printifyVariantIds, baseMockupImages
+        );
+        costs = waterfall.costs;
+        strategyUsed = waterfall.strategyUsed;
+        diagnostics = waterfall.diagnostics;
+      }
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         const platformCosts = filterCostsToPrintifyVariantIds(
@@ -16051,46 +16112,19 @@ ${orientationExtra}
       // Probe front+back COGS when the blueprint has a separate back placeholder.
       // Catalog/existing-product strategies usually reflect front-only placement.
       let costsBoth: Record<string, number> = {};
-      let hasBackPlaceholder = false;
-      try {
-        const positions: { position?: string }[] =
-          typeof productType.placeholderPositions === "string"
-            ? JSON.parse(productType.placeholderPositions || "[]")
-            : (productType.placeholderPositions || []);
-        hasBackPlaceholder = positions.some((p) => String(p?.position || "").toLowerCase() === "back");
-      } catch {
-        hasBackPlaceholder = false;
-      }
-      if (!hasBackPlaceholder && !productType.isAllOverPrint) {
-        const firstVid = printifyVariantIds[0];
-        try {
-          const vResp = await fetch(
-            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
-            { headers: { Authorization: `Bearer ${apiToken}` } },
-          );
-          if (vResp.ok) {
-            const vData = await vResp.json();
-            const variants = Array.isArray(vData.variants) ? vData.variants : [];
-            const sample = variants.find((v: any) => Number(v.id) === Number(firstVid)) || variants[0];
-            const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
-            hasBackPlaceholder = ph.some((p: any) => String(p?.position || "").toLowerCase() === "back");
-          }
-        } catch {
-          /* ignore — fall back to hasBackPlaceholder */
-        }
-      }
+      const hasBackPlaceholder = needsBothProbe || (await detectHasBackPlaceholder());
 
-      if (hasBackPlaceholder && shopId?.trim() && !productType.isAllOverPrint) {
+      if (hasBackPlaceholder && shopId?.trim() && costApiToken && !productType.isAllOverPrint) {
         const mockupUrl: string | undefined =
           baseMockupImages.primary ||
           baseMockupImages.front ||
           (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
-        const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
+        const probeImageId = await ensureCostProbeImageId(costApiToken, mockupUrl);
         if (probeImageId) {
           const chunk = printifyVariantIds.slice(0, 10);
           const bothProbe = await tryCreateTempProductForCosts(
             shopId,
-            apiToken,
+            costApiToken,
             productType.printifyBlueprintId,
             productType.printifyProviderId,
             chunk,
@@ -16105,7 +16139,13 @@ ${orientationExtra}
               `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
             );
           }
+        } else {
+          console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
         }
+      } else if (hasBackPlaceholder && !shopId?.trim()) {
+        console.warn(
+          "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
+        );
       }
 
       // Cache front (+ optional both) costs on the product type

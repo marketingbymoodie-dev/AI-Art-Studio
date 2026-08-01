@@ -259,9 +259,18 @@ export default function ResyncPricesDialog({
 
   async function handleRefreshCosts() {
     try {
-      await apiRequest("POST", "/api/admin/printify/costs/clear-cache");
-      await refetchCosts();
-      toast({ title: "Costs refreshed", description: "Latest Printify production costs loaded." });
+      // Clear this product type only (works for platform-owned rows too), then force a fresh GET.
+      await apiRequest("POST", "/api/admin/printify/costs/clear-cache", { productTypeId });
+      queryClient.removeQueries({ queryKey: ["/api/admin/printify/costs", productTypeId] });
+      const result = await refetchCosts();
+      const data = result.data;
+      const bothReady = !!(data?.supportsBothSides && data?.costsBoth && Object.keys(data.costsBoth).length > 0);
+      toast({
+        title: bothReady ? "Front + front/back costs loaded" : "Costs refreshed",
+        description: bothReady
+          ? "Front-only and front+back production costs are ready — Apply All Suggested to fill both columns."
+          : "Front costs updated. If this product has a back print area and you still see one column, check Printify Shop ID in Settings and try again.",
+      });
     } catch (err: any) {
       toast({
         title: "Could not refresh costs",
@@ -347,15 +356,17 @@ export default function ResyncPricesDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={supportsBothSidePricing ? "max-w-lg" : "max-w-md"}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <DollarSign className="h-5 w-5" />
-            Resync Prices — {title}
+      <DialogContent
+        className={`${supportsBothSidePricing ? "max-w-lg" : "max-w-md"} max-h-[min(85vh,720px)] flex flex-col overflow-hidden gap-3 p-5`}
+      >
+        <DialogHeader className="shrink-0 pr-6">
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <DollarSign className="h-5 w-5 shrink-0" />
+            <span className="truncate">Resync Prices — {title}</span>
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 pt-2">
-          <p className="text-sm text-muted-foreground">
+        <div className="flex flex-col gap-3 min-h-0 flex-1 overflow-hidden">
+          <p className="text-sm text-muted-foreground shrink-0">
             Prices are calculated from Printify production costs. Adjust markup and apply suggested prices, or edit individually.
             {supportsBothSidePricing
               ? " Front-only syncs to Shopify; front+back is used when customers choose Print Side = Both."
@@ -363,13 +374,13 @@ export default function ResyncPricesDialog({
           </p>
 
           {needsShopify ? (
-            <p className="text-sm text-amber-600">
+            <p className="text-sm text-amber-600 shrink-0">
               This product is not on Shopify yet. Send to store first, then resync prices.
             </p>
           ) : (
             <>
-              <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg border flex-wrap">
-                <div className="flex-1 min-w-[120px]">
+              <div className="flex items-end gap-2 p-3 bg-muted/50 rounded-lg border flex-wrap shrink-0">
+                <div className="min-w-[100px]">
                   <Label htmlFor="resync-markup" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Markup
                   </Label>
@@ -377,7 +388,7 @@ export default function ResyncPricesDialog({
                     <Input
                       id="resync-markup"
                       type="number"
-                      className="w-20"
+                      className="w-20 h-9"
                       value={markupPercent}
                       onChange={(e) => setMarkupPercent(Number(e.target.value))}
                     />
@@ -387,7 +398,7 @@ export default function ResyncPricesDialog({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-10"
+                  className="h-9"
                   onClick={() => void handleRefreshCosts()}
                   disabled={costsLoading}
                 >
@@ -397,7 +408,7 @@ export default function ResyncPricesDialog({
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="h-10"
+                  className="h-9"
                   disabled={Object.keys(recommendedPrices).length === 0}
                   onClick={() => {
                     const next: Record<string, string> = {};
@@ -419,19 +430,19 @@ export default function ResyncPricesDialog({
               </div>
 
               {!supportsBothSidePricing && costsAvailable && (
-                <p className="text-xs text-muted-foreground">
-                  No front+back cost tier yet for this product. Click Refresh Costs if it supports a back print area.
+                <p className="text-xs text-muted-foreground shrink-0">
+                  No front+back cost tier yet. Click Refresh Costs — this re-probes Printify for a back print area (takes ~15–30s).
                 </p>
               )}
 
               {blanksLoading || costsLoading ? (
-                <Skeleton className="h-40 w-full" />
+                <Skeleton className="h-32 w-full shrink-0" />
               ) : variants.length === 0 ? (
-                <p className="text-sm text-amber-600">
+                <p className="text-sm text-amber-600 shrink-0">
                   No variant data available. Refresh variants on the product first.
                 </p>
               ) : (
-                <div className="space-y-2 overflow-y-auto pr-1" style={{ maxHeight: "280px" }}>
+                <div className="space-y-2 overflow-y-auto pr-1 min-h-0 flex-1">
                   {variants.map((v) => (
                     <div key={v.id} className="space-y-1">
                       <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -452,7 +463,7 @@ export default function ResyncPricesDialog({
                           <div className="relative">
                             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                             <Input
-                              className="pl-7 text-sm"
+                              className="pl-7 text-sm h-9"
                               placeholder="0.00"
                               value={pricesMap[v.id] ?? ""}
                               onChange={(e) => setPricesMap({ ...pricesMap, [v.id]: e.target.value })}
@@ -472,7 +483,7 @@ export default function ResyncPricesDialog({
                             <div className="relative">
                               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                               <Input
-                                className="pl-7 text-sm"
+                                className="pl-7 text-sm h-9"
                                 placeholder="0.00"
                                 value={pricesBothMap[v.id] ?? ""}
                                 onChange={(e) => setPricesBothMap({ ...pricesBothMap, [v.id]: e.target.value })}
@@ -488,7 +499,7 @@ export default function ResyncPricesDialog({
             </>
           )}
 
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-2 pt-1 shrink-0 border-t">
             <Button
               variant="outline"
               className="flex-1"
