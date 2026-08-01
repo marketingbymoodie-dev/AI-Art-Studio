@@ -58,4 +58,17 @@ describe("buildPrintifyToShopifyVariantIdMap", () => {
     expect(map["1"]).toBe(10);
     expect(map["2"]).toBe(20);
   });
+
+  it("maps Solid-prefixed Printify colors to Shopify titles without Solid", () => {
+    const map = buildPrintifyToShopifyVariantIdMap({
+      variantMap: { "s:solid-black": { printifyVariantId: 77 } },
+      shopifyVariantIds: {},
+      sizes: [{ id: "s", name: "S" }],
+      frameColors: [{ id: "solid-black", name: "Solid Black" }],
+      shopifyVariants: [
+        { id: 7001, title: "S / Black", option1: "S", option2: "Black" },
+      ],
+    });
+    expect(map["77"]).toBe(7001);
+  });
 });

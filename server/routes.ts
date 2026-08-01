@@ -18356,12 +18356,49 @@ ${orientationExtra}
     });
 
     console.log(
-      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}`,
+      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}`,
     );
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const putVariantPriceWithRetry = async (variantNum: number, formatted: string) => {
+      // Shopify REST leaky-bucket: large apparel catalogs (96 PUTs) often 429 without backoff.
+      let lastError = "Unknown error";
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
+          method: "PUT",
+          body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+        });
+        if (priceResult.ok) return priceResult;
+        lastError = priceResult.error || "Unknown error";
+        const isRateLimited =
+          /API error 429\b/i.test(lastError) ||
+          /rate limit/i.test(lastError) ||
+          /Exceeded 2 calls per second/i.test(lastError);
+        if (!isRateLimited || attempt === 5) break;
+        const waitMs = Math.min(8000, 400 * Math.pow(2, attempt));
+        console.warn(
+          `[sync-prices] rate-limited updating variant ${variantNum}; retry ${attempt + 1}/5 in ${waitMs}ms`,
+        );
+        await sleep(waitMs);
+      }
+      return { ok: false as const, error: lastError };
+    };
 
     const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
 
     for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (!Number.isFinite(num) || num <= 0) {
+        updated.push({
+          variantId: 0,
+          price: String(price),
+          success: false,
+          error: `Refused to sync non-positive price "${price}" for "${vid}"`,
+        });
+        console.warn(`[sync-prices] refused non-positive price for ${vid}: ${price}`);
+        continue;
+      }
+
       let variantNum: number;
       if (String(vid).startsWith("printify:")) {
         const printifyId = String(vid).replace("printify:", "");
@@ -18372,17 +18409,14 @@ ${orientationExtra}
       if (!variantNum) {
         updated.push({
           variantId: 0,
-          price,
+          price: String(price),
           success: false,
           error: `Could not resolve Shopify variant ID for key "${vid}"`,
         });
         continue;
       }
-      const formatted = parseFloat(String(price)).toFixed(2);
-      const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
-        method: "PUT",
-        body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
-      });
+      const formatted = num.toFixed(2);
+      const priceResult = await putVariantPriceWithRetry(variantNum, formatted);
       if (priceResult.ok) {
         updated.push({ variantId: variantNum, price: formatted, success: true });
         if (onBaseVariantUpdated) {

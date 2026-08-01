@@ -73,13 +73,20 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
     const norm = normalizeVariantLabelForCostMatch(label);
     if (!norm) return;
     if (!byNormLabel.has(norm)) byNormLabel.set(norm, shopifyId);
+    // Cotton crew etc.: Printify may use "Solid Black" while Shopify stores "Black"
+    const noSolid = normalizeVariantLabelForCostMatch(norm.replace(/\bsolid\s+/g, ""));
+    if (noSolid && !byNormLabel.has(noSolid)) byNormLabel.set(noSolid, shopifyId);
+    // Slash colorways: "BLACK/ RED" ↔ "BLACK/RED"
+    const compactSlash = norm.replace(/\s*\/\s*/g, "/");
+    if (compactSlash && !byNormLabel.has(compactSlash)) byNormLabel.set(compactSlash, shopifyId);
   };
 
   for (const sv of shopifyVariants) {
     const id = Number(sv.id);
     if (!Number.isFinite(id) || id <= 0) continue;
     if (sv.title) addLabel(sv.title, id);
-    if (sv.option1) addLabel(sv.option1, id);
+    // Never index bare option1 when option2 exists — "S" would collide across colors.
+    if (sv.option1 && !sv.option2) addLabel(sv.option1, id);
     if (sv.option1 && sv.option2) {
       addLabel(`${sv.option1} / ${sv.option2}`, id);
       addLabel(`${sv.option1}:${sv.option2}`, id);
@@ -129,10 +136,16 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
 
     let shopifyId = 0;
     for (const candidate of candidates) {
+      const norm = normalizeVariantLabelForCostMatch(candidate);
+      const noSolid = normalizeVariantLabelForCostMatch(norm.replace(/\bsolid\s+/g, ""));
+      const compactSlash = norm.replace(/\s*\/\s*/g, "/");
       shopifyId =
         nameToShopifyId[candidate] ||
-        nameToShopifyId[normalizeVariantLabelForCostMatch(candidate)] ||
-        byNormLabel.get(normalizeVariantLabelForCostMatch(candidate)) ||
+        nameToShopifyId[norm] ||
+        nameToShopifyId[noSolid] ||
+        byNormLabel.get(norm) ||
+        byNormLabel.get(noSolid) ||
+        byNormLabel.get(compactSlash) ||
         0;
       if (shopifyId) break;
     }
