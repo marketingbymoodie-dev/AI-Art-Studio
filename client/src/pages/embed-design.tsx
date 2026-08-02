@@ -122,6 +122,7 @@ import {
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
+import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
@@ -613,64 +614,7 @@ function matchVariantBySizeColor(
   hasColors: boolean,
   frameColorId?: string,
 ): string | null {
-  if (catalog.length === 0) return null;
-
-  const sizeNorm = normalizeVariantToken(sizeName);
-  const frameNameNorm = normalizeVariantToken(frameName);
-  const frameIdNorm = frameColorId ? normalizeVariantToken(frameColorId) : "";
-
-  const colorTokenMatches = (raw: string): boolean => {
-    const opt = normalizeVariantToken(raw);
-    if (!opt) return false;
-    if (frameNameNorm && (opt.includes(frameNameNorm) || frameNameNorm.includes(opt))) {
-      return true;
-    }
-    if (frameIdNorm && (opt === frameIdNorm || opt.includes(frameIdNorm) || frameIdNorm.includes(opt))) {
-      return true;
-    }
-    return false;
-  };
-
-  const titleMatch = (v: VariantCatalogEntry) => {
-    const t = normalizeVariantToken(v.title || "");
-    if (!t) return false;
-    const hasSize = !sizeNorm || t.includes(sizeNorm) || sizeNorm.includes(t);
-    const hasFrame = !hasColors || !frameNameNorm && !frameIdNorm
-      ? true
-      : colorTokenMatches(v.title || "");
-    return hasSize && hasFrame;
-  };
-
-  const optionMatch = (v: VariantCatalogEntry) => {
-    const options = [v.option1, v.option2]
-      .filter(Boolean)
-      .map((o) => String(o));
-    if (options.length === 0) return false;
-    let sizeMatch = !sizeNorm;
-    let colorMatch = !hasColors || (!frameNameNorm && !frameIdNorm);
-    if (sizeNorm) {
-      sizeMatch = options.some((opt) => {
-        const o = normalizeVariantToken(opt);
-        return o.includes(sizeNorm) || sizeNorm.includes(o);
-      });
-    }
-    if (hasColors && (frameNameNorm || frameIdNorm)) {
-      colorMatch = options.some(colorTokenMatches);
-    }
-    return sizeMatch && colorMatch;
-  };
-
-  let match = catalog.find(titleMatch);
-  if (!match && sizeNorm) {
-    match = catalog.find((v) => normalizeVariantToken(v.title || "").includes(sizeNorm));
-  }
-  if (!match) {
-    match = catalog.find(optionMatch);
-  }
-  if (!match && catalog.length === 1) {
-    match = catalog[0];
-  }
-  return match ? String(match.id) : null;
+  return matchShopifyVariantBySizeColor(catalog, sizeName, frameName, hasColors, frameColorId);
 }
 
 function mapServerVariantsToCatalog(
