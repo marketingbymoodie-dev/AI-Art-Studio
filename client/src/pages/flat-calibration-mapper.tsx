@@ -73,6 +73,9 @@ type CalibratorState = {
   harvestComplete?: boolean;
   harvestOutcome?: "none" | "ready" | "unsupported" | "failed";
   harvestError?: string;
+  /** Providers skipped during multi-provider blank fill (e.g. Printify decorator 6002). */
+  harvestWarnings?: string[];
+  harvestProviderIds?: number[];
   modelPickerLabel?: "phone" | "variant" | null;
   edgeWrap?: boolean;
   models: ModelAssets[];
@@ -280,9 +283,13 @@ export default function FlatCalibrationMapperPage() {
   useEffect(() => {
     if (data?.harvestComplete && harvestPhase === "running") {
       setHarvestPhase("complete");
+      const warns = data.harvestWarnings?.filter(Boolean) ?? [];
       toast({
-        title: "Harvest complete",
-        description: "Assets are ready — align layers and save, then publish from Platform Catalog.",
+        title: warns.length ? "Harvest complete (some providers skipped)" : "Harvest complete",
+        description: warns.length
+          ? warns.slice(0, 2).join(" · ")
+          : "Assets are ready — align layers and save, then publish from Platform Catalog.",
+        variant: warns.length ? "destructive" : undefined,
       });
     } else if (data?.harvestComplete && harvestPhase === "idle") {
       setHarvestPhase("complete");
@@ -297,7 +304,14 @@ export default function FlatCalibrationMapperPage() {
         variant: "destructive",
       });
     }
-  }, [data?.harvestComplete, data?.harvestOutcome, data?.harvestError, harvestPhase, toast]);
+  }, [
+    data?.harvestComplete,
+    data?.harvestOutcome,
+    data?.harvestError,
+    data?.harvestWarnings,
+    harvestPhase,
+    toast,
+  ]);
 
   useEffect(() => {
     if (models.length > 0 && !selectedModelId) {
@@ -688,6 +702,24 @@ export default function FlatCalibrationMapperPage() {
               </>
             )}
           </p>
+        )}
+
+        {!!data?.harvestWarnings?.length && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-900 dark:text-amber-100 space-y-1">
+            <p className="font-medium">Some print providers could not supply blanks</p>
+            <ul className="list-disc pl-5 space-y-0.5">
+              {data.harvestWarnings.map((w, i) => (
+                <li key={i} className="break-words">
+                  {w}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs opacity-80">
+              Black/Red and other missing colours need a Printify shop that can create products
+              for that decorator. Listings stay provider-scoped — only the shared blank pool is
+              affected.
+            </p>
+          </div>
         )}
 
         {isLoading ? (

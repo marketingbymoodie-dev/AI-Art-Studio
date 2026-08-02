@@ -51,6 +51,7 @@ import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors"
 type StorageLike = {
   getProductTypes(): Promise<any[]>;
   getProductTypesByMerchant(merchantId: string): Promise<any[]>;
+  getMerchant(id: string): Promise<any>;
   getMerchantByUserId(userId: string): Promise<any>;
   getMerchantByShop(shop: string): Promise<any>;
 };
@@ -206,25 +207,82 @@ async function listBlueprintProductTypes(
 ): Promise<any[]> {
   const out: any[] = [];
   const seen = new Set<number>();
+  const pushPt = (pt: any) => {
+    if (Number(pt.printifyBlueprintId) !== blueprintId) return;
+    if (seen.has(pt.id)) return;
+    seen.add(pt.id);
+    out.push(pt);
+  };
   for (const merchantId of merchantIds) {
     const types = await storage.getProductTypesByMerchant(merchantId);
-    for (const pt of types) {
-      if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
-      if (seen.has(pt.id)) continue;
-      seen.add(pt.id);
-      out.push(pt);
-    }
+    for (const pt of types) pushPt(pt);
   }
-  if (out.length === 0) {
-    const all = await storage.getProductTypes();
-    for (const pt of all) {
-      if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
-      if (seen.has(pt.id)) continue;
-      seen.add(pt.id);
-      out.push(pt);
-    }
-  }
+  // Always merge global rows so a JAMS listing on another merchant is still a
+  // candidate for blank fill (not only when preferred merchants have zero rows).
+  const all = await storage.getProductTypes();
+  for (const pt of all) pushPt(pt);
   return out;
+}
+
+async function listHarvestCredsForProvider(
+  storage: StorageLike,
+  args: {
+    refProduct: any | null;
+    platformCreds: { token: string; shopId: string; merchant: any };
+    sessionMerchant: any | null;
+  },
+): Promise<Array<{ token: string; shopId: string; label: string }>> {
+  const tried: Array<{ token: string; shopId: string; label: string }> = [];
+  const pushPair = (token: string | null | undefined, shopId: string | number | null | undefined, label: string) => {
+    if (!token || shopId == null || shopId === "") return;
+    const sid = String(shopId);
+    if (tried.some((t) => t.token === token && t.shopId === sid)) return;
+    tried.push({ token, shopId: sid, label });
+  };
+  const pushMerchant = (m: any | null | undefined, label: string) => {
+    pushPair(m?.printifyApiToken, m?.printifyShopId, label);
+  };
+  if (args.refProduct?.merchantId) {
+    try {
+      const m = await storage.getMerchant(String(args.refProduct.merchantId));
+      pushMerchant(m, `listing-merchant:${args.refProduct.merchantId}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  pushMerchant(args.sessionMerchant, "session-merchant");
+  pushMerchant(args.platformCreds.merchant, "platform-merchant");
+  pushPair(args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
+
+  // Same Printify token can own multiple shops (US vs EU). Decorator 6002 is
+  // often shop-scoped — try every shop on each distinct token.
+  const tokens = [...new Set(tried.map((t) => t.token))];
+  for (const token of tokens) {
+    try {
+      const resp = await fetch("https://api.printify.com/v1/shops.json", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) continue;
+      const shops = await resp.json();
+      const list = Array.isArray(shops) ? shops : Array.isArray(shops?.data) ? shops.data : [];
+      for (const shop of list) {
+        const id = shop?.id ?? shop?.attributes?.id;
+        if (id != null) pushPair(token, id, `printify-shop:${id}`);
+      }
+    } catch {
+      /* ignore shop list failures */
+    }
+  }
+
+  return tried.length > 0
+    ? tried
+    : [
+        {
+          token: args.platformCreds.token,
+          shopId: String(args.platformCreds.shopId),
+          label: "platform-creds",
+        },
+      ];
 }
 
 async function findReferenceProduct(
@@ -597,6 +655,9 @@ export function registerPlatformCalibrationRoutes(
           };
         }),
       );
+      const harvestWarnings = Array.isArray((manifest as any)?.harvestWarnings)
+        ? ((manifest as any).harvestWarnings as string[]).filter((w) => typeof w === "string")
+        : [];
       res.json({
         blueprintId,
         version,
@@ -607,6 +668,10 @@ export function registerPlatformCalibrationRoutes(
         harvestComplete: isHarvestComplete(manifest),
         harvestOutcome: harvest.outcome,
         harvestError: harvest.error,
+        harvestWarnings,
+        harvestProviderIds: Array.isArray((manifest as any)?.harvestProviderIds)
+          ? (manifest as any).harvestProviderIds
+          : undefined,
         modelPickerLabel,
         models: modelPayload,
       });
@@ -649,9 +714,10 @@ export function registerPlatformCalibrationRoutes(
         return res.status(400).json({ error: "Platform Printify credentials not configured" });
       }
 
-      const sessionMerchantId = req.user?.claims?.sub
-        ? (await storage.getMerchantByUserId(req.user.claims.sub))?.id
+      const sessionMerchant = req.user?.claims?.sub
+        ? await storage.getMerchantByUserId(req.user.claims.sub)
         : null;
+      const sessionMerchantId = sessionMerchant?.id ?? null;
       const refLookup = await findReferenceProduct(storage, creds, blueprintId, sessionMerchantId);
 
       const merchantIds: string[] = [];
@@ -701,6 +767,7 @@ export function registerPlatformCalibrationRoutes(
         let lastError: string | null = null;
         let accumulated: FlatCalibrationManifest | null = null;
         const providersUsed: number[] = [];
+        const harvestWarnings: string[] = [];
         let wiped = false;
 
         const writeManifest = async (
@@ -719,6 +786,7 @@ export function registerPlatformCalibrationRoutes(
                   harvestError: error,
                   harvestProviderId: providersUsed[0] ?? manifest.providerId,
                   harvestProviderIds: providersUsed,
+                  harvestWarnings,
                 },
                 null,
                 2,
@@ -738,7 +806,8 @@ export function registerPlatformCalibrationRoutes(
         try {
           // Pass 1: first provider that can create products wins for masks/geometry.
           // Pass 2+: other providers only add blank colours not already harvested
-          // (e.g. JAMS Black/Red after UK White/*) — listings stay provider-scoped.
+          // (e.g. JAMS Black/Red after UK White/*). Each provider tries the Printify
+          // shop tied to that listing first — owner shops often reject US decorators.
           for (let i = 0; i < providerCandidates.length; i++) {
             const providerId = providerCandidates[i]!;
             const ref =
@@ -746,112 +815,133 @@ export function registerPlatformCalibrationRoutes(
                 (pt) => Number(pt.printifyProviderId) === providerId,
               ) ?? null;
             const skipBlankColorIds = accumulated ? existingBlankIds() : [];
+            const credOptions = await listHarvestCredsForProvider(storage, {
+              refProduct: ref,
+              platformCreds: creds,
+              sessionMerchant,
+            });
             console.log(
               `[platform-canonical] harvest bp ${blueprintId} v${version} provider ${providerId}` +
                 ` (${i + 1}/${providerCandidates.length}` +
                 `${ref ? `, pt ${ref.id}` : ", catalog colours"}` +
-                `${skipBlankColorIds.length ? `, skip ${skipBlankColorIds.length} blanks` : ""})`,
+                `${skipBlankColorIds.length ? `, skip ${skipBlankColorIds.length} blanks` : ""}` +
+                `, creds=${credOptions.map((c) => c.label).join("|")})`,
             );
-            try {
-              const result = await harvestFlatCalibration({
-                productTypeId: 0,
-                name: entry.label,
-                blueprintId,
-                providerId,
-                token: creds.token,
-                shopId: creds.shopId,
-                designerType: ref?.designerType ?? refLookup.product?.designerType,
-                sizes: ref?.sizes ?? refLookup.product?.sizes,
-                frameColors: ref?.frameColors,
-                variantMap: ref?.variantMap,
-                calibratorMode: true,
-                wipeExisting: !wiped,
-                storageKey,
-                forceFlatHarvest:
-                  !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
-                fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
-                skipBlankColorIds,
-              });
-              wiped = true;
 
-              const errMsg = result.error || "";
-              if (
-                (result.status === "failed" || result.status === "unsupported") &&
-                isPrintifyDecoratorUnavailableError(errMsg)
-              ) {
-                lastError = errMsg;
-                console.warn(
-                  `[platform-canonical] provider ${providerId} unavailable for bp ${blueprintId}; trying next`,
-                );
-                continue;
-              }
+            let providerOk = false;
+            let providerLastErr = "";
+            for (const shopCreds of credOptions) {
+              try {
+                const result = await harvestFlatCalibration({
+                  productTypeId: 0,
+                  name: entry.label,
+                  blueprintId,
+                  providerId,
+                  token: shopCreds.token,
+                  shopId: shopCreds.shopId,
+                  designerType: ref?.designerType ?? refLookup.product?.designerType,
+                  sizes: ref?.sizes ?? refLookup.product?.sizes,
+                  frameColors: ref?.frameColors,
+                  variantMap: ref?.variantMap,
+                  calibratorMode: true,
+                  wipeExisting: !wiped,
+                  storageKey,
+                  forceFlatHarvest:
+                    !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
+                  fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
+                  skipBlankColorIds,
+                });
+                wiped = true;
 
-              if (!accumulated) {
-                if (result.status !== "ready" && result.status !== "failed") {
-                  // unsupported without decorator — stop
-                  if (result.manifest) {
-                    await writeManifest(
-                      result.manifest,
-                      result.status,
-                      result.error ?? null,
-                    );
-                  }
-                  console.log(
-                    `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}` +
-                      ` provider=${providerId}${result.error ? ` (${result.error})` : ""}`,
+                const errMsg = result.error || "";
+                if (
+                  (result.status === "failed" || result.status === "unsupported") &&
+                  isPrintifyDecoratorUnavailableError(errMsg)
+                ) {
+                  providerLastErr = errMsg;
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} unavailable; trying next shop`,
                   );
-                  return;
-                }
-                if (result.status === "failed" && !result.manifest?.blanks) {
-                  lastError = errMsg || "harvest failed";
                   continue;
                 }
-                accumulated = result.manifest
-                  ? { ...result.manifest, blanks: { ...(result.manifest.blanks || {}) } }
-                  : null;
-                if (!accumulated) {
-                  lastError = errMsg || "harvest returned no manifest";
-                  continue;
-                }
-                providersUsed.push(providerId);
-                await writeManifest(
-                  accumulated,
-                  result.status === "ready" ? "ready" : result.status,
-                  result.error ?? null,
-                );
-                console.log(
-                  `[platform-canonical] harvest bp ${blueprintId}: primary provider ${providerId} -> ${result.status}` +
-                    ` blanks=${Object.keys(accumulated.blanks || {}).length}`,
-                );
-                // Continue to fill missing colours from other providers.
-                continue;
-              }
 
-              // Secondary provider: merge only new blank keys.
-              const added = mergeFlatCalibrationBlanks(accumulated, result.manifest);
-              if (added > 0) providersUsed.push(providerId);
-              await writeManifest(accumulated, "ready", null);
-              console.log(
-                `[platform-canonical] harvest bp ${blueprintId}: provider ${providerId} added ${added} blank(s)` +
-                  ` (total ${Object.keys(accumulated.blanks || {}).length})`,
-              );
-            } catch (err) {
-              const msg = (err as Error)?.message || String(err);
-              lastError = msg;
-              if (isPrintifyDecoratorUnavailableError(msg)) {
-                console.warn(
-                  `[platform-canonical] provider ${providerId} threw decorator error for bp ${blueprintId}; trying next: ${msg}`,
+                if (!accumulated) {
+                  if (result.status !== "ready" && result.status !== "failed") {
+                    if (result.manifest) {
+                      await writeManifest(
+                        result.manifest,
+                        result.status,
+                        result.error ?? null,
+                      );
+                    }
+                    console.log(
+                      `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}` +
+                        ` provider=${providerId}${result.error ? ` (${result.error})` : ""}`,
+                    );
+                    return;
+                  }
+                  if (result.status === "failed" && !result.manifest?.blanks) {
+                    providerLastErr = errMsg || "harvest failed";
+                    continue;
+                  }
+                  accumulated = result.manifest
+                    ? { ...result.manifest, blanks: { ...(result.manifest.blanks || {}) } }
+                    : null;
+                  if (!accumulated) {
+                    providerLastErr = errMsg || "harvest returned no manifest";
+                    continue;
+                  }
+                  providersUsed.push(providerId);
+                  providerOk = true;
+                  await writeManifest(
+                    accumulated,
+                    result.status === "ready" ? "ready" : result.status,
+                    result.error ?? null,
+                  );
+                  console.log(
+                    `[platform-canonical] harvest bp ${blueprintId}: primary provider ${providerId} via ${shopCreds.label}` +
+                      ` -> ${result.status} blanks=${Object.keys(accumulated.blanks || {}).length}`,
+                  );
+                  break;
+                }
+
+                const added = mergeFlatCalibrationBlanks(accumulated, result.manifest);
+                if (added > 0) providersUsed.push(providerId);
+                providerOk = true;
+                await writeManifest(accumulated, "ready", null);
+                console.log(
+                  `[platform-canonical] harvest bp ${blueprintId}: provider ${providerId} via ${shopCreds.label}` +
+                    ` added ${added} blank(s) (total ${Object.keys(accumulated.blanks || {}).length})`,
                 );
-                continue;
-              }
-              // Non-decorator errors on a fill pass shouldn't wipe a good primary harvest.
-              if (accumulated) {
+                break;
+              } catch (err) {
+                const msg = (err as Error)?.message || String(err);
+                providerLastErr = msg;
+                lastError = msg;
+                if (isPrintifyDecoratorUnavailableError(msg)) {
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} decorator error; trying next shop: ${msg}`,
+                  );
+                  continue;
+                }
+                if (accumulated) {
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} fill failed (keeping primary): ${msg}`,
+                  );
+                  break;
+                }
+                // Try next shop creds before failing the whole harvest.
                 console.warn(
-                  `[platform-canonical] provider ${providerId} fill failed (keeping primary): ${msg}`,
+                  `[platform-canonical] provider ${providerId} via ${shopCreds.label} failed: ${msg}`,
                 );
-                continue;
               }
-              throw err;
+            }
+
+            if (!providerOk && providerLastErr) {
+              lastError = providerLastErr;
+              const warn = `Provider ${providerId}${ref ? ` (pt ${ref.id})` : ""} skipped: ${providerLastErr}`;
+              harvestWarnings.push(warn);
+              console.warn(`[platform-canonical] ${warn}`);
             }
           }
 
@@ -862,7 +952,8 @@ export function registerPlatformCalibrationRoutes(
                 ` providers=[${providersUsed.join(",")}]` +
                 ` blanks=[${Object.keys(accumulated.blanks || {})
                   .map(normalizeHarvestBlankColorKey)
-                  .join(", ")}]`,
+                  .join(", ")}]` +
+                `${harvestWarnings.length ? ` warnings=${harvestWarnings.length}` : ""}`,
             );
             return;
           }
