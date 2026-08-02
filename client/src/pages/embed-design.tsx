@@ -4818,10 +4818,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               return;
             }
           }
-          // AOP mesh (incl. pillow product cameras): keep placer Front/Back.
+          // AOP mesh (person / lifestyle / product on-demand): keep placer Front/Back.
           // Flat lifestyle/tapestry: keep flatFrontMockups.
           const fronts =
-            mergePersonViews || (mergeProductMockups && aopBaseMockupsRef.current.length > 0)
+            mergePersonViews ||
+            ((mergeProductMockups || mergeContextOnly) &&
+              aopBaseMockupsRef.current.length > 0)
               ? aopBaseMockupsRef.current
               : flatFrontMockupsRef.current.length > 0
                 ? flatFrontMockupsRef.current
@@ -4850,6 +4852,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               url: e.url,
               label: e.label,
             }));
+            stickAopPersonGalleryRef.current = true;
+          } else if (mergeContextOnly || mergeProductMockups) {
+            // Keep the in-situ / printers slide selected after leaving the placer.
             stickAopPersonGalleryRef.current = true;
           }
           const mergedUrls = mergedImages.map((m) => m.url);
@@ -9873,14 +9878,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     showPatternStep &&
     !!productTypeConfig?.panelMappingTemplate &&
     selectedPostGenItem?.kind === "mockup" &&
-    isPersonMockupLabel(selectedPostGenItem.label)
+    isPrintifyOnDemandMockupLabel(selectedPostGenItem.label)
       ? selectedPostGenItem.url
       : null;
   const hoodieCanvasOverrideLabel = hoodieCanvasOverrideUrl
-    ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Front Person")
+    ? formatPostGenMockupLabel(
+        selectedPostGenItem?.label ?? "",
+        isPersonMockupLabel(selectedPostGenItem?.label ?? "")
+          ? "Front Person"
+          : "Lifestyle",
+      )
     : null;
 
-  /** Mesh AOP on-demand Front Person (Printers Mockup). */
+  /** Mesh AOP on-demand Front Person / pillow in-situ (Printers Mockup). */
   const canRequestAopPrintersMockup = !!(
     useAopCustomizer &&
     productTypeConfig?.panelMappingTemplate &&
@@ -9888,8 +9898,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize &&
     generatedDesign?.imageUrl
   );
-  const hasAopPersonMockup = printifyMockupImages.some((img) =>
-    isPersonMockupLabel(img.label),
+  const hasAopPersonMockup = printifyMockupImages.some(
+    (img) =>
+      isPersonMockupLabel(img.label) ||
+      isPrintifyContextMockupLabel(img.label) ||
+      /^printers/i.test(img.label || ""),
   );
   // Active as soon as artwork + size exist. Do not wait for aopPatternUrl —
   // deferred mesh apply left that null, so Printers Mockup stayed disabled
@@ -9914,9 +9927,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setLifestyleShotLoading(true);
       setLifestyleShotError(null);
       lastAopPanelUrlsRef.current = panels;
-      // Body/lumbar pillows have no Front Person cameras — request product
-      // cameras instead (same merge path as tapestry Printers Mockup).
-      const pillowProductCameras = isPillowWrapBlueprint(
+      // Body/lumbar pillows have no Front Person cameras — request in-situ
+      // lifestyle/context (bed/room). Fall back to product cameras if none.
+      const isPillowAop = isPillowWrapBlueprint(
         productTypeConfig.printifyBlueprintId,
       );
       try {
@@ -9924,7 +9937,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           aopPatternUrl ||
           aopBaseMockupsRef.current[0]?.url ||
           toAbsoluteImageUrl(generatedDesign.imageUrl);
-        const result = await fetchPrintifyMockups(
+        const fetchOpts = isPillowAop
+          ? { mergeContextOnly: true }
+          : { mergePersonViews: true };
+        let result = await fetchPrintifyMockups(
           designUrl,
           productTypeConfig.id,
           selectedSize!,
@@ -9937,10 +9953,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           panels,
           undefined,
           hoodieAopPlacerState?.backgroundColor,
-          pillowProductCameras
-            ? { mergeProductMockups: true }
-            : { mergePersonViews: true },
+          fetchOpts,
         );
+        if (!result.ok && isPillowAop) {
+          console.warn(
+            "[Mockups] Pillow lifestyle/context unavailable, trying product cameras:",
+            result.error,
+          );
+          result = await fetchPrintifyMockups(
+            designUrl,
+            productTypeConfig.id,
+            selectedSize!,
+            selectedFrameColor || "default",
+            100,
+            50,
+            50,
+            designUrl,
+            undefined,
+            panels,
+            undefined,
+            hoodieAopPlacerState?.backgroundColor,
+            { mergeProductMockups: true },
+          );
+        }
         if (!result.ok) {
           const msg = result.error || "Printers mockup failed";
           setLifestyleShotError(msg);
@@ -9953,8 +9988,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         toast({
           title: "Printers mockup ready",
-          description: pillowProductCameras
-            ? "Showing Printify product views — use the arrows under the preview to switch."
+          description: isPillowAop
+            ? "Showing in-situ lifestyle view — use the arrows under the preview to switch."
             : "Showing Front Person — use the arrows under the preview to switch views.",
         });
       } finally {
@@ -12577,7 +12612,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             const item = postGenGalleryItems[next];
                             stickAopPersonGalleryRef.current = !!(
                               item?.kind === "mockup" &&
-                              isPersonMockupLabel(item.label)
+                              isPrintifyOnDemandMockupLabel(item.label)
                             );
                             return next;
                           })
@@ -12601,7 +12636,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             const item = postGenGalleryItems[next];
                             stickAopPersonGalleryRef.current = !!(
                               item?.kind === "mockup" &&
-                              isPersonMockupLabel(item.label)
+                              isPrintifyOnDemandMockupLabel(item.label)
                             );
                             return next;
                           })
