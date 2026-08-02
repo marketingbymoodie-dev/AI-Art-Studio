@@ -1994,7 +1994,20 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     return { tier: "reject", status: "failed", manifest: baseManifest, error: "Supabase flat-calibration bucket not configured" };
   }
 
-  const variantsData = await pf<any>(`/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`, token);
+  // Prefer full catalog so blank harvest can resolve every colour id (incl. OOS).
+  // Temp-product mockups for OOS colours may still fail later; in-stock colours harvest normally.
+  let variantsData: any;
+  try {
+    variantsData = await pf<any>(
+      `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
+      token,
+    );
+  } catch {
+    variantsData = await pf<any>(
+      `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      token,
+    );
+  }
   const variants: any[] = variantsData.variants || [];
   if (variants.length === 0) return { tier: "reject", status: "failed", manifest: baseManifest, error: "no variants from catalog" };
 

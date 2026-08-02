@@ -178,6 +178,8 @@ import {
   normalizeShopifyOrderLine,
 } from "./flat-order-fulfillment";
 import { createPersistentPrintifyProduct } from "./design-product-publish";
+import { fetchPrintifyProviderVariantsDual } from "./printifyCatalogVariantsFetch";
+import { mergeNewlyAppearedSelectionIds } from "@shared/printifyCatalogSelection";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -12866,22 +12868,12 @@ ${orientationExtra}
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
-      const response = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
+      const dual = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        providerId,
+        merchant.printifyApiToken,
       );
-
-      if (!response.ok) {
-        throw new Error(`Printify API error: ${response.status}`);
-      }
-
-      const variants = await response.json();
-      res.json(variants);
+      res.json(dual.payload);
     } catch (error) {
       console.error("Error fetching variants:", error);
       res.status(500).json({ error: "Failed to fetch variants" });
@@ -12913,22 +12905,13 @@ ${orientationExtra}
         return res.status(400).json({ error: "Invalid providerId" });
       }
 
-      const response = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${actualProviderId}/variants.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
+      // Full catalog (incl. fully OOS colors) so the import wizard lists White/Black etc.
+      const dual = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        actualProviderId,
+        merchant.printifyApiToken,
       );
-
-      if (!response.ok) {
-        throw new Error(`Printify API error: ${response.status}`);
-      }
-
-      const variantsData = await response.json();
-      const variants = variantsData.variants || variantsData || [];
+      const variants = dual.variants;
       
       // Parse variants to extract sizes and colors (simplified version of import logic)
       const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
@@ -13551,25 +13534,23 @@ ${orientationExtra}
         console.log(`Blueprint options API - color extraction: no color options found or options missing`);
       }
 
-      // Fetch variants for this provider with retry logic
-      const variantsResponse = await fetchWithRetry(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      // Dual-fetch: full catalog (show-out-of-stock=1) builds variantMap so fully OOS
+      // colors like White/Black at JAMS still enter the denominator for stock scans.
+      const dualCatalog = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        providerId,
+        printifyToken,
         {
-          headers: {
-            "Authorization": `Bearer ${printifyToken}`,
-            "Content-Type": "application/json"
-          }
+          fetchFn: (url, init) => fetchWithRetry(String(url), init || {}, 3, 1500),
         },
-        3,
-        1500
       );
-
-      if (!variantsResponse.ok) {
-        throw new Error(`Failed to fetch variants: ${variantsResponse.status}`);
+      const variantsData = dualCatalog.payload;
+      const variants = dualCatalog.variants;
+      if (!dualCatalog.usedFullCatalog) {
+        console.warn(
+          `[Import] Blueprint ${blueprintId} provider ${providerId}: full catalog fetch failed — using in-stock-only list (${variants.length} variants)`,
+        );
       }
-
-      const variantsData = await variantsResponse.json();
-      const variants = variantsData.variants || variantsData || [];
       // Extract flat-lay SVG images from the `views` field of the variants response.
       // views[] contains { position, label, files[{ src, variant_ids }] } — one entry per
       // print panel position. We build a map of position → SVG URL for the Place on Item viewer.
@@ -14836,28 +14817,21 @@ ${orientationExtra}
       const blueprintId = productType.printifyBlueprintId;
       const providerId = productType.printifyProviderId;
 
-      // Fetch variants from Printify
-      const variantsResponse = await fetchWithRetry(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      // Full catalog so fully OOS colors re-enter variantMap / OOS denominator.
+      const dualRefresh = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        providerId,
+        merchant.printifyApiToken,
         {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
+          fetchFn: (url, init) => fetchWithRetry(String(url), init || {}, 3, 1500),
         },
-        3,
-        1500
       );
-
-      if (!variantsResponse.ok) {
-        throw new Error(`Failed to fetch variants: ${variantsResponse.status}`);
-      }
-
-      const variantsData = await variantsResponse.json();
-      const variants = variantsData.variants || variantsData || [];
+      const variants = dualRefresh.variants;
 
       // Log first few variants to debug
-      console.log(`[Refresh Variants] Blueprint ${blueprintId} returned ${variants.length} variants`);
+      console.log(
+        `[Refresh Variants] Blueprint ${blueprintId} returned ${variants.length} variants (fullCatalog=${dualRefresh.usedFullCatalog})`,
+      );
       if (variants.length > 0) {
         console.log(`[Refresh Variants] Sample variant:`, JSON.stringify(variants[0]).slice(0, 500));
         console.log(`[Refresh Variants] First 5 variant titles:`, variants.slice(0, 5).map((v: any) => v.title));
@@ -15057,36 +15031,31 @@ ${orientationExtra}
       }
 
       // Update product type.
-      // Preserve any existing manual selections — only reset to "all" if the merchant has never
-      // explicitly saved a selection (i.e. the stored array is empty / matches the old full set).
+      // Preserve intentional deselections; auto-add colors/sizes that newly appear
+      // when the full catalog includes previously omitted fully-OOS options.
       const existingSizeIds: string[] = typeof productType.selectedSizeIds === 'string'
         ? JSON.parse(productType.selectedSizeIds || '[]')
         : productType.selectedSizeIds || [];
       const existingColorIds: string[] = typeof productType.selectedColorIds === 'string'
         ? JSON.parse(productType.selectedColorIds || '[]')
         : productType.selectedColorIds || [];
+      const previousSizes: Array<{ id?: string }> = typeof productType.sizes === 'string'
+        ? JSON.parse(productType.sizes || '[]')
+        : productType.sizes || [];
+      const previousColors: Array<{ id?: string }> = typeof productType.frameColors === 'string'
+        ? JSON.parse(productType.frameColors || '[]')
+        : productType.frameColors || [];
 
-      // Keep only IDs that still exist in the refreshed data (remove stale ones).
-      const newSizeIdSet = new Set(sizes.map((s: { id: string }) => s.id));
-      const newColorIdSet = new Set(frameColors.map((c: { id: string }) => c.id));
-      const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
-      const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
-
-      // Preserve merchant selections after filtering stale ids. Empty selectedColorIds
-      // with a non-empty frameColors list means a broken import — backfill to all colours
-      // so storefront color dropdowns return after Refresh Variants.
-      const finalSizeIds =
-        filteredSizeIds.length > 0
-          ? filteredSizeIds
-          : existingSizeIds.length === 0 && sizes.length > 0
-            ? sizes.map((s: { id: string }) => s.id)
-            : filteredSizeIds;
-      const finalColorIds =
-        filteredColorIds.length > 0
-          ? filteredColorIds
-          : existingColorIds.length === 0 && frameColors.length > 0
-            ? frameColors.map((c: { id: string }) => c.id)
-            : filteredColorIds;
+      const finalSizeIds = mergeNewlyAppearedSelectionIds({
+        existingSelectedIds: existingSizeIds,
+        previousOptionIds: previousSizes.map((s) => String(s.id || "")).filter(Boolean),
+        refreshedOptionIds: sizes.map((s: { id: string }) => s.id),
+      });
+      const finalColorIds = mergeNewlyAppearedSelectionIds({
+        existingSelectedIds: existingColorIds,
+        previousOptionIds: previousColors.map((c) => String(c.id || "")).filter(Boolean),
+        refreshedOptionIds: frameColors.map((c: { id: string }) => c.id),
+      });
 
       const refreshedCatalogCosts = extractCostsFromCatalogVariants(variants);
       let finalRefreshCosts = refreshedCatalogCosts;

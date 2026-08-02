@@ -47,6 +47,18 @@ Same flat apparel invariants as bp 26 (guide = mask AABB, overlay host = canvas 
 - `onTheFlyTier`: `flat` + `flatCalibration` (front/back)
 - `hasPrintifyMockups`: true
 
+## Blank colours (storefront)
+
+Pre-design blank swaps use **harvested** `flatCalibration.blanks` keys (e.g.
+`white_red`, `white_black`), not Printify’s designer catalog alone. UK/EU
+providers often expose more colorways than the original JAMS harvest.
+
+After re-harvesting blueprint 79 blanks for all storefront colors (prefer
+T Shirt and Sons while those colorways are in stock), **publish canonical**
+and on each merchant product type click **Pull canonical calibration**, then
+hard-refresh the customizer. Without a blank key for a color, the garment
+image stays on the catalog primary.
+
 ## Verification checklist
 
 - [ ] Generate → dashed guide + clip + trim warning when oversized

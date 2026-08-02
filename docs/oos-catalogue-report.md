@@ -27,6 +27,32 @@ flag as in-stock.
 JAMS Designs (USA) and T Shirt and Sons (UK) are never merged. Customizer Pages
 show fulfill-by as `Printify: …`; Scan stock now toasts include the provider name.
 
+### Printify UI “Available providers” vs our scan
+
+Printify’s product-variants modal (e.g. “Printed by JAMS Designs”) shows
+**that provider’s** inventory in the Inventory column. The **Available
+providers** column is a cross-supplier hint for the same blueprint: when JAMS
+is fully OOS for White/Black, JAMS disappears from that row and only
+T Shirt and Sons remains — even while the modal header still says JAMS.
+
+Our scan matches the Inventory column for the product’s stored
+`printifyProviderId`. It never merges another supplier’s stock into the ratio.
+
+### Denominator = imported `variantMap` (must include fully OOS colors)
+
+`available / total` counts only size×color rows this product type sells
+(`variantMap` filtered by `selectedSizeIds` / `selectedColorIds`).
+
+Import, Refresh Variants, and the import wizard dual-fetch the full provider
+catalog (`?show-out-of-stock=1`) so colors that are entirely OOS at that
+provider (e.g. White/Black at JAMS) still enter `variantMap`. Refresh also
+auto-adds **newly appeared** color IDs to `selectedColorIds` while keeping
+intentional deselections of colors that already existed.
+
+If an older import used the in-stock-only list, a fully OOS colorway was
+omitted and the badge under-counted (e.g. 5/10 instead of 5/15). **Refresh
+Variants** on that product type, then **Scan stock now**.
+
 Products Import already documents this:
 
 > One product uses one print provider for fulfilment, costs, and mockup
