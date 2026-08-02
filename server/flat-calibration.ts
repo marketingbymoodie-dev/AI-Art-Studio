@@ -2090,16 +2090,25 @@ export async function harvestBlanksFromShopifyProduct(args: {
   const images: any[] = Array.isArray(product.images) ? product.images : [];
   const out: Record<string, Partial<Record<ViewName, string>>> = {};
 
+  const optionMatchesColor = (raw: string, color: ColorEntry): boolean => {
+    const name = color.name || color.id;
+    if (colorMatchesFrame(raw, name, color.id)) return true;
+    if (shopifyColorTokensEqual(raw, color.id) || shopifyColorTokensEqual(raw, name)) return true;
+    // "Black/ Red" (space after slash) vs slug black_red / name "Black/Red"
+    const compact = raw.replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+    if (colorMatchesFrame(compact, name, color.id)) return true;
+    if (shopifyColorTokensEqual(compact, color.id) || shopifyColorTokensEqual(compact, name)) {
+      return true;
+    }
+    return false;
+  };
+
   const variantIdForColor = (color: ColorEntry): any | null => {
     if (shopifyVariantIds && typeof shopifyVariantIds === "object") {
       for (const [key, vid] of Object.entries(shopifyVariantIds)) {
         const parts = String(key).split(":");
         const colorPart = parts.length >= 2 ? parts[parts.length - 1] : String(key);
-        if (
-          shopifyColorTokensEqual(colorPart, color.id) ||
-          shopifyColorTokensEqual(colorPart, color.name || "") ||
-          colorMatchesFrame(colorPart, color.name || color.id, color.id)
-        ) {
+        if (optionMatchesColor(colorPart, color)) {
           const hit = variants.find((v) => String(v.id) === String(vid));
           if (hit) return hit;
         }
@@ -2107,7 +2116,7 @@ export async function harvestBlanksFromShopifyProduct(args: {
     }
     for (const v of variants) {
       const opts = [v.option1, v.option2, v.option3, v.title].filter(Boolean).map(String);
-      if (opts.some((o) => colorMatchesFrame(o, color.name || color.id, color.id))) {
+      if (opts.some((o) => optionMatchesColor(o, color))) {
         return v;
       }
     }
@@ -2129,6 +2138,16 @@ export async function harvestBlanksFromShopifyProduct(args: {
     });
     return altHit?.src ? String(altHit.src) : null;
   };
+
+  if (colors.length > 0) {
+    const sampleOpts = variants.slice(0, 8).map((v) =>
+      [v.option1, v.option2, v.option3].filter(Boolean).join(" / "),
+    );
+    console.log(
+      `[flat-calibration] Shopify product ${productId}: ${variants.length} variants, ` +
+        `${images.length} images; sample options=[${sampleOpts.join(" | ")}]`,
+    );
+  }
 
   for (const color of colors) {
     const variant = variantIdForColor(color);
