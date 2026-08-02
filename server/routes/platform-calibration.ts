@@ -850,6 +850,9 @@ export function registerPlatformCalibrationRoutes(
                     !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
                   fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
                   skipBlankColorIds,
+                  // After primary masks/geometry exist, only pull missing blank photos —
+                  // never re-run probe/reg (those 6002 on US decorators and block blanks).
+                  blanksOnly: !!accumulated,
                 });
                 wiped = true;
 
@@ -880,7 +883,10 @@ export function registerPlatformCalibrationRoutes(
                     );
                     return;
                   }
-                  if (result.status === "failed" && !result.manifest?.blanks) {
+                  if (
+                    result.status === "failed" &&
+                    !Object.values(result.manifest?.blanks || {}).some((b) => !!(b?.front || b?.back))
+                  ) {
                     providerLastErr = errMsg || "harvest failed";
                     continue;
                   }
@@ -905,15 +911,29 @@ export function registerPlatformCalibrationRoutes(
                   break;
                 }
 
+                // Fill pass: merge whatever blanks we got, then keep trying shops when
+                // this shop added nothing (decorator 6002 / no existing product).
                 const added = mergeFlatCalibrationBlanks(accumulated, result.manifest);
-                if (added > 0) providersUsed.push(providerId);
-                providerOk = true;
-                await writeManifest(accumulated, "ready", null);
-                console.log(
-                  `[platform-canonical] harvest bp ${blueprintId}: provider ${providerId} via ${shopCreds.label}` +
-                    ` added ${added} blank(s) (total ${Object.keys(accumulated.blanks || {}).length})`,
+                if (added > 0) {
+                  if (!providersUsed.includes(providerId)) providersUsed.push(providerId);
+                  providerOk = true;
+                  await writeManifest(accumulated, "ready", null);
+                  console.log(
+                    `[platform-canonical] harvest bp ${blueprintId}: provider ${providerId} via ${shopCreds.label}` +
+                      ` added ${added} blank(s) (total ${Object.keys(accumulated.blanks || {}).length})`,
+                  );
+                  break;
+                }
+                if (result.status === "ready") {
+                  // No new colours for this provider — move on.
+                  providerOk = true;
+                  break;
+                }
+                providerLastErr = errMsg || `fill status ${result.status}`;
+                console.warn(
+                  `[platform-canonical] provider ${providerId} via ${shopCreds.label} added 0 blanks; trying next shop`,
                 );
-                break;
+                continue;
               } catch (err) {
                 const msg = (err as Error)?.message || String(err);
                 providerLastErr = msg;
@@ -924,15 +944,9 @@ export function registerPlatformCalibrationRoutes(
                   );
                   continue;
                 }
-                if (accumulated) {
-                  console.warn(
-                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} fill failed (keeping primary): ${msg}`,
-                  );
-                  break;
-                }
-                // Try next shop creds before failing the whole harvest.
+                // Try next shop creds (fill or primary) — US decorator access is often shop-scoped.
                 console.warn(
-                  `[platform-canonical] provider ${providerId} via ${shopCreds.label} failed: ${msg}`,
+                  `[platform-canonical] provider ${providerId} via ${shopCreds.label} ${accumulated ? "fill" : "primary"} failed: ${msg}`,
                 );
               }
             }
