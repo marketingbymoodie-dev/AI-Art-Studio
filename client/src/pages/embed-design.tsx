@@ -3601,6 +3601,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
         setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
       }
+      // Mesh composites matching the placer (not Printify cameras). Restore
+      // these as Front/Back so reopen matches what the customer last applied.
+      const savedPtForMesh = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
+      const currentPtForMesh = productTypeId ? String(productTypeId) : null;
+      const meshProductOk =
+        !savedPtForMesh || !currentPtForMesh || savedPtForMesh === currentPtForMesh;
+      if (
+        meshProductOk &&
+        ds.hoodieAopMockups &&
+        typeof ds.hoodieAopMockups === "object"
+      ) {
+        const meshImages: { url: string; label: string }[] = [];
+        const meshFront = abs(ds.hoodieAopMockups.front as string | undefined);
+        const meshBack = abs(ds.hoodieAopMockups.back as string | undefined);
+        if (meshFront) meshImages.push({ url: meshFront, label: "front" });
+        if (meshBack) meshImages.push({ url: meshBack, label: "back" });
+        if (meshImages.length > 0) {
+          aopBaseMockupsRef.current = meshImages;
+          const meshUrls = meshImages.map((i) => i.url);
+          setPrintifyMockupImages(meshImages);
+          setPrintifyMockups(meshUrls);
+          setSelectedMockupIndex(1);
+          setMockupsStale(false);
+          sendMockupsToParent(meshUrls);
+          if (!ds.aopPatternUrl && meshFront) setAopPatternUrl(meshFront);
+        }
+      }
       // Restore on-the-fly flat/mesh placer state so the customer resumes
       // their per-view placement mid-edit.
       if (ds.flatPlacerState && typeof ds.flatPlacerState === 'object') {
@@ -3658,16 +3685,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
     const mockupsMatchProduct =
       !savedProductTypeId || !currentProductTypeId || savedProductTypeId === currentProductTypeId;
-    if (mockups?.length && mockupsMatchProduct) {
+    // Mesh Front/Back already restored from hoodieAopMockups above — those match
+    // placer placement. Do not let Printify mockupUrls replace them (Printify
+    // warp often differs; that was "saved centered, reopen clipped").
+    const meshAlreadyRestored = aopBaseMockupsRef.current.length > 0;
+    if (mockups?.length && mockupsMatchProduct && !meshAlreadyRestored) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
-      // Restore aopPatternUrl so the ATC button is not blocked by the
-      // "useAopCustomizer && !aopPatternUrl" guard for saved AOP
-      // designs. The design URL is the same value set by onApply when applying fresh.
-      // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
-      if (absUrl) setAopPatternUrl(absUrl);
+      // ATC needs aopPatternUrl — use the cart/front mockup, never raw artwork
+      // (artwork overwrite made placement look "reset" on reopen).
       const durableMockups = useAopCustomizer
         ? absMockups.filter((url: string) => !isTemporaryPrintifyMockupUrl(url))
         : absMockups;
+      if (durableMockups[0]) {
+        setAopPatternUrl((prev) => prev || durableMockups[0]);
+      }
 
       if (durableMockups.length > 0) {
         setPrintifyMockups(durableMockups);
@@ -3680,6 +3711,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : (i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
           })),
         );
+        if (useAopCustomizer) {
+          aopBaseMockupsRef.current = durableMockups
+            .slice(0, 2)
+            .map((url: string, i: number) => ({
+              url,
+              label: i === 0 ? "front" : "back",
+            }));
+        }
         setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
         // The loaded mockups are already correct for this design — mark them fresh.
         // Without this, setTransform() called above triggers the stale-on-transform
@@ -3699,6 +3738,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setMockupsStale(true);
         sendMockupsToParent([]);
       }
+    } else if (mockups?.length && mockupsMatchProduct && meshAlreadyRestored) {
+      // Keep mesh Front/Back; still unlock ATC from restored pattern / mesh front.
+      setAopPatternUrl((prev) => prev || aopBaseMockupsRef.current[0]?.url || null);
+      currentMockupColorRef.current = topLevel.frameColor || "";
+      setMockupsStale(false);
     } else if (mockups?.length && !mockupsMatchProduct) {
       console.warn("[LoadDesign] Skipping mockup restore — saved design product type differs from active product");
       setPrintifyMockups([]);
@@ -4825,20 +4869,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           return;
         }
 
-        const finalImages =
-          useAopCustomizer && aopPersonMockupsRef.current.length > 0
-            ? (() => {
-                const seen = new Set(absImages.map((m: { url: string }) => mockupImageUrlKey(m.url)));
-                const merged = [...absImages];
-                for (const person of aopPersonMockupsRef.current) {
-                  const key = mockupImageUrlKey(person.url);
-                  if (seen.has(key)) continue;
-                  seen.add(key);
-                  merged.push(person);
-                }
-                return merged;
-              })()
-            : absImages;
+        // Mesh AOP: keep local placer Front/Back as the source of truth. Printify
+        // cameras are extras only — replacing them used to persist a different
+        // warp into mockupUrls so reopen no longer matched the saved placement.
+        const aopBases = useAopCustomizer ? aopBaseMockupsRef.current : [];
+        const finalImages = (() => {
+          if (aopBases.length > 0) {
+            const merged = [...aopBases];
+            const seen = new Set(merged.map((m) => mockupImageUrlKey(m.url)));
+            for (const img of absImages) {
+              const key = mockupImageUrlKey(img.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(img);
+            }
+            for (const person of aopPersonMockupsRef.current) {
+              const key = mockupImageUrlKey(person.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(person);
+            }
+            return merged;
+          }
+          if (useAopCustomizer && aopPersonMockupsRef.current.length > 0) {
+            const seen = new Set(absImages.map((m: { url: string }) => mockupImageUrlKey(m.url)));
+            const merged = [...absImages];
+            for (const person of aopPersonMockupsRef.current) {
+              const key = mockupImageUrlKey(person.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(person);
+            }
+            return merged;
+          }
+          return absImages;
+        })();
         const finalUrls = finalImages.map((m: { url: string }) => m.url);
         setPrintifyMockups(finalUrls);
         setPrintifyMockupImages(finalImages);
@@ -4862,6 +4927,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // Use the always-current ref so we get the resolved variant even when
           // selectedVariantParam and overrideVariantId are both absent from the closure.
           const baseVariantForShadow = baseVariantForShadowRef.current;
+          // Prefer durable local mesh URLs for AOP so Saved Designs / reopen keep
+          // placer placement (Printify CDN URLs also expire).
+          const urlsToPersist =
+            aopBases.length > 0
+              ? finalUrls.filter(
+                  (u) =>
+                    typeof u === "string" &&
+                    (u.startsWith("http://") || u.startsWith("https://")),
+                )
+              : result.mockupUrls;
           console.log('[Mockups] Saving permanent mockup URLs to job:', savedJobIdRef.current);
           safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
             method: 'POST',
@@ -4869,7 +4944,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             body: JSON.stringify({
               jobId: savedJobIdRef.current,
               shop: shopDomain,
-              mockupUrls: result.mockupUrls,
+              mockupUrls: urlsToPersist,
               ...(productId && baseVariantForShadow ? { baseProductId: productId, baseVariantId: baseVariantForShadow } : {}),
             }),
           }).then(r => r.json()).then(saved => {
@@ -5062,12 +5137,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !mockupLoading &&
       !mockupFailed
     ) {
-      if (useAopCustomizer) {
-        console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
-        setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-        setAopPatternUrl(null);
-        setShowPatternStep(true);
-      } else if (usesFlatOnTheFlyPreview) {
+    if (useAopCustomizer) {
+      // Resume with saved placer state: keep aopPatternUrl / mockups; only open
+      // the placer. Clearing pattern URL forced a default re-apply path.
+      console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
+      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      setShowPatternStep(true);
+    } else if (usesFlatOnTheFlyPreview) {
         setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
@@ -5081,7 +5158,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
       }
     }
-  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview]);
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
@@ -5100,7 +5177,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (useAopCustomizer) {
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-      setAopPatternUrl(null);
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
       setShowPatternStep(true);
       return;
     }
@@ -5120,7 +5197,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       transform.x,
       transform.y
     );
-  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
+  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState]);
 
   /**
    * Admin tester (Printify zoom products): persist scale/position/size for the

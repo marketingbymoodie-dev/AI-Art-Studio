@@ -8496,6 +8496,29 @@ ${orientationExtra}
           ...(designState.flatPlacerState as Record<string, unknown>),
         };
       }
+      if (
+        designState.hoodieAopPlacerState &&
+        typeof designState.hoodieAopPlacerState === "object" &&
+        !Array.isArray(designState.hoodieAopPlacerState) &&
+        prevState.hoodieAopPlacerState &&
+        typeof prevState.hoodieAopPlacerState === "object" &&
+        !Array.isArray(prevState.hoodieAopPlacerState)
+      ) {
+        const prevHoodie = prevState.hoodieAopPlacerState as Record<string, unknown>;
+        const nextHoodie = designState.hoodieAopPlacerState as Record<string, unknown>;
+        mergedDesignState.hoodieAopPlacerState = {
+          ...prevHoodie,
+          ...nextHoodie,
+          placements: {
+            ...((prevHoodie.placements as object) || {}),
+            ...((nextHoodie.placements as object) || {}),
+          },
+          enabled: {
+            ...((prevHoodie.enabled as object) || {}),
+            ...((nextHoodie.enabled as object) || {}),
+          },
+        };
+      }
       // Sync size / colour / artwork onto job columns so test orders and
       // fulfillment prefer the merchant's current Apply selection.
       const jobPatch: Record<string, unknown> = { designState: mergedDesignState };
