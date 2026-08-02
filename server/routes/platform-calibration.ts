@@ -28,8 +28,11 @@ import {
   calibratorLayerPaths,
   defaultCalibratorModelEntry,
   harvestFlatCalibration,
+  mergeFlatCalibrationBlanks,
+  normalizeHarvestBlankColorKey,
   sharedCalibratorLayerPaths,
   type CalibratorModelEntry,
+  type FlatCalibrationManifest,
   type FlatCalibratorGeometry,
   type ViewName,
 } from "../flat-calibration";
@@ -696,19 +699,58 @@ export function registerPlatformCalibrationRoutes(
       void (async () => {
         const storageKey = canonicalStorageKey(blueprintId, version);
         let lastError: string | null = null;
+        let accumulated: FlatCalibrationManifest | null = null;
+        const providersUsed: number[] = [];
+        let wiped = false;
+
+        const writeManifest = async (
+          manifest: FlatCalibrationManifest,
+          status: string,
+          error: string | null,
+        ) => {
+          await uploadToFlatCalibrationBucket(
+            `${storageKey}/manifest.json`,
+            Buffer.from(
+              JSON.stringify(
+                {
+                  ...manifest,
+                  canonicalVersion: version,
+                  harvestStatus: status,
+                  harvestError: error,
+                  harvestProviderId: providersUsed[0] ?? manifest.providerId,
+                  harvestProviderIds: providersUsed,
+                },
+                null,
+                2,
+              ),
+              "utf-8",
+            ),
+            "application/json",
+          );
+        };
+
+        const existingBlankIds = (): string[] =>
+          Object.keys(accumulated?.blanks || {}).filter((k) => {
+            const b = accumulated!.blanks[k];
+            return !!(b?.front || b?.back);
+          });
+
         try {
+          // Pass 1: first provider that can create products wins for masks/geometry.
+          // Pass 2+: other providers only add blank colours not already harvested
+          // (e.g. JAMS Black/Red after UK White/*) — listings stay provider-scoped.
           for (let i = 0; i < providerCandidates.length; i++) {
             const providerId = providerCandidates[i]!;
-            // Use size/color/variantMap only from a product type that shares this
-            // provider — JAMS variant IDs are invalid for T Shirt and Sons, etc.
             const ref =
               blueprintProducts.find(
                 (pt) => Number(pt.printifyProviderId) === providerId,
               ) ?? null;
+            const skipBlankColorIds = accumulated ? existingBlankIds() : [];
             console.log(
-              `[platform-canonical] harvest bp ${blueprintId} v${version} trying provider ${providerId}` +
+              `[platform-canonical] harvest bp ${blueprintId} v${version} provider ${providerId}` +
                 ` (${i + 1}/${providerCandidates.length}` +
-                `${ref ? `, pt ${ref.id}` : ", catalog colours"})`,
+                `${ref ? `, pt ${ref.id}` : ", catalog colours"}` +
+                `${skipBlankColorIds.length ? `, skip ${skipBlankColorIds.length} blanks` : ""})`,
             );
             try {
               const result = await harvestFlatCalibration({
@@ -723,41 +765,19 @@ export function registerPlatformCalibrationRoutes(
                 frameColors: ref?.frameColors,
                 variantMap: ref?.variantMap,
                 calibratorMode: true,
-                wipeExisting: i === 0,
+                wipeExisting: !wiped,
                 storageKey,
-                // Operator tagged Flat in the catalog — that IS the override when the
-                // print-area probe rejects apparel (bp 79 baseball tee, etc.).
                 forceFlatHarvest:
                   !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
                 fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
+                skipBlankColorIds,
               });
-
-              if (result.manifest) {
-                await uploadToFlatCalibrationBucket(
-                  `${storageKey}/manifest.json`,
-                  Buffer.from(
-                    JSON.stringify(
-                      {
-                        ...result.manifest,
-                        canonicalVersion: version,
-                        harvestStatus: result.status,
-                        harvestError: result.error ?? null,
-                        harvestProviderId: providerId,
-                      },
-                      null,
-                      2,
-                    ),
-                    "utf-8",
-                  ),
-                  "application/json",
-                );
-              }
+              wiped = true;
 
               const errMsg = result.error || "";
               if (
                 (result.status === "failed" || result.status === "unsupported") &&
-                isPrintifyDecoratorUnavailableError(errMsg) &&
-                i < providerCandidates.length - 1
+                isPrintifyDecoratorUnavailableError(errMsg)
               ) {
                 lastError = errMsg;
                 console.warn(
@@ -766,20 +786,68 @@ export function registerPlatformCalibrationRoutes(
                 continue;
               }
 
+              if (!accumulated) {
+                if (result.status !== "ready" && result.status !== "failed") {
+                  // unsupported without decorator — stop
+                  if (result.manifest) {
+                    await writeManifest(
+                      result.manifest,
+                      result.status,
+                      result.error ?? null,
+                    );
+                  }
+                  console.log(
+                    `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}` +
+                      ` provider=${providerId}${result.error ? ` (${result.error})` : ""}`,
+                  );
+                  return;
+                }
+                if (result.status === "failed" && !result.manifest?.blanks) {
+                  lastError = errMsg || "harvest failed";
+                  continue;
+                }
+                accumulated = result.manifest
+                  ? { ...result.manifest, blanks: { ...(result.manifest.blanks || {}) } }
+                  : null;
+                if (!accumulated) {
+                  lastError = errMsg || "harvest returned no manifest";
+                  continue;
+                }
+                providersUsed.push(providerId);
+                await writeManifest(
+                  accumulated,
+                  result.status === "ready" ? "ready" : result.status,
+                  result.error ?? null,
+                );
+                console.log(
+                  `[platform-canonical] harvest bp ${blueprintId}: primary provider ${providerId} -> ${result.status}` +
+                    ` blanks=${Object.keys(accumulated.blanks || {}).length}`,
+                );
+                // Continue to fill missing colours from other providers.
+                continue;
+              }
+
+              // Secondary provider: merge only new blank keys.
+              const added = mergeFlatCalibrationBlanks(accumulated, result.manifest);
+              if (added > 0) providersUsed.push(providerId);
+              await writeManifest(accumulated, "ready", null);
               console.log(
-                `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}` +
-                  ` provider=${providerId}${result.error ? ` (${result.error})` : ""}`,
+                `[platform-canonical] harvest bp ${blueprintId}: provider ${providerId} added ${added} blank(s)` +
+                  ` (total ${Object.keys(accumulated.blanks || {}).length})`,
               );
-              return;
             } catch (err) {
               const msg = (err as Error)?.message || String(err);
               lastError = msg;
-              if (
-                isPrintifyDecoratorUnavailableError(msg) &&
-                i < providerCandidates.length - 1
-              ) {
+              if (isPrintifyDecoratorUnavailableError(msg)) {
                 console.warn(
                   `[platform-canonical] provider ${providerId} threw decorator error for bp ${blueprintId}; trying next: ${msg}`,
+                );
+                continue;
+              }
+              // Non-decorator errors on a fill pass shouldn't wipe a good primary harvest.
+              if (accumulated) {
+                console.warn(
+                  `[platform-canonical] provider ${providerId} fill failed (keeping primary): ${msg}`,
                 );
                 continue;
               }
@@ -787,26 +855,33 @@ export function registerPlatformCalibrationRoutes(
             }
           }
 
-          // All candidates failed with decorator errors
-          await uploadToFlatCalibrationBucket(
-            `${storageKey}/manifest.json`,
-            Buffer.from(
-              JSON.stringify(
-                {
-                  blueprintId,
-                  tier: "reject",
-                  harvestStatus: "failed",
-                  harvestError:
-                    lastError ||
-                    `No Printify print provider available for blueprint ${blueprintId} on this shop`,
-                  generatedAt: new Date().toISOString(),
-                },
-                null,
-                2,
-              ),
-              "utf-8",
-            ),
-            "application/json",
+          if (accumulated) {
+            await writeManifest(accumulated, "ready", null);
+            console.log(
+              `[platform-canonical] harvest bp ${blueprintId} v${version} complete` +
+                ` providers=[${providersUsed.join(",")}]` +
+                ` blanks=[${Object.keys(accumulated.blanks || {})
+                  .map(normalizeHarvestBlankColorKey)
+                  .join(", ")}]`,
+            );
+            return;
+          }
+
+          await writeManifest(
+            {
+              productTypeId: 0,
+              name: entry.label,
+              blueprintId,
+              providerId: providerCandidates[0]!,
+              tier: "reject",
+              views: {},
+              blanks: {},
+              representativeGeometry: true,
+              generatedAt: new Date().toISOString(),
+            },
+            "failed",
+            lastError ||
+              `No Printify print provider available for blueprint ${blueprintId} on this shop`,
           );
           console.error(
             `[platform-canonical] harvest failed bp ${blueprintId}: all providers rejected (${lastError})`,

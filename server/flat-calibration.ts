@@ -1945,7 +1945,44 @@ export type HarvestOptions = {
   /** Platform catalog override — harvest despite (AOP) in Printify title. */
   forceFlatHarvest?: boolean;
   fulfillmentLayout?: string | null;
+  /**
+   * Blank colour ids already present in a multi-provider canonical harvest.
+   * Skipped so a second provider only adds missing colorways (e.g. JAMS Black/Red
+   * after T Shirt and Sons harvested White/*).
+   */
+  skipBlankColorIds?: string[];
 };
+
+/** Normalize blank colour keys for multi-provider merge / skip matching. */
+export function normalizeHarvestBlankColorKey(id: string): string {
+  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+}
+
+/**
+ * Copy blank (and per-blank geometry) entries from `from` into `into` when the
+ * key is not already present. Returns how many blank keys were added.
+ */
+export function mergeFlatCalibrationBlanks(
+  into: FlatCalibrationManifest,
+  from: FlatCalibrationManifest | null | undefined,
+): number {
+  if (!from?.blanks) return 0;
+  if (!into.blanks) into.blanks = {};
+  let added = 0;
+  for (const [key, views] of Object.entries(from.blanks)) {
+    if (!views?.front && !views?.back) continue;
+    const existing = into.blanks[key];
+    if (existing?.front || existing?.back) continue;
+    into.blanks[key] = { ...views };
+    added += 1;
+    const geo = from.geometryByBlank?.[key];
+    if (geo) {
+      if (!into.geometryByBlank) into.geometryByBlank = {};
+      if (!into.geometryByBlank[key]) into.geometryByBlank[key] = geo;
+    }
+  }
+  return added;
+}
 
 /**
  * Harvest flat/mesh calibration for one product and upload assets to Supabase.
@@ -2010,6 +2047,44 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
   }
   const variants: any[] = variantsData.variants || [];
   if (variants.length === 0) return { tier: "reject", status: "failed", manifest: baseManifest, error: "no variants from catalog" };
+
+  const skipBlankKeys = new Set(
+    (opts.skipBlankColorIds || []).map((id) => normalizeHarvestBlankColorKey(String(id))),
+  );
+  if (skipBlankKeys.size > 0) {
+    // Resolve colours early so multi-provider fill can no-op without probe/reg cost.
+    let previewColors =
+      opts.colors && opts.colors.length > 0
+        ? opts.colors
+        : await resolveHarvestColors({
+            token,
+            blueprintId,
+            providerId,
+            variants,
+            productType:
+              opts.frameColors || opts.variantMap || opts.designerType || opts.sizes
+                ? {
+                    designerType: opts.designerType,
+                    frameColors: opts.frameColors,
+                    sizes: opts.sizes,
+                    variantMap: opts.variantMap,
+                  }
+                : null,
+          });
+    previewColors = previewColors.filter(
+      (c) => !skipBlankKeys.has(normalizeHarvestBlankColorKey(c.id)),
+    );
+    if (previewColors.length === 0) {
+      console.log(
+        `[flat-calibration] ${name} (bp ${blueprintId} / provider ${providerId}): no new blank colours to harvest — skipping`,
+      );
+      return {
+        tier: "flat",
+        status: "ready",
+        manifest: { ...baseManifest, tier: "flat", blanks: {} },
+      };
+    }
+  }
 
   const viewLayout = resolveHarvestViewLayout(variants, opts, blueprintId);
   if ("error" in viewLayout) {
@@ -2180,6 +2255,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
 
     // ── 3. BLANK pass per color/model -> plain garment photos ─────────────────
+    const harvestWarnings: string[] = [];
     let colors =
       opts.colors && opts.colors.length > 0
         ? opts.colors
@@ -2198,6 +2274,24 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
                   }
                 : null,
           });
+    if (skipBlankKeys.size > 0) {
+      const before = colors.length;
+      colors = colors.filter(
+        (c) => !skipBlankKeys.has(normalizeHarvestBlankColorKey(c.id)),
+      );
+      if (before !== colors.length) {
+        console.log(
+          `[flat-calibration] ${name}: skipped ${before - colors.length} blank(s) already harvested by another provider`,
+        );
+      }
+      if (colors.length === 0) {
+        return {
+          tier: productTier,
+          status: "ready",
+          manifest: baseManifest,
+        };
+      }
+    }
     if (colors.length === 0) {
       console.warn(
         `[flat-calibration] ${name} (pt ${productTypeId}): no colours resolved — using first catalog variant as default blank`,
@@ -2209,7 +2303,6 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       );
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
-    const harvestWarnings: string[] = [];
     const harvestSizes = parseJsonArray(opts.sizes);
     const apparelProduct = isApparelHarvestProduct(opts.designerType, harvestSizes);
     const decorPerSize =

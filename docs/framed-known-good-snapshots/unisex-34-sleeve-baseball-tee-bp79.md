@@ -53,11 +53,15 @@ Pre-design blank swaps use **harvested** `flatCalibration.blanks` keys (e.g.
 `white_red`, `white_black`), not Printify’s designer catalog alone. UK/EU
 providers often expose more colorways than the original JAMS harvest.
 
-After re-harvesting blueprint 79 blanks for all storefront colors (prefer
-T Shirt and Sons while those colorways are in stock), **publish canonical**
-and on each merchant product type click **Pull canonical calibration**, then
-hard-refresh the customizer. Without a blank key for a color, the garment
-image stays on the catalog primary.
+Platform **Retry harvest** walks every Printify provider available to the
+operator shop: the first that can create products supplies masks/geometry;
+later providers only **add missing blank colour keys** (e.g. JAMS `black_red`
+after T Shirt and Sons harvested `white_*`). Merchant listings stay
+provider-scoped — blanks are a shared pool, not a merged variant catalog.
+
+After harvest, **publish canonical** and on each merchant product type click
+**Pull canonical calibration**, then hard-refresh the customizer. Without a
+blank key for a color, the garment image stays on the catalog primary.
 
 ## Verification checklist
 
