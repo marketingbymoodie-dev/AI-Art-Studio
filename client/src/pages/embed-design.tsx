@@ -770,67 +770,79 @@ async function fetchReuseArtworkBlob(imageUrl: string): Promise<Blob> {
   const abs = toAbsoluteImageUrl(imageUrl);
   if (!abs) throw new Error("Missing artwork URL");
 
-  const tryFetch = async (url: string, init?: RequestInit) => {
-    const res = await fetch(url, init);
+  // CRITICAL: never use window.fetch here — Shopify's storefront service worker
+  // intercepts fetch for /apps/appai/* and external URLs can hang forever.
+  // safeFetch uses XHR (see comment above xhrFetch).
+  const trySafeBlob = async (url: string, timeoutMs = 20000) => {
+    const res = await safeFetch(url, { credentials: "same-origin" }, timeoutMs);
     if (!res.ok) throw new Error(`Failed to fetch artwork (${res.status})`);
     return res.blob();
   };
 
-  // Same-origin / app-proxy paths — most reliable in the storefront iframe.
-  try {
-    if (abs.startsWith("/") || abs.includes(window.location.origin)) {
-      let path = abs;
-      if (abs.startsWith("http")) {
-        const u = new URL(abs);
-        path = `${u.pathname}${u.search}`;
+  const candidates: string[] = [];
+  if (abs.startsWith("/")) {
+    candidates.push(abs.startsWith("/objects/") ? `/apps/appai${abs}` : abs);
+  } else if (abs.startsWith("http://") || abs.startsWith("https://")) {
+    try {
+      const u = new URL(abs);
+      if (u.origin === window.location.origin || u.pathname.startsWith("/apps/appai") || u.pathname.startsWith("/objects/")) {
+        let path = `${u.pathname}${u.search}`;
+        if (path.startsWith("/objects/")) path = `/apps/appai${path}`;
+        candidates.push(path);
       }
-      if (path.startsWith("/objects/")) path = `/apps/appai${path}`;
-      const res = await safeFetch(path, { credentials: "same-origin" }, 60000);
-      if (res.ok) return res.blob();
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* fall through */
+    candidates.push(abs);
   }
 
+  let lastErr: unknown;
+  for (const url of candidates) {
+    try {
+      return await trySafeBlob(url);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  // Canvas fallback with a hard timeout (Image can hang if CDN blocks).
   try {
-    return await tryFetch(abs, { credentials: "include", mode: "cors" });
-  } catch {
-    /* fall through */
-  }
-
-  try {
-    return await tryFetch(abs, { credentials: "omit", mode: "cors" });
-  } catch {
-    /* fall through to canvas */
-  }
-
-  // Last resort: draw a CORS-enabled <img> to canvas (works for many CDNs).
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.naturalWidth || img.width;
-        canvas.height = img.naturalHeight || img.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          reject(new Error("Canvas unavailable"));
-          return;
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const timer = window.setTimeout(() => reject(new Error("Artwork image load timed out")), 15000);
+      img.onload = () => {
+        window.clearTimeout(timer);
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Canvas unavailable"));
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          canvas.toBlob(
+            (b) => (b ? resolve(b) : reject(new Error("Could not encode artwork"))),
+            "image/png",
+          );
+        } catch (e) {
+          reject(e);
         }
-        ctx.drawImage(img, 0, 0);
-        canvas.toBlob(
-          (b) => (b ? resolve(b) : reject(new Error("Could not encode artwork"))),
-          "image/png",
-        );
-      } catch (e) {
-        reject(e);
-      }
-    };
-    img.onerror = () => reject(new Error("Failed to load artwork image"));
-    img.src = abs;
-  });
-  return blob;
+      };
+      img.onerror = () => {
+        window.clearTimeout(timer);
+        reject(new Error("Failed to load artwork image"));
+      };
+      img.src = abs;
+    });
+    return blob;
+  } catch (e) {
+    lastErr = e;
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error("Could not load artwork for reuse");
 }
 
 /** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
@@ -1597,6 +1609,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [reusePages, setReusePages] = useState<ReusePageOption[]>([]);
   const [reusePagesLoading, setReusePagesLoading] = useState(false);
   const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
+  const [reuseBusy, setReuseBusy] = useState(false);
+  const [reuseBusyLabel, setReuseBusyLabel] = useState("Preparing artwork…");
   const autoReuseGenerateDoneRef = useRef(false);
   const autoReuseHydratedRef = useRef(false);
   const autoReuseSeedingRef = useRef(false);
@@ -8314,11 +8328,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         });
 
         reuseInAppBusyRef.current = true;
+        setReuseBusy(true);
+        setReuseBusyLabel("Preparing artwork…");
         try {
-          toast({
-            title: "Reusing artwork…",
-            description: "Switching product and attaching it as a reference image.",
-          });
+          setReuseBusyLabel("Loading artwork…");
           const blob = await fetchReuseArtworkBlob(opts.artworkUrl);
           const file = new File([blob], "reuse-artwork.png", {
             type: blob.type || "image/png",
@@ -8327,6 +8340,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const b64 = await blobToDataUrl(blob);
           if (!b64) throw new Error("Could not read artwork for reference");
 
+          setReuseBusyLabel("Switching product…");
           await switchToCustomizerPageByHandle(handle);
 
           setReferenceImages([file]);
@@ -8340,10 +8354,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           autoReuseSeedingRef.current = true;
           autoReuseGenerateDoneRef.current = false;
           clearReuseHandoff();
+          setReuseBusyLabel("Starting regenerate…");
           setReuseGenerateTick((n) => n + 1);
+          setReuseBusy(false);
           return;
         } catch (err: any) {
           console.error("[ReuseArtwork] in-app regenerate failed, falling back to page nav:", err);
+          setReuseBusyLabel("Opening product page…");
           toast({
             title: "Switching page…",
             description: err?.message || "Retrying with a full page load.",
@@ -8382,6 +8399,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
       const qs = params.toString();
       const url = qs ? `${target}?${qs}` : target;
+      setReuseBusy(true);
+      setReuseBusyLabel("Opening product page…");
       try {
         window.parent.location.href = url;
       } catch {
@@ -10333,22 +10352,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
-    if (isInAppProductSwitching) {
+    if (isInAppProductSwitching || reuseBusy) {
       return (
-        <div className="min-h-[520px] flex items-center justify-center bg-[#f4f4f5]" data-testid="container-loading">
-          <style>{'@keyframes appai-iframe-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}'}</style>
-          <div
-            className="text-[34px] max-sm:text-[28px] font-extrabold leading-tight tracking-[-0.04em] text-transparent bg-clip-text"
-            style={{
-              backgroundImage: 'linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
-              backgroundSize: '200% auto',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              animation: 'appai-iframe-title-shimmer 2.4s linear infinite',
-            }}
-          >
-            Loading AI Art Studio
-          </div>
+        <div
+          className="min-h-[520px] flex flex-col items-center justify-center gap-3 bg-[#f4f4f5]"
+          data-testid="container-loading-reuse"
+        >
+          <Loader2 className="h-8 w-8 animate-spin text-foreground" />
+          <p className="text-sm font-medium text-foreground">
+            {reuseBusy ? reuseBusyLabel : "Loading AI Art Studio"}
+          </p>
         </div>
       );
     }
@@ -10610,12 +10623,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   return (
     <div
-      className={`p-2 sm:p-3 ${
+      className={`p-2 sm:p-3 relative ${
         isEmbedded || isStorefront || isAdminTester || isMerchantStudio
           ? "bg-transparent"
           : "bg-background min-h-screen"
       }`}
     >
+      {reuseBusy && (
+        <div
+          className="fixed inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-[1px]"
+          data-testid="overlay-reuse-busy"
+          aria-busy="true"
+          aria-live="polite"
+        >
+          <Loader2 className="h-8 w-8 animate-spin text-foreground" />
+          <p className="text-sm font-medium text-foreground px-4 text-center">{reuseBusyLabel}</p>
+        </div>
+      )}
       <AlertDialog open={flatClipConfirmOpen} onOpenChange={setFlatClipConfirmOpen}>
         <AlertDialogContent data-testid="dialog-flat-clip-confirm">
           <AlertDialogHeader>
@@ -10675,16 +10699,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col sm:flex-row gap-2">
-            <AlertDialogCancel data-testid="button-reuse-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={reuseBusy} data-testid="button-reuse-cancel">
+              Cancel
+            </AlertDialogCancel>
             <Button
               type="button"
               variant="outline"
+              disabled={reuseBusy}
               data-testid="button-reuse-open-asis"
               onClick={() => {
-                if (!reuseDialog) return;
+                if (!reuseDialog || reuseBusy) return;
                 const d = reuseDialog;
                 setReuseDialog(null);
-                navigateToReuseProduct(d.handle, {
+                void navigateToReuseProduct(d.handle, {
                   designId: d.designId,
                   artworkUrl: d.artworkUrl,
                   prompt: d.prompt,
@@ -10693,22 +10720,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             >
               Open as-is
             </Button>
-            <AlertDialogAction
+            <Button
+              type="button"
+              disabled={reuseBusy}
               data-testid="button-reuse-regenerate"
               onClick={() => {
-                if (!reuseDialog) return;
+                if (!reuseDialog || reuseBusy) return;
                 const d = reuseDialog;
+                setReuseBusy(true);
+                setReuseBusyLabel("Preparing artwork…");
                 setReuseDialog(null);
-                navigateToReuseProduct(d.handle, {
+                void navigateToReuseProduct(d.handle, {
                   regenerate: true,
                   designId: d.designId,
                   artworkUrl: d.artworkUrl,
                   prompt: d.prompt,
+                }).catch((err: any) => {
+                  console.error("[ReuseArtwork] regenerate click failed:", err);
+                  setReuseBusy(false);
+                  toast({
+                    title: "Could not reuse artwork",
+                    description: err?.message || "Please try again.",
+                    variant: "destructive",
+                  });
                 });
               }}
             >
-              Regenerate to fit (1 credit)
-            </AlertDialogAction>
+              {reuseBusy ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Working…
+                </>
+              ) : (
+                "Regenerate to fit (1 credit)"
+              )}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
