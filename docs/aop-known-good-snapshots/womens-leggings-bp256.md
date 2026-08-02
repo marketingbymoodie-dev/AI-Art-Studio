@@ -56,10 +56,13 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 | Design groups | `right-leg` + `left-leg` (per-panel place) |
 | Place scale / offsets | Max **500%** (slider + bbox). Defaults (Link on): right `scale=3 ox=-113.2 oy=25.2`, left `scale=3 ox=7.3 oy=25.2` (X gap ≈ 120.5). |
 | Link sides | **ON** — preserve **X gap** (+same dx); hard-sync **Y** (and scale). |
-| Mirror | **OFF** (can combine with Link; while linked = art flip only) |
-| Reset | Beside Link/Mirror. Restores locked placements **and** Link ON / Mirror OFF / both legs enabled / active right-leg. |
+| Mirror | **OFF**. Turning Mirror **on** turns Link **off** and syncs left from right so the real mirror effect is visible. |
+| Reset | Beside Link/Mirror. Restores locked placements **and** Link ON / Mirror OFF / both legs enabled / active right-leg / **Front view**. |
+| Back view | Inspection only — Reset, canvas click, or any edit control returns to **Front**. |
 | Replace artwork | **Removed** — use top-level Upload / Generate. |
 | Fine position | Horizontal Left / Up / Down / Right in the **controls** column (former Replace slot). Not under the preview for leggings. |
+| Action bar | **Above** the preview: Edit Pattern / Reuse Artwork / Share (Download removed). |
+| Reuse Artwork | Dropdown of other live customizer pages; opens same-tab. Mismatched AR offers Open as-is vs Regenerate to fit (1 credit). |
 | Mockup sync | **Deferred** — live mesh preview while editing; flush on ATC, Back, page leave, or Printers Mockup. No 1.5s auto-apply flash. |
 | Gen AR | Tall single-leg panel AR (fallback `2:3`) |
 | Seam allowance | Mesh groups use `seamAllowance: 0`. Legacy PatternCustomizer used **70px** linear sew gap between L/R flats — not ported to mesh UV. |
@@ -81,8 +84,9 @@ Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's
 |---------|----------|
 | Place | Full motif contain-fit **per leg** (not continuous mural) |
 | Link sides | Toggle keeps L/R **offsetX** gap; while on, same **dx** + hard-sync **Y**/scale; union box; both Left/Right on; Artwork enabled / Reset act on both legs |
-| Mirror | Left art horizontally flipped; optionally copies right placement when turned on |
-| Reset | Full home: locked L/R placements + Link ON + Mirror OFF (Place and Pattern Link/Mirror rows) |
+| Mirror | Left art horizontally flipped; turning **on** also turns Link **off** and syncs left from right so the mirror is visible immediately |
+| Reset | Full home: Front view + locked L/R placements + Link ON + Mirror OFF (Place and Pattern Link/Mirror rows) |
+| Back view | Inspection only — Reset, canvas click, or any edit control returns to Front |
 | Fine position | Nudge arrows in controls (Left, Up, Down, Right) |
 | Place → Pattern | Link + Mirror forced **off** for clean tile symmetry; Place session snapshotted |
 | Pattern → Place | Restores last Place session Link/Mirror/placements/enabled |

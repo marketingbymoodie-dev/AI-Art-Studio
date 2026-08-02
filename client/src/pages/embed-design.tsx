@@ -12,7 +12,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
@@ -1362,6 +1370,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
   const loadDesignId = searchParams.get("loadDesignId") || "";
+  const parentReuseParams = (() => {
+    try {
+      return new URLSearchParams(window.parent.location.search);
+    } catch {
+      return new URLSearchParams();
+    }
+  })();
+  const reuseArtworkUrlParam =
+    parentReuseParams.get("reuseArtworkUrl") || searchParams.get("reuseArtworkUrl") || "";
+  const reusePromptParam =
+    parentReuseParams.get("reusePrompt") || searchParams.get("reusePrompt") || "";
+  const autoReuseGenerateParam =
+    (parentReuseParams.get("autoReuseGenerate") || searchParams.get("autoReuseGenerate") || "") === "1";
   // parentLoadDesignId: read loadDesignId directly from the parent page URL.
   // The iframe is served on the same Shopify domain as the parent, so window.parent.location
   // is accessible (no cross-origin restriction). This bypasses the Shopify CDN-cached liquid file.
@@ -1408,6 +1429,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
   const [referencePreviews, setReferencePreviews] = useState<string[]>([]);
+  type ReusePageOption = {
+    handle: string;
+    title: string;
+    status?: string;
+    publiclyMountable?: boolean;
+  };
+  type ReuseDialogState = {
+    handle: string;
+    title: string;
+    designId: string | null;
+    artworkUrl: string;
+    prompt: string;
+  };
+  const [reusePages, setReusePages] = useState<ReusePageOption[]>([]);
+  const [reusePagesLoading, setReusePagesLoading] = useState(false);
+  const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
+  const autoReuseGenerateDoneRef = useRef(false);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -5939,14 +5977,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const handleGenerate = async (options?: {
     skipStyleMismatchCheck?: boolean;
     overridePresetId?: string;
+    overridePrompt?: string;
+    overrideReferenceImagesBase64?: string[];
   }) => {
-    const effectivePresetId = options?.overridePresetId ?? selectedPreset;
+    let effectivePresetId = options?.overridePresetId ?? selectedPreset;
     if (options?.overridePresetId) {
       setSelectedPreset(options.overridePresetId);
     }
+    const effectivePrompt = options?.overridePrompt ?? prompt;
+    if (options?.overridePrompt != null) {
+      setPrompt(options.overridePrompt);
+    }
 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
-    if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
+    if (!effectivePrompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
       notifyInsufficientCredits();
@@ -5965,9 +6009,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     
     // Validate required fields
-    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-      alert("Please select an art style before generating");
-      return;
+    if (showPresetsParam && filteredStylePresets.length > 0 && effectivePresetId === "") {
+      if (options?.overrideReferenceImagesBase64?.length) {
+        effectivePresetId = filteredStylePresets[0]?.id || "";
+        if (effectivePresetId) setSelectedPreset(effectivePresetId);
+      } else {
+        alert("Please select an art style before generating");
+        return;
+      }
     }
     if (printSizes.length > 0 && selectedSize === "") {
       alert("Please select a size before generating");
@@ -5977,13 +6026,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Validate required style sub-option
     const activePreset = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (activePreset?.options?.required && selectedStyleOption === "") {
-      alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-      return;
+      if (!options?.overrideReferenceImagesBase64?.length) {
+        alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+        return;
+      }
     }
 
-    if (!options?.skipStyleMismatchCheck && activePreset && prompt.trim()) {
+    if (!options?.skipStyleMismatchCheck && activePreset && effectivePrompt.trim()) {
       const mismatch = detectStylePromptMismatch(
-        prompt,
+        effectivePrompt,
         activePreset.promptSuffix,
         activePreset.name,
       );
@@ -6002,19 +6053,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     // Build the prompt: prepend selected option fragment if present
-    let fullPrompt = prompt;
+    let fullPrompt = effectivePrompt;
     let resolvedBaseImageUrl: string | undefined;
     if (activePreset?.options && selectedStyleOption !== "") {
       const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
       if (selectedChoice) {
-        fullPrompt = `${selectedChoice.promptFragment}. ${prompt}`;
+        fullPrompt = `${selectedChoice.promptFragment}. ${effectivePrompt}`;
         if (selectedChoice.baseImageUrl) resolvedBaseImageUrl = selectedChoice.baseImageUrl;
       }
     }
     if (!resolvedBaseImageUrl && (activePreset as any)?.baseImageUrl) {
       resolvedBaseImageUrl = (activePreset as any).baseImageUrl;
     }
-    if (!shouldUseStyleReferenceImage(prompt, referenceImages.length > 0)) {
+    const hasReuseRefs = !!options?.overrideReferenceImagesBase64?.length;
+    if (!shouldUseStyleReferenceImage(effectivePrompt, referenceImages.length > 0 || hasReuseRefs)) {
       resolvedBaseImageUrl = undefined;
     }
     if (effectivePresetId && effectivePresetId !== "") {
@@ -6029,16 +6081,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     // Convert all reference images to base64
     const referenceImagesBase64: string[] = [];
-    for (const imgFile of referenceImages) {
-      const b64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(imgFile);
-      });
-      if (b64 && b64.length > 5 * 1024 * 1024) {
-        throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
+    if (options?.overrideReferenceImagesBase64?.length) {
+      for (const b64 of options.overrideReferenceImagesBase64) {
+        if (b64 && b64.length > 5 * 1024 * 1024) {
+          throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
+        }
+        referenceImagesBase64.push(b64);
       }
-      referenceImagesBase64.push(b64);
+    } else {
+      for (const imgFile of referenceImages) {
+        const b64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(imgFile);
+        });
+        if (b64 && b64.length > 5 * 1024 * 1024) {
+          throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
+        }
+        referenceImagesBase64.push(b64);
+      }
     }
 
     console.log('[Generate] clicked', {
@@ -6060,7 +6121,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     try {
       generateMutation.mutate({
         prompt: fullPrompt,
-        userPrompt: prompt, // raw user text — stored separately so it can be restored cleanly
+        userPrompt: effectivePrompt, // raw user text — stored separately so it can be restored cleanly
         size: selectedSize,
         // Prefer the live Colour selection — never silently force "black" (that
         // sent Black frames to Printify after the merchant picked White).
@@ -7848,6 +7909,298 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       });
     }
   }, [toast]);
+
+  const parseAspectRatioValue = useCallback((ar: string | null | undefined): number | null => {
+    if (!ar) return null;
+    const parts = ar.replace("/", ":").split(":").map(Number);
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    return parts[0] / parts[1];
+  }, []);
+
+  const aspectRatiosDifferMuch = useCallback(
+    (a: string | null | undefined, b: string | null | undefined, tolerance = 0.2) => {
+      const ra = parseAspectRatioValue(a);
+      const rb = parseAspectRatioValue(b);
+      if (ra == null || rb == null) return false;
+      return Math.abs(ra - rb) / Math.max(ra, rb) > tolerance;
+    },
+    [parseAspectRatioValue],
+  );
+
+  const currentDesignAspectRatio = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (sizeConfig) {
+      return (
+        sizeConfig.aspectRatio ||
+        resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio) ||
+        productTypeConfig?.aspectRatio ||
+        "3:4"
+      );
+    }
+    return productTypeConfig?.aspectRatio || "3:4";
+  }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
+
+  const loadReusePages = useCallback(async () => {
+    if (!isStorefront && !isShopify) return;
+    setReusePagesLoading(true);
+    try {
+      const res = await safeFetch("/apps/appai/customizer-pages", { credentials: "same-origin" }, 20000);
+      if (!res.ok) throw new Error(`Failed to load products (${res.status})`);
+      const data = await res.json();
+      const pages: ReusePageOption[] = Array.isArray(data?.pages) ? data.pages : [];
+      const currentHandle = (activeProductContext.pageHandle || productHandle || "").toLowerCase();
+      setReusePages(
+        pages.filter(
+          (p) =>
+            p?.handle &&
+            p.publiclyMountable !== false &&
+            (p.status == null || p.status === "active") &&
+            String(p.handle).toLowerCase() !== currentHandle,
+        ),
+      );
+    } catch (err) {
+      console.warn("[ReuseArtwork] Failed to load customizer pages:", err);
+      setReusePages([]);
+    } finally {
+      setReusePagesLoading(false);
+    }
+  }, [isStorefront, isShopify, activeProductContext.pageHandle, productHandle]);
+
+  const navigateToReuseProduct = useCallback(
+    (handle: string, opts: { designId?: string | null; regenerate?: boolean; artworkUrl?: string; prompt?: string }) => {
+      const target = `/pages/${encodeURIComponent(handle)}`;
+      const params = new URLSearchParams();
+      if (opts.regenerate) {
+        if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
+        if (opts.prompt) params.set("reusePrompt", opts.prompt);
+        params.set("autoReuseGenerate", "1");
+      } else if (opts.designId) {
+        params.set("loadDesignId", opts.designId);
+      } else if (opts.artworkUrl) {
+        params.set("reuseArtworkUrl", opts.artworkUrl);
+        if (opts.prompt) params.set("reusePrompt", opts.prompt);
+      }
+      const qs = params.toString();
+      const url = qs ? `${target}?${qs}` : target;
+      try {
+        window.parent.location.href = url;
+      } catch {
+        window.location.href = url;
+      }
+    },
+    [],
+  );
+
+  const resolveTargetAspectRatio = useCallback((config: any): string => {
+    const dc = config?.designerConfig || {};
+    const sizes = Array.isArray(dc.sizes) ? dc.sizes : [];
+    const first = sizes[0];
+    if (first && typeof first === "object") {
+      return (
+        first.aspectRatio ||
+        resolveSizeAspectRatio(
+          {
+            id: String(first.id || first.name || ""),
+            name: String(first.name || first.id || ""),
+            width: Number(first.width) || 0,
+            height: Number(first.height) || 0,
+          },
+          dc.aspectRatio,
+        ) ||
+        dc.aspectRatio ||
+        "3:4"
+      );
+    }
+    return dc.aspectRatio || "3:4";
+  }, []);
+
+  const handleReuseProductPick = useCallback(
+    async (page: ReusePageOption) => {
+      const artworkUrl = generatedDesign?.imageUrl
+        ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+        : "";
+      if (!artworkUrl) {
+        toast({
+          title: "No artwork to reuse",
+          description: "Generate or upload artwork first.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const designId =
+        savedJobIdRef.current ||
+        (generatedDesign?.id && !String(generatedDesign.id).startsWith("local-")
+          ? String(generatedDesign.id)
+          : null);
+      const reusePrompt = (prompt || generatedDesign?.prompt || "").trim();
+
+      try {
+        const res = await safeFetch(
+          `/apps/appai/customizer-page?handle=${encodeURIComponent(page.handle)}`,
+          { credentials: "same-origin" },
+          30000,
+        );
+        if (!res.ok) throw new Error(`Could not load ${page.handle}`);
+        const config = await res.json();
+        const targetAr = resolveTargetAspectRatio(config);
+        if (aspectRatiosDifferMuch(currentDesignAspectRatio, targetAr)) {
+          setReuseDialog({
+            handle: page.handle,
+            title: page.title || page.handle,
+            designId,
+            artworkUrl,
+            prompt: reusePrompt,
+          });
+          return;
+        }
+        navigateToReuseProduct(page.handle, {
+          designId,
+          artworkUrl,
+          prompt: reusePrompt,
+        });
+      } catch (err: any) {
+        console.error("[ReuseArtwork] pick failed:", err);
+        toast({
+          title: "Could not open product",
+          description: err?.message || "Please try again.",
+          variant: "destructive",
+        });
+      }
+    },
+    [
+      generatedDesign,
+      prompt,
+      currentDesignAspectRatio,
+      aspectRatiosDifferMuch,
+      resolveTargetAspectRatio,
+      navigateToReuseProduct,
+      toast,
+    ],
+  );
+
+  const clearReuseUrlParams = useCallback(() => {
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.searchParams.delete("reuseArtworkUrl");
+      parentUrl.searchParams.delete("reusePrompt");
+      parentUrl.searchParams.delete("autoReuseGenerate");
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      /* ignore */
+    }
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("reuseArtworkUrl");
+      params.delete("reusePrompt");
+      params.delete("autoReuseGenerate");
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Deep-link fallback: open reused artwork as-is when no loadDesignId / regenerate.
+  useEffect(() => {
+    if (!reuseArtworkUrlParam || autoReuseGenerateParam) return;
+    if (effectiveLoadDesignId || generatedDesign?.imageUrl || configLoading) return;
+    if (autoReuseGenerateDoneRef.current) return;
+    autoReuseGenerateDoneRef.current = true;
+    const abs = toAbsoluteImageUrl(reuseArtworkUrlParam);
+    let promptText = "";
+    try {
+      promptText = reusePromptParam ? decodeURIComponent(reusePromptParam) : "";
+    } catch {
+      promptText = reusePromptParam || "";
+    }
+    setGeneratedDesign({
+      id: `reuse-${Date.now()}`,
+      imageUrl: abs,
+      prompt: promptText,
+    });
+    if (promptText) setPrompt(promptText);
+    clearReuseUrlParams();
+  }, [
+    reuseArtworkUrlParam,
+    reusePromptParam,
+    autoReuseGenerateParam,
+    effectiveLoadDesignId,
+    generatedDesign?.imageUrl,
+    configLoading,
+    clearReuseUrlParams,
+  ]);
+
+  // Deep-link: regenerate reused artwork for a new product aspect ratio (1 credit).
+  useEffect(() => {
+    if (!autoReuseGenerateParam || !reuseArtworkUrlParam) return;
+    if (autoReuseGenerateDoneRef.current) return;
+    if (configLoading || !productTypeConfig) return;
+    if (printSizes.length > 0 && !selectedSize) return;
+    if (generateMutation.isPending || generatedDesign?.imageUrl) return;
+
+    autoReuseGenerateDoneRef.current = true;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const abs = toAbsoluteImageUrl(reuseArtworkUrlParam);
+        const res = await fetch(abs, { credentials: "omit", mode: "cors" });
+        if (!res.ok) throw new Error(`Failed to fetch artwork (${res.status})`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        const file = new File([blob], "reuse-artwork.png", {
+          type: blob.type || "image/png",
+        });
+        const preview = URL.createObjectURL(blob);
+        setReferenceImages([file]);
+        setReferencePreviews([preview]);
+        const b64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Failed to read reused artwork"));
+          reader.readAsDataURL(blob);
+        });
+        if (cancelled) return;
+        let originalPrompt = "";
+        try {
+          originalPrompt = reusePromptParam ? decodeURIComponent(reusePromptParam) : "";
+        } catch {
+          originalPrompt = reusePromptParam || "";
+        }
+        const reusePromptText = originalPrompt
+          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
+          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+        clearReuseUrlParams();
+        await handleGenerate({
+          skipStyleMismatchCheck: true,
+          overridePrompt: reusePromptText,
+          overrideReferenceImagesBase64: b64 ? [b64] : undefined,
+        });
+      } catch (err: any) {
+        console.error("[ReuseArtwork] auto-generate failed:", err);
+        autoReuseGenerateDoneRef.current = false;
+        toast({
+          title: "Could not reuse artwork",
+          description: err?.message || "Please try again.",
+          variant: "destructive",
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    autoReuseGenerateParam,
+    reuseArtworkUrlParam,
+    reusePromptParam,
+    configLoading,
+    productTypeConfig,
+    selectedSize,
+    printSizes.length,
+    generateMutation.isPending,
+    generatedDesign?.imageUrl,
+  ]);
 
   useEffect(() => {
     const DB = debugBridge;
@@ -9811,6 +10164,59 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog
+        open={!!reuseDialog}
+        onOpenChange={(open) => {
+          if (!open) setReuseDialog(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-reuse-artwork-ar">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Different product shape</AlertDialogTitle>
+            <AlertDialogDescription>
+              {reuseDialog
+                ? `${reuseDialog.title} has a different aspect ratio than your current artwork. Open it as-is, or regenerate to fit (uses 1 credit).`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel data-testid="button-reuse-cancel">Cancel</AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="button-reuse-open-asis"
+              onClick={() => {
+                if (!reuseDialog) return;
+                const d = reuseDialog;
+                setReuseDialog(null);
+                navigateToReuseProduct(d.handle, {
+                  designId: d.designId,
+                  artworkUrl: d.artworkUrl,
+                  prompt: d.prompt,
+                });
+              }}
+            >
+              Open as-is
+            </Button>
+            <AlertDialogAction
+              data-testid="button-reuse-regenerate"
+              onClick={() => {
+                if (!reuseDialog) return;
+                const d = reuseDialog;
+                setReuseDialog(null);
+                navigateToReuseProduct(d.handle, {
+                  regenerate: true,
+                  artworkUrl: d.artworkUrl,
+                  prompt: d.prompt,
+                });
+              }}
+            >
+              Regenerate to fit (1 credit)
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={!!styleMismatchDialog} onOpenChange={(open) => !open && setStyleMismatchDialog(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -11768,6 +12174,107 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 )}
               </div>
             ) : (<>
+            {/* Edit / Reuse / Share — above the viewing window (closed preview) */}
+            {generatedDesign?.imageUrl && !showPatternStep && !flatPlacerEditOpen && (
+              <div
+                className="flex items-center justify-between gap-2 flex-wrap pb-2"
+                data-testid="container-artwork-actions-top"
+              >
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  {useAopCustomizer && !flatPlacerEligible && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (generatedDesign?.imageUrl) {
+                          setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                        }
+                        setShowPatternStep(true);
+                      }}
+                      className="shrink-0"
+                      data-testid="button-edit-pattern"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                      <span className="text-xs">Edit Pattern</span>
+                    </Button>
+                  )}
+                  {flatPlacerEligible && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFlatPlacerEditOpen(true)}
+                      className="shrink-0"
+                      data-testid="button-edit-flat-placement"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                      <span className="text-xs">Edit Placement</span>
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  <DropdownMenu
+                    onOpenChange={(open) => {
+                      if (open) void loadReusePages();
+                    }}
+                  >
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!generatedDesign?.imageUrl}
+                        className="shrink-0"
+                        data-testid="button-reuse-artwork"
+                      >
+                        <Layers className="w-4 h-4 mr-1" />
+                        <span className="text-xs">Reuse Artwork</span>
+                        <ChevronDown className="w-3 h-3 ml-1 opacity-70" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto min-w-[12rem]">
+                      <DropdownMenuLabel className="text-xs">Other products</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {reusePagesLoading ? (
+                        <DropdownMenuItem disabled>
+                          <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+                          Loading…
+                        </DropdownMenuItem>
+                      ) : reusePages.length === 0 ? (
+                        <DropdownMenuItem disabled data-testid="reuse-artwork-empty">
+                          No other products available
+                        </DropdownMenuItem>
+                      ) : (
+                        reusePages.map((p) => (
+                          <DropdownMenuItem
+                            key={p.handle}
+                            onSelect={() => {
+                              void handleReuseProductPick(p);
+                            }}
+                            data-testid={`reuse-artwork-item-${p.handle}`}
+                          >
+                            <span className="truncate">{p.title || p.handle}</span>
+                          </DropdownMenuItem>
+                        ))
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleShare}
+                    disabled={isSharing || !generatedDesign?.imageUrl}
+                    className="shrink-0"
+                    data-testid="button-share"
+                  >
+                    {isSharing ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <Share2 className="w-4 h-4 mr-1" />
+                    )}
+                    <span className="text-xs">Share</span>
+                  </Button>
+                </div>
+              </div>
+            )}
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               ref={previewLandingRef}
@@ -12156,8 +12663,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 disabled={!generatedDesign?.imageUrl}
                 showDragHint={canShowDragHint}
                 extraActions={
+                  showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups ? (
                   <div className="flex items-center gap-2">
-                    {showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -12203,127 +12710,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         )}
                         <span className="text-xs">Refresh Mockups</span>
                       </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                      disabled={!generatedDesign?.imageUrl}
-                      data-testid="button-download-artwork"
-                      className="shrink-0"
-                    >
-                      <Download className="w-4 h-4 mr-1" />
-                      <span className="text-xs">Download Artwork</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleShare}
-                      disabled={isSharing || !generatedDesign?.imageUrl}
-                      data-testid="button-share"
-                      className="shrink-0"
-                    >
-                      {isSharing ? (
-                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                      ) : (
-                        <Share2 className="w-4 h-4 mr-1" />
-                      )}
-                      <span className="text-xs">Share</span>
-                    </Button>
                   </div>
+                  ) : undefined
                 }
               />
-            )}
-
-            {generatedDesign?.imageUrl && flatPlacerEligible && !flatPlacerEditOpen && (
-              <div className="flex items-center justify-between pt-2 border-t gap-2 flex-wrap">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setFlatPlacerEditOpen(true)}
-                  className="shrink-0"
-                  data-testid="button-edit-flat-placement"
-                >
-                  <RefreshCw className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Edit Placement</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                  disabled={!generatedDesign?.imageUrl}
-                  data-testid="button-download-artwork-flat"
-                  className="shrink-0"
-                >
-                  <Download className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Download Artwork</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleShare}
-                  disabled={isSharing || !generatedDesign?.imageUrl}
-                  data-testid="button-share-flat"
-                  className="shrink-0"
-                >
-                  {isSharing ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                  ) : (
-                    <Share2 className="w-4 h-4 mr-1" />
-                  )}
-                  <span className="text-xs">Share</span>
-                </Button>
-              </div>
-            )}
-
-            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply).
-                Mutually exclusive with flat placer — never show both editor entry points. */}
-            {generatedDesign?.imageUrl && useAopCustomizer && !flatPlacerEligible && !showPatternStep && (
-              <div className="flex items-center justify-between pt-2 border-t gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    // Saved designs already have mockups — aopPendingMotifUrl is never set by the
-                    // auto-open effect in that case, so PatternCustomizer would not mount without this.
-                    if (generatedDesign?.imageUrl) {
-                      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                    }
-                    setShowPatternStep(true);
-                  }}
-                  className="shrink-0"
-                  data-testid="button-edit-pattern"
-                >
-                  <RefreshCw className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Edit Pattern</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                  disabled={!generatedDesign?.imageUrl}
-                  data-testid="button-download-artwork-aop"
-                  className="shrink-0"
-                >
-                  <Download className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Download Artwork</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleShare}
-                  disabled={isSharing || !generatedDesign?.imageUrl}
-                  data-testid="button-share-aop"
-                  className="shrink-0"
-                >
-                  {isSharing ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                  ) : (
-                    <Share2 className="w-4 h-4 mr-1" />
-                  )}
-                  <span className="text-xs">Share</span>
-                </Button>
-              </div>
             )}
 
             {/* Mockup error status */}

@@ -1294,6 +1294,31 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
    * after changing view. Pick Sleeves again explicitly to edit sleeves.
    * Also leaves Printers Mockup so the first click is never a no-op.
    */
+  /** Back is inspection-only for leggings — edits always return to Front. */
+  const withFrontIfNeeded = useCallback(
+    (prev: HoodieAopPlacerState): HoodieAopPlacerState => {
+      if (prev.view === "front") return prev;
+      const leggings = data && isLeggingsBlueprint(data.template.blueprintId);
+      if (!leggings) {
+        // Hoodies: still jump off Back when the customer starts editing.
+        return {
+          ...prev,
+          view: "front",
+          activeGroupId:
+            prev.activeGroupId === "back-body" ? "front-body" : prev.activeGroupId,
+        };
+      }
+      return {
+        ...prev,
+        view: "front",
+        activeGroupId: isLegsPart(prev.activeGroupId)
+          ? prev.activeGroupId
+          : "right-leg",
+      };
+    },
+    [data],
+  );
+
   const setView = useCallback((view: HoodieView) => {
     onEngageLiveEditorRef.current?.();
     setState((prev) => {
@@ -1358,6 +1383,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         setOverlayVisible((v) => !v);
         return;
       }
+      // Back view is inspection-only — any click returns to Front for editing.
+      if (state.view === "back") {
+        setState((prev) => (prev ? withFrontIfNeeded(prev) : prev));
+        onEngageLiveEditorRef.current?.();
+        return;
+      }
+
       const mockup = mockups[state.view]!;
       const effective = buildEffectiveRenderConfig(data.template, state);
       const pt = mockupPointFromClick(e, canvasRef.current, mockup);
@@ -1456,12 +1488,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       }
       setOverlayVisible(false);
     },
-    [state, data, artworkImg, mockups, onPartButton],
+    [state, data, artworkImg, mockups, onPartButton, withFrontIfNeeded],
   );
 
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) => {
       if (!prev) return prev;
+      prev = withFrontIfNeeded(prev);
       const legsTogether = prev.legsSynced || prev.legsMirrored;
       const ids = resolveEditGroupIds(
         groupId,
@@ -1483,16 +1516,19 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           : prev.placements;
       return { ...prev, enabled, placements };
     });
-  }, [data]);
+  }, [data, withFrontIfNeeded]);
 
   const setBgColor = useCallback((hex: string) => {
-    setState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
-  }, []);
+    setState((prev) =>
+      prev ? { ...withFrontIfNeeded(prev), backgroundColor: hex } : prev,
+    );
+  }, [withFrontIfNeeded]);
 
   const updateActiveGroupPlacement = useCallback(
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev || !data) return prev;
+        prev = withFrontIfNeeded(prev);
         const clampedNext: ArtworkPlacement = {
           ...next,
           scale: clampPlaceScale(next.scale),
@@ -1576,12 +1612,14 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         return { ...prev, placements };
       });
     },
-    [data],
+    [data, withFrontIfNeeded],
   );
 
   const setActiveScale = useCallback((view: HoodieView, scale: number) => {
     setOverlayVisible(true);
     setState((prev) => {
+      if (!prev) return prev;
+      prev = withFrontIfNeeded(prev);
       if (!prev || !data) return prev;
       const pillowDup = pillowDuplicateLinked(prev, data.template);
       const primaryId = pillowDup
@@ -1649,7 +1687,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       }
       return { ...prev, placements };
     });
-  }, [data]);
+  }, [data, withFrontIfNeeded]);
 
   const nudgePlacement = useCallback(
     (axis: "x" | "y", direction: 1 | -1) => {
@@ -1700,6 +1738,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         }
         return {
           ...prev,
+          view: "front",
           placements,
           enabled,
           legsSynced: true,
@@ -1707,6 +1746,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           activeGroupId: "right-leg",
         };
       }
+      prev = withFrontIfNeeded(prev);
       const legsTogether = prev.legsSynced || prev.legsMirrored;
       const ids = resolveEditGroupIds(
         prev.activeGroupId,
@@ -1726,13 +1766,18 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       }
       return { ...prev, placements, enabled };
     });
-  }, [data]);
+  }, [data, withFrontIfNeeded]);
 
   const setTileSettings = useCallback((patch: Partial<TileSettings>) => {
     setState((prev) =>
-      prev ? { ...prev, tileSettings: { ...prev.tileSettings, ...patch } } : prev,
+      prev
+        ? {
+            ...withFrontIfNeeded(prev),
+            tileSettings: { ...prev.tileSettings, ...patch },
+          }
+        : prev,
     );
-  }, []);
+  }, [withFrontIfNeeded]);
 
   const triggerEyedropper = useCallback(async () => {
     const W = window as any;
@@ -2397,6 +2442,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                     onClick={() =>
                       setState((prev) => {
                         if (!prev) return prev;
+                        prev = withFrontIfNeeded(prev);
                         const legsSynced = !prev.legsSynced;
                         return {
                           ...prev,
@@ -2430,15 +2476,16 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                     onClick={() =>
                       setState((prev) => {
                         if (!prev) return prev;
+                        prev = withFrontIfNeeded(prev);
                         const legsMirrored = !prev.legsMirrored;
+                        // Mirror on → Link off so the real mirror placement is visible.
                         return {
                           ...prev,
                           legsMirrored,
-                          // While Link is on, Mirror only flips art (renderer).
-                          placements:
-                            legsMirrored && !prev.legsSynced
-                              ? syncLegPlacementsForMirror(prev.placements, true)
-                              : prev.placements,
+                          legsSynced: legsMirrored ? false : prev.legsSynced,
+                          placements: legsMirrored
+                            ? syncLegPlacementsForMirror(prev.placements, true)
+                            : prev.placements,
                         };
                       })
                     }
@@ -2460,9 +2507,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   {state.legsMirrored
-                    ? state.legsSynced
-                      ? "Mirror flips left art; Link keeps X gap and matching height."
-                      : "Left leg art is flipped; placement copied from right."
+                    ? "Left leg art is flipped; Link turns off so mirror placement is clear."
                     : state.legsSynced
                       ? "Linked — both move together; X gap and matching height are preserved."
                       : "Left and right legs can be placed independently. Click artwork to switch."}
@@ -2495,6 +2540,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                 onClick={() =>
                   setState((prev) => {
                     if (!prev) return prev;
+                    prev = withFrontIfNeeded(prev);
                     const legsSynced = !prev.legsSynced;
                     return {
                       ...prev,
@@ -2522,14 +2568,15 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                 onClick={() =>
                   setState((prev) => {
                     if (!prev) return prev;
+                    prev = withFrontIfNeeded(prev);
                     const legsMirrored = !prev.legsMirrored;
                     return {
                       ...prev,
                       legsMirrored,
-                      placements:
-                        legsMirrored && !prev.legsSynced
-                          ? syncLegPlacementsForMirror(prev.placements, true)
-                          : prev.placements,
+                      legsSynced: legsMirrored ? false : prev.legsSynced,
+                      placements: legsMirrored
+                        ? syncLegPlacementsForMirror(prev.placements, true)
+                        : prev.placements,
                     };
                   })
                 }
