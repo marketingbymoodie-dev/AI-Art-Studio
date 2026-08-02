@@ -43,6 +43,7 @@ import {
 } from "../supabaseFlatCalibration";
 import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
 import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
+import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors";
 
 type StorageLike = {
   getProductTypes(): Promise<any[]>;
@@ -109,12 +110,10 @@ function referenceProductErrorMessage(lookup: ReferenceProductLookup): string {
   return `${mismatchHint} ${importedHint}`;
 }
 
-async function resolveProviderFromCatalog(
+async function listCatalogProviders(
   token: string,
   blueprintId: number,
-  preferredProviderId?: number | null,
-): Promise<number | null> {
-  if (preferredProviderId) return preferredProviderId;
+): Promise<Array<{ id: number; title: string }>> {
   const res = await fetch(
     `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
     {
@@ -124,10 +123,105 @@ async function resolveProviderFromCatalog(
       },
     },
   );
-  if (!res.ok) return null;
+  if (!res.ok) return [];
   const providers = await res.json();
-  if (!Array.isArray(providers) || providers.length === 0) return null;
-  return Number(providers[0].id) || null;
+  if (!Array.isArray(providers)) return [];
+  return providers
+    .map((p: { id?: number; title?: string }) => ({
+      id: Number(p.id),
+      title: String(p.title || `provider ${p.id}`),
+    }))
+    .filter((p) => Number.isFinite(p.id) && p.id > 0);
+}
+
+async function resolveProviderFromCatalog(
+  token: string,
+  blueprintId: number,
+  preferredProviderId?: number | null,
+): Promise<number | null> {
+  const providers = await listCatalogProviders(token, blueprintId);
+  if (providers.length === 0) return preferredProviderId ?? null;
+  if (preferredProviderId && providers.some((p) => p.id === preferredProviderId)) {
+    return preferredProviderId;
+  }
+  return providers[0]?.id ?? null;
+}
+
+function frameColorCount(pt: { frameColors?: unknown }): number {
+  const raw = pt.frameColors;
+  if (Array.isArray(raw)) return raw.length;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw || "[]");
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Ordered provider candidates for canonical harvest.
+ * Prefer explicit override, then imported product types with the most colours
+ * (UK/EU listings often have more in-stock colorways than a US OOS provider),
+ * then remaining catalog providers. Shop create may still reject some
+ * (decorator 6002) — caller retries the next candidate.
+ */
+async function buildHarvestProviderCandidates(args: {
+  token: string;
+  blueprintId: number;
+  preferredProviderId?: number | null;
+  productTypes: Array<{ printifyProviderId?: number | null; frameColors?: unknown }>;
+}): Promise<number[]> {
+  const catalog = await listCatalogProviders(args.token, args.blueprintId);
+  const catalogIds = new Set(catalog.map((p) => p.id));
+  const ordered: number[] = [];
+  const push = (id: number | null | undefined) => {
+    const n = Number(id);
+    if (!Number.isFinite(n) || n <= 0) return;
+    if (catalogIds.size > 0 && !catalogIds.has(n)) return;
+    if (!ordered.includes(n)) ordered.push(n);
+  };
+
+  push(args.preferredProviderId ?? null);
+
+  const byColors = [...args.productTypes].sort(
+    (a, b) => frameColorCount(b) - frameColorCount(a),
+  );
+  for (const pt of byColors) push(pt.printifyProviderId);
+
+  for (const p of catalog) push(p.id);
+
+  return ordered;
+}
+
+async function listBlueprintProductTypes(
+  storage: StorageLike,
+  blueprintId: number,
+  merchantIds: string[],
+): Promise<any[]> {
+  const out: any[] = [];
+  const seen = new Set<number>();
+  for (const merchantId of merchantIds) {
+    const types = await storage.getProductTypesByMerchant(merchantId);
+    for (const pt of types) {
+      if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
+      if (seen.has(pt.id)) continue;
+      seen.add(pt.id);
+      out.push(pt);
+    }
+  }
+  if (out.length === 0) {
+    const all = await storage.getProductTypes();
+    for (const pt of all) {
+      if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
+      if (seen.has(pt.id)) continue;
+      seen.add(pt.id);
+      out.push(pt);
+    }
+  }
+  return out;
 }
 
 async function findReferenceProduct(
@@ -555,18 +649,35 @@ export function registerPlatformCalibrationRoutes(
       const sessionMerchantId = req.user?.claims?.sub
         ? (await storage.getMerchantByUserId(req.user.claims.sub))?.id
         : null;
-      let refLookup = await findReferenceProduct(storage, creds, blueprintId, sessionMerchantId);
-      let providerId =
-        refLookup.providerId ??
-        (refLookup.product?.printifyProviderId != null
-          ? Number(refLookup.product.printifyProviderId)
-          : null);
-      if (!providerId) {
-        providerId = await resolveProviderFromCatalog(creds.token, blueprintId);
-        if (providerId) refLookup = { ...refLookup, matchedVia: "catalog_api" };
+      const refLookup = await findReferenceProduct(storage, creds, blueprintId, sessionMerchantId);
+
+      const merchantIds: string[] = [];
+      const ownerShop = process.env.OWNER_SHOP_DOMAIN?.trim();
+      if (ownerShop) {
+        const ownerMerchant = await storage.getMerchantByShop(ownerShop);
+        if (ownerMerchant?.id) merchantIds.push(ownerMerchant.id);
+      }
+      if (creds.merchant?.id && !merchantIds.includes(creds.merchant.id)) {
+        merchantIds.push(creds.merchant.id);
+      }
+      if (sessionMerchantId && !merchantIds.includes(sessionMerchantId)) {
+        merchantIds.push(sessionMerchantId);
       }
 
-      if (!providerId) {
+      const blueprintProducts = await listBlueprintProductTypes(storage, blueprintId, merchantIds);
+      // Only honor an explicit body override as "preferred". Do not pin the first
+      // reference product's provider (often JAMS) ahead of a UK listing with more
+      // colours — shop create may reject that decorator (Printify 6002).
+      const bodyProviderId = req.body?.providerId != null ? Number(req.body.providerId) : null;
+      const providerCandidates = await buildHarvestProviderCandidates({
+        token: creds.token,
+        blueprintId,
+        preferredProviderId:
+          Number.isFinite(bodyProviderId) && bodyProviderId! > 0 ? bodyProviderId : null,
+        productTypes: blueprintProducts,
+      });
+
+      if (providerCandidates.length === 0) {
         return res.status(400).json({
           error: referenceProductErrorMessage(refLookup),
           expectedBlueprintId: blueprintId,
@@ -575,60 +686,134 @@ export function registerPlatformCalibrationRoutes(
         });
       }
 
-      const ref = refLookup.product;
-
-      res.status(202).json({ status: "running", blueprintId, version });
+      res.status(202).json({
+        status: "running",
+        blueprintId,
+        version,
+        providerCandidates,
+      });
 
       void (async () => {
+        const storageKey = canonicalStorageKey(blueprintId, version);
+        let lastError: string | null = null;
         try {
-          const storageKey = canonicalStorageKey(blueprintId, version);
-          const result = await harvestFlatCalibration({
-            productTypeId: 0,
-            name: entry.label,
-            blueprintId,
-            providerId,
-            token: creds.token,
-            shopId: creds.shopId,
-            designerType: ref?.designerType,
-            sizes: ref?.sizes,
-            frameColors: ref?.frameColors,
-            variantMap: ref?.variantMap,
-            calibratorMode: true,
-            wipeExisting: true,
-            storageKey,
-            // Operator tagged Flat in the catalog — that IS the override when the
-            // print-area probe rejects apparel (bp 79 baseball tee, etc.). The separate
-            // forceFlatHarvest checkbox remains for AOP/tote edge cases.
-            forceFlatHarvest:
-              !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
-            fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
-          });
-          if (result.manifest) {
-            await uploadToFlatCalibrationBucket(
-              `${storageKey}/manifest.json`,
-              Buffer.from(
-                JSON.stringify(
-                  {
-                    ...result.manifest,
-                    canonicalVersion: version,
-                    harvestStatus: result.status,
-                    harvestError: result.error ?? null,
-                  },
-                  null,
-                  2,
-                ),
-                "utf-8",
-              ),
-              "application/json",
+          for (let i = 0; i < providerCandidates.length; i++) {
+            const providerId = providerCandidates[i]!;
+            // Use size/color/variantMap only from a product type that shares this
+            // provider — JAMS variant IDs are invalid for T Shirt and Sons, etc.
+            const ref =
+              blueprintProducts.find(
+                (pt) => Number(pt.printifyProviderId) === providerId,
+              ) ?? null;
+            console.log(
+              `[platform-canonical] harvest bp ${blueprintId} v${version} trying provider ${providerId}` +
+                ` (${i + 1}/${providerCandidates.length}` +
+                `${ref ? `, pt ${ref.id}` : ", catalog colours"})`,
             );
+            try {
+              const result = await harvestFlatCalibration({
+                productTypeId: 0,
+                name: entry.label,
+                blueprintId,
+                providerId,
+                token: creds.token,
+                shopId: creds.shopId,
+                designerType: ref?.designerType ?? refLookup.product?.designerType,
+                sizes: ref?.sizes ?? refLookup.product?.sizes,
+                frameColors: ref?.frameColors,
+                variantMap: ref?.variantMap,
+                calibratorMode: true,
+                wipeExisting: i === 0,
+                storageKey,
+                // Operator tagged Flat in the catalog — that IS the override when the
+                // print-area probe rejects apparel (bp 79 baseball tee, etc.).
+                forceFlatHarvest:
+                  !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
+                fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
+              });
+
+              if (result.manifest) {
+                await uploadToFlatCalibrationBucket(
+                  `${storageKey}/manifest.json`,
+                  Buffer.from(
+                    JSON.stringify(
+                      {
+                        ...result.manifest,
+                        canonicalVersion: version,
+                        harvestStatus: result.status,
+                        harvestError: result.error ?? null,
+                        harvestProviderId: providerId,
+                      },
+                      null,
+                      2,
+                    ),
+                    "utf-8",
+                  ),
+                  "application/json",
+                );
+              }
+
+              const errMsg = result.error || "";
+              if (
+                (result.status === "failed" || result.status === "unsupported") &&
+                isPrintifyDecoratorUnavailableError(errMsg) &&
+                i < providerCandidates.length - 1
+              ) {
+                lastError = errMsg;
+                console.warn(
+                  `[platform-canonical] provider ${providerId} unavailable for bp ${blueprintId}; trying next`,
+                );
+                continue;
+              }
+
+              console.log(
+                `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}` +
+                  ` provider=${providerId}${result.error ? ` (${result.error})` : ""}`,
+              );
+              return;
+            } catch (err) {
+              const msg = (err as Error)?.message || String(err);
+              lastError = msg;
+              if (
+                isPrintifyDecoratorUnavailableError(msg) &&
+                i < providerCandidates.length - 1
+              ) {
+                console.warn(
+                  `[platform-canonical] provider ${providerId} threw decorator error for bp ${blueprintId}; trying next: ${msg}`,
+                );
+                continue;
+              }
+              throw err;
+            }
           }
-          console.log(
-            `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}${result.error ? ` (${result.error})` : ""}`,
+
+          // All candidates failed with decorator errors
+          await uploadToFlatCalibrationBucket(
+            `${storageKey}/manifest.json`,
+            Buffer.from(
+              JSON.stringify(
+                {
+                  blueprintId,
+                  tier: "reject",
+                  harvestStatus: "failed",
+                  harvestError:
+                    lastError ||
+                    `No Printify print provider available for blueprint ${blueprintId} on this shop`,
+                  generatedAt: new Date().toISOString(),
+                },
+                null,
+                2,
+              ),
+              "utf-8",
+            ),
+            "application/json",
+          );
+          console.error(
+            `[platform-canonical] harvest failed bp ${blueprintId}: all providers rejected (${lastError})`,
           );
         } catch (err) {
           console.error(`[platform-canonical] harvest failed bp ${blueprintId}:`, err);
           try {
-            const storageKey = canonicalStorageKey(blueprintId, version);
             await uploadToFlatCalibrationBucket(
               `${storageKey}/manifest.json`,
               Buffer.from(
