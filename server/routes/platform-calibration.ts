@@ -27,6 +27,7 @@ import {
   calibratorGeometryPath,
   calibratorLayerPaths,
   defaultCalibratorModelEntry,
+  harvestBlanksFromShopifyProduct,
   harvestFlatCalibration,
   mergeFlatCalibrationBlanks,
   normalizeHarvestBlankColorKey,
@@ -47,9 +48,10 @@ import {
 import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
 import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
 import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors";
+import { normalizeMyshopifyShopDomain } from "../shopDomain";
 import { db } from "../db";
 import { customizerPages } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 type StorageLike = {
   getProductTypes(): Promise<any[]>;
@@ -59,6 +61,7 @@ type StorageLike = {
   getMerchantByShop(shop: string): Promise<any>;
   getShopifyInstallationByShop(shopDomain: string): Promise<any>;
   getShopifyInstallationsByMerchant(merchantId: string): Promise<any[]>;
+  getAllShopifyInstallations(): Promise<any[]>;
 };
 
 function parseShopifyVariantIds(raw: unknown): Record<string, number | string> | undefined {
@@ -78,92 +81,194 @@ function parseShopifyVariantIds(raw: unknown): Record<string, number | string> |
     : undefined;
 }
 
+type ShopifyBlankSource = {
+  shopDomain: string;
+  accessToken: string;
+  productId: string;
+  shopifyVariantIds?: Record<string, number | string>;
+};
+
+function shopDomainCandidates(raw: string | null | undefined): string[] {
+  const norm = normalizeMyshopifyShopDomain(raw);
+  const bare = String(raw || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .toLowerCase()
+    .trim();
+  return [...new Set([norm, bare].filter(Boolean))];
+}
+
+async function installationForShop(
+  storage: StorageLike,
+  shopDomain: string | null | undefined,
+): Promise<{ shopDomain: string; accessToken: string } | undefined> {
+  for (const shop of shopDomainCandidates(shopDomain)) {
+    try {
+      const inst = await storage.getShopifyInstallationByShop(shop);
+      if (inst?.accessToken && (inst.status === "active" || !inst.status)) {
+        return { shopDomain: normalizeMyshopifyShopDomain(inst.shopDomain) || shop, accessToken: String(inst.accessToken) };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return undefined;
+}
+
+/** Prefer a product type row that already has a Shopify listing we can read images from. */
+function pickProviderProductType(blueprintProducts: any[], providerId: number): any | null {
+  const matches = blueprintProducts.filter((pt) => Number(pt.printifyProviderId) === providerId);
+  if (matches.length === 0) return null;
+  return (
+    matches.find((pt) => pt.shopifyProductId) ||
+    matches.find((pt) => pt.shopifyShopDomain) ||
+    matches[0] ||
+    null
+  );
+}
+
 /** Resolve Shopify Admin creds for a listing so blanks can be pulled without Printify create. */
 async function resolveShopifyBlankSource(
   storage: StorageLike,
-  refProduct: any | null,
-): Promise<
-  | {
-      shopDomain: string;
-      accessToken: string;
-      productId: string;
-      shopifyVariantIds?: Record<string, number | string>;
+  refProducts: any[],
+): Promise<ShopifyBlankSource | undefined> {
+  const refs = (refProducts || []).filter(Boolean);
+  if (refs.length === 0) return undefined;
+
+  type Candidate = {
+    productId: string;
+    shopHint?: string | null;
+    variantIds?: Record<string, number | string>;
+    merchantId?: string | null;
+  };
+  const candidates: Candidate[] = [];
+
+  for (const ref of refs) {
+    const variantIds = parseShopifyVariantIds(ref.shopifyVariantIds);
+    if (ref.shopifyProductId) {
+      candidates.push({
+        productId: String(ref.shopifyProductId),
+        shopHint: ref.shopifyShopDomain,
+        variantIds,
+        merchantId: ref.merchantId,
+      });
     }
-  | undefined
-> {
-  if (!refProduct) return undefined;
+  }
 
-  let productId =
-    refProduct.shopifyProductId != null && refProduct.shopifyProductId !== ""
-      ? String(refProduct.shopifyProductId)
-      : "";
-  let shopHint: string | null | undefined = refProduct.shopifyShopDomain;
-  const variantIds = parseShopifyVariantIds(refProduct.shopifyVariantIds);
-
-  // Customizer pages often hold the live base product even when product_types is stale.
-  if ((!productId || !shopHint) && refProduct.id != null) {
+  const ptIds = refs.map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
+  if (ptIds.length > 0) {
     try {
       const pages = await db
         .select()
         .from(customizerPages)
-        .where(eq(customizerPages.productTypeId, Number(refProduct.id)))
-        .limit(5);
-      const page = pages.find((p) => p.baseProductId) || pages[0];
-      if (page?.baseProductId && !productId) productId = String(page.baseProductId);
-      if (page?.shop && !shopHint) shopHint = page.shop;
-    } catch {
-      /* ignore */
+        .where(inArray(customizerPages.productTypeId, ptIds))
+        .limit(20);
+      for (const page of pages) {
+        if (!page.baseProductId) continue;
+        const ref = refs.find((r) => Number(r.id) === Number(page.productTypeId));
+        candidates.push({
+          productId: String(page.baseProductId),
+          shopHint: page.shop || ref?.shopifyShopDomain,
+          variantIds: parseShopifyVariantIds(ref?.shopifyVariantIds),
+          merchantId: ref?.merchantId,
+        });
+      }
+    } catch (err) {
+      console.warn(
+        `[platform-canonical] customizer page lookup for Shopify blanks failed:`,
+        (err as Error).message,
+      );
     }
   }
-  if (!productId) return undefined;
 
-  const tryInstall = async (shopDomain: string | null | undefined) => {
-    const shop = String(shopDomain || "")
-      .replace(/^https?:\/\//, "")
-      .replace(/\/$/, "")
-      .toLowerCase();
-    if (!shop) return undefined;
-    try {
-      const inst = await storage.getShopifyInstallationByShop(shop);
-      if (inst?.accessToken && (inst.status === "active" || !inst.status)) {
-        return {
-          shopDomain: shop,
-          accessToken: String(inst.accessToken),
-          productId,
-          shopifyVariantIds: variantIds,
-        };
-      }
-    } catch {
-      /* ignore */
+  // Dedupe by productId+shopHint
+  const seen = new Set<string>();
+  const unique = candidates.filter((c) => {
+    const key = `${c.productId}|${c.shopHint || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  for (const c of unique) {
+    const fromHint = await installationForShop(storage, c.shopHint);
+    if (fromHint) {
+      console.log(
+        `[platform-canonical] Shopify blank source product=${c.productId} shop=${fromHint.shopDomain}`,
+      );
+      return {
+        shopDomain: fromHint.shopDomain,
+        accessToken: fromHint.accessToken,
+        productId: c.productId,
+        shopifyVariantIds: c.variantIds,
+      };
     }
-    return undefined;
-  };
 
-  const fromDomain = await tryInstall(shopHint);
-  if (fromDomain) return fromDomain;
-
-  if (refProduct.merchantId) {
-    try {
-      const installs = await storage.getShopifyInstallationsByMerchant(String(refProduct.merchantId));
-      for (const inst of installs || []) {
-        if (!inst?.accessToken) continue;
-        if (inst.status && inst.status !== "active") continue;
-        const shop = String(inst.shopDomain || "")
-          .replace(/^https?:\/\//, "")
-          .replace(/\/$/, "")
-          .toLowerCase();
-        if (!shop) continue;
-        return {
-          shopDomain: shop,
-          accessToken: String(inst.accessToken),
-          productId,
-          shopifyVariantIds: variantIds,
-        };
+    if (c.merchantId) {
+      try {
+        const installs = await storage.getShopifyInstallationsByMerchant(String(c.merchantId));
+        for (const inst of installs || []) {
+          if (!inst?.accessToken) continue;
+          if (inst.status && inst.status !== "active") continue;
+          const shop = normalizeMyshopifyShopDomain(inst.shopDomain);
+          if (!shop) continue;
+          console.log(
+            `[platform-canonical] Shopify blank source product=${c.productId} shop=${shop} (merchant install)`,
+          );
+          return {
+            shopDomain: shop,
+            accessToken: String(inst.accessToken),
+            productId: c.productId,
+            shopifyVariantIds: c.variantIds,
+          };
+        }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
     }
   }
+
+  // Last resort: probe every active install until the product id resolves (shop mismatch / stale domain).
+  if (unique.length > 0) {
+    try {
+      const all = await storage.getAllShopifyInstallations();
+      for (const c of unique) {
+        for (const inst of all || []) {
+          if (!inst?.accessToken) continue;
+          if (inst.status && inst.status !== "active") continue;
+          const shop = normalizeMyshopifyShopDomain(inst.shopDomain);
+          if (!shop) continue;
+          try {
+            const res = await fetch(`https://${shop}/admin/api/2025-10/products/${c.productId}.json`, {
+              headers: { "X-Shopify-Access-Token": String(inst.accessToken) },
+            });
+            if (!res.ok) continue;
+            console.log(
+              `[platform-canonical] Shopify blank source product=${c.productId} shop=${shop} (probed)`,
+            );
+            return {
+              shopDomain: shop,
+              accessToken: String(inst.accessToken),
+              productId: c.productId,
+              shopifyVariantIds: c.variantIds,
+            };
+          } catch {
+            /* try next */
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[platform-canonical] Shopify install probe failed:`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  console.warn(
+    `[platform-canonical] no Shopify blank source for pts=[${ptIds.join(",")}]` +
+      ` candidates=${unique.map((c) => c.productId).join(",") || "none"}`,
+  );
   return undefined;
 }
 
@@ -921,12 +1026,12 @@ export function registerPlatformCalibrationRoutes(
           // shop tied to that listing first — owner shops often reject US decorators.
           for (let i = 0; i < providerCandidates.length; i++) {
             const providerId = providerCandidates[i]!;
-            const ref =
-              blueprintProducts.find(
-                (pt) => Number(pt.printifyProviderId) === providerId,
-              ) ?? null;
+            const providerPts = blueprintProducts.filter(
+              (pt) => Number(pt.printifyProviderId) === providerId,
+            );
+            const ref = pickProviderProductType(blueprintProducts, providerId);
             const skipBlankColorIds = accumulated ? existingBlankIds() : [];
-            const shopifyBlankSource = await resolveShopifyBlankSource(storage, ref);
+            const shopifyBlankSource = await resolveShopifyBlankSource(storage, providerPts);
             const credOptions = await listHarvestCredsForProvider(storage, {
               refProduct: ref,
               platformCreds: creds,
@@ -937,7 +1042,7 @@ export function registerPlatformCalibrationRoutes(
                 ` (${i + 1}/${providerCandidates.length}` +
                 `${ref ? `, pt ${ref.id}` : ", catalog colours"}` +
                 `${skipBlankColorIds.length ? `, skip ${skipBlankColorIds.length} blanks` : ""}` +
-                `${shopifyBlankSource ? `, shopify=${shopifyBlankSource.productId}` : ""}` +
+                `${shopifyBlankSource ? `, shopify=${shopifyBlankSource.productId}@${shopifyBlankSource.shopDomain}` : ", shopify=none"}` +
                 `, creds=${credOptions.map((c) => c.label).join("|")})`,
             );
 
@@ -971,6 +1076,21 @@ export function registerPlatformCalibrationRoutes(
                 wiped = true;
 
                 const errMsg = result.error || "";
+                // Always merge any blanks harvested before treating decorator failure as a skip
+                // (Shopify / existing-product paths may have added colourways).
+                if (accumulated && result.manifest?.blanks) {
+                  const preMerge = mergeFlatCalibrationBlanks(accumulated, result.manifest);
+                  if (preMerge > 0) {
+                    if (!providersUsed.includes(providerId)) providersUsed.push(providerId);
+                    providerOk = true;
+                    await writeManifest(accumulated, "ready", null);
+                    console.log(
+                      `[platform-canonical] harvest bp ${blueprintId}: provider ${providerId} via ${shopCreds.label}` +
+                        ` added ${preMerge} blank(s) despite status=${result.status}`,
+                    );
+                    break;
+                  }
+                }
                 if (
                   (result.status === "failed" || result.status === "unsupported") &&
                   isPrintifyDecoratorUnavailableError(errMsg)
@@ -1063,6 +1183,94 @@ export function registerPlatformCalibrationRoutes(
                   `[platform-canonical] provider ${providerId} via ${shopCreds.label} ${accumulated ? "fill" : "primary"} failed: ${msg}`,
                 );
               }
+            }
+
+            // Explicit Shopify fill when every Printify shop rejected create — does not
+            // depend on createTempProduct succeeding inside harvestFlatCalibration.
+            if (!providerOk && accumulated && shopifyBlankSource) {
+              try {
+                const skipKeys = new Set(
+                  existingBlankIds().map((id) => normalizeHarvestBlankColorKey(id)),
+                );
+                let colors = (
+                  ref ? buildHarvestColorsFromProductType(ref) : []
+                ).filter((c) => !skipKeys.has(normalizeHarvestBlankColorKey(c.id)));
+                // Shopify image match only needs colour ids/names — synthesize from frameColors
+                // when variantMap couldn't resolve Printify variant ids.
+                if (colors.length === 0 && ref?.frameColors) {
+                  try {
+                    const fcs = typeof ref.frameColors === "string"
+                      ? JSON.parse(ref.frameColors)
+                      : ref.frameColors;
+                    if (Array.isArray(fcs)) {
+                      colors = fcs
+                        .filter((fc: any) => fc?.id)
+                        .map((fc: any) => ({
+                          id: String(fc.id),
+                          name: String(fc.name || fc.id),
+                          hex: fc.hex,
+                          variantId: 1,
+                        }))
+                        .filter(
+                          (c: { id: string }) =>
+                            !skipKeys.has(normalizeHarvestBlankColorKey(c.id)),
+                        );
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                if (colors.length > 0) {
+                  console.log(
+                    `[platform-canonical] provider ${providerId}: direct Shopify blank fill` +
+                      ` product=${shopifyBlankSource.productId} colours=${colors.map((c) => c.id).join(",")}`,
+                  );
+                  const fromShopify = await harvestBlanksFromShopifyProduct({
+                    shopDomain: shopifyBlankSource.shopDomain,
+                    accessToken: shopifyBlankSource.accessToken,
+                    productId: shopifyBlankSource.productId,
+                    shopifyVariantIds: shopifyBlankSource.shopifyVariantIds,
+                    colors,
+                    storageKey,
+                    calibratorMode: true,
+                    views: ["front", "back"],
+                  });
+                  const added = mergeFlatCalibrationBlanks(accumulated, {
+                    productTypeId: 0,
+                    name: entry.label,
+                    blueprintId,
+                    providerId,
+                    tier: "flat",
+                    views: {},
+                    blanks: fromShopify,
+                    representativeGeometry: true,
+                    generatedAt: new Date().toISOString(),
+                  });
+                  if (added > 0) {
+                    if (!providersUsed.includes(providerId)) providersUsed.push(providerId);
+                    providerOk = true;
+                    providerLastErr = "";
+                    await writeManifest(accumulated, "ready", null);
+                    console.log(
+                      `[platform-canonical] provider ${providerId}: Shopify fill added ${added} blank(s)` +
+                        ` from product ${shopifyBlankSource.productId}`,
+                    );
+                  } else {
+                    harvestWarnings.push(
+                      `Provider ${providerId}: Shopify product ${shopifyBlankSource.productId} had no matching colour images` +
+                        ` (wanted ${colors.map((c) => c.id).join(", ")})`,
+                    );
+                  }
+                }
+              } catch (err) {
+                const msg = (err as Error)?.message || String(err);
+                harvestWarnings.push(`Provider ${providerId}: Shopify blank fill failed: ${msg}`);
+                console.warn(`[platform-canonical] Shopify fill failed for provider ${providerId}:`, msg);
+              }
+            } else if (!providerOk && !shopifyBlankSource && ref) {
+              harvestWarnings.push(
+                `Provider ${providerId} (pt ${ref.id}): no Shopify listing linked — cannot fill blanks without Printify create`,
+              );
             }
 
             if (!providerOk && providerLastErr) {

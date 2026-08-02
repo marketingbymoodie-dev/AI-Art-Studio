@@ -2040,7 +2040,7 @@ function shopifyImageSrcForVariant(variant: any, productImages: any[]): string |
  * Pull blank garment photos from a published Shopify listing when Printify
  * decorator create is unavailable (common for US providers on EU harvest shops).
  */
-async function harvestBlanksFromShopifyProduct(args: {
+export async function harvestBlanksFromShopifyProduct(args: {
   shopDomain: string;
   accessToken: string;
   productId: string;
@@ -2114,11 +2114,32 @@ async function harvestBlanksFromShopifyProduct(args: {
     return null;
   };
 
+  const imageSrcForColor = (color: ColorEntry, variant: any | null): string | null => {
+    if (variant) {
+      const fromVariant = shopifyImageSrcForVariant(variant, images);
+      if (fromVariant) return fromVariant;
+    }
+    // Printify→Shopify publishes often put the colour name in image alt.
+    const altHit = images.find((img: any) => {
+      if (!img?.src) return false;
+      const alt = String(img.alt || "");
+      if (alt && colorMatchesFrame(alt, color.name || color.id, color.id)) return true;
+      const file = String(img.src).split("/").pop() || "";
+      return !!file && colorMatchesFrame(file, color.name || color.id, color.id);
+    });
+    return altHit?.src ? String(altHit.src) : null;
+  };
+
   for (const color of colors) {
     const variant = variantIdForColor(color);
-    if (!variant) continue;
-    const src = shopifyImageSrcForVariant(variant, images);
-    if (!src) continue;
+    const src = imageSrcForColor(color, variant);
+    if (!src) {
+      console.warn(
+        `[flat-calibration] Shopify blank: no image for ${color.id}` +
+          ` (product ${productId}, variant=${variant?.id ?? "none"})`,
+      );
+      continue;
+    }
     try {
       const buf = await downloadBuffer(src);
       const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
