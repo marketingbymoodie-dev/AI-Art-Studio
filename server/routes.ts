@@ -8309,7 +8309,7 @@ ${orientationExtra}
   // in the background, so Add to Cart is instant when the user clicks it.
   app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, mockupUrls, baseProductId, baseVariantId } = req.body;
+      const { shop, jobId, mockupUrls, baseProductId, baseVariantId, productTypeId } = req.body;
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
@@ -8323,7 +8323,14 @@ ${orientationExtra}
       }
       // Only store valid absolute URLs (Printify CDN URLs)
       const validUrls = mockupUrls.filter((u: any) => typeof u === 'string' && u.startsWith('http'));
-      await storage.updateGenerationJob(jobId, { mockupUrls: validUrls } as any);
+      const mockupPatch: Record<string, unknown> = { mockupUrls: validUrls };
+      if (productTypeId != null && String(productTypeId).trim()) {
+        const nextPt = String(productTypeId).trim();
+        if (nextPt !== String(job.productTypeId || "")) {
+          mockupPatch.productTypeId = nextPt;
+        }
+      }
+      await storage.updateGenerationJob(jobId, mockupPatch as any);
       console.log(`[SaveMockups] jobId=${jobId} saved ${validUrls.length} mockup URLs`);
 
       // ── Pre-create shadow product in background ──────────────────────────────
@@ -8461,10 +8468,71 @@ ${orientationExtra}
     }
   });
 
+  // Clone artwork onto a new job for the TARGET customizer product (Reuse as-is).
+  // Never reuse the source job id — that keeps the source productTypeId/pageHandle.
+  app.post("/api/storefront/fork-design", async (req: Request, res: Response) => {
+    try {
+      const { shop, artworkUrl, prompt, productTypeId, customerId, size, frameColor, pageHandle } =
+        req.body || {};
+      if (!shop || !artworkUrl || !productTypeId) {
+        return res
+          .status(400)
+          .json({ error: "shop, artworkUrl, and productTypeId are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const absArt =
+        typeof artworkUrl === "string" &&
+        (artworkUrl.startsWith("http") || artworkUrl.startsWith("/"))
+          ? artworkUrl
+          : "";
+      if (!absArt) {
+        return res.status(400).json({ error: "Invalid artworkUrl" });
+      }
+      const designState: Record<string, unknown> = {};
+      if (typeof pageHandle === "string" && pageHandle.trim()) {
+        designState.pageHandle = pageHandle.trim();
+      }
+      designState.productTypeId = String(productTypeId);
+      const promptText =
+        typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Reused artwork";
+      const job = await storage.createGenerationJob({
+        shop: shop.toLowerCase().replace(/^https?:\/\//, ""),
+        sessionId: null,
+        customerId: customerId ? String(customerId) : null,
+        status: "complete",
+        prompt: promptText,
+        userPrompt: promptText,
+        stylePreset: null,
+        size: typeof size === "string" ? size : null,
+        frameColor: typeof frameColor === "string" ? frameColor : null,
+        productTypeId: String(productTypeId),
+        referenceImageUrl: null,
+        designImageUrl: absArt,
+        thumbnailUrl: absArt,
+        designState,
+        billingMode: "customer",
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      });
+      console.log(
+        `[ForkDesign] jobId=${job.id} productTypeId=${productTypeId} pageHandle=${pageHandle || ""}`,
+      );
+      return res.json({ jobId: job.id, saved: true });
+    } catch (err: any) {
+      console.error("[ForkDesign]", err);
+      return res.status(500).json({ error: "Failed to fork design" });
+    }
+  });
+
   // ==================== STOREFRONT SAVE DESIGN STATE ====================
   app.post("/api/storefront/save-state", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, designState } = req.body;
+      const { shop, jobId, designState, productTypeId, pageHandle } = req.body;
       if (!shop || !jobId || !designState || typeof designState !== 'object') {
         return res.status(400).json({ error: "shop, jobId, and designState are required" });
       }
@@ -8481,6 +8549,12 @@ ${orientationExtra}
           ? (job.designState as Record<string, unknown>)
           : {};
       const mergedDesignState: Record<string, unknown> = { ...prevState, ...designState };
+      if (typeof pageHandle === "string" && pageHandle.trim()) {
+        mergedDesignState.pageHandle = pageHandle.trim();
+      }
+      if (productTypeId != null && String(productTypeId).trim()) {
+        mergedDesignState.productTypeId = String(productTypeId).trim();
+      }
       // Deep-merge placer state so a partial patch (e.g. artworkUrl-only) cannot
       // wipe placements / enabled flags from a prior Apply.
       if (
@@ -8522,6 +8596,17 @@ ${orientationExtra}
       // Sync size / colour / artwork onto job columns so test orders and
       // fulfillment prefer the merchant's current Apply selection.
       const jobPatch: Record<string, unknown> = { designState: mergedDesignState };
+      // Retarget product when the customer applied/reused onto a different customizer
+      // (fixes Saved Designs opening the reuse-source tee instead of leggings).
+      const nextProductTypeId =
+        productTypeId != null && String(productTypeId).trim()
+          ? String(productTypeId).trim()
+          : typeof mergedDesignState.productTypeId === "string"
+            ? mergedDesignState.productTypeId.trim()
+            : "";
+      if (nextProductTypeId && nextProductTypeId !== String(job.productTypeId || "")) {
+        jobPatch.productTypeId = nextProductTypeId;
+      }
       if (typeof designState.selectedSize === "string" && designState.selectedSize.trim()) {
         jobPatch.size = designState.selectedSize.trim();
       }
@@ -9564,7 +9649,21 @@ ${orientationExtra}
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
-        designs: rows.map(d => ({
+        designs: rows.map(d => {
+          const ds =
+            d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)
+              ? (d.designState as Record<string, unknown>)
+              : null;
+          // Prefer retargeted product/page from designState (reuse-as-is used to leave
+          // the source tee productTypeId on the job while mockups showed leggings).
+          const statePt =
+            ds && ds.productTypeId != null ? normalizeProductTypeId(String(ds.productTypeId)) : null;
+          const ptId = statePt || normalizeProductTypeId(d.productTypeId);
+          const stateHandle =
+            ds && typeof ds.pageHandle === "string" && ds.pageHandle.trim()
+              ? ds.pageHandle.trim()
+              : null;
+          return {
           id: d.id,
           artworkUrl:
             proxyUrl(d.designImageUrl) ||
@@ -9578,12 +9677,13 @@ ${orientationExtra}
           stylePreset: d.stylePreset,
           size: d.size,
           frameColor: d.frameColor,
-          productTypeId: normalizeProductTypeId(d.productTypeId),
-          baseTitle: normalizeProductTypeId(d.productTypeId) ? (ptMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
-          pageHandle: normalizeProductTypeId(d.productTypeId) ? (handleMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
+          productTypeId: ptId,
+          baseTitle: ptId ? (ptMap[ptId] || null) : null,
+          pageHandle: stateHandle || (ptId ? (handleMap[ptId] || null) : null),
           customerId: d.customerId,
           createdAt: d.createdAt,
-        }))
+        };
+        })
       });
     } catch (err: any) {
       console.error("[MyDesigns GET]", err);

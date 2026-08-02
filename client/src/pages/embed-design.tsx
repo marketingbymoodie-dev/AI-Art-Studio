@@ -138,6 +138,7 @@ import {
 } from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
+import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
@@ -4817,13 +4818,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               return;
             }
           }
-          const fronts = mergePersonViews
-            ? aopBaseMockupsRef.current.length > 0
+          // AOP mesh (incl. pillow product cameras): keep placer Front/Back.
+          // Flat lifestyle/tapestry: keep flatFrontMockups.
+          const fronts =
+            mergePersonViews || (mergeProductMockups && aopBaseMockupsRef.current.length > 0)
               ? aopBaseMockupsRef.current
-              : []
-            : flatFrontMockupsRef.current.length > 0
-              ? flatFrontMockupsRef.current
-              : [];
+              : flatFrontMockupsRef.current.length > 0
+                ? flatFrontMockupsRef.current
+                : [];
           const mergedImages: Array<{ url: string; label: string }> = [...fronts];
           const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
           for (const extra of extras) {
@@ -7968,10 +7970,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           body: JSON.stringify({
             jobId,
             shop: shopDomain,
+            productTypeId: productTypeId || undefined,
+            pageHandle: activeProductContext.pageHandle || undefined,
             designState: {
               hoodieAopPlacerState: result.state,
               aopPatternUrl: frontHosted,
               hoodieAopMockups: { front: frontHosted, back: backHosted },
+              productTypeId: productTypeId || undefined,
+              pageHandle: activeProductContext.pageHandle || undefined,
             },
           }),
         }).catch((e) => {
@@ -8008,6 +8014,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
+              productTypeId: productTypeId || undefined,
               // Front first (gallery thumbnail), back second.
               mockupUrls,
             }),
@@ -8058,6 +8065,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     storefrontCustomerId,
     emitTesterDesignStatus,
     productTypeConfig,
+    productTypeId,
+    activeProductContext.pageHandle,
     selectedSize,
     selectedFrameColor,
     transform.scale,
@@ -8547,6 +8556,74 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
 
+      // As-is: fork artwork onto a NEW job for the TARGET product. Never
+      // loadDesignId of the source job — that kept the tee's productTypeId
+      // so Saved Designs later opened the reuse source instead of leggings.
+      if (!opts.regenerate && opts.artworkUrl) {
+        writeReuseHandoff({
+          jobId: null,
+          artworkUrl: opts.artworkUrl,
+          prompt: opts.prompt,
+          autoGenerate: false,
+        });
+        setReuseBusy(true);
+        setReuseBusyLabel("Opening product…");
+        try {
+          const pageRes = await safeFetch(
+            `/apps/appai/customizer-page?handle=${encodeURIComponent(handle)}`,
+            { credentials: "same-origin" },
+            30000,
+          );
+          if (!pageRes.ok) throw new Error(`Could not load ${handle}`);
+          const pageConfig = await pageRes.json();
+          const targetProductTypeId = pageConfig?.productTypeId
+            ? String(pageConfig.productTypeId)
+            : "";
+          if (!targetProductTypeId) throw new Error("Target product has no product type");
+
+          await switchToCustomizerPageByHandle(handle);
+          const abs = toAbsoluteImageUrl(opts.artworkUrl);
+          let forkedJobId: string | null = null;
+          if (shopDomain) {
+            const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                shop: shopDomain,
+                artworkUrl: abs,
+                prompt: opts.prompt || "",
+                productTypeId: targetProductTypeId,
+                customerId: storefrontCustomerId || undefined,
+                pageHandle: handle,
+              }),
+            });
+            if (forkRes.ok) {
+              const forked = await forkRes.json();
+              if (forked?.jobId) forkedJobId = String(forked.jobId);
+            } else {
+              console.warn("[ReuseArtwork] fork-design failed:", forkRes.status);
+            }
+          }
+          savedJobIdRef.current = forkedJobId;
+          loadDesignAppliedRef.current = true;
+          setBridgeLoadDesignId(forkedJobId || "");
+          setGeneratedDesign({
+            id: forkedJobId || `reuse-${Date.now()}`,
+            imageUrl: abs,
+            prompt: opts.prompt || "",
+          });
+          if (opts.prompt) setPrompt(opts.prompt);
+          clearReuseHandoff();
+          setReuseBusy(false);
+          return;
+        } catch (err: any) {
+          console.error("[ReuseArtwork] in-app as-is failed, falling back to page nav:", err);
+          setReuseBusyLabel("Opening product page…");
+        } finally {
+          reuseInAppBusyRef.current = false;
+        }
+      }
+
       const target = `/pages/${encodeURIComponent(handle)}`;
       const params = new URLSearchParams();
       if (opts.regenerate) {
@@ -8561,8 +8638,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         // Always include artwork URL as fallback when handoff/job status fails.
         if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
-      } else if (opts.designId) {
-        params.set("loadDesignId", opts.designId);
       } else if (opts.artworkUrl) {
         writeReuseHandoff({
           jobId: null,
@@ -8583,7 +8658,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         window.location.href = url;
       }
     },
-    [switchToCustomizerPageByHandle, toast],
+    [switchToCustomizerPageByHandle, toast, shopDomain, storefrontCustomerId],
   );
 
   const resolveTargetAspectRatio = useCallback((config: any): string => {
@@ -9839,6 +9914,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setLifestyleShotLoading(true);
       setLifestyleShotError(null);
       lastAopPanelUrlsRef.current = panels;
+      // Body/lumbar pillows have no Front Person cameras — request product
+      // cameras instead (same merge path as tapestry Printers Mockup).
+      const pillowProductCameras = isPillowWrapBlueprint(
+        productTypeConfig.printifyBlueprintId,
+      );
       try {
         const designUrl =
           aopPatternUrl ||
@@ -9857,7 +9937,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           panels,
           undefined,
           hoodieAopPlacerState?.backgroundColor,
-          { mergePersonViews: true },
+          pillowProductCameras
+            ? { mergeProductMockups: true }
+            : { mergePersonViews: true },
         );
         if (!result.ok) {
           const msg = result.error || "Printers mockup failed";
@@ -9871,8 +9953,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         toast({
           title: "Printers mockup ready",
-          description:
-            "Showing Front Person — use the arrows under the preview to switch views.",
+          description: pillowProductCameras
+            ? "Showing Printify product views — use the arrows under the preview to switch."
+            : "Showing Front Person — use the arrows under the preview to switch views.",
         });
       } finally {
         setLifestyleShotLoading(false);
@@ -9881,6 +9964,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [
       canRequestAopPrintersMockup,
       productTypeConfig?.id,
+      productTypeConfig?.printifyBlueprintId,
       generatedDesign?.imageUrl,
       lifestyleShotLoading,
       fetchPrintifyMockups,
@@ -10061,12 +10145,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!flatPlacerEligible) return;
     currentMockupColorRef.current = "";
     lastFlatGalleryMockupKeyRef.current = "";
-    // Model/size/colour change leaves Printers/Context — back to live Front editor.
-    setSelectedMockupIndex(0);
-    if (flatDecorMode && generatedDesign?.imageUrl) {
+    // Stay on a mockup slide (Front) while the new blank rasters — jumping to
+    // index 0 flashed raw Artwork between colour changes on crew tees.
+    setSelectedMockupIndex((prev) => (prev >= 1 ? 1 : prev));
+    if (generatedDesign?.imageUrl) {
       setFlatMockupRefreshing(true);
     }
-  }, [flatPlacerEligible, flatBlankColorId, selectedSize, flatDecorMode, generatedDesign?.imageUrl]);
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize, generatedDesign?.imageUrl]);
 
   const handleRefreshFlatMockups = useCallback(() => {
     setMockupError(null);
@@ -10170,7 +10255,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // Front already cached — lifestyle/context is on-demand (Lifestyle Shot).
           return;
         }
-        if (flatDecorMode) setFlatMockupRefreshing(true);
+        setFlatMockupRefreshing(true);
         const images: { url: string; label: string }[] = [];
         for (const view of views) {
           const dataUrl = await renderFlatMockupDataUrl(
