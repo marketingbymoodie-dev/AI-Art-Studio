@@ -31,6 +31,11 @@ interface ProductMockupProps {
   };
   showSafeZone?: boolean;
   blankImageUrl?: string | null;
+  /**
+   * Used when `blankImageUrl` 404s / fails (stale flat-calibration assets after
+   * a re-harvest wipe). Typically the merchant catalog primary placeholder.
+   */
+  blankImageFallbackUrl?: string | null;
   /** The product's aspect ratio string, e.g. "3:4" or "2:1". Used to detect
    *  landscape products that need a scale-up to fill the container. */
   aspectRatio?: string;
@@ -321,12 +326,38 @@ export function ProductMockup({
   canvasConfig,
   showSafeZone = false,
   blankImageUrl,
+  blankImageFallbackUrl,
   aspectRatio,
   isAop = false,
   initialPreviewUrl,
   mockupFit = "cover",
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
+
+  // Prefer the colour-accurate blank; if it 404s (stale harvest URL), use catalog primary.
+  const [blankSrc, setBlankSrc] = useState<string | null>(blankImageUrl || null);
+  const [blankPrimaryFailed, setBlankPrimaryFailed] = useState(false);
+  useEffect(() => {
+    setBlankPrimaryFailed(false);
+    setBlankSrc(blankImageUrl || null);
+  }, [blankImageUrl, blankImageFallbackUrl]);
+  useEffect(() => {
+    if (blankPrimaryFailed && blankImageFallbackUrl && blankImageFallbackUrl !== blankImageUrl) {
+      setBlankSrc(blankImageFallbackUrl);
+    }
+  }, [blankPrimaryFailed, blankImageFallbackUrl, blankImageUrl]);
+  const onBlankError = useCallback(() => {
+    if (
+      blankImageFallbackUrl &&
+      blankSrc === blankImageUrl &&
+      blankImageFallbackUrl !== blankImageUrl
+    ) {
+      setBlankPrimaryFailed(true);
+      setBlankSrc(blankImageFallbackUrl);
+      return;
+    }
+    setBlankSrc(null);
+  }, [blankImageFallbackUrl, blankImageUrl, blankSrc]);
 
   if (typeof window !== "undefined") {
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
@@ -468,13 +499,13 @@ export function ProductMockup({
       // Flat/mesh products use a separate placer + composite slides; stacking the
       // blank under raw Artwork looks like a double-up on saved designs.
       const showBlankUnderArt =
-        !!blankImageUrl && designerType === "apparel" && !!enableDrag;
+        !!blankSrc && designerType === "apparel" && !!enableDrag;
       if (showBlankUnderArt) {
         return (
           <>
             <img
-              key={blankImageUrl}
-              src={blankImageUrl}
+              key={blankSrc}
+              src={blankSrc}
               alt="Product blank"
               className="absolute inset-0 w-full h-full object-contain"
               style={{
@@ -483,6 +514,7 @@ export function ProductMockup({
               }}
               draggable={false}
               data-testid="img-blank"
+              onError={onBlankError}
             />
             <img
               src={displayUrl}
@@ -509,7 +541,7 @@ export function ProductMockup({
       );
     }
 
-    if (blankImageUrl) {
+    if (blankSrc) {
       // Apparel / mug / framed / shaped pillows: contain so tall blanks
       // (hoodies) are not cropped by object-cover in the square preview.
       // Framed posters still prefer contain so hangers stay visible.
@@ -522,26 +554,28 @@ export function ProductMockup({
       if (useContainBlank) {
         return (
           <img
-            key={blankImageUrl}
-            src={blankImageUrl}
+            key={blankSrc}
+            src={blankSrc}
             alt="Product blank"
             className="absolute inset-0 w-full h-full object-contain"
             style={{ pointerEvents: "none", opacity: 0.92 }}
             draggable={false}
             data-testid="img-blank"
+            onError={onBlankError}
           />
         );
       }
       const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
-          key={blankImageUrl}
-          src={blankImageUrl}
+          key={blankSrc}
+          src={blankSrc}
           alt="Product blank"
           className="absolute inset-0 w-full h-full object-cover"
           style={{ pointerEvents: "none", opacity: 0.92, transform: blankScale, transformOrigin: "center center" }}
           draggable={false}
           data-testid="img-blank"
+          onError={onBlankError}
         />
       );
     }

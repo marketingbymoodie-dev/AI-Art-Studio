@@ -2349,6 +2349,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setCatalogPreviewIndex(0);
   }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
 
+  // When browsing Primary / View 2 / View 3, changing colour or size must return
+  // to Primary so the colour-accurate blank (not a static gallery slide) is shown.
+  useEffect(() => {
+    setCatalogPreviewIndex(0);
+  }, [selectedFrameColor, selectedSize]);
+
   const postGenGalleryItems = useMemo(
     () =>
       generatedDesign?.imageUrl
@@ -11777,6 +11783,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           catalogPreviewImages[0] ||
                           null
                         );
+                      })()}
+                      blankImageFallbackUrl={(() => {
+                        // Stale flat-calibration URLs 404 after a re-harvest wipe —
+                        // fall back to merchant catalog primary / next gallery image.
+                        const primary = catalogPreviewImages[0] || null;
+                        const preferred =
+                          orientationBlankOverride ||
+                          flatCalibrationBlankUrl ||
+                          colorAwareBlankUrl ||
+                          null;
+                        if (preferred && primary && preferred !== primary) return primary;
+                        return catalogPreviewImages.find((u) => u !== preferred) || null;
                       })()}
                       aspectRatio={
                         (selectedSizeConfig
