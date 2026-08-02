@@ -2088,6 +2088,48 @@ export async function harvestBlanksFromShopifyProduct(args: {
 
   const variants: any[] = Array.isArray(product.variants) ? product.variants : [];
   const images: any[] = Array.isArray(product.images) ? product.images : [];
+  /** GraphQL often has per-variant image URLs when REST leaves image_id / variant_ids empty. */
+  const graphqlImageByVariantId = new Map<number, string>();
+  try {
+    const gqlRes = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `{
+          product(id: "gid://shopify/Product/${productId}") {
+            variants(first: 250) {
+              nodes {
+                legacyResourceId
+                image { url }
+                selectedOptions { name value }
+              }
+            }
+          }
+        }`,
+      }),
+    });
+    if (gqlRes.ok) {
+      const gqlJson = await gqlRes.json();
+      const nodes = gqlJson?.data?.product?.variants?.nodes || [];
+      for (const node of nodes) {
+        const vid = Number(node.legacyResourceId);
+        const url = node.image?.url;
+        if (Number.isFinite(vid) && url) graphqlImageByVariantId.set(vid, String(url));
+      }
+      console.log(
+        `[flat-calibration] Shopify GraphQL product ${productId}: ` +
+          `${graphqlImageByVariantId.size} variant image(s)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[flat-calibration] Shopify GraphQL variant images failed:`,
+      (err as Error).message,
+    );
+  }
   const out: Record<string, Partial<Record<ViewName, string>>> = {};
 
   const optionMatchesColor = (raw: string, color: ColorEntry): boolean => {
@@ -2103,59 +2145,116 @@ export async function harvestBlanksFromShopifyProduct(args: {
     return false;
   };
 
-  const variantIdForColor = (color: ColorEntry): any | null => {
+  /** AppAI publish SKUs look like `{blueprint}-{sizeId}-{colorId}`. */
+  const skuMatchesColor = (sku: string, color: ColorEntry): boolean => {
+    const s = String(sku || "").toLowerCase();
+    if (!s) return false;
+    const id = normalizeHarvestBlankColorKey(color.id);
+    const nameKey = normalizeHarvestBlankColorKey(color.name || "");
+    const parts = s.split("-");
+    const tail = parts[parts.length - 1] || "";
+    const tail2 = parts.length >= 2 ? `${parts[parts.length - 2]}_${parts[parts.length - 1]}` : "";
+    // 79-s-black_red → last segment may be black_red, or split across hyphens as black / red
+    if (normalizeHarvestBlankColorKey(tail) === id) return true;
+    if (nameKey && normalizeHarvestBlankColorKey(tail) === nameKey) return true;
+    if (normalizeHarvestBlankColorKey(tail2) === id) return true;
+    if (s.includes(`-${color.id.toLowerCase()}`)) return true;
+    if (s.endsWith(color.id.toLowerCase())) return true;
+    return false;
+  };
+
+  const variantsForColor = (color: ColorEntry): any[] => {
+    const hits: any[] = [];
+    const seen = new Set<string>();
+    const push = (v: any) => {
+      if (!v?.id) return;
+      const id = String(v.id);
+      if (seen.has(id)) return;
+      seen.add(id);
+      hits.push(v);
+    };
+
     if (shopifyVariantIds && typeof shopifyVariantIds === "object") {
       for (const [key, vid] of Object.entries(shopifyVariantIds)) {
         const parts = String(key).split(":");
-        const colorPart = parts.length >= 2 ? parts[parts.length - 1] : String(key);
+        // Keys are `size:color` — colour is always the last segment (colour names may contain `/`).
+        const colorPart = parts.length >= 2 ? parts.slice(1).join(":") : String(key);
         if (optionMatchesColor(colorPart, color)) {
-          const hit = variants.find((v) => String(v.id) === String(vid));
-          if (hit) return hit;
+          push(variants.find((v) => String(v.id) === String(vid)));
         }
       }
     }
     for (const v of variants) {
       const opts = [v.option1, v.option2, v.option3, v.title].filter(Boolean).map(String);
-      if (opts.some((o) => optionMatchesColor(o, color))) {
-        return v;
+      if (opts.some((o) => optionMatchesColor(o, color)) || skuMatchesColor(String(v.sku || ""), color)) {
+        push(v);
       }
     }
-    return null;
+    return hits;
   };
 
-  const imageSrcForColor = (color: ColorEntry, variant: any | null): string | null => {
-    if (variant) {
+  // Pre-index images by variant id (Printify often attaches one mockup to every size of a colour).
+  const imageByVariantId = new Map<number, string>();
+  for (const img of images) {
+    if (!img?.src) continue;
+    const vids = Array.isArray(img.variant_ids) ? img.variant_ids.map(Number) : [];
+    for (const vid of vids) {
+      if (!imageByVariantId.has(vid)) imageByVariantId.set(vid, String(img.src));
+    }
+  }
+
+  const imageSrcForColor = (color: ColorEntry, colorVariants: any[]): string | null => {
+    for (const variant of colorVariants) {
       const fromVariant = shopifyImageSrcForVariant(variant, images);
       if (fromVariant) return fromVariant;
+      const mapped = imageByVariantId.get(Number(variant.id));
+      if (mapped) return mapped;
+      const gql = graphqlImageByVariantId.get(Number(variant.id));
+      if (gql) return gql;
     }
-    // Printify→Shopify publishes often put the colour name in image alt.
+
+    // Alt / filename match (Printify mockup alts often include the colour title).
     const altHit = images.find((img: any) => {
       if (!img?.src) return false;
       const alt = String(img.alt || "");
-      if (alt && colorMatchesFrame(alt, color.name || color.id, color.id)) return true;
-      const file = String(img.src).split("/").pop() || "";
-      return !!file && colorMatchesFrame(file, color.name || color.id, color.id);
+      if (alt && optionMatchesColor(alt, color)) return true;
+      const file = decodeURIComponent(String(img.src).split("/").pop() || "");
+      return !!file && optionMatchesColor(file, color);
     });
-    return altHit?.src ? String(altHit.src) : null;
+    if (altHit?.src) return String(altHit.src);
+
+    // Last resort: if this colour is the product's first/default variant, use the featured image.
+    // (JAMS baseball customizer defaults to Black/Red — product.image is that blank.)
+    if (
+      colorVariants.some((v) => String(v.id) === String(product.variants?.[0]?.id)) &&
+      product.image?.src
+    ) {
+      return String(product.image.src);
+    }
+
+    return null;
   };
 
   if (colors.length > 0) {
     const sampleOpts = variants.slice(0, 8).map((v) =>
       [v.option1, v.option2, v.option3].filter(Boolean).join(" / "),
     );
+    const sampleSkus = variants.slice(0, 4).map((v) => v.sku).filter(Boolean);
     console.log(
       `[flat-calibration] Shopify product ${productId}: ${variants.length} variants, ` +
-        `${images.length} images; sample options=[${sampleOpts.join(" | ")}]`,
+        `${images.length} images; sample options=[${sampleOpts.join(" | ")}]` +
+        `${sampleSkus.length ? `; skus=[${sampleSkus.join(" | ")}]` : ""}` +
+        `; imageVariantLinks=${imageByVariantId.size}`,
     );
   }
 
   for (const color of colors) {
-    const variant = variantIdForColor(color);
-    const src = imageSrcForColor(color, variant);
+    const colorVariants = variantsForColor(color);
+    const src = imageSrcForColor(color, colorVariants);
     if (!src) {
       console.warn(
         `[flat-calibration] Shopify blank: no image for ${color.id}` +
-          ` (product ${productId}, variant=${variant?.id ?? "none"})`,
+          ` (product ${productId}, matchedVariants=${colorVariants.map((v) => v.id).join(",") || "none"})`,
       );
       continue;
     }
@@ -2174,7 +2273,8 @@ export async function harvestBlanksFromShopifyProduct(args: {
       if (perView.front || perView.back) {
         out[color.id] = perView;
         console.log(
-          `[flat-calibration] blank ${color.id} from Shopify product ${productId} variant ${variant.id}`,
+          `[flat-calibration] blank ${color.id} from Shopify product ${productId}` +
+            ` (variants=${colorVariants.map((v) => v.id).join(",") || "alt"})`,
         );
       }
     } catch (err) {
