@@ -258,17 +258,23 @@ export default function AdminProducts() {
     enabled: !!selectedBlueprint,
   });
 
-  // Calculate variant count based on selections (no fake "1" when load failed / empty).
+  // Calculate variant count from current checkboxes. Import flow gates save on
+  // variantsReady separately; Edit Variants must still show a real total (sizes×colors)
+  // even when variantsReady is false from a prior import dialog.
   const variantCount = useMemo(() => {
-    if (!variantsReady) return 0;
     const sizeCount = selectedSizeIds.size;
     if (sizeCount === 0) return 0;
     const colorCount =
       availableColors.length === 0 ? 1 : selectedColorIds.size;
     if (availableColors.length > 0 && colorCount === 0) return 0;
     return sizeCount * colorCount;
-  }, [variantsReady, selectedSizeIds.size, selectedColorIds.size, availableColors.length]);
-  
+  }, [selectedSizeIds.size, selectedColorIds.size, availableColors.length]);
+
+  const isEditVariantCountValid =
+    availableSizes.length > 0 &&
+    variantCount > 0 &&
+    variantCount <= 100;
+
   const isVariantCountValid =
     variantsReady &&
     availableSizes.length > 0 &&
@@ -1710,12 +1716,17 @@ export default function AdminProducts() {
               {/* Variant Count Display */}
               <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
                 <span className="text-sm font-medium">Total Variants:</span>
-                <span className={`text-lg font-bold ${isVariantCountValid ? 'text-green-600' : 'text-red-600'}`}>
+                <span className={`text-lg font-bold ${isEditVariantCountValid ? 'text-green-600' : 'text-red-600'}`}>
                   {variantCount}
                 </span>
               </div>
               
-              {!isVariantCountValid && (
+              {variantCount === 0 && (
+                <p className="text-sm text-red-600">
+                  Select at least one size and one colour to continue.
+                </p>
+              )}
+              {variantCount > 100 && (
                 <p className="text-sm text-red-600">
                   Shopify allows maximum 100 variants. Deselect some options to continue.
                 </p>
@@ -1817,7 +1828,7 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleSaveVariants}
-                  disabled={!isVariantCountValid || updateVariantsMutation.isPending}
+                  disabled={!isEditVariantCountValid || updateVariantsMutation.isPending}
                 >
                   {updateVariantsMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />

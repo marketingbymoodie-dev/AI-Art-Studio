@@ -45,9 +45,12 @@ Our scan matches the Inventory column for the product’s stored
 
 Import, Refresh Variants, and the import wizard dual-fetch the full provider
 catalog (`?show-out-of-stock=1`) so colors that are entirely OOS at that
-provider (e.g. White/Black at JAMS) still enter `variantMap`. Refresh also
-auto-adds **newly appeared** color IDs to `selectedColorIds` while keeping
-intentional deselections of colors that already existed.
+provider (e.g. White/Black at JAMS) still enter `variantMap` / Edit Variants.
+Refresh auto-selects **newly appeared colors only when they have at least one
+in-stock size** at this provider — fully OOS newcomers (Deep Heather with no
+providers, White/Black while JAMS is OOS) stay unchecked until you enable them
+in Edit Variants. Intentional deselections of colors that already existed are
+kept.
 
 If an older import used the in-stock-only list, a fully OOS colorway was
 omitted and the badge under-counted (e.g. 5/10 instead of 5/15). **Refresh

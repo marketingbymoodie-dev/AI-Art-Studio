@@ -179,7 +179,10 @@ import {
 } from "./flat-order-fulfillment";
 import { createPersistentPrintifyProduct } from "./design-product-publish";
 import { fetchPrintifyProviderVariantsDual } from "./printifyCatalogVariantsFetch";
-import { mergeNewlyAppearedSelectionIds } from "@shared/printifyCatalogSelection";
+import {
+  colorIdsWithInStockVariants,
+  mergeNewlyAppearedSelectionIds,
+} from "@shared/printifyCatalogSelection";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -228,7 +231,10 @@ function kickoffFlatCalibration(args: {
       let fulfillmentLayout = fulfillmentLayoutArg ?? null;
       if (forceFlatHarvest == null && blueprintId) {
         const catalogEntry = await getPlatformCatalogEntry(blueprintId);
-        forceFlatHarvest = catalogEntry?.forceFlatHarvest ?? false;
+        // Flat catalog tag means operator chose flat harvest — same as forceFlatHarvest
+        // when the print-area probe would otherwise reject apparel.
+        forceFlatHarvest =
+          !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat");
         fulfillmentLayout = fulfillmentLayout ?? catalogEntry?.fulfillmentLayout ?? null;
       }
 
@@ -15031,8 +15037,10 @@ ${orientationExtra}
       }
 
       // Update product type.
-      // Preserve intentional deselections; auto-add colors/sizes that newly appear
-      // when the full catalog includes previously omitted fully-OOS options.
+      // Preserve intentional deselections. Newly appeared colors are only auto-selected
+      // when they have at least one in-stock size — fully OOS newcomers (Deep Heather with
+      // no providers, White/Black at JAMS) stay in frameColors/variantMap for Edit Variants
+      // but are not forced onto the storefront until the merchant checks them.
       const existingSizeIds: string[] = typeof productType.selectedSizeIds === 'string'
         ? JSON.parse(productType.selectedSizeIds || '[]')
         : productType.selectedSizeIds || [];
@@ -15046,6 +15054,20 @@ ${orientationExtra}
         ? JSON.parse(productType.frameColors || '[]')
         : productType.frameColors || [];
 
+      const colorsWithStock = new Set(
+        colorIdsWithInStockVariants({
+          variantMap,
+          inStockVariantIds: dualRefresh.inStockVariantIds,
+        }),
+      );
+      const refreshedColorIds = frameColors.map((c: { id: string }) => c.id);
+      const previousColorIdSet = new Set(
+        previousColors.map((c) => String(c.id || "")).filter(Boolean),
+      );
+      const autoSelectNewColors = refreshedColorIds.filter(
+        (id: string) => !previousColorIdSet.has(id) && colorsWithStock.has(id),
+      );
+
       const finalSizeIds = mergeNewlyAppearedSelectionIds({
         existingSelectedIds: existingSizeIds,
         previousOptionIds: previousSizes.map((s) => String(s.id || "")).filter(Boolean),
@@ -15054,7 +15076,8 @@ ${orientationExtra}
       const finalColorIds = mergeNewlyAppearedSelectionIds({
         existingSelectedIds: existingColorIds,
         previousOptionIds: previousColors.map((c) => String(c.id || "")).filter(Boolean),
-        refreshedOptionIds: frameColors.map((c: { id: string }) => c.id),
+        refreshedOptionIds: refreshedColorIds,
+        autoSelectNewlyAppearedIds: autoSelectNewColors,
       });
 
       const refreshedCatalogCosts = extractCostsFromCatalogVariants(variants);

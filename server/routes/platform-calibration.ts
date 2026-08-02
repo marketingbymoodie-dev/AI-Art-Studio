@@ -596,7 +596,11 @@ export function registerPlatformCalibrationRoutes(
             calibratorMode: true,
             wipeExisting: true,
             storageKey,
-            forceFlatHarvest: catalogEntry?.forceFlatHarvest ?? false,
+            // Operator tagged Flat in the catalog — that IS the override when the
+            // print-area probe rejects apparel (bp 79 baseball tee, etc.). The separate
+            // forceFlatHarvest checkbox remains for AOP/tote edge cases.
+            forceFlatHarvest:
+              !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat"),
             fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
           });
           if (result.manifest) {
