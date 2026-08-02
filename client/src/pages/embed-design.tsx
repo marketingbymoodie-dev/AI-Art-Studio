@@ -683,7 +683,7 @@ function designSessionStorageKey(
   return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
 }
 
-/** Cross-product Reuse Artwork handoff (same Shopify origin; survives full page nav). */
+/** Cross-product Reuse Artwork handoff (survives full page nav as fallback). */
 const REUSE_HANDOFF_KEY = "appai_reuse_handoff";
 
 type ReuseHandoff = {
@@ -694,38 +694,76 @@ type ReuseHandoff = {
   ts: number;
 };
 
-function writeReuseHandoff(data: Omit<ReuseHandoff, "ts">) {
+/** Prefer parent storefront storage (same Shopify origin); fall back to iframe + localStorage. */
+function reuseStorageTargets(): Storage[] {
+  const out: Storage[] = [];
+  const pushUnique = (s: Storage | null | undefined) => {
+    if (!s) return;
+    if (!out.includes(s)) out.push(s);
+  };
   try {
-    sessionStorage.setItem(
-      REUSE_HANDOFF_KEY,
-      JSON.stringify({ ...data, ts: Date.now() } as ReuseHandoff),
-    );
+    if (window.parent && window.parent !== window) {
+      pushUnique(window.parent.sessionStorage);
+      pushUnique(window.parent.localStorage);
+    }
   } catch {
-    /* quota / private mode */
+    /* cross-origin parent */
+  }
+  try {
+    pushUnique(sessionStorage);
+    pushUnique(localStorage);
+  } catch {
+    /* private mode */
+  }
+  return out;
+}
+
+function writeReuseHandoff(data: Omit<ReuseHandoff, "ts">) {
+  const payload = JSON.stringify({ ...data, ts: Date.now() } as ReuseHandoff);
+  for (const store of reuseStorageTargets()) {
+    try {
+      store.setItem(REUSE_HANDOFF_KEY, payload);
+    } catch {
+      /* quota */
+    }
   }
 }
 
 function readReuseHandoff(): ReuseHandoff | null {
-  try {
-    const raw = sessionStorage.getItem(REUSE_HANDOFF_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as ReuseHandoff;
-    if (!parsed || Date.now() - (parsed.ts || 0) > 10 * 60 * 1000) {
-      sessionStorage.removeItem(REUSE_HANDOFF_KEY);
-      return null;
+  for (const store of reuseStorageTargets()) {
+    try {
+      const raw = store.getItem(REUSE_HANDOFF_KEY);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as ReuseHandoff;
+      if (!parsed || Date.now() - (parsed.ts || 0) > 10 * 60 * 1000) {
+        store.removeItem(REUSE_HANDOFF_KEY);
+        continue;
+      }
+      return parsed;
+    } catch {
+      /* ignore */
     }
-    return parsed;
-  } catch {
-    return null;
   }
+  return null;
 }
 
 function clearReuseHandoff() {
-  try {
-    sessionStorage.removeItem(REUSE_HANDOFF_KEY);
-  } catch {
-    /* ignore */
+  for (const store of reuseStorageTargets()) {
+    try {
+      store.removeItem(REUSE_HANDOFF_KEY);
+    } catch {
+      /* ignore */
+    }
   }
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read image"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 async function fetchReuseArtworkBlob(imageUrl: string): Promise<Blob> {
@@ -760,7 +798,39 @@ async function fetchReuseArtworkBlob(imageUrl: string): Promise<Blob> {
     /* fall through */
   }
 
-  return tryFetch(abs, { credentials: "omit", mode: "cors" });
+  try {
+    return await tryFetch(abs, { credentials: "omit", mode: "cors" });
+  } catch {
+    /* fall through to canvas */
+  }
+
+  // Last resort: draw a CORS-enabled <img> to canvas (works for many CDNs).
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas unavailable"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("Could not encode artwork"))),
+          "image/png",
+        );
+      } catch (e) {
+        reject(e);
+      }
+    };
+    img.onerror = () => reject(new Error("Failed to load artwork image"));
+    img.src = abs;
+  });
+  return blob;
 }
 
 /** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
@@ -1530,10 +1600,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const autoReuseGenerateDoneRef = useRef(false);
   const autoReuseHydratedRef = useRef(false);
   const autoReuseSeedingRef = useRef(false);
+  /** True while in-app Reuse regenerate is switching products (skip deep-link Phase A). */
+  const reuseInAppBusyRef = useRef(false);
   const pendingReuseGenerateRef = useRef<{
     prompt: string;
     referenceImagesBase64: string[];
   } | null>(null);
+  const [reuseGenerateTick, setReuseGenerateTick] = useState(0);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -3815,6 +3888,175 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     setBridgeLoadDesignId(designId);
+  }, [applyDesignerConfig, shopDomain]);
+
+  /** In-app customizer page switch (no full reload) — used by Reuse Artwork regenerate. */
+  const switchToCustomizerPageByHandle = useCallback(async (pageHandle: string) => {
+    if (!pageHandle) throw new Error("Missing customizer page handle");
+
+    setIsInAppProductSwitching(true);
+    setConfigLoading(true);
+    setProductTypeError(null);
+    setGeneratedDesign(null);
+    setDesignSource(null);
+    setShowPatternStep(false);
+    setAopPendingMotifUrl(null);
+    setAopPatternUrl(null);
+    setAopPlacementSettings(undefined);
+    setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+    setHoodieAopPlacerState(null);
+    setFlatPlacerState(null);
+    setFlatPlacerEditOpen(false);
+    setFlatApplyStatus("idle");
+    setFlatRenderFailed(false);
+    lastAopPanelUrlsRef.current = null;
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(0);
+    setMockupsStale(false);
+    setMockupTriggered(false);
+    setMockupLoading(false);
+    setMockupFailed(false);
+    setVariantError(null);
+    setPreShadowVariantId(null);
+    setPreShadowProductId(null);
+    loadDesignAppliedRef.current = false;
+    setBridgeLoadDesignId("");
+    setSelectedSize("");
+    setSelectedPreset("");
+    setSelectedStyleOption("");
+
+    const res = await safeFetch(`/apps/appai/customizer-page?handle=${encodeURIComponent(pageHandle)}`, {
+      credentials: "same-origin",
+    }, 30000);
+    if (!res.ok) {
+      setConfigLoading(false);
+      setIsInAppProductSwitching(false);
+      throw new Error(`Could not load customizer page "${pageHandle}" (${res.status})`);
+    }
+    const config = await res.json();
+    if (!config?.designerConfig) {
+      setConfigLoading(false);
+      setIsInAppProductSwitching(false);
+      throw new Error(`Customizer page "${pageHandle}" has no designer config`);
+    }
+
+    const baseVariant = config.baseVariantId ? String(config.baseVariantId) : "";
+    let targetVariants = Array.isArray(config.variants)
+      ? mapServerVariantsToCatalog(config.variants)
+      : [];
+
+    if (targetVariants.length === 0) {
+      const resolvedProductTypeId = config.productTypeId ? String(config.productTypeId) : "";
+      const resolvedHandle = config.baseProductHandle || "";
+      const fetchUrl = buildProductVariantsFetchUrl(
+        shopDomain,
+        resolvedProductTypeId,
+        resolvedHandle,
+      );
+      if (fetchUrl) {
+        try {
+          const variantRes = await safeFetch(fetchUrl);
+          if (variantRes.ok) {
+            const variantData = await variantRes.json();
+            if (Array.isArray(variantData.variants) && variantData.variants.length > 0) {
+              targetVariants = mapServerVariantsToCatalog(variantData.variants);
+            }
+          }
+        } catch (e) {
+          console.warn("[ReuseArtwork] Variant fallback fetch failed:", e);
+        }
+      }
+    }
+
+    const variantCatalogKey = `${config.productTypeId ? String(config.productTypeId) : "0"}|${config.baseProductHandle || pageHandle}`;
+    const configFrameColors = Array.isArray(config.designerConfig?.frameColors)
+      ? config.designerConfig.frameColors
+      : [];
+    const variantsHaveOptions = targetVariants.some((v) => v.option1 || v.option2);
+    if (targetVariants.length > 0 && (variantsHaveOptions || configFrameColors.length === 0)) {
+      variantsLoadedKeyRef.current = variantCatalogKey;
+      variantsFetchingKeyRef.current = "";
+    } else {
+      variantsLoadedKeyRef.current = "";
+      variantsFetchingKeyRef.current = "";
+    }
+
+    setVariants(targetVariants);
+    setVariantsFetched(targetVariants.length > 0);
+    setShopifyVariants(targetVariants);
+    const initialVariantId =
+      baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null);
+    setShopifyVariantId(initialVariantId);
+    setOverrideVariantId(initialVariantId);
+    baseVariantForShadowRef.current = initialVariantId ? normalizeVariantId(initialVariantId) : "";
+
+    setActiveProductContext({
+      productTypeId: config.productTypeId ? String(config.productTypeId) : "0",
+      productId: config.baseProductId ? String(config.baseProductId) : "",
+      productHandle: config.baseProductHandle || pageHandle,
+      productTitle: config.baseProductTitle || config.title || "Custom Product",
+      displayName: config.title || config.baseProductTitle || "Custom Product",
+      selectedVariant: baseVariant,
+      pageHandle,
+      designerConfig: config.designerConfig,
+      stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
+    });
+
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.pathname = `/pages/${pageHandle}`;
+      parentUrl.searchParams.delete("loadDesignId");
+      parentUrl.searchParams.delete("loadMockup");
+      parentUrl.searchParams.delete("loadProductName");
+      parentUrl.searchParams.delete("reuseArtworkUrl");
+      parentUrl.searchParams.delete("reusePrompt");
+      parentUrl.searchParams.delete("reuseJobId");
+      parentUrl.searchParams.delete("autoReuseGenerate");
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      /* parent may be inaccessible */
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    params.set("productTypeId", config.productTypeId ? String(config.productTypeId) : "0");
+    if (config.baseProductId) params.set("productId", String(config.baseProductId));
+    if (config.baseProductHandle || pageHandle) {
+      params.set("productHandle", config.baseProductHandle || pageHandle);
+    }
+    if (config.baseProductTitle || config.title) {
+      params.set("productTitle", config.baseProductTitle || config.title);
+    }
+    if (config.title) params.set("displayName", config.title);
+    if (baseVariant) params.set("selectedVariant", baseVariant);
+    params.delete("loadDesignId");
+    params.delete("loadMockup");
+    params.delete("reuseArtworkUrl");
+    params.delete("reusePrompt");
+    params.delete("reuseJobId");
+    params.delete("autoReuseGenerate");
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+
+    applyDesignerConfig(config.designerConfig, "SWITCH REUSE PRODUCT");
+    if (Array.isArray(config.stylePresets)) {
+      setStylePresets(config.stylePresets);
+    }
+    setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
+    setConfigLoading(false);
+    setIsInAppProductSwitching(false);
+
+    try {
+      window.parent.postMessage({
+        type: "AI_ART_STUDIO_PRODUCT_CONTEXT",
+        productTypeId: config.productTypeId ? String(config.productTypeId) : null,
+        productId: config.baseProductId ? String(config.baseProductId) : null,
+        productHandle: config.baseProductHandle || pageHandle,
+        selectedVariant: initialVariantId,
+        variants: targetVariants,
+      }, "*");
+    } catch {
+      /* ignore */
+    }
   }, [applyDesignerConfig, shopDomain]);
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
@@ -8055,7 +8297,63 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [isStorefront, isShopify, activeProductContext.pageHandle, productHandle]);
 
   const navigateToReuseProduct = useCallback(
-    (handle: string, opts: { designId?: string | null; regenerate?: boolean; artworkUrl?: string; prompt?: string }) => {
+    async (handle: string, opts: { designId?: string | null; regenerate?: boolean; artworkUrl?: string; prompt?: string }) => {
+      // Regenerate: stay in the iframe, switch product in-app, attach reference immediately.
+      // Full-page nav was dropping sessionStorage/URL handoff so Body Pillow landed blank.
+      if (opts.regenerate && opts.artworkUrl) {
+        const originalPrompt = (opts.prompt || "").trim();
+        const reusePromptText = originalPrompt
+          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
+          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+
+        writeReuseHandoff({
+          jobId: opts.designId || null,
+          artworkUrl: opts.artworkUrl,
+          prompt: originalPrompt,
+          autoGenerate: true,
+        });
+
+        reuseInAppBusyRef.current = true;
+        try {
+          toast({
+            title: "Reusing artwork…",
+            description: "Switching product and attaching it as a reference image.",
+          });
+          const blob = await fetchReuseArtworkBlob(opts.artworkUrl);
+          const file = new File([blob], "reuse-artwork.png", {
+            type: blob.type || "image/png",
+          });
+          const preview = URL.createObjectURL(blob);
+          const b64 = await blobToDataUrl(blob);
+          if (!b64) throw new Error("Could not read artwork for reference");
+
+          await switchToCustomizerPageByHandle(handle);
+
+          setReferenceImages([file]);
+          setReferencePreviews([preview]);
+          setPrompt(reusePromptText);
+          pendingReuseGenerateRef.current = {
+            prompt: reusePromptText,
+            referenceImagesBase64: [b64],
+          };
+          autoReuseHydratedRef.current = true;
+          autoReuseSeedingRef.current = true;
+          autoReuseGenerateDoneRef.current = false;
+          clearReuseHandoff();
+          setReuseGenerateTick((n) => n + 1);
+          return;
+        } catch (err: any) {
+          console.error("[ReuseArtwork] in-app regenerate failed, falling back to page nav:", err);
+          toast({
+            title: "Switching page…",
+            description: err?.message || "Retrying with a full page load.",
+          });
+          // Fall through to hard navigation with durable handoff.
+        } finally {
+          reuseInAppBusyRef.current = false;
+        }
+      }
+
       const target = `/pages/${encodeURIComponent(handle)}`;
       const params = new URLSearchParams();
       if (opts.regenerate) {
@@ -8066,11 +8364,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           autoGenerate: true,
         });
         params.set("autoReuseGenerate", "1");
-        if (opts.designId) {
-          params.set("reuseJobId", opts.designId);
-        } else if (opts.artworkUrl) {
-          params.set("reuseArtworkUrl", opts.artworkUrl);
-        }
+        if (opts.designId) params.set("reuseJobId", opts.designId);
+        // Always include artwork URL as fallback when handoff/job status fails.
+        if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
+        if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       } else if (opts.designId) {
         params.set("loadDesignId", opts.designId);
       } else if (opts.artworkUrl) {
@@ -8081,7 +8378,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           autoGenerate: false,
         });
         params.set("reuseArtworkUrl", opts.artworkUrl);
-        if (opts.prompt) params.set("reusePrompt", opts.prompt);
+        if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       }
       const qs = params.toString();
       const url = qs ? `${target}?${qs}` : target;
@@ -8091,7 +8388,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         window.location.href = url;
       }
     },
-    [],
+    [switchToCustomizerPageByHandle, toast],
   );
 
   const resolveTargetAspectRatio = useCallback((config: any): string => {
@@ -8243,6 +8540,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Phase A: seed reference images + prompt as soon as reuse regenerate lands
   // (do not wait for size/style — that was leaving Body Pillow blank).
   useEffect(() => {
+    if (reuseInAppBusyRef.current) return;
     const handoff = readReuseHandoff();
     const wantsAuto =
       autoReuseGenerateParam || handoff?.autoGenerate === true;
@@ -8386,7 +8684,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    reuseGenerateTick,
     referenceImages.length,
+    referencePreviews.length,
     selectedSize,
     printSizes,
     configLoading,
