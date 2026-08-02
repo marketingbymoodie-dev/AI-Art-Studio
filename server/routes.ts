@@ -14192,6 +14192,22 @@ ${orientationExtra}
         printShape = "rectangle";
         bleedMarginPercent = 3;
       }
+      // Phone cases BEFORE framed-print — Printify copy often contains "print" and would
+      // mis-tag slim cases as framed-print (breaks square browse window on storefront).
+      else if (
+        isPhoneCase ||
+        Number.parseInt(String(blueprintId), 10) === slimPhoneCaseBlueprintId() ||
+        combined.includes("phone case") ||
+        (combined.includes("case") &&
+          (combined.includes("iphone") ||
+            combined.includes("samsung") ||
+            combined.includes("galaxy") ||
+            combined.includes("pixel")))
+      ) {
+        designerType = "generic";
+        printShape = "rectangle";
+        bleedMarginPercent = 3;
+      }
       // Detect framed prints AFTER apparel (to avoid false positives from "print surface" in descriptions)
       else if (combined.includes("frame") || combined.includes("poster") || combined.includes("canvas") || 
                matchesWord(combined, "print") || combined.includes("wall art")) {

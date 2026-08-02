@@ -11711,6 +11711,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 aspectRatio: (() => {
                   // Pre-artwork browse: standard square window (faux-suede-pillow reference).
                   // Decor keeps size AR — window shape is the size/orientation cue there.
+                  // Phone / edge-wrap: always 1:1 browse even if import mis-tagged as framed-print.
+                  if (
+                    !generatedDesign?.imageUrl &&
+                    (isPhoneCaseProduct || flatEdgeWrapMode)
+                  ) {
+                    return "1/1";
+                  }
+                  // AOP pillows with mixed Square/Horizontal: only leave 1:1 when a real
+                  // orientation blank exists (catalog/Shopify) — otherwise keep square chrome.
+                  if (
+                    !generatedDesign?.imageUrl &&
+                    productTypeConfig?.designerType === "pillow" &&
+                    hasMixedCanvasOrientation &&
+                    !orientationBlankOverride
+                  ) {
+                    return "1/1";
+                  }
                   if (
                     !generatedDesign?.imageUrl &&
                     !hasMixedCanvasOrientation &&

@@ -81,7 +81,7 @@ Before the customer generates artwork, `browsePlaceholderSlides` drives the blan
 - Colour/size change resets to slide 0 (colour blank when present).
 - `ProductMockup` blank `<img>` uses `key={blankImageUrl}` so index changes always repaint.
 
-**Browse window size (faux-suede-pillow reference):** pre-artwork `container-mockup` is a **1:1 square capped at 520px** for apparel, phone cases, mugs, totes, pillows, etc. Do **not** size the browse window from print-area AR (that made tees/phone cases look smaller than the pillow). Exceptions — keep size/orientation AR: framed decor, mixed-orientation products (tapestry/wall decals), catalog-size-blank blueprints (comforter). After artwork generates, print-area AR applies as before. Blanks use `blankFit="contain"` while browsing so tall photos are not cropped in the square.
+**Browse window size (faux-suede-pillow reference):** pre-artwork `container-mockup` is a **1:1 square capped at 520px** for apparel, phone cases, mugs, totes, pillows, etc. Do **not** size the browse window from print-area AR (that made tees/phone cases look smaller than the pillow). Phone / edge-wrap always force 1:1 browse even if `designerType` was mis-imported as `framed-print`. AOP pillows with Square/Horizontal pills stay 1:1 until a catalog/Shopify landscape blank exists (no flat harvest for AOP pillows). Exceptions — keep size/orientation AR: framed decor, mixed-orientation products that have an orientation blank (tapestry/wall decals), catalog-size-blank blueprints (comforter). After artwork generates, print-area AR applies as before. Blanks use `blankFit="contain"` while browsing so tall photos are not cropped in the square.
 
 ---
 
