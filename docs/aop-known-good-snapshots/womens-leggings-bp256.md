@@ -7,10 +7,10 @@ Builds on the 2026-07-27 Place/Pattern sign-off. This pin adds Reset-home UX, re
 
 | Field | Value |
 |-------|--------|
-| **Commit** | *(set after deploy — see git log on `production`)* |
+| **Commit** | `f56f8980d14a3c7e74ecca5bcf183cd4c6c0c664` (`f56f898`) |
 | **Branch** | `production` (Railway deploy target) |
 | **Date** | 2026-08-02 |
-| **Message** | Leggings placer UX: Reset home, nudge in controls, deferred AOP apply |
+| **Message** | Polish leggings AOP placer UX and defer mockup apply |
 
 Prior verified pin (Place/Pattern core): `2fec216` (2026-07-26). Prefer this newer pin for UX/apply behaviour; keep `2fec216` stack if reverting only mesh/placement math.
 
@@ -18,7 +18,7 @@ Prior verified pin (Place/Pattern core): `2fec216` (2026-07-26). Prefer this new
 
 | Commit | Summary |
 |--------|---------|
-| *(this pin)* | Reset beside Mirror (Link ON / Mirror OFF + locked placements); no Replace artwork; Fine position in controls; deferred apply |
+| `f56f898` | **This pin** — Reset beside Mirror (Link ON / Mirror OFF + locked placements); no Replace artwork; Fine position in controls; deferred apply |
 | `2fec216` | Front/Back leave Printers Mockup → live editor |
 | `7372c81` | Place rotate: bake artwork once (linked legs stay height-aligned) |
 | `07782aa` | Place-mode rotate handle on bounding box |
@@ -133,7 +133,7 @@ Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's
 ```bash
 git fetch origin
 git checkout production
-git reset --hard <this-pin-sha>
+git reset --hard f56f898
 git push --force-with-lease origin production
 ```
 
@@ -152,11 +152,11 @@ Prefer when other products' fixes after this pin must be kept.
 ### Option C — restore leggings-critical files from the pin
 
 ```bash
-git checkout <this-pin-sha> -- client/src/components/hoodie-template-mapper/lib/aopPreview.ts
-git checkout <this-pin-sha> -- client/src/components/designer/HoodieAopPlacer/index.tsx
-git checkout <this-pin-sha> -- client/src/components/hoodie-template-mapper/DesignRectHandlesOverlay.tsx
-git checkout <this-pin-sha> -- shared/hoodieTemplate.ts
-git checkout <this-pin-sha> -- client/src/pages/embed-design.tsx
+git checkout f56f898 -- client/src/components/hoodie-template-mapper/lib/aopPreview.ts
+git checkout f56f898 -- client/src/components/designer/HoodieAopPlacer/index.tsx
+git checkout f56f898 -- client/src/components/hoodie-template-mapper/DesignRectHandlesOverlay.tsx
+git checkout f56f898 -- shared/hoodieTemplate.ts
+git checkout f56f898 -- client/src/pages/embed-design.tsx
 npm run build
 # commit + merge to production as usual
 ```
@@ -187,4 +187,4 @@ npm run build
 
 ---
 
-*Snapshot updated: 2026-08-02. Prior sign-off: Women's Casual Leggings AOP at production `2fec216` (2026-07-27).*
+*Snapshot updated: 2026-08-02. Pin: production `f56f898`. Prior Place/Pattern sign-off: `2fec216` (2026-07-27).*
