@@ -1142,8 +1142,10 @@ export default function AdminCustomizerPages() {
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <Label>Placeholder Images</Label>
-                          <span className="text-xs text-muted-foreground">
-                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images
+                          <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
+                            Primary is your marketing hero — on the storefront the selected colour
+                            blank leads when available; your Primary stays in the carousel.
                           </span>
                         </div>
                         {(() => {
@@ -2221,7 +2223,11 @@ export default function AdminCustomizerPages() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Placeholder Images</Label>
-                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images</span>
+                  <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                    Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
+                    Primary is your marketing hero — on the storefront the selected colour blank
+                    leads when available; your Primary stays in the carousel.
+                  </span>
                 </div>
                 {(() => {
                   const available = buildAvailablePlaceholderImages(

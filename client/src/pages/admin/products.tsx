@@ -1617,8 +1617,10 @@ export default function AdminProducts() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm font-medium">Placeholder Images</Label>
-                      <span className="text-xs text-muted-foreground">
-                        Choose 1 primary and up to 3 gallery images
+                      <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                        Choose 1 primary and up to 3 gallery images. Primary is your marketing
+                        hero — on the storefront the selected colour blank leads when available;
+                        your Primary stays in the carousel.
                       </span>
                     </div>
                     {placeholderOptionsLoading ? (

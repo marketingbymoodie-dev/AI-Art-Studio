@@ -2361,8 +2361,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setCatalogPreviewIndex(0);
   }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
 
-  // When browsing Primary / View 2 / View 3, changing colour or size must return
-  // to Primary so the colour-accurate blank (not a static gallery slide) is shown.
+  // Colour/size change: land on slide 0 (leading colour blank when present, else Primary).
   useEffect(() => {
     setCatalogPreviewIndex(0);
   }, [selectedFrameColor, selectedSize]);
@@ -5095,6 +5094,56 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     showFrameColorSelector,
     frameOptionsRedundantWithSizes,
   ]);
+
+  /**
+   * Pre-artwork browse carousel: optional colour/size-accurate blank leads, then
+   * merchant Primary + Gallery unchanged (never pixel-swapped under the Primary label).
+   */
+  const browsePlaceholderSlides = useMemo(() => {
+    type Slide = { url: string; label: string; kind: "color" | "primary" | "gallery" };
+    const slides: Slide[] = [];
+    const seen = new Set<string>();
+    const add = (url: string | null | undefined, label: string, kind: Slide["kind"]) => {
+      if (!url || typeof url !== "string") return;
+      const key = mockupImageUrlKey(url);
+      if (seen.has(key)) return;
+      seen.add(key);
+      slides.push({ url, label, kind });
+    };
+
+    const colorLead =
+      orientationBlankOverride || flatCalibrationBlankUrl || colorAwareBlankUrl || null;
+    const merchantPrimary = catalogPreviewImages[0] || null;
+    if (
+      colorLead &&
+      (!merchantPrimary || mockupImageUrlKey(colorLead) !== mockupImageUrlKey(merchantPrimary))
+    ) {
+      const colorLabel =
+        frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ||
+        selectedFrameColor ||
+        (orientationBlankOverride ? "Size" : "Colour");
+      add(colorLead, colorLabel, "color");
+    }
+
+    catalogPreviewImages.forEach((url, i) => {
+      add(url, i === 0 ? "Primary" : `View ${i + 1}`, i === 0 ? "primary" : "gallery");
+    });
+
+    return slides;
+  }, [
+    orientationBlankOverride,
+    flatCalibrationBlankUrl,
+    colorAwareBlankUrl,
+    catalogPreviewImages,
+    frameColorObjects,
+    selectedFrameColor,
+  ]);
+
+  useEffect(() => {
+    if (catalogPreviewIndex >= browsePlaceholderSlides.length) {
+      setCatalogPreviewIndex(0);
+    }
+  }, [browsePlaceholderSlides.length, catalogPreviewIndex]);
 
   const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
     const pick = (url: string | undefined): string => {
@@ -11777,28 +11826,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={(() => {
-                        // Catalog carousel (Primary / View 2 / …) must win while
-                        // browsing placeholders — size-accurate blanks otherwise
-                        // pin every slide to the same flat/Shopify photo.
-                        const browsingCatalog =
-                          !generatedDesign?.imageUrl && catalogPreviewImages.length > 1;
-                        if (browsingCatalog && catalogPreviewIndex > 0) {
-                          return catalogPreviewImages[catalogPreviewIndex] || null;
+                        // Pre-artwork: browse slides own their pixels (colour lead +
+                        // merchant Primary/Views). Never swap Primary under the hood.
+                        if (!generatedDesign?.imageUrl) {
+                          return (
+                            browsePlaceholderSlides[catalogPreviewIndex]?.url ||
+                            browsePlaceholderSlides[0]?.url ||
+                            null
+                          );
                         }
-                        // Size-keyed catalog blanks (comforter / wall decals) beat a
-                        // shared Shopify lifestyle image that does not change with size.
                         return (
                           orientationBlankOverride ||
                           flatCalibrationBlankUrl ||
                           colorAwareBlankUrl ||
-                          catalogPreviewImages[catalogPreviewIndex] ||
                           catalogPreviewImages[0] ||
                           null
                         );
                       })()}
                       blankImageFallbackUrl={(() => {
-                        // Stale flat-calibration URLs 404 after a re-harvest wipe —
-                        // fall back to merchant catalog primary / next gallery image.
+                        // Prefer the next browse slide, then merchant Primary.
+                        if (!generatedDesign?.imageUrl) {
+                          const current =
+                            browsePlaceholderSlides[catalogPreviewIndex]?.url || null;
+                          const next = browsePlaceholderSlides.find(
+                            (s) => s.url !== current,
+                          )?.url;
+                          return next || catalogPreviewImages[0] || null;
+                        }
                         const primary = catalogPreviewImages[0] || null;
                         const preferred =
                           orientationBlankOverride ||
@@ -11834,14 +11888,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
 
               {/* Catalog placeholder carousel — before customer generates artwork */}
-              {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+              {isStorefront && !generatedDesign?.imageUrl && browsePlaceholderSlides.length > 1 && (
                 <>
                   <button
                     type="button"
                     aria-label="Previous placeholder"
                     onClick={() =>
                       setCatalogPreviewIndex((i) =>
-                        (i - 1 + catalogPreviewImages.length) % catalogPreviewImages.length,
+                        (i - 1 + browsePlaceholderSlides.length) % browsePlaceholderSlides.length,
                       )
                     }
                     className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
@@ -11852,7 +11906,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     type="button"
                     aria-label="Next placeholder"
                     onClick={() =>
-                      setCatalogPreviewIndex((i) => (i + 1) % catalogPreviewImages.length)
+                      setCatalogPreviewIndex((i) => (i + 1) % browsePlaceholderSlides.length)
                     }
                     className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
                   >
@@ -11937,14 +11991,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             </div>
 
             {/* Catalog placeholder indicators — before artwork exists */}
-            {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+            {isStorefront && !generatedDesign?.imageUrl && browsePlaceholderSlides.length > 1 && (
                 <div className="flex justify-center gap-3 mt-1">
-                {catalogPreviewImages.map((_, idx) => (
+                {browsePlaceholderSlides.map((slide, idx) => (
                     <button
-                      key={idx}
+                      key={`${slide.kind}-${idx}`}
                     type="button"
                     onClick={() => setCatalogPreviewIndex(idx)}
-                    aria-label={`Placeholder image ${idx + 1}`}
+                    aria-label={slide.label}
                     className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
                       catalogPreviewIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
                     }`}
@@ -11961,7 +12015,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         catalogPreviewIndex === idx ? "text-foreground" : "text-muted-foreground"
                       }`}
                     >
-                      {idx === 0 ? "Primary" : `View ${idx + 1}`}
+                      {slide.label}
                     </span>
                   </button>
                 ))}

@@ -67,13 +67,18 @@ On Shopify customizer pages the iframe auto-resizes to full content height. Brow
 
 Do not remove this without re-testing (a) hard refresh on a long customizer page (mobile + desktop) and (b) fresh landing on Ritual — header/menu must stay visible.
 
-### Catalog placeholder carousel (Primary / View 2 / View 3)
+### Catalog placeholder carousel (colour blank + Primary / View 2)
 
-Before the customer generates artwork, `catalogPreviewImages` drives the blank mockup carousel.
+Before the customer generates artwork, `browsePlaceholderSlides` drives the blank mockup carousel:
 
-- Build from merchant **`primary`** / **`gallery`** / **`custom`** only — not `baseMockupImages.available` (admin picker pool).
-- **Dedupe by URL pathname** (ignore query strings) — do not show View 2 / View 3 when they are the same image as Primary.
-- Hide carousel UI unless `catalogPreviewImages.length > 1` after dedupe.
+1. **Optional leading colour slide** — flat harvest blank or Shopify variant image for the selected colour/size, labelled with the colour name (e.g. `Black/ Red`). Only inserted when distinct from merchant Primary.
+2. **Merchant Primary** — curated marketing hero from Customizer Pages / Products Import (`baseMockupImages.primary`). Label stays **Primary**; pixels are never swapped for a colour blank.
+3. **Gallery** — merchant `gallery` picks as View 2 / View 3 / …
+
+- Merchant list comes from **`primary`** / **`gallery`** only — not `baseMockupImages.available` (admin picker pool).
+- **Dedupe by URL pathname** (ignore query strings).
+- Hide carousel UI unless `browsePlaceholderSlides.length > 1` after dedupe.
+- Colour/size change resets to slide 0 (colour blank when present).
 - `ProductMockup` blank `<img>` uses `key={blankImageUrl}` so index changes always repaint.
 
 ---
