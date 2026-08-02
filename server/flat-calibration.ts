@@ -2223,15 +2223,9 @@ export async function harvestBlanksFromShopifyProduct(args: {
     });
     if (altHit?.src) return String(altHit.src);
 
-    // Last resort: if this colour is the product's first/default variant, use the featured image.
-    // (JAMS baseball customizer defaults to Black/Red — product.image is that blank.)
-    if (
-      colorVariants.some((v) => String(v.id) === String(product.variants?.[0]?.id)) &&
-      product.image?.src
-    ) {
-      return String(product.image.src);
-    }
-
+    // Deliberately NO featured-image fallback: Shopify hero images are usually a
+    // single colourway (bp79 shipped a white/black hero as the "black_red" blank).
+    // A missing blank is recoverable; a wrong blank ships to storefronts.
     return null;
   };
 
@@ -2443,6 +2437,200 @@ async function harvestBlanksFromExistingShopProducts(args: {
 }
 
 /**
+ * Decorator-blocked providers (6002) refuse shop product *creation*, but Printify's
+ * images-api still renders any variant of an EXISTING shop product on the fly —
+ * and product *updates* are not blocked. Temporarily swap an existing product's
+ * print areas to a transparent PNG, capture plain-garment renders for the missing
+ * colours, then restore the original print areas. This is the only automated true
+ * blank source when a colourway exists solely at a blocked provider (e.g. bp79
+ * Black/Red at JAMS) — Shopify listing images are hero shots, not per-colour blanks.
+ */
+async function harvestBlanksByRenderingExistingProduct(args: {
+  token: string;
+  shopId: string;
+  blueprintId: number;
+  providerId: number;
+  colors: ColorEntry[];
+  storageKey: string;
+  calibratorMode: boolean;
+  views: ViewName[];
+}): Promise<Record<string, Partial<Record<ViewName, string>>>> {
+  const { token, shopId, blueprintId, providerId, colors, storageKey, calibratorMode, views } = args;
+  const out: Record<string, Partial<Record<ViewName, string>>> = {};
+  if (colors.length === 0) return out;
+
+  const candidates: any[] = [];
+  for (let page = 1; page <= 8; page++) {
+    let listData: any;
+    try {
+      listData = await pf<any>(`/shops/${shopId}/products.json?limit=50&page=${page}`, token);
+    } catch (err) {
+      console.warn(
+        `[flat-calibration] render-existing list failed shop=${shopId} page=${page}:`,
+        (err as Error).message,
+      );
+      break;
+    }
+    const products: any[] = Array.isArray(listData?.data) ? listData.data : [];
+    if (products.length === 0) break;
+    for (const p of products) {
+      if (Number(p.blueprint_id) === blueprintId && Number(p.print_provider_id) === providerId) {
+        candidates.push(p);
+      }
+    }
+    if (!listData?.next_page_url && (!listData?.last_page || page >= listData.last_page)) break;
+  }
+  if (candidates.length === 0) return out;
+
+  // Prefer our own disposable artifacts over real listings (swap is restore-safe
+  // either way, but a test product regenerating mockups is a non-event).
+  const looksDisposable = (p: any) =>
+    /__appai_calibration|appai\s*test|flat-test-order/i.test(String(p.title || ""));
+  candidates.sort((a, b) => Number(looksDisposable(b)) - Number(looksDisposable(a)));
+
+  for (const summary of candidates.slice(0, 3)) {
+    const stillNeeded = colors.filter((c) => !(out[c.id]?.front || out[c.id]?.back));
+    if (stillNeeded.length === 0) break;
+
+    let product: any;
+    try {
+      product = await pf<any>(`/shops/${shopId}/products/${summary.id}.json`, token);
+    } catch {
+      continue;
+    }
+
+    // Camera ids per view from the product's own mockup URLs:
+    // /mockup/{productId}/{variantId}/{cameraId}/...?camera_label={view}
+    const cameraByView = new Map<ViewName, string>();
+    for (const img of product.images || []) {
+      const src = String(img?.src || "");
+      const m = src.match(/\/mockup\/[^/]+\/\d+\/(\d+)\//);
+      if (!m) continue;
+      const label = extractCameraLabel(src);
+      for (const view of views) {
+        if (!cameraByView.has(view) && (label === view || label.includes(view))) {
+          cameraByView.set(view, m[1]);
+        }
+      }
+    }
+    if (cameraByView.size === 0) continue;
+
+    const productVariantIds = new Set<number>(
+      (product.variants || []).map((v: any) => Number(v.id)),
+    );
+    const optionMeta = new Map<number, string>();
+    for (const opt of product.options || []) {
+      for (const v of opt.values || []) {
+        optionMeta.set(Number(v.id), String(v.title || v.id));
+      }
+    }
+    const variantIdForColor = (color: ColorEntry): number | null => {
+      if (color.variantId && productVariantIds.has(Number(color.variantId))) {
+        return Number(color.variantId);
+      }
+      for (const variant of product.variants || []) {
+        for (const optId of variantOptionValues(variant)) {
+          const title = optionMeta.get(Number(optId));
+          if (title && colorEntryMatchesOption(color, title, optId)) return Number(variant.id);
+        }
+      }
+      return null;
+    };
+    const renderable = stillNeeded
+      .map((color) => ({ color, variantId: variantIdForColor(color) }))
+      .filter((x): x is { color: ColorEntry; variantId: number } => x.variantId != null);
+    if (renderable.length === 0) continue;
+
+    const originalPrintAreas = (product.print_areas || []).map((pa: any) => ({
+      variant_ids: pa.variant_ids,
+      placeholders: (pa.placeholders || []).map((pl: any) => ({
+        position: pl.position,
+        images: (pl.images || []).map((im: any) => ({
+          id: im.id,
+          x: im.x,
+          y: im.y,
+          scale: im.scale,
+          angle: im.angle,
+        })),
+      })),
+    }));
+
+    let swapped = false;
+    try {
+      const transparentId = await uploadImage(token, "blank.png", await transparentPng());
+      await pf<any>(`/shops/${shopId}/products/${product.id}.json`, token, {
+        method: "PUT",
+        body: JSON.stringify({
+          print_areas: [
+            {
+              variant_ids: [...productVariantIds],
+              placeholders: [
+                {
+                  position: originalPrintAreas[0]?.placeholders?.[0]?.position || "front",
+                  images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+                },
+              ],
+            },
+          ],
+        }),
+      });
+      swapped = true;
+      // Give the mockup generator a beat before requesting fresh renders.
+      await new Promise((r) => setTimeout(r, 2500));
+
+      for (const { color, variantId } of renderable) {
+        const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+        const perView: Partial<Record<ViewName, string>> = {};
+        for (const view of views) {
+          const camera = cameraByView.get(view);
+          if (!camera) continue;
+          // Unique filename busts images-api's render cache (pre-swap artwork).
+          const renderUrl = `https://images-api.printify.com/mockup/${product.id}/${variantId}/${camera}/appai-blank-${Date.now()}.jpg`;
+          try {
+            const buf = await downloadBuffer(renderUrl);
+            const blankPath = calibratorMode
+              ? calibratorLayerPaths(storageKey, safe, view).blank
+              : `${storageKey}/blank-${safe}-${view}.jpg`;
+            perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
+          } catch (err) {
+            console.warn(
+              `[flat-calibration] render-existing blank failed ${color.id}/${view}:`,
+              (err as Error).message,
+            );
+          }
+        }
+        if (perView.front || perView.back) {
+          out[color.id] = perView;
+          console.log(
+            `[flat-calibration] blank ${color.id} rendered from existing product ${product.id} (provider ${providerId})`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[flat-calibration] render-existing swap failed for product ${summary.id}:`,
+        (err as Error).message,
+      );
+    } finally {
+      if (swapped && originalPrintAreas.length > 0) {
+        try {
+          await pf<any>(`/shops/${shopId}/products/${product.id}.json`, token, {
+            method: "PUT",
+            body: JSON.stringify({ print_areas: originalPrintAreas }),
+          });
+        } catch (err) {
+          console.warn(
+            `[flat-calibration] failed to restore print areas on ${product.id}:`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Blank-photo-only harvest for multi-provider canonical fill. Skips probe/reg/shading
  * so a decorator-unavailable provider can still contribute missing colorways.
  */
@@ -2572,6 +2760,27 @@ async function harvestBlanksOnlyPass(args: {
       const b = baseManifest.blanks[c.id];
       return !(b?.front || b?.back);
     });
+    // True-blank renders first: swap an existing product's print to transparent and
+    // render via images-api. Stored product images (next pass) can carry artwork.
+    if (stillNeeded.length > 0) {
+      const fromRender = await harvestBlanksByRenderingExistingProduct({
+        token,
+        shopId,
+        blueprintId,
+        providerId,
+        colors: stillNeeded,
+        storageKey,
+        calibratorMode,
+        views: manifestViews,
+      });
+      for (const [id, viewsForColor] of Object.entries(fromRender)) {
+        baseManifest.blanks[id] = viewsForColor;
+      }
+      stillNeeded = colors.filter((c) => {
+        const b = baseManifest.blanks[c.id];
+        return !(b?.front || b?.back);
+      });
+    }
     if (stillNeeded.length > 0) {
       const fromExisting = await harvestBlanksFromExistingShopProducts({
         token,

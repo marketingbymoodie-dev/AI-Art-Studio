@@ -8,6 +8,7 @@ import { canonicalStorageKey } from "@shared/canonicalProducts";
 import {
   getCanonicalPublishState,
   loadCanonicalManifest,
+  loadCanonicalPublishedMeta,
   publishCanonicalManifest,
 } from "../canonicalFlatCalibration";
 import {
@@ -39,6 +40,10 @@ import {
 } from "../flat-calibration";
 import { isPlatformAdminRequest, requirePlatformAdmin } from "../platformAdmin";
 import {
+  parseFlatCalibrationManifest,
+  syncProductTypeFromCanonicalCalibration,
+} from "../syncCanonicalCalibration";
+import {
   deleteFlatCalibrationAssetsByPrefix,
   downloadFlatCalibrationFile,
   publicFlatCalibrationUrl,
@@ -63,6 +68,39 @@ type StorageLike = {
   getShopifyInstallationsByMerchant(merchantId: string): Promise<any[]>;
   getAllShopifyInstallations(): Promise<any[]>;
 };
+
+/**
+ * Push canonical calibration onto every merchant product type of this blueprint
+ * whose calibration is canonical-derived or missing. Merchant-specific harvests
+ * (no canonicalVersion stamp) are left untouched.
+ */
+async function propagateCanonicalToMerchants(
+  storage: StorageLike,
+  blueprintId: number,
+): Promise<{ propagated: number[]; skipped: number[] }> {
+  const propagated: number[] = [];
+  const skipped: number[] = [];
+  const allTypes = await storage.getProductTypes();
+  for (const pt of allTypes) {
+    if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
+    const current = parseFlatCalibrationManifest(pt.flatCalibration);
+    if (current && current.canonicalVersion == null) {
+      skipped.push(pt.id);
+      continue;
+    }
+    const synced = await syncProductTypeFromCanonicalCalibration(pt, {
+      allowUnpublishedHarvest: false,
+      forceOverwrite: true,
+    });
+    if (synced.synced) propagated.push(pt.id);
+  }
+  if (propagated.length > 0) {
+    console.log(
+      `[platform-canonical] bp ${blueprintId}: canonical synced onto product type(s) ${propagated.join(", ")}`,
+    );
+  }
+  return { propagated, skipped };
+}
 
 function parseShopifyVariantIds(raw: unknown): Record<string, number | string> | undefined {
   if (!raw) return undefined;
@@ -1346,6 +1384,38 @@ export function registerPlatformCalibrationRoutes(
                   .join(", ")}]` +
                 `${harvestWarnings.length ? ` warnings=${harvestWarnings.length}` : ""}`,
             );
+
+            // Already-published blueprints: auto-republish + push to merchant
+            // products so a re-harvest reaches storefronts with zero extra clicks.
+            try {
+              const publishedMeta = await loadCanonicalPublishedMeta(blueprintId);
+              if (publishedMeta && (accumulated.tier === "flat" || accumulated.tier === "mesh")) {
+                await publishCanonicalManifest({
+                  blueprintId,
+                  version,
+                  manifest: {
+                    ...accumulated,
+                    harvestStatus: "ready",
+                    harvestError: null,
+                    harvestProviderId: providersUsed[0] ?? accumulated.providerId,
+                    harvestProviderIds: providersUsed,
+                    harvestWarnings,
+                  } as FlatCalibrationManifest,
+                  tier: accumulated.tier,
+                  label: entry.label,
+                });
+                const r = await propagateCanonicalToMerchants(storage, blueprintId);
+                console.log(
+                  `[platform-canonical] bp ${blueprintId}: auto-republished after harvest` +
+                    ` (synced ${r.propagated.length} product type(s))`,
+                );
+              }
+            } catch (autoErr) {
+              console.warn(
+                `[platform-canonical] bp ${blueprintId}: auto-republish after harvest failed:`,
+                (autoErr as Error).message,
+              );
+            }
             return;
           }
 
@@ -1466,7 +1536,22 @@ export function registerPlatformCalibrationRoutes(
         label: entry.label,
       });
 
-      res.json({ ok: true, published: meta });
+      // Auto-propagate: a publish reaches storefronts immediately — no manual
+      // "Pull canonical" per product.
+      let propagatedProductTypeIds: number[] = [];
+      let skippedProductTypeIds: number[] = [];
+      try {
+        const r = await propagateCanonicalToMerchants(storage, blueprintId);
+        propagatedProductTypeIds = r.propagated;
+        skippedProductTypeIds = r.skipped;
+      } catch (propErr) {
+        console.warn(
+          `[platform-canonical] publish bp ${blueprintId}: merchant propagation failed:`,
+          (propErr as Error).message,
+        );
+      }
+
+      res.json({ ok: true, published: meta, propagatedProductTypeIds, skippedProductTypeIds });
     } catch (e: any) {
       console.error("[platform-canonical] publish failed:", e);
       res.status(500).json({ error: e?.message || "Publish failed" });

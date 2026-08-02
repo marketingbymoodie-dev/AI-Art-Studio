@@ -153,10 +153,18 @@ export default function PlatformCatalogPage() {
       const res = await apiRequest("POST", `/api/platform/canonical/${blueprintId}/publish`, { version: 1 });
       return res.json();
     },
-    onSuccess: () => {
-      toast({ title: "Published", description: "Merchants can now import this product instantly." });
+    onSuccess: (body: { propagatedProductTypeIds?: number[] }) => {
+      const n = body?.propagatedProductTypeIds?.length ?? 0;
+      toast({
+        title: "Published",
+        description:
+          n > 0
+            ? `Synced to ${n} imported product${n === 1 ? "" : "s"} automatically — storefronts update on next load.`
+            : "Merchants can now import this product instantly.",
+      });
       queryClient.invalidateQueries({ queryKey: ["/api/platform/canonical/products"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/catalog/allowed-blueprints"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
     },
     onError: (e: Error) => toast({ title: "Publish failed", description: e.message, variant: "destructive" }),
   });
