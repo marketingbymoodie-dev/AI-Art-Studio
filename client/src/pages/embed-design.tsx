@@ -463,6 +463,20 @@ function ensureContrastingForeground(
  * - data: URL → pass through (caller MUST use ensureHostedUrl before sending to backend APIs)
  * - Relative path (/objects/...) → prepend API_BASE
  */
+/**
+ * Preview chrome AR (CSS `w/h`). Never use extreme print-canvas ratios as the
+ * viewing window — e.g. body pillow 20×54 → ~0.37 makes a thin tall strip.
+ * Print placement still uses the real size AR; this only sizes the mockup box.
+ */
+function clampPreviewChromeAspectCss(arCss: string): string {
+  const parts = arCss.replace(":", "/").split("/").map(Number);
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return "3/4";
+  const r = parts[0] / parts[1];
+  if (r < 0.55) return "3/4"; // taller than ~9:16 → standard portrait chrome
+  if (r > 1.85) return "16/9"; // wider than ~16:9 → wide chrome, not a ribbon
+  return `${parts[0]}/${parts[1]}`;
+}
+
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
   if (isDataUrl(url)) return url;
@@ -6973,25 +6987,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return applied;
   }, []);
 
-  /** ATC "Apply Pattern to Continue" — must actually apply (was disabled/no-op before). */
+  /** ATC "Apply Pattern to Continue" — flush placement; stay in the editor. */
   const handleApplyPatternToContinue = useCallback(() => {
     if (!generatedDesign?.imageUrl) return;
-    // Already in the placer: flush panels (sets aopPatternUrl) then return to preview.
+    // Already in the placer: flush panels (sets aopPatternUrl) but do NOT leave
+    // the editor — exiting made Printers Mockup unreachable and felt like a
+    // "saved design" hand-off.
     if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
       toast({
         title: "Saving placement…",
-        description: "Applying your layout so you can add to cart.",
+        description: "You can use Printers Mockup or Add to Cart when ready.",
       });
-      void flushHoodieAopPlacer({ force: true })
-        .then(() => setShowPatternStep(false))
-        .catch((err: any) => {
-          console.error("[AOP] Apply Pattern flush failed:", err);
-          toast({
-            title: "Could not apply pattern",
-            description: err?.message || "Try Back on the placer, then Add to Cart.",
-            variant: "destructive",
-          });
+      void flushHoodieAopPlacer({ force: true }).catch((err: any) => {
+        console.error("[AOP] Apply Pattern flush failed:", err);
+        toast({
+          title: "Could not apply pattern",
+          description: err?.message || "Try again, or use Back on the placer.",
+          variant: "destructive",
         });
+      });
       return;
     }
     // Placer not open — open it so the customer can place, then apply.
@@ -6999,7 +7013,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setShowPatternStep(true);
     toast({
       title: "Place your artwork",
-      description: "Adjust placement, then click Apply Pattern to Continue again (or Back).",
+      description: "Adjust placement, then click Apply Pattern to Continue again.",
     });
   }, [
     generatedDesign?.imageUrl,
@@ -9690,12 +9704,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const hasAopPersonMockup = printifyMockupImages.some((img) =>
     isPersonMockupLabel(img.label),
   );
+  // Active as soon as artwork + size exist. Do not wait for aopPatternUrl —
+  // deferred mesh apply left that null, so Printers Mockup stayed disabled
+  // until Apply (and Apply used to exit the editor). The button force-applies first.
   const aopPrintersMockupActive = !!(
     canRequestAopPrintersMockup &&
     !lifestyleShotLoading &&
-    !mockupLoading &&
-    (!!aopPatternUrl ||
-      printifyMockupImages.some((img) => img.label === "front"))
+    !mockupLoading
   );
 
   const requestAopPrintersMockup = useCallback(
@@ -12329,7 +12344,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               : "Printers Mockup",
                             loadingLabel: "Generating printers mockup…",
                             idleHint:
-                              "Finish placement (or generate artwork) to enable Printers Mockup",
+                              "Wait for the current mockup to finish, then try again",
                             error: lifestyleShotError,
                           }
                         : null
@@ -12920,6 +12935,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // The DB aspectRatio for mugs is the wrap-around print area (wide),
                   // but the container should be portrait so the full tumbler is visible.
                   if (productTypeConfig?.designerType === "mug") return "3/4";
+                  // Mesh / AOP viewing chrome: never follow extreme print-panel ARs
+                  // (body pillow 20×54, tall leg panels) — those make a thin strip.
+                  // Match pre-gen browse + placer: square window, letterbox the product.
+                  if (useAopCustomizer || productTypeConfig?.panelMappingTemplate) {
+                    return "1/1";
+                  }
                   // Prefer resolved size AR (id/name inch tokens) so landscape sizes
                   // like 24×18 / 88×68 update the blank box even if width/height are stale.
                   if (selectedSizeConfig) {
@@ -12927,7 +12948,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedSizeConfig,
                       productTypeConfig?.aspectRatio,
                     );
-                    if (ar) return ar.replace(":", "/");
+                    if (ar) return clampPreviewChromeAspectCss(ar.replace(":", "/"));
                   }
                   // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
                   // but each printable face is 1:1 — keep the placeholder square before size pick.
@@ -12946,10 +12967,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       firstSize,
                       productTypeConfig?.aspectRatio,
                     );
-                    if (ar) return ar.replace(":", "/");
+                    if (ar) return clampPreviewChromeAspectCss(ar.replace(":", "/"));
                   }
                   const ar = productTypeConfig?.aspectRatio || "3:4";
-                  return ar.replace(":", "/");
+                  return clampPreviewChromeAspectCss(ar.replace(":", "/"));
                 })(),
                 // Cap height without forcing full width — otherwise maxHeight + w-full
                 // shortens the box and object-cover chops the top (frame hangers).
