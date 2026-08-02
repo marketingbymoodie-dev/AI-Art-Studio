@@ -1,9 +1,12 @@
 /**
  * Pure aggregation for the daily Printify catalogue OOS scan
- * (server/oos-catalogue-report.ts). Given a raw Printify catalog
- * `variants.json?show-out-of-stock=1` response and the set of Printify
- * variant IDs a product type actually sells (its selected size/color
- * combinations), compute an at-a-glance stock status.
+ * (server/oos-catalogue-report.ts).
+ *
+ * Printify's catalog variants endpoint documents stock via list membership:
+ * - default / show-out-of-stock=0 → in-stock variants only
+ * - show-out-of-stock=1 → all variants (incl. OOS)
+ * Catalog rows often omit `is_available` entirely (that field is a shop-product
+ * property). Never treat missing `is_available` as in-stock.
  */
 
 export type PrintifyCatalogVariantAvailability = {
@@ -17,7 +20,7 @@ export type VariantAvailabilitySummary = {
   totalSelected: number;
   availableSelected: number;
   unavailableSelected: number;
-  /** Selected Printify variant ids the catalog response didn't return at all (treated as OOS — safer default than assuming available). */
+  /** Selected Printify variant ids not present in the all-variants catalog list. */
   missingFromCatalog: number;
   status: VariantAvailabilityStatus;
   /** Human-readable labels for a sample of unavailable variants (capped), for the digest email. */
@@ -27,31 +30,68 @@ export type VariantAvailabilitySummary = {
 export const DEFAULT_CRITICAL_OOS_RATIO = 0.9;
 const MAX_SAMPLE_LABELS = 5;
 
+function toIdSet(ids: Iterable<number | string> | undefined): Set<number> {
+  const out = new Set<number>();
+  if (!ids) return out;
+  for (const raw of ids) {
+    const id = Number(raw);
+    if (Number.isFinite(id) && id > 0) out.add(id);
+  }
+  return out;
+}
+
 /**
  * Summarize stock for the variants a product type actually sells.
- * `status` is "fully_oos" when nothing is available, "critical" when the
- * out-of-stock ratio meets `criticalRatio` (default 90%), otherwise "ok".
- * "unknown" means there were no selected variants to check.
+ *
+ * Prefer `availablePrintifyVariantIds` (IDs returned by Printify's in-stock-only
+ * catalog list). When provided, membership in that set is the availability
+ * signal. `catalogVariants` (typically from show-out-of-stock=1) is used only
+ * to distinguish "listed but OOS" vs "missing from this provider's catalog".
+ *
+ * Without `availablePrintifyVariantIds`, fall back to explicit
+ * `is_available === true` only — never treat omitted `is_available` as in stock.
  */
 export function summarizeVariantAvailability(args: {
   catalogVariants: PrintifyCatalogVariantAvailability[];
   selectedPrintifyVariantIds: Array<number | string>;
+  /** IDs from Printify's in-stock-only catalog response (preferred signal). */
+  availablePrintifyVariantIds?: Array<number | string>;
   labelsByPrintifyVariantId?: Record<string, string>;
   criticalRatio?: number;
 }): VariantAvailabilitySummary {
   const {
     catalogVariants,
     selectedPrintifyVariantIds,
+    availablePrintifyVariantIds,
     labelsByPrintifyVariantId = {},
     criticalRatio = DEFAULT_CRITICAL_OOS_RATIO,
   } = args;
 
+  const inStockIds = availablePrintifyVariantIds
+    ? toIdSet(availablePrintifyVariantIds)
+    : null;
+
+  const listedIds = new Set<number>();
   const availabilityById = new Map<number, boolean>();
   for (const v of catalogVariants) {
     if (v?.id == null) continue;
     const id = Number(v.id);
     if (!Number.isFinite(id)) continue;
-    availabilityById.set(id, v.is_available !== false);
+    listedIds.add(id);
+    if (inStockIds) {
+      availabilityById.set(id, inStockIds.has(id));
+    } else {
+      // Strict: only explicit true counts as available when no in-stock list was provided.
+      availabilityById.set(id, v.is_available === true);
+    }
+  }
+
+  // In-stock IDs that somehow weren't in the all-variants list still count as available.
+  if (inStockIds) {
+    for (const id of inStockIds) {
+      if (!availabilityById.has(id)) availabilityById.set(id, true);
+      listedIds.add(id);
+    }
   }
 
   const selectedIds = Array.from(
@@ -79,6 +119,24 @@ export function summarizeVariantAvailability(args: {
   const unavailableLabels: string[] = [];
 
   for (const id of selectedIds) {
+    if (inStockIds) {
+      if (inStockIds.has(id)) {
+        availableSelected += 1;
+        continue;
+      }
+      if (!listedIds.has(id)) {
+        missingFromCatalog += 1;
+        if (unavailableLabels.length < MAX_SAMPLE_LABELS) {
+          unavailableLabels.push(labelsByPrintifyVariantId[String(id)] ?? `variant ${id} (removed)`);
+        }
+        continue;
+      }
+      if (unavailableLabels.length < MAX_SAMPLE_LABELS) {
+        unavailableLabels.push(labelsByPrintifyVariantId[String(id)] ?? `variant ${id}`);
+      }
+      continue;
+    }
+
     const isAvailable = availabilityById.get(id);
     if (isAvailable === undefined) {
       missingFromCatalog += 1;
@@ -111,4 +169,15 @@ export function summarizeVariantAvailability(args: {
     status,
     unavailableLabels,
   };
+}
+
+/** Extract numeric variant ids from a Printify catalog variants.json payload. */
+export function extractCatalogVariantIds(variants: PrintifyCatalogVariantAvailability[]): number[] {
+  const ids: number[] = [];
+  for (const v of variants) {
+    if (v?.id == null) continue;
+    const id = Number(v.id);
+    if (Number.isFinite(id) && id > 0) ids.push(id);
+  }
+  return ids;
 }

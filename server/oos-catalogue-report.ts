@@ -13,6 +13,7 @@ import {
   buildActivePrintifyVariantLabels,
 } from "@shared/printifyVariantLabels";
 import {
+  extractCatalogVariantIds,
   summarizeVariantAvailability,
   type VariantAvailabilityStatus,
 } from "@shared/printifyAvailability";
@@ -101,10 +102,12 @@ async function fetchCatalogVariants(
   blueprintId: number,
   providerId: number,
   apiToken: string,
+  opts: { showOutOfStock: boolean },
 ): Promise<{ ok: true; variants: unknown[] } | { ok: false; error: string }> {
   try {
+    const qs = opts.showOutOfStock ? "?show-out-of-stock=1" : "";
     const resp = await fetch(
-      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
+      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json${qs}`,
       { headers: { Authorization: `Bearer ${apiToken}` } },
     );
     if (!resp.ok) {
@@ -158,20 +161,30 @@ export async function scanProductTypeStock(
       .map((id) => Number(id))
       .filter((id) => Number.isFinite(id) && id > 0);
 
-    const catalog = await fetchCatalogVariants(pt.printifyBlueprintId, providerId, apiToken);
-    if (!catalog.ok) {
+    // Dual-fetch: in-stock-only list is Printify's documented stock signal;
+    // show-out-of-stock=1 lists everything (often without is_available).
+    const [inStockCatalog, allCatalog] = await Promise.all([
+      fetchCatalogVariants(pt.printifyBlueprintId, providerId, apiToken, { showOutOfStock: false }),
+      fetchCatalogVariants(pt.printifyBlueprintId, providerId, apiToken, { showOutOfStock: true }),
+    ]);
+    if (!inStockCatalog.ok && !allCatalog.ok) {
       result = {
         ...base,
         status: "error",
         availableSelected: 0,
         totalSelected: selectedIds.length,
         unavailableLabels: [],
-        error: catalog.error,
+        error: inStockCatalog.error || allCatalog.error,
       };
     } else {
+      const inStockVariants = inStockCatalog.ok ? (inStockCatalog.variants as any[]) : [];
+      const allVariants = allCatalog.ok
+        ? (allCatalog.variants as any[])
+        : inStockVariants;
       const summary = summarizeVariantAvailability({
-        catalogVariants: catalog.variants as any[],
+        catalogVariants: allVariants,
         selectedPrintifyVariantIds: selectedIds,
+        availablePrintifyVariantIds: extractCatalogVariantIds(inStockVariants),
         labelsByPrintifyVariantId: labels,
         criticalRatio: criticalOosRatio(),
       });

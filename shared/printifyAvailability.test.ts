@@ -51,8 +51,6 @@ describe("summarizeVariantAvailability", () => {
   });
 
   it("treats selected variants missing from the catalog response as OOS (safer default)", () => {
-    // 999 never appears in the catalog response (e.g. delisted variant) — counts toward OOS,
-    // but at 1/2 = 50% that's still below the critical ratio.
     const summary = summarizeVariantAvailability({
       catalogVariants: [{ id: 1, is_available: true }],
       selectedPrintifyVariantIds: [1, 999],
@@ -75,7 +73,7 @@ describe("summarizeVariantAvailability", () => {
   it("only intersects the variants a product type actually sells, ignoring unrelated catalog colors", () => {
     const catalogVariants = [
       { id: 1, is_available: true },
-      { id: 2, is_available: false }, // not selected by this product type — must not affect status
+      { id: 2, is_available: false },
     ];
     const summary = summarizeVariantAvailability({
       catalogVariants,
@@ -92,5 +90,41 @@ describe("summarizeVariantAvailability", () => {
       labelsByPrintifyVariantId: { "1": "S / Heather Grey" },
     });
     expect(summary.unavailableLabels).toEqual(["S / Heather Grey"]);
+  });
+
+  it("does not treat omitted is_available as in-stock (catalog docs omit the field)", () => {
+    // show-out-of-stock=1 returns all variants with no is_available — must NOT count as available.
+    const allVariants = Array.from({ length: 10 }, (_, i) => ({ id: i + 1 }));
+    const summary = summarizeVariantAvailability({
+      catalogVariants: allVariants,
+      selectedPrintifyVariantIds: allVariants.map((v) => v.id),
+    });
+    expect(summary.availableSelected).toBe(0);
+    expect(summary.status).toBe("fully_oos");
+  });
+
+  it("uses availablePrintifyVariantIds membership as the primary stock signal", () => {
+    // All 10 listed with show-out-of-stock=1; in-stock-only list is empty → fully OOS.
+    const allVariants = Array.from({ length: 10 }, (_, i) => ({ id: i + 1 }));
+    const summary = summarizeVariantAvailability({
+      catalogVariants: allVariants,
+      selectedPrintifyVariantIds: allVariants.map((v) => v.id),
+      availablePrintifyVariantIds: [],
+    });
+    expect(summary.status).toBe("fully_oos");
+    expect(summary.availableSelected).toBe(0);
+    expect(summary.unavailableSelected).toBe(10);
+  });
+
+  it("counts only IDs present in the in-stock list as available", () => {
+    const allVariants = Array.from({ length: 10 }, (_, i) => ({ id: i + 1 }));
+    const summary = summarizeVariantAvailability({
+      catalogVariants: allVariants,
+      selectedPrintifyVariantIds: allVariants.map((v) => v.id),
+      availablePrintifyVariantIds: [1], // 90% OOS → critical
+    });
+    expect(summary.availableSelected).toBe(1);
+    expect(summary.unavailableSelected).toBe(9);
+    expect(summary.status).toBe("critical");
   });
 });

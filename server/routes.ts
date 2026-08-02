@@ -14316,8 +14316,18 @@ ${orientationExtra}
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
         variantMap: JSON.stringify(variantMap),
-        selectedSizeIds: JSON.stringify(selectedSizeIds || sizes.map((s: { id: string }) => s.id)),
-        selectedColorIds: JSON.stringify(selectedColorIds || frameColors.map((c: { id: string }) => c.id)),
+        // Empty [] from a failed/partial variants wizard must mean "select all", not
+        // "intentionally none" (that would hide storefront color/size dropdowns).
+        selectedSizeIds: JSON.stringify(
+          Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
+            ? selectedSizeIds
+            : sizes.map((s: { id: string }) => s.id),
+        ),
+        selectedColorIds: JSON.stringify(
+          Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+            ? selectedColorIds
+            : frameColors.map((c: { id: string }) => c.id),
+        ),
         aspectRatio,
         printShape,
         // Store only physical dimensions (inches) for unit consistency
@@ -15055,9 +15065,6 @@ ${orientationExtra}
       const existingColorIds: string[] = typeof productType.selectedColorIds === 'string'
         ? JSON.parse(productType.selectedColorIds || '[]')
         : productType.selectedColorIds || [];
-      const previousFrameColors: Array<{ id: string }> = typeof productType.frameColors === 'string'
-        ? JSON.parse(productType.frameColors || '[]')
-        : productType.frameColors || [];
 
       // Keep only IDs that still exist in the refreshed data (remove stale ones).
       const newSizeIdSet = new Set(sizes.map((s: { id: string }) => s.id));
@@ -15065,8 +15072,9 @@ ${orientationExtra}
       const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
       const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
 
-      // Preserve merchant selections after filtering stale ids. When import failed to parse
-      // colours (frameColors was empty + selectedColorIds []), backfill to all discovered colours.
+      // Preserve merchant selections after filtering stale ids. Empty selectedColorIds
+      // with a non-empty frameColors list means a broken import — backfill to all colours
+      // so storefront color dropdowns return after Refresh Variants.
       const finalSizeIds =
         filteredSizeIds.length > 0
           ? filteredSizeIds
@@ -15076,9 +15084,7 @@ ${orientationExtra}
       const finalColorIds =
         filteredColorIds.length > 0
           ? filteredColorIds
-          : existingColorIds.length === 0 &&
-              previousFrameColors.length === 0 &&
-              frameColors.length > 0
+          : existingColorIds.length === 0 && frameColors.length > 0
             ? frameColors.map((c: { id: string }) => c.id)
             : filteredColorIds;
 
@@ -15751,23 +15757,36 @@ ${orientationExtra}
     const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
 
     // Strategy catalog: production costs from catalog variants.json (no shop product needed).
-    // Default catalog omits OOS variants — baseball tees etc. can return an empty list when
-    // the provider is fully out of stock. Always request show-out-of-stock=1 for costs.
+    // Dual-fetch: in-stock-only list = which IDs to prefer for temp-product probes;
+    // show-out-of-stock=1 = full list for cost fields (catalog often omits is_available).
     console.log(`[Printify Costs] Strategy catalog — reading costs from catalog variants for blueprint ${blueprintId}`);
     let catalogAvailableVariantIds: number[] = [];
     try {
-      const catalogResp = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
-        { headers: { Authorization: `Bearer ${apiToken}` } },
-      );
+      const [inStockResp, catalogResp] = await Promise.all([
+        fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        ),
+        fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        ),
+      ]);
+      if (inStockResp.ok) {
+        const inStockData = await inStockResp.json();
+        const inStockList = Array.isArray(inStockData?.variants)
+          ? inStockData.variants
+          : Array.isArray(inStockData)
+            ? inStockData
+            : [];
+        catalogAvailableVariantIds = inStockList
+          .map((v: any) => Number(v?.id))
+          .filter((id: number) => Number.isFinite(id) && id > 0);
+      }
       if (catalogResp.ok) {
         const catalogData = await catalogResp.json();
         const catalogVariants = catalogData.variants || catalogData || [];
         const list = Array.isArray(catalogVariants) ? catalogVariants : [];
-        catalogAvailableVariantIds = list
-          .filter((v: any) => v?.is_available !== false && v?.id != null)
-          .map((v: any) => Number(v.id))
-          .filter((id: number) => Number.isFinite(id) && id > 0);
         const catalogCosts = extractCostsFromCatalogVariants(list);
         if (hasCosts(catalogCosts)) {
           console.log(

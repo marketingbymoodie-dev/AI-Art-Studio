@@ -13,16 +13,19 @@ Code: [`server/oos-catalogue-report.ts`](../server/oos-catalogue-report.ts),
 ## Provider-scoped (not “any supplier”)
 
 Each product type stores one `printifyProviderId` (chosen at import). The scan
-calls Printify’s **provider-specific** catalog URL:
+dual-fetches Printify’s **provider-specific** catalog URLs:
 
 ```
-GET /catalog/blueprints/{bp}/print_providers/{providerId}/variants.json?show-out-of-stock=1
+GET .../variants.json                    → in-stock only (availability signal)
+GET .../variants.json?show-out-of-stock=1 → all variants (labels / missing check)
 ```
 
-JAMS Designs (USA) and T Shirt and Sons (UK) are never merged. If baseball tee
-looks “in stock” in AppAI while JAMS is fully OOS in Printify, check that the
-product row’s fulfill-by provider matches the supplier you care about (shown
-on Customizer Pages as `Printify: …` and in Scan stock now toasts).
+Stock = membership in the in-stock-only list. Catalog rows often omit
+`is_available` (that field is a shop-product property); never treat a missing
+flag as in-stock.
+
+JAMS Designs (USA) and T Shirt and Sons (UK) are never merged. Customizer Pages
+show fulfill-by as `Printify: …`; Scan stock now toasts include the provider name.
 
 Products Import already documents this:
 

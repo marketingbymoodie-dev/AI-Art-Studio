@@ -10433,7 +10433,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   className="text-lg font-bold leading-tight"
                   data-testid="text-product-title"
                 >
-                  {productTypeConfig?.name || displayName || productTitle}
+                  {displayName || productTypeConfig?.name || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
                   const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';

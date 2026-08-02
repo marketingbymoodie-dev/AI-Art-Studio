@@ -131,6 +131,8 @@ export default function AdminProducts() {
   const [selectedSizeIds, setSelectedSizeIds] = useState<Set<string>>(new Set());
   const [selectedColorIds, setSelectedColorIds] = useState<Set<string>>(new Set());
   const [variantDataLoading, setVariantDataLoading] = useState(false);
+  /** False until a successful variants fetch for the current blueprint/provider. */
+  const [variantsReady, setVariantsReady] = useState(false);
   
   // Edit variants for existing product
   const [editVariantsOpen, setEditVariantsOpen] = useState(false);
@@ -256,14 +258,22 @@ export default function AdminProducts() {
     enabled: !!selectedBlueprint,
   });
 
-  // Calculate variant count based on selections
+  // Calculate variant count based on selections (no fake "1" when load failed / empty).
   const variantCount = useMemo(() => {
-    const sizeCount = selectedSizeIds.size || 1;
-    const colorCount = selectedColorIds.size || (availableColors.length === 0 ? 1 : 0);
-    return sizeCount * (colorCount || 1);
-  }, [selectedSizeIds.size, selectedColorIds.size, availableColors.length]);
+    if (!variantsReady) return 0;
+    const sizeCount = selectedSizeIds.size;
+    if (sizeCount === 0) return 0;
+    const colorCount =
+      availableColors.length === 0 ? 1 : selectedColorIds.size;
+    if (availableColors.length > 0 && colorCount === 0) return 0;
+    return sizeCount * colorCount;
+  }, [variantsReady, selectedSizeIds.size, selectedColorIds.size, availableColors.length]);
   
-  const isVariantCountValid = variantCount <= 100 && variantCount > 0;
+  const isVariantCountValid =
+    variantsReady &&
+    availableSizes.length > 0 &&
+    variantCount > 0 &&
+    variantCount <= 100;
 
   const importPrintifyMutation = useMutation({
     mutationFn: async (data: { 
@@ -635,6 +645,11 @@ export default function AdminProducts() {
     if (!selectedBlueprint || !selectedProvider) return;
     
     setVariantDataLoading(true);
+    setVariantsReady(false);
+    setAvailableSizes([]);
+    setAvailableColors([]);
+    setSelectedSizeIds(new Set());
+    setSelectedColorIds(new Set());
     try {
       const url = `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`;
       
@@ -642,15 +657,26 @@ export default function AdminProducts() {
       if (!response.ok) throw new Error("Failed to fetch variants");
       
       const data = await response.json();
-      setAvailableSizes(data.sizes || []);
-      setAvailableColors(data.colors || []);
+      const sizes: VariantOption[] = data.sizes || [];
+      const colors: VariantOption[] = data.colors || [];
+      if (sizes.length === 0) {
+        throw new Error("Printify returned no sizes for this supplier");
+      }
+      setAvailableSizes(sizes);
+      setAvailableColors(colors);
       
       // Select all by default
-      setSelectedSizeIds(new Set(data.sizes?.map((s: VariantOption) => s.id) || []));
-      setSelectedColorIds(new Set(data.colors?.map((c: VariantOption) => c.id) || []));
+      setSelectedSizeIds(new Set(sizes.map((s) => s.id)));
+      setSelectedColorIds(new Set(colors.map((c) => c.id)));
+      setVariantsReady(true);
     } catch (e) {
       console.error("Failed to load variant data:", e);
-      toast({ title: "Failed to load variants", variant: "destructive" });
+      setVariantsReady(false);
+      toast({
+        title: "Failed to load variants",
+        description: "Retry before importing — Import is disabled until sizes/colours load successfully.",
+        variant: "destructive",
+      });
     } finally {
       setVariantDataLoading(false);
     }
@@ -669,12 +695,20 @@ export default function AdminProducts() {
     setVariantSelectionOpen(true);
     setPlaceholderPrimaryUrl("");
     setPlaceholderGalleryUrls(new Set());
+    setVariantsReady(false);
     await loadVariantData();
   };
 
   const handleImportBlueprint = async () => {
     if (!selectedBlueprint || !selectedProvider) return;
-    if (!isVariantCountValid) return;
+    if (!isVariantCountValid) {
+      toast({
+        title: "Variants not ready",
+        description: "Wait for sizes/colours to load, or click Retry if the last load failed.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     // Same blueprint may already exist via another supplier — keep titles distinct
     // (matches server uniqueness on blueprint+provider and the "separate EU/US listing" copy).
@@ -1463,7 +1497,18 @@ export default function AdminProducts() {
                 </span>
               </div>
               
-              {!isVariantCountValid && (
+              {!variantsReady && !variantDataLoading && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 space-y-2">
+                  <p className="text-sm text-destructive">
+                    Sizes/colours didn’t load for this supplier. Import is disabled until they load successfully.
+                  </p>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void loadVariantData()}>
+                    Retry load variants
+                  </Button>
+                </div>
+              )}
+
+              {variantsReady && variantCount > 100 && (
                 <p className="text-sm text-red-600">
                   Shopify allows maximum 100 variants. Deselect some options to continue.
                 </p>
@@ -1631,7 +1676,13 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleImportBlueprint}
-                  disabled={!selectedProvider || !isVariantCountValid || importPrintifyMutation.isPending}
+                  disabled={
+                    !selectedProvider ||
+                    !variantsReady ||
+                    !isVariantCountValid ||
+                    variantDataLoading ||
+                    importPrintifyMutation.isPending
+                  }
                 >
                   {importPrintifyMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
