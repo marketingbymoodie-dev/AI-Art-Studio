@@ -11709,6 +11709,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               className="mx-auto rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
+                  // Pre-artwork browse: standard square window (faux-suede-pillow reference).
+                  // Decor keeps size AR — window shape is the size/orientation cue there.
+                  if (
+                    !generatedDesign?.imageUrl &&
+                    !hasMixedCanvasOrientation &&
+                    !flatDecorMode &&
+                    productTypeConfig?.designerType !== "framed-print" &&
+                    !isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId)
+                  ) {
+                    return "1/1";
+                  }
                   // Mugs/tumblers: the blank product photo is a tall portrait shot.
                   // The DB aspectRatio for mugs is the wrap-around print area (wide),
                   // but the container should be portrait so the full tumbler is visible.
@@ -11882,6 +11893,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           ? "contain"
                           : "cover"
                       }
+                      // Browse-mode square window: never crop tall phone-case / mug blanks.
+                      blankFit={!generatedDesign?.imageUrl ? "contain" : undefined}
                     />
                   );
                 })()}

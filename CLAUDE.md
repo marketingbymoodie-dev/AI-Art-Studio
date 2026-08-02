@@ -81,6 +81,8 @@ Before the customer generates artwork, `browsePlaceholderSlides` drives the blan
 - Colour/size change resets to slide 0 (colour blank when present).
 - `ProductMockup` blank `<img>` uses `key={blankImageUrl}` so index changes always repaint.
 
+**Browse window size (faux-suede-pillow reference):** pre-artwork `container-mockup` is a **1:1 square capped at 520px** for apparel, phone cases, mugs, totes, pillows, etc. Do **not** size the browse window from print-area AR (that made tees/phone cases look smaller than the pillow). Exceptions — keep size/orientation AR: framed decor, mixed-orientation products (tapestry/wall decals), catalog-size-blank blueprints (comforter). After artwork generates, print-area AR applies as before. Blanks use `blankFit="contain"` while browsing so tall photos are not cropped in the square.
+
 ---
 
 ## SVG vectorization drops internal colors/sections — fixed 2026-07

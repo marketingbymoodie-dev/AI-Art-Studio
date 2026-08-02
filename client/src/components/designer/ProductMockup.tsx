@@ -47,6 +47,10 @@ interface ProductMockupProps {
    *  Use "contain" for edge-wrap phone-case previews so the full grey bleed
    *  area is visible instead of being cropped to the container aspect. */
   mockupFit?: "cover" | "contain";
+  /** How blank placeholder images fit (default: designer-type heuristic).
+   *  Use "contain" while browsing in the standard square window so tall
+   *  phone-case / mug blanks are not cropped. */
+  blankFit?: "cover" | "contain";
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -331,6 +335,7 @@ export function ProductMockup({
   isAop = false,
   initialPreviewUrl,
   mockupFit = "cover",
+  blankFit,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -545,12 +550,15 @@ export function ProductMockup({
       // Apparel / mug / framed / shaped pillows: contain so tall blanks
       // (hoodies) are not cropped by object-cover in the square preview.
       // Framed posters still prefer contain so hangers stay visible.
+      // blankFit="contain" forces this for browse-mode square windows (phone cases).
       const useContainBlank =
-        designerType === "apparel" ||
-        designerType === "mug" ||
-        designerType === "framed-print" ||
-        (designerType === "pillow" &&
-          (printShape === "square" || printShape === "circle"));
+        blankFit === "contain" ||
+        (blankFit !== "cover" &&
+          (designerType === "apparel" ||
+            designerType === "mug" ||
+            designerType === "framed-print" ||
+            (designerType === "pillow" &&
+              (printShape === "square" || printShape === "circle"))));
       if (useContainBlank) {
         return (
           <img
