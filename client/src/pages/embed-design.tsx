@@ -59,7 +59,13 @@ import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
-import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import {
+  resolveFlatBlankColorId,
+  resolveFlatPlacementGeometryKey,
+  resolveFlatBlank,
+  normalizeFlatColorKey,
+  withFlatAssetVersion,
+} from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
@@ -2211,7 +2217,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return null;
     }
     const blank = resolveFlatBlank(productTypeConfig.flatCalibration, flatBlankColorId);
-    return blank?.front || null;
+    const front = blank?.front || null;
+    // Match FlatProductPlacer: pin harvest pixels to manifest.generatedAt so a
+    // re-upload at the same storage path can't leave the storefront on a stale
+    // browser/CDN cached blank (bp79 black_red shipped a wrong hero this way).
+    return front
+      ? withFlatAssetVersion(front, productTypeConfig.flatCalibration.generatedAt)
+      : null;
   }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration, flatBlankColorId]);
 
   const flatPlacerGeometryKey = useMemo(() => {
