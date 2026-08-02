@@ -837,6 +837,11 @@
     if (loadMockup) {
       params.set('loadMockup', loadMockup);
     }
+    // Reuse Artwork deep-link (cross-product regenerate / open-as-is).
+    ['autoReuseGenerate', 'reuseJobId', 'reuseArtworkUrl', 'reusePrompt'].forEach(function (key) {
+      var val = urlParams.get(key);
+      if (val) params.set(key, val);
+    });
     // Set by the customizer tray's "Sign in" item when navigating here from a
     // page without a designer iframe — opens the OTP sign-in panel on load.
     if (urlParams.get('openSignIn') === '1') {

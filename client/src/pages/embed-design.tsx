@@ -683,6 +683,86 @@ function designSessionStorageKey(
   return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
 }
 
+/** Cross-product Reuse Artwork handoff (same Shopify origin; survives full page nav). */
+const REUSE_HANDOFF_KEY = "appai_reuse_handoff";
+
+type ReuseHandoff = {
+  jobId?: string | null;
+  artworkUrl?: string;
+  prompt?: string;
+  autoGenerate?: boolean;
+  ts: number;
+};
+
+function writeReuseHandoff(data: Omit<ReuseHandoff, "ts">) {
+  try {
+    sessionStorage.setItem(
+      REUSE_HANDOFF_KEY,
+      JSON.stringify({ ...data, ts: Date.now() } as ReuseHandoff),
+    );
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function readReuseHandoff(): ReuseHandoff | null {
+  try {
+    const raw = sessionStorage.getItem(REUSE_HANDOFF_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ReuseHandoff;
+    if (!parsed || Date.now() - (parsed.ts || 0) > 10 * 60 * 1000) {
+      sessionStorage.removeItem(REUSE_HANDOFF_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearReuseHandoff() {
+  try {
+    sessionStorage.removeItem(REUSE_HANDOFF_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function fetchReuseArtworkBlob(imageUrl: string): Promise<Blob> {
+  const abs = toAbsoluteImageUrl(imageUrl);
+  if (!abs) throw new Error("Missing artwork URL");
+
+  const tryFetch = async (url: string, init?: RequestInit) => {
+    const res = await fetch(url, init);
+    if (!res.ok) throw new Error(`Failed to fetch artwork (${res.status})`);
+    return res.blob();
+  };
+
+  // Same-origin / app-proxy paths — most reliable in the storefront iframe.
+  try {
+    if (abs.startsWith("/") || abs.includes(window.location.origin)) {
+      let path = abs;
+      if (abs.startsWith("http")) {
+        const u = new URL(abs);
+        path = `${u.pathname}${u.search}`;
+      }
+      if (path.startsWith("/objects/")) path = `/apps/appai${path}`;
+      const res = await safeFetch(path, { credentials: "same-origin" }, 60000);
+      if (res.ok) return res.blob();
+    }
+  } catch {
+    /* fall through */
+  }
+
+  try {
+    return await tryFetch(abs, { credentials: "include", mode: "cors" });
+  } catch {
+    /* fall through */
+  }
+
+  return tryFetch(abs, { credentials: "omit", mode: "cors" });
+}
+
 /** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
 function buildProductVariantsFetchUrl(
   shop: string,
@@ -1381,6 +1461,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     parentReuseParams.get("reuseArtworkUrl") || searchParams.get("reuseArtworkUrl") || "";
   const reusePromptParam =
     parentReuseParams.get("reusePrompt") || searchParams.get("reusePrompt") || "";
+  const reuseJobIdParam =
+    parentReuseParams.get("reuseJobId") || searchParams.get("reuseJobId") || "";
   const autoReuseGenerateParam =
     (parentReuseParams.get("autoReuseGenerate") || searchParams.get("autoReuseGenerate") || "") === "1";
   // parentLoadDesignId: read loadDesignId directly from the parent page URL.
@@ -1446,6 +1528,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [reusePagesLoading, setReusePagesLoading] = useState(false);
   const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
   const autoReuseGenerateDoneRef = useRef(false);
+  const autoReuseHydratedRef = useRef(false);
+  const autoReuseSeedingRef = useRef(false);
+  const pendingReuseGenerateRef = useRef<{
+    prompt: string;
+    referenceImagesBase64: string[];
+  } | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -7971,12 +8059,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const target = `/pages/${encodeURIComponent(handle)}`;
       const params = new URLSearchParams();
       if (opts.regenerate) {
-        if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
-        if (opts.prompt) params.set("reusePrompt", opts.prompt);
+        writeReuseHandoff({
+          jobId: opts.designId || null,
+          artworkUrl: opts.artworkUrl,
+          prompt: opts.prompt,
+          autoGenerate: true,
+        });
         params.set("autoReuseGenerate", "1");
+        if (opts.designId) {
+          params.set("reuseJobId", opts.designId);
+        } else if (opts.artworkUrl) {
+          params.set("reuseArtworkUrl", opts.artworkUrl);
+        }
       } else if (opts.designId) {
         params.set("loadDesignId", opts.designId);
       } else if (opts.artworkUrl) {
+        writeReuseHandoff({
+          jobId: null,
+          artworkUrl: opts.artworkUrl,
+          prompt: opts.prompt,
+          autoGenerate: false,
+        });
         params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt);
       }
@@ -8083,6 +8186,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const parentUrl = new URL(window.parent.location.href);
       parentUrl.searchParams.delete("reuseArtworkUrl");
       parentUrl.searchParams.delete("reusePrompt");
+      parentUrl.searchParams.delete("reuseJobId");
       parentUrl.searchParams.delete("autoReuseGenerate");
       window.parent.history.replaceState({}, "", parentUrl.toString());
     } catch {
@@ -8092,6 +8196,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const params = new URLSearchParams(window.location.search);
       params.delete("reuseArtworkUrl");
       params.delete("reusePrompt");
+      params.delete("reuseJobId");
       params.delete("autoReuseGenerate");
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
     } catch {
@@ -8101,16 +8206,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Deep-link fallback: open reused artwork as-is when no loadDesignId / regenerate.
   useEffect(() => {
-    if (!reuseArtworkUrlParam || autoReuseGenerateParam) return;
+    if (autoReuseGenerateParam) return;
     if (effectiveLoadDesignId || generatedDesign?.imageUrl || configLoading) return;
     if (autoReuseGenerateDoneRef.current) return;
+    const handoff = readReuseHandoff();
+    const artworkUrl = reuseArtworkUrlParam || handoff?.artworkUrl || "";
+    if (!artworkUrl || handoff?.autoGenerate) return;
     autoReuseGenerateDoneRef.current = true;
-    const abs = toAbsoluteImageUrl(reuseArtworkUrlParam);
+    const abs = toAbsoluteImageUrl(artworkUrl);
     let promptText = "";
     try {
-      promptText = reusePromptParam ? decodeURIComponent(reusePromptParam) : "";
+      promptText = reusePromptParam
+        ? decodeURIComponent(reusePromptParam)
+        : handoff?.prompt || "";
     } catch {
-      promptText = reusePromptParam || "";
+      promptText = reusePromptParam || handoff?.prompt || "";
     }
     setGeneratedDesign({
       id: `reuse-${Date.now()}`,
@@ -8118,6 +8228,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       prompt: promptText,
     });
     if (promptText) setPrompt(promptText);
+    clearReuseHandoff();
     clearReuseUrlParams();
   }, [
     reuseArtworkUrlParam,
@@ -8129,30 +8240,62 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     clearReuseUrlParams,
   ]);
 
-  // Deep-link: regenerate reused artwork for a new product aspect ratio (1 credit).
+  // Phase A: seed reference images + prompt as soon as reuse regenerate lands
+  // (do not wait for size/style — that was leaving Body Pillow blank).
   useEffect(() => {
-    if (!autoReuseGenerateParam || !reuseArtworkUrlParam) return;
-    if (autoReuseGenerateDoneRef.current) return;
+    const handoff = readReuseHandoff();
+    const wantsAuto =
+      autoReuseGenerateParam || handoff?.autoGenerate === true;
+    if (!wantsAuto) return;
+    if (autoReuseHydratedRef.current || autoReuseSeedingRef.current) return;
     if (configLoading || !productTypeConfig) return;
-    if (printSizes.length > 0 && !selectedSize) return;
-    if (generateMutation.isPending || generatedDesign?.imageUrl) return;
+    if (generatedDesign?.imageUrl) return;
 
-    autoReuseGenerateDoneRef.current = true;
+    autoReuseSeedingRef.current = true;
     let cancelled = false;
 
     void (async () => {
       try {
-        const abs = toAbsoluteImageUrl(reuseArtworkUrlParam);
-        const res = await fetch(abs, { credentials: "omit", mode: "cors" });
-        if (!res.ok) throw new Error(`Failed to fetch artwork (${res.status})`);
-        const blob = await res.blob();
+        const jobId = reuseJobIdParam || handoff?.jobId || "";
+        let artworkUrl = reuseArtworkUrlParam || handoff?.artworkUrl || "";
+        let originalPrompt = "";
+        try {
+          originalPrompt = reusePromptParam
+            ? decodeURIComponent(reusePromptParam)
+            : handoff?.prompt || "";
+        } catch {
+          originalPrompt = reusePromptParam || handoff?.prompt || "";
+        }
+
+        if (jobId && shopDomain) {
+          try {
+            const statusRes = await safeFetch(
+              `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shopDomain)}&t=${Date.now()}`,
+              { credentials: "include" },
+              30000,
+            );
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              if (status?.status === "complete" && status.imageUrl) {
+                artworkUrl = status.imageUrl;
+                if (!originalPrompt && status.prompt) originalPrompt = String(status.prompt);
+              }
+            }
+          } catch (e) {
+            console.warn("[ReuseArtwork] job status fetch failed, falling back to URL:", e);
+          }
+        }
+
+        if (!artworkUrl) {
+          throw new Error("No artwork available to reuse");
+        }
+
+        const blob = await fetchReuseArtworkBlob(artworkUrl);
         if (cancelled) return;
         const file = new File([blob], "reuse-artwork.png", {
           type: blob.type || "image/png",
         });
         const preview = URL.createObjectURL(blob);
-        setReferenceImages([file]);
-        setReferencePreviews([preview]);
         const b64 = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(String(reader.result || ""));
@@ -8160,24 +8303,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           reader.readAsDataURL(blob);
         });
         if (cancelled) return;
-        let originalPrompt = "";
-        try {
-          originalPrompt = reusePromptParam ? decodeURIComponent(reusePromptParam) : "";
-        } catch {
-          originalPrompt = reusePromptParam || "";
-        }
+
         const reusePromptText = originalPrompt
           ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
           : "Recreate this artwork as closely as possible for the new product aspect ratio";
+
+        setReferenceImages([file]);
+        setReferencePreviews([preview]);
+        setPrompt(reusePromptText);
+        pendingReuseGenerateRef.current = {
+          prompt: reusePromptText,
+          referenceImagesBase64: b64 ? [b64] : [],
+        };
+        autoReuseHydratedRef.current = true;
+        clearReuseHandoff();
         clearReuseUrlParams();
-        await handleGenerate({
-          skipStyleMismatchCheck: true,
-          overridePrompt: reusePromptText,
-          overrideReferenceImagesBase64: b64 ? [b64] : undefined,
-        });
       } catch (err: any) {
-        console.error("[ReuseArtwork] auto-generate failed:", err);
-        autoReuseGenerateDoneRef.current = false;
+        console.error("[ReuseArtwork] hydrate failed:", err);
+        autoReuseSeedingRef.current = false;
         toast({
           title: "Could not reuse artwork",
           description: err?.message || "Please try again.",
@@ -8188,18 +8331,70 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     return () => {
       cancelled = true;
+      if (!autoReuseHydratedRef.current) {
+        autoReuseSeedingRef.current = false;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     autoReuseGenerateParam,
     reuseArtworkUrlParam,
+    reuseJobIdParam,
     reusePromptParam,
     configLoading,
     productTypeConfig,
+    generatedDesign?.imageUrl,
+    shopDomain,
+  ]);
+
+  // Phase B: after refs are seeded, pick defaults and generate (1 credit).
+  useEffect(() => {
+    if (!autoReuseHydratedRef.current) return;
+    if (autoReuseGenerateDoneRef.current) return;
+    if (configLoading || !productTypeConfig) return;
+    if (generateMutation.isPending || generatedDesign?.imageUrl) return;
+    const pending = pendingReuseGenerateRef.current;
+    if (!pending?.referenceImagesBase64?.length) return;
+
+    if (printSizes.length > 0 && !selectedSize) {
+      const first = printSizes[0];
+      if (first?.id) {
+        setSelectedSize(first.id);
+        if (frameOptionsRedundantWithSizes) {
+          const matched = resolveFrameColorForSize(first, frameColorObjects);
+          if (matched) setSelectedFrameColor(matched);
+        }
+      }
+      return;
+    }
+
+    autoReuseGenerateDoneRef.current = true;
+    pendingReuseGenerateRef.current = null;
+    void handleGenerate({
+      skipStyleMismatchCheck: true,
+      overridePrompt: pending.prompt,
+      overrideReferenceImagesBase64: pending.referenceImagesBase64,
+    }).catch((err: any) => {
+      console.error("[ReuseArtwork] auto-generate failed:", err);
+      autoReuseGenerateDoneRef.current = false;
+      pendingReuseGenerateRef.current = pending;
+      toast({
+        title: "Could not start regenerate",
+        description: err?.message || "Reference image is ready — pick style/size and Generate.",
+        variant: "destructive",
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    referenceImages.length,
     selectedSize,
-    printSizes.length,
+    printSizes,
+    configLoading,
+    productTypeConfig,
     generateMutation.isPending,
     generatedDesign?.imageUrl,
+    frameOptionsRedundantWithSizes,
+    frameColorObjects,
   ]);
 
   useEffect(() => {
@@ -10206,6 +10401,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 setReuseDialog(null);
                 navigateToReuseProduct(d.handle, {
                   regenerate: true,
+                  designId: d.designId,
                   artworkUrl: d.artworkUrl,
                   prompt: d.prompt,
                 });
