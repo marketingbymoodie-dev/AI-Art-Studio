@@ -228,7 +228,14 @@ function buildInitialState(
   availableViews: ViewName[],
   saved?: Partial<FlatProductPlacerState> | null,
   defaultPlacement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
+  edgeWrapMode = false,
 ): FlatProductPlacerState {
+  const hasExplicitBg = !!saved && Object.prototype.hasOwnProperty.call(saved, "backgroundColor");
+  const resolvedBg = hasExplicitBg
+    ? normalizeBgHex(String(saved?.backgroundColor ?? "")) ?? null
+    : edgeWrapMode
+      ? "#FFFFFF"
+      : null;
   const base: FlatProductPlacerState = {
     view: "front",
     placements: {
@@ -241,7 +248,7 @@ function buildInitialState(
     },
     linkSides: false,
     artworkUrl: saved?.artworkUrl ?? null,
-    backgroundColor: normalizeBgHex(String(saved?.backgroundColor ?? "")) ?? null,
+    backgroundColor: resolvedBg,
   };
   if (!saved) return base;
   return {
@@ -250,7 +257,7 @@ function buildInitialState(
     placements: { ...base.placements, ...(saved.placements ?? {}) },
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
     linkSides: false,
-    backgroundColor: normalizeBgHex(String(saved.backgroundColor ?? "")) ?? null,
+    backgroundColor: resolvedBg,
   };
 }
 
@@ -425,7 +432,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           saved &&
           Object.keys(saved).some((k) => k !== "artworkUrl")
         );
-        return buildInitialState(availableViews, saved, defaultPlacement);
+        return buildInitialState(availableViews, saved, defaultPlacement, edgeWrapMode);
       }
       if (artworkSourceUrl && prev.artworkUrl !== artworkSourceUrl) {
         return { ...prev, artworkUrl: artworkSourceUrl };
@@ -434,7 +441,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     });
     // initialState consumed on first seed; artworkSourceUrl kept in sync after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableViews, artworkSourceUrl, defaultPlacement]);
+  }, [availableViews, artworkSourceUrl, defaultPlacement, edgeWrapMode]);
 
   // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
   const parentEnabledFront = initialState?.enabled?.front;

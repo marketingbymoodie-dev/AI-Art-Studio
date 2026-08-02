@@ -2344,11 +2344,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       for (const r of results) {
         if (!map[r.orientation]) map[r.orientation] = r.url;
       }
-      // Fallback: if only one catalog image, use it for every orientation.
-      if (Object.keys(map).length === 1 && urls[0]) {
-        map.horizontal = map.horizontal || urls[0];
-        map.vertical = map.vertical || urls[0];
-        map.square = map.square || urls[0];
+      // Fallback: only when there is literally one catalog image (not one
+      // orientation bucket among many square-padded gallery URLs).
+      if (Object.keys(map).length === 1 && urls.length === 1 && urls[0]) {
+        map.horizontal = urls[0];
+        map.vertical = urls[0];
+        map.square = urls[0];
       }
       setCatalogBlankByOrientation(map);
     });
@@ -2586,12 +2587,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       sizeConfig || { id: selectedSize, name: selectedSize },
       productTypeConfig?.aspectRatio,
     );
-    return (
-      bySize ||
-      catalogBlankByOrientation[sizeCanvasOrientation] ||
-      (sizeCanvasOrientation === "horizontal" && catalogPreviewImages[1]) ||
-      null
-    );
+    const primary = catalogPreviewImages[0] || null;
+    const primaryKey = primary ? mockupImageUrlKey(primary) : null;
+    const fromOrient = catalogBlankByOrientation[sizeCanvasOrientation] || null;
+    // Non-square sizes: reject Primary-as-orientation (square-padded broadcast false positive).
+    const fromOrientOk =
+      !!fromOrient &&
+      (sizeCanvasOrientation === "square" ||
+        !primaryKey ||
+        mockupImageUrlKey(fromOrient) !== primaryKey);
+    const galleryForOrientation =
+      sizeCanvasOrientation !== "square"
+        ? catalogPreviewImages.slice(1).find(Boolean) || null
+        : null;
+    return bySize || (fromOrientOk ? fromOrient : null) || galleryForOrientation || null;
   }, [
     hasMixedCanvasOrientation,
     sizeCanvasOrientation,
@@ -5672,6 +5681,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           },
           linkSides: false,
           artworkUrl: artworkAbs,
+          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
+          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
         });
       } else {
         setFlatPlacerState(null);
@@ -6191,6 +6202,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           },
           linkSides: false,
           artworkUrl: artworkAbs,
+          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
+          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
         });
       } else {
         setFlatPlacerState(null);

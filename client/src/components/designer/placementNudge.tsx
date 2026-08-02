@@ -60,10 +60,10 @@ type FinePositionNudgeProps = {
   className?: string;
 };
 
-/** Shared ↑←→↓ fine-position controls for flat-lay and AOP placers. */
+/** Shared fine-position controls for flat-lay and AOP placers (one horizontal row). */
 export function FinePositionNudge({
   onNudge,
-  hint = "Drag the artwork box to move freely. Right-click a nudge arrow for the opposite direction.",
+  hint = "Drag to move. Right-click a nudge for the opposite direction.",
   className,
 }: FinePositionNudgeProps) {
   return (
@@ -71,20 +71,18 @@ export function FinePositionNudge({
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         Fine position
       </div>
-      <div className="flex flex-col items-center gap-1">
+      <div className="flex items-center justify-center gap-1">
+        <NudgeButton label="Nudge left" direction={-1} onPress={(dir) => onNudge("x", dir)}>
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </NudgeButton>
         <NudgeButton label="Nudge up" direction={-1} onPress={(dir) => onNudge("y", dir)}>
           <ChevronUp className="h-3.5 w-3.5" />
         </NudgeButton>
-        <div className="flex items-center gap-1">
-          <NudgeButton label="Nudge left" direction={-1} onPress={(dir) => onNudge("x", dir)}>
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </NudgeButton>
-          <NudgeButton label="Nudge right" direction={1} onPress={(dir) => onNudge("x", dir)}>
-            <ChevronRight className="h-3.5 w-3.5" />
-          </NudgeButton>
-        </div>
         <NudgeButton label="Nudge down" direction={1} onPress={(dir) => onNudge("y", dir)}>
           <ChevronDown className="h-3.5 w-3.5" />
+        </NudgeButton>
+        <NudgeButton label="Nudge right" direction={1} onPress={(dir) => onNudge("x", dir)}>
+          <ChevronRight className="h-3.5 w-3.5" />
         </NudgeButton>
       </div>
       {hint ? (
