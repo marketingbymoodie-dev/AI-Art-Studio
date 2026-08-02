@@ -1572,10 +1572,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return ''; // cross-origin guard (shouldn't happen on same domain)
     }
   })();
-  // bridgeLoadDesignId is set when the parent page sends AI_ART_STUDIO_LOAD_DESIGN via postMessage
+  // bridgeLoadDesignId is set by Saved Designs clicks / postMessage. Must win over a
+  // sticky parent ?loadDesignId= — otherwise clicking design A while the parent URL
+  // still has design B does nothing (same effective id) or re-opens B.
   const [bridgeLoadDesignId, setBridgeLoadDesignId] = useState("");
-  // The effective loadDesignId — prefer parent URL (most reliable), then bridge, then iframe URL param
-  const effectiveLoadDesignId = parentLoadDesignId || bridgeLoadDesignId || loadDesignId;
+  // Bumped on every Saved Designs click so re-selecting the same id still restores.
+  const [loadDesignNonce, setLoadDesignNonce] = useState(0);
+  const effectiveLoadDesignId = bridgeLoadDesignId || parentLoadDesignId || loadDesignId;
 
   // loadMockup: the gallery passes the clicked design's mockup URL so we can
   // paint it instantly while the full design data loads over the App Proxy
@@ -3962,6 +3965,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     setBridgeLoadDesignId(designId);
+    setLoadDesignNonce((n) => n + 1);
   }, [applyDesignerConfig, shopDomain]);
 
   /** In-app customizer page switch (no full reload) — used by Reuse Artwork regenerate. */
@@ -4156,21 +4160,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setSelectedMockupIndex(0);
       setMockupsStale(false);
     }
-  }, [effectiveLoadDesignId]);
+  }, [effectiveLoadDesignId, loadDesignNonce]);
 
   /** Drop sticky loadDesignId from the URL so a remount can't revive the wrong design. */
   const clearLoadDesignIdFromUrl = useCallback(() => {
     try {
       const url = new URL(window.location.href);
-      if (!url.searchParams.has("loadDesignId") && !url.searchParams.has("loadMockup")) {
-        return;
-      }
       url.searchParams.delete("loadDesignId");
       url.searchParams.delete("loadMockup");
       url.searchParams.delete("loadProductName");
       window.history.replaceState({}, "", url.toString());
     } catch {
       /* ignore */
+    }
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.searchParams.delete("loadDesignId");
+      parentUrl.searchParams.delete("loadMockup");
+      parentUrl.searchParams.delete("loadProductName");
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      /* cross-origin guard */
     }
     setBridgeLoadDesignId("");
   }, []);
@@ -4207,7 +4217,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, savedDesigns, configLoading, isAdminTester, productTypeId]);
+  }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId]);
 
   // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
   // fetch the job status directly from the server
@@ -4246,7 +4256,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }, 2000);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, shopDomain, configLoading, isAdminTester, productTypeId]);
+  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -9140,6 +9150,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         loadDesignAppliedRef.current = false;
         // Set the bridge-provided loadDesignId into state so the restore effect can use it
         setBridgeLoadDesignId(bridgeLoadId);
+        setLoadDesignNonce((n) => n + 1);
       }
 
       if (type === "AI_ART_STUDIO_SWITCH_SAVED_DESIGN" && event.data.design) {
@@ -11425,6 +11436,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 <div
                                   className="rounded-md overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors"
                                   onClick={() => {
+                                    const clickedId = String(d.id || "");
+                                    if (!clickedId) return;
                                     setShowSavedDesigns(false);
                                     // If this design belongs to a different product type, switch
                                     // the iframe's active customizer context without navigating the
@@ -11465,23 +11478,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                         }
                                       })();
                                     } else {
-                                      // Same product → load IN-PLACE. No iframe reload means no
-                                      // blank/stale frame and no flash: we just update the URLs
-                                      // (so a manual refresh still restores this design) and bump
-                                      // bridgeLoadDesignId, which drives the restore effect to swap
-                                      // the design via React state. The placer remounts cleanly
-                                      // because its key includes generatedDesign.id.
+                                      // Same product → load IN-PLACE. Bridge id is the source of
+                                      // truth (must win over sticky parent ?loadDesignId=).
+                                      loadDesignAppliedRef.current = false;
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
-                                        parentUrl.searchParams.set('loadDesignId', d.id);
+                                        parentUrl.searchParams.set('loadDesignId', clickedId);
+                                        const mockupSrc =
+                                          d.mockupUrls && d.mockupUrls.length > 0
+                                            ? d.mockupUrls[0]
+                                            : "";
+                                        if (mockupSrc) {
+                                          parentUrl.searchParams.set(
+                                            "loadMockup",
+                                            toAbsoluteImageUrl(mockupSrc),
+                                          );
+                                        } else {
+                                          parentUrl.searchParams.delete("loadMockup");
+                                        }
                                         window.parent.history.replaceState({}, '', parentUrl.toString());
                                       } catch {
                                         // cross-origin guard — fall back to iframe-only
                                       }
                                       const params = new URLSearchParams(window.location.search);
-                                      params.set('loadDesignId', d.id);
+                                      params.set('loadDesignId', clickedId);
                                       window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                      setBridgeLoadDesignId(d.id);
+                                      setBridgeLoadDesignId(clickedId);
+                                      setLoadDesignNonce((n) => n + 1);
                                     }
                                   }}
                                 >
