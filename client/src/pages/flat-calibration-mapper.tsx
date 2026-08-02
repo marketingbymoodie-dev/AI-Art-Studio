@@ -715,8 +715,9 @@ export default function FlatCalibrationMapperPage() {
               ))}
             </ul>
             <p className="text-xs opacity-80">
-              Black/Red and other missing colours need a Printify shop that can create products
-              for that decorator. Listings stay provider-scoped — only the shared blank pool is
+              Missing colours are filled from other catalog providers, existing Printify products,
+              or the listing&apos;s Shopify product images when a decorator can&apos;t create on
+              the harvest shop. Listings stay provider-scoped — only the shared blank pool is
               affected.
             </p>
           </div>

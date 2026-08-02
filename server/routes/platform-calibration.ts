@@ -47,6 +47,9 @@ import {
 import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
 import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
 import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors";
+import { db } from "../db";
+import { customizerPages } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 type StorageLike = {
   getProductTypes(): Promise<any[]>;
@@ -54,7 +57,115 @@ type StorageLike = {
   getMerchant(id: string): Promise<any>;
   getMerchantByUserId(userId: string): Promise<any>;
   getMerchantByShop(shop: string): Promise<any>;
+  getShopifyInstallationByShop(shopDomain: string): Promise<any>;
+  getShopifyInstallationsByMerchant(merchantId: string): Promise<any[]>;
 };
+
+function parseShopifyVariantIds(raw: unknown): Record<string, number | string> | undefined {
+  if (!raw) return undefined;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, number | string>)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, number | string>)
+    : undefined;
+}
+
+/** Resolve Shopify Admin creds for a listing so blanks can be pulled without Printify create. */
+async function resolveShopifyBlankSource(
+  storage: StorageLike,
+  refProduct: any | null,
+): Promise<
+  | {
+      shopDomain: string;
+      accessToken: string;
+      productId: string;
+      shopifyVariantIds?: Record<string, number | string>;
+    }
+  | undefined
+> {
+  if (!refProduct) return undefined;
+
+  let productId =
+    refProduct.shopifyProductId != null && refProduct.shopifyProductId !== ""
+      ? String(refProduct.shopifyProductId)
+      : "";
+  let shopHint: string | null | undefined = refProduct.shopifyShopDomain;
+  const variantIds = parseShopifyVariantIds(refProduct.shopifyVariantIds);
+
+  // Customizer pages often hold the live base product even when product_types is stale.
+  if ((!productId || !shopHint) && refProduct.id != null) {
+    try {
+      const pages = await db
+        .select()
+        .from(customizerPages)
+        .where(eq(customizerPages.productTypeId, Number(refProduct.id)))
+        .limit(5);
+      const page = pages.find((p) => p.baseProductId) || pages[0];
+      if (page?.baseProductId && !productId) productId = String(page.baseProductId);
+      if (page?.shop && !shopHint) shopHint = page.shop;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!productId) return undefined;
+
+  const tryInstall = async (shopDomain: string | null | undefined) => {
+    const shop = String(shopDomain || "")
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")
+      .toLowerCase();
+    if (!shop) return undefined;
+    try {
+      const inst = await storage.getShopifyInstallationByShop(shop);
+      if (inst?.accessToken && (inst.status === "active" || !inst.status)) {
+        return {
+          shopDomain: shop,
+          accessToken: String(inst.accessToken),
+          productId,
+          shopifyVariantIds: variantIds,
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+    return undefined;
+  };
+
+  const fromDomain = await tryInstall(shopHint);
+  if (fromDomain) return fromDomain;
+
+  if (refProduct.merchantId) {
+    try {
+      const installs = await storage.getShopifyInstallationsByMerchant(String(refProduct.merchantId));
+      for (const inst of installs || []) {
+        if (!inst?.accessToken) continue;
+        if (inst.status && inst.status !== "active") continue;
+        const shop = String(inst.shopDomain || "")
+          .replace(/^https?:\/\//, "")
+          .replace(/\/$/, "")
+          .toLowerCase();
+        if (!shop) continue;
+        return {
+          shopDomain: shop,
+          accessToken: String(inst.accessToken),
+          productId,
+          shopifyVariantIds: variantIds,
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return undefined;
+}
 
 type FlatCanonicalEntry = {
   blueprintId: number;
@@ -815,6 +926,7 @@ export function registerPlatformCalibrationRoutes(
                 (pt) => Number(pt.printifyProviderId) === providerId,
               ) ?? null;
             const skipBlankColorIds = accumulated ? existingBlankIds() : [];
+            const shopifyBlankSource = await resolveShopifyBlankSource(storage, ref);
             const credOptions = await listHarvestCredsForProvider(storage, {
               refProduct: ref,
               platformCreds: creds,
@@ -825,6 +937,7 @@ export function registerPlatformCalibrationRoutes(
                 ` (${i + 1}/${providerCandidates.length}` +
                 `${ref ? `, pt ${ref.id}` : ", catalog colours"}` +
                 `${skipBlankColorIds.length ? `, skip ${skipBlankColorIds.length} blanks` : ""}` +
+                `${shopifyBlankSource ? `, shopify=${shopifyBlankSource.productId}` : ""}` +
                 `, creds=${credOptions.map((c) => c.label).join("|")})`,
             );
 
@@ -853,6 +966,7 @@ export function registerPlatformCalibrationRoutes(
                   // After primary masks/geometry exist, only pull missing blank photos —
                   // never re-run probe/reg (those 6002 on US decorators and block blanks).
                   blanksOnly: !!accumulated,
+                  shopifyBlankSource,
                 });
                 wiped = true;
 

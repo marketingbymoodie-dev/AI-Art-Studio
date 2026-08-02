@@ -48,7 +48,8 @@ function sizeTokensMatch(a: string, b: string): boolean {
   return false;
 }
 
-function colorMatchesFrame(
+/** Match a Shopify option/title fragment to a frame colour id or display name. */
+export function colorMatchesFrame(
   raw: string,
   frameName: string,
   frameColorId?: string,
