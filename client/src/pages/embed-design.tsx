@@ -4910,7 +4910,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       const pollMockupJob = async (jobId: string) => {
         const started = Date.now();
-        const MAX_POLL_MS = 300_000;
+        // On-demand person/lifestyle merges must not sit on the 5‑minute primary
+        // budget — body pillows often finish with zero person cameras and used
+        // to leave the spinner spinning until this cap.
+        const MAX_POLL_MS = isOnDemandMerge ? 90_000 : 300_000;
         const POLL_RAMP_MS = [0, 500, 750, 1000, 1500];
         let pollIndex = 0;
 
@@ -4933,9 +4936,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }
 
           const pollResult = await pollResponse.json();
-          if (pollResult.status === 'done' && pollResult.mockupUrls?.length > 0) {
-            handleMockupSuccess({ ...pollResult, success: true });
-            return;
+          if (pollResult.status === "done") {
+            if (pollResult.mockupUrls?.length > 0) {
+              handleMockupSuccess({ ...pollResult, success: true });
+              return;
+            }
+            // Job finished with empty URLs (e.g. preferPersonViews, no cameras).
+            // Do not keep polling — that was the 2–5 minute hang.
+            throw new Error(
+              pollResult.error ||
+                (mergePersonViews
+                  ? "Printify returned no Front Person mockup for this product."
+                  : mergeProductMockups
+                    ? "Printify returned no mockups for this product."
+                    : "Printify returned no lifestyle/context views for this product."),
+            );
           }
           if (pollResult.status === 'failed') {
             throw new Error(pollResult.error || 'Mockup generation failed');
@@ -4964,6 +4979,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         await pollMockupJob(result.jobId);
       } else if (!result.success) {
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
+      } else if (isOnDemandMerge) {
+        throw new Error(
+          result.error ||
+            (mergePersonViews
+              ? "Printify returned no Front Person mockup for this product."
+              : mergeProductMockups
+                ? "Printify returned no mockups for this product."
+                : "Printify returned no lifestyle/context views for this product."),
+        );
       }
     } catch (error) {
       if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
