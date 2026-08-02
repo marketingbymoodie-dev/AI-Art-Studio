@@ -36,6 +36,7 @@ import {
 import HoodieAopPlacer, {
   type HoodieAopPlacerState,
   type HoodieAopPlacerApplyResult,
+  type HoodieAopPlacerHandle,
 } from "@/components/designer/HoodieAopPlacer";
 import { MOCKUP_PANEL_MAX_LONG_EDGE_PX } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import FlatProductPlacer, {
@@ -2061,6 +2062,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
    */
   const [hoodieAopPlacerState, setHoodieAopPlacerState] =
     useState<HoodieAopPlacerState | null>(null);
+  const hoodieAopPlacerRef = useRef<HoodieAopPlacerHandle>(null);
+  const [aopApplyStatus, setAopApplyStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [aopPlacementDirty, setAopPlacementDirty] = useState(false);
 
   /**
    * On-the-fly flat/mesh placer state + a graceful-fallback flag. When the
@@ -5366,13 +5372,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       flatPlacerOn &&
       (flatApplyStatus === "saving" || flatPlacementDirty)
     );
+    const aopSaveBlocking = !!(
+      showPatternStep &&
+      productTypeConfig?.panelMappingTemplate &&
+      aopApplyStatus === "saving"
+    );
+    const saveBlocking = flatSaveBlocking || aopSaveBlocking;
     const mockupsStaleBlocksCart = mockupsStale;
     const shouldDisable =
-      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || flatSaveBlocking;
-    const label = flatSaveBlocking
-      ? flatApplyStatus === "saving"
-        ? "Saving design\u2026"
-        : "Refresh Mockups to Continue"
+      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || saveBlocking;
+    const label = saveBlocking
+      ? "Saving design\u2026"
       : waitingForMockups
         ? "Generating preview\u2026"
         : mockupLoading
@@ -5383,7 +5393,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !flatSaveBlocking,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -5393,7 +5403,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -6541,8 +6551,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return flatPlacerRef.current.applyIfNeeded(opts);
   }, []);
 
+  const flushHoodieAopPlacer = useCallback(async (opts?: { force?: boolean }) => {
+    if (!hoodieAopPlacerRef.current) return false;
+    const applied = await hoodieAopPlacerRef.current.applyIfNeeded(opts);
+    if (applied) setAopPlacementDirty(false);
+    return applied;
+  }, []);
+
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
+      // Mesh AOP: flush deferred placement before test order.
+      if (
+        useAopCustomizer &&
+        productTypeConfig?.panelMappingTemplate &&
+        (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
+      ) {
+        await flushHoodieAopPlacer({ force: true });
+      }
       // Printify zoom products: placement is persisted in the background; flush now.
       if (isAdminTester && !useAopCustomizer) {
         const ok = await persistAdminTesterPrintifyDesign();
@@ -6620,6 +6645,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     transform.scale,
     emitTesterDesignStatus,
     flushFlatPlacer,
+    flushHoodieAopPlacer,
+    aopPlacementDirty,
+    productTypeConfig?.panelMappingTemplate,
     isAdminTester,
     useAopCustomizer,
     persistAdminTesterPrintifyDesign,
@@ -6637,8 +6665,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   useEffect(() => {
     const onHide = () => {
-      if (!flatPlacerEditOpen) return;
-      void flushFlatPlacer();
+      if (flatPlacerEditOpen) void flushFlatPlacer();
+      if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+        void flushHoodieAopPlacer();
+      }
     };
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", onHide);
@@ -6646,7 +6676,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onHide);
     };
-  }, [flatPlacerEditOpen, flushFlatPlacer]);
+  }, [
+    flatPlacerEditOpen,
+    flushFlatPlacer,
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    flushHoodieAopPlacer,
+  ]);
 
   // Generator Tester has no ATC — auto-Apply flat placement after generate so
   // test orders get current size/colour/artwork and status reaches "saved".
@@ -6818,6 +6854,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       try {
         await flushFlatPlacer({ force: true });
         setFlatPlacementDirty(false);
+      } catch {
+        setVariantError("Couldn't save your placement. Please try again.");
+        return;
+      }
+    }
+
+    const aopNeedsFlush = !!(
+      useAopCustomizer &&
+      productTypeConfig?.panelMappingTemplate &&
+      (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
+    );
+    if (aopNeedsFlush) {
+      try {
+        await flushHoodieAopPlacer({ force: true });
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         return;
@@ -7173,11 +7223,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     result: HoodieAopPlacerApplyResult,
   ) => {
     setHoodieAopPlacerState(result.state);
-    // NOTE: Do NOT call `setShowPatternStep(false)` here. The placer is now
-    // live-editing — auto-apply fires 1.5 s after every change to keep the
-    // cart preview in sync, so closing the step on every apply would boot
-    // the customer out of the placer immediately after they open it. The
-    // customer leaves the placer via the explicit "Back" toolbar button.
+    setAopPlacementDirty(false);
+    // NOTE: Do NOT call `setShowPatternStep(false)` here. Apply is deferred
+    // (ATC / leave / Printers Mockup) — closing on every apply would boot
+    // the customer out of the placer. They leave via "Back".
 
     // Front is the canonical "preferred" mockup the cart references.
     const frontCanvas = result.renderView("front");
@@ -8944,6 +8993,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatPlacerSaveBlocking = !!(
     flatPlacerActive && flatApplyStatus === "saving"
   );
+  const aopPlacerSaveBlocking = !!(
+    showPatternStep &&
+    productTypeConfig?.panelMappingTemplate &&
+    aopApplyStatus === "saving"
+  );
 
   // Stable identity for keeping on-demand Printers/Context slides across re-rasters.
   // Refresh nonce must NOT be part of this — Apply used to set identity without nonce,
@@ -9552,7 +9606,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -9561,7 +9615,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Adding to Cart...</span>
                 </>
-              ) : flatPlacerSaveBlocking ? (
+              ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">
@@ -10545,7 +10599,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
@@ -10554,7 +10608,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Adding to Cart...</span>
                           </>
-                        ) : flatPlacerSaveBlocking ? (
+                        ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">
@@ -11173,11 +11227,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {showPatternStep && aopPendingMotifUrl ? (
               productTypeConfig?.panelMappingTemplate ? (
                 <div className="relative flex flex-col gap-2 min-h-0">
-                  {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
-                      The placer auto-saves on every change (no Apply button) —
-                      handleHoodieAopApply is fired ~1.5 s after the customer's
-                      last edit and uploads the local front+back render to
-                      Supabase so the cart preview is always in sync. */}
+                  {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
+                      (not on every nudge). */}
                   {(isStorefront || isShopify) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
@@ -11185,8 +11236,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         variant="outline"
                         size="sm"
                         className="flex-1 min-w-0"
-                        onClick={() => setShowPatternStep(false)}
-                        title="Return to product preview without applying"
+                        onClick={() => {
+                          void flushHoodieAopPlacer().finally(() => {
+                            setShowPatternStep(false);
+                          });
+                        }}
+                        title="Save placement and return to product preview"
                         data-testid="button-back-from-hoodie-placer"
                       >
                         <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
@@ -11217,6 +11272,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // mid-edit is handled by `hoodieAopPlacerState` flowing
                     // back in via initialState below.
                     key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
+                    ref={hoodieAopPlacerRef}
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
@@ -11235,19 +11291,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         emitTesterDesignStatus({ aopPanels: "none" });
                       }
                       setHoodieAopPlacerState(s);
+                      setAopPlacementDirty(true);
                     }}
                     onApply={handleHoodieAopApply}
-                    // Resuming a saved design (we have a restored placer
-                    // state) → don't re-render + re-upload on open. The saved
-                    // mockup is already restored into the preview, so firing
-                    // the auto-apply here would just replay the grey scanning
-                    // animation for no reason. This flag is true immediately
-                    // from the restored state (no async/timing gap), so the
-                    // initial apply is reliably skipped. Fresh designs (no
-                    // restored state) still auto-apply once to generate the
-                    // initial cart image. Broken/missing thumbnails are already
-                    // repaired server-side at read time, so we no longer need
-                    // to heal-on-open.
+                    onApplyStatusChange={(s) => {
+                      setAopApplyStatus(s);
+                      if (s === "saved") setAopPlacementDirty(false);
+                    }}
+                    // Resume: skip one-shot initial apply (mockup already persisted).
+                    // Fresh designs still apply once for the first cart image.
                     skipInitialAutoApply={!!hoodieAopPlacerState}
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
