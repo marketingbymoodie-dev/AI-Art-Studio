@@ -1616,6 +1616,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const autoReuseSeedingRef = useRef(false);
   /** True while in-app Reuse regenerate is switching products (skip deep-link Phase A). */
   const reuseInAppBusyRef = useRef(false);
+  /** Set when Reuse→Regenerate starts a paid generate — toast on success. */
+  const reuseRegeneratePendingToastRef = useRef(false);
   const pendingReuseGenerateRef = useRef<{
     prompt: string;
     referenceImagesBase64: string[];
@@ -5934,6 +5936,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: imageUrl,
         prompt: prompt,
       });
+      if (reuseRegeneratePendingToastRef.current) {
+        reuseRegeneratePendingToastRef.current = false;
+        toast({
+          title: "Regenerated for this product",
+          description:
+            "1 credit used. The result may look similar on purpose — adjust placement, then Apply Pattern to Continue.",
+        });
+      }
       // Update credit balance from the async status response
       if (
         data.creditsRemaining !== undefined ||
@@ -6962,6 +6972,42 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (applied) setAopPlacementDirty(false);
     return applied;
   }, []);
+
+  /** ATC "Apply Pattern to Continue" — must actually apply (was disabled/no-op before). */
+  const handleApplyPatternToContinue = useCallback(() => {
+    if (!generatedDesign?.imageUrl) return;
+    // Already in the placer: flush panels (sets aopPatternUrl) then return to preview.
+    if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+      toast({
+        title: "Saving placement…",
+        description: "Applying your layout so you can add to cart.",
+      });
+      void flushHoodieAopPlacer({ force: true })
+        .then(() => setShowPatternStep(false))
+        .catch((err: any) => {
+          console.error("[AOP] Apply Pattern flush failed:", err);
+          toast({
+            title: "Could not apply pattern",
+            description: err?.message || "Try Back on the placer, then Add to Cart.",
+            variant: "destructive",
+          });
+        });
+      return;
+    }
+    // Placer not open — open it so the customer can place, then apply.
+    setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+    setShowPatternStep(true);
+    toast({
+      title: "Place your artwork",
+      description: "Adjust placement, then click Apply Pattern to Continue again (or Back).",
+    });
+  }, [
+    generatedDesign?.imageUrl,
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    flushHoodieAopPlacer,
+    toast,
+  ]);
 
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
@@ -8355,6 +8401,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           autoReuseGenerateDoneRef.current = false;
           clearReuseHandoff();
           setReuseBusyLabel("Starting regenerate…");
+          reuseRegeneratePendingToastRef.current = true;
+          toast({
+            title: "Regenerating for this product",
+            description: "Using 1 credit to recreate the artwork for the new shape.",
+          });
           setReuseGenerateTick((n) => n + 1);
           setReuseBusy(false);
           return;
@@ -8687,6 +8738,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     autoReuseGenerateDoneRef.current = true;
     pendingReuseGenerateRef.current = null;
+    reuseRegeneratePendingToastRef.current = true;
+    toast({
+      title: "Regenerating for this product",
+      description: "Using 1 credit to recreate the artwork for the new shape.",
+    });
     void handleGenerate({
       skipStyleMismatchCheck: true,
       overridePrompt: pending.prompt,
@@ -8695,6 +8751,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       console.error("[ReuseArtwork] auto-generate failed:", err);
       autoReuseGenerateDoneRef.current = false;
       pendingReuseGenerateRef.current = pending;
+      reuseRegeneratePendingToastRef.current = false;
       toast({
         title: "Could not start regenerate",
         description: err?.message || "Reference image is ready — pick style/size and Generate.",
@@ -10433,6 +10490,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           ) : (
             <Button
               onClick={() => {
+                if (useAopCustomizer && !aopPatternUrl) {
+                  handleApplyPatternToContinue();
+                  return;
+                }
                 if (atcMockupsStaleBlocks) {
                   if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                     if (generatedDesign?.imageUrl) {
@@ -10467,7 +10528,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -11512,6 +11573,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     ) : (
                       <Button
                         onClick={() => {
+                          if (useAopCustomizer && !aopPatternUrl) {
+                            handleApplyPatternToContinue();
+                            return;
+                          }
                           if (atcMockupsStaleBlocks) {
                             if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                               if (generatedDesign?.imageUrl) {
@@ -11547,7 +11612,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
