@@ -674,7 +674,40 @@ export default function AdminCustomizerPages() {
     });
   }, [formStep, costsError, costsFetchError, costsErrorPayload?.code, toast, queryClient]);
 
-  // Mutation: clear all cached costs and refetch for current product
+  // Product Sync: refresh Product Intelligence (COGS / availability), then reload cost UI from DB.
+  const productSyncMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedBlank?.productTypeId) throw new Error("No product selected");
+      const res = await apiRequest(
+        "POST",
+        `/api/admin/product-types/${selectedBlank.productTypeId}/product-sync`,
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Product Sync failed");
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+      queryClient.removeQueries({ queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId] });
+      const r = data?.result;
+      toast({
+        title: r?.ok === false ? "Product Sync finished with issues" : "Product Sync complete",
+        description: r?.error
+          ? r.error
+          : "COGS and availability updated. Reloading pricing…",
+        variant: r?.ok === false ? "destructive" : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Product Sync failed",
+        description: error.message || "Could not sync product intelligence.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Force Printify waterfall by clearing JSON cache (legacy path; prefer Product Sync).
   const clearCostsMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/admin/printify/costs/clear-cache");
@@ -682,9 +715,8 @@ export default function AdminCustomizerPages() {
       return res.json();
     },
     onSuccess: () => {
-      // Invalidate the costs query so it re-fetches fresh data
       queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
-      toast({ title: "Costs refreshed", description: "Production costs cache cleared. Fetching fresh data…" });
+      toast({ title: "Costs cache cleared", description: "Fetching fresh Printify production costs…" });
     },
     onError: () => {
       toast({ title: "Refresh failed", description: "Could not clear costs cache. Please try again.", variant: "destructive" });
@@ -1444,12 +1476,13 @@ export default function AdminCustomizerPages() {
                                     <Button
                                       variant="outline"
                                       size="sm"
-                                      onClick={() => clearCostsMutation.mutate()}
-                                      disabled={clearCostsMutation.isPending || costsLoading}
+                                      onClick={() => productSyncMutation.mutate()}
+                                      disabled={productSyncMutation.isPending || costsLoading || !selectedBlank?.productTypeId}
                                       className="ml-auto shrink-0"
+                                      title="Sync COGS and availability from Printify into Product Intelligence"
                                     >
-                                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
-                                      Refresh Pricing
+                                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${productSyncMutation.isPending ? 'animate-spin' : ''}`} />
+                                      Product Sync
                                     </Button>
                                   </div>
                                   {shippingData.countries && shippingData.countries.length > 0 && (

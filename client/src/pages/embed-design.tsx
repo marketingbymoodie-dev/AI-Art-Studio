@@ -78,6 +78,11 @@ import {
 import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
+  isVariantKeyAvailable,
+  parseVariantAvailabilityMap,
+  type VariantAvailabilityMap,
+} from "@shared/productIntelligence";
+import {
   detectStylePromptMismatch,
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
@@ -259,8 +264,17 @@ interface ProductTypeConfig {
   printShape?: PrintShape;
   canvasConfig?: CanvasConfig;
   sizes: Array<{ id: string; name: string; width: number; height: number; aspectRatio?: string }>;
-  frameColors: Array<{ id: string; name: string; hex: string; variantAvailable?: boolean }>;
+  frameColors: Array<{
+    id: string;
+    name: string;
+    hex: string;
+    variantAvailable?: boolean;
+    inStock?: boolean;
+  }>;
   variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
+  /** Product Intelligence: sizeId:colorId → stock status */
+  variantAvailability?: VariantAvailabilityMap;
+  unavailableVariantKeys?: string[];
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, any>;
   doubleSidedPrint?: boolean;
@@ -1821,6 +1835,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       ),
     [frameColorObjects],
   );
+
+  /** Product Intelligence: sizes unavailable for the selected colour. */
+  const outOfStockSizeIds = useMemo(() => {
+    const avail =
+      typeof productTypeConfig?.variantAvailability === "string"
+        ? parseVariantAvailabilityMap(productTypeConfig.variantAvailability)
+        : (productTypeConfig?.variantAvailability ?? {});
+    if (Object.keys(avail).length === 0) return [] as string[];
+    const colorId = selectedFrameColor || "default";
+    const oos: string[] = [];
+    for (const size of printSizes) {
+      if (!isVariantKeyAvailable(avail, size.id, colorId)) oos.push(size.id);
+    }
+    return oos;
+  }, [productTypeConfig?.variantAvailability, printSizes, selectedFrameColor]);
+
+  // If the current size becomes OOS for this colour, move to the first in-stock size.
+  useEffect(() => {
+    if (!selectedSize || outOfStockSizeIds.length === 0) return;
+    if (!outOfStockSizeIds.includes(selectedSize)) return;
+    const next = printSizes.find((s) => !outOfStockSizeIds.includes(s.id));
+    if (next) setSelectedSize(next.id);
+  }, [selectedSize, outOfStockSizeIds, printSizes]);
 
   // Hide the redundant Printify "Model" dropdown when models already live in Size.
   const showFrameColorSelector =
@@ -7661,6 +7698,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
 
+    // Product Intelligence: refuse OOS size/colour before shadow resolve / cart.
+    if (selectedSize && outOfStockSizeIds.includes(selectedSize)) {
+      setVariantError(
+        isPhoneCaseProduct
+          ? "That model is currently out of stock. Please choose another."
+          : "That size is currently out of stock. Please choose another.",
+      );
+      return;
+    }
+    {
+      const avail =
+        typeof productTypeConfig?.variantAvailability === "string"
+          ? parseVariantAvailabilityMap(productTypeConfig.variantAvailability)
+          : (productTypeConfig?.variantAvailability ?? {});
+      if (
+        Object.keys(avail).length > 0 &&
+        selectedSize &&
+        !isVariantKeyAvailable(avail, selectedSize, selectedFrameColor || "default")
+      ) {
+        setVariantError("That size/color combination is currently out of stock.");
+        return;
+      }
+    }
+
     // Flat apparel: if either enabled face is past the dashed guide, confirm first.
     if (
       usesFlatOnTheFlyPreview &&
@@ -7896,6 +7957,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             variantId: normalizedVariant,
             designId: properties['_design_id'],
             mockupUrl: mockupFullUrl,
+            productTypeId: productTypeConfig?.id ?? productTypeId,
+            sizeId: selectedSize,
+            colorId: selectedFrameColor || "default",
             ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
           }),
           signal: controller.signal,
@@ -12478,6 +12542,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           }
                         }}
                         prices={buildPriceMap()}
+                        outOfStockSizeIds={outOfStockSizeIds}
                       />
                       <div className="mt-0.5 min-h-[1rem]">
                         {selectedSize === "" && (
@@ -12535,6 +12600,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                       }}
                       prices={buildPriceMap()}
+                      outOfStockSizeIds={outOfStockSizeIds}
                     />
                     <div className="mt-0.5 min-h-[1rem]">
                       {selectedSize === "" && (

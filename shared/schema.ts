@@ -534,6 +534,20 @@ export const productTypes = pgTable("product_types", {
   oosTotalVariants: integer("oos_total_variants"),
   oosStatus: text("oos_status"),
   oosDetail: text("oos_detail").default("{}"),
+  /**
+   * Product Intelligence (see docs/product-intelligence-architecture.md).
+   * pricingStrategy: maintain_margin | maintain_price | notify_only
+   * productHealth: healthy | needs_review | attention_required
+   * variantAvailability: JSON map sizeId:colorId → in_stock | out_of_stock | removed
+   */
+  pricingVersion: integer("pricing_version").notNull().default(0),
+  lastProductSyncAt: timestamp("last_product_sync_at"),
+  defaultMarkupPercent: integer("default_markup_percent"),
+  pricingStrategy: text("pricing_strategy").notNull().default("notify_only"),
+  minMarginPercent: integer("min_margin_percent"),
+  productHealth: text("product_health").notNull().default("healthy"),
+  variantAvailability: text("variant_availability").default("{}"),
+  shippingSnapshot: text("shipping_snapshot").default("{}"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -545,6 +559,124 @@ export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
 });
 export type ProductType = typeof productTypes.$inferSelect;
 export type InsertProductType = z.infer<typeof insertProductTypeSchema>;
+
+/** Current Product Intelligence row: one supplier variant × print-area config. */
+export const catalogVariantCosts = pgTable(
+  "catalog_variant_costs",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id").notNull(),
+    supplier: text("supplier").notNull().default("printify"),
+    blueprintId: integer("blueprint_id"),
+    providerId: integer("provider_id"),
+    supplierProductId: text("supplier_product_id"),
+    supplierVariantId: text("supplier_variant_id").notNull(),
+    productName: text("product_name"),
+    variantName: text("variant_name"),
+    size: text("size"),
+    color: text("color"),
+    printAreaKey: text("print_area_key").notNull().default("front"),
+    printAreasJson: text("print_areas_json").default("[]"),
+    baseCogsCents: integer("base_cogs_cents"),
+    previousCogsCents: integer("previous_cogs_cents"),
+    shippingFirstItemUsCents: integer("shipping_first_item_us_cents"),
+    currency: text("currency").notNull().default("USD"),
+    available: boolean("available").notNull().default(true),
+    availabilityStatus: text("availability_status").notNull().default("unknown"),
+    priceChanged: boolean("price_changed").notNull().default(false),
+    availabilityChanged: boolean("availability_changed").notNull().default(false),
+    isNewVariant: boolean("is_new_variant").notNull().default(false),
+    isRemoved: boolean("is_removed").notNull().default(false),
+    pricingVersion: integer("pricing_version").notNull().default(1),
+    costChecksum: text("cost_checksum"),
+    lastSyncedAt: timestamp("last_synced_at").defaultNow().notNull(),
+    priceLastChangedAt: timestamp("price_last_changed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("catalog_variant_costs_product_type_idx").on(table.productTypeId),
+    index("catalog_variant_costs_variant_idx").on(
+      table.productTypeId,
+      table.supplier,
+      table.supplierVariantId,
+      table.printAreaKey,
+    ),
+  ],
+);
+
+export type CatalogVariantCost = typeof catalogVariantCosts.$inferSelect;
+export type InsertCatalogVariantCost = typeof catalogVariantCosts.$inferInsert;
+
+/** One Product Sync run (catalogue-wide or single product). */
+export const catalogSyncRuns = pgTable("catalog_sync_runs", {
+  id: serial("id").primaryKey(),
+  scope: text("scope").notNull().default("catalogue"), // catalogue | product
+  productTypeId: integer("product_type_id"),
+  source: text("source").notNull().default("manual"), // manual | daily | backfill | import
+  status: text("status").notNull().default("running"), // running | complete | failed
+  productsChecked: integer("products_checked").notNull().default(0),
+  variantsChecked: integer("variants_checked").notNull().default(0),
+  priceChanges: integer("price_changes").notNull().default(0),
+  availabilityChanges: integer("availability_changes").notNull().default(0),
+  newVariants: integer("new_variants").notNull().default(0),
+  removedVariants: integer("removed_variants").notNull().default(0),
+  syncFailures: integer("sync_failures").notNull().default(0),
+  summaryJson: text("summary_json").default("{}"),
+  error: text("error"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type CatalogSyncRun = typeof catalogSyncRuns.$inferSelect;
+
+/** Per-variant cost history for pricing_version audit trail. */
+export const catalogVariantCostHistory = pgTable(
+  "catalog_variant_cost_history",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id").notNull(),
+    supplier: text("supplier").notNull().default("printify"),
+    supplierVariantId: text("supplier_variant_id").notNull(),
+    printAreaKey: text("print_area_key").notNull().default("front"),
+    pricingVersion: integer("pricing_version").notNull(),
+    previousCogsCents: integer("previous_cogs_cents"),
+    newCogsCents: integer("new_cogs_cents"),
+    previousShippingUsCents: integer("previous_shipping_us_cents"),
+    newShippingUsCents: integer("new_shipping_us_cents"),
+    changeReason: text("change_reason").notNull(),
+    syncRunId: integer("sync_run_id"),
+    changedAt: timestamp("changed_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("catalog_variant_cost_history_product_idx").on(table.productTypeId),
+  ],
+);
+
+export type CatalogVariantCostHistory = typeof catalogVariantCostHistory.$inferSelect;
+
+/** Granular Product Intelligence change feed. */
+export const catalogSyncEvents = pgTable(
+  "catalog_sync_events",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id"),
+    syncRunId: integer("sync_run_id"),
+    pricingVersion: integer("pricing_version"),
+    eventType: text("event_type").notNull(),
+    supplierVariantId: text("supplier_variant_id"),
+    printAreaKey: text("print_area_key"),
+    payloadJson: text("payload_json").default("{}"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("catalog_sync_events_product_idx").on(table.productTypeId),
+    index("catalog_sync_events_run_idx").on(table.syncRunId),
+  ],
+);
+
+export type CatalogSyncEvent = typeof catalogSyncEvents.$inferSelect;
 
 // Shared designs for public sharing via URLs
 export const sharedDesigns = pgTable("shared_designs", {

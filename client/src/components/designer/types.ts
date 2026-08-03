@@ -12,6 +12,8 @@ export interface FrameColor {
   hex: string;
   /** False when variantMap has no Printify variant for this color (any size). */
   variantAvailable?: boolean;
+  /** False when Product Intelligence marks every size for this colour OOS. */
+  inStock?: boolean;
 }
 
 export interface StylePresetOption {

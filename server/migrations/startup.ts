@@ -78,6 +78,14 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "oos_total_variants",          type: "INTEGER" },
   { table: "product_types",         column: "oos_status",                  type: "TEXT" },
   { table: "product_types",         column: "oos_detail",                  type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "pricing_version",             type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "product_types",         column: "last_product_sync_at",        type: "TIMESTAMP" },
+  { table: "product_types",         column: "default_markup_percent",      type: "INTEGER" },
+  { table: "product_types",         column: "pricing_strategy",            type: "TEXT NOT NULL DEFAULT 'notify_only'" },
+  { table: "product_types",         column: "min_margin_percent",          type: "INTEGER" },
+  { table: "product_types",         column: "product_health",              type: "TEXT NOT NULL DEFAULT 'healthy'" },
+  { table: "product_types",         column: "variant_availability",        type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "shipping_snapshot",           type: "TEXT DEFAULT '{}'" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -592,6 +600,102 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "catalog_variant_costs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_variant_costs" (
+        "id"                            SERIAL PRIMARY KEY,
+        "product_type_id"               INTEGER NOT NULL,
+        "supplier"                      TEXT NOT NULL DEFAULT 'printify',
+        "blueprint_id"                  INTEGER,
+        "provider_id"                   INTEGER,
+        "supplier_product_id"           TEXT,
+        "supplier_variant_id"           TEXT NOT NULL,
+        "product_name"                  TEXT,
+        "variant_name"                  TEXT,
+        "size"                          TEXT,
+        "color"                         TEXT,
+        "print_area_key"                TEXT NOT NULL DEFAULT 'front',
+        "print_areas_json"              TEXT DEFAULT '[]',
+        "base_cogs_cents"               INTEGER,
+        "previous_cogs_cents"           INTEGER,
+        "shipping_first_item_us_cents"  INTEGER,
+        "currency"                      TEXT NOT NULL DEFAULT 'USD',
+        "available"                     BOOLEAN NOT NULL DEFAULT TRUE,
+        "availability_status"           TEXT NOT NULL DEFAULT 'unknown',
+        "price_changed"                 BOOLEAN NOT NULL DEFAULT FALSE,
+        "availability_changed"          BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_new_variant"                BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_removed"                    BOOLEAN NOT NULL DEFAULT FALSE,
+        "pricing_version"               INTEGER NOT NULL DEFAULT 1,
+        "cost_checksum"                 TEXT,
+        "last_synced_at"                TIMESTAMP DEFAULT NOW() NOT NULL,
+        "price_last_changed_at"         TIMESTAMP,
+        "created_at"                    TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"                    TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalog_sync_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_sync_runs" (
+        "id"                      SERIAL PRIMARY KEY,
+        "scope"                   TEXT NOT NULL DEFAULT 'catalogue',
+        "product_type_id"         INTEGER,
+        "source"                  TEXT NOT NULL DEFAULT 'manual',
+        "status"                  TEXT NOT NULL DEFAULT 'running',
+        "products_checked"        INTEGER NOT NULL DEFAULT 0,
+        "variants_checked"        INTEGER NOT NULL DEFAULT 0,
+        "price_changes"           INTEGER NOT NULL DEFAULT 0,
+        "availability_changes"    INTEGER NOT NULL DEFAULT 0,
+        "new_variants"            INTEGER NOT NULL DEFAULT 0,
+        "removed_variants"        INTEGER NOT NULL DEFAULT 0,
+        "sync_failures"           INTEGER NOT NULL DEFAULT 0,
+        "summary_json"            TEXT DEFAULT '{}',
+        "error"                   TEXT,
+        "started_at"              TIMESTAMP DEFAULT NOW() NOT NULL,
+        "finished_at"             TIMESTAMP,
+        "created_at"              TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalog_variant_cost_history",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_variant_cost_history" (
+        "id"                           SERIAL PRIMARY KEY,
+        "product_type_id"              INTEGER NOT NULL,
+        "supplier"                     TEXT NOT NULL DEFAULT 'printify',
+        "supplier_variant_id"          TEXT NOT NULL,
+        "print_area_key"               TEXT NOT NULL DEFAULT 'front',
+        "pricing_version"              INTEGER NOT NULL,
+        "previous_cogs_cents"          INTEGER,
+        "new_cogs_cents"               INTEGER,
+        "previous_shipping_us_cents"   INTEGER,
+        "new_shipping_us_cents"        INTEGER,
+        "change_reason"                TEXT NOT NULL,
+        "sync_run_id"                  INTEGER,
+        "changed_at"                   TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalog_sync_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_sync_events" (
+        "id"                   SERIAL PRIMARY KEY,
+        "product_type_id"      INTEGER,
+        "sync_run_id"          INTEGER,
+        "pricing_version"      INTEGER,
+        "event_type"           TEXT NOT NULL,
+        "supplier_variant_id"  TEXT,
+        "print_area_key"       TEXT,
+        "payload_json"         TEXT DEFAULT '{}',
+        "created_at"           TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -680,6 +784,32 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     sql: `CREATE INDEX IF NOT EXISTS "founder_alerts_shop_idx"
       ON "founder_alerts" ("shop_domain", "created_at")`,
   },
+  {
+    name: "catalog_variant_costs_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_variant_costs_product_type_idx"
+      ON "catalog_variant_costs" ("product_type_id")`,
+  },
+  {
+    name: "catalog_variant_costs_variant_unique",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "catalog_variant_costs_variant_unique"
+      ON "catalog_variant_costs" ("product_type_id", "supplier", "supplier_variant_id", "print_area_key")`,
+  },
+  {
+    name: "catalog_variant_cost_history_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_variant_cost_history_product_idx"
+      ON "catalog_variant_cost_history" ("product_type_id")`,
+  },
+  {
+    name: "catalog_sync_events_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_sync_events_product_idx"
+      ON "catalog_sync_events" ("product_type_id")`,
+  },
+  {
+    name: "catalog_sync_events_run_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_sync_events_run_idx"
+      ON "catalog_sync_events" ("sync_run_id")`,
+  },
+
   {
     name: "design_products_merchant_idx",
     sql: `CREATE INDEX IF NOT EXISTS "design_products_merchant_idx"

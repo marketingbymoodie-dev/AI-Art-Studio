@@ -114,6 +114,20 @@ import {
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
 import {
+  runCatalogueProductSync,
+  getProductIntelligence,
+  listRecentSyncRuns,
+  getVariantCostHistory,
+  ensureBackfillForProductType,
+  syncProductTypeIntelligence,
+  costsResponseFromProductIntelligence,
+} from "./product-intelligence-sync";
+import {
+  parseVariantAvailabilityMap,
+  unavailableVariantKeys,
+  isVariantKeyAvailable,
+} from "@shared/productIntelligence";
+import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
   OVERAGE_PRICE_CENTS,
@@ -6457,14 +6471,24 @@ ${orientationExtra}
           aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
         };
       }),
-      frameColors: frameColors.map((c: any) => ({
-        id: c.id,
-        name: c.name,
-        hex: c.hex,
-        variantAvailable: sizes.some((s: any) =>
-          hasExactVariantMapping(variantMap as VariantMap, s.id, c.id),
-        ),
-      })),
+      frameColors: frameColors.map((c: any) => {
+        const availMap = parseVariantAvailabilityMap(
+          (productTypeToUse as any).variantAvailability,
+        );
+        const hasMap = Object.keys(availMap).length > 0;
+        return {
+          id: c.id,
+          name: c.name,
+          hex: c.hex,
+          variantAvailable: sizes.some((s: any) =>
+            hasExactVariantMapping(variantMap as VariantMap, s.id, c.id),
+          ),
+          // Product Intelligence stock: at least one size in stock for this colour
+          inStock: !hasMap
+            ? true
+            : sizes.some((s: any) => isVariantKeyAvailable(availMap, s.id, c.id)),
+        };
+      }),
       // Determine the label for the color/option selector
       colorLabel: getColorOptionName(frameColors, productTypeToUse.colorOptionName),
       sizeChart: sizeChart || null,
@@ -6475,6 +6499,14 @@ ${orientationExtra}
         safeZoneMargin,
       },
       variantMap,
+      variantAvailability: parseVariantAvailabilityMap(
+        (productTypeToUse as any).variantAvailability,
+      ),
+      unavailableVariantKeys: unavailableVariantKeys(
+        parseVariantAvailabilityMap((productTypeToUse as any).variantAvailability),
+      ),
+      productHealth: (productTypeToUse as any).productHealth || "healthy",
+      lastProductSyncAt: (productTypeToUse as any).lastProductSyncAt || null,
       // Front+back retail tier (Shopify base variants stay at front-only prices).
       // Expand printify: blank keys → Shopify id / size:color so storefront lookups hit
       // even when Resync originally persisted printify-only keys.
@@ -9107,13 +9139,53 @@ ${orientationExtra}
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
-      const { shop: shopRaw, variantId, designId, mockupUrl, price: priceOverride } = req.body;
+      const {
+        shop: shopRaw,
+        variantId,
+        designId,
+        mockupUrl,
+        price: priceOverride,
+        productTypeId: productTypeIdRaw,
+        sizeId,
+        colorId,
+      } = req.body;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }
       if (!mockupUrl.startsWith("https://")) {
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
+      }
+
+      // Product Intelligence OOS guard — refuse shadow create for unavailable size/colour.
+      try {
+        let ptId =
+          productTypeIdRaw != null && String(productTypeIdRaw).trim() !== ""
+            ? parseInt(String(productTypeIdRaw), 10)
+            : NaN;
+        if (!Number.isFinite(ptId) || ptId <= 0) {
+          const designNum = parseInt(String(designId).replace(/\D/g, ""), 10);
+          if (Number.isFinite(designNum) && designNum > 0) {
+            const design = await storage.getDesign(designNum);
+            if (design?.productTypeId) ptId = design.productTypeId;
+          }
+        }
+        if (Number.isFinite(ptId) && ptId > 0 && sizeId) {
+          const pt = await storage.getProductType(ptId);
+          const avail = parseVariantAvailabilityMap((pt as any)?.variantAvailability);
+          if (
+            Object.keys(avail).length > 0 &&
+            !isVariantKeyAvailable(avail, String(sizeId), String(colorId || "default"))
+          ) {
+            return res.status(409).json({
+              success: false,
+              error: "Selected size/color is out of stock",
+              code: "variant_out_of_stock",
+            });
+          }
+        }
+      } catch (oosErr: any) {
+        console.warn("[ShadowProduct] OOS guard skipped:", oosErr?.message || oosErr);
       }
       // Optional retail override for front+back (or other surcharge tiers). Validated below.
       const overridePriceNum =
@@ -10736,6 +10808,20 @@ ${orientationExtra}
   }, 5 * 60 * 1000);
   setInterval(() => {
     runOosCatalogueScan().catch((e: Error) => console.error("[OOS Catalogue Scan] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Daily Product Intelligence sync (COGS + availability + shipping snapshot).
+  // Shares a 20h guard with POST /api/internal/product-intelligence-sync.
+  // Staggered 15 min after boot so it doesn't pile on with the OOS scan.
+  setTimeout(() => {
+    runCatalogueProductSync({ source: "daily" }).catch((e: Error) =>
+      console.error("[Product Intelligence Sync] Startup run error:", e),
+    );
+  }, 15 * 60 * 1000);
+  setInterval(() => {
+    runCatalogueProductSync({ source: "daily" }).catch((e: Error) =>
+      console.error("[Product Intelligence Sync] Interval error:", e),
+    );
   }, 24 * 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern
@@ -16136,11 +16222,6 @@ ${orientationExtra}
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
 
-      const apiToken = merchant.printifyApiToken;
-      if (!apiToken) {
-        return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
-      }
-
       const productTypeId = parseInt(req.params.productTypeId, 10);
       if (!productTypeId) return res.status(400).json({ error: "Invalid product type ID" });
 
@@ -16152,6 +16233,18 @@ ${orientationExtra}
       }
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
+      }
+
+      // Product Intelligence first — avoid Printify temp-product waterfall when DB covers variants.
+      const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
+      if (!forceRefresh) {
+        const fromPi = await costsResponseFromProductIntelligence(productType);
+        if (fromPi) return res.json(fromPi);
+      }
+
+      const apiToken = merchant.printifyApiToken;
+      if (!apiToken) {
+        return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
       }
 
       const variantMap = JSON.parse(productType.variantMap || "{}");
@@ -18846,6 +18939,111 @@ ${orientationExtra}
     return res.json({ ok: true, ...result });
   }));
 
+  /**
+   * POST /api/admin/product-types/:id/product-sync — Product Intelligence sync
+   * for one product (variants, COGS from catalog/cache, shipping, availability).
+   */
+  app.post("/api/admin/product-types/:id/product-sync", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const productTypeId = parseInt(req.params.id, 10);
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    if (!merchant.printifyApiToken) {
+      return res.status(400).json({ error: "Printify is not connected for this merchant." });
+    }
+    if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+      return res.status(400).json({ error: "Product is missing a Printify blueprint/provider." });
+    }
+
+    // Prefer DB-first PI; refresh waterfall costs into printify_costs when empty.
+    await ensureBackfillForProductType(productTypeId);
+    const fresh = await storage.getProductType(productTypeId);
+    const result = await syncProductTypeIntelligence(fresh!, merchant.printifyApiToken, {
+      source: "manual",
+    });
+    return res.json({ success: result.ok, result });
+  }));
+
+  /** POST /api/admin/product-intelligence/sync-all — catalogue Product Sync */
+  app.post("/api/admin/product-intelligence/sync-all", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const result = await runCatalogueProductSync({
+      force: true,
+      source: "manual",
+      skipShipping: req.query.skipShipping === "1",
+    });
+    return res.json({ ok: true, ...result });
+  }));
+
+  /** GET /api/admin/product-intelligence/runs — recent sync runs (operators) */
+  app.get("/api/admin/product-intelligence/runs", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const runs = await listRecentSyncRuns(30);
+    return res.json({ runs });
+  }));
+
+  /** GET /api/admin/product-intelligence/:productTypeId */
+  app.get("/api/admin/product-intelligence/:productTypeId", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const productTypeId = parseInt(req.params.productTypeId, 10);
+    if (!Number.isFinite(productTypeId)) {
+      return res.status(400).json({ error: "Invalid product type id" });
+    }
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    await ensureBackfillForProductType(productTypeId);
+    const data = await getProductIntelligence(productTypeId);
+    return res.json(data);
+  }));
+
+  /** GET /api/admin/product-intelligence/:productTypeId/history */
+  app.get("/api/admin/product-intelligence/:productTypeId/history", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const productTypeId = parseInt(req.params.productTypeId, 10);
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    const history = await getVariantCostHistory(
+      productTypeId,
+      typeof req.query.variantId === "string" ? req.query.variantId : undefined,
+      typeof req.query.printAreaKey === "string" ? req.query.printAreaKey : undefined,
+    );
+    return res.json({ history });
+  }));
+
+  app.post("/api/internal/product-intelligence-sync", asyncHandler(async (req: Request, res: Response) => {
+    const secret = process.env.PRODUCT_SYNC_SECRET || process.env.OOS_SCAN_SECRET;
+    if (!secret) return res.status(404).json({ error: "Not found" });
+    const header = req.header("x-product-sync-secret") || req.header("x-oos-scan-secret");
+    if (header !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const result = await runCatalogueProductSync({
+      force: req.query.force === "1",
+      source: "daily",
+    });
+    return res.json({ ok: true, ...result });
+  }));
+
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
   // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
   app.get("/api/appai/blanks", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
@@ -18970,6 +19168,12 @@ ${orientationExtra}
           oosTotalVariants: pt.oosTotalVariants ?? null,
           lastOosScanAt: pt.lastOosScanAt ?? null,
           printifyProviderName: parseOosProviderName(pt.oosDetail) ?? null,
+          productHealth: (pt as any).productHealth ?? "healthy",
+          lastProductSyncAt: (pt as any).lastProductSyncAt ?? null,
+          variantAvailability: parseVariantAvailabilityMap((pt as any).variantAvailability),
+          unavailableVariantKeys: unavailableVariantKeys(
+            parseVariantAvailabilityMap((pt as any).variantAvailability),
+          ),
         });
       }
       return res.json({ blanks: enriched });

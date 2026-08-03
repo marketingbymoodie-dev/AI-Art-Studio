@@ -146,6 +146,7 @@ export default function AdminProducts() {
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
   const [pullCanonicalMutatingId, setPullCanonicalMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
+  const [productSyncMutatingId, setProductSyncMutatingId] = useState<number | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -423,6 +424,32 @@ export default function AdminProducts() {
     onError: (error: Error) => {
       setRefreshVariantsMutatingId(null);
       toast({ title: "Failed to refresh variants", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const productSyncMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setProductSyncMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/product-sync`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Product Sync failed");
+      return data;
+    },
+    onSuccess: (data) => {
+      setProductSyncMutatingId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      const r = data?.result;
+      toast({
+        title: r?.ok === false ? "Product Sync finished with issues" : "Product Sync complete",
+        description: r?.error
+          ? r.error
+          : `Variants checked: ${r?.variantsChecked ?? 0}. Health: ${r?.productHealth ?? "—"}.`,
+        variant: r?.ok === false ? "destructive" : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      setProductSyncMutatingId(null);
+      toast({ title: "Product Sync failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -893,9 +920,45 @@ export default function AdminProducts() {
                           <div>Blueprint: {pt.printifyBlueprintId || "Custom"}</div>
                         </CardDescription>
                       </div>
-                      <Badge variant="outline" className="text-xs">
-                        {pt.designerType}
-                      </Badge>
+                      <div className="flex flex-col items-end gap-1">
+                        <Badge variant="outline" className="text-xs">
+                          {pt.designerType}
+                        </Badge>
+                        {(() => {
+                          const health = (pt as any).productHealth as string | undefined;
+                          if (!health || health === "healthy") {
+                            return (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+                                data-testid={`badge-health-${pt.id}`}
+                              >
+                                Healthy
+                              </Badge>
+                            );
+                          }
+                          if (health === "needs_review") {
+                            return (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                                data-testid={`badge-health-${pt.id}`}
+                              >
+                                Needs review
+                              </Badge>
+                            );
+                          }
+                          return (
+                            <Badge
+                              variant="destructive"
+                              className="text-[10px]"
+                              data-testid={`badge-health-${pt.id}`}
+                            >
+                              Attention
+                            </Badge>
+                          );
+                        })()}
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -1130,6 +1193,19 @@ export default function AdminProducts() {
                         >
                           <Upload className="h-3 w-3 mr-1" />
                           Create Customizer Page
+                        </Button>
+                      )}
+                      {pt.printifyBlueprintId && pt.printifyProviderId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => productSyncMutation.mutate(pt.id)}
+                          disabled={productSyncMutatingId === pt.id}
+                          title="Sync COGS, shipping, and availability from Printify into Product Intelligence."
+                          data-testid={`button-product-sync-${pt.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${productSyncMutatingId === pt.id ? "animate-spin" : ""}`} />
+                          Product Sync
                         </Button>
                       )}
                       {pt.shopifyProductId && (
