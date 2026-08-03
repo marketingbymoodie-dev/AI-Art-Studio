@@ -43,6 +43,11 @@ export async function renderFlatMockupDataUrl(
   if (includeArtwork && !artwork) return null;
 
   const canvas = document.createElement("canvas");
+  const bg =
+    typeof placerState.backgroundColor === "string" &&
+    /^#[0-9a-fA-F]{6}$/.test(placerState.backgroundColor.trim())
+      ? placerState.backgroundColor.trim()
+      : null;
   renderFlatView({
     target: canvas,
     blank: assets.blank,
@@ -56,6 +61,8 @@ export async function renderFlatMockupDataUrl(
     edgeWrapMode: !!manifest.edgeWrap,
     decorMode: opts?.decorMode === true || !!manifest.decorPerSize,
     fabricWeave: opts?.fabricWeave === true,
+    // Phone cases: customer BG colour must survive colour-swap re-bake.
+    printCanvasBackgroundColor: manifest.edgeWrap ? bg : null,
   });
 
   try {

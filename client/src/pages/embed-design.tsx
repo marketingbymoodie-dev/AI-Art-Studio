@@ -1129,14 +1129,37 @@ function InfoCollapsible({
   );
 }
 
+/** Drop a leaked leading H1/H2 from another product's description HTML. */
+function sanitizeProductDescriptionHtml(
+  html: string,
+  productName: string | null | undefined,
+): string {
+  const raw = String(html || "").trim();
+  if (!raw) return "";
+  const name = String(productName || "").trim().toLowerCase();
+  if (!name) return raw;
+  return raw.replace(
+    /^\s*<(h[1-3])[^>]*>([\s\S]*?)<\/\1>\s*/i,
+    (full, _tag: string, inner: string) => {
+      const heading = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+      if (!heading) return "";
+      // Keep heading only when it clearly refers to this product.
+      if (heading.includes(name) || name.includes(heading)) return full;
+      return "";
+    },
+  );
+}
+
 function ProductInfoSections({
   description,
   sizeChart,
   sizeChartLoading,
   blueprintId,
   className,
-}: ProductInfoSectionsProps) {
-  const hasDetails = !!description;
+  productName,
+}: ProductInfoSectionsProps & { productName?: string | null }) {
+  const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
+  const hasDetails = !!safeDescription;
   const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
   if (!hasDetails && !hasSizeChartArea) return null;
 
@@ -1146,7 +1169,7 @@ function ProductInfoSections({
         <InfoCollapsible title="Product Details">
           <div
             className="prose prose-sm max-w-none text-sm leading-relaxed text-muted-foreground"
-            dangerouslySetInnerHTML={{ __html: description || "" }}
+            dangerouslySetInnerHTML={{ __html: safeDescription }}
           />
         </InfoCollapsible>
       )}
@@ -1261,16 +1284,29 @@ type PostGenGalleryItem =
 
 function formatPostGenMockupLabel(raw: string, fallback: string): string {
   const l = raw.toLowerCase();
-  if (l === "front" || l === "mockup 1") return "Front";
-  if (l === "back" || l === "mockup 2") return "Back";
-  if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
+  // Person / lifestyle first — never collapse these into plain Front/Back.
   if (isFrontPersonMockupLabel(raw)) return "Front Person";
   if (/\bside[\s-]*person\b/i.test(l)) return "Side Person";
   if (/\bback[\s-]*person\b/i.test(l)) return "Back Person";
   if (/\bon[\s-]*person\b/i.test(l)) return "On Person";
+  if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
   if (/lifestyle/i.test(l)) return "Lifestyle";
   if (/(context|room|home|bedroom|wall)/i.test(l)) return "Context";
+  if (l === "front" || l === "mockup 1") return "Front";
+  if (l === "back" || l === "mockup 2") return "Back";
   return raw || fallback;
+}
+
+/** Avoid two carousel chips both reading "Front" (mesh + Printify camera). */
+function uniquifyPostGenMockupLabel(
+  label: string,
+  seenPlainViews: Set<string>,
+): string {
+  if (label === "Front" || label === "Back") {
+    if (seenPlainViews.has(label)) return "Printers Mockup";
+    seenPlainViews.add(label);
+  }
+  return label;
 }
 
 /** Align with server — never treat flatlay "front side" as Lifestyle Context. */
@@ -1298,6 +1334,7 @@ function buildPostGenGalleryItems(
 
   // Prefer front/back first, then always include person cameras (Printers Mockup)
   // even when that exceeds the old 3-slot cap.
+  const seenPlainViews = new Set<string>();
   let printifyEntries: Array<{ url: string; label: string }> = [];
   if (printifyMockupImages.length > 0) {
     const person = printifyMockupImages.filter((img) =>
@@ -1312,14 +1349,20 @@ function buildPostGenGalleryItems(
     );
     printifyEntries = ordered.map((img, i) => ({
       url: img.url,
-      label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+      label: uniquifyPostGenMockupLabel(
+        formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+        seenPlainViews,
+      ),
     }));
   } else {
     printifyEntries = printifyMockups.slice(0, 3).map((url, i) => ({
       url,
-      label: formatPostGenMockupLabel(
-        "",
-        i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`,
+      label: uniquifyPostGenMockupLabel(
+        formatPostGenMockupLabel(
+          "",
+          i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`,
+        ),
+        seenPlainViews,
       ),
     }));
   }
@@ -2335,12 +2378,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatFrontMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
   /** Mesh AOP local front/back — Printers Mockup (person) merge keeps these. */
   const aopBaseMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
-  /** Last AOP Front/Side/Back Person shots — re-attached after placer auto-apply. */
+  /** Last on-demand Printers shots (person and/or lifestyle/context) — re-attached after placer auto-apply. */
   const aopPersonMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
   /**
-   * After Printers Mockup lands, keep selecting Front Person even if placer
-   * auto-apply / primary mockup fetch tries to reset the gallery index.
-   * Cleared when the customer manually steps to Artwork (or a non-person slide).
+   * After Printers Mockup lands, keep selecting that on-demand slide even if
+   * placer auto-apply / primary mockup fetch tries to reset the gallery index.
+   * Cleared when the customer manually steps to Artwork (or a non-on-demand slide).
    */
   const stickAopPersonGalleryRef = useRef(false);
 
@@ -2625,27 +2668,36 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
 
-  // After Printers Mockup, land on Front Person (and recover if apply/mockup
-  // rebuild resets the index). Keep Side/Back Person if the customer already
-  // stepped there.
+  // After Printers Mockup, land on the on-demand slide (Front Person or
+  // pillow lifestyle/context) and recover if apply/mockup rebuild resets the
+  // index. Keep Side/Back Person if the customer already stepped there.
   useEffect(() => {
     if (!stickAopPersonGalleryRef.current) return;
     setSelectedMockupIndex((prev) => {
       const cur = postGenGalleryItems[prev];
-      if (cur?.kind === "mockup" && isPersonMockupLabel(cur.label)) return prev;
+      if (
+        cur?.kind === "mockup" &&
+        isPrintifyOnDemandMockupLabel(cur.label)
+      ) {
+        return prev;
+      }
       const idx = postGenGalleryItems.findIndex(
         (item) =>
-          item.kind === "mockup" && isPersonMockupLabel(item.label),
+          item.kind === "mockup" &&
+          isPrintifyOnDemandMockupLabel(item.label),
       );
       return idx >= 0 ? idx : prev;
     });
   }, [postGenGalleryItems]);
 
-  // Keep stick while the customer is actively viewing a person slide (so a
-  // placement auto-apply does not drop them). Cleared on mode switch / Artwork.
+  // Keep stick while viewing an on-demand Printers/lifestyle slide so a
+  // placement auto-apply does not drop them. Cleared on mode switch / Artwork.
   useEffect(() => {
     const item = postGenGalleryItems[selectedMockupIndex];
-    if (item?.kind === "mockup" && isPersonMockupLabel(item.label)) {
+    if (
+      item?.kind === "mockup" &&
+      isPrintifyOnDemandMockupLabel(item.label)
+    ) {
       stickAopPersonGalleryRef.current = true;
     }
   }, [selectedMockupIndex, postGenGalleryItems]);
@@ -3381,6 +3433,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
           }
           setProductTypeError(null);
+          // Replace sticky iframe displayName from a previous product
+          // (e.g. baseball tee title left on pillow/leggings). Keep a page title
+          // that still looks related to this product type name.
+          if (designerConfig.name) {
+            setActiveProductContext((prev) => {
+              const nextName = String(designerConfig.name);
+              const prevName = String(prev.displayName || "").trim();
+              const prevLower = prevName.toLowerCase();
+              const nextLower = nextName.toLowerCase();
+              const related =
+                !prevName ||
+                prevLower === nextLower ||
+                prevLower.includes(nextLower) ||
+                nextLower.includes(prevLower);
+              if (related) {
+                return {
+                  ...prev,
+                  productTypeId: String(designerConfig.id || prev.productTypeId),
+                };
+              }
+              return {
+                ...prev,
+                displayName: nextName,
+                productTitle: nextName,
+                productTypeId: String(designerConfig.id || prev.productTypeId),
+              };
+            });
+          }
         } else {
           // Designer endpoint failed - show explicit error, NO DEFAULT FALLBACK
           const errorBody = await designerRes.text();
@@ -3539,9 +3619,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Helper to apply a saved design record to the UI state
   const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
     const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
-    const absUrl = abs(imageUrl);
+    // Prefer the job row artwork — never a stale designState.artworkUrl from another product.
+    const preferredUrl =
+      imageUrl ||
+      (typeof ds?.artworkUrl === "string" ? ds.artworkUrl : "") ||
+      "";
+    const absUrl = abs(preferredUrl);
     if (!absUrl) return;
     lastAopPanelUrlsRef.current = null;
+    aopPersonMockupsRef.current = [];
+    aopBaseMockupsRef.current = [];
+    flatFrontMockupsRef.current = [];
+    stickAopPersonGalleryRef.current = false;
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
@@ -3654,11 +3743,74 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (backUrl) flatImages.push({ url: backUrl, label: "back" });
         if (flatImages.length > 0) {
           const flatUrls = flatImages.map((i) => i.url);
+          // Seed so colour-swap re-bake does not wipe restored BG until refresh.
+          flatFrontMockupsRef.current = flatImages;
           setPrintifyMockupImages(flatImages);
           setPrintifyMockups(flatUrls);
           setSelectedMockupIndex(1);
           setMockupsStale(false);
           sendMockupsToParent(flatUrls);
+        }
+      }
+      // Restore Printers Mockup / lifestyle shots saved after on-demand Printify.
+      const savedOnDemand = Array.isArray(ds.printersMockups)
+        ? (ds.printersMockups as Array<{ url?: string; label?: string }>)
+        : Array.isArray(ds.aopPersonMockups)
+          ? (ds.aopPersonMockups as Array<{ url?: string; label?: string }>)
+          : [];
+      if (savedOnDemand.length > 0) {
+        const onDemandImages = savedOnDemand
+          .map((img) => {
+            const url = abs(img.url);
+            if (!url) return null;
+            return {
+              url,
+              label: String(img.label || "printers"),
+            };
+          })
+          .filter((img): img is { url: string; label: string } => !!img);
+        if (onDemandImages.length > 0) {
+          aopPersonMockupsRef.current = onDemandImages.filter((img) =>
+            isPersonMockupLabel(img.label),
+          );
+          setPrintifyMockupImages((prev) => {
+            const bases =
+              prev.length > 0
+                ? prev.filter(
+                    (img) =>
+                      !isPrintifyOnDemandMockupLabel(img.label) &&
+                      /^(front|back|mockup 1|mockup 2)$/i.test(img.label || ""),
+                  )
+                : aopBaseMockupsRef.current.length > 0
+                  ? aopBaseMockupsRef.current
+                  : flatFrontMockupsRef.current;
+            const seen = new Set(bases.map((m) => mockupImageUrlKey(m.url)));
+            const merged = [...bases];
+            for (const extra of onDemandImages) {
+              const key = mockupImageUrlKey(extra.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(extra);
+            }
+            return merged;
+          });
+          setPrintifyMockups((prev) => {
+            const baseUrls =
+              aopBaseMockupsRef.current.length > 0
+                ? aopBaseMockupsRef.current.map((m) => m.url)
+                : flatFrontMockupsRef.current.length > 0
+                  ? flatFrontMockupsRef.current.map((m) => m.url)
+                  : prev.slice(0, 2);
+            const seen = new Set(baseUrls.map(mockupImageUrlKey));
+            const merged = [...baseUrls];
+            for (const extra of onDemandImages) {
+              const key = mockupImageUrlKey(extra.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(extra.url);
+            }
+            return merged;
+          });
         }
       }
     } else {
@@ -4847,16 +4999,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       : "context";
             mergedImages.push({ url: extra.url, label });
           }
-          if (mergePersonViews) {
-            aopPersonMockupsRef.current = extras.map((e) => ({
-              url: e.url,
-              label: e.label,
-            }));
-            stickAopPersonGalleryRef.current = true;
-          } else if (mergeContextOnly || mergeProductMockups) {
-            // Keep the in-situ / printers slide selected after leaving the placer.
-            stickAopPersonGalleryRef.current = true;
-          }
+          // Keep person AND pillow lifestyle/product cameras across placer Apply.
+          aopPersonMockupsRef.current = extras.map((e) => ({
+            url: e.url,
+            label: e.label,
+          }));
+          stickAopPersonGalleryRef.current = true;
           const mergedUrls = mergedImages.map((m) => m.url);
           setPrintifyMockupImages(mergedImages);
           setPrintifyMockups(mergedUrls);
@@ -4882,6 +5030,59 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             fronts.length,
             mergePersonViews ? "AOP base view(s)" : "flat front(s)",
           );
+          // Persist so Saved Designs / reopen keep Printers + lifestyle slides.
+          // (This path used to return before save-mockups, so person shots vanished.)
+          if (isStorefront && savedJobIdRef.current && shopDomain) {
+            const jobId = savedJobIdRef.current;
+            const persistUrls = mergedUrls.filter(
+              (u) =>
+                typeof u === "string" &&
+                (u.startsWith("http://") || u.startsWith("https://")),
+            );
+            if (persistUrls.length > 0) {
+              void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  jobId,
+                  shop: shopDomain,
+                  mockupUrls: persistUrls,
+                  ...(productId && baseVariantForShadowRef.current
+                    ? {
+                        baseProductId: productId,
+                        baseVariantId: baseVariantForShadowRef.current,
+                      }
+                    : {}),
+                }),
+              }).catch((e) => {
+                console.error("[Mockups] on-demand save-mockups failed:", e);
+              });
+            }
+            void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId,
+                shop: shopDomain,
+                designState: {
+                  printersMockups: extras.map((e) => ({
+                    url: e.url,
+                    label: e.label,
+                  })),
+                  ...(mergePersonViews
+                    ? {
+                        aopPersonMockups: extras.map((e) => ({
+                          url: e.url,
+                          label: e.label,
+                        })),
+                      }
+                    : {}),
+                },
+              }),
+            }).catch((e) => {
+              console.error("[Mockups] on-demand save-state failed:", e);
+            });
+          }
           contextMergeOutcome = { ok: true, contextCount: extras.length };
           return;
         }
@@ -4925,10 +5126,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPrintifyMockups(finalUrls);
         setPrintifyMockupImages(finalImages);
         if (stickAopPersonGalleryRef.current) {
-          const personIdx = finalImages.findIndex((m: { label: string }) =>
-            isPersonMockupLabel(m.label),
+          const onDemandIdx = finalImages.findIndex((m: { label: string }) =>
+            isPrintifyOnDemandMockupLabel(m.label),
           );
-          setSelectedMockupIndex(personIdx >= 0 ? 1 + personIdx : 1);
+          setSelectedMockupIndex(onDemandIdx >= 0 ? 1 + onDemandIdx : 1);
         } else {
           setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         }
@@ -7848,23 +8049,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (backHosted) images.push({ url: backHosted, label: "back" });
 
       aopBaseMockupsRef.current = images;
-      const withPerson = [...images, ...aopPersonMockupsRef.current];
-      const withPersonUrls = withPerson.map((i) => i.url);
-      setPrintifyMockupImages(withPerson);
-      setPrintifyMockups(withPersonUrls);
+      // Placement-only apply clears on-demand Printers shots unless we are
+      // still stuck on a Printers/lifestyle slide (or about to refresh them).
+      if (!stickAopPersonGalleryRef.current) {
+        aopPersonMockupsRef.current = [];
+      }
+      const withOnDemand = [...images, ...aopPersonMockupsRef.current];
+      const withOnDemandUrls = withOnDemand.map((i) => i.url);
+      setPrintifyMockupImages(withOnDemand);
+      setPrintifyMockups(withOnDemandUrls);
       setSelectedMockupIndex((prev) => {
-        // Stick keeps Printers Mockup after placement edits; mode switch clears
-        // stick first so apply lands on Artwork / live editor.
+        // Stick keeps Printers Mockup (person or pillow lifestyle) after
+        // placement edits; mode switch clears stick so apply lands on live editor.
         if (
           !stickAopPersonGalleryRef.current ||
           aopPersonMockupsRef.current.length === 0
         ) {
           return 0;
         }
-        const personIdx = withPerson.findIndex((m) =>
-          isPersonMockupLabel(m.label),
+        const onDemandIdx = withOnDemand.findIndex((m) =>
+          isPrintifyOnDemandMockupLabel(m.label),
         );
-        return personIdx >= 0 ? 1 + personIdx : prev;
+        return onDemandIdx >= 0 ? 1 + onDemandIdx : prev;
       });
       // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
       // ATC. The hoodie placer has no separate "pattern" — the local
@@ -12473,6 +12679,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 <ProductInfoSections
                   className="hidden md:block"
                   description={productTypeConfig?.description}
+                  productName={productTypeConfig?.name || displayName}
                   sizeChart={sizeChart}
                   sizeChartLoading={sizeChartLoading}
                   blueprintId={productTypeConfig?.printifyBlueprintId}
@@ -12603,6 +12810,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Previous"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            // Clear stick first so a concurrent gallery rebuild
+                            // cannot snap the index back to Front Person mid-step.
+                            stickAopPersonGalleryRef.current = false;
                             const next = stepPostGenGalleryIndex(
                               i,
                               -1,
@@ -12627,6 +12837,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Next"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            stickAopPersonGalleryRef.current = false;
                             const next = stepPostGenGalleryIndex(
                               i,
                               1,
@@ -12962,9 +13173,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Previous"
                         onClick={() =>
-                          setSelectedMockupIndex((i) =>
-                            stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
-                          )
+                          setSelectedMockupIndex((i) => {
+                            stickAopPersonGalleryRef.current = false;
+                            return stepPostGenGalleryIndex(
+                              i,
+                              -1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                          })
                         }
                         className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                         data-testid="button-flat-gallery-prev"
@@ -12975,9 +13192,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Next"
                         onClick={() =>
-                          setSelectedMockupIndex((i) =>
-                            stepPostGenGalleryIndex(i, 1, postGenGalleryItems, true),
-                          )
+                          setSelectedMockupIndex((i) => {
+                            stickAopPersonGalleryRef.current = false;
+                            return stepPostGenGalleryIndex(
+                              i,
+                              1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                          })
                         }
                         className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
                         data-testid="button-flat-gallery-next"
@@ -13396,9 +13619,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       type="button"
                       aria-label="Previous"
                     onClick={() =>
-                      setSelectedMockupIndex((i) =>
-                        stepPostGenGalleryIndex(i, -1, postGenGalleryItems, false),
-                      )
+                      setSelectedMockupIndex((i) => {
+                        // Explicit carousel step — don't let person-stick snap back.
+                        stickAopPersonGalleryRef.current = false;
+                        return stepPostGenGalleryIndex(
+                          i,
+                          -1,
+                          postGenGalleryItems,
+                          false,
+                        );
+                      })
                     }
                       className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                     >
@@ -13408,9 +13638,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       type="button"
                       aria-label="Next"
                     onClick={() =>
-                      setSelectedMockupIndex((i) =>
-                        stepPostGenGalleryIndex(i, 1, postGenGalleryItems, false),
-                      )
+                      setSelectedMockupIndex((i) => {
+                        stickAopPersonGalleryRef.current = false;
+                        return stepPostGenGalleryIndex(
+                          i,
+                          1,
+                          postGenGalleryItems,
+                          false,
+                        );
+                      })
                     }
                       className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                     >
@@ -13654,6 +13890,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <ProductInfoSections
                 className="md:hidden border-t pt-4 mt-2"
                 description={productTypeConfig?.description}
+                productName={productTypeConfig?.name || displayName}
                 sizeChart={sizeChart}
                 sizeChartLoading={sizeChartLoading}
                 blueprintId={productTypeConfig?.printifyBlueprintId}

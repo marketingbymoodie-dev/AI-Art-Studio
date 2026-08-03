@@ -74,6 +74,16 @@ describe("stepPostGenGalleryIndex", () => {
       }),
     ).toBe(true);
   });
+
+  it("steps Front → Front Person in one click when placer is closed", () => {
+    const itemsClosed: PostGenGalleryNavItem[] = [
+      { kind: "artwork", label: "Artwork" },
+      { kind: "mockup", url: "https://x.example/front.png", label: "Front" },
+      { kind: "mockup", url: "https://x.example/fp.png", label: "Front Person" },
+      { kind: "mockup", url: "https://x.example/sp.png", label: "Side Person" },
+    ];
+    expect(stepPostGenGalleryIndex(1, 1, itemsClosed, false)).toBe(2);
+  });
 });
 
 describe("isFlatPlacerGalleryReachable", () => {

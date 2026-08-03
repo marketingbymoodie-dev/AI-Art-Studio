@@ -474,13 +474,17 @@ export function ProductMockup({
     }
 
     // Composite mockup (Printify / flat on-the-fly) — use object-contain for
-    // edge-wrap previews so the full grey print canvas is visible (not cropped).
+    // edge-wrap previews so the full print canvas is visible (not cropped).
     if (mockupUrl) {
       return (
         <img
           src={mockupUrl}
           alt="Product mockup"
-          className={`absolute inset-0 w-full h-full ${mockupFit === "contain" ? "object-contain bg-[#d4d4d4]" : "object-cover"}`}
+          className={`absolute inset-0 w-full h-full transition-transform duration-200 ease-out ${
+            mockupFit === "contain"
+              ? "object-contain bg-white"
+              : "object-cover"
+          } ${showMockupZoomPreview ? "group-hover/mockup:scale-[1.03]" : ""}`}
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"
@@ -655,6 +659,7 @@ export function ProductMockup({
     }
   };
 
+  const [zoomOpen, setZoomOpen] = useState(false);
   const showTransformOverlay = !!imageUrl && enableDrag && !mockupUrl && !isLoading;
   // Composite mockup slides only — never on Artwork drag or while loading.
   const showMockupZoomPreview = !!mockupUrl && !isLoading && !enableDrag;
@@ -673,10 +678,23 @@ export function ProductMockup({
   return (
     <div
       ref={containerRef}
-      className="relative rounded-md w-full h-full"
+      className={`relative rounded-md w-full h-full${
+        showMockupZoomPreview ? " group/mockup cursor-zoom-in" : ""
+      }`}
       style={{ touchAction }}
       data-testid="product-mockup"
       data-appai-wheel-forward={isDesktopEmbed ? "true" : undefined}
+      title={showMockupZoomPreview ? "Click to zoom" : undefined}
+      onClick={
+        showMockupZoomPreview
+          ? (e) => {
+              // Ignore clicks on gallery chrome that bubble through.
+              const t = e.target as HTMLElement | null;
+              if (t?.closest?.("button,a,[role='button']")) return;
+              setZoomOpen(true);
+            }
+          : undefined
+      }
     >
       {renderProductMockup()}
       {showTransformOverlay && (
@@ -697,7 +715,12 @@ export function ProductMockup({
         </div>
       )}
       {showMockupZoomPreview && (
-        <MockupZoomPreview imageUrl={mockupUrl!} enabled />
+        <MockupZoomPreview
+          imageUrl={mockupUrl!}
+          enabled
+          open={zoomOpen}
+          onOpenChange={setZoomOpen}
+        />
       )}
     </div>
   );
