@@ -35,6 +35,7 @@ import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import PlanPicker from "./plan-picker";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 import CustomizerPageStyleSelector from "@/components/admin/CustomizerPageStyleSelector";
+import { useSetupStatus } from "@/hooks/use-setup-status";
 import {
   defaultStyleConfigForDesignerType,
   parseCustomizerPageStyleConfig,
@@ -53,9 +54,15 @@ interface CustomizerPage {
   baseProductTitle: string | null;
   baseVariantTitle: string | null;
   baseProductPrice: string | null;
-  status: "active" | "disabled";
+  status: "preview" | "active" | "disabled";
   styleConfig?: CustomizerPageStyleConfig | null;
   createdAt: string;
+}
+
+function statusBadgeLabel(status: CustomizerPage["status"]): string {
+  if (status === "active") return "Live";
+  if (status === "preview") return "Preview";
+  return "Disabled";
 }
 
 interface PagesResponse {
@@ -211,6 +218,8 @@ function formatStyleConfigSummary(
 export default function AdminCustomizerPages() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
+  const { data: setupStatus } = useSetupStatus();
+  const printifyConnected = !!setupStatus?.printifyConnected;
 
   const [createOpen, setCreateOpen] = useState(false);
   // Deep-link from Products page ("Create Customizer Page" button):
@@ -219,6 +228,15 @@ export default function AdminCustomizerPages() {
     const raw = new URLSearchParams(window.location.search).get("createForProductType");
     const parsed = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(parsed) ? parsed : null;
+  });
+  // Catalogue "Create Page" / "Add to store" deep-links.
+  const [pendingCreateBlueprintId, setPendingCreateBlueprintId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("createFromBlueprint");
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  });
+  const [pendingPromotePageId, setPendingPromotePageId] = useState<string | null>(() => {
+    return new URLSearchParams(window.location.search).get("promote");
   });
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
@@ -305,8 +323,8 @@ export default function AdminCustomizerPages() {
 
   // Open the create wizard as soon as we know a deep-linked product is pending.
   useEffect(() => {
-    if (pendingCreateProductTypeId != null) setCreateOpen(true);
-  }, [pendingCreateProductTypeId]);
+    if (pendingCreateProductTypeId != null || pendingCreateBlueprintId != null) setCreateOpen(true);
+  }, [pendingCreateProductTypeId, pendingCreateBlueprintId]);
 
   // Once blanks have loaded, pre-select the deep-linked product and clear the query param.
   useEffect(() => {
@@ -321,6 +339,26 @@ export default function AdminCustomizerPages() {
     url.searchParams.delete("createForProductType");
     window.history.replaceState({}, "", url.toString());
   }, [pendingCreateProductTypeId, blanksData]);
+
+  // Catalogue Create Page: pre-select blank by Printify blueprint id.
+  useEffect(() => {
+    if (pendingCreateBlueprintId == null) return;
+    if (!blanksData?.blanks) return;
+    const match = blanksData.blanks.find((b) => b.printifyBlueprintId === pendingCreateBlueprintId);
+    if (match) {
+      setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+      setCreateOpen(true);
+    } else {
+      toast({
+        title: "Preview this product first",
+        description: "Open Products Catalogue, Preview the product once, then Create Page.",
+      });
+    }
+    setPendingCreateBlueprintId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("createFromBlueprint");
+    window.history.replaceState({}, "", url.toString());
+  }, [pendingCreateBlueprintId, blanksData, toast]);
 
   const { data: adminStyles = [] } = useQuery<Array<{ id: number; name: string; category?: string | null }>>({
     queryKey: ["/api/admin/styles"],
@@ -390,6 +428,40 @@ export default function AdminCustomizerPages() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] }),
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
+
+  // Add to store: promote an existing Preview page to Live.
+  useEffect(() => {
+    if (!pendingPromotePageId || !pagesData?.pages) return;
+    const page = pagesData.pages.find((p) => String(p.id) === String(pendingPromotePageId));
+    const url = new URL(window.location.href);
+    url.searchParams.delete("promote");
+    window.history.replaceState({}, "", url.toString());
+    setPendingPromotePageId(null);
+    if (!page) {
+      toast({ title: "Page not found", description: "That preview page is no longer available.", variant: "destructive" });
+      return;
+    }
+    if (page.status === "active") {
+      toast({ title: "Already Live", description: `"${page.title}" is already Live for customers.` });
+      return;
+    }
+    if (!printifyConnected) {
+      toast({
+        title: "Connect Printify first",
+        description: "Connect Printify below, then set this page Live.",
+        variant: "destructive",
+      });
+      return;
+    }
+    toggleMutation.mutate(
+      { id: page.id, status: "active" },
+      {
+        onSuccess: () =>
+          toast({ title: "Page is Live", description: `"${page.title}" is now visible to customers.` }),
+      },
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when promote deep-link + pages are ready
+  }, [pendingPromotePageId, pagesData, printifyConnected]);
 
   const scanStockMutation = useMutation({
     mutationFn: async (productTypeId: number) => {
@@ -1037,7 +1109,7 @@ export default function AdminCustomizerPages() {
               Customizer Pages
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Create storefront pages where customers can generate custom designs.
+              Manage Preview, Live, and Disabled pages. Connect Printify before setting a page Live.
             </p>
           </div>
 
@@ -1919,6 +1991,24 @@ export default function AdminCustomizerPages() {
           )}
         </div>
 
+        {!printifyConnected && (
+          <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium">Connect Printify to go Live</p>
+                <p className="text-sm text-muted-foreground">
+                  Preview pages are for you only. Add your Printify API token in Settings before
+                  customers can see a Live page and orders can be fulfilled.
+                </p>
+              </div>
+              <Button onClick={() => navigate("/admin/settings")} data-testid="button-connect-printify-banner">
+                <Factory className="h-4 w-4 mr-2" />
+                Connect Printify
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Reauth Banner */}
         {reauthData && (
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">
@@ -2072,8 +2162,16 @@ export default function AdminCustomizerPages() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold">{page.title}</span>
-                            <Badge variant={page.status === "active" ? "default" : "secondary"}>
-                              {page.status}
+                            <Badge
+                              variant={
+                                page.status === "active"
+                                  ? "default"
+                                  : page.status === "preview"
+                                    ? "outline"
+                                    : "secondary"
+                              }
+                            >
+                              {statusBadgeLabel(page.status)}
                             </Badge>
                             {oosBadgeLabel && (
                               <Badge
@@ -2123,7 +2221,13 @@ export default function AdminCustomizerPages() {
                             variant="ghost"
                             size="icon"
                             disabled={toggleMutation.isPending}
-                            title={page.status === "active" ? "Disable page" : "Enable page"}
+                            title={
+                              page.status === "active"
+                                ? "Disable page"
+                                : page.status === "preview"
+                                  ? "Set Live"
+                                  : "Set Live"
+                            }
                             onClick={() =>
                               toggleMutation.mutate({
                                 id: page.id,

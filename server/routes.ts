@@ -18100,11 +18100,18 @@ ${orientationExtra}
       }
     }
 
-    // Plan limit check - only for ACTIVE pages
+    // Plan limit check - only for ACTIVE (Live) pages
     const activeCount = await storage.countActiveCustomizerPages(shop);
     const { allowed, limit } = canCreatePage(plan.planName, activeCount);
-    
-    // We allow creating INACTIVE pages even if over limit
+
+    // Create Page wizard goes Live — requires Printify + an available Live slot.
+    // Over-limit merchants can still create a disabled page and enable later.
+    if (allowed && !isPrintifyConnected(merchant)) {
+      return res.status(400).json({
+        error: "Connect Printify in Settings before creating a Live customizer page.",
+        code: "PRINTIFY_NOT_CONNECTED",
+      });
+    }
     const initialStatus = allowed ? "active" : "disabled";
 
     // Resolve variant + product info via Admin API.
@@ -18504,25 +18511,32 @@ ${orientationExtra}
     }
     if (req.body.status !== undefined) {
       const s = req.body.status;
-      if (s !== "active" && s !== "disabled") {
-        return res.status(400).json({ error: 'Status must be "active" or "disabled"' });
+      if (s !== "active" && s !== "disabled" && s !== "preview") {
+        return res.status(400).json({ error: 'Status must be "preview", "active", or "disabled"' });
       }
-      
+
       if (s === "active" && dbPage.status !== "active") {
-        // Plan limit check
+        const merchantForLive = await storage.getMerchantByShop(shop);
+        if (!isPrintifyConnected(merchantForLive)) {
+          return res.status(400).json({
+            error: "Connect Printify in Settings before setting a page Live.",
+            code: "PRINTIFY_NOT_CONNECTED",
+          });
+        }
+        // Plan limit check — Live (active) pages only
         const plan = getEffectivePlan(installation as any, shop);
         const activeCount = await storage.countActiveCustomizerPages(shop);
         const { allowed, limit } = canCreatePage(plan.planName, activeCount);
         if (!allowed) {
           return res.status(402).json({
-            error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} active customizer page${limit === 1 ? "" : "s"}. Upgrade to activate more.`,
+            error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} Live customizer page${limit === 1 ? "" : "s"}. Upgrade to set more Live.`,
             limit,
             activeCount,
             planName: plan.planName,
           });
         }
       }
-      
+
       updates.status = s;
     }
 
@@ -19522,7 +19536,9 @@ ${orientationExtra}
       baseProductPrice: p.baseProductPrice,
       status: p.status,
       publiclyMountable:
-        p.status === "active" && (printifyConnected || verifyPreviewToken(previewToken, shop, p.handle)),
+        (p.status === "active" && printifyConnected) ||
+        ((p.status === "active" || p.status === "preview") &&
+          verifyPreviewToken(previewToken, shop, p.handle)),
     }));
 
     // Include fallback URL so embed can redirect disabled-page visitors
@@ -19551,16 +19567,39 @@ ${orientationExtra}
         : "";
       if (bare) page = await storage.getCustomizerPageByHandle(bare, handle);
     }
-    if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
+    if (!page) return res.status(404).json({ error: "Customizer page not found" });
 
     const installation = await storage.getShopifyInstallationByShop(shop);
-
-    // Locked setup-rail rule: no public customizer without Printify connected.
-    // A merchant's own signed preview link (appai_preview) bypasses this so
-    // they can see + tester-generate on the page before connecting.
     const merchantForGate = await storage.getMerchantByShop(shop);
     const previewOk = verifyPreviewToken(req.query.appai_preview as string | undefined, shop, page.handle);
-    if (!isPrintifyConnected(merchantForGate) && !previewOk) {
+    // Saved-design reopen while page is disabled: allow config load for ATC, not fresh design.
+    const savedDesignReopen = String(req.query.savedDesignId || "").trim().length > 0;
+    const pageLive = page.status === "active";
+    const pagePreview = page.status === "preview";
+    const pageDisabled = page.status === "disabled";
+
+    if (pagePreview && !previewOk) {
+      return res.status(404).json({
+        error: "Customizer page not found",
+        code: "PAGE_NOT_LIVE",
+        fallbackUrl: installation?.customizerHubUrl ?? "/",
+      });
+    }
+    if (pageDisabled && !savedDesignReopen && !previewOk) {
+      return res.status(404).json({
+        error: "Customizer page not found",
+        code: "PAGE_DISABLED",
+        fallbackUrl: installation?.customizerHubUrl ?? "/",
+        freshDesignAllowed: false,
+      });
+    }
+    if (!pageLive && !pagePreview && !pageDisabled) {
+      return res.status(404).json({ error: "Customizer page not found" });
+    }
+
+    // Locked setup-rail rule: no public customizer without Printify connected.
+    // Merchant preview token or saved-design reopen bypasses for limited access.
+    if (pageLive && !isPrintifyConnected(merchantForGate) && !previewOk) {
       return res.status(404).json({
         error: "Customizer page not found",
         code: "PRINTIFY_NOT_CONNECTED",
@@ -19703,6 +19742,7 @@ ${orientationExtra}
       id: page.id,
       handle: page.handle,
       title: page.title,
+      status: page.status,
       baseVariantId: page.baseVariantId,
       baseProductId: page.baseProductId ?? null,
       baseProductHandle: (page as any).baseProductHandle ?? null,
@@ -19716,6 +19756,8 @@ ${orientationExtra}
       stylePresets,
       styleConfig: pageStyleConfig,
       productPublished,
+      // Disabled pages: saved designs may ATC; new blank sessions cannot start.
+      freshDesignAllowed: page.status === "active" || page.status === "preview",
     });
   }));
 
@@ -20266,9 +20308,8 @@ ${orientationExtra}
       handle = `${baseHandle}-${suffix++}`;
     }
 
-    const activeCount = await storage.countActiveCustomizerPages(shop);
-    const { allowed: pageAllowed } = canCreatePage(plan.planName, activeCount);
-    const initialStatus = pageAllowed ? "active" : "disabled";
+    // Setup / catalogue Preview always creates a draft page — does not consume Live plan slots.
+    const initialStatus = "preview";
 
     const pageBody = await shopifyApiCall(shop, installation.accessToken, "pages.json", {
       method: "POST",

@@ -844,9 +844,9 @@ export default function AdminProducts() {
       <div className="space-y-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold" data-testid="text-products-title">Products</h1>
+            <h1 className="text-2xl font-bold" data-testid="text-products-title">Products Catalogue</h1>
             <p className="text-muted-foreground">
-              Activate a ready-made customizer product, then manage pricing and variants below.
+              Browse ready-to-go products, Create Page to go Live, then manage pricing and variants below.
             </p>
           </div>
           <Button
@@ -855,16 +855,16 @@ export default function AdminProducts() {
             data-testid="button-import-printify"
           >
             <Download className="h-4 w-4 mr-2" />
-            Advanced import
+            Product settings
           </Button>
         </div>
 
-        <CatalogActivateSection />
+        <CatalogActivateSection mode="catalogue" />
 
         <div>
           <h2 className="text-lg font-semibold mb-1">Your product types</h2>
           <p className="text-sm text-muted-foreground mb-4">
-            Activated products appear here for pricing, variants, and Shopify sync.
+            Previewed and Live products appear here for pricing, variants, and Shopify sync.
           </p>
         </div>
 
@@ -1272,7 +1272,7 @@ export default function AdminProducts() {
               <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
               <h3 className="font-medium mb-2">No product types yet</h3>
               <p className="text-sm text-muted-foreground mb-4">
-                Activate a product from the catalog above to get started.
+                Preview or Create Page from the catalogue above to get started.
               </p>
             </CardContent>
           </Card>
@@ -1281,7 +1281,7 @@ export default function AdminProducts() {
         <Dialog open={printifyImportOpen} onOpenChange={setPrintifyImportOpen}>
           <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Advanced Printify import</DialogTitle>
+              <DialogTitle>Product settings — Printify import</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">

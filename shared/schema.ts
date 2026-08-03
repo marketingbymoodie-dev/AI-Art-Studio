@@ -746,7 +746,8 @@ export const customizerPages = pgTable("customizer_pages", {
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
   styleConfig: json("style_config"),
-  status: text("status").notNull().default("active"),  // active | disabled
+  /** preview = merchant-only draft; active = Live; disabled = off (settings retained). */
+  status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

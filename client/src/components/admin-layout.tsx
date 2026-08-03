@@ -49,7 +49,7 @@ interface AdminLayoutProps {
 const menuItems = [
   { title: "Dashboard", url: "/admin", icon: BarChart3 },
   { title: "Setup", url: "/admin/setup", icon: Sparkles },
-  { title: "Products Import", url: "/admin/products", icon: Package },
+  { title: "Products Catalogue", url: "/admin/products", icon: Package },
   { title: "Art Generator Tester", url: "/admin/create-product", icon: Plus },
   { title: "Customizer Pages", url: "/admin/customizer-pages", icon: LayoutTemplate },
   { title: "Styles", url: "/admin/styles", icon: Palette },

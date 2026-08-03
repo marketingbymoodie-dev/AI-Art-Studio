@@ -2,8 +2,8 @@
 
 Replaces the old "import from Printify → create product → create page" manual
 flow for brand-new merchants with a forced-progression, Shopify-first rail:
-install → enable App Embed → instantly activate a platform-catalogue product
-→ preview it yourself → connect Printify to go live.
+install → enable App Embed → **Preview** a platform-catalogue product →
+connect Printify → set pages **Live** on Customizer Pages.
 
 Goal: a brand-new merchant can see a working customizer page **before**
 they've touched Printify at all, while making it structurally impossible to
@@ -23,42 +23,50 @@ customers land on an unfulfillable page.
    enabled it" to record `shopify_installations.embed_confirmed_at`. This is
    an honesty-system confirmation, not a hard technical check — there is no
    reliable server-side way to detect App Embed on/off state.
-3. **Choose a Customizer Page product** — merchant picks any published entry
-   from the platform catalogue (`platform_catalog_blueprints`, same table
-   used by the merchant/operator Printify-import flow). Activation uses the
-   **platform's own** `PRINTIFY_API_TOKEN` (catalog reads only — blueprint
-   print-providers, blueprint options) so it works before the merchant has
-   any Printify account. A Shopify product + Shopify page + `customizerPage`
-   row are created in one shot; "See your page" opens a signed
-   merchant-preview link.
-4. **Connect Printify** — required before the page is public. Until this
-   happens: the page is invisible to real customers (proxy/embed gate) and
-   generation is capped at the trial/tester allowance (quota gate). A daily
-   nag modal reminds the merchant; "Not now" only dismisses the modal for the
-   rest of the day — it never unlocks the page or the higher quota.
+3. **Preview a Customizer Product** — merchant picks any published entry
+   from the platform catalogue (`platform_catalog_blueprints`). Preview uses
+   the **platform's own** `PRINTIFY_API_TOKEN` (catalog reads only) so it
+   works before the merchant has any Printify account. A Shopify product +
+   Shopify page + `customizer_pages` row with `status: "preview"` are created;
+   **Preview Your Page** opens a signed merchant-preview link. Merchants may
+   Preview many products (preview pages do not consume Live plan slots).
+4. **Connect Printify → go Live** — required before customers see the page.
+   Connect Printify from Customizer Pages (or Settings). Then **Create Page** /
+   **Add to store** / toggle **Set Live** on Customizer Pages. Live requires
+   Printify + an available plan slot (`status: "active"` only).
+
+## Page statuses
+
+| Status | Who sees it | Plan slot | Fresh design |
+|---|---|---|---|
+| `preview` | Merchant via signed preview token only | No | Yes (on preview link) |
+| `active` (Live) | Customers (Printify must be connected) | Yes | Yes |
+| `disabled` | Saved-design reopen only (`savedDesignId`) | No | No — ATC only |
 
 ## Locked rules (do not regress)
 
-- **No public page without Printify.** A customizer page is never reachable
-  by an anonymous storefront visitor until `isPrintifyConnected(merchant)` is
-  true, *unless* the request carries a valid signed `appai_preview` token
-  scoped to that exact shop + page handle (the merchant's own "See your page"
-  link). See `server/printify-connection.ts` (`isPrintifyConnected`) and
-  `server/merchant-setup.ts` (`signPreviewToken` / `verifyPreviewToken` /
-  `buildPreviewUrl`).
+- **No public Live page without Printify.** An `active` customizer page is
+  never reachable by an anonymous storefront visitor until
+  `isPrintifyConnected(merchant)` is true, *unless* the request carries a
+  valid signed `appai_preview` token. Preview pages are never public.
+- **Plan limits count Live (`active`) pages only** — not preview or disabled.
 - **Generation is capped at the trial/tester bucket (20 lifetime) until
-  Printify is connected** — regardless of the merchant's paid plan. This
-  prevents tyre-kicker abuse of a page nobody can actually fulfil yet. See
+  Printify is connected** — regardless of the merchant's paid plan. See
   `resolveQuotaContext()` in `server/generation-quota.ts`.
 - **"Not now" is a dismissal, not an unlock.** Only closes the nag modal for
   the rest of the calendar day (`localStorage`, `appai_printify_nag_dismissed_date`
-  in `PrintifyNagModal.tsx`). It never flips a merchant into a "manual
-  fulfillment, still public" mode — orders can't be filled without a
-  connected Printify account, so the page stays merchant-only.
-- **Enabling the App Embed cannot be automated.** It's a Shopify safety
-  requirement enforced by Shopify itself (manual merchant approval in the
-  theme editor). Don't try to "detect and auto-enable" this — surface it
-  clearly instead (info tooltip on step 2 of `/admin/setup`).
+  in `PrintifyNagModal.tsx`).
+- **Enabling the App Embed cannot be automated.**
+- **Disabled + saved designs:** ATC OK; **Start Fresh Design** / new generate
+  blocked (`freshDesignAllowed: false` from proxy → theme embed → iframe).
+
+## Admin surfaces
+
+| Surface | Role |
+|---|---|
+| Setup | Multi-preview cards; Preview Your Page; link to Customizer Pages for Printify |
+| Products Catalogue | Browse catalogue; Details; Preview / Create Page / Add to store (no Connect Printify here) |
+| Customizer Pages | Connect Printify banner; Preview / Live / Disabled badges; Create Page wizard → Live; edit settings |
 
 ## Server pieces
 
@@ -66,12 +74,13 @@ customers land on an unfulfillable page.
 |---|---|
 | `isPrintifyConnected` (dependency-free) | `server/printify-connection.ts` |
 | Preview JWT sign/verify, `ensureTrialStarted`, `getMerchantSetupStatus` | `server/merchant-setup.ts` |
-| `GET /api/appai/setup/status` — silently starts the trial, returns rail readiness flags | `server/routes.ts` |
-| `POST /api/appai/setup/confirm-embed` — records `embedConfirmedAt` | `server/routes.ts` |
-| `GET /api/appai/setup/catalog` — published platform catalogue for instant activation | `server/routes.ts` |
-| `POST /api/appai/setup/activate-product` — platform-token import + auto Shopify product + page | `server/routes.ts` |
-| `GET /api/appai/setup/preview-url` — mint a fresh preview link for an existing page | `server/routes.ts` |
-| Printify-connected gate on `GET /api/proxy/customizer-page` + `/customizer-pages` | `server/routes.ts` |
+| `GET /api/appai/setup/status` | `server/routes.ts` |
+| `POST /api/appai/setup/confirm-embed` | `server/routes.ts` |
+| `GET /api/appai/setup/catalog` | `server/routes.ts` |
+| `POST /api/appai/setup/activate-product` — creates `status: "preview"` | `server/routes.ts` |
+| `GET /api/appai/setup/preview-url` | `server/routes.ts` |
+| Printify + status gates on `GET /api/proxy/customizer-page` (`freshDesignAllowed`) | `server/routes.ts` |
+| PATCH status `preview` \| `active` \| `disabled` (Live needs Printify + plan) | `server/routes.ts` |
 | Trial/tester quota force in `resolveQuotaContext()` | `server/generation-quota.ts` |
 | OAuth → `/admin/setup` deep link | `server/shopify.ts` |
 | `embed_confirmed_at` column | `shared/schema.ts`, `server/migrations/startup.ts` |
@@ -80,41 +89,10 @@ customers land on an unfulfillable page.
 
 | Piece | File |
 |---|---|
-| Setup rail page (4 steps) | `client/src/pages/admin/setup.tsx` |
-| Shared setup-status query hook | `client/src/hooks/use-setup-status.ts` |
-| Daily Printify nag modal (mounted globally in the admin layout) | `client/src/components/admin/PrintifyNagModal.tsx` |
-| Pure-CSS confetti burst for "See your page" | `client/src/components/admin/ConfettiBurst.tsx` |
-| Sidebar "Setup" nav item | `client/src/components/admin-layout.tsx` |
-
-## Storefront gate propagation
-
-The Printify-connected gate has to be honored by three different storefront
-scripts, in order of who might see a not-yet-public page first:
-
-1. `extensions/theme-extension/assets/appai-customizer-embed.js` (redirect-only
-   stub) — checks `publiclyMountable` on `/customizer-pages` list entries;
-   forwards `appai_preview` from the URL so a merchant's own preview link
-   isn't redirected away.
-2. `extensions/theme-extension/assets/appai-customizer-tray.js` (floating
-   launcher on other storefront pages) — filters out pages where
-   `publiclyMountable === false` so it never advertises a page a customer
-   can't actually open.
-3. `extensions/theme-extension/assets/appai-art-embed.js` (primary embed,
-   mounts the actual designer iframe) — forwards `appai_preview` on its
-   `/customizer-page` fetch, and as a race-safety-net also reads
-   `fallbackUrl` out of the 404 error body (not just `opts.fallbackUrl`) so a
-   gated page still redirects even if the stub script above didn't win the
-   init race.
-
-## Known gaps / next steps
-
-- The App Embed "enabled" state is **not** verified — it's merchant
-  self-report. If this becomes a support burden, consider polling the
-  Shopify Theme Asset API for the embed block's `disabled` flag (heavier,
-  rate-limited, theme-specific).
-- The nag modal's "once per day" dismissal is `localStorage`-scoped to the
-  browser/device, not server-tracked — a merchant using multiple devices/
-  browsers will see it once per device per day, not globally once per day.
-- Catalogue entries are limited to whatever's `published`/importable in
-  `platform_catalog_blueprints` — the operator catalogue tooling
-  (`/admin/platform/catalog`) is the source of truth for what shows up here.
+| Setup rail UI | `client/src/pages/admin/setup.tsx` |
+| Catalogue cards (preview + catalogue modes) | `client/src/components/admin/CatalogActivateSection.tsx` |
+| Products Catalogue page | `client/src/pages/admin/products.tsx` |
+| Customizer Pages + Printify banner + promote deep-links | `client/src/pages/admin/customizer-pages.tsx` |
+| Storefront `freshDesignAllowed` | `client/src/pages/embed-design.tsx`, `extensions/theme-extension/assets/appai-art-embed.js` |
+| Printify nag modal | `client/src/components/admin/PrintifyNagModal.tsx` |
+| Setup status hook | `client/src/hooks/use-setup-status.ts` |

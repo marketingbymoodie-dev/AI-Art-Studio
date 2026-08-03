@@ -820,6 +820,10 @@
     if (config.inlineDesignerConfig) {
       params.set('deferDesignerConfig', '1');
     }
+    // Disabled pages with a saved design: ATC OK, Start Fresh / new generate blocked.
+    if (config.freshDesignAllowed === false) {
+      params.set('freshDesignAllowed', '0');
+    }
     
     if (customerId) {
       params.set('customerId', String(customerId));
@@ -1333,6 +1337,7 @@
         iframe.contentWindow.postMessage({
           type: 'AI_ART_STUDIO_DESIGNER_CONFIG',
           designerConfig: config.inlineDesignerConfig,
+          freshDesignAllowed: config.freshDesignAllowed !== false,
           stylePresets: config.stylePresets || [],
           styleConfig: config.styleConfig || null,
         }, iframeOrigin || '*');
@@ -2423,6 +2428,7 @@
       hideAddToCart:        false,
       enabled:              true,
       inlineDesignerConfig: config.designerConfig || null,
+      freshDesignAllowed:   config.freshDesignAllowed !== false,
       // Shopify variants with prices and style presets — pushed into the
       // iframe via postMessage in the BRIDGE_ACK handler so the generator
       // can render them internally (no external dropdown needed).
@@ -2459,8 +2465,11 @@
   }
   function appaiFetchCustomizerConfig(handle, attempt) {
     var previewMatch = window.location.search.match(/[?&]appai_preview=([^&]+)/);
+    var savedDesignMatch = window.location.search.match(/[?&](?:savedDesignId|loadDesignId)=([^&]+)/);
     var url = '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle);
     if (previewMatch) url += '&appai_preview=' + previewMatch[1];
+    // Disabled pages only load for saved-design reopen (ATC); pass id for server gate.
+    if (savedDesignMatch) url += '&savedDesignId=' + savedDesignMatch[1];
     return appaiFetchWithTimeout(
       url,
       { credentials: 'same-origin' },

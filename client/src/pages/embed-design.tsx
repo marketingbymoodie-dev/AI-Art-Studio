@@ -1762,6 +1762,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
+  /** Disabled customizer pages may reopen a saved design for ATC, but not Start Fresh / new generate. */
+  const [freshDesignAllowed, setFreshDesignAllowed] = useState(
+    () => searchParams.get("freshDesignAllowed") !== "0",
+  );
   const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
@@ -4130,6 +4134,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       designerConfig: config.designerConfig,
       stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
     });
+    if (typeof config.freshDesignAllowed === "boolean") {
+      setFreshDesignAllowed(config.freshDesignAllowed);
+    }
 
     const mockupSrc = (design.mockupUrls && design.mockupUrls[0]) || "";
     const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : "";
@@ -4292,6 +4299,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       designerConfig: config.designerConfig,
       stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
     });
+    if (typeof config.freshDesignAllowed === "boolean") {
+      setFreshDesignAllowed(config.freshDesignAllowed);
+    }
 
     try {
       const parentUrl = new URL(window.parent.location.href);
@@ -6735,6 +6745,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     overridePrompt?: string;
     overrideReferenceImagesBase64?: string[];
   }) => {
+    if (!freshDesignAllowed) {
+      toast({
+        title: "Fresh designs unavailable",
+        description: "This page is not Live. You can still add a saved design to cart.",
+        variant: "destructive",
+      });
+      return;
+    }
     let effectivePresetId = options?.overridePresetId ?? selectedPreset;
     if (options?.overridePresetId) {
       setSelectedPreset(options.overridePresetId);
@@ -9347,6 +9365,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (event.data.styleConfig !== undefined) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
         }
+        if (typeof event.data.freshDesignAllowed === "boolean") {
+          setFreshDesignAllowed(event.data.freshDesignAllowed);
+        }
         setConfigLoading(false);
       }
 
@@ -11159,7 +11180,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               }
               handleGenerate();
             }}
-            disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+            disabled={!freshDesignAllowed || !!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
@@ -11184,44 +11205,46 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {isStorefront && bridgeError && (
               <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-bridge-error")}>{bridgeError}</p>
             )}
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-              onClick={() => {
-                setGeneratedDesign(null);
-                lastAopPanelUrlsRef.current = null;
-                setFlatPlacerState(null);
-                setFlatPlacerEditOpen(false);
-                setFlatApplyStatus("idle");
-                setFlatRenderFailed(false);
-                setDesignSource(null);
-                setAddedToCart(false);
-                loadDesignAppliedRef.current = false;
-                setBridgeLoadDesignId('');
-                setReferenceImages([]);
-                setReferencePreviews([]);
-                if (fileInputRef.current) fileInputRef.current.value = '';
-                setSelectedPreset('');
-                setSelectedStyleOption('');
-                setSelectedSize('');
-                setSelectedFrameColor('');
-                try {
-                  const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                  sessionStorage.removeItem(stateKey);
-                } catch (_) {}
-                const url = new URL(window.location.href);
-                url.searchParams.delete('loadDesignId');
-                window.history.replaceState({}, '', url.toString());
-                try {
-                  const parentUrl = new URL(window.parent.location.href);
-                  parentUrl.searchParams.delete('loadDesignId');
-                  window.parent.history.replaceState({}, '', parentUrl.toString());
-                } catch (_) {}
-              }}
-            >
-              <Plus className="w-3 h-3" />
-              Start Fresh Design
-            </button>
+            {freshDesignAllowed && (
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                onClick={() => {
+                  setGeneratedDesign(null);
+                  lastAopPanelUrlsRef.current = null;
+                  setFlatPlacerState(null);
+                  setFlatPlacerEditOpen(false);
+                  setFlatApplyStatus("idle");
+                  setFlatRenderFailed(false);
+                  setDesignSource(null);
+                  setAddedToCart(false);
+                  loadDesignAppliedRef.current = false;
+                  setBridgeLoadDesignId('');
+                  setReferenceImages([]);
+                  setReferencePreviews([]);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                  setSelectedPreset('');
+                  setSelectedStyleOption('');
+                  setSelectedSize('');
+                  setSelectedFrameColor('');
+                  try {
+                    const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+                    sessionStorage.removeItem(stateKey);
+                  } catch (_) {}
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete('loadDesignId');
+                  window.history.replaceState({}, '', url.toString());
+                  try {
+                    const parentUrl = new URL(window.parent.location.href);
+                    parentUrl.searchParams.delete('loadDesignId');
+                    window.parent.history.replaceState({}, '', parentUrl.toString());
+                  } catch (_) {}
+                }}
+              >
+                <Plus className="w-3 h-3" />
+                Start Fresh Design
+              </button>
+            )}
             {isStorefront && (
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                 {artworksRemainingLabel}
@@ -12258,7 +12281,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         handleGenerate();
                       }}
-                      disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+                      disabled={!freshDesignAllowed || !!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -12284,40 +12307,42 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       {isStorefront && bridgeError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
                       )}
-                      <button
-                        type="button"
-                        className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-                        onClick={() => {
-                          setGeneratedDesign(null);
-                          lastAopPanelUrlsRef.current = null;
-                          setDesignSource(null);
-                          setAddedToCart(false);
-                          loadDesignAppliedRef.current = false;
-                          setBridgeLoadDesignId('');
-                          setReferenceImages([]);
-                          setReferencePreviews([]);
-                          if (fileInputRef.current) fileInputRef.current.value = '';
-                          setSelectedPreset('');
-                          setSelectedStyleOption('');
-                          setSelectedSize('');
-                          setSelectedFrameColor('');
-                          try {
-                            const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                            sessionStorage.removeItem(stateKey);
-                          } catch (_) {}
-                          const url = new URL(window.location.href);
-                          url.searchParams.delete('loadDesignId');
-                          window.history.replaceState({}, '', url.toString());
-                          try {
-                            const parentUrl = new URL(window.parent.location.href);
-                            parentUrl.searchParams.delete('loadDesignId');
-                            window.parent.history.replaceState({}, '', parentUrl.toString());
-                          } catch (_) {}
-                        }}
-                      >
-                        <Plus className="w-3 h-3" />
-                        Start Fresh Design
-                      </button>
+                      {freshDesignAllowed && (
+                        <button
+                          type="button"
+                          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                          onClick={() => {
+                            setGeneratedDesign(null);
+                            lastAopPanelUrlsRef.current = null;
+                            setDesignSource(null);
+                            setAddedToCart(false);
+                            loadDesignAppliedRef.current = false;
+                            setBridgeLoadDesignId('');
+                            setReferenceImages([]);
+                            setReferencePreviews([]);
+                            if (fileInputRef.current) fileInputRef.current.value = '';
+                            setSelectedPreset('');
+                            setSelectedStyleOption('');
+                            setSelectedSize('');
+                            setSelectedFrameColor('');
+                            try {
+                              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+                              sessionStorage.removeItem(stateKey);
+                            } catch (_) {}
+                            const url = new URL(window.location.href);
+                            url.searchParams.delete('loadDesignId');
+                            window.history.replaceState({}, '', url.toString());
+                            try {
+                              const parentUrl = new URL(window.parent.location.href);
+                              parentUrl.searchParams.delete('loadDesignId');
+                              window.parent.history.replaceState({}, '', parentUrl.toString());
+                            } catch (_) {}
+                          }}
+                        >
+                          <Plus className="w-3 h-3" />
+                          Start Fresh Design
+                        </button>
+                      )}
                       {isStorefront && (
                         <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                           {artworksRemainingLabel}
