@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
+import { queryClient, apiRequest, apiFetch, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useSetupStatus, type MerchantSetupStatus } from "@/hooks/use-setup-status";
 import { getShopifyParams } from "@/lib/shopify";
@@ -139,12 +139,28 @@ export default function AdminSetupPage() {
 
   const activateMutation = useMutation({
     mutationFn: async (blueprintId: number) => {
-      const res = await apiRequest("POST", "/api/appai/setup/activate-product", { blueprintId });
+      const res = await apiFetch("/api/appai/setup/activate-product", {
+        method: "POST",
+        body: JSON.stringify({ blueprintId }),
+      });
+      const body = await res.json().catch(() => ({} as Record<string, unknown>));
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to activate this product.");
+        const code = String(body.error || "");
+        if (code === "SHOP_NOT_ACTIVE" || code === "REAUTH_REQUIRED" || code === "SHOP_NOT_CONNECTED") {
+          throw new Error(
+            "This shop needs a fresh app connection. Close this tab, open AI Art Studio (Staging) again from Shopify Admin → Apps (reinstall if asked), then retry Activate.",
+          );
+        }
+        if (code === "Merchant not found") {
+          throw new Error(
+            "Merchant account isn't linked yet. Re-open the app from Shopify Admin → Apps, then retry Activate.",
+          );
+        }
+        throw new Error(
+          (typeof body.error === "string" && body.error) || "Failed to activate this product.",
+        );
       }
-      return res.json() as Promise<ActivateResult>;
+      return body as ActivateResult;
     },
     onMutate: (blueprintId) => setActivatedBlueprintId(blueprintId),
     onSuccess: (data) => {

@@ -20099,7 +20099,22 @@ ${orientationExtra}
    */
   app.post("/api/appai/setup/activate-product", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+    if (!resolved.ok) {
+      const shopHint = String(req.shopDomain || "").toLowerCase().replace(/^https?:\/\//, "");
+      const reinstallUrl =
+        resolved.reinstallUrl ||
+        (shopHint ? `/shopify/install?shop=${encodeURIComponent(shopHint)}` : undefined);
+      return res.status(resolved.status).json({
+        error: resolved.error,
+        ...(reinstallUrl ? { reinstallUrl } : {}),
+        message:
+          resolved.error === "SHOP_NOT_ACTIVE" ||
+          resolved.error === "REAUTH_REQUIRED" ||
+          resolved.error === "SHOP_NOT_CONNECTED"
+            ? "Reconnect the app from Shopify Admin so we can save a fresh access token, then retry Activate."
+            : undefined,
+      });
+    }
 
     const installation = await ensureTrialStarted(resolved.installation);
     const shop = installation.shopDomain;
