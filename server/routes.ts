@@ -20119,8 +20119,11 @@ ${orientationExtra}
     const installation = await ensureTrialStarted(resolved.installation);
     const shop = installation.shopDomain;
     const userId = req.user.claims.sub;
-    const merchant = await storage.getMerchantByUserId(userId);
-    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    // Fresh staging DBs often have an install row before /api/merchant has run.
+    let merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) {
+      merchant = await storage.getOrCreateShopifyMerchant(shop);
+    }
 
     const plan = getEffectivePlan(installation as any, shop);
     if (plan.requiresPlan) {
