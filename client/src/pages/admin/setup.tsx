@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useSetupStatus, type MerchantSetupStatus } from "@/hooks/use-setup-status";
 import { getShopifyParams } from "@/lib/shopify";
@@ -129,7 +129,9 @@ export default function AdminSetupPage() {
     onError: (err: Error) => {
       toast({
         title: "Couldn't save that yet",
-        description: err.message || "Try reopening the app from Shopify Admin, then click again.",
+        description:
+          parseApiErrorMessage(err) ||
+          "Try reopening the app from Shopify Admin, then click again.",
         variant: "destructive",
       });
     },
