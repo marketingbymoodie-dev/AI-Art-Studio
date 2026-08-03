@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useSetupStatus } from "@/hooks/use-setup-status";
+import { getShopifyParams } from "@/lib/shopify";
 import AdminLayout from "@/components/admin-layout";
 import ConfettiBurst from "@/components/admin/ConfettiBurst";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -88,7 +89,24 @@ export default function AdminSetupPage() {
     queryKey: ["/api/shopify/installations"],
     select: (data) => data.installations,
   });
-  const shopDomain = installationsData?.[0]?.shopDomain;
+  // Prefer DB install row; fall back to embedded Admin shop/host so
+  // "Open Theme Editor" works on first visit before installations finish linking.
+  const shopifyParams = getShopifyParams();
+  const shopFromHost = (() => {
+    if (!shopifyParams.host) return null;
+    try {
+      const decoded = atob(shopifyParams.host);
+      const handle = decoded.match(/\/store\/([^/?]+)/)?.[1];
+      return handle ? `${handle}.myshopify.com` : null;
+    } catch {
+      return null;
+    }
+  })();
+  const shopDomain =
+    installationsData?.[0]?.shopDomain ||
+    shopifyParams.shop ||
+    shopFromHost ||
+    null;
 
   const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({
     queryKey: ["/api/appai/setup/catalog"],
@@ -130,8 +148,13 @@ export default function AdminSetupPage() {
   const hasPage = (status?.pagesCount ?? 0) > 0;
   const printifyDone = !!status?.printifyConnected;
 
-  const themeEditorUrl = shopDomain
-    ? `https://${shopDomain}/admin/themes/current/editor?context=apps`
+  const normalizedShop = shopDomain
+    ? shopDomain.includes(".")
+      ? shopDomain
+      : `${shopDomain}.myshopify.com`
+    : null;
+  const themeEditorUrl = normalizedShop
+    ? `https://${normalizedShop}/admin/themes/current/editor?context=apps`
     : null;
 
   return (
@@ -174,8 +197,17 @@ export default function AdminSetupPage() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant={embedDone ? "outline" : "default"}
-              disabled={!themeEditorUrl}
-              onClick={() => themeEditorUrl && window.open(themeEditorUrl, "_blank")}
+              onClick={() => {
+                if (themeEditorUrl) {
+                  window.open(themeEditorUrl, "_blank");
+                  return;
+                }
+                toast({
+                  title: "Open Theme Editor from Shopify",
+                  description:
+                    "Go to Online Store → Themes → Customize → App embeds, then toggle on AI Art Studio Embed and Save.",
+                });
+              }}
               data-testid="button-open-theme-editor"
             >
               <ExternalLink className="h-4 w-4 mr-2" />
