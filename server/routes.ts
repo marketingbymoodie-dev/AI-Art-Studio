@@ -12688,23 +12688,29 @@ ${orientationExtra}
     });
   });
 
+  /** Merchant Settings token, else platform PRINTIFY_API_TOKEN (operator catalog / staging). */
+  function resolveCatalogPrintifyToken(merchant: { printifyApiToken?: string | null } | undefined | null): string {
+    return String(merchant?.printifyApiToken || process.env.PRINTIFY_API_TOKEN || "").trim();
+  }
+
   // Fetch all blueprints from Printify catalog with optional location filtering
   app.get("/api/admin/printify/blueprints", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const locationFilter = req.query.location as string | undefined;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ 
           error: "Printify API token not configured",
-          message: "Please add your Printify API token in Settings first"
+          message: "Add a Printify API token in Settings, or set PRINTIFY_API_TOKEN on the server."
         });
       }
 
       const response = await fetch("https://api.printify.com/v1/catalog/blueprints.json", {
         headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Authorization": `Bearer ${printifyToken}`,
           "Content-Type": "application/json"
         }
       });
@@ -12766,8 +12772,9 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const { blueprintIds } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -12805,7 +12812,7 @@ ${orientationExtra}
                 `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
                 {
                   headers: {
-                    "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                    "Authorization": `Bearer ${printifyToken}`,
                     "Content-Type": "application/json"
                   }
                 },
@@ -12841,7 +12848,7 @@ ${orientationExtra}
                   `https://api.printify.com/v1/catalog/print_providers/${providerId}.json`,
                   {
                     headers: {
-                      "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                      "Authorization": `Bearer ${printifyToken}`,
                       "Content-Type": "application/json"
                     }
                   },
