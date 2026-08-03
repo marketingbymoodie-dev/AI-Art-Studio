@@ -2340,7 +2340,7 @@ export default function AdminCustomizerPages() {
             <AlertDialogTitle>Delete customizer page?</AlertDialogTitle>
             <AlertDialogDescription>
               This will delete <strong>{deleteTarget?.title}</strong> (/pages/{deleteTarget?.handle}) from
-              both AppAI and your Shopify store. This action cannot be undone.
+              both AI Art Studio and your Shopify store. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

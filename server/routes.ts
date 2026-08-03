@@ -9841,9 +9841,9 @@ ${orientationExtra}
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: "AppAI <onboarding@resend.dev>",
+          from: "AI Art Studio <onboarding@resend.dev>",
           to: [emailNorm],
-          subject: "Your AppAI Login Code",
+          subject: "Your AI Art Studio Login Code",
           html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:20px"><h2 style="text-align:center">Your Login Code</h2><div style="background:#f5f5f5;border-radius:8px;padding:20px;text-align:center;margin:20px 0"><span style="font-size:32px;letter-spacing:8px;font-weight:bold">${otpCode}</span></div><p style="color:#666;text-align:center">This code expires in 10 minutes.</p></div>`,
         }),
       });
@@ -10512,9 +10512,9 @@ ${orientationExtra}
       // Create hidden shadow product on Shopify
       const productPayload = {
         product: {
-          title: `AppAI Design ${designId}`,
+          title: `AI Art Studio Design ${designId}`,
           body_html: "",
-          vendor: "AppAI",
+          vendor: "AI Art Studio",
           product_type: "appai-shadow",
           status: "draft",          // hidden from Online Store
           published: false,
@@ -10529,7 +10529,7 @@ ${orientationExtra}
               sku: `appai-shadow-${designId}`,
             },
           ],
-          images: [{ src: mockupUrl, alt: "AppAI custom design mockup" }],
+          images: [{ src: mockupUrl, alt: "AI Art Studio custom design mockup" }],
         },
       };
 
@@ -13496,7 +13496,7 @@ ${orientationExtra}
 
       if (!catalogEntry || catalogEntry.kind === "blocked") {
         return res.status(403).json({
-          error: "This product is not available in the AppAI catalog yet.",
+          error: "This product is not available in the AI Art Studio catalog yet.",
           code: "BLUEPRINT_NOT_ALLOWED",
         });
       }
@@ -13513,7 +13513,7 @@ ${orientationExtra}
           });
         }
         return res.status(403).json({
-          error: "This product is not available in the AppAI catalog yet.",
+          error: "This product is not available in the AI Art Studio catalog yet.",
           code: "BLUEPRINT_NOT_ALLOWED",
         });
       }
@@ -19660,7 +19660,7 @@ ${orientationExtra}
       title: productTitle,
       handle: productHandle,
       body_html: `<p>${design.prompt}</p>`,
-      vendor: "AppAI Custom",
+      vendor: "AI Art Studio",
       product_type: "Custom",
       status: "active",
       published: true,   // Must be true for storefront /cart/add.js to accept
@@ -19859,7 +19859,7 @@ ${orientationExtra}
     const entry = await getPlatformCatalogEntry(blueprintId);
     if (!entry || !(await canMerchantImportEntry(entry))) {
       return res.status(403).json({
-        error: "This product is not available in the AppAI catalog yet.",
+        error: "This product is not available in the AI Art Studio catalog yet.",
         code: "BLUEPRINT_NOT_ALLOWED",
       });
     }

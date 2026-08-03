@@ -66,7 +66,7 @@ export async function syncMerchantQuotaAlerts(
     if (refreshed.quotaAlert100BucketKey === bucketKey) return;
     await shopResourceFeedback(refreshed, "REQUIRES_ACTION", [
       "Included AI generations for this billing period are used up (USD plan allowance). " +
-        "Enable pay-as-you-go extra usage in AppAI Plan & Billing, upgrade your plan, or wait until next month. " +
+        "Enable pay-as-you-go extra usage in AI Art Studio Plan & Billing, upgrade your plan, or wait until next month. " +
         "Customer-purchased credit packs still work.",
     ]);
     await storage.updateShopifyInstallation(refreshed.id, {
@@ -80,7 +80,7 @@ export async function syncMerchantQuotaAlerts(
     const pct = Math.round((decision.includedUsed / decision.includedLimit) * 100);
     await shopResourceFeedback(refreshed, "REQUIRES_ACTION", [
       `You've used ${pct}% of your included AI generations this billing period (USD plan allowance). ` +
-        "Open AppAI Plan & Billing to enable pay-as-you-go extra usage before you hit the limit.",
+        "Open AI Art Studio Plan & Billing to enable pay-as-you-go extra usage before you hit the limit.",
     ]);
     await storage.updateShopifyInstallation(refreshed.id, {
       quotaAlert90BucketKey: bucketKey,

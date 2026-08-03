@@ -150,7 +150,7 @@ export default function AdminSetupPage() {
         {/* Step 1 — Install & permissions (always complete by the time this page loads) */}
         <StepShell number={1} title="Install the app" done>
           <p className="text-sm text-muted-foreground">
-            Done — you've installed AppAI and approved the required permissions.
+            Done — you've installed AI Art Studio and approved the required permissions.
           </p>
         </StepShell>
 

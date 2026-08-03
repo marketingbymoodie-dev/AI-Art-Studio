@@ -7,22 +7,24 @@ Shopify + Printify POD app: AI design studio embed, custom mockups, cart/checkou
 - **Client:** React + Vite (`client/`)
 - **Server:** Express (`server/`), builds to `dist/index.cjs`
 - **DB:** Drizzle + Postgres
-- **Deploy:** Railway watches **`production`** branch (not `main` — `main` push may be branch-protected)
-- **Shopify:** theme extension + checkout UI in `extensions/`
+- **Deploy:** Railway **staging** watches `staging`; **production** watches `production` (`main` may be branch-protected). Staging-first release: see `docs/staging-and-release.md`.
+- **Shopify:** theme extension + checkout UI in `extensions/`; use `shopify.app.staging.toml` vs `shopify.app.production.toml`
 
 ## Commands
 
 ```bash
-npm run dev          # local server
-npm run build        # must pass before deploy
-npm run shopify:dev  # Shopify app dev
-npm run shopify:deploy
+npm run dev                      # local server
+npm run build                    # must pass before deploy
+npm run shopify:dev:staging      # CLI against staging app + demo store
+npm run shopify:deploy:staging   # extensions → staging Partner app only
+npm run shopify:deploy:production # extensions → live merchants (after explicit go-live)
 ```
 
 ## Git / deploy conventions
 
 - Only commit when the user asks (or when explicitly shipping deploy-worthy work).
-- **Production deploy:** merge to `production`, push → Railway auto-deploys. Sync `main` when possible.
+- **Staging first:** merge to `staging`, push → Railway staging. Test on demo store. Ask before go-live.
+- **Production:** only after user says go live — merge to `production`, push → Railway production; sync `main` when possible.
 - Do **not** force-push `main`/`master`.
 - Never commit `.env` or secrets.
 
@@ -44,7 +46,7 @@ Touch with care: `server/routes.ts` (`resolve-design-variant`), `extensions/them
 
 ### Railway deploy
 
-After **deploy-worthy** fixes (not docs-only): `npm run build` → commit → merge `production` → push.
+After **deploy-worthy** fixes (not docs-only): `npm run build` → commit → merge `staging` → push → demo-store QA → **ask go-live** → merge `production` → push. Extensions: `shopify:deploy:staging` then (only on go-live) `shopify:deploy:production`.
 
 ---
 

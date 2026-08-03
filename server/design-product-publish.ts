@@ -328,7 +328,7 @@ export async function createPersistentPrintifyProduct(
   const variantIds = resolvedVariants.map((v) => v.printifyVariantId);
   const requestBody = {
     title: title.slice(0, 250),
-    description: description || "AppAI Studio design product — artwork stored for automatic order fulfillment. Do not edit print areas manually.",
+    description: description || "AI Art Studio design product — artwork stored for automatic order fulfillment. Do not edit print areas manually.",
     blueprint_id: blueprintId,
     print_provider_id: providerId,
     variants: variantIds.map((id) => ({ id, price: 100, is_enabled: true })),
