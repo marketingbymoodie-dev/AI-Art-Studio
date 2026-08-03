@@ -233,8 +233,203 @@ const DATA_MIGRATIONS: string[] = [
 
 // ── Table creation ─────────────────────────────────────────────────────────────
 // SQL matches shared/schema.ts exactly.
+//
+// Fresh environments (e.g. Railway Staging Postgres) have ZERO tables.
+// drizzle-kit push is NOT run at deploy time — these CREATE TABLE IF NOT EXISTS
+// statements (plus COLUMN_MIGRATIONS) are what bootstrap an empty database.
+// Core tables that predate this file MUST be listed here or staging breaks.
 
 const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "pgcrypto_extension",
+    sql: `CREATE EXTENSION IF NOT EXISTS "pgcrypto"`,
+  },
+  {
+    name: "users",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "users" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "email" varchar UNIQUE,
+        "first_name" varchar,
+        "last_name" varchar,
+        "profile_image_url" varchar,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      )
+    `,
+  },
+  {
+    name: "merchants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "merchants" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "user_id" varchar NOT NULL UNIQUE,
+        "store_name" text,
+        "printify_api_token" text,
+        "printify_shop_id" text,
+        "use_built_in_nano_banana" boolean NOT NULL DEFAULT true,
+        "custom_nano_banana_token" text,
+        "subscription_tier" text NOT NULL DEFAULT 'free',
+        "monthly_generation_limit" integer NOT NULL DEFAULT 100,
+        "generations_this_month" integer NOT NULL DEFAULT 0,
+        "branding_settings" json,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shopify_installations",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shopify_installations" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar,
+        "shop_domain" text NOT NULL UNIQUE,
+        "access_token" text NOT NULL,
+        "scope" text,
+        "status" text NOT NULL DEFAULT 'active',
+        "installed_at" timestamp DEFAULT now() NOT NULL,
+        "uninstalled_at" timestamp,
+        "customizer_hub_url" text,
+        "plan_name" text,
+        "plan_status" text,
+        "trial_started_at" timestamp,
+        "billing_subscription_id" text,
+        "billing_usage_line_item_id" text,
+        "billing_current_period_end" timestamp,
+        "generation_month" text,
+        "monthly_generations_used" integer NOT NULL DEFAULT 0,
+        "monthly_overage_used" integer NOT NULL DEFAULT 0,
+        "overage_opt_in_enabled" boolean NOT NULL DEFAULT false,
+        "overage_budget_cents" integer,
+        "overage_recurring" boolean NOT NULL DEFAULT false,
+        "overage_opt_in_at" timestamp,
+        "overage_opt_in_bucket_key" text,
+        "quota_alert_90_bucket_key" text,
+        "quota_alert_100_bucket_key" text,
+        "pending_plan_name" text,
+        "pending_plan_effective_at" timestamp,
+        "embed_confirmed_at" timestamp
+      )
+    `,
+  },
+  {
+    name: "customers",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "customers" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "user_id" varchar NOT NULL UNIQUE,
+        "credits" integer NOT NULL DEFAULT 5,
+        "free_generations_used" integer NOT NULL DEFAULT 0,
+        "total_generations" integer NOT NULL DEFAULT 0,
+        "total_spent" numeric(10, 2) NOT NULL DEFAULT '0.00',
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "style_presets",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_presets" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar NOT NULL,
+        "name" text NOT NULL,
+        "prompt_prefix" text NOT NULL,
+        "prompt_prefix_dark" text,
+        "category" text NOT NULL DEFAULT 'all',
+        "is_active" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "base_image_url" text,
+        "prompt_placeholder" text,
+        "description_optional" boolean NOT NULL DEFAULT false,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "product_types",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "product_types" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar,
+        "name" text NOT NULL,
+        "description" text,
+        "printify_blueprint_id" integer,
+        "printify_provider_id" integer,
+        "mockup_template_url" text,
+        "sizes" text NOT NULL DEFAULT '[]',
+        "frame_colors" text NOT NULL DEFAULT '[]',
+        "variant_map" text NOT NULL DEFAULT '{}',
+        "selected_size_ids" text NOT NULL DEFAULT '[]',
+        "selected_color_ids" text NOT NULL DEFAULT '[]',
+        "aspect_ratio" text NOT NULL DEFAULT '3:4',
+        "print_shape" text NOT NULL DEFAULT 'rectangle',
+        "print_area_width" integer,
+        "print_area_height" integer,
+        "bleed_margin_percent" integer NOT NULL DEFAULT 5,
+        "designer_type" text NOT NULL DEFAULT 'generic',
+        "size_type" text NOT NULL DEFAULT 'dimensional',
+        "has_printify_mockups" boolean NOT NULL DEFAULT false,
+        "base_mockup_images" text NOT NULL DEFAULT '{}',
+        "primary_mockup_index" integer NOT NULL DEFAULT 0,
+        "double_sided_print" boolean NOT NULL DEFAULT false,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "shopify_product_id" text,
+        "shopify_product_handle" text,
+        "shopify_product_url" text,
+        "shopify_shop_domain" text,
+        "shopify_variant_ids" json,
+        "last_pushed_to_shopify" timestamp,
+        "printify_costs" text DEFAULT '{}',
+        "variant_prices_both" text DEFAULT '{}',
+        "is_all_over_print" boolean NOT NULL DEFAULT false,
+        "placeholder_positions" text DEFAULT '[]',
+        "panel_flat_lay_images" text DEFAULT '{}',
+        "aop_template_id" text,
+        "panel_mapping_template" text,
+        "on_the_fly_tier" text,
+        "flat_calibration_status" text,
+        "flat_calibration" text DEFAULT '{}',
+        "storefront_mockup_mode" text,
+        "fulfillment_layout" text,
+        "fabric_weave_texture" boolean,
+        "color_option_name" text,
+        "last_oos_scan_at" timestamp,
+        "oos_available_variants" integer,
+        "oos_total_variants" integer,
+        "oos_status" text,
+        "oos_detail" text DEFAULT '{}',
+        "pricing_version" integer NOT NULL DEFAULT 0,
+        "last_product_sync_at" timestamp,
+        "default_markup_percent" integer,
+        "pricing_strategy" text NOT NULL DEFAULT 'notify_only',
+        "min_margin_percent" integer,
+        "product_health" text NOT NULL DEFAULT 'healthy',
+        "variant_availability" text DEFAULT '{}',
+        "shipping_snapshot" text DEFAULT '{}',
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "credit_transactions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "credit_transactions" (
+        "id" serial PRIMARY KEY,
+        "customer_id" varchar NOT NULL,
+        "type" text NOT NULL,
+        "amount" integer NOT NULL,
+        "price_in_cents" integer,
+        "order_id" integer,
+        "description" text,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
   {
     name: "design_sku_mappings",
     sql: `

@@ -58,6 +58,21 @@ That publishes theme/checkout extensions to the **staging** Partner app only.
 
 **Install Shopify CLI once** (Windows): follow [Shopify CLI install](https://shopify.dev/docs/api/shopify-cli). You only need the terminal for Shopify extension deploy / occasional `shopify app dev` — not for every code edit.
 
+### B0. Fresh staging database (required once)
+
+Railway Staging Postgres starts **empty**. Production schema is NOT copied when you
+duplicate an environment. On first boot the app runs startup migrations that
+`CREATE TABLE IF NOT EXISTS` for core tables (`shopify_installations`, `merchants`, …).
+
+After the first green Staging deploy with those migrations:
+
+1. Re-install **AI Art Studio (Staging)** on the demo store (or open the app so OAuth
+   writes a real install row) — earlier installs may have failed to save.
+2. Then continue Setup (App Embed → product).
+
+If logs show `relation "shopify_installations" does not exist`, Staging is still on an
+old build or migrations failed — redeploy Staging and check startup logs.
+
 ### B. Railway (staging service)
 
 1. In Railway → open the **current production** project.
