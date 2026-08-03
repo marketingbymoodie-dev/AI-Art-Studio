@@ -30,6 +30,7 @@ import {
 } from "@shared/productLayoutPolicy";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
+import CatalogActivateSection from "@/components/admin/CatalogActivateSection";
 import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
 import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
@@ -222,7 +223,8 @@ export default function AdminProducts() {
     refetch: refetchBlueprints,
     error: blueprintsFetchError,
   } = usePrintifyCatalogFilters({
-    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
+    // Platform PRINTIFY_API_TOKEN backs catalog reads — merchant token not required.
+    enabled: printifyImportOpen,
     maxResults: 80,
     extraFilter: catalogAllowlistFilter,
   });
@@ -843,25 +845,28 @@ export default function AdminProducts() {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold" data-testid="text-products-title">Products</h1>
-            <p className="text-muted-foreground">Manage your product types for the AI design studio</p>
+            <p className="text-muted-foreground">
+              Activate a ready-made customizer product, then manage pricing and variants below.
+            </p>
           </div>
-          <Button onClick={handleOpenPrintifyImport} disabled={!merchant?.printifyApiToken} data-testid="button-import-printify">
+          <Button
+            variant="outline"
+            onClick={handleOpenPrintifyImport}
+            data-testid="button-import-printify"
+          >
             <Download className="h-4 w-4 mr-2" />
-            Import from Printify
+            Advanced import
           </Button>
         </div>
 
-        {!merchant?.printifyApiToken && (
-          <Card className="border-yellow-200 bg-yellow-50 dark:bg-yellow-900/20 dark:border-yellow-800">
-            <CardContent className="pt-6">
-              <p className="text-sm">
-                Connect your Printify account in{" "}
-                <a href="/admin/settings" className="text-primary underline">Settings</a>
-                {" "}to import products from the Printify catalog.
-              </p>
-            </CardContent>
-          </Card>
-        )}
+        <CatalogActivateSection />
+
+        <div>
+          <h2 className="text-lg font-semibold mb-1">Your product types</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Activated products appear here for pricing, variants, and Shopify sync.
+          </p>
+        </div>
 
         {productTypesLoading ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -1265,14 +1270,10 @@ export default function AdminProducts() {
           <Card>
             <CardContent className="py-12 text-center">
               <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="font-medium mb-2">No products yet</h3>
+              <h3 className="font-medium mb-2">No product types yet</h3>
               <p className="text-sm text-muted-foreground mb-4">
-                Import products from Printify to get started
+                Activate a product from the catalog above to get started.
               </p>
-              <Button onClick={handleOpenPrintifyImport} disabled={!merchant?.printifyApiToken}>
-                <Download className="h-4 w-4 mr-2" />
-                Import from Printify
-              </Button>
             </CardContent>
           </Card>
         )}
@@ -1280,7 +1281,7 @@ export default function AdminProducts() {
         <Dialog open={printifyImportOpen} onOpenChange={setPrintifyImportOpen}>
           <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Import from Printify Catalog</DialogTitle>
+              <DialogTitle>Advanced Printify import</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">

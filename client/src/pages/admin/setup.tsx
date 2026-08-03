@@ -299,8 +299,8 @@ export default function AdminSetupPage() {
           ) : (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Pick a product from our ready-to-go catalog — it's activated instantly, no Printify
-                account needed yet.
+                Pick a product from our ready-to-go catalog — activated instantly. Same catalog as
+                Products Import. No Printify account needed until customers should see the page.
               </p>
 
               {lastResult && (

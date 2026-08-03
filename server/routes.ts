@@ -12930,14 +12930,15 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const blueprintId = req.params.id;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
         headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Authorization": `Bearer ${printifyToken}`,
           "Content-Type": "application/json"
         }
       });
@@ -12966,15 +12967,16 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const blueprintId = req.params.id;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       // Fetch blueprint-specific providers
       const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`, {
         headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Authorization": `Bearer ${printifyToken}`,
           "Content-Type": "application/json"
         }
       });
@@ -12993,7 +12995,7 @@ ${orientationExtra}
               `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
               {
                 headers: {
-                  "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                  "Authorization": `Bearer ${printifyToken}`,
                   "Content-Type": "application/json"
                 }
               }
@@ -13086,15 +13088,16 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const { blueprintId, providerId } = req.params;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       const dual = await fetchPrintifyProviderVariantsDual(
         blueprintId,
         providerId,
-        merchant.printifyApiToken,
+        printifyToken,
       );
       res.json(dual.payload);
     } catch (error) {
@@ -13110,8 +13113,9 @@ ${orientationExtra}
       const { blueprintId } = req.params;
       const { providerId } = req.query;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -13132,7 +13136,7 @@ ${orientationExtra}
       const dual = await fetchPrintifyProviderVariantsDual(
         blueprintId,
         actualProviderId,
-        merchant.printifyApiToken,
+        printifyToken,
       );
       const variants = dual.variants;
       
@@ -13537,13 +13541,14 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
-      if (!merchant.printifyApiToken) return res.status(400).json({ error: "Printify API token not configured" });
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+      if (!printifyToken) return res.status(400).json({ error: "Printify API token not configured" });
 
       const blueprintId = parseInt(req.params.blueprintId);
       const providerId = parseInt(req.params.providerId);
       if (!blueprintId || !providerId) return res.status(400).json({ error: "Invalid blueprint or provider ID" });
 
-      const images = await fetchPrintifyPlaceholderOptions(merchant.printifyApiToken, blueprintId, providerId);
+      const images = await fetchPrintifyPlaceholderOptions(printifyToken, blueprintId, providerId);
       res.json({ images });
     } catch (error) {
       console.error("Error fetching Printify placeholder images:", error);
@@ -13575,9 +13580,13 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const printifyToken = opts?.printifyTokenOverride || merchant.printifyApiToken;
+      const printifyToken =
+        opts?.printifyTokenOverride || resolveCatalogPrintifyToken(merchant);
       if (!printifyToken) {
-        return res.status(400).json({ error: "Printify API token not configured" });
+        return res.status(400).json({
+          error: "Printify API token not configured",
+          message: "Add a Printify API token in Settings, or set PRINTIFY_API_TOKEN on the server.",
+        });
       }
 
       if (!blueprintId || !name) {
