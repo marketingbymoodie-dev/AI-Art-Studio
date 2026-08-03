@@ -2380,6 +2380,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const aopBaseMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
   /** Last on-demand Printers shots (person and/or lifestyle/context) — re-attached after placer auto-apply. */
   const aopPersonMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /** Timestamp of the last explicit arrow/dot click — recovery effects must not fight it. */
+  const lastManualGalleryNavRef = useRef(0);
   /**
    * After Printers Mockup lands, keep selecting that on-demand slide even if
    * placer auto-apply / primary mockup fetch tries to reset the gallery index.
@@ -2668,11 +2670,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
 
+  // Preload every gallery slide as soon as items exist so stepping the
+  // carousel paints instantly instead of waiting on a cold fetch.
+  useEffect(() => {
+    for (const item of postGenGalleryItems) {
+      if (item.kind === "artwork") continue;
+      if (!item.url) continue;
+      const img = new Image();
+      img.decoding = "async";
+      img.src = item.url;
+    }
+  }, [postGenGalleryItems]);
+
   // After Printers Mockup, land on the on-demand slide (Front Person or
   // pillow lifestyle/context) and recover if apply/mockup rebuild resets the
   // index. Keep Side/Back Person if the customer already stepped there.
+  // Never fight an explicit arrow click (lastManualGalleryNavRef window).
   useEffect(() => {
     if (!stickAopPersonGalleryRef.current) return;
+    if (Date.now() - lastManualGalleryNavRef.current < 1500) return;
     setSelectedMockupIndex((prev) => {
       const cur = postGenGalleryItems[prev];
       if (
@@ -3631,6 +3647,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     aopBaseMockupsRef.current = [];
     flatFrontMockupsRef.current = [];
     stickAopPersonGalleryRef.current = false;
+    // Size/colour mockup cache is per-design — never reuse across designs.
+    mockupColorCacheRef.current = {};
+    currentMockupColorRef.current = "";
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
@@ -3770,8 +3789,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           })
           .filter((img): img is { url: string; label: string } => !!img);
         if (onDemandImages.length > 0) {
+          // Keep ALL on-demand shots (person AND pillow printers/lifestyle) in
+          // the ref — a later placement apply re-merges from this ref, and
+          // person-only filtering silently dropped pillow Printers slides.
           aopPersonMockupsRef.current = onDemandImages.filter((img) =>
-            isPersonMockupLabel(img.label),
+            isPrintifyOnDemandMockupLabel(img.label),
           );
           setPrintifyMockupImages((prev) => {
             const bases =
@@ -4312,6 +4334,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
       setMockupsStale(false);
+      // Design-agnostic caches must not leak between saved designs: the
+      // size/colour mockup cache held the PREVIOUS design's renders, so
+      // opening design B with the same size/colour repainted design A.
+      mockupColorCacheRef.current = {};
+      currentMockupColorRef.current = "";
+      aopBaseMockupsRef.current = [];
+      aopPersonMockupsRef.current = [];
+      flatFrontMockupsRef.current = [];
+      stickAopPersonGalleryRef.current = false;
     }
   }, [effectiveLoadDesignId, loadDesignNonce]);
 
@@ -4980,13 +5011,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : flatFrontMockupsRef.current.length > 0
                 ? flatFrontMockupsRef.current
                 : [];
-          const mergedImages: Array<{ url: string; label: string }> = [...fronts];
-          const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
-          for (const extra of extras) {
-            const key = mockupImageUrlKey(extra.url);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const label = mergePersonViews
+          // Map raw Printify camera labels to gallery labels ONCE — the same
+          // mapped label must be used for the gallery, the on-demand ref, and
+          // persistence (raw "front" would collide with the base Front slide).
+          const labelForExtra = (extra: { url: string; label: string }) =>
+            mergePersonViews
               ? extra.label
               : mergeProductMockups
                 ? "printers"
@@ -4997,10 +5026,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     : /context/i.test(extra.label)
                       ? extra.label
                       : "context";
-            mergedImages.push({ url: extra.url, label });
+          const extrasLabeled = extras.map((e) => ({
+            url: e.url,
+            label: labelForExtra(e),
+          }));
+          const mergedImages: Array<{ url: string; label: string }> = [...fronts];
+          const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
+          for (const extra of extrasLabeled) {
+            const key = mockupImageUrlKey(extra.url);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            mergedImages.push({ url: extra.url, label: extra.label });
           }
           // Keep person AND pillow lifestyle/product cameras across placer Apply.
-          aopPersonMockupsRef.current = extras.map((e) => ({
+          aopPersonMockupsRef.current = extrasLabeled.map((e) => ({
             url: e.url,
             label: e.label,
           }));
@@ -5065,17 +5104,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 jobId,
                 shop: shopDomain,
                 designState: {
-                  printersMockups: extras.map((e) => ({
-                    url: e.url,
-                    label: e.label,
-                  })),
+                  printersMockups: extrasLabeled,
                   ...(mergePersonViews
-                    ? {
-                        aopPersonMockups: extras.map((e) => ({
-                          url: e.url,
-                          label: e.label,
-                        })),
-                      }
+                    ? { aopPersonMockups: extrasLabeled }
                     : {}),
                 },
               }),
@@ -5150,7 +5181,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const urlsToPersist =
             aopBases.length > 0
               ? finalUrls.filter(
-                  (u) =>
+                  (u: string) =>
                     typeof u === "string" &&
                     (u.startsWith("http://") || u.startsWith("https://")),
                 )
@@ -7447,6 +7478,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
   }, [embeddedContext, flushDesignForTester]);
 
+  // Opening Saved Designs while a placer is mid-edit: flush the deferred apply
+  // NOW so the current design's latest placement is persisted before the
+  // customer clicks another design (otherwise reopen shows a stale placement).
+  useEffect(() => {
+    if (!showSavedDesigns) return;
+    if (flatPlacerEditOpen) void flushFlatPlacer({ force: true });
+    if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+      void flushHoodieAopPlacer({ force: true });
+    }
+  }, [
+    showSavedDesigns,
+    flatPlacerEditOpen,
+    flushFlatPlacer,
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    flushHoodieAopPlacer,
+  ]);
+
   useEffect(() => {
     const onHide = () => {
       if (flatPlacerEditOpen) void flushFlatPlacer();
@@ -8049,11 +8098,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (backHosted) images.push({ url: backHosted, label: "back" });
 
       aopBaseMockupsRef.current = images;
-      // Placement-only apply clears on-demand Printers shots unless we are
-      // still stuck on a Printers/lifestyle slide (or about to refresh them).
-      if (!stickAopPersonGalleryRef.current) {
-        aopPersonMockupsRef.current = [];
-      }
+      // Keep on-demand Printers/lifestyle shots across placement applies —
+      // they are only replaced by a new Printers Mockup call or a new design.
       const withOnDemand = [...images, ...aopPersonMockupsRef.current];
       const withOnDemandUrls = withOnDemand.map((i) => i.url);
       setPrintifyMockupImages(withOnDemand);
@@ -8215,7 +8261,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         };
         const frontAbs = toAbsoluteMockupUrl(frontHosted);
         const backAbs = toAbsoluteMockupUrl(backHosted);
-        const mockupUrls = [frontAbs, backAbs].filter(
+        // Include current on-demand Printers/lifestyle shots so Saved Designs /
+        // ATC reopen keep them (front/back-only overwrite dropped them before).
+        const onDemandAbs = aopPersonMockupsRef.current
+          .map((m) => toAbsoluteMockupUrl(m.url))
+          .filter((u): u is string => !!u && u.startsWith("http"));
+        const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
           (u): u is string => !!u,
         );
         if (mockupUrls.length > 0) {
@@ -10161,11 +10212,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           hoodieAopPlacerState?.backgroundColor,
           fetchOpts,
         );
+        let pillowUsedProductCameras = false;
         if (!result.ok && isPillowAop) {
           console.warn(
             "[Mockups] Pillow lifestyle/context unavailable, trying product cameras:",
             result.error,
           );
+          pillowUsedProductCameras = true;
           result = await fetchPrintifyMockups(
             designUrl,
             productTypeConfig.id,
@@ -10195,7 +10248,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         toast({
           title: "Printers mockup ready",
           description: isPillowAop
-            ? "Showing in-situ lifestyle view — use the arrows under the preview to switch."
+            ? pillowUsedProductCameras
+              ? "Printify has no lifestyle scene for this pillow — showing the printer's product mockup instead."
+              : "Showing in-situ lifestyle view — use the arrows under the preview to switch."
             : "Showing Front Person — use the arrows under the preview to switch views.",
         });
       } finally {
@@ -10486,6 +10541,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           },
           linkSides: false,
           artworkUrl,
+          backgroundColor: flatPlacerState?.backgroundColor ?? null,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
         if (
@@ -12526,6 +12582,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               back: nextPlacement === "back" || nextPlacement === "both",
                             },
                             linkSides: false,
+                            backgroundColor: prev?.backgroundColor ?? null,
                           }));
                           currentMockupColorRef.current = "";
                           lastFlatGalleryMockupKeyRef.current = "";
@@ -12812,6 +12869,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           setSelectedMockupIndex((i) => {
                             // Clear stick first so a concurrent gallery rebuild
                             // cannot snap the index back to Front Person mid-step.
+                            lastManualGalleryNavRef.current = Date.now();
                             stickAopPersonGalleryRef.current = false;
                             const next = stepPostGenGalleryIndex(
                               i,
@@ -12837,6 +12895,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Next"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
                             stickAopPersonGalleryRef.current = false;
                             const next = stepPostGenGalleryIndex(
                               i,
@@ -13174,6 +13233,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Previous"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
                             stickAopPersonGalleryRef.current = false;
                             return stepPostGenGalleryIndex(
                               i,
@@ -13193,6 +13253,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Next"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
                             stickAopPersonGalleryRef.current = false;
                             return stepPostGenGalleryIndex(
                               i,
@@ -13226,7 +13287,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         <button
                           key={`${item.kind}-${idx}`}
                           type="button"
-                          onClick={() => setSelectedMockupIndex(idx)}
+                          onClick={() => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = !!(
+                              item.kind === "mockup" &&
+                              isPrintifyOnDemandMockupLabel(item.label)
+                            );
+                            setSelectedMockupIndex(idx);
+                          }}
                           aria-label={
                             item.kind === "artwork" && flatEdgeWrapMode
                               ? "Front"
@@ -13370,6 +13438,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               className="mx-auto rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
+                  // Post-gen: catalog Views + Printers/lifestyle shots are square-ish
+                  // product photos — match the editor's square chrome instead of the
+                  // print-canvas AR (tall phone canvas gave huge white bars on View 2).
+                  if (generatedDesign?.imageUrl) {
+                    const slide = postGenGalleryItems[selectedMockupIndex];
+                    if (
+                      slide &&
+                      (slide.kind === "catalog" ||
+                        (slide.kind === "mockup" &&
+                          isPrintifyOnDemandMockupLabel(slide.label)))
+                    ) {
+                      return "1/1";
+                    }
+                  }
                   // Pre-artwork browse: standard square window (faux-suede-pillow reference).
                   // Decor keeps size AR — window shape is the size/orientation cue there.
                   // Phone / edge-wrap: always 1:1 browse even if import mis-tagged as framed-print.
@@ -13621,6 +13703,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     onClick={() =>
                       setSelectedMockupIndex((i) => {
                         // Explicit carousel step — don't let person-stick snap back.
+                        lastManualGalleryNavRef.current = Date.now();
                         stickAopPersonGalleryRef.current = false;
                         return stepPostGenGalleryIndex(
                           i,
@@ -13639,6 +13722,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       aria-label="Next"
                     onClick={() =>
                       setSelectedMockupIndex((i) => {
+                        lastManualGalleryNavRef.current = Date.now();
                         stickAopPersonGalleryRef.current = false;
                         return stepPostGenGalleryIndex(
                           i,
@@ -13739,7 +13823,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <button
                     key={`${item.kind}-${idx}`}
                       type="button"
-                      onClick={() => setSelectedMockupIndex(idx)}
+                      onClick={() => {
+                        lastManualGalleryNavRef.current = Date.now();
+                        stickAopPersonGalleryRef.current = !!(
+                          item.kind === "mockup" &&
+                          isPrintifyOnDemandMockupLabel(item.label)
+                        );
+                        setSelectedMockupIndex(idx);
+                      }}
                     aria-label={item.label}
                       className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
                         selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"

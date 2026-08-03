@@ -75,6 +75,13 @@ describe("stepPostGenGalleryIndex", () => {
     ).toBe(true);
   });
 
+  it("clamps an out-of-range index so one click still advances", () => {
+    // Gallery shrank while the pointer was on the (now removed) last slide.
+    expect(stepPostGenGalleryIndex(4, 1, items, false)).toBe(0);
+    expect(stepPostGenGalleryIndex(9, 1, items, false)).toBe(0);
+    expect(stepPostGenGalleryIndex(-2, -1, items, false)).toBe(3);
+  });
+
   it("steps Front → Front Person in one click when placer is closed", () => {
     const itemsClosed: PostGenGalleryNavItem[] = [
       { kind: "artwork", label: "Artwork" },

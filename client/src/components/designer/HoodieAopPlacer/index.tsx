@@ -2174,6 +2174,21 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               </div>
             )}
           </div>
+          {/* Full-canvas progress overlay while Printers Mockup is generating —
+              the button spinner alone was easy to miss for the 4-5s wait. */}
+          {printersMockupAction?.loading && (
+            <div
+              className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+              data-testid="hoodie-aop-printers-loading-overlay"
+            >
+              <div className="flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>
+                  {printersMockupAction.loadingLabel || "Generating printers mockup…"}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
         {/* Non-leggings: nudge under preview. Leggings: nudge lives in controls. */}
         {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (

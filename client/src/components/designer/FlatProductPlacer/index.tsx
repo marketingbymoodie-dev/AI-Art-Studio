@@ -1267,7 +1267,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           // Fill the matched-height card; zoom bar pinned to card bottom.
           <div
             ref={canvasAreaRef}
-            className="flex h-full min-h-0 w-full flex-col bg-zinc-100"
+            className="relative flex h-full min-h-0 w-full flex-col bg-zinc-100"
             data-testid="flat-placer-canvas-area"
           >
             <div
@@ -1278,6 +1278,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               {previewMedia}
             </div>
             {previewZoomBar}
+            {lifestyleAction?.loading && (
+              <div
+                className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+                data-testid="flat-placer-printers-loading-overlay"
+              >
+                <div className="flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{lifestyleAction.loadingLabel || "Generating…"}</span>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div
@@ -1299,6 +1310,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             */}
             {previewMedia}
             {previewZoomBar}
+            {lifestyleAction?.loading && (
+              <div
+                className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+                data-testid="flat-placer-printers-loading-overlay"
+              >
+                <div className="flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{lifestyleAction.loadingLabel || "Generating…"}</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

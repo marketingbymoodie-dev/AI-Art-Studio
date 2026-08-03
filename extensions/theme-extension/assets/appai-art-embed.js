@@ -2364,12 +2364,25 @@
       document.querySelectorAll('#ai-art-studio-auto-embed, .ai-art-studio-embed').forEach(function(el) {
         if (el && el.parentNode) el.parentNode.removeChild(el);
       });
-      Array.prototype.slice.call(mount.children || []).forEach(function(el) {
-        if (el.id === 'appai-boot' || el.id === 'appai-nav-transition') return;
-        if (el.classList && el.classList.contains('ai-art-studio-embed')) return;
-        el.style.display = 'none';
-      });
     }
+
+    // Hide ALL other main-content children on customizer pages — not only on
+    // replaceExisting. The theme's own page title/body renders BELOW the iframe
+    // (e.g. a big "Slim Phone Cases" H1 near the footer) and the selector list
+    // below misses theme-specific markup. Keep anything that contains our embed
+    // (theme app block mounts render the iframe inside an existing section).
+    Array.prototype.slice.call(mount.children || []).forEach(function(el) {
+      if (!el) return;
+      if (el.id === 'appai-boot' || el.id === 'appai-nav-transition') return;
+      if (el.classList && el.classList.contains('ai-art-studio-embed')) return;
+      if (el.querySelector && (
+        el.querySelector('.ai-art-studio-embed') ||
+        el.querySelector('.ai-art-studio-block') ||
+        el.querySelector('#ai-art-studio-auto-embed') ||
+        el.querySelector('iframe[title="AI Art Design Studio"]')
+      )) return;
+      el.style.display = 'none';
+    });
 
     var hideThemeElement = function(el) {
       if (!el || el.querySelector('#appai-boot') || el.closest('#appai-boot')) return;
