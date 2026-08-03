@@ -1,16 +1,9 @@
-# Keep GitHub `main` aligned with `production` after each go-live.
-# Deploy path is staging → production; `main` is a protected mirror and
-# cannot be pushed directly, so this opens a PR and enables auto-merge.
-#
-# One-time GitHub settings (repo owner):
-# 1. Settings → General → Allow auto-merge (on)
-# 2. Settings → Branches → `main` rule: allow GitHub Actions to bypass
-#    required reviews / required PRs if auto-merge otherwise stalls
-#    (or leave as-is and click Merge once when the sync PR appears)
+# Keep GitHub main aligned with production after each go-live.
+# Opens a PR (main is protected) and enables auto-merge when allowed.
 
 name: Sync main from production
 
-on:
+"on":
   push:
     branches:
       - production
@@ -26,7 +19,7 @@ concurrency:
 
 jobs:
   sync-main:
-    name: Sync main ← production
+    name: Sync main from production
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -50,7 +43,7 @@ jobs:
           PROD_SHA="$(git rev-parse origin/production)"
 
           {
-            echo "## Sync main ← production"
+            echo "## Sync main from production"
             echo ""
             echo "| Branch | Commit |"
             echo "| --- | --- |"
@@ -60,7 +53,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$MAIN_SHA" = "$PROD_SHA" ]; then
-            echo "main already matches production — nothing to do."
+            echo "main already matches production - nothing to do."
             echo "### Already in sync" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -68,29 +61,23 @@ jobs:
           AHEAD="$(git rev-list --count origin/main..origin/production)"
           echo "production is ${AHEAD} commit(s) ahead of main."
 
-          # Dedicated head branch so we can force-update without touching main.
           git checkout -B sync/main-from-production origin/production
           git push -f origin sync/main-from-production
 
           PR_NUMBER="$(gh pr list --base main --head sync/main-from-production --state open --json number -q '.[0].number' || true)"
           if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
-            BODY='Automated sync after a production go-live.
-
-Keeps the protected `main` branch aligned with `production` (Railway live).
-No app behavior change — git mirror only.'
             gh pr create \
               --base main \
               --head sync/main-from-production \
               --title "Sync main with production" \
-              --body "${BODY}"
+              --body "Automated sync after a production go-live. Keeps protected main aligned with production (Railway live). No app behavior change."
             PR_NUMBER="$(gh pr list --base main --head sync/main-from-production --state open --json number -q '.[0].number')"
           fi
 
           echo "Sync PR: #${PR_NUMBER}"
           echo "### Pull request" >> "$GITHUB_STEP_SUMMARY"
-          echo "Opened/updated PR #${PR_NUMBER}: sync/main-from-production → main" >> "$GITHUB_STEP_SUMMARY"
+          echo "Opened/updated PR #${PR_NUMBER}: sync/main-from-production -> main" >> "$GITHUB_STEP_SUMMARY"
 
-          # Prefer auto-merge when the repo allows it; otherwise try a direct merge.
           if gh pr merge "${PR_NUMBER}" --auto --merge; then
             echo "Auto-merge enabled for PR #${PR_NUMBER}."
             echo "Auto-merge enabled." >> "$GITHUB_STEP_SUMMARY"
@@ -98,9 +85,6 @@ No app behavior change — git mirror only.'
             echo "Merged PR #${PR_NUMBER}."
             echo "Merged immediately." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning::Could not auto-merge PR #${PR_NUMBER}. Enable Allow auto-merge and/or Actions bypass on the main branch rule, or merge the PR manually."
-            {
-              echo ""
-              echo "**Action needed:** merge PR #${PR_NUMBER} in GitHub, or enable auto-merge + Actions bypass on \`main\`."
-            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Could not auto-merge PR #${PR_NUMBER}. Merge it manually in GitHub Pull requests."
+            echo "**Action needed:** merge PR #${PR_NUMBER} manually." >> "$GITHUB_STEP_SUMMARY"
           fi
