@@ -187,4 +187,21 @@ Cursor will drive this. Your job is mostly answering prompts.
 
 - [ ] Theme App Embed enabled on demo store
 - [ ] `npm run shopify:deploy:staging` succeeded once (extensions)
-- [ ] First feature shipped staging → explicit go-live → production
+- [x] First feature shipped staging → explicit go-live → production
+- [ ] GitHub auto-sync: `Sync main from production` workflow live + auto-merge enabled (see below)
+
+---
+
+## Keep GitHub `main` in sync (automatic)
+
+`main` is branch-protected (PR required). After each push to `production`, the workflow
+`.github/workflows/sync-main-from-production.yml` opens/updates PR
+`sync/main-from-production` → `main` and tries to auto-merge.
+
+**One-time GitHub settings (you):**
+
+1. Repo → **Settings** → **General** → enable **Allow auto-merge**
+2. Repo → **Settings** → **Branches** → rule for `main`:
+   - Allow **GitHub Actions** to bypass required reviews / restrictions if merges stall
+3. After the workflow is on `production`, either wait for the next go-live or run
+   **Actions → Sync main from production → Run workflow** once to catch up.

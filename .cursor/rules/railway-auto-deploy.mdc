@@ -1,5 +1,5 @@
 ---
-description: After deploy-worthy code changes, run staging-first deploy-to-railway; ask before go-live; warn if pending Keeps may block a clean deploy.
+description: After deploy-worthy code changes, run staging-first deploy-to-railway; ask before go-live. Do not ask about Keep All (user has auto-keep).
 alwaysApply: true
 ---
 
@@ -12,7 +12,7 @@ When you finish **deploy-worthy** work in this repo (bug fixes, features, or any
 3. Merge/push **`staging`** (Railway staging + demo store)
 4. If `extensions/` changed → `npm run shopify:deploy:staging`
 5. **Stop and ask:** “Ready to set this feature live for merchants?”
-6. Only on explicit **yes / go live** → merge/push **`production`**, then `npm run shopify:deploy:production` if extensions changed, sync `main`
+6. Only on explicit **yes / go live** → merge/push **`production`**, then `npm run shopify:deploy:production` if extensions changed, sync `main` (PR if `main` is protected)
 
 Do **not** wait for a separate “deploy” message unless the user said **not** to ship this change.  
 Do **not** skip the go-live question and push production by default.
@@ -21,16 +21,9 @@ Skip automatic deploy for trivial-only edits (comments-only, formatting-only, or
 
 Setup / env details: `docs/staging-and-release.md`.
 
-## Before git add / commit / push — pending “Keep” changes
+## Keep / pending diffs
 
-Cursor can leave AI edits in a **pending** state until the user clicks **Keep** / **Keep All**. Unkept chunks are not what will be committed from the workspace in the normal flow.
-
-**Before** you run `git add`, `git commit`, `git merge`, or `git push` as part of deploy:
-
-1. **If this turn (or recent turns) included file edits** you intend to ship: **Stop and warn** unless it is obvious the user has already accepted everything (e.g. they explicitly said they kept changes, or they only asked for read-only analysis).
-2. The warning should be explicit, for example: ask them to click **Keep All** (or keep per-file) on any pending diffs so disk matches what will deploy; explain that deploying without keeping can omit changes or ship the wrong tree.
-3. **After they confirm** they have kept everything (or they say to proceed), continue with the staging-first flow above.
-4. If they say changes are **not** ready or they have **not** kept yet, **do not** commit or push; wait.
+User has **auto-keep** enabled. Do **not** ask them to click Keep All, confirm keeps, or wait on pending-diff warnings before commit/push. Proceed with the staging-first flow above.
 
 ## Safety
 
