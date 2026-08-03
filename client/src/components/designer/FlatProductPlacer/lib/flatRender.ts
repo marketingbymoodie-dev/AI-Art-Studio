@@ -141,6 +141,11 @@ export type FlatRenderInput = {
   forceShadingMap?: boolean;
   /** Edge-print phone cases — placement uses full print bounds, not safe zone. */
   edgeWrapMode?: boolean;
+  /**
+   * Phone cases: customer fill under artwork out to the blue dashed print
+   * canvas. When unset, preview keeps Printify grey guide chrome only.
+   */
+  printCanvasBackgroundColor?: string | null;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
   /** Woven fabric procedural texture (tapestry only unless admin-enabled). */
@@ -212,6 +217,50 @@ export function flatVisibleRectPx(
       height: canvasH,
     }
   );
+}
+
+/**
+ * Match harvest `REG_VERTICAL_OVERSCAN` (1.12). Printify clips that overscan
+ * out of the mockup magenta AABB but still accepts art in the taller print
+ * file — so the dashed guide must grow or it reads short at the collar.
+ */
+/** Fallback only when no mask — prefer reharvest with REG_VERTICAL_OVERSCAN 1.2. */
+export const FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST = 1.2;
+
+/**
+ * Magenta harvest AABB often understates Printify printable height: at
+ * scale=1 Printify width-fills and clips vertical overscan, so the detected
+ * rect can be shorter than the real print area. Grow height (keep width + X),
+ * preferring expansion toward the collar; clamp to the mockup.
+ */
+export function expandPrintGuideToPrintFileAspect(
+  rect: Rect,
+  printFileDims: { width: number; height: number } | null | undefined,
+  canvasW: number,
+  canvasH: number,
+  heightBoost: number = FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
+): Rect {
+  if (!(rect.width > 0) || !(rect.height > 0) || !(canvasH > 0)) return rect;
+
+  const pfW = printFileDims?.width ?? 0;
+  const pfH = printFileDims?.height ?? 0;
+  // Tallest of: current height, printFileDims aspect, harvest overscan boost.
+  let targetH = rect.height * Math.max(1, heightBoost);
+  if (pfW > 0 && pfH > 0) {
+    targetH = Math.max(targetH, rect.width * (pfH / pfW));
+  }
+  if (!(targetH > rect.height + 0.5)) return rect;
+
+  if (targetH >= canvasH - 0.5) {
+    return { x: rect.x, y: 0, width: rect.width, height: canvasH };
+  }
+
+  // ~70% of the extra height goes upward (collar / neckline side).
+  const extra = targetH - rect.height;
+  let y = rect.y - extra * 0.7;
+  if (y < 0) y = 0;
+  if (y + targetH > canvasH) y = canvasH - targetH;
+  return { x: rect.x, y, width: rect.width, height: targetH };
 }
 
 /** Full print silhouette from manifest (harvested mask bbox). */
@@ -516,9 +565,160 @@ export function flatPrintCanvasLayout(
 
 export { PRINT_CANVAS_GREY };
 
+/** Map a rect from one pixel space into another (uniform per-axis scale). */
+export function scaleRectToCanvas(
+  rect: Rect,
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number,
+): Rect {
+  const sx = dstW / Math.max(1, srcW);
+  const sy = dstH / Math.max(1, srcH);
+  return {
+    x: rect.x * sx,
+    y: rect.y * sy,
+    width: rect.width * sx,
+    height: rect.height * sy,
+  };
+}
+
+const maskAlphaBoundsCache = new WeakMap<HTMLImageElement, Rect | null>();
+
+/** Cached alpha AABB of a mask image (native mask pixels). */
+export function flatMaskAlphaBoundsCached(
+  mask: HTMLImageElement,
+): Rect | null {
+  if (maskAlphaBoundsCache.has(mask)) return maskAlphaBoundsCache.get(mask)!;
+  const bounds = flatImageAlphaBounds(mask);
+  maskAlphaBoundsCache.set(mask, bounds);
+  return bounds;
+}
+
+/**
+ * Opaque-content bounds of an artwork image as fractions of its pixel size.
+ * Generated/uploaded PNGs often carry transparent padding; the bounding box
+ * and trim warnings should track the visible pixels, not the padded rect.
+ * Null when unreadable (cross-origin without CORS) or fully transparent —
+ * callers fall back to the full image rect.
+ */
+export type ArtContentFractions = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+const artContentFractionsCache = new WeakMap<
+  HTMLImageElement,
+  ArtContentFractions | null
+>();
+
+export function flatArtContentFractionsCached(
+  artwork: HTMLImageElement,
+): ArtContentFractions | null {
+  if (artContentFractionsCache.has(artwork)) {
+    return artContentFractionsCache.get(artwork)!;
+  }
+  const w = artwork.naturalWidth || artwork.width;
+  const h = artwork.naturalHeight || artwork.height;
+  // Alpha ≥ 1: soft motif edges that still paint/clip in the preview must count
+  // as content — threshold 10 was missing brim/barrel tips so trim warnings
+  // stayed off while the canvas clearly clipped them at the dashed guide.
+  const bounds = w > 0 && h > 0 ? flatImageAlphaBounds(artwork, 1) : null;
+  const fractions =
+    bounds && bounds.width > 0 && bounds.height > 0
+      ? {
+          left: bounds.x / w,
+          top: bounds.y / h,
+          width: bounds.width / w,
+          height: bounds.height / h,
+        }
+      : null;
+  artContentFractionsCache.set(artwork, fractions);
+  return fractions;
+}
+
+/** Sub-rect of a placed artwork box covering only the opaque content. */
+export function flatArtContentSubRect(
+  fullBox: Rect,
+  content: ArtContentFractions | null,
+): Rect {
+  if (!content) return fullBox;
+  return {
+    x: fullBox.x + content.left * fullBox.width,
+    y: fullBox.y + content.top * fullBox.height,
+    width: content.width * fullBox.width,
+    height: content.height * fullBox.height,
+  };
+}
+
+/** Axis-aligned bounds of `rect` rotated `deg` degrees around (cx, cy). */
+export function flatRotatedAabbAround(
+  rect: Rect,
+  cx: number,
+  cy: number,
+  deg: number,
+): Rect {
+  if (!deg) return rect;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const corners = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x, y: rect.y + rect.height },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+  ];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const c of corners) {
+    const dx = c.x - cx;
+    const dy = c.y - cy;
+    const rx = cx + dx * cos - dy * sin;
+    const ry = cy + dx * sin + dy * cos;
+    if (rx < minX) minX = rx;
+    if (ry < minY) minY = ry;
+    if (rx > maxX) maxX = rx;
+    if (ry > maxY) maxY = ry;
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Axis-aligned bounds of the placed artwork's OPAQUE content (rotation applied
+ * around the full image centre — the true rotation origin). Used for trim /
+ * coverage warnings so transparent PNG padding neither triggers false trim
+ * warnings nor fakes coverage.
+ */
+export function flatVisibleArtBoxAxisAligned(
+  rect: Rect,
+  placement: ArtworkPlacement,
+  artwork: HTMLImageElement,
+): Rect {
+  const artW = artwork.naturalWidth || artwork.width || 1;
+  const artH = artwork.naturalHeight || artwork.height || 1;
+  const fullBox = flatArtBox(rect, placement, artW, artH);
+  const content = flatArtContentFractionsCached(artwork);
+  const sub = flatArtContentSubRect(fullBox, content);
+  const deg = Number.isFinite(placement.rotationDeg)
+    ? Number(placement.rotationDeg)
+    : 0;
+  return flatRotatedAabbAround(
+    sub,
+    fullBox.x + fullBox.width / 2,
+    fullBox.y + fullBox.height / 2,
+    deg,
+  );
+}
+
 /**
  * Coordinate system for placement + print-file bake.
- * Edge-wrap: full print canvas. Apparel: visible print rect on mockup.
+ * Edge-wrap: full print canvas. Apparel: prefer the live mask alpha AABB so the
+ * dashed guide matches destination-in clipping (harvest magenta AABB is often
+ * much shorter than the mask silhouette customers actually see).
  */
 export function flatPlacementRectPx(
   view: FlatViewCalibration,
@@ -530,7 +730,33 @@ export function flatPlacementRectPx(
   if (opts.edgeWrapMode) {
     return flatPrintCanvasLayout(view).printCanvas;
   }
-  return flatVisibleRectPx(view, canvasW, canvasH);
+  const harvest = flatVisibleRectPx(view, canvasW, canvasH);
+  // Decor / wall-decal guides are mat openings — do not stretch to print AR.
+  if (opts.decorMode) return harvest;
+
+  if (mask) {
+    const mw = mask.naturalWidth || mask.width;
+    const mh = mask.naturalHeight || mask.height;
+    const bounds = mw > 0 && mh > 0 ? flatMaskAlphaBoundsCached(mask) : null;
+    if (bounds && bounds.width > 0 && bounds.height > 0) {
+      // Exact WYSIWYG: the guide IS the mask AABB — no aspect expansion.
+      // A guide taller than the mask overpromises (art clips inside the line).
+      // Short old harvests are fixed by reharvesting, not by stretching here.
+      return scaleRectToCanvas(bounds, mw, mh, canvasW, canvasH);
+    }
+    // Mask pixels unreadable — the harvest AABB was derived from the same
+    // magenta mask, so it matches the destination-in clip. No boost: a boosted
+    // guide would extend past where the mask actually clips.
+    return harvest;
+  }
+
+  // No mask at all — clip is fillRect(rect), so the boosted rect stays WYSIWYG.
+  return expandPrintGuideToPrintFileAspect(
+    harvest,
+    view.printFileDims,
+    canvasW,
+    canvasH,
+  );
 }
 
 /** Edge-wrap overlay guides: outer = print canvas, inner = safe zone. */
@@ -583,6 +809,41 @@ export function flatArtBox(
   return { x: cx - drawW / 2, y: cy - drawH / 2, width: drawW, height: drawH };
 }
 
+/**
+ * Axis-aligned bounds of the (possibly rotated) artwork box — used for
+ * overflow / coverage warnings so a rotated corner past the guide still warns.
+ */
+export function flatArtBoxAxisAligned(
+  rect: Rect,
+  placement: ArtworkPlacement,
+  artW: number,
+  artH: number,
+): Rect {
+  const box = flatArtBox(rect, placement, artW, artH);
+  const deg = Number.isFinite(placement.rotationDeg) ? Number(placement.rotationDeg) : 0;
+  if (!deg) return box;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const bbW = box.width * cos + box.height * sin;
+  const bbH = box.width * sin + box.height * cos;
+  return { x: cx - bbW / 2, y: cy - bbH / 2, width: bbW, height: bbH };
+}
+
+/**
+ * Harvest magenta AABB (unexpanded). Preview mask clip follows this silhouette
+ * more closely than the Printify-overscan guide — use for apparel trim warnings.
+ */
+export function flatApparelTrimRectPx(
+  view: FlatViewCalibration,
+  canvasW: number,
+  canvasH: number,
+): Rect {
+  return flatVisibleRectPx(view, canvasW, canvasH);
+}
+
 /** Draw artwork into `box`, optionally rotated CW around the box centre. */
 export function drawFlatArtwork(
   ctx: CanvasRenderingContext2D,
@@ -616,14 +877,111 @@ export function flatCovers(rect: Rect, box: Rect): boolean {
 }
 
 /** True when artwork extends past the print rect — mask clip will trim edges. */
-export function flatOverflows(rect: Rect, box: Rect): boolean {
-  const eps = 1;
+export function flatOverflows(rect: Rect, box: Rect, slackPx = 1): boolean {
+  const eps = Math.max(0, slackPx);
   return (
     box.x < rect.x - eps ||
     box.y < rect.y - eps ||
     box.x + box.width > rect.x + rect.width + eps ||
     box.y + box.height > rect.y + rect.height + eps
   );
+}
+
+/**
+ * Apparel trim banner: opaque artwork vs the dashed print guide only.
+ * Transparent PNG padding does not count. Ring/handles are UI chrome and must
+ * not trigger the warning. Fires when any opaque edge touches or crosses the
+ * guide (flush with the line = will be clipped).
+ */
+export function flatApparelGuideTrimmed(guideRect: Rect, artBox: Rect): boolean {
+  // Sub-pixel tolerance so "comfortably inside" stays quiet; flush/touch warns.
+  const touchEps = 0.5;
+  return (
+    artBox.x <= guideRect.x + touchEps ||
+    artBox.y <= guideRect.y + touchEps ||
+    artBox.x + artBox.width >= guideRect.x + guideRect.width - touchEps ||
+    artBox.y + artBox.height >= guideRect.y + guideRect.height - touchEps
+  );
+}
+
+/**
+ * Apparel: warn when art extends past the harvest/mask AABB *or* the (taller)
+ * Printify guide. Expanding the dashed guide for collar overscan must not
+ * silence the trim warning when the mask still clips the design.
+ */
+export function flatApparelArtworkTrimmed(
+  trimRect: Rect,
+  guideRect: Rect,
+  artBox: Rect,
+): boolean {
+  return flatOverflows(trimRect, artBox) || flatOverflows(guideRect, artBox);
+}
+
+/**
+ * True when the axis-aligned art box sits inside the dashed guide AABB but
+ * still overlaps transparent mask pixels (silhouette / print-window clip).
+ * Samples the art-box perimeter in mask space — cheap and catches the common
+ * "clipped inside the dashed line, Placement ready" failure mode.
+ */
+export function flatMaskRejectsArtBox(
+  mask: HTMLImageElement | null,
+  artBox: Rect,
+  canvasW: number,
+  canvasH: number,
+  alphaThreshold = 16,
+): boolean {
+  if (!mask || artBox.width <= 0 || artBox.height <= 0) return false;
+  const mw = mask.naturalWidth || mask.width;
+  const mh = mask.naturalHeight || mask.height;
+  if (mw <= 0 || mh <= 0 || canvasW <= 0 || canvasH <= 0) return false;
+
+  const c = document.createElement("canvas");
+  c.width = mw;
+  c.height = mh;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return false;
+  let data: Uint8ClampedArray;
+  try {
+    ctx.drawImage(mask, 0, 0, mw, mh);
+    data = ctx.getImageData(0, 0, mw, mh).data;
+  } catch {
+    return false;
+  }
+
+  const sx = mw / canvasW;
+  const sy = mh / canvasH;
+  const steps = 24;
+  const samples: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    samples.push(
+      { x: artBox.x + artBox.width * t, y: artBox.y },
+      { x: artBox.x + artBox.width * t, y: artBox.y + artBox.height },
+      { x: artBox.x, y: artBox.y + artBox.height * t },
+      { x: artBox.x + artBox.width, y: artBox.y + artBox.height * t },
+    );
+  }
+  // Mid-edge insets — catches hard rect clips a few px inside the AABB.
+  const insetX = Math.min(6, artBox.width * 0.05);
+  const insetY = Math.min(6, artBox.height * 0.05);
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    samples.push(
+      { x: artBox.x + artBox.width * t, y: artBox.y + insetY },
+      { x: artBox.x + artBox.width * t, y: artBox.y + artBox.height - insetY },
+      { x: artBox.x + insetX, y: artBox.y + artBox.height * t },
+      { x: artBox.x + artBox.width - insetX, y: artBox.y + artBox.height * t },
+    );
+  }
+
+  for (const p of samples) {
+    if (p.x < 0 || p.y < 0 || p.x >= canvasW || p.y >= canvasH) return true;
+    const mx = Math.min(mw - 1, Math.max(0, Math.floor(p.x * sx)));
+    const my = Math.min(mh - 1, Math.max(0, Math.floor(p.y * sy)));
+    const a = data[(my * mw + mx) * 4 + 3];
+    if (a <= alphaThreshold) return true;
+  }
+  return false;
 }
 
 /**
@@ -1153,8 +1511,14 @@ function solidifyMaskForClip(
 
 /**
  * Clip the offscreen artwork layer to the printable area.
- * Prefer the pixel mask when present; otherwise hard-clip to `rect` (wall-decal
- * catalog blanks skip the shared harvest mask but still need side/top trim).
+ * Prefer the pixel mask when present, then ALSO erase everything outside the
+ * dashed guide `rect` so artwork can never display past the guide even when a
+ * fallback made the two diverge (e.g. mask pixels unreadable → guide from
+ * harvest AABB). WYSIWYG must hold structurally, not per-path.
+ *
+ * Note: destination-in + fillRect(rect) cannot intersect (fillRect only
+ * touches pixels inside the rect); erasing the four outside margins with
+ * destination-out is a true intersection using only draw calls.
  */
 export function clipFlatArtToPrintArea(
   actx: CanvasRenderingContext2D,
@@ -1165,7 +1529,7 @@ export function clipFlatArtToPrintArea(
     canvasH: number;
     fabricWeave?: boolean;
   },
-): "mask" | "rect" {
+): "mask" | "rect" | "mask+rect" {
   const { mask, rect, canvasW, canvasH, fabricWeave } = opts;
   actx.globalCompositeOperation = "destination-in";
   if (mask) {
@@ -1174,8 +1538,20 @@ export function clipFlatArtToPrintArea(
     } else {
       actx.drawImage(mask, 0, 0, canvasW, canvasH);
     }
+    let mode: "mask" | "mask+rect" = "mask";
+    if (rect.width > 0 && rect.height > 0) {
+      actx.globalCompositeOperation = "destination-out";
+      actx.fillStyle = "#fff";
+      const right = rect.x + rect.width;
+      const bottom = rect.y + rect.height;
+      if (rect.x > 0) actx.fillRect(0, 0, rect.x, canvasH);
+      if (right < canvasW) actx.fillRect(right, 0, canvasW - right, canvasH);
+      if (rect.y > 0) actx.fillRect(0, 0, canvasW, rect.y);
+      if (bottom < canvasH) actx.fillRect(0, bottom, canvasW, canvasH - bottom);
+      mode = "mask+rect";
+    }
     actx.globalCompositeOperation = "source-over";
-    return "mask";
+    return mode;
   }
   actx.fillStyle = "#fff";
   actx.fillRect(rect.x, rect.y, rect.width, rect.height);
@@ -1864,6 +2240,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     artworkCorsClean = true,
     forceShadingMap = false,
     edgeWrapMode = false,
+    printCanvasBackgroundColor = null,
     decorMode = false,
     fabricWeave = false,
     layerAdjust,
@@ -1954,7 +2331,15 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
-    // Step 1: Grey print-canvas fill (the "Printify grey box" bleed area).
+    const customerBg =
+      typeof printCanvasBackgroundColor === "string" &&
+      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
+        ? printCanvasBackgroundColor.trim()
+        : null;
+
+    // Step 1: Always Printify grey guide chrome for the print canvas (blue
+    // dashed). Customer bg is mask-clipped in step 2b so the outer grey box
+    // never floods with colour — bake still fills the full print file.
     ctx.clearRect(0, 0, outW, outH);
     ctx.fillStyle = PRINT_CANVAS_GREY;
     ctx.fillRect(0, 0, outW, outH);
@@ -1996,6 +2381,37 @@ export function renderFlatView(input: FlatRenderInput): void {
         drawAssetScaled,
       );
     };
+
+    // Step 2b: Customer bg on the masked phone (face + wrap edges under art).
+    if (customerBg) {
+      const bgLayer = document.createElement("canvas");
+      bgLayer.width = outW;
+      bgLayer.height = outH;
+      const bgCtx = bgLayer.getContext("2d");
+      if (bgCtx) {
+        bgCtx.fillStyle = customerBg;
+        bgCtx.fillRect(
+          layout.printCanvas.x,
+          layout.printCanvas.y,
+          layout.printCanvas.width,
+          layout.printCanvas.height,
+        );
+        if (mask) {
+          clipMaskToDest(bgCtx, maskDraw);
+        } else {
+          const pb = layout.phoneBack;
+          bgCtx.save();
+          bgCtx.beginPath();
+          bgCtx.rect(pb.x, pb.y, pb.width, pb.height);
+          bgCtx.clip();
+          bgCtx.globalCompositeOperation = "destination-in";
+          bgCtx.fillStyle = "#fff";
+          bgCtx.fillRect(pb.x, pb.y, pb.width, pb.height);
+          bgCtx.restore();
+        }
+        ctx.drawImage(bgLayer, 0, 0);
+      }
+    }
 
     if (!showArtLayer || !artwork) {
       punchBlankHardware();

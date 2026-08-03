@@ -13,8 +13,13 @@ Per-product **signed-off** pins for flat-placer products (framed decor, tapestry
 | Woven Wall Tapestry | 1649 | 2026-07-23 | `23bfaab` | [woven-wall-tapestry-bp1649.md](./woven-wall-tapestry-bp1649.md) |
 | Shoulder Tote Bag (AOP) | 836 | 2026-07-24 | `c09b062` | [shoulder-tote-bp836.md](./shoulder-tote-bp836.md) |
 | Unisex Cotton Crew Tee | 5 | 2026-07-24 | `eafd244` | [unisex-cotton-crew-tee-bp5.md](./unisex-cotton-crew-tee-bp5.md) |
+| Men's Lightweight Fashion Tee | 26 | 2026-07-28 | `7d163e6` | [mens-lightweight-fashion-tee-bp26.md](./mens-lightweight-fashion-tee-bp26.md) |
+| Unisex 3/4 Sleeve Baseball Tee | 79 | 2026-07-28 | `7d163e6` | [unisex-34-sleeve-baseball-tee-bp79.md](./unisex-34-sleeve-baseball-tee-bp79.md) |
+| Unisex Heavy Blend™ Crewneck Sweatshirt | 49 | 2026-07-28 | `d677610` | [unisex-heavy-blend-crewneck-sweatshirt-bp49.md](./unisex-heavy-blend-crewneck-sweatshirt-bp49.md) |
+| Unisex Heavy Blend™ Hooded Sweatshirt | 77 | 2026-07-28 | `d677610` | [unisex-heavy-blend-hooded-sweatshirt-bp77.md](./unisex-heavy-blend-hooded-sweatshirt-bp77.md) |
+| Slim Phone Cases (edge-wrap) | 421 | 2026-07-29 | `f253677` | [slim-phone-cases-bp421.md](./slim-phone-cases-bp421.md) |
 
-VFP / HFP / tapestry share pin `23bfaab`. Shoulder Tote is pinned later at `c09b062`. Crew tee is pinned at `eafd244` (85% default scale, Print Side sync, dashed-guide AR). Prefer **surgical** reverts if only one product regresses.
+VFP / HFP / tapestry share pin `23bfaab`. Shoulder Tote is pinned later at `c09b062`. Crew tee is pinned at `eafd244` (85% default scale, Print Side sync, dashed-guide AR). Fashion tee (bp 26) + baseball tee (bp 79) share `7d163e6`. Heavy Blend crewneck (bp 49) + hooded sweatshirt (bp 77) share `d677610` — **opaque-touch** trim warning baseline. Slim Phone Cases (bp **421**) pinned at `f253677` — mask-only preview bg, full-canvas bake / Printers Mockup. Prefer **surgical** reverts if only one product regresses.
 
 ## Related
 

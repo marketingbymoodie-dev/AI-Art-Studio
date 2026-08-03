@@ -34,8 +34,11 @@ drawer itself, but navigation lives in the tray.)
 | `server/routes.ts` | `/apps/appai/customizer-pages` (App Proxy) supplies the tray's page list; `buildCustomizerBootHtml()` loads the same assets on self-bootstrapped pages (settings element absent → defaults) |
 
 The launcher stays hidden when the shop has **no active customizer pages**
-(`fetchPages()` returns empty), and when the merchant disables it in the
-theme editor.
+(`fetchPages()` returns a successful empty list), and when the merchant
+disables it in the theme editor. A failed App Proxy fetch must **not** be
+treated as “zero pages” — that previously wiped a good tray list on open
+(`ok:false` keeps the cache). Proxy shop is normalized to `*.myshopify.com`
+(with a bare-handle fallback) so admin-listed pages match the storefront.
 
 ## Launcher behavior — why every piece exists
 

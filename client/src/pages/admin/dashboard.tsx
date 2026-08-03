@@ -1,15 +1,81 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart3, CheckCircle, AlertCircle, TrendingUp } from "lucide-react";
+import { BarChart3, CheckCircle, AlertCircle, TrendingUp, ArrowRight, CheckCircle2, Sparkles } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
-import { BookOpen } from "lucide-react";
+import { useSetupStatus, type SetupNextStep } from "@/hooks/use-setup-status";
 
 interface GenerationStats {
   total: number;
   successful: number;
   failed: number;
+}
+
+const SETUP_STEP_LABELS: Partial<Record<SetupNextStep, string>> = {
+  enable_embed: "Enable the App Embed",
+  choose_product: "Choose a Customizer Page product",
+  connect_printify: "Connect Printify to fulfil orders",
+};
+const SETUP_STEP_NUMBERS: Partial<Record<SetupNextStep, number>> = {
+  enable_embed: 2,
+  choose_product: 3,
+  connect_printify: 4,
+};
+
+/** Dashboard's setup-rail pointer — mirrors /admin/setup's live status instead of a static list of steps. */
+function SetupStatusCard() {
+  const { data: status } = useSetupStatus();
+  if (!status) return null;
+
+  if (status.nextStep === "done") {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-600" />
+            <CardTitle>Setup complete</CardTitle>
+          </div>
+          <CardDescription>
+            Printify is connected and your Customizer Page{status.activePagesCount > 1 ? "s are" : " is"} live for
+            customers.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline" size="sm" data-testid="button-setup-add-product">
+            <Link href="/admin/setup">
+              Activate another product
+              <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-primary" />
+          <CardTitle>Finish setting up</CardTitle>
+        </div>
+        <CardDescription>
+          Step {SETUP_STEP_NUMBERS[status.nextStep]} of 4 — {SETUP_STEP_LABELS[status.nextStep]}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button asChild data-testid="button-continue-setup">
+          <Link href="/admin/setup">
+            Continue setup
+            <ArrowRight className="h-4 w-4 ml-2" />
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function AdminDashboard() {
@@ -97,57 +163,7 @@ export default function AdminDashboard() {
           </Card>
         </div>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <BookOpen className="h-4 w-4 text-muted-foreground" />
-              <CardTitle>Setup Guide</CardTitle>
-            </div>
-            <CardDescription>One-time configuration steps</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            {[
-              {
-                n: 1,
-                title: "Enable the AppAI App Embed",
-                body: "Online Store → Themes → Customize → App Embeds → Enable AI Art Studio Embed. One-time step.",
-              },
-              {
-                n: 2,
-                title: "Import your products from Printify",
-                body: "Go to Products Import and import from Printify.",
-              },
-              {
-                n: 3,
-                title: "Test your Art Generator",
-                body: "Test your art generator for your chosen product before creating a Customiser Page for it.",
-              },
-              {
-                n: 4,
-                title: "Create a customizer page for your new generator",
-                body: "Click Create Page, pick a title, URL handle, and which product customers will customize. Customizer page allowance depends on your plan.",
-              },
-              {
-                n: 5,
-                title: "Check your store menu",
-                body: "Check your store menu has added the newly created Customiser page and test it on your live store to make sure it's working as expected. Refresh your web page if it hasn't shown up immediately.",
-              },
-            ].map(({ n, title, body }) => (
-              <div key={n} className="flex items-start gap-3">
-                <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
-                  {n}
-                </span>
-                <div>
-                  <p className="font-medium">{title}</p>
-                  <p className="text-muted-foreground">{body}</p>
-                </div>
-              </div>
-            ))}
-            <p className="text-muted-foreground pt-1">
-              Visit the storefront page to ensure it's loading correctly. Repeat steps 3–5 for every product you want to have a generator page for.
-            </p>
-          </CardContent>
-        </Card>
+        <SetupStatusCard />
       </div>
     </AdminLayout>
   );

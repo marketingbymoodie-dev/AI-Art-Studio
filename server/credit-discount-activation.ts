@@ -1,4 +1,4 @@
-// Per-shop activation of the "AppAI Credit Buyer Discount" automatic app discount
+// Per-shop activation of the "AI Art Studio Credit Buyer Discount" automatic app discount
 // that is backed by extensions/credit-discount-function.
 //
 // Called best-effort from the OAuth callback. We:
@@ -12,8 +12,9 @@
 
 import { shopifyApiCall } from "./shopify";
 
-const FUNCTION_TITLE = "AppAI Credit Buyer Discount";
-const DISCOUNT_TITLE = "AppAI Credit Buyer Discount";
+const FUNCTION_TITLE = "AI Art Studio Credit Buyer Discount";
+const DISCOUNT_TITLE = "AI Art Studio Credit Buyer Discount";
+const LEGACY_FUNCTION_TITLE = "AppAI Credit Buyer Discount";
 
 interface ShopifyFunctionNode {
   id: string;
@@ -52,13 +53,21 @@ async function findCreditFunctionId(shop: string, accessToken: string): Promise<
     return null;
   }
   const nodes: ShopifyFunctionNode[] = result.data?.data?.shopifyFunctions?.nodes ?? [];
-  // Prefer exact title + discounts apiType. Fall back to any discounts function
-  // owned by this app if the title was renamed at deploy time.
+  // Prefer exact title + discounts apiType. Fall back to legacy AppAI title, then
+  // any discounts function whose title still mentions AppAI / Art Studio credit.
   const exact = nodes.find(
     (n) => n.apiType === "discounts" && n.title === FUNCTION_TITLE,
   );
   if (exact) return exact.id;
-  const fuzzy = nodes.find((n) => n.apiType === "discounts" && n.title?.toLowerCase().includes("appai"));
+  const legacy = nodes.find(
+    (n) => n.apiType === "discounts" && n.title === LEGACY_FUNCTION_TITLE,
+  );
+  if (legacy) return legacy.id;
+  const fuzzy = nodes.find((n) => {
+    if (n.apiType !== "discounts") return false;
+    const t = n.title?.toLowerCase() ?? "";
+    return t.includes("appai") || (t.includes("art studio") && t.includes("credit"));
+  });
   return fuzzy?.id ?? null;
 }
 

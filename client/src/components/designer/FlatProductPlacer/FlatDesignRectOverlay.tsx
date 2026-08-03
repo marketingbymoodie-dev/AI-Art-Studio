@@ -10,8 +10,10 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   flatArtBox,
+  flatArtContentFractionsCached,
   flatVisibleRectPx,
   FLAT_SCALE_MIN,
+  type ArtContentFractions,
   type Rect,
 } from "./lib/flatRender";
 import type { FlatViewCalibration } from "@/pages/embed-design";
@@ -43,6 +45,13 @@ export type FlatDesignRectOverlayProps = {
   outerGuideRect?: Rect | null;
   /** Placement coordinate rect in mockup px (defaults to visible print rect). */
   placementRect?: Rect | null;
+  /**
+   * Canvas bitmap size (blank px). Prefer this over reading canvasRef.width
+   * during render — internal canvas resize does not re-render the overlay, so
+   * falling back to mockupDims can desync guide % vs warning math.
+   */
+  mockupWidth?: number;
+  mockupHeight?: number;
   /** Max placement scale (decor / edge-wrap allow zoom past 100%). */
   scaleMax?: number;
   /** Amber safe-zone guide (edge-wrap inner line). Default true. */
@@ -63,6 +72,8 @@ export default function FlatDesignRectOverlay({
   innerGuideRect = null,
   outerGuideRect = null,
   placementRect = null,
+  mockupWidth,
+  mockupHeight,
   scaleMax = 1,
   showInnerGuide = true,
   showOuterGuide,
@@ -83,14 +94,26 @@ export default function FlatDesignRectOverlay({
         startPlacement: ArtworkPlacement;
         canvasRect: DOMRect;
         rect: Rect;
+        /** Full image box centre — the true rotation/scale origin. */
         center: { x: number; y: number };
+        /** Opaque-content centre — what the handles visually track. */
+        scaleCenter: { x: number; y: number };
+        content: ArtContentFractions;
         startAngleRad?: number;
       }
   >(null);
 
-  // Mockup-px dimensions of the canvas (set by the renderer).
-  const mockupW = canvasRef.current?.width || view.mockupDims?.width || 1;
-  const mockupH = canvasRef.current?.height || view.mockupDims?.height || 1;
+  // Prefer parent-provided blank/canvas bitmap size (stable across renders).
+  const mockupW =
+    (mockupWidth && mockupWidth > 0 ? mockupWidth : 0) ||
+    canvasRef.current?.width ||
+    view.mockupDims?.width ||
+    1;
+  const mockupH =
+    (mockupHeight && mockupHeight > 0 ? mockupHeight : 0) ||
+    canvasRef.current?.height ||
+    view.mockupDims?.height ||
+    1;
 
   const artW = artwork.naturalWidth || artwork.width;
   const artH = artwork.naturalHeight || artwork.height;
@@ -108,6 +131,25 @@ export default function FlatDesignRectOverlay({
   const box = useMemo(
     () => flatArtBox(rect, placement, artW, artH),
     [rect, placement, artW, artH],
+  );
+
+  // Opaque-content bounds: the visible ring/handles hug the artwork pixels,
+  // not the (often transparent-padded) PNG rect. Falls back to the full image
+  // when pixels are unreadable (cross-origin artwork without CORS).
+  const contentFractions = useMemo(
+    () => flatArtContentFractionsCached(artwork),
+    [artwork],
+  );
+  const cf: ArtContentFractions =
+    contentFractions ?? { left: 0, top: 0, width: 1, height: 1 };
+  const contentBox = useMemo<Rect>(
+    () => ({
+      x: box.x + cf.left * box.width,
+      y: box.y + cf.top * box.height,
+      width: cf.width * box.width,
+      height: cf.height * box.height,
+    }),
+    [box, cf.left, cf.top, cf.width, cf.height],
   );
 
   useEffect(() => {
@@ -151,16 +193,17 @@ export default function FlatDesignRectOverlay({
         return;
       }
 
-      // Scale around the box centre (matches the slider). Aspect is locked, so
-      // derive the uniform scale from the pointer's distance to the centre.
-      const halfW = Math.abs(mx - drag.center.x);
-      const halfH = Math.abs(my - drag.center.y);
+      // Scale around the content centre (what the handles visually frame).
+      // Aspect is locked, so derive the uniform scale from the pointer's
+      // distance to the centre, against the content's cover-baseline half-dims.
+      const halfW = Math.abs(mx - drag.scaleCenter.x);
+      const halfH = Math.abs(my - drag.scaleCenter.y);
       const cover = Math.max(
         drag.rect.width / Math.max(1, artW),
         drag.rect.height / Math.max(1, artH),
       );
-      const baseW = (artW * cover) / 2;
-      const baseH = (artH * cover) / 2;
+      const baseW = (artW * drag.content.width * cover) / 2;
+      const baseH = (artH * drag.content.height * cover) / 2;
       // Pick whichever axis the pointer pushed proportionally further.
       const scaleFromW = baseW > 0 ? halfW / baseW : drag.startPlacement.scale;
       const scaleFromH = baseH > 0 ? halfH / baseH : drag.startPlacement.scale;
@@ -177,12 +220,21 @@ export default function FlatDesignRectOverlay({
         const snapY = SNAP_SCREEN_PX * (mockupH / drag.canvasRect.height);
         const rectCx = drag.rect.x + drag.rect.width / 2;
         const rectCy = drag.rect.y + drag.rect.height / 2;
-        const boxCx = currentBox.x + currentBox.width / 2;
-        const boxCy = currentBox.y + currentBox.height / 2;
+        // Snap the opaque content's centre — that's what customers perceive
+        // as "the artwork" when the PNG carries transparent padding.
+        const c = drag.content;
+        const boxCx = currentBox.x + (c.left + c.width / 2) * currentBox.width;
+        const boxCy = currentBox.y + (c.top + c.height / 2) * currentBox.height;
+        // Offset that puts the content centre exactly on the rect centre
+        // (0 when the PNG has no padding — matches the legacy behaviour).
+        const centeredOffsetX =
+          (-(c.left + c.width / 2 - 0.5) * currentBox.width) / drag.rect.width;
+        const centeredOffsetY =
+          (-(c.top + c.height / 2 - 0.5) * currentBox.height) / drag.rect.height;
         let offsetX = cur.offsetX;
         let offsetY = cur.offsetY;
-        if (Math.abs(boxCx - rectCx) <= snapX) offsetX = 0;
-        if (Math.abs(boxCy - rectCy) <= snapY) offsetY = 0;
+        if (Math.abs(boxCx - rectCx) <= snapX) offsetX = centeredOffsetX;
+        if (Math.abs(boxCy - rectCy) <= snapY) offsetY = centeredOffsetY;
         if (offsetX !== cur.offsetX || offsetY !== cur.offsetY) {
           const snapped = { ...cur, offsetX, offsetY };
           latestPlacementRef.current = snapped;
@@ -213,6 +265,10 @@ export default function FlatDesignRectOverlay({
     if (!canvas) return;
     const canvasRect = canvas.getBoundingClientRect();
     const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const scaleCenter = {
+      x: contentBox.x + contentBox.width / 2,
+      y: contentBox.y + contentBox.height / 2,
+    };
     let startAngleRad: number | undefined;
     if (mode === "rotate") {
       const sx = mockupW / canvasRect.width;
@@ -229,6 +285,8 @@ export default function FlatDesignRectOverlay({
       canvasRect,
       rect,
       center,
+      scaleCenter,
+      content: cf,
       startAngleRad,
     };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -270,6 +328,7 @@ export default function FlatDesignRectOverlay({
     } as React.CSSProperties;
   };
 
+  // Root fills host sized to the canvas CSS box (see FlatProductPlacer).
   return (
     <div
       className="pointer-events-none absolute inset-0 overflow-hidden"
@@ -295,14 +354,16 @@ export default function FlatDesignRectOverlay({
         className={`pointer-events-none absolute border-2 border-dashed ${
           edgeWrapMode
             ? "border-amber-300/95"
-            : "border-white/70 mix-blend-difference"
+            : "border-sky-300/95"
         }`}
         style={{
           left: `${innerPct.left}%`,
           top: `${innerPct.top}%`,
           width: `${innerPct.width}%`,
           height: `${innerPct.height}%`,
-          ...(edgeWrapMode ? { boxShadow: "0 0 0 1px rgba(0,0,0,0.35)" } : {}),
+          // Solid contrast outline — mix-blend-difference was eating the top
+          // edge on saturated garment colours so clipping looked "allowed".
+          boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
         }}
         title={
           edgeWrapMode
@@ -312,9 +373,12 @@ export default function FlatDesignRectOverlay({
       />
       )}
 
-      {/* Artwork bounding box with drag + corner-resize + rotate handles. */}
+      {/* Artwork bounding box with drag + corner-resize + rotate handles.
+          Outer div = full image rect (invisible) so rotation happens around
+          the true image centre; inner div hugs the opaque content, which is
+          what the ring/handles frame. */}
       <div
-        className="pointer-events-auto absolute select-none"
+        className="pointer-events-none absolute"
         style={{
           left: `${boxPct.left}%`,
           top: `${boxPct.top}%`,
@@ -325,42 +389,52 @@ export default function FlatDesignRectOverlay({
             : undefined,
           transformOrigin: "50% 50%",
         }}
-        // Stop clicks from toggling the canvas backdrop; drag/resize uses
-        // window pointerup (must not stopPropagation on pointerup or capture
-        // retargeting prevents the global listener from ending the gesture).
-        onClick={(e) => e.stopPropagation()}
       >
         <div
-          onPointerDown={(e) => startDrag(e, "translate")}
-          className="absolute inset-0 cursor-move ring-2 ring-primary/70 transition hover:bg-primary/5"
-          style={{ touchAction: "none" }}
-          title="Drag to move artwork"
-        />
-        {(["nw", "ne", "sw", "se"] as const).map((c) => (
-          <div
-            key={c}
-            onPointerDown={(e) => startDrag(e, "scale")}
-            style={{ ...cornerStyle(c), touchAction: "none" }}
-            className="rounded-sm border-2 border-primary/40 bg-primary shadow-md hover:scale-110"
-            title="Drag corner to resize (aspect locked, max 100%)"
-          />
-        ))}
-        <button
-          type="button"
-          onPointerDown={(e) => startDrag(e, "rotate")}
-          className="absolute flex h-7 w-7 items-center justify-center rounded-full border-2 border-primary/50 bg-background text-primary shadow-md hover:scale-110"
+          className="pointer-events-auto absolute select-none"
           style={{
-            right: -handleSize / 2 - 22,
-            bottom: -handleSize / 2 - 22,
-            touchAction: "none",
-            cursor: "grab",
+            left: `${cf.left * 100}%`,
+            top: `${cf.top * 100}%`,
+            width: `${cf.width * 100}%`,
+            height: `${cf.height * 100}%`,
           }}
-          title="Drag to rotate artwork"
-          aria-label="Rotate artwork"
-          data-testid="flat-rect-rotate-handle"
+          // Stop clicks from toggling the canvas backdrop; drag/resize uses
+          // window pointerup (must not stopPropagation on pointerup or capture
+          // retargeting prevents the global listener from ending the gesture).
+          onClick={(e) => e.stopPropagation()}
         >
-          <RotateCw className="h-3.5 w-3.5" />
-        </button>
+          <div
+            onPointerDown={(e) => startDrag(e, "translate")}
+            className="absolute inset-0 cursor-move ring-2 ring-primary/70 transition hover:bg-primary/5"
+            style={{ touchAction: "none" }}
+            title="Drag to move artwork"
+          />
+          {(["nw", "ne", "sw", "se"] as const).map((c) => (
+            <div
+              key={c}
+              onPointerDown={(e) => startDrag(e, "scale")}
+              style={{ ...cornerStyle(c), touchAction: "none" }}
+              className="rounded-sm border-2 border-primary/40 bg-primary shadow-md hover:scale-110"
+              title="Drag corner to resize (aspect locked, max 100%)"
+            />
+          ))}
+          <button
+            type="button"
+            onPointerDown={(e) => startDrag(e, "rotate")}
+            className="absolute flex h-7 w-7 items-center justify-center rounded-full border-2 border-primary/50 bg-background text-primary shadow-md hover:scale-110"
+            style={{
+              right: -handleSize / 2 - 22,
+              bottom: -handleSize / 2 - 22,
+              touchAction: "none",
+              cursor: "grab",
+            }}
+            title="Drag to rotate artwork"
+            aria-label="Rotate artwork"
+            data-testid="flat-rect-rotate-handle"
+          >
+            <RotateCw className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );

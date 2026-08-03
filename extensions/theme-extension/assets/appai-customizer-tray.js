@@ -143,14 +143,39 @@
   var _pages = null; // active pages [{handle,title,baseProductTitle}]
   var _settings = null; // resolved settings from readSettings()
 
+  /**
+   * Fetch active customizer pages via App Proxy.
+   * Returns { ok, pages }. ok=false means network/HTTP/parse failure — callers
+   * must NOT treat that as "merchant has zero pages" (that wiped the tray).
+   */
   function fetchPages() {
     return fetch(PROXY + '/customizer-pages', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        if (!data || !data.pages) return [];
-        return data.pages.filter(function (p) { return p.status === 'active'; });
+      .then(function (r) {
+        if (!r.ok) {
+          try {
+            console.warn('[AppAI Tray] customizer-pages HTTP ' + r.status);
+          } catch (_) {}
+          return { ok: false, pages: [] };
+        }
+        return r.json().then(function (data) {
+          if (!data || !Array.isArray(data.pages)) {
+            try {
+              console.warn('[AppAI Tray] customizer-pages: missing pages array');
+            } catch (_) {}
+            return { ok: false, pages: [] };
+          }
+          var active = data.pages.filter(function (p) {
+            return p && p.status === 'active' && p.publiclyMountable !== false && p.handle;
+          });
+          return { ok: true, pages: active };
+        });
       })
-      .catch(function () { return []; });
+      .catch(function (err) {
+        try {
+          console.warn('[AppAI Tray] customizer-pages fetch failed', err && err.message ? err.message : err);
+        } catch (_) {}
+        return { ok: false, pages: [] };
+      });
   }
 
   // ─── DOM: styles ──────────────────────────────────────────────────────
@@ -1230,12 +1255,20 @@
       if (closeBtn) closeBtn.focus();
     }, 330);
     // Background refresh so a just-published page appears without reload.
-    fetchPages().then(function (pages) {
-      if (pages.length !== (_pages || []).length) {
-        _pages = pages;
-        var tray2 = document.getElementById(TRAY_ID);
-        if (tray2 && tray2.classList.contains('appai-open')) renderTrayBody();
-      }
+    // Never overwrite a good cache with a failed fetch (looks like "no pages").
+    fetchPages().then(function (result) {
+      if (!result || !result.ok) return;
+      var pages = result.pages || [];
+      var prev = _pages || [];
+      var changed =
+        pages.length !== prev.length ||
+        pages.some(function (p, i) {
+          return !prev[i] || prev[i].handle !== p.handle || prev[i].title !== p.title;
+        });
+      if (!changed) return;
+      _pages = pages;
+      var tray2 = document.getElementById(TRAY_ID);
+      if (tray2 && tray2.classList.contains('appai-open')) renderTrayBody();
     });
   }
 
@@ -1261,10 +1294,15 @@
     _settings = settings;
     if (!settings.enabled) return;
 
-    fetchPages().then(function (pages) {
+    fetchPages().then(function (result) {
+      if (!result || !result.ok) {
+        console.warn('[AppAI Tray] Could not load customizer pages; launcher hidden until reload.');
+        return;
+      }
+      var pages = result.pages || [];
       _pages = pages;
       // No active customizer pages → nothing to launch into; stay hidden.
-      if (!pages || pages.length === 0) {
+      if (!pages.length) {
         console.log('[AppAI Tray] No active customizer pages; launcher hidden.');
         return;
       }

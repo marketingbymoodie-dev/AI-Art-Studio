@@ -7,22 +7,24 @@ Shopify + Printify POD app: AI design studio embed, custom mockups, cart/checkou
 - **Client:** React + Vite (`client/`)
 - **Server:** Express (`server/`), builds to `dist/index.cjs`
 - **DB:** Drizzle + Postgres
-- **Deploy:** Railway watches **`production`** branch (not `main` — `main` push may be branch-protected)
-- **Shopify:** theme extension + checkout UI in `extensions/`
+- **Deploy:** Railway **staging** watches `staging`; **production** watches `production` (`main` may be branch-protected). Staging-first release: see `docs/staging-and-release.md`.
+- **Shopify:** theme extension + checkout UI in `extensions/`; use `shopify.app.staging.toml` vs `shopify.app.production.toml`
 
 ## Commands
 
 ```bash
-npm run dev          # local server
-npm run build        # must pass before deploy
-npm run shopify:dev  # Shopify app dev
-npm run shopify:deploy
+npm run dev                      # local server
+npm run build                    # must pass before deploy
+npm run shopify:dev:staging      # CLI against staging app + demo store
+npm run shopify:deploy:staging   # extensions → staging Partner app only
+npm run shopify:deploy:production # extensions → live merchants (after explicit go-live)
 ```
 
 ## Git / deploy conventions
 
 - Only commit when the user asks (or when explicitly shipping deploy-worthy work).
-- **Production deploy:** merge to `production`, push → Railway auto-deploys. Sync `main` when possible.
+- **Staging first:** merge to `staging`, push → Railway staging. Test on demo store. Ask before go-live.
+- **Production:** only after user says go live — merge to `production`, push → Railway production; sync `main` when possible.
 - Do **not** force-push `main`/`master`.
 - Never commit `.env` or secrets.
 
@@ -44,7 +46,7 @@ Touch with care: `server/routes.ts` (`resolve-design-variant`), `extensions/them
 
 ### Railway deploy
 
-After **deploy-worthy** fixes (not docs-only): `npm run build` → commit → merge `production` → push.
+After **deploy-worthy** fixes (not docs-only): `npm run build` → commit → merge `staging` → push → demo-store QA → **ask go-live** → merge `production` → push. Extensions: `shopify:deploy:staging` then (only on go-live) `shopify:deploy:production`.
 
 ---
 
@@ -67,14 +69,21 @@ On Shopify customizer pages the iframe auto-resizes to full content height. Brow
 
 Do not remove this without re-testing (a) hard refresh on a long customizer page (mobile + desktop) and (b) fresh landing on Ritual — header/menu must stay visible.
 
-### Catalog placeholder carousel (Primary / View 2 / View 3)
+### Catalog placeholder carousel (colour blank + Primary / View 2)
 
-Before the customer generates artwork, `catalogPreviewImages` drives the blank mockup carousel.
+Before the customer generates artwork, `browsePlaceholderSlides` drives the blank mockup carousel:
 
-- Build from merchant **`primary`** / **`gallery`** / **`custom`** only — not `baseMockupImages.available` (admin picker pool).
-- **Dedupe by URL pathname** (ignore query strings) — do not show View 2 / View 3 when they are the same image as Primary.
-- Hide carousel UI unless `catalogPreviewImages.length > 1` after dedupe.
+1. **Optional leading colour slide** — flat harvest blank or Shopify variant image for the selected colour/size, labelled with the colour name (e.g. `Black/ Red`). Only inserted when distinct from merchant Primary.
+2. **Merchant Primary** — curated marketing hero from Customizer Pages / Products Import (`baseMockupImages.primary`). Label stays **Primary**; pixels are never swapped for a colour blank.
+3. **Gallery** — merchant `gallery` picks as View 2 / View 3 / …
+
+- Merchant list comes from **`primary`** / **`gallery`** only — not `baseMockupImages.available` (admin picker pool).
+- **Dedupe by URL pathname** (ignore query strings).
+- Hide carousel UI unless `browsePlaceholderSlides.length > 1` after dedupe.
+- Colour/size change resets to slide 0 (colour blank when present).
 - `ProductMockup` blank `<img>` uses `key={blankImageUrl}` so index changes always repaint.
+
+**Browse window size (faux-suede-pillow reference):** pre-artwork `container-mockup` is a **1:1 square capped at 520px** for apparel, phone cases, mugs, totes, pillows, etc. Do **not** size the browse window from print-area AR (that made tees/phone cases look smaller than the pillow). Phone / edge-wrap always force 1:1 browse even if `designerType` was mis-imported as `framed-print`. AOP pillows with Square/Horizontal pills stay 1:1 until a catalog/Shopify landscape blank exists (no flat harvest for AOP pillows). Exceptions — keep size/orientation AR: framed decor, mixed-orientation products that have an orientation blank (tapestry/wall decals), catalog-size-blank blueprints (comforter). After artwork generates, print-area AR applies as before. Blanks use `blankFit="contain"` while browsing so tall photos are not cropped in the square.
 
 ---
 
@@ -93,7 +102,11 @@ Fix (`server/replicate-vectorizer.ts`):
 
 ---
 
-## Phone cases (flat calibration) — active problem area
+## Phone cases (flat calibration) — known-good (bp 421)
+
+**Signed off 2026-07-29** — pin `f253677` on `production`. Full lockdown doc: [`docs/framed-known-good-snapshots/slim-phone-cases-bp421.md`](docs/framed-known-good-snapshots/slim-phone-cases-bp421.md).
+
+**Background contract:** bake / Printers Mockup / orders fill the full print canvas (blue dashed); editor preview shows customer colour only on the **masked case** (grey chrome stays grey).
 
 ### What Printify expects
 

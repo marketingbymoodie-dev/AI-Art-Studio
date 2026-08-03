@@ -17,7 +17,7 @@ export const privacyPolicyHtml = `<!doctype html>
   <p class="muted">Last updated: May 3, 2026</p>
 
   <p>
-    AI Art Studio ("AppAI", "we", "us") provides AI artwork generation,
+    AI Art Studio ("we", "us") provides AI artwork generation,
     product customization, cart/checkout image support, and customer credit
     purchase features for Shopify merchants.
   </p>

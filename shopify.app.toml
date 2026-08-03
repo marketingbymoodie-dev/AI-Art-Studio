@@ -1,6 +1,9 @@
-client_id = "6f6c83692d275fd284accad7d5a6fefd"
-name = "AI Art Studio"
-application_url = "https://appai-pod-production.up.railway.app"
+# Default CLI target = staging (safer). Production: shopify.app.production.toml
+# Switch: npm run shopify:config:use:staging | npm run shopify:config:use:production
+
+client_id = "f7ec7df619bb8720c5f3f626dc7533ee"
+name = "AI Art Studio (Staging)"
+application_url = "https://ai-art-studio-staging.up.railway.app"
 embedded = true
 
 [build]
@@ -62,11 +65,11 @@ scopes = "read_products,read_themes,write_products,write_themes,write_content,re
 # Shopify adds shop, timestamp, signature query params automatically.
 prefix = "apps"
 subpath = "appai"
-url = "https://appai-pod-production.up.railway.app/api/proxy"
+url = "https://ai-art-studio-staging.up.railway.app/api/proxy"
 
 [auth]
 redirect_urls = [
-  "https://appai-pod-production.up.railway.app/auth/callback",
-  "https://appai-pod-production.up.railway.app/shopify/callback",
-  "https://appai-pod-production.up.railway.app/api/auth/callback"
+  "https://ai-art-studio-staging.up.railway.app/auth/callback",
+  "https://ai-art-studio-staging.up.railway.app/shopify/callback",
+  "https://ai-art-studio-staging.up.railway.app/api/auth/callback"
 ]

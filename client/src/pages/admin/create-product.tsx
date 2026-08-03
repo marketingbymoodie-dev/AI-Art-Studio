@@ -12,6 +12,16 @@ import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import { dedupeProductTypesForPicker } from "@shared/productTypePicker";
 import type { ProductType } from "@shared/schema";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface DesignStudioIdentity {
   shop: string;
@@ -36,12 +46,17 @@ export default function AdminCreateProduct() {
   // Live status of the design on screen, reported by the embedded customizer:
   // which generation job it is + whether its AOP print panels are still uploading.
   // Ref (not state) — updates arrive mid-edit and shouldn't rerender the page.
-  const testerStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: "none" });
+  const testerStatusRef = useRef<TesterDesignStatus>({
+    jobId: null,
+    aopPanels: "none",
+    flatClipSides: [],
+  });
   const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
   /** Flushes pending flat placement / zoom before a test order. */
   const flushDesignRef = useRef<(() => Promise<void>) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
+  const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
@@ -157,6 +172,16 @@ export default function AdminCreateProduct() {
     },
   });
 
+  const requestTestOrder = useCallback(() => {
+    if (selectedProductTypeId == null) return;
+    const sides = testerStatusRef.current.flatClipSides ?? [];
+    if (sides.length > 0) {
+      setClipConfirmOpen(true);
+      return;
+    }
+    testOrderMutation.mutate(selectedProductTypeId);
+  }, [selectedProductTypeId, testOrderMutation]);
+
   const saveDesignMutation = useMutation({
     mutationFn: async () => {
       const waitStart = Date.now();
@@ -230,7 +255,7 @@ export default function AdminCreateProduct() {
                 </p>
               ) : null}
               <Button
-                onClick={() => testOrderMutation.mutate(selectedProductTypeId)}
+                onClick={requestTestOrder}
                 disabled={
                   testOrderMutation.isPending ||
                   testerPanelStatus === "saving" ||
@@ -298,9 +323,14 @@ export default function AdminCreateProduct() {
               onValueChange={(v) => {
                 // Switching products remounts the customizer — never carry artwork
                 // across products (wrong aspect ratio / wrong bake credentials).
-                testerStatusRef.current = { jobId: null, aopPanels: "none" };
+                testerStatusRef.current = {
+                  jobId: null,
+                  aopPanels: "none",
+                  flatClipSides: [],
+                };
                 setTesterHasDesign(false);
                 setTesterPanelStatus("none");
+                setClipConfirmOpen(false);
                 try {
                   const toRemove: string[] = [];
                   for (let i = 0; i < sessionStorage.length; i++) {
@@ -310,6 +340,19 @@ export default function AdminCreateProduct() {
                   for (const k of toRemove) sessionStorage.removeItem(k);
                 } catch {
                   /* sessionStorage may be unavailable */
+                }
+                // Strip loadDesignId / loadMockup — otherwise EmbedDesign remounts
+                // onto the new product and immediately re-applies the previous
+                // saved design (wrong product, wrong test-order target).
+                try {
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete("loadDesignId");
+                  url.searchParams.delete("loadMockup");
+                  url.searchParams.delete("loadProductName");
+                  url.searchParams.set("productTypeId", v);
+                  window.history.replaceState({}, "", url.toString());
+                } catch {
+                  /* ignore */
                 }
                 setSelectedProductTypeId(parseInt(v));
               }}
@@ -353,6 +396,48 @@ export default function AdminCreateProduct() {
           </div>
         )}
       </div>
+
+      <AlertDialog open={clipConfirmOpen} onOpenChange={setClipConfirmOpen}>
+        <AlertDialogContent data-testid="dialog-tester-flat-clip-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Artwork extends past the print area</AlertDialogTitle>
+            <AlertDialogDescription>
+              {(() => {
+                const sides = testerStatusRef.current.flatClipSides ?? [];
+                const label =
+                  sides.length === 2
+                    ? "front and back"
+                    : sides[0] === "back"
+                      ? "the back"
+                      : "the front";
+                return (
+                  <>
+                    Your design on {label} is larger than the printable area and will be
+                    trimmed on the product. Continue only if you are happy with that
+                    cropping before sending the Printify test order.
+                  </>
+                );
+              })()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-tester-flat-clip-cancel">
+              Go back and adjust
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="button-tester-flat-clip-continue"
+              onClick={() => {
+                setClipConfirmOpen(false);
+                if (selectedProductTypeId != null) {
+                  testOrderMutation.mutate(selectedProductTypeId);
+                }
+              }}
+            >
+              Continue with clipped artwork
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AdminLayout>
   );
 }

@@ -86,8 +86,15 @@ interface Blank {
   isAllOverPrint?: boolean;
   printifyBlueprintId?: number | null;
   printifyProviderId?: number | null;
+  /** Resolved from last OOS scan (oosDetail); null until first scan. */
+  printifyProviderName?: string | null;
   printifyVariantLabels?: Record<string, string>;
   description?: string | null;
+  /** Daily Printify stock scan (server/oos-catalogue-report.ts) — null until first scan runs. */
+  oosStatus?: "ok" | "critical" | "fully_oos" | "error" | "unknown" | null;
+  oosAvailableVariants?: number | null;
+  oosTotalVariants?: number | null;
+  lastOosScanAt?: string | null;
   baseMockupImages?: {
     primary?: string;
     front?: string;
@@ -241,6 +248,8 @@ export default function AdminCustomizerPages() {
   // Wizard state
   const [formStep, setFormStep] = useState<1 | 2 | 3 | 4>(1);
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
+  /** Front+back retail prices — only used when Printify costs include a both-sides tier. */
+  const [variantPricesBoth, setVariantPricesBoth] = useState<Record<string, string>>({});
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
@@ -291,7 +300,7 @@ export default function AdminCustomizerPages() {
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
-    enabled: createOpen || !!editTarget,
+    // Always on (not just create/edit) — the pages list badge below needs oosStatus per row.
   });
 
   // Open the create wizard as soon as we know a deep-linked product is pending.
@@ -358,6 +367,7 @@ export default function AdminCustomizerPages() {
       baseProductId?: string;
       productTypeId?: number;
       variantPrices: Record<string, string>;
+      variantPricesBoth?: Record<string, string>;
       baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
       styleConfig: CustomizerPageStyleConfig;
     }) => {
@@ -379,6 +389,39 @@ export default function AdminCustomizerPages() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] }),
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const scanStockMutation = useMutation({
+    mutationFn: async (productTypeId: number) => {
+      const res = await apiRequest("POST", `/api/admin/product-types/${productTypeId}/scan-stock`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      const result = data?.result;
+      const status = result?.status;
+      const via = result?.providerName
+        ? ` (${result.providerName})`
+        : result?.providerId != null
+          ? ` (provider #${result.providerId})`
+          : "";
+      toast({
+        title:
+          status === "fully_oos"
+            ? `Fully out of stock${via}`
+            : status === "critical"
+              ? `Critically low stock${via}`
+              : status === "error"
+                ? `Stock scan failed${via}`
+                : `Stock is OK${via}`,
+        description:
+          status === "error"
+            ? (result?.error ?? "Could not reach Printify.")
+            : `${result?.availableSelected ?? 0} of ${result?.totalSelected ?? 0} variants in stock for this product's Printify supplier.`,
+        variant: status === "fully_oos" || status === "critical" || status === "error" ? "destructive" : undefined,
+      });
+    },
+    onError: (err: any) => toast({ title: "Stock scan failed", description: err.message, variant: "destructive" }),
   });
 
   const editMutation = useMutation({
@@ -585,8 +628,42 @@ export default function AdminCustomizerPages() {
     retry: false,
   });
 
+  const costsErrorPayload = useMemo(() => {
+    if (!costsFetchError) return null;
+    const text = costsFetchError instanceof Error ? costsFetchError.message : String(costsFetchError);
+    const jsonStart = text.indexOf("{");
+    if (jsonStart === -1) return null;
+    try {
+      return JSON.parse(text.slice(jsonStart)) as {
+        code?: string;
+        error?: string;
+        message?: string;
+        oosStatus?: string;
+        providerName?: string | null;
+      };
+    } catch {
+      return null;
+    }
+  }, [costsFetchError]);
+
+  const selectedBlankFullyOos =
+    selectedBlank?.oosStatus === "fully_oos" || costsErrorPayload?.code === "PRINTIFY_FULLY_OOS";
+  const selectedBlankProviderLabel =
+    costsErrorPayload?.providerName ||
+    selectedBlank?.printifyProviderName ||
+    (selectedBlank?.printifyProviderId != null ? `Provider #${selectedBlank.printifyProviderId}` : null);
+
   useEffect(() => {
     if (formStep !== 2 || !costsError || !costsFetchError) return;
+    if (costsErrorPayload?.code === "PRINTIFY_FULLY_OOS") {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      toast({
+        title: "Printify stock unavailable",
+        description: parseApiErrorMessage(costsFetchError),
+        variant: "destructive",
+      });
+      return;
+    }
     const msg = parseApiErrorMessage(
       costsFetchError instanceof Error ? costsFetchError.message : costsFetchError,
     );
@@ -595,7 +672,7 @@ export default function AdminCustomizerPages() {
       description: msg,
       variant: "destructive",
     });
-  }, [formStep, costsError, costsFetchError, toast]);
+  }, [formStep, costsError, costsFetchError, costsErrorPayload?.code, toast, queryClient]);
 
   // Mutation: clear all cached costs and refetch for current product
   const clearCostsMutation = useMutation({
@@ -670,6 +747,12 @@ export default function AdminCustomizerPages() {
   const costsAvailable =
     !!costsData?.costs && Object.keys(costsData.costs).length > 0;
 
+  const supportsBothSidePricing = !!(
+    costsData?.supportsBothSides &&
+    costsData?.costsBoth &&
+    Object.keys(costsData.costsBoth).length > 0
+  );
+
   // Recommended retail prices based on production costs + markup
   const recommendedPrices = useMemo(() => {
     if (!costsAvailable || selectedVariants.length === 0) return {};
@@ -694,6 +777,28 @@ export default function AdminCustomizerPages() {
     return result;
   }, [costsAvailable, costsData, selectedVariants, markupPercent]);
 
+  const recommendedPricesBoth = useMemo(() => {
+    if (!supportsBothSidePricing || selectedVariants.length === 0) return {};
+    const result: Record<string, string> = {};
+    const labelToCost: Record<string, number> = {};
+    if (costsData.printifyVariantLabels && costsData.costsBoth) {
+      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+        const costCents = costsData.costsBoth[printifyVid];
+        if (costCents != null) {
+          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
+        }
+      }
+    }
+    const bothCostsData = { ...costsData, costs: costsData.costsBoth || {} };
+    for (const v of selectedVariants) {
+      const costCents = resolveBlankVariantCostCents(v, bothCostsData, labelToCost);
+      if (costCents == null) continue;
+      const raw = (costCents / 100) * (1 + markupPercent / 100);
+      result[v.id] = roundUpTo95(raw).toFixed(2);
+    }
+    return result;
+  }, [supportsBothSidePricing, costsData, selectedVariants, markupPercent]);
+
   // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
   useEffect(() => {
     if (formStep !== 2) return;
@@ -711,6 +816,22 @@ export default function AdminCustomizerPages() {
       return changed ? next : prev;
     });
   }, [recommendedPrices, formStep]);
+
+  useEffect(() => {
+    if (formStep !== 2 || !supportsBothSidePricing) return;
+    if (Object.keys(recommendedPricesBoth).length === 0) return;
+    setVariantPricesBoth((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [id, price] of Object.entries(recommendedPricesBoth)) {
+        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
+          next[id] = price;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [recommendedPricesBoth, formStep, supportsBothSidePricing]);
 
   // Auto-populate page title from product name when product is selected (if title not manually edited)
   useEffect(() => {
@@ -776,12 +897,32 @@ export default function AdminCustomizerPages() {
 
   /** Validate prices in Step 2; advance to Step 3 (confirm) */
   function advanceToStep3() {
+    if (selectedBlankFullyOos) {
+      toast({
+        title: "Printify stock unavailable",
+        description: selectedBlankProviderLabel
+          ? `Wait until ${selectedBlankProviderLabel} has stock again (daily OOS report emails when it changes), or pick another product.`
+          : "Wait until Printify has stock again, or pick another product.",
+        variant: "destructive",
+      });
+      return;
+    }
     const errs: Record<string, string> = {};
     for (const v of selectedVariants) {
       const val = variantPrices[v.id] ?? "";
       const num = parseFloat(val);
       if (!val.trim() || isNaN(num) || num <= 0) {
-        errs[v.id] = "Required — enter a price greater than $0.00";
+        errs[v.id] = "Required — enter a front-only price greater than $0.00";
+        continue;
+      }
+      if (supportsBothSidePricing) {
+        const bothVal = variantPricesBoth[v.id] ?? "";
+        const bothNum = parseFloat(bothVal);
+        if (!bothVal.trim() || isNaN(bothNum) || bothNum <= 0) {
+          errs[v.id] = "Required — enter a front+back price greater than $0.00";
+        } else if (bothNum < num) {
+          errs[v.id] = "Front+back price should be at least the front-only price";
+        }
       }
     }
     if (Object.keys(errs).length > 0) {
@@ -817,6 +958,7 @@ export default function AdminCustomizerPages() {
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
+      ...(supportsBothSidePricing ? { variantPricesBoth } : {}),
       styleConfig: formStyleConfig,
       baseMockupImages: curated,
     });
@@ -929,7 +1071,9 @@ export default function AdminCustomizerPages() {
                               return (
                                 <SelectItem key={val} value={val}>
                                   {blank.title}
-                                  {blank.needsShopifySync ? " (new — will be sent to store)" : ""}
+                                  {blank.needsShopifySync
+                                    ? " (not on this store yet — will be created)"
+                                    : ""}
                                 </SelectItem>
                               );
                             })}
@@ -938,7 +1082,10 @@ export default function AdminCustomizerPages() {
                       )}
                       {selectedBlank?.needsShopifySync ? (
                         <p className="text-xs text-muted-foreground mt-1">
-                          This product will be automatically created on your store when you finish setting up this page.
+                          This catalog product is not linked to a Shopify product in this store
+                          (or the link is stale). Finishing this page will create/send it to the
+                          store. Having a customizer page elsewhere does not mean it is already
+                          on Shopify here.
                         </p>
                       ) : null}
                       {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
@@ -995,8 +1142,10 @@ export default function AdminCustomizerPages() {
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <Label>Placeholder Images</Label>
-                          <span className="text-xs text-muted-foreground">
-                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images
+                          <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
+                            Primary is your marketing hero — on the storefront the selected colour
+                            blank leads when available; your Primary stays in the carousel.
                           </span>
                         </div>
                         {(() => {
@@ -1185,10 +1334,12 @@ export default function AdminCustomizerPages() {
                               ) : costsData?.costs || costsData?.shopifyVariantCosts ? (
                                 <>
                                   <div className="rounded-md border text-sm">
-                                    <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
+                                    <div className={`grid gap-2 px-3 py-2 bg-muted font-medium ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
                                       <span>Variant</span>
-                                      <span className="text-right">Standard Cost</span>
-                                      <span className="text-right text-emerald-700">Premium Cost</span>
+                                      <span className="text-right">Front cost</span>
+                                      {supportsBothSidePricing && <span className="text-right">Front+back</span>}
+                                      <span className="text-right text-emerald-700">Premium (est.)</span>
+                                      {supportsBothSidePricing && <span className="text-right text-emerald-700">Prem. both</span>}
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
                                       const labelToCost: Record<string, number> = {};
@@ -1199,26 +1350,65 @@ export default function AdminCustomizerPages() {
                                         }
                                       }
                                       const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
+                                      const labelToBoth: Record<string, number> = {};
+                                      if (costsData.printifyVariantLabels && costsData.costsBoth) {
+                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                                          const c = costsData.costsBoth[printifyVid];
+                                          if (c != null) labelToBoth[label.toLowerCase().trim()] = c;
+                                        }
+                                      }
+                                      const bothCents = supportsBothSidePricing
+                                        ? resolveBlankVariantCostCents(v, { ...costsData, costs: costsData.costsBoth || {} }, labelToBoth)
+                                        : null;
                                       return (
-                                        <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                        <div key={v.id} className={`grid gap-2 px-3 py-2 border-t ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
                                           <span className="truncate">{v.title}</span>
                                           <span className="text-right font-mono">
                                             {costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}
                                           </span>
+                                          {supportsBothSidePricing && (
+                                            <span className="text-right font-mono">
+                                              {bothCents != null ? `$${(bothCents / 100).toFixed(2)}` : "—"}
+                                            </span>
+                                          )}
                                           <span className="text-right font-mono text-emerald-600">
                                             {costCents != null ? `$${(costCents * 0.8 / 100).toFixed(2)}` : "—"}
                                           </span>
+                                          {supportsBothSidePricing && (
+                                            <span className="text-right font-mono text-emerald-600">
+                                              {bothCents != null ? `$${(bothCents * 0.8 / 100).toFixed(2)}` : "—"}
+                                            </span>
+                                          )}
                                         </div>
                                       );
                                     }) : Object.entries(costsData.costs).map(([vid, costCents]) => (
-                                      <div key={vid} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                      <div key={vid} className={`grid gap-2 px-3 py-2 border-t ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
                                         <span className="text-muted-foreground">Variant {vid}</span>
                                         <span className="text-right font-mono">${(Number(costCents) / 100).toFixed(2)}</span>
+                                        {supportsBothSidePricing && (
+                                          <span className="text-right font-mono">
+                                            {costsData.costsBoth?.[vid] != null
+                                              ? `$${(Number(costsData.costsBoth[vid]) / 100).toFixed(2)}`
+                                              : "—"}
+                                          </span>
+                                        )}
                                         <span className="text-right font-mono text-emerald-600">${(Number(costCents) * 0.8 / 100).toFixed(2)}</span>
+                                        {supportsBothSidePricing && (
+                                          <span className="text-right font-mono text-emerald-600">
+                                            {costsData.costsBoth?.[vid] != null
+                                              ? `$${(Number(costsData.costsBoth[vid]) * 0.8 / 100).toFixed(2)}`
+                                              : "—"}
+                                          </span>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
-                                  <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.
+                                    {supportsBothSidePricing
+                                      ? " Front+back costs include Printify’s extra print-area charge."
+                                      : ""}
+                                  </p>
                                   {costsData.cached && (
                                     <p className="text-xs text-muted-foreground">Cached data. Use the Refresh button above to fetch the latest costs.</p>
                                   )}
@@ -1374,6 +1564,13 @@ export default function AdminCustomizerPages() {
                             next[id] = price;
                           }
                           setVariantPrices(next);
+                          if (supportsBothSidePricing) {
+                            const nextBoth: Record<string, string> = {};
+                            for (const [id, price] of Object.entries(recommendedPricesBoth)) {
+                              nextBoth[id] = price;
+                            }
+                            setVariantPricesBoth(nextBoth);
+                          }
                         }}
                       >
                         Apply All Suggested
@@ -1386,7 +1583,39 @@ export default function AdminCustomizerPages() {
                       </p>
                     )}
 
-                    {costsError && (
+                    {selectedBlankFullyOos && (
+                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 space-y-2">
+                        <span className="font-medium block">
+                          Printify stock is currently unavailable
+                          {selectedBlankProviderLabel ? ` for ${selectedBlankProviderLabel}` : ""}.
+                        </span>
+                        <span className="block text-destructive/90">
+                          Suggested retail can’t be calculated until variants are back in stock for this supplier.
+                          The daily catalogue stock report will email when status changes — or use Scan stock now on the page list anytime.
+                        </span>
+                        {selectedBlank?.productTypeId != null && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            disabled={scanStockMutation.isPending}
+                            onClick={() => {
+                              scanStockMutation.mutate(selectedBlank.productTypeId, {
+                                onSuccess: () => {
+                                  void refetchCosts();
+                                  queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+                                },
+                              });
+                            }}
+                          >
+                            {scanStockMutation.isPending ? "Scanning…" : "Scan stock now"}
+                          </Button>
+                        )}
+                      </p>
+                    )}
+
+                    {costsError && !selectedBlankFullyOos && (
                       <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
                         <span>
                           {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
@@ -1395,6 +1624,15 @@ export default function AdminCustomizerPages() {
                         <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
                           Retry
                         </Button>
+                      </p>
+                    )}
+
+                    {!costsError && selectedBlank?.oosStatus === "critical" && (
+                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3">
+                        Most variants are out of stock
+                        {selectedBlankProviderLabel ? ` at ${selectedBlankProviderLabel}` : ""}
+                        {" "}({selectedBlank.oosAvailableVariants ?? 0}/{selectedBlank.oosTotalVariants ?? 0} available).
+                        You can still set prices for in-stock options.
                       </p>
                     )}
 
@@ -1424,27 +1662,58 @@ export default function AdminCustomizerPages() {
                       <p className="text-xs font-semibold shimmer-text">
                         Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
                       </p>
+                      {supportsBothSidePricing && (
+                        <p className="text-xs text-muted-foreground">
+                          This product can print front-only or front+back. Set both retail prices — the storefront shows
+                          “from $front” and charges the front+back price when Print on Back is on.
+                        </p>
+                      )}
                       {selectedVariants.map((v) => (
                         <div key={v.id} className="space-y-1.5">
-                          <div className="flex justify-between items-end">
-                            <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
-                            {costsLoading ? (
-                              <div className="flex items-center gap-1">
-                                <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
-                                <span className="text-[10px] text-muted-foreground italic">Calculating...</span>
+                          <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
+                          <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-end gap-2">
+                                <span className="text-[10px] text-muted-foreground">
+                                  {supportsBothSidePricing ? "Front only" : "Retail"}
+                                </span>
+                                {costsLoading ? (
+                                  <div className="flex items-center gap-1">
+                                    <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
+                                  </div>
+                                ) : recommendedPrices[v.id] ? (
+                                  <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
+                                ) : null}
                               </div>
-                            ) : recommendedPrices[v.id] ? (
-                              <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
-                            ) : null}
-                          </div>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                            <Input
-                              className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
-                              placeholder="0.00"
-                              value={variantPrices[v.id] ?? ""}
-                              onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
-                            />
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                <Input
+                                  className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                  placeholder="0.00"
+                                  value={variantPrices[v.id] ?? ""}
+                                  onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
+                                />
+                              </div>
+                            </div>
+                            {supportsBothSidePricing && (
+                              <div className="space-y-1">
+                                <div className="flex justify-between items-end gap-2">
+                                  <span className="text-[10px] text-muted-foreground">Front + back</span>
+                                  {recommendedPricesBoth[v.id] ? (
+                                    <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPricesBoth[v.id]}</span>
+                                  ) : null}
+                                </div>
+                                <div className="relative">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                  <Input
+                                    className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                    placeholder="0.00"
+                                    value={variantPricesBoth[v.id] ?? ""}
+                                    onChange={(e) => setVariantPricesBoth({ ...variantPricesBoth, [v.id]: e.target.value })}
+                                  />
+                                </div>
+                              </div>
+                            )}
                           </div>
                           {priceErrors[v.id] && (
                             <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
@@ -1457,7 +1726,16 @@ export default function AdminCustomizerPages() {
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(1)}>
                         Back
                       </Button>
-                      <Button className="flex-1" onClick={advanceToStep3}>
+                      <Button
+                        className="flex-1"
+                        onClick={advanceToStep3}
+                        disabled={selectedBlankFullyOos}
+                        title={
+                          selectedBlankFullyOos
+                            ? "Cannot create a customizer page while this Printify supplier has no stock"
+                            : undefined
+                        }
+                      >
                         Review & Create <ChevronRight className="h-4 w-4 ml-1" />
                       </Button>
                     </div>
@@ -1494,9 +1772,14 @@ export default function AdminCustomizerPages() {
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
                           <div className={selectedVariants.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
                             {selectedVariants.map((v) => (
-                              <div key={v.id} className="flex justify-between">
-                                <span>{v.title}</span>
-                                <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
+                              <div key={v.id} className="flex justify-between gap-3">
+                                <span className="truncate">{v.title}</span>
+                                <span className="font-medium shrink-0 text-right">
+                                  ${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}
+                                  {supportsBothSidePricing && variantPricesBoth[v.id]
+                                    ? ` / $${parseFloat(variantPricesBoth[v.id]).toFixed(2)} both`
+                                    : ""}
+                                </span>
                               </div>
                             ))}
                           </div>
@@ -1727,7 +2010,29 @@ export default function AdminCustomizerPages() {
               </Card>
             ) : (
               <div className="space-y-3">
-                {pages.map((page) => (
+                {pages.map((page) => {
+                  const blank = blanksData?.blanks.find((b) => b.productTypeId === page.productTypeId);
+                  const oosStatus = blank?.oosStatus;
+                  const oosBadgeLabel =
+                    oosStatus === "fully_oos"
+                      ? "Out of stock"
+                      : oosStatus === "critical"
+                        ? "Low stock"
+                        : oosStatus === "error"
+                          ? "Stock check failed"
+                          : null;
+                  const providerLabel =
+                    blank?.printifyProviderName ||
+                    (blank?.printifyProviderId != null ? `Provider #${blank.printifyProviderId}` : null);
+                  const oosTooltip = [
+                    providerLabel ? `Printify: ${providerLabel}` : null,
+                    blank?.lastOosScanAt
+                      ? `${blank.oosAvailableVariants ?? 0}/${blank.oosTotalVariants ?? 0} variants available (checked ${new Date(blank.lastOosScanAt).toLocaleString()})`
+                      : "Stock not scanned yet",
+                  ]
+                    .filter(Boolean)
+                    .join(" — ");
+                  return (
                   <Card key={page.id}>
                     <CardContent className="pt-4 pb-4">
                       <div className="flex items-start justify-between gap-4">
@@ -1737,6 +2042,16 @@ export default function AdminCustomizerPages() {
                             <Badge variant={page.status === "active" ? "default" : "secondary"}>
                               {page.status}
                             </Badge>
+                            {oosBadgeLabel && (
+                              <Badge
+                                variant="destructive"
+                                title={oosTooltip}
+                                className="flex items-center gap-1"
+                              >
+                                <AlertTriangle className="h-3 w-3" />
+                                {oosBadgeLabel}
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-sm text-muted-foreground mt-0.5 font-mono">
                             /pages/{page.handle}
@@ -1746,6 +2061,11 @@ export default function AdminCustomizerPages() {
                               {page.baseProductTitle}
                               {page.baseVariantTitle && ` — ${page.baseVariantTitle}`}
                               {page.baseProductPrice && ` · $${parseFloat(page.baseProductPrice).toFixed(2)}`}
+                            </p>
+                          )}
+                          {providerLabel && (
+                            <p className="text-xs text-muted-foreground mt-1" title={oosTooltip}>
+                              Printify: {providerLabel}
                             </p>
                           )}
                           <p className="text-xs text-muted-foreground mt-1">
@@ -1800,6 +2120,17 @@ export default function AdminCustomizerPages() {
                           >
                             <DollarSign className="h-4 w-4" />
                           </Button>
+                          {page.productTypeId != null && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title={`Scan Printify stock now — ${oosTooltip}`}
+                              disabled={scanStockMutation.isPending}
+                              onClick={() => scanStockMutation.mutate(page.productTypeId as number)}
+                            >
+                              <RefreshCw className={`h-4 w-4 ${scanStockMutation.isPending && scanStockMutation.variables === page.productTypeId ? "animate-spin" : ""}`} />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
@@ -1813,7 +2144,8 @@ export default function AdminCustomizerPages() {
                       </div>
                     </CardContent>
                   </Card>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -1891,7 +2223,11 @@ export default function AdminCustomizerPages() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Placeholder Images</Label>
-                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images</span>
+                  <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                    Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
+                    Primary is your marketing hero — on the storefront the selected colour blank
+                    leads when available; your Primary stays in the carousel.
+                  </span>
                 </div>
                 {(() => {
                   const available = buildAvailablePlaceholderImages(
@@ -2004,7 +2340,7 @@ export default function AdminCustomizerPages() {
             <AlertDialogTitle>Delete customizer page?</AlertDialogTitle>
             <AlertDialogDescription>
               This will delete <strong>{deleteTarget?.title}</strong> (/pages/{deleteTarget?.handle}) from
-              both AppAI and your Shopify store. This action cannot be undone.
+              both AI Art Studio and your Shopify store. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -336,7 +336,15 @@ if (res.locals.shopify?.session?.shop) {
       res.clearCookie("shopify_state");
       res.clearCookie("shopify_merchant");
 
-      res.redirect(`https://${shop}/admin/apps`);
+      // Deep-link straight into the embedded app's setup rail instead of the
+      // generic Shopify "Apps" list. /admin/setup is safe to land on even for
+      // reinstalls of an already-configured shop — completed steps just show
+      // as done (see docs/merchant-setup-rail.md).
+      const setupPath = "/admin/setup";
+      const redirectUrl = SHOPIFY_API_KEY
+        ? `https://${shop}/admin/apps/${SHOPIFY_API_KEY}${setupPath}`
+        : `https://${shop}/admin/apps`;
+      res.redirect(redirectUrl);
     } catch (error) {
       console.error("Shopify OAuth error:", error);
       res.status(500).send("Failed to complete Shopify installation");

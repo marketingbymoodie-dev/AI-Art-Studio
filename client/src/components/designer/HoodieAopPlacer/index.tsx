@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Pipette,
   RotateCcw,
-  Upload,
   Loader2,
   Link2,
   Link2Off,
@@ -63,10 +70,9 @@ import { safeFetch } from "@/lib/safeFetch";
  *   2. View row: Front / Back / Hood
  *   3. Artwork Enabled (per-active-group)
  *   4. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
- *   5. Artwork upload (Replace / Upload artwork)
+ *   5. Fine position nudge (leggings: in controls; others: under preview)
  *   6. Scale slider (drives the active group)
- *   7. Fine position nudge (↑←→↓)
- *   8. Reset
+ *   7. Reset (beside Link / Mirror)
  *
  * View row notes:
  *   - `Front` and `Back` switch the canvas view.
@@ -94,15 +100,15 @@ export type HoodieAopPlacerProps = {
    * remaining fields from the loaded template's defaults.
    */
   initialState?: Partial<HoodieAopPlacerState> | null;
-  onApply?: (result: HoodieAopPlacerApplyResult) => void;
+  onApply?: (result: HoodieAopPlacerApplyResult) => void | Promise<void>;
   onChange?: (state: HoodieAopPlacerState) => void;
+  onApplyStatusChange?: (
+    status: "idle" | "saving" | "saved" | "error",
+  ) => void;
   /**
-   * When `true`, the placer does NOT fire its first auto-apply on open —
-   * it just records the opened state as the baseline. Used when resuming a
-   * previously-saved design whose cart mockup is already persisted, so
-   * re-opening it doesn't trigger a needless re-render + re-upload (and the
-   * product-preview "loading" scan that comes with it). Any subsequent
-   * customer edit still auto-applies normally.
+   * When `true`, skip the one-shot initial apply on open (resume path —
+   * cart mockup already persisted). Edits only flush on ATC / leave /
+   * Printers Mockup via `applyIfNeeded`.
    */
   skipInitialAutoApply?: boolean;
   /**
@@ -139,6 +145,11 @@ export type HoodieAopPlacerProps = {
    * (view state alone would not change).
    */
   onEngageLiveEditor?: () => void;
+};
+
+export type HoodieAopPlacerHandle = {
+  applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
+  hasPendingChanges: () => boolean;
 };
 
 /**
@@ -883,20 +894,27 @@ function overlayGroupId(
   return activeGroupId;
 }
 
-export default function HoodieAopPlacer({
-  templateName,
-  initialState,
-  onApply,
-  onChange,
-  skipInitialAutoApply = false,
-  placeholderPositions,
-  printersMockupAction = null,
-  canvasOverrideUrl = null,
-  canvasOverrideLabel = null,
-  onEngageLiveEditor,
-}: HoodieAopPlacerProps) {
+const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
+  function HoodieAopPlacer(
+    {
+      templateName,
+      initialState,
+      onApply,
+      onChange,
+      onApplyStatusChange,
+      skipInitialAutoApply = false,
+      placeholderPositions,
+      printersMockupAction = null,
+      canvasOverrideUrl = null,
+      canvasOverrideLabel = null,
+      onEngageLiveEditor,
+    },
+    ref,
+  ) {
   const onEngageLiveEditorRef = useRef(onEngageLiveEditor);
   onEngageLiveEditorRef.current = onEngageLiveEditor;
+  const onApplyStatusChangeRef = useRef(onApplyStatusChange);
+  onApplyStatusChangeRef.current = onApplyStatusChange;
   // ---------- Template fetch ----------
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1028,28 +1046,21 @@ export default function HoodieAopPlacer({
   // toggle next to "Artwork scale" for explicit control.
   const [overlayVisible, setOverlayVisible] = useState(false);
 
-  // ---------- Auto-apply (debounced) ----------
-  // We removed the "Apply to product" button — the cart/checkout preview
-  // is kept in sync automatically. `onApply` fires ~1.5 s after the last
-  // state change so a customer dragging/scaling doesn't trigger dozens
-  // of uploads. We surface the status as a small indicator next to the
-  // controls so the customer knows their changes are being saved.
-  //
-  // Note: this is a *local* render upload (front + back PNG → Supabase),
-  // not a Printify mockup call. Printify mockup generation is deferred to
-  // Stage 5 because it needs per-panel print files we don't compute yet.
-  const [autoApplyStatus, setAutoApplyStatus] = useState<
-    "idle" | "pending" | "saving" | "saved" | "error"
+  // Deferred apply — flush only on ATC / leave / Printers Mockup (not every nudge).
+  const [applyStatus, setApplyStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
   >("idle");
+  const setApplyStatusBoth = useCallback(
+    (s: "idle" | "saving" | "saved" | "error") => {
+      setApplyStatus(s);
+      onApplyStatusChangeRef.current?.(s);
+    },
+    [],
+  );
 
-  // Baseline output signature. The first time the placer has both state and
-  // artwork ready, we record the current signature as the baseline (and,
-  // when `skipInitialAutoApply` is set, do NOT fire an apply for it). After
-  // that, the auto-apply effect only fires when the signature diverges from
-  // the baseline — so re-opening an unchanged saved design, or just
-  // switching views, never triggers a pointless re-render + re-upload (and
-  // its product-preview loading scan).
-  const baselineSignatureRef = useRef<string | null>(null);
+  // Last successfully applied signature. Null until first apply / resume baseline.
+  const lastAppliedSignatureRef = useRef<string | null>(null);
+  const initialApplyDoneRef = useRef(false);
 
   // Place→Pattern: stash Link/Mirror/placements/enabled so Place can restore.
   const placeSessionRef = useRef<PlaceSessionSnapshot | null>(null);
@@ -1283,6 +1294,31 @@ export default function HoodieAopPlacer({
    * after changing view. Pick Sleeves again explicitly to edit sleeves.
    * Also leaves Printers Mockup so the first click is never a no-op.
    */
+  /** Back is inspection-only for leggings — edits always return to Front. */
+  const withFrontIfNeeded = useCallback(
+    (prev: HoodieAopPlacerState): HoodieAopPlacerState => {
+      if (prev.view === "front") return prev;
+      const leggings = data && isLeggingsBlueprint(data.template.blueprintId);
+      if (!leggings) {
+        // Hoodies: still jump off Back when the customer starts editing.
+        return {
+          ...prev,
+          view: "front",
+          activeGroupId:
+            prev.activeGroupId === "back-body" ? "front-body" : prev.activeGroupId,
+        };
+      }
+      return {
+        ...prev,
+        view: "front",
+        activeGroupId: isLegsPart(prev.activeGroupId)
+          ? prev.activeGroupId
+          : "right-leg",
+      };
+    },
+    [data],
+  );
+
   const setView = useCallback((view: HoodieView) => {
     onEngageLiveEditorRef.current?.();
     setState((prev) => {
@@ -1347,6 +1383,13 @@ export default function HoodieAopPlacer({
         setOverlayVisible((v) => !v);
         return;
       }
+      // Back view is inspection-only — any click returns to Front for editing.
+      if (state.view === "back") {
+        setState((prev) => (prev ? withFrontIfNeeded(prev) : prev));
+        onEngageLiveEditorRef.current?.();
+        return;
+      }
+
       const mockup = mockups[state.view]!;
       const effective = buildEffectiveRenderConfig(data.template, state);
       const pt = mockupPointFromClick(e, canvasRef.current, mockup);
@@ -1445,12 +1488,13 @@ export default function HoodieAopPlacer({
       }
       setOverlayVisible(false);
     },
-    [state, data, artworkImg, mockups, onPartButton],
+    [state, data, artworkImg, mockups, onPartButton, withFrontIfNeeded],
   );
 
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) => {
       if (!prev) return prev;
+      prev = withFrontIfNeeded(prev);
       const legsTogether = prev.legsSynced || prev.legsMirrored;
       const ids = resolveEditGroupIds(
         groupId,
@@ -1472,16 +1516,19 @@ export default function HoodieAopPlacer({
           : prev.placements;
       return { ...prev, enabled, placements };
     });
-  }, [data]);
+  }, [data, withFrontIfNeeded]);
 
   const setBgColor = useCallback((hex: string) => {
-    setState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
-  }, []);
+    setState((prev) =>
+      prev ? { ...withFrontIfNeeded(prev), backgroundColor: hex } : prev,
+    );
+  }, [withFrontIfNeeded]);
 
   const updateActiveGroupPlacement = useCallback(
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev || !data) return prev;
+        prev = withFrontIfNeeded(prev);
         const clampedNext: ArtworkPlacement = {
           ...next,
           scale: clampPlaceScale(next.scale),
@@ -1565,12 +1612,14 @@ export default function HoodieAopPlacer({
         return { ...prev, placements };
       });
     },
-    [data],
+    [data, withFrontIfNeeded],
   );
 
   const setActiveScale = useCallback((view: HoodieView, scale: number) => {
     setOverlayVisible(true);
     setState((prev) => {
+      if (!prev) return prev;
+      prev = withFrontIfNeeded(prev);
       if (!prev || !data) return prev;
       const pillowDup = pillowDuplicateLinked(prev, data.template);
       const primaryId = pillowDup
@@ -1638,7 +1687,7 @@ export default function HoodieAopPlacer({
       }
       return { ...prev, placements };
     });
-  }, [data]);
+  }, [data, withFrontIfNeeded]);
 
   const nudgePlacement = useCallback(
     (axis: "x" | "y", direction: 1 | -1) => {
@@ -1671,27 +1720,33 @@ export default function HoodieAopPlacer({
     [state, data, mockups, updateActiveGroupPlacement],
   );
 
-  const handleArtworkUpload = (file: File) => {
-    const url = URL.createObjectURL(file);
-    setState((prev) => {
-      if (!prev) return prev;
-      if (prev.artworkUrl?.startsWith("blob:")) {
-        try {
-          URL.revokeObjectURL(prev.artworkUrl);
-        } catch {
-          /* ignore */
-        }
-      }
-      return { ...prev, artworkUrl: url };
-    });
-  };
-
   const resetActivePart = useCallback(() => {
     if (!data) return;
     const groups =
       data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
     setState((prev) => {
       if (!prev) return prev;
+      const leggings = isLeggingsBlueprint(data.template.blueprintId);
+      // Leggings: full "home" reset — Link on, Mirror off, locked dual-leg flow.
+      if (leggings) {
+        const placements = { ...prev.placements };
+        const enabled = { ...prev.enabled };
+        for (const id of LEG_GROUP_IDS) {
+          const locked = leggingsDefaultPlacementForGroup(id);
+          placements[id] = { front: { ...locked }, back: { ...locked } };
+          enabled[id] = true;
+        }
+        return {
+          ...prev,
+          view: "front",
+          placements,
+          enabled,
+          legsSynced: true,
+          legsMirrored: false,
+          activeGroupId: "right-leg",
+        };
+      }
+      prev = withFrontIfNeeded(prev);
       const legsTogether = prev.legsSynced || prev.legsMirrored;
       const ids = resolveEditGroupIds(
         prev.activeGroupId,
@@ -1701,42 +1756,28 @@ export default function HoodieAopPlacer({
       );
       const placements = { ...prev.placements };
       const enabled = { ...prev.enabled };
-      const leggings = isLeggingsBlueprint(data.template.blueprintId);
       for (const id of ids) {
-        if (leggings && (id === "left-leg" || id === "right-leg")) {
-          const locked = leggingsDefaultPlacementForGroup(id);
-          placements[id] = { front: { ...locked }, back: { ...locked } };
-        } else {
-          const g = groups.find((x) => x.id === id);
-          placements[id] = {
-            front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
-            back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
-          };
-        }
-        // Reset must bring artwork back — previously only cleared offsets,
-        // so a disabled leg stayed stuck off.
+        const g = groups.find((x) => x.id === id);
+        placements[id] = {
+          front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
+          back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+        };
         enabled[id] = true;
-      }
-      if (isLegsPart(prev.activeGroupId) && legsTogether) {
-        enabled["left-leg"] = true;
-        enabled["right-leg"] = true;
-        if (leggings) {
-          for (const id of LEG_GROUP_IDS) {
-            const locked = leggingsDefaultPlacementForGroup(id);
-            placements[id] = { front: { ...locked }, back: { ...locked } };
-            enabled[id] = true;
-          }
-        }
       }
       return { ...prev, placements, enabled };
     });
-  }, [data]);
+  }, [data, withFrontIfNeeded]);
 
   const setTileSettings = useCallback((patch: Partial<TileSettings>) => {
     setState((prev) =>
-      prev ? { ...prev, tileSettings: { ...prev.tileSettings, ...patch } } : prev,
+      prev
+        ? {
+            ...withFrontIfNeeded(prev),
+            tileSettings: { ...prev.tileSettings, ...patch },
+          }
+        : prev,
     );
-  }, []);
+  }, [withFrontIfNeeded]);
 
   const triggerEyedropper = useCallback(async () => {
     const W = window as any;
@@ -1819,69 +1860,76 @@ export default function HoodieAopPlacer({
     }));
   }, [data, state, mockups, artworkImg, placeholderPositions]);
 
-  const handleApply = useCallback(() => {
-    if (!state) return;
-    onApply?.({
-      state,
-      renderView: renderViewToCanvas,
-      renderPrintPanels: renderPrintPanelsToDataUrls,
-    });
-  }, [onApply, state, renderViewToCanvas, renderPrintPanelsToDataUrls]);
+  const hasPendingChanges = useCallback((): boolean => {
+    if (!state || !artworkImg) return false;
+    if (lastAppliedSignatureRef.current === null) return true;
+    return outputSignature(state) !== lastAppliedSignatureRef.current;
+  }, [state, artworkImg]);
 
-  // Debounced auto-apply: a *meaningful* change to placer state schedules
-  // an apply 1.5 s later, collapsing rapid edits into a single upload.
-  useEffect(() => {
-    if (!onApply) return;
-    if (!state || !data || !artworkImg) return;
-
-    const sig = outputSignature(state);
-
-    // First ready cycle → establish the baseline.
-    if (baselineSignatureRef.current === null) {
-      baselineSignatureRef.current = sig;
-      // Skip the initial apply when resuming a saved design. We trust EITHER
-      // the parent prop OR our own mount-time detection (seededAsResumeRef),
-      // so a render-timing gap on the prop can't cause a spurious re-render.
-      if (skipInitialAutoApply || seededAsResumeRef.current) {
-        // Resuming a saved design whose mockup is already persisted — show
-        // it as saved and don't re-upload until the customer changes
-        // something. This is what prevents the "open, then reload with the
-        // scanning box" behaviour.
-        setAutoApplyStatus("saved");
-        return;
-      }
-      // Fresh design (no saved mockup yet) → fall through and apply once so
-      // the cart/checkout image gets generated.
-    } else if (sig === baselineSignatureRef.current) {
-      // Nothing that affects the rendered mockup has changed (e.g. the
-      // customer just switched Front/Back/Hood).
-      setAutoApplyStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
-      return;
-    }
-
-    setAutoApplyStatus("pending");
-    const t = window.setTimeout(() => {
-      setAutoApplyStatus("saving");
+  const applyIfNeeded = useCallback(
+    async (opts?: { force?: boolean }): Promise<boolean> => {
+      if (!onApply || !state || !data || !artworkImg) return false;
+      if (!opts?.force && !hasPendingChanges()) return false;
+      setApplyStatusBoth("saving");
       try {
-        onApply({
-          state,
-          renderView: renderViewToCanvas,
-          renderPrintPanels: renderPrintPanelsToDataUrls,
-        });
-        baselineSignatureRef.current = sig;
-        // Optimistic — the parent's upload runs async; we flip to
-        // "saved" after a short visual delay so the customer sees
-        // confirmation. If the parent reports a real failure it'd
-        // surface via the parent's mockupError state, not here.
-        window.setTimeout(() => setAutoApplyStatus("saved"), 800);
+        await Promise.resolve(
+          onApply({
+            state,
+            renderView: renderViewToCanvas,
+            renderPrintPanels: renderPrintPanelsToDataUrls,
+          }),
+        );
+        lastAppliedSignatureRef.current = outputSignature(state);
+        setApplyStatusBoth("saved");
+        return true;
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.error("[HoodieAopPlacer] auto-apply error:", e);
-        setAutoApplyStatus("error");
+        console.error("[HoodieAopPlacer] apply error:", e);
+        setApplyStatusBoth("error");
+        throw e;
       }
-    }, 1500);
-    return () => window.clearTimeout(t);
-  }, [state, data, artworkImg, onApply, renderViewToCanvas, renderPrintPanelsToDataUrls, skipInitialAutoApply]);
+    },
+    [
+      onApply,
+      state,
+      data,
+      artworkImg,
+      hasPendingChanges,
+      renderViewToCanvas,
+      renderPrintPanelsToDataUrls,
+      setApplyStatusBoth,
+    ],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({ applyIfNeeded, hasPendingChanges }),
+    [applyIfNeeded, hasPendingChanges],
+  );
+
+  // Resume: record baseline without uploading. Fresh: one-shot apply for cart image.
+  useEffect(() => {
+    if (!onApply || !state || !data || !artworkImg) return;
+    if (initialApplyDoneRef.current) return;
+    initialApplyDoneRef.current = true;
+    const sig = outputSignature(state);
+    if (skipInitialAutoApply || seededAsResumeRef.current) {
+      lastAppliedSignatureRef.current = sig;
+      setApplyStatusBoth("saved");
+      return;
+    }
+    void applyIfNeeded({ force: true }).catch(() => {
+      initialApplyDoneRef.current = false;
+    });
+  }, [
+    onApply,
+    state,
+    data,
+    artworkImg,
+    skipInitialAutoApply,
+    applyIfNeeded,
+    setApplyStatusBoth,
+  ]);
 
   // ---------- Render guards ----------
   if (loading || !state) {
@@ -2126,8 +2174,24 @@ export default function HoodieAopPlacer({
               </div>
             )}
           </div>
+          {/* Full-canvas progress overlay while Printers Mockup is generating —
+              the button spinner alone was easy to miss for the 4-5s wait. */}
+          {printersMockupAction?.loading && (
+            <div
+              className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+              data-testid="hoodie-aop-printers-loading-overlay"
+            >
+              <div className="flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>
+                  {printersMockupAction.loadingLabel || "Generating printers mockup…"}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
-        {state.mode === "place" && artworkImg && activePartEnabled && (
+        {/* Non-leggings: nudge under preview. Leggings: nudge lives in controls. */}
+        {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
             className="relative z-10 border-t border-border bg-card px-3 py-2"
             onNudge={nudgePlacement}
@@ -2159,11 +2223,18 @@ export default function HoodieAopPlacer({
                 if (!printersMockupAction.active || printersMockupAction.loading) {
                   return;
                 }
-                const panels = renderPrintPanelsToDataUrls({
-                  maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
-                });
-                if (!panels?.length) return;
-                printersMockupAction.onClick(panels);
+                void (async () => {
+                  try {
+                    await applyIfNeeded({ force: true });
+                  } catch {
+                    /* parent surfaces errors */
+                  }
+                  const panels = renderPrintPanelsToDataUrls({
+                    maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+                  });
+                  if (!panels?.length) return;
+                  printersMockupAction.onClick(panels);
+                })();
               }}
               disabled={
                 !printersMockupAction.active || !!printersMockupAction.loading
@@ -2308,29 +2379,39 @@ export default function HoodieAopPlacer({
             </div>
             {hasSleeves && isSleevesPart(state.activeGroupId) && (
               <div className="mt-1.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setState((prev) => {
-                      if (!prev) return prev;
-                      const sleevesMirrored = !prev.sleevesMirrored;
-                      return {
-                        ...prev,
-                        sleevesMirrored,
-                        placements: syncSleevePlacements(
-                          prev.placements,
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setState((prev) => {
+                        if (!prev) return prev;
+                        const sleevesMirrored = !prev.sleevesMirrored;
+                        return {
+                          ...prev,
                           sleevesMirrored,
-                        ),
-                      };
-                    })
-                  }
-                  aria-pressed={state.sleevesMirrored}
-                  className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                    state.sleevesMirrored,
-                  )}`}
-                >
-                  Mirror
-                </button>
+                          placements: syncSleevePlacements(
+                            prev.placements,
+                            sleevesMirrored,
+                          ),
+                        };
+                      })
+                    }
+                    aria-pressed={state.sleevesMirrored}
+                    className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                      state.sleevesMirrored,
+                    )}`}
+                  >
+                    Mirror
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetActivePart}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                    title="Reset the selected part to its default placement"
+                  >
+                    <RotateCcw className="h-3 w-3" /> Reset
+                  </button>
+                </div>
                 {state.sleevesMirrored && (
                   <div className="mt-1 text-[10px] text-muted-foreground">
                     Right sleeve flips art; left/right move toward the chest together.
@@ -2376,6 +2457,7 @@ export default function HoodieAopPlacer({
                     onClick={() =>
                       setState((prev) => {
                         if (!prev) return prev;
+                        prev = withFrontIfNeeded(prev);
                         const legsSynced = !prev.legsSynced;
                         return {
                           ...prev,
@@ -2409,15 +2491,16 @@ export default function HoodieAopPlacer({
                     onClick={() =>
                       setState((prev) => {
                         if (!prev) return prev;
+                        prev = withFrontIfNeeded(prev);
                         const legsMirrored = !prev.legsMirrored;
+                        // Mirror on → Link off so the real mirror placement is visible.
                         return {
                           ...prev,
                           legsMirrored,
-                          // While Link is on, Mirror only flips art (renderer).
-                          placements:
-                            legsMirrored && !prev.legsSynced
-                              ? syncLegPlacementsForMirror(prev.placements, true)
-                              : prev.placements,
+                          legsSynced: legsMirrored ? false : prev.legsSynced,
+                          placements: legsMirrored
+                            ? syncLegPlacementsForMirror(prev.placements, true)
+                            : prev.placements,
                         };
                       })
                     }
@@ -2428,12 +2511,18 @@ export default function HoodieAopPlacer({
                   >
                     Mirror
                   </button>
+                  <button
+                    type="button"
+                    onClick={resetActivePart}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                    title="Reset to default placement with Link sides on"
+                  >
+                    <RotateCcw className="h-3 w-3" /> Reset
+                  </button>
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   {state.legsMirrored
-                    ? state.legsSynced
-                      ? "Mirror flips left art; Link keeps X gap and matching height."
-                      : "Left leg art is flipped; placement copied from right."
+                    ? "Left leg art is flipped; Link turns off so mirror placement is clear."
                     : state.legsSynced
                       ? "Linked — both move together; X gap and matching height are preserved."
                       : "Left and right legs can be placed independently. Click artwork to switch."}
@@ -2466,6 +2555,7 @@ export default function HoodieAopPlacer({
                 onClick={() =>
                   setState((prev) => {
                     if (!prev) return prev;
+                    prev = withFrontIfNeeded(prev);
                     const legsSynced = !prev.legsSynced;
                     return {
                       ...prev,
@@ -2493,14 +2583,15 @@ export default function HoodieAopPlacer({
                 onClick={() =>
                   setState((prev) => {
                     if (!prev) return prev;
+                    prev = withFrontIfNeeded(prev);
                     const legsMirrored = !prev.legsMirrored;
                     return {
                       ...prev,
                       legsMirrored,
-                      placements:
-                        legsMirrored && !prev.legsSynced
-                          ? syncLegPlacementsForMirror(prev.placements, true)
-                          : prev.placements,
+                      legsSynced: legsMirrored ? false : prev.legsSynced,
+                      placements: legsMirrored
+                        ? syncLegPlacementsForMirror(prev.placements, true)
+                        : prev.placements,
                     };
                   })
                 }
@@ -2510,6 +2601,14 @@ export default function HoodieAopPlacer({
                 )}`}
               >
                 Mirror
+              </button>
+              <button
+                type="button"
+                onClick={resetActivePart}
+                className="inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                title="Reset to default placement with Link sides on"
+              >
+                <RotateCcw className="h-3 w-3" /> Reset
               </button>
             </div>
             <div className="mt-1 text-[10px] text-muted-foreground">
@@ -2642,23 +2741,14 @@ export default function HoodieAopPlacer({
           </div>
         </div>
 
-        {/* Artwork upload (separate row since legacy assumes art is already chosen) */}
-        <Section title="Artwork">
-          <label className="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-border bg-muted/40 p-3 text-xs font-semibold text-foreground hover:border-primary/60 hover:bg-muted">
-            <Upload className="h-4 w-4" />
-            {state.artworkUrl ? "Replace artwork" : "Upload artwork"}
-            <input
-              type="file"
-              accept="image/*"
-              className="sr-only"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleArtworkUpload(f);
-                e.target.value = "";
-              }}
-            />
-          </label>
-        </Section>
+        {/* Leggings: fine-position nudges (replaces former Replace artwork slot). */}
+        {isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
+          <FinePositionNudgeInline
+            className="rounded border border-border bg-muted/20 px-2 py-2"
+            onNudge={nudgePlacement}
+            label="Fine position"
+          />
+        )}
 
         {/* PLACE mode: Scale slider drives active group */}
         {state.mode === "place" && (
@@ -2712,6 +2802,18 @@ export default function HoodieAopPlacer({
                 <> • Link sides on</>
               )}
             </div>
+            {/* Reset when Link/Mirror row isn't showing (body/hood parts). */}
+            {!isLeggings &&
+              !(hasSleeves && isSleevesPart(state.activeGroupId)) && (
+              <button
+                type="button"
+                onClick={resetActivePart}
+                className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                title="Reset the selected part to its default placement"
+              >
+                <RotateCcw className="h-3 w-3" /> Reset
+              </button>
+            )}
           </div>
         )}
 
@@ -2760,49 +2862,31 @@ export default function HoodieAopPlacer({
           </>
         )}
 
-        {/* Reset active part to admin default placement */}
-        <button
-          onClick={resetActivePart}
-          className="flex w-full items-center justify-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          title="Reset the selected part to its default centred placement"
-        >
-          <RotateCcw className="h-3 w-3" /> Reset
-        </button>
-
-        {/* Auto-save indicator (replaces the old "Apply to product" button —
-            the cart preview is now kept in sync automatically, debounced
-            ~1.5 s after the customer's last change). */}
+        {/* Deferred-apply status — flush on ATC / leave / Printers Mockup. */}
         {onApply && artworkImg && (
           <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-            {autoApplyStatus === "saving" || autoApplyStatus === "pending" ? (
+            {applyStatus === "saving" ? (
               <>
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>Saving design…</span>
               </>
-            ) : autoApplyStatus === "saved" ? (
+            ) : applyStatus === "saved" && !hasPendingChanges() ? (
               <>
                 <Check className="h-3 w-3 text-green-600" />
-                <span>Design saved</span>
+                <span>Ready</span>
               </>
-            ) : autoApplyStatus === "error" ? (
-              <span className="text-destructive">Couldn't save — try again</span>
+            ) : applyStatus === "error" ? (
+              <span className="text-destructive">Couldn&apos;t save — try again</span>
             ) : (
-              <span className="opacity-60">Design syncs automatically</span>
+              <span className="opacity-60">
+                Unsaved changes — saved when you add to cart…
+              </span>
             )}
           </div>
         )}
       </div>
     </div>
   );
-}
+});
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
+export default HoodieAopPlacer;

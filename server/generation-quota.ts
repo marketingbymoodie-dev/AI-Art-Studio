@@ -16,6 +16,7 @@ import {
   resolveEffectiveOverageCap,
 } from "./overage-settings";
 import { maybeApplyPendingPlan } from "./plan-transition-apply";
+import { isPrintifyConnected } from "./printify-connection";
 import type { ShopifyInstallation } from "@shared/schema";
 
 export type QuotaBlockCode =
@@ -215,7 +216,12 @@ async function resolveQuotaContext(installation: ShopifyInstallation): Promise<{
   refreshed = await maybeApplyPendingPlan(refreshed);
 
   const eff = getEffectivePlan(refreshed as any, refreshed.shopDomain);
-  const quota = resolveGenerationQuota(eff.planName, eff.isActive);
+  // Merchant setup rail: until Printify is connected, generation is capped to
+  // the trial/tester bucket (20 lifetime) regardless of paid plan status —
+  // prevents tyre-kicker abuse on a page nobody can actually fulfil yet.
+  const merchant = await storage.getMerchantByShop(refreshed.shopDomain);
+  const printifyConnected = isPrintifyConnected(merchant);
+  const quota = resolveGenerationQuota(eff.planName, eff.isActive && printifyConnected);
   const effectiveOverageCap = resolveEffectiveOverageCap(refreshed, quota);
   const hardCap = quota.freeQuota + effectiveOverageCap;
   return { quota, effectiveOverageCap, hardCap };

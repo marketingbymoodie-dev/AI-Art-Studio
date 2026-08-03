@@ -4,7 +4,9 @@ import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
 import ArtworkTransformOverlay from "./ArtworkTransformOverlay";
-import { MockupZoomPreview } from "./MockupZoomPreview";
+
+/** Magnification for the inline hover/tap zoom on composite mockup slides. */
+const ZOOM_SCALE = 2.2;
 
 interface ProductMockupProps {
   imageUrl?: string | null;
@@ -31,6 +33,11 @@ interface ProductMockupProps {
   };
   showSafeZone?: boolean;
   blankImageUrl?: string | null;
+  /**
+   * Used when `blankImageUrl` 404s / fails (stale flat-calibration assets after
+   * a re-harvest wipe). Typically the merchant catalog primary placeholder.
+   */
+  blankImageFallbackUrl?: string | null;
   /** The product's aspect ratio string, e.g. "3:4" or "2:1". Used to detect
    *  landscape products that need a scale-up to fill the container. */
   aspectRatio?: string;
@@ -42,6 +49,10 @@ interface ProductMockupProps {
    *  Use "contain" for edge-wrap phone-case previews so the full grey bleed
    *  area is visible instead of being cropped to the container aspect. */
   mockupFit?: "cover" | "contain";
+  /** How blank placeholder images fit (default: designer-type heuristic).
+   *  Use "contain" while browsing in the standard square window so tall
+   *  phone-case / mug blanks are not cropped. */
+  blankFit?: "cover" | "contain";
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -321,12 +332,39 @@ export function ProductMockup({
   canvasConfig,
   showSafeZone = false,
   blankImageUrl,
+  blankImageFallbackUrl,
   aspectRatio,
   isAop = false,
   initialPreviewUrl,
   mockupFit = "cover",
+  blankFit,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
+
+  // Prefer the colour-accurate blank; if it 404s (stale harvest URL), use catalog primary.
+  const [blankSrc, setBlankSrc] = useState<string | null>(blankImageUrl || null);
+  const [blankPrimaryFailed, setBlankPrimaryFailed] = useState(false);
+  useEffect(() => {
+    setBlankPrimaryFailed(false);
+    setBlankSrc(blankImageUrl || null);
+  }, [blankImageUrl, blankImageFallbackUrl]);
+  useEffect(() => {
+    if (blankPrimaryFailed && blankImageFallbackUrl && blankImageFallbackUrl !== blankImageUrl) {
+      setBlankSrc(blankImageFallbackUrl);
+    }
+  }, [blankPrimaryFailed, blankImageFallbackUrl, blankImageUrl]);
+  const onBlankError = useCallback(() => {
+    if (
+      blankImageFallbackUrl &&
+      blankSrc === blankImageUrl &&
+      blankImageFallbackUrl !== blankImageUrl
+    ) {
+      setBlankPrimaryFailed(true);
+      setBlankSrc(blankImageFallbackUrl);
+      return;
+    }
+    setBlankSrc(null);
+  }, [blankImageFallbackUrl, blankImageUrl, blankSrc]);
 
   if (typeof window !== "undefined") {
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
@@ -334,6 +372,18 @@ export function ProductMockup({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [artworkAspect, setArtworkAspect] = useState(1);
+
+  // Inline magnify (hover on desktop, tap-toggle on mobile) for mockup slides.
+  const [zoomState, setZoomState] = useState({ active: false, x: 50, y: 50 });
+  const zoomStateRef = useRef(zoomState);
+  useEffect(() => {
+    zoomStateRef.current = zoomState;
+  }, [zoomState]);
+  const lastPointerTypeRef = useRef<string>("mouse");
+  // Leaving a slide resets any tap-zoom so the next slide starts unzoomed.
+  useEffect(() => {
+    setZoomState((z) => (z.active ? { ...z, active: false } : z));
+  }, [mockupUrl]);
 
   useEffect(() => {
     if (!imageUrl || mockupUrl) {
@@ -438,14 +488,26 @@ export function ProductMockup({
     }
 
     // Composite mockup (Printify / flat on-the-fly) — use object-contain for
-    // edge-wrap previews so the full grey print canvas is visible (not cropped).
+    // edge-wrap previews so the full print canvas is visible (not cropped).
     if (mockupUrl) {
       return (
         <img
           src={mockupUrl}
           alt="Product mockup"
-          className={`absolute inset-0 w-full h-full ${mockupFit === "contain" ? "object-contain bg-[#d4d4d4]" : "object-cover"}`}
-          style={{ pointerEvents: "none" }}
+          className={`absolute inset-0 w-full h-full ${
+            mockupFit === "contain"
+              ? "object-contain bg-white"
+              : "object-cover"
+          }`}
+          style={{
+            pointerEvents: "none",
+            // Native-style magnify: origin follows cursor/tap so the zoomed
+            // area is the part under the pointer (no dialog, no pan UI).
+            transform: zoomState.active ? `scale(${ZOOM_SCALE})` : undefined,
+            transformOrigin: `${zoomState.x}% ${zoomState.y}%`,
+            transition: "transform 120ms ease-out",
+            willChange: zoomState.active ? "transform" : undefined,
+          }}
           draggable={false}
           data-testid="img-mockup"
           onLoad={() => { setMockupImageLoading(false); }}
@@ -464,24 +526,26 @@ export function ProductMockup({
         transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
         transformOrigin: "center center",
       };
-      const showBlankUnderArt = !!blankImageUrl && designerType === "apparel";
+      // Blank-under-art is only for Printify drag placement (enableDrag).
+      // Flat/mesh products use a separate placer + composite slides; stacking the
+      // blank under raw Artwork looks like a double-up on saved designs.
+      const showBlankUnderArt =
+        !!blankSrc && designerType === "apparel" && !!enableDrag;
       if (showBlankUnderArt) {
-        const blankScale = isLandscape ? "scale(1.1)" : undefined;
         return (
           <>
             <img
-              key={blankImageUrl}
-              src={blankImageUrl}
+              key={blankSrc}
+              src={blankSrc}
               alt="Product blank"
-              className="absolute inset-0 w-full h-full object-cover"
+              className="absolute inset-0 w-full h-full object-contain"
               style={{
                 pointerEvents: "none",
                 opacity: 0.92,
-                transform: blankScale,
-                transformOrigin: "center center",
               }}
               draggable={false}
               data-testid="img-blank"
+              onError={onBlankError}
             />
             <img
               src={displayUrl}
@@ -508,36 +572,44 @@ export function ProductMockup({
       );
     }
 
-    if (blankImageUrl) {
-      // Framed posters include hangers/moulding above the print — cover crops the top.
+    if (blankSrc) {
+      // Apparel / mug / framed / shaped pillows: contain so tall blanks
+      // (hoodies) are not cropped by object-cover in the square preview.
+      // Framed posters still prefer contain so hangers stay visible.
+      // blankFit="contain" forces this for browse-mode square windows (phone cases).
       const useContainBlank =
-        designerType === "mug" ||
-        designerType === "framed-print" ||
-        (designerType === "pillow" &&
-          (printShape === "square" || printShape === "circle"));
+        blankFit === "contain" ||
+        (blankFit !== "cover" &&
+          (designerType === "apparel" ||
+            designerType === "mug" ||
+            designerType === "framed-print" ||
+            (designerType === "pillow" &&
+              (printShape === "square" || printShape === "circle"))));
       if (useContainBlank) {
         return (
           <img
-            key={blankImageUrl}
-            src={blankImageUrl}
+            key={blankSrc}
+            src={blankSrc}
             alt="Product blank"
             className="absolute inset-0 w-full h-full object-contain"
             style={{ pointerEvents: "none", opacity: 0.92 }}
             draggable={false}
             data-testid="img-blank"
+            onError={onBlankError}
           />
         );
       }
       const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
-          key={blankImageUrl}
-          src={blankImageUrl}
+          key={blankSrc}
+          src={blankSrc}
           alt="Product blank"
           className="absolute inset-0 w-full h-full object-cover"
           style={{ pointerEvents: "none", opacity: 0.92, transform: blankScale, transformOrigin: "center center" }}
           draggable={false}
           data-testid="img-blank"
+          onError={onBlankError}
         />
       );
     }
@@ -624,13 +696,72 @@ export function ProductMockup({
       ? "auto"
       : "pan-y";
 
+  const zoomOriginFromEvent = useCallback((clientX: number, clientY: number) => {
+    const el = containerRef.current;
+    if (!el) return { x: 50, y: 50 };
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { x: 50, y: 50 };
+    return {
+      x: Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100)),
+    };
+  }, []);
+
+  const onZoomPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!showMockupZoomPreview) return;
+      if (e.pointerType === "mouse") {
+        // Desktop: magnify on hover, origin tracking the cursor.
+        const { x, y } = zoomOriginFromEvent(e.clientX, e.clientY);
+        setZoomState({ active: true, x, y });
+      } else if (zoomStateRef.current.active) {
+        // Mobile: while zoomed, dragging pans by moving the origin.
+        const { x, y } = zoomOriginFromEvent(e.clientX, e.clientY);
+        setZoomState({ active: true, x, y });
+      }
+    },
+    [showMockupZoomPreview, zoomOriginFromEvent],
+  );
+
+  const onZoomPointerLeave = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") {
+      setZoomState((z) => (z.active ? { ...z, active: false } : z));
+    }
+  }, []);
+
+  const onZoomClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (!showMockupZoomPreview) return;
+      // Ignore gallery chrome (arrows, dots) that sits over the image.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("button,a,[role='button']")) return;
+      // Touch/pen only — desktop already zooms on hover.
+      if (lastPointerTypeRef.current === "mouse") return;
+      const { x, y } = zoomOriginFromEvent(e.clientX, e.clientY);
+      setZoomState((z) =>
+        z.active ? { active: false, x, y } : { active: true, x, y },
+      );
+    },
+    [showMockupZoomPreview, zoomOriginFromEvent],
+  );
+
   return (
     <div
       ref={containerRef}
-      className="relative rounded-md w-full h-full"
+      className={`relative rounded-md w-full h-full overflow-hidden${
+        showMockupZoomPreview ? " cursor-zoom-in" : ""
+      }`}
       style={{ touchAction }}
       data-testid="product-mockup"
       data-appai-wheel-forward={isDesktopEmbed ? "true" : undefined}
+      onPointerMove={showMockupZoomPreview ? onZoomPointerMove : undefined}
+      onPointerLeave={showMockupZoomPreview ? onZoomPointerLeave : undefined}
+      onPointerDown={
+        showMockupZoomPreview
+          ? (e) => { lastPointerTypeRef.current = e.pointerType; }
+          : undefined
+      }
+      onClick={showMockupZoomPreview ? onZoomClick : undefined}
     >
       {renderProductMockup()}
       {showTransformOverlay && (
@@ -649,9 +780,6 @@ export function ProductMockup({
             <span>Loading...</span>
           </div>
         </div>
-      )}
-      {showMockupZoomPreview && (
-        <MockupZoomPreview imageUrl={mockupUrl!} enabled />
       )}
     </div>
   );

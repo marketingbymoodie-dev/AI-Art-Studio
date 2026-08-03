@@ -7,7 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye, EyeOff, ImagePlus, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import { Eye, EyeOff, ImagePlus, Loader2, Pipette, RotateCcw, AlertTriangle } from "lucide-react";
+import {
+  extractArtworkPalette,
+  type PaletteSwatch,
+} from "@/components/designer/HoodieAopPlacer/extractPalette";
 import {
   FinePositionNudge,
   mockupDeltaFromScreenNudge,
@@ -24,12 +28,13 @@ import {
   resolveFlatBlank,
   resolveFlatViewCalibration,
   resolveCalibratorLayerAdjust,
+  withFlatAssetVersion,
   type FlatViewName,
 } from "./lib/flatAssets";
 import {
-  flatArtBox,
   flatCovers,
-  flatOverflows,
+  flatVisibleArtBoxAxisAligned,
+  flatApparelGuideTrimmed,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -48,10 +53,9 @@ import type {
  * Customer-facing placer for "on-the-fly" flat / mesh products.
  *
  * Structurally modelled on `HoodieAopPlacer`: a left live-canvas + right
- * controls column, a hideable bounding box, a debounced auto-apply that hands
- * a `renderView(view)` callback back to the parent (which uploads the PNG and
- * pins it as the cart / checkout mockup). Unlike the hoodie placer this draws a
- * single design onto a calibrated blank (no panel template, no AOP tiling).
+ * controls column, a hideable bounding box. Persist is parent-driven (ATC /
+ * leave editor / test order) — not on every nudge. Unlike the hoodie placer
+ * this draws a single design onto a calibrated blank (no panel template).
  *
  * Invariants enforced here:
  *   - Front + back placements are independent unless `linkSides` is on.
@@ -60,6 +64,8 @@ import type {
  *     (and the selected colour's blank) actually has a back view.
  *   - Placement scale is capped at 1.0 (Printify clamps placement scale), so
  *     the UI never implies more coverage than the print file provides.
+ *   - Phone cases (`edgeWrapMode`): optional `backgroundColor` fills the blue
+ *     dashed print canvas under cutout artwork.
  */
 
 type ViewName = FlatViewName;
@@ -72,12 +78,18 @@ export type FlatProductPlacerState = {
   /** Per-view enabled flag. Back defaults false. */
   enabled: Record<ViewName, boolean>;
   /**
-   * When true (and both views exist), edits to scale/position on either side
-   * update the other: same scale + offsetY, mirrored offsetX.
+   * Legacy field — always treated as false. Front/back placements are
+   * independent (the old "Link sides" toggle was removed; it silently
+   * overscaled the other face into the trim zone).
    */
   linkSides: boolean;
   /** The artwork (the customer's generated/uploaded design). */
   artworkUrl: string | null;
+  /**
+   * Phone cases: opaque fill under artwork out to the blue dashed print canvas.
+   * `null` = no customer fill (grey guide chrome in preview; transparent bake).
+   */
+  backgroundColor: string | null;
 };
 
 export type FlatProductPlacerApplyResult = {
@@ -89,6 +101,14 @@ export type FlatProductPlacerApplyResult = {
 /** Explicit persist lifecycle — parent flushes on ATC / leave editor / page hide. */
 export type FlatApplyStatus = "idle" | "saving" | "saved" | "error";
 
+/** Per-face trim status for ATC / test-order confirmation. */
+export type FlatTrimStatus = {
+  front: boolean;
+  back: boolean;
+  /** Enabled faces currently past the dashed guide. */
+  clippedSides: Array<"front" | "back">;
+};
+
 export type FlatProductPlacerHandle = {
   /**
    * Upload + persist. Pass `{ force: true }` to re-save after size/colour changes.
@@ -96,6 +116,8 @@ export type FlatProductPlacerHandle = {
    */
   applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
+  /** Live trim status for enabled faces (dashed-guide overflow). */
+  getTrimStatus: () => FlatTrimStatus;
 };
 
 export type FlatProductPlacerProps = {
@@ -116,6 +138,8 @@ export type FlatProductPlacerProps = {
   onViewChange?: (view: ViewName) => void;
   /** Fired when an explicit persist starts / finishes (for ATC gating). */
   onApplyStatusChange?: (status: FlatApplyStatus) => void;
+  /** Fired when either face's trim-warning status changes. */
+  onTrimStatusChange?: (status: FlatTrimStatus) => void;
   /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
   onAssetsFailed?: (reason: string) => void;
   /** Skip the first auto-apply when resuming an already-saved design. */
@@ -152,6 +176,11 @@ export type FlatProductPlacerProps = {
   canvasOverrideUrl?: string | null;
   /** Badge text when showing a Lifestyle / catalog override (e.g. "On Person"). */
   canvasOverrideLabel?: string | null;
+  /**
+   * Phone cases: explicit viewing-card height (px), matched to the embed form
+   * column (prompt box). Zoom sits at the bottom of this card.
+   */
+  viewerHeightPx?: number | null;
 };
 
 type LoadedAssets = {
@@ -168,41 +197,45 @@ function outputSignature(s: FlatProductPlacerState): string {
     placements: s.placements,
     enabled: s.enabled,
     linkSides: s.linkSides,
+    backgroundColor: s.backgroundColor ?? null,
   });
 }
 
-/** Mirror horizontal offset so left/right stay visually consistent across faces. */
-function mirrorLinkedPlacement(source: ArtworkPlacement): ArtworkPlacement {
-  return {
-    scale: source.scale,
-    offsetX: -source.offsetX,
-    offsetY: source.offsetY,
-  };
+function normalizeBgHex(raw: string): string | null {
+  const s = raw.trim();
+  if (!s || /^(none|transparent)$/i.test(s)) return null;
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(s);
+  if (!m) return null;
+  return `#${m[1].toUpperCase()}`;
 }
 
-function otherView(view: ViewName): ViewName {
-  return view === "front" ? "back" : "front";
-}
+const EDGE_WRAP_FIXED_SWATCHES: PaletteSwatch[] = [
+  { hex: "#FFFFFF", weight: 1 },
+  { hex: "#000000", weight: 1 },
+];
 
 function applyPlacementToState(
   prev: FlatProductPlacerState,
   view: ViewName,
   next: ArtworkPlacement,
-  availableViews: ViewName[],
+  _availableViews: ViewName[],
 ): FlatProductPlacerState {
-  const placements = { ...prev.placements, [view]: next };
-  if (prev.linkSides && availableViews.includes(otherView(view))) {
-    placements[otherView(view)] = mirrorLinkedPlacement(next);
-  }
-  return { ...prev, placements };
+  // Front/back are always independent — never mirror/scale the other face.
+  return { ...prev, linkSides: false, placements: { ...prev.placements, [view]: next } };
 }
 
 function buildInitialState(
   availableViews: ViewName[],
   saved?: Partial<FlatProductPlacerState> | null,
   defaultPlacement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
+  edgeWrapMode = false,
 ): FlatProductPlacerState {
-  const canLink = availableViews.includes("front") && availableViews.includes("back");
+  const hasExplicitBg = !!saved && Object.prototype.hasOwnProperty.call(saved, "backgroundColor");
+  const resolvedBg = hasExplicitBg
+    ? normalizeBgHex(String(saved?.backgroundColor ?? "")) ?? null
+    : edgeWrapMode
+      ? "#FFFFFF"
+      : null;
   const base: FlatProductPlacerState = {
     view: "front",
     placements: {
@@ -213,30 +246,18 @@ function buildInitialState(
       front: availableViews.includes("front"),
       back: false,
     },
-    // Double-sided products default to linked so front/back stay matched.
-    linkSides: canLink,
+    linkSides: false,
     artworkUrl: saved?.artworkUrl ?? null,
+    backgroundColor: resolvedBg,
   };
   if (!saved) return base;
-  const linkSides =
-    typeof saved.linkSides === "boolean" ? saved.linkSides : base.linkSides;
-  let placements = { ...base.placements, ...(saved.placements ?? {}) };
-  if (linkSides && canLink) {
-    const sourceView: ViewName =
-      saved.view === "back" && placements.back ? "back" : "front";
-    const source = placements[sourceView] ?? defaultPlacement;
-    placements = {
-      ...placements,
-      [sourceView]: { ...source },
-      [otherView(sourceView)]: mirrorLinkedPlacement(source),
-    };
-  }
   return {
     ...base,
     ...saved,
-    placements,
+    placements: { ...base.placements, ...(saved.placements ?? {}) },
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
-    linkSides,
+    linkSides: false,
+    backgroundColor: resolvedBg,
   };
 }
 
@@ -252,6 +273,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       onChange,
       onViewChange,
       onApplyStatusChange,
+      onTrimStatusChange,
       onAssetsFailed,
       skipInitialAutoApply = false,
       edgeWrapMode = false,
@@ -263,6 +285,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       lifestyleAction = null,
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
+      viewerHeightPx = null,
     },
     ref,
   ) {
@@ -286,6 +309,24 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
   /** View-only zoom of the editor canvas (does not change print placement). */
   const [previewZoom, setPreviewZoom] = useState(1);
+  /**
+   * Canvas CSS box (offsetWidth/Height). The dashed-guide overlay MUST match
+   * this exactly — sizing it via the wrapper's `inset-0` desyncs whenever the
+   * wrapper is max-height constrained shorter than the canvas (aspect-square
+   * + zoom-bar padding), which makes the guide float above/inside the real clip.
+   */
+  const [canvasCssBox, setCanvasCssBox] = useState({ w: 0, h: 0 });
+  /**
+   * Phone cases: preview viewport above the zoom bar. Fit size is computed from
+   * this box (not the outer card) so the blue print canvas fills available
+   * height with 10px pad; zoom uses transform inside overflow:hidden.
+   */
+  const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const edgeWrapViewportRef = useRef<HTMLDivElement | null>(null);
+  const [edgeWrapFitSize, setEdgeWrapFitSize] = useState<{
+    w: number;
+    h: number;
+  } | null>(null);
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -317,19 +358,26 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         // Use colorId (e.g. 20x30:white) for mask/geometry — size-only geometryKey
         // misses decorPerSize geometryByBlank and falls back to the shared 11×14 mask.
         const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
-        const blankUrl =
-          v === "front" && blankUrlOverride ? blankUrlOverride : blank[v];
+        const isOverrideBlank = v === "front" && !!blankUrlOverride;
+        const blankUrl = isOverrideBlank ? blankUrlOverride : blank[v];
         if (!calib || !blankUrl) continue;
+        // Version-pin harvest assets to the manifest generation — stable
+        // canonical URLs are overwritten on re-harvest and a stale cached
+        // mask silently desyncs the clip from the fresh guide geometry.
         const [b, m, s] = await Promise.all([
-          loadFlatImage(blankUrl),
+          loadFlatImage(
+            isOverrideBlank
+              ? blankUrl
+              : withFlatAssetVersion(blankUrl, manifest.generatedAt),
+          ),
           !refitCatalogSizeGuide && calib.maskUrl
-            ? loadFlatImage(calib.maskUrl)
+            ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
             !!calib.printBoundsNormalized)
-            ? loadFlatImage(calib.shadingUrl)
+            ? loadFlatImage(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
             : Promise.resolve(null),
         ]);
         if (
@@ -384,7 +432,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           saved &&
           Object.keys(saved).some((k) => k !== "artworkUrl")
         );
-        return buildInitialState(availableViews, saved, defaultPlacement);
+        return buildInitialState(availableViews, saved, defaultPlacement, edgeWrapMode);
       }
       if (artworkSourceUrl && prev.artworkUrl !== artworkSourceUrl) {
         return { ...prev, artworkUrl: artworkSourceUrl };
@@ -393,7 +441,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     });
     // initialState consumed on first seed; artworkSourceUrl kept in sync after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableViews, artworkSourceUrl, defaultPlacement]);
+  }, [availableViews, artworkSourceUrl, defaultPlacement, edgeWrapMode]);
 
   // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
   const parentEnabledFront = initialState?.enabled?.front;
@@ -439,12 +487,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
   const [artworkLoading, setArtworkLoading] = useState(false);
   const [artworkCorsClean, setArtworkCorsClean] = useState(true);
+  const [artPalette, setArtPalette] = useState<PaletteSwatch[]>([]);
   useEffect(() => {
     const url = artworkSourceUrl?.trim() || null;
     if (!url) {
       setArtworkImg(null);
       setArtworkCorsClean(true);
       setArtworkLoading(false);
+      setArtPalette([]);
       return;
     }
     let cancelled = false;
@@ -456,6 +506,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         setArtworkCorsClean(true);
         setArtworkImg(withCors);
         setArtworkLoading(false);
+        if (edgeWrapMode) {
+          try {
+            setArtPalette(extractArtworkPalette(withCors, 4));
+          } catch {
+            setArtPalette([]);
+          }
+        }
         return;
       }
       const displayOnly = await loadFlatImage(url, { cors: false });
@@ -463,13 +520,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (displayOnly) {
         setArtworkCorsClean(false);
         setArtworkImg(displayOnly);
+        setArtPalette([]);
       }
       setArtworkLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [artworkSourceUrl]);
+  }, [artworkSourceUrl, edgeWrapMode]);
 
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);
@@ -533,6 +591,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
+          printCanvasBackgroundColor: edgeWrapMode
+            ? state.backgroundColor
+            : null,
           decorMode,
           fabricWeave,
           cropToBackFace: false,
@@ -570,6 +631,29 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     if (!canvas) return;
     renderInto(canvas, state.view, false);
   }, [state, assets, artworkImg, renderInto]);
+
+  // Keep the guide overlay's CSS box locked to the canvas element (not the
+  // max-height-constrained wrapper — that was drawing the dashed line short).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvasOverrideUrl) {
+      setCanvasCssBox({ w: 0, h: 0 });
+      return;
+    }
+    const sync = () => {
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      setCanvasCssBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(canvas);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [canvasOverrideUrl, assetsLoading, state?.view, previewZoom, assets, artworkImg, edgeWrapFitSize]);
 
   // ---------- Apply hand-off ----------
   const renderViewToCanvas = useCallback(
@@ -617,11 +701,69 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     colorId,
   ]);
 
+  const computeTrimStatus = useCallback((): FlatTrimStatus => {
+    const empty: FlatTrimStatus = { front: false, back: false, clippedSides: [] };
+    if (!state || !artworkImg || edgeWrapMode || decorMode || fabricWeave) {
+      return empty;
+    }
+    const clippedSides: Array<"front" | "back"> = [];
+    for (const view of availableViews) {
+      if (!state.enabled[view]) continue;
+      const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+      if (!cal) continue;
+      const va = assets[view];
+      const mW = va.blank?.naturalWidth || cal.mockupDims?.width || 1;
+      const mH = va.blank?.naturalHeight || cal.mockupDims?.height || 1;
+      const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
+        edgeWrapMode,
+        decorMode,
+      });
+      const placed = {
+        ...(state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT),
+        scale: clampPlacementScale(
+          (state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT).scale,
+        ),
+      };
+      const box = flatVisibleArtBoxAxisAligned(pRect, placed, artworkImg);
+      if (flatApparelGuideTrimmed(pRect, box)) {
+        clippedSides.push(view);
+      }
+    }
+    return {
+      front: clippedSides.includes("front"),
+      back: clippedSides.includes("back"),
+      clippedSides,
+    };
+  }, [
+    state,
+    artworkImg,
+    edgeWrapMode,
+    decorMode,
+    fabricWeave,
+    availableViews,
+    manifest,
+    colorId,
+    calibOpts,
+    assets,
+    clampPlacementScale,
+  ]);
+
   useImperativeHandle(
     ref,
-    () => ({ applyIfNeeded, hasPendingChanges }),
-    [applyIfNeeded, hasPendingChanges],
+    () => ({ applyIfNeeded, hasPendingChanges, getTrimStatus: computeTrimStatus }),
+    [applyIfNeeded, hasPendingChanges, computeTrimStatus],
   );
+
+  const onTrimStatusChangeRef = useRef(onTrimStatusChange);
+  onTrimStatusChangeRef.current = onTrimStatusChange;
+  const lastTrimSigRef = useRef("");
+  useEffect(() => {
+    const status = computeTrimStatus();
+    const sig = status.clippedSides.join(",");
+    if (sig === lastTrimSigRef.current) return;
+    lastTrimSigRef.current = sig;
+    onTrimStatusChangeRef.current?.(status);
+  }, [computeTrimStatus]);
 
   // Seed baseline when resuming a saved design (no upload on open).
   useEffect(() => {
@@ -653,23 +795,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }, []);
 
-  const setLinkSides = useCallback(
-    (on: boolean) => {
-      setState((prev) => {
-        if (!prev) return prev;
-        if (!on) return { ...prev, linkSides: false };
-        const source = prev.placements[prev.view] ?? DEFAULT_ARTWORK_PLACEMENT;
-        const placements = {
-          ...prev.placements,
-          [prev.view]: { ...source },
-          [otherView(prev.view)]: mirrorLinkedPlacement(source),
-        };
-        return { ...prev, linkSides: true, placements };
-      });
-    },
-    [],
-  );
-
   const updatePlacement = useCallback(
     (view: ViewName, next: ArtworkPlacement) => {
       const clamped = { ...next, scale: clampPlacementScale(next.scale) };
@@ -695,6 +820,29 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     },
     [availableViews, clampPlacementScale, defaultPlacement],
   );
+
+  const setBgColor = useCallback((hex: string | null) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const next = hex == null ? null : normalizeBgHex(hex);
+      if ((prev.backgroundColor ?? null) === next) return prev;
+      return { ...prev, backgroundColor: next };
+    });
+  }, []);
+
+  const triggerEyedropper = useCallback(async () => {
+    const W = window as unknown as {
+      EyeDropper?: new () => { open: () => Promise<{ sRGBHex?: string }> };
+    };
+    if (!W.EyeDropper) return;
+    try {
+      const ed = new W.EyeDropper();
+      const r = await ed.open();
+      if (r?.sRGBHex) setBgColor(r.sRGBHex);
+    } catch {
+      /* cancelled */
+    }
+  }, [setBgColor]);
 
   const resetView = useCallback(
     (view: ViewName) => {
@@ -758,6 +906,91 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
 
+  // Phone cases: fit preview into the clipped viewport above the zoom bar.
+  useEffect(() => {
+    if (!edgeWrapMode) {
+      setEdgeWrapFitSize(null);
+      return;
+    }
+    const viewport = edgeWrapViewportRef.current;
+    if (!viewport) return;
+
+    const EDGE_WRAP_PAD_PX = 10;
+    const sync = () => {
+      const style = getComputedStyle(viewport);
+      const padL = parseFloat(style.paddingLeft) || EDGE_WRAP_PAD_PX;
+      const padR = parseFloat(style.paddingRight) || EDGE_WRAP_PAD_PX;
+      const padT = parseFloat(style.paddingTop) || EDGE_WRAP_PAD_PX;
+      const padB = parseFloat(style.paddingBottom) || EDGE_WRAP_PAD_PX;
+      const availW = Math.max(80, viewport.clientWidth - padL - padR);
+      const availH = Math.max(100, viewport.clientHeight - padT - padB);
+
+      let srcW = 900;
+      let srcH = 1524;
+      if (canvasOverrideUrl) {
+        const img = viewport.querySelector(
+          '[data-testid="flat-placer-context-preview"]',
+        ) as HTMLImageElement | null;
+        if (img?.naturalWidth && img.naturalHeight) {
+          srcW = img.naturalWidth;
+          srcH = img.naturalHeight;
+        }
+      } else {
+        const canvas = canvasRef.current;
+        if (canvas?.width && canvas?.height) {
+          srcW = canvas.width;
+          srcH = canvas.height;
+        } else if (state) {
+          const cal = resolveFlatViewCalibration(
+            manifest,
+            colorId,
+            state.view,
+            calibOpts,
+          );
+          if (cal) {
+            const dims = flatPrintCanvasPreviewDims(cal);
+            srcW = dims.width;
+            srcH = dims.height;
+          }
+        }
+      }
+
+      const scale = Math.min(availW / srcW, availH / srcH);
+      const w = Math.max(1, Math.floor(srcW * scale));
+      const h = Math.max(1, Math.floor(srcH * scale));
+      setEdgeWrapFitSize((prev) =>
+        prev && prev.w === w && prev.h === h ? prev : { w, h },
+      );
+    };
+
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(viewport);
+    window.addEventListener("resize", sync);
+    const img = viewport.querySelector(
+      '[data-testid="flat-placer-context-preview"]',
+    ) as HTMLImageElement | null;
+    if (img && !img.complete) {
+      img.addEventListener("load", sync);
+    }
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+      img?.removeEventListener("load", sync);
+    };
+  }, [
+    edgeWrapMode,
+    canvasOverrideUrl,
+    assetsLoading,
+    state?.view,
+    assets,
+    artworkImg,
+    manifest,
+    colorId,
+    calibOpts,
+    state,
+  ]);
+
   // ---------- Render guards ----------
   if (!state || (assetsLoading && !hasDisplayableAssets)) {
     return (
@@ -813,18 +1046,24 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled && placementRect) {
-    const box = flatArtBox(
-      placementRect,
-      { ...placement, scale: clampPlacementScale(placement.scale) },
-      artworkImg.naturalWidth,
-      artworkImg.naturalHeight,
-    );
-    if (edgeWrapMode || decorMode || fabricWeave) {
-      // Tapestry / decor / phone: warn when art leaves the print area uncovered.
+    const placed = {
+      ...placement,
+      scale: clampPlacementScale(placement.scale),
+    };
+    // Opaque-content bounds: transparent PNG padding must not trigger false
+    // trim warnings (nothing visible is clipped) nor fake print-area coverage.
+    const box = flatVisibleArtBoxAxisAligned(placementRect, placed, artworkImg);
+    if (edgeWrapMode) {
+      // Phone: gap warn only when no customer bg fills the blue canvas.
+      if (!state.backgroundColor && !flatCovers(placementRect, box)) {
+        coverageWarning = "edge-gap";
+      }
+    } else if (decorMode || fabricWeave) {
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatOverflows(placementRect, box)) {
+    } else if (flatApparelGuideTrimmed(placementRect, box)) {
+      // Apparel: opaque pixels touching/crossing the dashed guide only.
       coverageWarning = "trim";
     }
   }
@@ -838,136 +1077,262 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const displayScale = clampPlacementScale(placement.scale);
 
+  const onCanvasAreaClick = () => {
+    if (canvasOverrideUrl) return;
+    if (canvasDragRef.current) {
+      canvasDragRef.current = false;
+      return;
+    }
+    setOverlayVisible((v) => !v);
+  };
+
+  const previewZoomBar = (
+    <div
+      className={
+        edgeWrapMode
+          ? "z-10 flex shrink-0 items-center gap-2 border-t border-border/50 bg-background px-2.5 py-1.5"
+          : "absolute bottom-2 left-2 right-2 z-10 flex items-center gap-2 rounded-md border border-border/60 bg-background/90 px-2.5 py-1.5 shadow-sm"
+      }
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      data-testid="flat-placer-preview-zoom"
+    >
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Zoom
+      </span>
+      <input
+        type="range"
+        min={1}
+        max={2}
+        step={0.05}
+        value={previewZoom}
+        onChange={(e) => setPreviewZoom(Number(e.target.value))}
+        className="min-w-0 flex-1"
+        style={{ accentColor: "hsl(var(--primary))" }}
+        aria-label="Preview zoom"
+      />
+      <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+        {Math.round(previewZoom * 100)}%
+      </span>
+    </div>
+  );
+
+  const previewMedia = (
+    <div
+      className="relative inline-block max-w-full leading-none"
+      style={{
+        transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
+        transformOrigin: "center center",
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        className={
+          canvasOverrideUrl
+            ? "hidden"
+            : edgeWrapMode
+              ? "block rounded"
+              : decorMode
+                ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
+                : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
+        }
+        style={
+          edgeWrapMode && !canvasOverrideUrl && edgeWrapFitSize
+            ? {
+                width: edgeWrapFitSize.w,
+                height: edgeWrapFitSize.h,
+                maxWidth: "100%",
+              }
+            : undefined
+        }
+        data-testid="flat-placer-canvas"
+      />
+      {canvasOverrideUrl ? (
+        <img
+          src={canvasOverrideUrl}
+          alt="Lifestyle context"
+          className={
+            edgeWrapMode
+              ? "block rounded object-contain"
+              : decorMode
+                ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
+                : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
+          }
+          style={
+            edgeWrapMode && edgeWrapFitSize
+              ? {
+                  width: edgeWrapFitSize.w,
+                  height: edgeWrapFitSize.h,
+                  maxWidth: "100%",
+                }
+              : undefined
+          }
+          data-testid="flat-placer-context-preview"
+        />
+      ) : (
+        showOverlay &&
+        calib &&
+        viewAssets.blank &&
+        artworkImg && (
+          <div
+            className="pointer-events-none absolute left-0 top-0"
+            style={
+              canvasCssBox.w > 0 && canvasCssBox.h > 0
+                ? { width: canvasCssBox.w, height: canvasCssBox.h }
+                : { right: 0, bottom: 0 }
+            }
+            data-testid="flat-rect-overlay-host"
+          >
+            <FlatDesignRectOverlay
+              canvasRef={canvasRef}
+              view={calib}
+              artwork={artworkImg}
+              placement={{ ...placement, scale: displayScale }}
+              edgeWrapMode={edgeWrapMode}
+              innerGuideRect={displayEdgeGuides?.inner ?? null}
+              outerGuideRect={displayEdgeGuides?.outer ?? null}
+              placementRect={placementRect}
+              mockupWidth={displayMockupW}
+              mockupHeight={displayMockupH}
+              scaleMax={scaleMax}
+              onChange={(next) => updatePlacement(state.view, next)}
+              onDragActivity={() => {
+                canvasDragRef.current = true;
+              }}
+            />
+          </div>
+        )
+      )}
+      {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
+          Create a design to preview it on the product →
+        </div>
+      )}
+      {!canvasOverrideUrl && artworkLoading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
+        </div>
+      )}
+      {!canvasOverrideUrl && assetsLoading && hasDisplayableAssets && (
+        <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
+          <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
+        </div>
+      )}
+      {canvasOverrideUrl && (
+        <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
+          {canvasOverrideLabel?.trim() || "Context"}
+        </div>
+      )}
+    </div>
+  );
+
+  const edgeWrapCardHeight =
+    edgeWrapMode && viewerHeightPx && viewerHeightPx > 0
+      ? viewerHeightPx
+      : edgeWrapMode
+        ? Math.min(
+            typeof window !== "undefined"
+              ? Math.floor(window.innerHeight * 0.5)
+              : 480,
+            520,
+          )
+        : null;
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
-    <div className="flex w-full flex-col gap-4 lg:flex-row">
+    <div
+      className={
+        edgeWrapMode
+          ? "flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start"
+          : "flex w-full flex-col gap-4 lg:flex-row"
+      }
+    >
       {/* Live canvas + overlay (or lifestyle/context override) */}
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
-        <div
-          className={
-            // Phone cases are tall — square crop clips the bottom.
-            // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
-            edgeWrapMode
-              ? "relative flex max-h-[85vh] min-h-[360px] items-center justify-center bg-zinc-100 p-2 pb-12 lg:max-h-[90vh] lg:p-3 lg:pb-12"
-              : decorMode
+      <div
+        className={
+          // Phone cases: height is matched to the form/prompt column (px), not
+          // viewport stretch — Zoom stays on the bottom of that card.
+          edgeWrapMode
+            ? "relative flex w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card self-start"
+            : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
+        }
+        style={
+          edgeWrapCardHeight
+            ? { height: edgeWrapCardHeight, maxHeight: edgeWrapCardHeight }
+            : undefined
+        }
+      >
+        {edgeWrapMode ? (
+          // Fill the matched-height card; zoom bar pinned to card bottom.
+          <div
+            ref={canvasAreaRef}
+            className="relative flex h-full min-h-0 w-full flex-col bg-zinc-100"
+            data-testid="flat-placer-canvas-area"
+          >
+            <div
+              ref={edgeWrapViewportRef}
+              className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-[10px]"
+              onClick={onCanvasAreaClick}
+            >
+              {previewMedia}
+            </div>
+            {previewZoomBar}
+            {lifestyleAction?.loading && (
+              <div
+                className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+                data-testid="flat-placer-printers-loading-overlay"
+              >
+                <div className="flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{lifestyleAction.loadingLabel || "Generating…"}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            ref={canvasAreaRef}
+            className={
+              // Framed decor (esp. landscape 36×24) must not use lg:aspect-square either.
+              decorMode
                 ? "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-[85vh] lg:p-4 lg:pb-12"
                 : "relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 pb-12 lg:max-h-none lg:aspect-square lg:p-4 lg:pb-12"
-          }
-          onClick={() => {
-            if (canvasOverrideUrl) return;
-            if (canvasDragRef.current) {
-              canvasDragRef.current = false;
-              return;
             }
-            setOverlayVisible((v) => !v);
-          }}
-          data-testid="flat-placer-canvas-area"
-        >
-          <div
-            className="relative flex max-h-full max-w-full items-center justify-center overflow-hidden"
-            style={{
-              transform: previewZoom !== 1 ? `scale(${previewZoom})` : undefined,
-              transformOrigin: "center center",
-            }}
+            onClick={onCanvasAreaClick}
+            data-testid="flat-placer-canvas-area"
           >
-            <canvas
-              ref={canvasRef}
-              className={
-                canvasOverrideUrl
-                  ? "hidden"
-                  : edgeWrapMode
-                    ? "block max-h-[80vh] max-w-full h-auto w-auto rounded lg:max-h-[88vh]"
-                    : decorMode
-                      ? "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[82vh]"
-                      : "block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
-              }
-              data-testid="flat-placer-canvas"
-            />
-            {canvasOverrideUrl ? (
-              <img
-                src={canvasOverrideUrl}
-                alt="Lifestyle context"
-                className={
-                  decorMode
-                    ? "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[82vh]"
-                    : "block max-h-[50vh] max-w-full h-auto w-auto rounded object-contain lg:max-h-[78vh]"
-                }
-                data-testid="flat-placer-context-preview"
-              />
-            ) : (
-              showOverlay &&
-              calib &&
-              viewAssets.blank &&
-              artworkImg && (
-                <FlatDesignRectOverlay
-                  canvasRef={canvasRef}
-                  view={calib}
-                  artwork={artworkImg}
-                  placement={{ ...placement, scale: displayScale }}
-                  edgeWrapMode={edgeWrapMode}
-                  innerGuideRect={displayEdgeGuides?.inner ?? null}
-                  outerGuideRect={displayEdgeGuides?.outer ?? null}
-                  placementRect={placementRect}
-                  scaleMax={scaleMax}
-                  onChange={(next) => updatePlacement(state.view, next)}
-                  onDragActivity={() => {
-                    canvasDragRef.current = true;
-                  }}
-                />
-              )
-            )}
-            {!canvasOverrideUrl && !artworkImg && !artworkLoading && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
-                Create a design to preview it on the product →
-              </div>
-            )}
-            {!canvasOverrideUrl && artworkLoading && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
-              </div>
-            )}
-            {!canvasOverrideUrl && assetsLoading && hasDisplayableAssets && (
-              <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
-                <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
-              </div>
-            )}
-            {canvasOverrideUrl && (
-              <div className="pointer-events-none absolute left-2 top-2 rounded bg-background/85 px-2 py-1 text-[10px] font-medium text-foreground shadow-sm">
-                {canvasOverrideLabel?.trim() || "Context"}
+            {/*
+              Wrapper sizes to the canvas (no max-h-full — that was shorter than
+              the canvas under aspect-square + zoom-bar padding, so inset-0 guides
+              floated away from the real clip). Overlay is explicitly sized to
+              canvas offsetWidth/Height.
+            */}
+            {previewMedia}
+            {previewZoomBar}
+            {lifestyleAction?.loading && (
+              <div
+                className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+                data-testid="flat-placer-printers-loading-overlay"
+              >
+                <div className="flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{lifestyleAction.loadingLabel || "Generating…"}</span>
+                </div>
               </div>
             )}
           </div>
-          {/* View zoom only — does not change artwork print scale / Apply payload. */}
-          <div
-            className="absolute bottom-2 left-2 right-2 z-10 flex items-center gap-2 rounded-md bg-background/90 px-2.5 py-1.5 shadow-sm border border-border/60"
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            data-testid="flat-placer-preview-zoom"
-          >
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Zoom
-            </span>
-            <input
-              type="range"
-              min={1}
-              max={2}
-              step={0.05}
-              value={previewZoom}
-              onChange={(e) => setPreviewZoom(Number(e.target.value))}
-              className="min-w-0 flex-1"
-              style={{ accentColor: "hsl(var(--primary))" }}
-              aria-label="Preview zoom"
-            />
-            <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
-              {Math.round(previewZoom * 100)}%
-            </span>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
-      <div className="w-full shrink-0 space-y-4 lg:w-80">
+      <div
+        className={
+          edgeWrapMode
+            ? "w-full shrink-0 space-y-4 lg:w-80 lg:self-start"
+            : "w-full shrink-0 space-y-4 lg:w-80"
+        }
+      >
         {/* View row: Front always; Back only when available */}
         {availableViews.length > 1 && (
           <div>
@@ -993,16 +1358,145 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {/* Artwork enabled — per current view */}
-        <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Print on {state.view === "front" ? "front" : "back"}
-          </span>
-          <Toggle
-            checked={viewEnabled}
-            onChange={(on) => setEnabled(state.view, on)}
-          />
-        </div>
+        {/* Artwork enabled — skip for phone cases (single print side only). */}
+        {!edgeWrapMode && (
+          <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Print on {state.view === "front" ? "front" : "back"}
+            </span>
+            <Toggle
+              checked={viewEnabled}
+              onChange={(on) => setEnabled(state.view, on)}
+            />
+          </div>
+        )}
+
+        {/* Phone cases: Printers Mockup replaces the Print-on-front toggle slot. */}
+        {edgeWrapMode && lifestyleAction && (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (!lifestyleAction.active || lifestyleAction.loading) return;
+                lifestyleAction.onClick();
+              }}
+              disabled={!lifestyleAction.active || !!lifestyleAction.loading}
+              data-testid="button-lifestyle-shot-placer"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-opacity ${
+                lifestyleAction.active && !lifestyleAction.loading
+                  ? "border-foreground/80 bg-foreground text-background"
+                  : "border-border bg-muted text-muted-foreground opacity-45 cursor-not-allowed"
+              }`}
+            >
+              {lifestyleAction.loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className={
+                  lifestyleAction.active && !lifestyleAction.loading
+                    ? "shimmer-text-white"
+                    : undefined
+                }
+              >
+                {lifestyleAction.loading
+                  ? lifestyleAction.loadingLabel || "Generating…"
+                  : lifestyleAction.label}
+              </span>
+            </button>
+            {lifestyleAction.error ? (
+              <p className="text-[10px] text-destructive leading-snug">
+                {lifestyleAction.error}
+              </p>
+            ) : !lifestyleAction.active && !lifestyleAction.loading ? (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                {lifestyleAction.idleHint ||
+                  "Finish placement (or generate artwork) to enable"}
+              </p>
+            ) : null}
+          </div>
+        )}
+
+        {/* Phone cases: fill under cutout art out to the blue dashed print canvas. */}
+        {edgeWrapMode && (
+          <div data-testid="flat-edge-wrap-background">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Background
+            </div>
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => setBgColor(null)}
+                className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                  !state.backgroundColor
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-card text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                None
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={state.backgroundColor || "#FFFFFF"}
+                onChange={(e) => setBgColor(e.target.value)}
+                className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
+                aria-label="Background colour"
+              />
+              <input
+                type="text"
+                value={state.backgroundColor || ""}
+                placeholder="None"
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  if (!v) {
+                    setBgColor(null);
+                    return;
+                  }
+                  const n = normalizeBgHex(v);
+                  if (n) setBgColor(n);
+                }}
+                className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
+                spellCheck={false}
+              />
+              {typeof window !== "undefined" && "EyeDropper" in window && (
+                <button
+                  type="button"
+                  onClick={() => void triggerEyedropper()}
+                  className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
+                  title="Pick a colour from anywhere on screen"
+                  aria-label="Eyedropper"
+                >
+                  <Pipette className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[...artPalette.slice(0, 4), ...EDGE_WRAP_FIXED_SWATCHES].map((s) => (
+                <button
+                  key={s.hex}
+                  type="button"
+                  onClick={() => setBgColor(s.hex)}
+                  title={s.hex}
+                  aria-label={`Use ${s.hex} as background`}
+                  className={`h-6 w-6 rounded border-2 transition ${
+                    (state.backgroundColor || "").toUpperCase() === s.hex.toUpperCase()
+                      ? "border-primary ring-2 ring-primary/40"
+                      : "border-border hover:border-foreground/40"
+                  }`}
+                  style={{ backgroundColor: s.hex }}
+                />
+              ))}
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground leading-snug">
+              Fills the masked phone case (including wrap edges) under your
+              artwork. The grey print-canvas guide stays grey. Use None for
+              floating cutout designs with no fill.
+            </p>
+          </div>
+        )}
 
         {/* Scale slider (capped at 1.0) */}
         {viewEnabled && (
@@ -1026,21 +1520,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                       <EyeOff className="h-3.5 w-3.5" />
                     )}
                   </button>
-                )}
-                {availableViews.length > 1 && (
-                  <label
-                    className="flex cursor-pointer items-center gap-1.5 normal-case tracking-normal text-muted-foreground"
-                    title="Keep front and back scale matched, with mirrored left/right placement"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!state.linkSides}
-                      onChange={(e) => setLinkSides(e.target.checked)}
-                      className="h-3.5 w-3.5 rounded border-border accent-[hsl(var(--primary))]"
-                      aria-label="Link sides"
-                    />
-                    <span className="text-[11px] font-medium">Link sides</span>
-                  </label>
                 )}
               </span>
               <span className="text-muted-foreground/80">
@@ -1066,9 +1545,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
             {edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Blue dashed line = full print canvas (Printify grey box). Amber
-                line = safe visible back face. Scale artwork to cover the blue
-                outline on all four sides.
+                Blue dashed line = full print canvas. Amber line = safe visible
+                back face. For full-bleed art, scale to cover the blue outline on
+                all four sides — or pick a background colour to fill uncovered
+                areas under cutout artwork.
               </p>
             )}
             {fabricWeave && !edgeWrapMode && !decorMode && (
@@ -1087,7 +1567,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {viewEnabled && artworkImg && coverageWarning === "trim" && !fabricWeave && (
-          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-trim-warning"
+          >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork extends past the printable area — edges will be trimmed by
@@ -1120,12 +1603,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {viewEnabled && artworkImg && coverageWarning === "edge-gap" && edgeWrapMode && (
-          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-edge-gap-warning"
+          >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Artwork doesn&apos;t fully cover the print canvas — scale up or
-              reposition so the design reaches all four edges of the blue
-              outline. Uncovered edges may not print.
+              Artwork doesn&apos;t reach all four edges of the blue print canvas.
+              Scale up for a full-bleed design, or choose a background colour to
+              fill the uncovered area under cutout art. Transparent gaps may not
+              print as expected.
             </span>
           </div>
         )}
@@ -1150,9 +1637,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </>
             ) : applyStatus === "error" ? (
               <span className="text-destructive">Couldn't save — try add to cart again</span>
+            ) : coverageWarning === "trim" && !fabricWeave ? (
+              <span className="font-medium text-amber-700" data-testid="flat-trim-status">
+                Edges will be trimmed — scale down or reposition
+              </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">
-                Unsaved changes — saved when you add to cart or leave the editor
+                Unsaved changes — saved when you add to cart, send a test order, or leave the editor
               </span>
             ) : (
               <span className="opacity-60">Placement ready</span>
@@ -1160,7 +1651,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {lifestyleAction && (
+        {/* Non-phone: lifestyle / printers action stays under placement status. */}
+        {lifestyleAction && !edgeWrapMode && (
           <div className="flex flex-col gap-1 pt-1">
             <button
               type="button"

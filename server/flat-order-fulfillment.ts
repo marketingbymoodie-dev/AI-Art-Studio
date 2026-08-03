@@ -151,6 +151,8 @@ export type ResolvedFlatDesign = {
   artworkUrl: string;
   sizeId: string;
   colorId: string;
+  /** Phone cases: opaque print-canvas fill under cutout art (`#RRGGBB` or null). */
+  backgroundColor?: string | null;
   /** Design product's persistent Printify product (if any) — bake-failure fallback (Phase 3). */
   printifyProductId?: string | null;
 };
@@ -373,7 +375,12 @@ export async function resolveDesignForOrderLine(
 
   const designState = parseJson<Record<string, any>>(job.designState, {});
   const flatPlacerState = designState?.flatPlacerState as
-    | { placements?: Partial<Record<ViewName, FlatPlacement>>; enabled?: Partial<Record<ViewName, boolean>>; artworkUrl?: string }
+    | {
+        placements?: Partial<Record<ViewName, FlatPlacement>>;
+        enabled?: Partial<Record<ViewName, boolean>>;
+        artworkUrl?: string;
+        backgroundColor?: string | null;
+      }
     | undefined;
 
   const artworkUrl = pickFlatOrderArtworkUrl({
@@ -578,6 +585,12 @@ export async function resolveDesignForOrderLine(
     jobColor: job.frameColor,
   });
 
+  const rawBg = flatPlacerState?.backgroundColor;
+  const backgroundColor =
+    typeof rawBg === "string" && /^#[0-9a-fA-F]{6}$/.test(rawBg.trim())
+      ? rawBg.trim()
+      : null;
+
   return {
     ok: true,
     kind: "flat",
@@ -594,6 +607,7 @@ export async function resolveDesignForOrderLine(
       artworkUrl,
       sizeId,
       colorId,
+      backgroundColor,
       printifyProductId: designProductOverride?.printifyProductId ?? null,
     },
   };
@@ -682,6 +696,7 @@ async function buildPrintAreasForDesign(
       placement,
       printFileDims: { width: dims.width, height: dims.height },
       placementRect: placementRect ?? undefined,
+      backgroundColor: design.backgroundColor ?? null,
     });
     const url = await persistBakedPrintFile(design.productType.id, design.designId, view, baked.buffer);
     if (!url) {
@@ -1144,12 +1159,24 @@ export async function submitFlatTestOrder(args: {
     );
   }
 
+  // Bake always resolves the Printify product from job.productTypeId — never
+  // silently order product A when the tester UI is on product B.
+  const jobForProductCheck = await storage.getGenerationJob(designId);
+  if (!jobForProductCheck) {
+    throw new Error("Design job not found. Generate artwork on this product, then send a test order.");
+  }
+  if (String(jobForProductCheck.productTypeId) !== String(args.productType.id)) {
+    throw new Error(
+      `That artwork belongs to a different product (job productTypeId=${jobForProductCheck.productTypeId}, selected=${args.productType.id}). Switch back to that product, or generate a new design on the product currently selected.`,
+    );
+  }
+
   const idempotencyKey = `flat-test-order:${args.productType.id}:${designId}:${Date.now()}`;
   // Build a synthetic single-line order keyed by the design id so the standard
   // resolution path (line.properties._appai_job_id → generation_jobs) is used.
   // Carry Size/Color from the latest designState (Apply) so bake doesn't rely
   // only on generate-time job columns.
-  const job = await storage.getGenerationJob(designId);
+  const job = jobForProductCheck;
   const designState = parseJson<Record<string, any>>(job?.designState, {});
   const { sizeId, colorId } = pickFlatOrderSizeColor({
     designStateSize: designState?.selectedSize,

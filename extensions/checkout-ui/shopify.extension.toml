@@ -8,7 +8,7 @@ api_version = "2025-10"
 uid = "1d9ae044-807d-faeb-4d9c-61a5eebe8fd3bd6f63d1"
 
 type = "ui_extension"
-name = "AppAI Custom Design Preview"
+name = "AI Art Studio Custom Design Preview"
 handle = "appai-checkout-design-preview"
 
   [[extensions.targeting]]

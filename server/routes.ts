@@ -56,6 +56,8 @@ import {
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
+import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
+import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
@@ -110,6 +112,7 @@ import {
   type GenerationBillingMode,
 } from "./generation-billing";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
+import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
 import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
@@ -149,6 +152,13 @@ import {
   listMerchantImportableCatalog,
   listPlatformCatalogByKind,
 } from "./platformCatalogStore";
+import {
+  isPrintifyConnected,
+  ensureTrialStarted,
+  getMerchantSetupStatus,
+  buildPreviewUrl,
+  verifyPreviewToken,
+} from "./merchant-setup";
 import { isPlatformAdminRequest } from "./platformAdmin";
 import {
   adminProductTypeAccessError,
@@ -168,6 +178,11 @@ import {
   normalizeShopifyOrderLine,
 } from "./flat-order-fulfillment";
 import { createPersistentPrintifyProduct } from "./design-product-publish";
+import { fetchPrintifyProviderVariantsDual } from "./printifyCatalogVariantsFetch";
+import {
+  colorIdsWithInStockVariants,
+  mergeNewlyAppearedSelectionIds,
+} from "@shared/printifyCatalogSelection";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -216,7 +231,10 @@ function kickoffFlatCalibration(args: {
       let fulfillmentLayout = fulfillmentLayoutArg ?? null;
       if (forceFlatHarvest == null && blueprintId) {
         const catalogEntry = await getPlatformCatalogEntry(blueprintId);
-        forceFlatHarvest = catalogEntry?.forceFlatHarvest ?? false;
+        // Flat catalog tag means operator chose flat harvest — same as forceFlatHarvest
+        // when the print-area probe would otherwise reject apparel.
+        forceFlatHarvest =
+          !!(catalogEntry?.forceFlatHarvest || catalogEntry?.kind === "flat");
         fulfillmentLayout = fulfillmentLayout ?? catalogEntry?.fulfillmentLayout ?? null;
       }
 
@@ -6457,6 +6475,25 @@ ${orientationExtra}
         safeZoneMargin,
       },
       variantMap,
+      // Front+back retail tier (Shopify base variants stay at front-only prices).
+      // Expand printify: blank keys → Shopify id / size:color so storefront lookups hit
+      // even when Resync originally persisted printify-only keys.
+      variantPricesBoth: (() => {
+        try {
+          const raw = (productTypeToUse as any).variantPricesBoth;
+          const parsed =
+            typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
+          if (!parsed || typeof parsed !== "object") return {};
+          return expandVariantPricesBothMap(parsed as Record<string, string>, {
+            variantMap: (productTypeToUse as any).variantMap,
+            shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
+            sizes: (productTypeToUse as any).sizes,
+            frameColors: (productTypeToUse as any).frameColors,
+          });
+        } catch {
+          return {};
+        }
+      })(),
     };
 
     if (resolvedFrom) {
@@ -8272,7 +8309,7 @@ ${orientationExtra}
   // in the background, so Add to Cart is instant when the user clicks it.
   app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, mockupUrls, baseProductId, baseVariantId } = req.body;
+      const { shop, jobId, mockupUrls, baseProductId, baseVariantId, productTypeId } = req.body;
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
@@ -8286,7 +8323,14 @@ ${orientationExtra}
       }
       // Only store valid absolute URLs (Printify CDN URLs)
       const validUrls = mockupUrls.filter((u: any) => typeof u === 'string' && u.startsWith('http'));
-      await storage.updateGenerationJob(jobId, { mockupUrls: validUrls } as any);
+      const mockupPatch: Record<string, unknown> = { mockupUrls: validUrls };
+      if (productTypeId != null && String(productTypeId).trim()) {
+        const nextPt = String(productTypeId).trim();
+        if (nextPt !== String(job.productTypeId || "")) {
+          mockupPatch.productTypeId = nextPt;
+        }
+      }
+      await storage.updateGenerationJob(jobId, mockupPatch as any);
       console.log(`[SaveMockups] jobId=${jobId} saved ${validUrls.length} mockup URLs`);
 
       // ── Pre-create shadow product in background ──────────────────────────────
@@ -8424,10 +8468,71 @@ ${orientationExtra}
     }
   });
 
+  // Clone artwork onto a new job for the TARGET customizer product (Reuse as-is).
+  // Never reuse the source job id — that keeps the source productTypeId/pageHandle.
+  app.post("/api/storefront/fork-design", async (req: Request, res: Response) => {
+    try {
+      const { shop, artworkUrl, prompt, productTypeId, customerId, size, frameColor, pageHandle } =
+        req.body || {};
+      if (!shop || !artworkUrl || !productTypeId) {
+        return res
+          .status(400)
+          .json({ error: "shop, artworkUrl, and productTypeId are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const absArt =
+        typeof artworkUrl === "string" &&
+        (artworkUrl.startsWith("http") || artworkUrl.startsWith("/"))
+          ? artworkUrl
+          : "";
+      if (!absArt) {
+        return res.status(400).json({ error: "Invalid artworkUrl" });
+      }
+      const designState: Record<string, unknown> = {};
+      if (typeof pageHandle === "string" && pageHandle.trim()) {
+        designState.pageHandle = pageHandle.trim();
+      }
+      designState.productTypeId = String(productTypeId);
+      const promptText =
+        typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Reused artwork";
+      const job = await storage.createGenerationJob({
+        shop: shop.toLowerCase().replace(/^https?:\/\//, ""),
+        sessionId: null,
+        customerId: customerId ? String(customerId) : null,
+        status: "complete",
+        prompt: promptText,
+        userPrompt: promptText,
+        stylePreset: null,
+        size: typeof size === "string" ? size : null,
+        frameColor: typeof frameColor === "string" ? frameColor : null,
+        productTypeId: String(productTypeId),
+        referenceImageUrl: null,
+        designImageUrl: absArt,
+        thumbnailUrl: absArt,
+        designState,
+        billingMode: "customer",
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      });
+      console.log(
+        `[ForkDesign] jobId=${job.id} productTypeId=${productTypeId} pageHandle=${pageHandle || ""}`,
+      );
+      return res.json({ jobId: job.id, saved: true });
+    } catch (err: any) {
+      console.error("[ForkDesign]", err);
+      return res.status(500).json({ error: "Failed to fork design" });
+    }
+  });
+
   // ==================== STOREFRONT SAVE DESIGN STATE ====================
   app.post("/api/storefront/save-state", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, designState } = req.body;
+      const { shop, jobId, designState, productTypeId, pageHandle } = req.body;
       if (!shop || !jobId || !designState || typeof designState !== 'object') {
         return res.status(400).json({ error: "shop, jobId, and designState are required" });
       }
@@ -8444,6 +8549,12 @@ ${orientationExtra}
           ? (job.designState as Record<string, unknown>)
           : {};
       const mergedDesignState: Record<string, unknown> = { ...prevState, ...designState };
+      if (typeof pageHandle === "string" && pageHandle.trim()) {
+        mergedDesignState.pageHandle = pageHandle.trim();
+      }
+      if (productTypeId != null && String(productTypeId).trim()) {
+        mergedDesignState.productTypeId = String(productTypeId).trim();
+      }
       // Deep-merge placer state so a partial patch (e.g. artworkUrl-only) cannot
       // wipe placements / enabled flags from a prior Apply.
       if (
@@ -8459,9 +8570,43 @@ ${orientationExtra}
           ...(designState.flatPlacerState as Record<string, unknown>),
         };
       }
+      if (
+        designState.hoodieAopPlacerState &&
+        typeof designState.hoodieAopPlacerState === "object" &&
+        !Array.isArray(designState.hoodieAopPlacerState) &&
+        prevState.hoodieAopPlacerState &&
+        typeof prevState.hoodieAopPlacerState === "object" &&
+        !Array.isArray(prevState.hoodieAopPlacerState)
+      ) {
+        const prevHoodie = prevState.hoodieAopPlacerState as Record<string, unknown>;
+        const nextHoodie = designState.hoodieAopPlacerState as Record<string, unknown>;
+        mergedDesignState.hoodieAopPlacerState = {
+          ...prevHoodie,
+          ...nextHoodie,
+          placements: {
+            ...((prevHoodie.placements as object) || {}),
+            ...((nextHoodie.placements as object) || {}),
+          },
+          enabled: {
+            ...((prevHoodie.enabled as object) || {}),
+            ...((nextHoodie.enabled as object) || {}),
+          },
+        };
+      }
       // Sync size / colour / artwork onto job columns so test orders and
       // fulfillment prefer the merchant's current Apply selection.
       const jobPatch: Record<string, unknown> = { designState: mergedDesignState };
+      // Retarget product when the customer applied/reused onto a different customizer
+      // (fixes Saved Designs opening the reuse-source tee instead of leggings).
+      const nextProductTypeId =
+        productTypeId != null && String(productTypeId).trim()
+          ? String(productTypeId).trim()
+          : typeof mergedDesignState.productTypeId === "string"
+            ? mergedDesignState.productTypeId.trim()
+            : "";
+      if (nextProductTypeId && nextProductTypeId !== String(job.productTypeId || "")) {
+        jobPatch.productTypeId = nextProductTypeId;
+      }
       if (typeof designState.selectedSize === "string" && designState.selectedSize.trim()) {
         jobPatch.size = designState.selectedSize.trim();
       }
@@ -8962,7 +9107,7 @@ ${orientationExtra}
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
-      const { shop: shopRaw, variantId, designId, mockupUrl } = req.body;
+      const { shop: shopRaw, variantId, designId, mockupUrl, price: priceOverride } = req.body;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
@@ -8970,6 +9115,13 @@ ${orientationExtra}
       if (!mockupUrl.startsWith("https://")) {
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
       }
+      // Optional retail override for front+back (or other surcharge tiers). Validated below.
+      const overridePriceNum =
+        priceOverride != null && String(priceOverride).trim() !== ""
+          ? parseFloat(String(priceOverride))
+          : NaN;
+      const hasPriceOverride = Number.isFinite(overridePriceNum) && overridePriceNum > 0;
+      const overridePriceFormatted = hasPriceOverride ? overridePriceNum.toFixed(2) : null;
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) {
         return res.status(403).json({ success: false, error: "Shop not authorized" });
@@ -8987,6 +9139,18 @@ ${orientationExtra}
         if (!existing.cartAddedAt) {
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
           await storage.updatePublishedProduct(existing.id, { expiresAt: sixHours });
+        }
+        // Keep shadow price in sync when Print Side / surcharge tier changes for the same design.
+        if (overridePriceFormatted && existing.shopifyVariantId) {
+          try {
+            await fetch(`${apiBase}/variants/${existing.shopifyVariantId}.json`, {
+              method: "PUT",
+              headers,
+              body: JSON.stringify({ variant: { id: Number(existing.shopifyVariantId), price: overridePriceFormatted } }),
+            });
+          } catch (priceErr: any) {
+            console.warn(`[ShadowProduct] Failed to update reused shadow price:`, priceErr?.message || priceErr);
+          }
         }
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
@@ -9061,7 +9225,7 @@ ${orientationExtra}
             published: false,
             tags: 'appai-shadow',
             variants: [{
-              price: baseVariant.price,
+              price: overridePriceFormatted || baseVariant.price,
               compare_at_price: baseVariant.compare_at_price || null,
               taxable: baseVariant.taxable,
               requires_shipping: baseVariant.requires_shipping,
@@ -9485,7 +9649,21 @@ ${orientationExtra}
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
-        designs: rows.map(d => ({
+        designs: rows.map(d => {
+          const ds =
+            d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)
+              ? (d.designState as Record<string, unknown>)
+              : null;
+          // Prefer retargeted product/page from designState (reuse-as-is used to leave
+          // the source tee productTypeId on the job while mockups showed leggings).
+          const statePt =
+            ds && ds.productTypeId != null ? normalizeProductTypeId(String(ds.productTypeId)) : null;
+          const ptId = statePt || normalizeProductTypeId(d.productTypeId);
+          const stateHandle =
+            ds && typeof ds.pageHandle === "string" && ds.pageHandle.trim()
+              ? ds.pageHandle.trim()
+              : null;
+          return {
           id: d.id,
           artworkUrl:
             proxyUrl(d.designImageUrl) ||
@@ -9499,12 +9677,13 @@ ${orientationExtra}
           stylePreset: d.stylePreset,
           size: d.size,
           frameColor: d.frameColor,
-          productTypeId: normalizeProductTypeId(d.productTypeId),
-          baseTitle: normalizeProductTypeId(d.productTypeId) ? (ptMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
-          pageHandle: normalizeProductTypeId(d.productTypeId) ? (handleMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
+          productTypeId: ptId,
+          baseTitle: ptId ? (ptMap[ptId] || null) : null,
+          pageHandle: stateHandle || (ptId ? (handleMap[ptId] || null) : null),
           customerId: d.customerId,
           createdAt: d.createdAt,
-        }))
+        };
+        })
       });
     } catch (err: any) {
       console.error("[MyDesigns GET]", err);
@@ -9662,9 +9841,9 @@ ${orientationExtra}
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: "AppAI <onboarding@resend.dev>",
+          from: "AI Art Studio <onboarding@resend.dev>",
           to: [emailNorm],
-          subject: "Your AppAI Login Code",
+          subject: "Your AI Art Studio Login Code",
           html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:20px"><h2 style="text-align:center">Your Login Code</h2><div style="background:#f5f5f5;border-radius:8px;padding:20px;text-align:center;margin:20px 0"><span style="font-size:32px;letter-spacing:8px;font-weight:bold">${otpCode}</span></div><p style="color:#666;text-align:center">This code expires in 10 minutes.</p></div>`,
         }),
       });
@@ -10333,9 +10512,9 @@ ${orientationExtra}
       // Create hidden shadow product on Shopify
       const productPayload = {
         product: {
-          title: `AppAI Design ${designId}`,
+          title: `AI Art Studio Design ${designId}`,
           body_html: "",
-          vendor: "AppAI",
+          vendor: "AI Art Studio",
           product_type: "appai-shadow",
           status: "draft",          // hidden from Online Store
           published: false,
@@ -10350,7 +10529,7 @@ ${orientationExtra}
               sku: `appai-shadow-${designId}`,
             },
           ],
-          images: [{ src: mockupUrl, alt: "AppAI custom design mockup" }],
+          images: [{ src: mockupUrl, alt: "AI Art Studio custom design mockup" }],
         },
       };
 
@@ -10546,6 +10725,18 @@ ${orientationExtra}
   setInterval(() => {
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
+
+  // Daily Printify catalogue OOS scan + email digest. This in-process interval is the
+  // primary trigger (no Railway Cron configured); the secured POST /api/internal/oos-catalogue-scan
+  // endpoint is available if an external scheduler is added later — both share the same
+  // 20h dedupe guard in runOosCatalogueScan, so they never double-run/double-email same-day.
+  // Delayed one-shot so a deploy doesn't wait a full 24h for the first scan.
+  setTimeout(() => {
+    runOosCatalogueScan().catch((e: Error) => console.error("[OOS Catalogue Scan] Startup run error:", e));
+  }, 5 * 60 * 1000);
+  setInterval(() => {
+    runOosCatalogueScan().catch((e: Error) => console.error("[OOS Catalogue Scan] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern
   // Accepts { imageUrl, mode, pattern, scale, width, height, bgColor,
@@ -12806,22 +12997,12 @@ ${orientationExtra}
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
-      const response = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
+      const dual = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        providerId,
+        merchant.printifyApiToken,
       );
-
-      if (!response.ok) {
-        throw new Error(`Printify API error: ${response.status}`);
-      }
-
-      const variants = await response.json();
-      res.json(variants);
+      res.json(dual.payload);
     } catch (error) {
       console.error("Error fetching variants:", error);
       res.status(500).json({ error: "Failed to fetch variants" });
@@ -12853,22 +13034,13 @@ ${orientationExtra}
         return res.status(400).json({ error: "Invalid providerId" });
       }
 
-      const response = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${actualProviderId}/variants.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
+      // Full catalog (incl. fully OOS colors) so the import wizard lists White/Black etc.
+      const dual = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        actualProviderId,
+        merchant.printifyApiToken,
       );
-
-      if (!response.ok) {
-        throw new Error(`Printify API error: ${response.status}`);
-      }
-
-      const variantsData = await response.json();
-      const variants = variantsData.variants || variantsData || [];
+      const variants = dual.variants;
       
       // Parse variants to extract sizes and colors (simplified version of import logic)
       const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
@@ -13286,7 +13458,20 @@ ${orientationExtra}
   });
 
   // Import a Printify blueprint as a product type
-  app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
+  /**
+   * Core Printify blueprint import logic — shared by the merchant-driven
+   * Products admin import AND the setup-rail "activate from platform
+   * catalogue" flow (which supplies a platform Printify token instead of
+   * requiring the merchant's own token — see opts.printifyTokenOverride).
+   *
+   * `req`/`res` only need `.user.claims.sub` / `.body` and `.status().json()`
+   * respectively, so the setup-rail route can pass lightweight shims.
+   */
+  async function handlePrintifyImportRequest(
+    req: any,
+    res: any,
+    opts?: { printifyTokenOverride?: string },
+  ) {
     try {
       const userId = req.user.claims.sub;
       const { blueprintId, name, description, providerId: bodyProviderId, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
@@ -13296,7 +13481,8 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      if (!merchant.printifyApiToken) {
+      const printifyToken = opts?.printifyTokenOverride || merchant.printifyApiToken;
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -13310,7 +13496,7 @@ ${orientationExtra}
 
       if (!catalogEntry || catalogEntry.kind === "blocked") {
         return res.status(403).json({
-          error: "This product is not available in the AppAI catalog yet.",
+          error: "This product is not available in the AI Art Studio catalog yet.",
           code: "BLUEPRINT_NOT_ALLOWED",
         });
       }
@@ -13327,7 +13513,7 @@ ${orientationExtra}
           });
         }
         return res.status(403).json({
-          error: "This product is not available in the AppAI catalog yet.",
+          error: "This product is not available in the AI Art Studio catalog yet.",
           code: "BLUEPRINT_NOT_ALLOWED",
         });
       }
@@ -13348,24 +13534,12 @@ ${orientationExtra}
         }
       }
 
-      // Check if this blueprint is already imported for this merchant
-      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
-      const alreadyImported = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintIdNum);
-      if (alreadyImported) {
-        return res.status(400).json({
-          error: `This product is already in your catalog as "${alreadyImported.name}". Open Products to edit it, or delete it there before importing again.`,
-          code: "BLUEPRINT_ALREADY_IMPORTED",
-          existingProductTypeId: alreadyImported.id,
-          existingProductName: alreadyImported.name,
-        });
-      }
-
       // Fetch print providers for this blueprint with retry logic
       const providersResponse = await fetchWithRetry(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
         {
           headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Authorization": `Bearer ${printifyToken}`,
             "Content-Type": "application/json"
           }
         },
@@ -13402,12 +13576,33 @@ ${orientationExtra}
         });
       }
 
+      // Unique on blueprint + provider (matches Products Import UI: re-import the same
+      // blueprint with a different supplier for a separate EU/US listing).
+      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+      const alreadyImported = existingTypes.find(
+        (pt) =>
+          pt.printifyBlueprintId === blueprintIdNum &&
+          Number(pt.printifyProviderId) === providerId,
+      );
+      if (alreadyImported) {
+        const providerTitle =
+          (providers as Array<{ id: number; title?: string }>).find((p) => Number(p.id) === providerId)?.title ||
+          `provider #${providerId}`;
+        return res.status(400).json({
+          error: `This product is already in your catalog as "${alreadyImported.name}" via ${providerTitle}. Open Products to edit it, or delete it there before importing again. To list the same blueprint with a different supplier, pick that supplier instead.`,
+          code: "BLUEPRINT_ALREADY_IMPORTED",
+          existingProductTypeId: alreadyImported.id,
+          existingProductName: alreadyImported.name,
+          existingProviderId: alreadyImported.printifyProviderId,
+        });
+      }
+
       // Fetch blueprint details to get color hex codes from options
       const blueprintResponse = await fetchWithRetry(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`,
         {
           headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Authorization": `Bearer ${printifyToken}`,
             "Content-Type": "application/json"
           }
         },
@@ -13468,25 +13663,23 @@ ${orientationExtra}
         console.log(`Blueprint options API - color extraction: no color options found or options missing`);
       }
 
-      // Fetch variants for this provider with retry logic
-      const variantsResponse = await fetchWithRetry(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      // Dual-fetch: full catalog (show-out-of-stock=1) builds variantMap so fully OOS
+      // colors like White/Black at JAMS still enter the denominator for stock scans.
+      const dualCatalog = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        providerId,
+        printifyToken,
         {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
+          fetchFn: (url, init) => fetchWithRetry(String(url), init || {}, 3, 1500),
         },
-        3,
-        1500
       );
-
-      if (!variantsResponse.ok) {
-        throw new Error(`Failed to fetch variants: ${variantsResponse.status}`);
+      const variantsData = dualCatalog.payload;
+      const variants = dualCatalog.variants;
+      if (!dualCatalog.usedFullCatalog) {
+        console.warn(
+          `[Import] Blueprint ${blueprintId} provider ${providerId}: full catalog fetch failed — using in-stock-only list (${variants.length} variants)`,
+        );
       }
-
-      const variantsData = await variantsResponse.json();
-      const variants = variantsData.variants || variantsData || [];
       // Extract flat-lay SVG images from the `views` field of the variants response.
       // views[] contains { position, label, files[{ src, variant_ids }] } — one entry per
       // print panel position. We build a map of position → SVG URL for the Place on Item viewer.
@@ -13978,7 +14171,7 @@ ${orientationExtra}
       let availablePlaceholderImages: PlaceholderImageOption[] = [];
       try {
         availablePlaceholderImages = await fetchPrintifyPlaceholderOptions(
-          merchant.printifyApiToken,
+          printifyToken,
           parseInt(blueprintId),
           providerId,
         );
@@ -14122,6 +14315,22 @@ ${orientationExtra}
         printShape = "rectangle";
         bleedMarginPercent = 3;
       }
+      // Phone cases BEFORE framed-print — Printify copy often contains "print" and would
+      // mis-tag slim cases as framed-print (breaks square browse window on storefront).
+      else if (
+        isPhoneCase ||
+        Number.parseInt(String(blueprintId), 10) === slimPhoneCaseBlueprintId() ||
+        combined.includes("phone case") ||
+        (combined.includes("case") &&
+          (combined.includes("iphone") ||
+            combined.includes("samsung") ||
+            combined.includes("galaxy") ||
+            combined.includes("pixel")))
+      ) {
+        designerType = "generic";
+        printShape = "rectangle";
+        bleedMarginPercent = 3;
+      }
       // Detect framed prints AFTER apparel (to avoid false positives from "print surface" in descriptions)
       else if (combined.includes("frame") || combined.includes("poster") || combined.includes("canvas") || 
                matchesWord(combined, "print") || combined.includes("wall art")) {
@@ -14233,8 +14442,18 @@ ${orientationExtra}
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
         variantMap: JSON.stringify(variantMap),
-        selectedSizeIds: JSON.stringify(selectedSizeIds || sizes.map((s: { id: string }) => s.id)),
-        selectedColorIds: JSON.stringify(selectedColorIds || frameColors.map((c: { id: string }) => c.id)),
+        // Empty [] from a failed/partial variants wizard must mean "select all", not
+        // "intentionally none" (that would hide storefront color/size dropdowns).
+        selectedSizeIds: JSON.stringify(
+          Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
+            ? selectedSizeIds
+            : sizes.map((s: { id: string }) => s.id),
+        ),
+        selectedColorIds: JSON.stringify(
+          Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+            ? selectedColorIds
+            : frameColors.map((c: { id: string }) => c.id),
+        ),
         aspectRatio,
         printShape,
         // Store only physical dimensions (inches) for unit consistency
@@ -14319,6 +14538,10 @@ ${orientationExtra}
       console.error("Error importing Printify blueprint:", error);
       res.status(500).json({ error: "Failed to import blueprint" });
     }
+  }
+
+  app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
+    await handlePrintifyImportRequest(req, res);
   });
 
   // POST /api/admin/product-types/:id/calibrate-flat - (Re)run on-the-fly flat
@@ -14342,14 +14565,25 @@ ${orientationExtra}
         return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
+      const forceFromCanonical = req.body?.forceFromCanonical === true;
       const synced = await syncProductTypeFromCanonicalCalibration(productType!, {
         allowUnpublishedHarvest: true,
+        forceOverwrite: forceFromCanonical,
       });
       if (synced.synced) {
         return res.status(200).json({
           status: "ready",
           productTypeId: productType.id,
           syncedFromCanonical: true,
+          forceFromCanonical,
+        });
+      }
+
+      if (forceFromCanonical) {
+        return res.status(404).json({
+          error:
+            "No usable platform canonical calibration for this blueprint. Harvest (and preferably Publish) it in Platform Catalog first.",
+          code: "CANONICAL_MISSING",
         });
       }
 
@@ -14728,28 +14962,21 @@ ${orientationExtra}
       const blueprintId = productType.printifyBlueprintId;
       const providerId = productType.printifyProviderId;
 
-      // Fetch variants from Printify
-      const variantsResponse = await fetchWithRetry(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      // Full catalog so fully OOS colors re-enter variantMap / OOS denominator.
+      const dualRefresh = await fetchPrintifyProviderVariantsDual(
+        blueprintId,
+        providerId,
+        merchant.printifyApiToken,
         {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
+          fetchFn: (url, init) => fetchWithRetry(String(url), init || {}, 3, 1500),
         },
-        3,
-        1500
       );
-
-      if (!variantsResponse.ok) {
-        throw new Error(`Failed to fetch variants: ${variantsResponse.status}`);
-      }
-
-      const variantsData = await variantsResponse.json();
-      const variants = variantsData.variants || variantsData || [];
+      const variants = dualRefresh.variants;
 
       // Log first few variants to debug
-      console.log(`[Refresh Variants] Blueprint ${blueprintId} returned ${variants.length} variants`);
+      console.log(
+        `[Refresh Variants] Blueprint ${blueprintId} returned ${variants.length} variants (fullCatalog=${dualRefresh.usedFullCatalog})`,
+      );
       if (variants.length > 0) {
         console.log(`[Refresh Variants] Sample variant:`, JSON.stringify(variants[0]).slice(0, 500));
         console.log(`[Refresh Variants] First 5 variant titles:`, variants.slice(0, 5).map((v: any) => v.title));
@@ -14949,40 +15176,48 @@ ${orientationExtra}
       }
 
       // Update product type.
-      // Preserve any existing manual selections — only reset to "all" if the merchant has never
-      // explicitly saved a selection (i.e. the stored array is empty / matches the old full set).
+      // Preserve intentional deselections. Newly appeared colors are only auto-selected
+      // when they have at least one in-stock size — fully OOS newcomers (Deep Heather with
+      // no providers, White/Black at JAMS) stay in frameColors/variantMap for Edit Variants
+      // but are not forced onto the storefront until the merchant checks them.
       const existingSizeIds: string[] = typeof productType.selectedSizeIds === 'string'
         ? JSON.parse(productType.selectedSizeIds || '[]')
         : productType.selectedSizeIds || [];
       const existingColorIds: string[] = typeof productType.selectedColorIds === 'string'
         ? JSON.parse(productType.selectedColorIds || '[]')
         : productType.selectedColorIds || [];
-      const previousFrameColors: Array<{ id: string }> = typeof productType.frameColors === 'string'
+      const previousSizes: Array<{ id?: string }> = typeof productType.sizes === 'string'
+        ? JSON.parse(productType.sizes || '[]')
+        : productType.sizes || [];
+      const previousColors: Array<{ id?: string }> = typeof productType.frameColors === 'string'
         ? JSON.parse(productType.frameColors || '[]')
         : productType.frameColors || [];
 
-      // Keep only IDs that still exist in the refreshed data (remove stale ones).
-      const newSizeIdSet = new Set(sizes.map((s: { id: string }) => s.id));
-      const newColorIdSet = new Set(frameColors.map((c: { id: string }) => c.id));
-      const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
-      const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
+      const colorsWithStock = new Set(
+        colorIdsWithInStockVariants({
+          variantMap,
+          inStockVariantIds: dualRefresh.inStockVariantIds,
+        }),
+      );
+      const refreshedColorIds = frameColors.map((c: { id: string }) => c.id);
+      const previousColorIdSet = new Set(
+        previousColors.map((c) => String(c.id || "")).filter(Boolean),
+      );
+      const autoSelectNewColors = refreshedColorIds.filter(
+        (id: string) => !previousColorIdSet.has(id) && colorsWithStock.has(id),
+      );
 
-      // Preserve merchant selections after filtering stale ids. When import failed to parse
-      // colours (frameColors was empty + selectedColorIds []), backfill to all discovered colours.
-      const finalSizeIds =
-        filteredSizeIds.length > 0
-          ? filteredSizeIds
-          : existingSizeIds.length === 0 && sizes.length > 0
-            ? sizes.map((s: { id: string }) => s.id)
-            : filteredSizeIds;
-      const finalColorIds =
-        filteredColorIds.length > 0
-          ? filteredColorIds
-          : existingColorIds.length === 0 &&
-              previousFrameColors.length === 0 &&
-              frameColors.length > 0
-            ? frameColors.map((c: { id: string }) => c.id)
-            : filteredColorIds;
+      const finalSizeIds = mergeNewlyAppearedSelectionIds({
+        existingSelectedIds: existingSizeIds,
+        previousOptionIds: previousSizes.map((s) => String(s.id || "")).filter(Boolean),
+        refreshedOptionIds: sizes.map((s: { id: string }) => s.id),
+      });
+      const finalColorIds = mergeNewlyAppearedSelectionIds({
+        existingSelectedIds: existingColorIds,
+        previousOptionIds: previousColors.map((c) => String(c.id || "")).filter(Boolean),
+        refreshedOptionIds: refreshedColorIds,
+        autoSelectNewlyAppearedIds: autoSelectNewColors,
+      });
 
       const refreshedCatalogCosts = extractCostsFromCatalogVariants(variants);
       let finalRefreshCosts = refreshedCatalogCosts;
@@ -15391,17 +15626,21 @@ ${orientationExtra}
 
   // Helper: attempt to create a Printify temp product and immediately delete it, returning variant costs.
   // Returns { success, costs, tempProductId, error } — always deletes the product if created.
+  // `placeholderPosition` may be a single position or an ordered list (e.g. ["front","back"] for
+  // front+back COGS probes — Printify charges per filled placeholder).
   async function tryCreateTempProductForCosts(
     shopId: string,
     apiToken: string,
     blueprintId: number,
     providerId: number,
     variantIds: number[],
-    placeholderPosition: string,
+    placeholderPosition: string | string[],
     imageSpec: { id: string; x: number; y: number; scale: number; angle: number } | null
   ): Promise<{ success: boolean; costs: Record<string, number>; tempProductId?: string; status?: number; error?: string }> {
-    // Apparel/DTG almost always prints on "front"; catalog placeholder names vary.
-    const printPosition = imageSpec ? "front" : placeholderPosition;
+    const positions = (Array.isArray(placeholderPosition) ? placeholderPosition : [placeholderPosition])
+      .map((p) => String(p || "").trim())
+      .filter(Boolean);
+    const effectivePositions = positions.length > 0 ? positions : ["front"];
     const body: any = {
       title: `_cost_probe_${Date.now()}`,
       description: "Temporary product for cost lookup - will be deleted immediately",
@@ -15410,7 +15649,10 @@ ${orientationExtra}
       variants: variantIds.map((id) => ({ id, price: 2499, is_enabled: true })),
       print_areas: [{
         variant_ids: variantIds,
-        placeholders: [{ position: printPosition, images: imageSpec ? [imageSpec] : [] }],
+        placeholders: effectivePositions.map((position) => ({
+          position,
+          images: imageSpec ? [imageSpec] : [],
+        })),
       }],
     };
     const createResp = await fetch(
@@ -15645,28 +15887,49 @@ ${orientationExtra}
       baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
     const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
 
-    // Strategy catalog: production costs from catalog variants.json (no shop product needed)
+    // Strategy catalog: production costs from catalog variants.json (no shop product needed).
+    // Dual-fetch: in-stock-only list = which IDs to prefer for temp-product probes;
+    // show-out-of-stock=1 = full list for cost fields (catalog often omits is_available).
     console.log(`[Printify Costs] Strategy catalog — reading costs from catalog variants for blueprint ${blueprintId}`);
+    let catalogAvailableVariantIds: number[] = [];
     try {
-      const catalogResp = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
-        { headers: { Authorization: `Bearer ${apiToken}` } },
-      );
+      const [inStockResp, catalogResp] = await Promise.all([
+        fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        ),
+        fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        ),
+      ]);
+      if (inStockResp.ok) {
+        const inStockData = await inStockResp.json();
+        const inStockList = Array.isArray(inStockData?.variants)
+          ? inStockData.variants
+          : Array.isArray(inStockData)
+            ? inStockData
+            : [];
+        catalogAvailableVariantIds = inStockList
+          .map((v: any) => Number(v?.id))
+          .filter((id: number) => Number.isFinite(id) && id > 0);
+      }
       if (catalogResp.ok) {
         const catalogData = await catalogResp.json();
         const catalogVariants = catalogData.variants || catalogData || [];
-        const catalogCosts = extractCostsFromCatalogVariants(
-          Array.isArray(catalogVariants) ? catalogVariants : [],
-        );
+        const list = Array.isArray(catalogVariants) ? catalogVariants : [];
+        const catalogCosts = extractCostsFromCatalogVariants(list);
         if (hasCosts(catalogCosts)) {
-          console.log(`[Printify Costs] Strategy catalog succeeded — ${Object.keys(catalogCosts).length} costs`);
+          console.log(
+            `[Printify Costs] Strategy catalog succeeded — ${Object.keys(catalogCosts).length} costs (incl. OOS; available=${catalogAvailableVariantIds.length})`,
+          );
           diagnostics.push({ strategy: "catalog_variants", success: true });
           return { costs: catalogCosts, strategyUsed: "catalog_variants", diagnostics };
         }
         diagnostics.push({
           strategy: "catalog_variants",
           success: false,
-          error: "Catalog variants response had no cost fields",
+          error: "Catalog variants response had no cost fields (even with show-out-of-stock=1)",
         });
       } else {
         diagnostics.push({
@@ -15680,6 +15943,15 @@ ${orientationExtra}
       diagnostics.push({ strategy: "catalog_variants", success: false, error: String(catalogErr) });
       console.warn("[Printify Costs] Strategy catalog error:", catalogErr);
     }
+
+    // Prefer in-stock IDs for temp-product probes when the catalog flagged availability.
+    const probeVariantIds =
+      catalogAvailableVariantIds.length > 0
+        ? variantIds.filter((id) => catalogAvailableVariantIds.includes(id))
+        : variantIds;
+    const effectiveProbeIds = probeVariantIds.length > 0 ? probeVariantIds : variantIds;
+    const availableChunk = effectiveProbeIds.slice(0, VARIANT_CHUNK_SIZE);
+    const availableBulk = effectiveProbeIds.slice(0, 100);
 
     // Strategy 0: read costs from an existing Printify product
     if (!shopId?.trim()) {
@@ -15738,10 +16010,16 @@ ${orientationExtra}
     }
 
     if (probeImageId) {
-      // Strategy A: all variants in one temp product (up to Printify's 100-variant limit)
-      console.log(`[Printify Costs] Strategy A — bulk ${bulkVariantIds.length} variants with probe image`);
+      // Strategy A: available (or all) variants in one temp product (up to Printify's 100 limit).
+      // Using only in-stock IDs avoids create failures when the blueprint is largely OOS.
+      console.log(
+        `[Printify Costs] Strategy A — bulk ${availableBulk.length} variants with probe image` +
+          (availableBulk.length < bulkVariantIds.length
+            ? ` (filtered from ${bulkVariantIds.length}; skipped OOS)`
+            : ""),
+      );
       const sBulk = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, bulkVariantIds, position, imageSpec(probeImageId),
+        shopId, apiToken, blueprintId, providerId, availableBulk, position, imageSpec(probeImageId),
       );
       diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
       if (sBulk.success && hasCosts(sBulk.costs)) {
@@ -15755,7 +16033,7 @@ ${orientationExtra}
     // Strategy 1: smaller chunk with probe image
     if (probeImageId) {
       console.log("[Printify Costs] Strategy 1 — chunk with probe image");
-      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, imageSpec(probeImageId));
       diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
       if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
       console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
@@ -15763,7 +16041,7 @@ ${orientationExtra}
 
     // Strategy 2: print_areas with empty images array
     console.log(`[Printify Costs] Strategy 2 — empty images[] for position "${position}"`);
-    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
+    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, null);
     diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
     if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
 
@@ -15777,13 +16055,14 @@ ${orientationExtra}
       if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
     }
 
-    // Strategy 4: parallel single-variant probe for every variant ID
+    // Strategy 4: parallel single-variant probe (prefer in-stock IDs when catalog flagged OOS)
     if (probeImageId) {
-      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${variantIds.length} variants)`);
+      const singleProbeIds = effectiveProbeIds.length > 0 ? effectiveProbeIds : variantIds;
+      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${singleProbeIds.length} variants)`);
       const probedCosts: Record<string, number> = {};
       const BATCH = 8;
-      for (let i = 0; i < variantIds.length; i += BATCH) {
-        const batch = variantIds.slice(i, i + BATCH);
+      for (let i = 0; i < singleProbeIds.length; i += BATCH) {
+        const batch = singleProbeIds.slice(i, i + BATCH);
         await Promise.all(batch.map(async (vid) => {
           const probe = await tryCreateTempProductForCosts(
             shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
@@ -15797,7 +16076,14 @@ ${orientationExtra}
         diagnostics.push({ strategy: "single_variant_probe", success: true });
         return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
       }
-      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No costs extracted from single-variant probes" });
+      diagnostics.push({
+        strategy: "single_variant_probe",
+        success: false,
+        error:
+          catalogAvailableVariantIds.length === 0 && variantIds.length > 0
+            ? "No costs extracted — catalog shows no in-stock variants (provider may be fully OOS)"
+            : "No costs extracted from single-variant probes",
+      });
     } else {
       diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No probe artwork available" });
     }
@@ -15806,13 +16092,26 @@ ${orientationExtra}
   }
 
   // POST /api/admin/printify/costs/clear-cache
-  // Clears cached printify_costs for ALL product types belonging to this merchant,
-  // forcing a fresh fetch next time each product type's costs are requested.
+  // Clears cached printify_costs. Optional body `{ productTypeId }` clears one row
+  // (including platform-owned types the merchant can access); otherwise clears all
+  // of this merchant's product types.
   app.post("/api/admin/printify/costs/clear-cache", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const singleId = parseInt(String(req.body?.productTypeId ?? ""), 10);
+      if (Number.isFinite(singleId) && singleId > 0) {
+        const pt = await storage.getProductType(singleId);
+        const accessErr = adminProductTypeAccessError(req, pt, merchant);
+        if (accessErr) {
+          return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+        }
+        await storage.updateProductType(singleId, { printifyCosts: "{}" });
+        console.log(`[Printify Costs] Cache cleared for product type ${singleId}`);
+        return res.json({ success: true, cleared: 1, productTypeId: singleId });
+      }
 
       const productTypes = await storage.getProductTypesByMerchant(merchant.id);
       let cleared = 0;
@@ -15862,17 +16161,54 @@ ${orientationExtra}
       }
 
       // Use import/refresh cache whenever it covers active variants (no TTL — refresh-variants updates it).
-      const { costs: cachedCostsOnly } = parsePrintifyCostsCache(productType.printifyCosts);
-      if (cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds)) {
+      // Exception: front-only legacy cache on a product with a back placeholder must still probe both.
+      const cachedParsed = parsePrintifyCostsCache(productType.printifyCosts);
+      const cachedCostsOnly = cachedParsed.front;
+      const cachedBothOnly = cachedParsed.both;
+      const frontCacheHits = cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
+      const bothCacheHits = Object.keys(cachedBothOnly).length > 0;
+
+      async function detectHasBackPlaceholder(): Promise<boolean> {
+        if (productType.isAllOverPrint) return false;
+        try {
+          const positions: { position?: string }[] =
+            typeof productType.placeholderPositions === "string"
+              ? JSON.parse(productType.placeholderPositions || "[]")
+              : (productType.placeholderPositions || []);
+          if (positions.some((p) => String(p?.position || "").toLowerCase() === "back")) return true;
+        } catch {
+          /* continue */
+        }
+        if (productType.doubleSidedPrint) return true;
+        try {
+          const vResp = await fetch(
+            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
+            { headers: { Authorization: `Bearer ${apiToken}` } },
+          );
+          if (!vResp.ok) return false;
+          const vData = await vResp.json();
+          const variants = Array.isArray(vData.variants) ? vData.variants : [];
+          for (const sample of variants.slice(0, 8)) {
+            const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+            if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) return true;
+          }
+        } catch {
+          return false;
+        }
+        return false;
+      }
+
+      const needsBothProbe = frontCacheHits && !bothCacheHits && (await detectHasBackPlaceholder());
+
+      if (frontCacheHits && !needsBothProbe) {
         const cachedCosts = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
+        const cachedCostsBoth = filterCostsToPrintifyVariantIds(cachedBothOnly, currentPrintifyVariantIds);
         const svIds = (typeof productType.shopifyVariantIds === "string"
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
         const vm = JSON.parse(productType.variantMap || "{}");
         const sizes = JSON.parse(productType.sizes || "[]");
         const frameColors = JSON.parse(productType.frameColors || "[]");
-        // Build sizeId:colorId → printifyVariantId label lookup
-        // AND a sizeName:colorName → printifyVariantId bridge for shopifyVariantIds matching
         const nameToVmKey: Record<string, string> = {};
         const cachedLabels: Record<string, string> = {};
         for (const [key, entry] of Object.entries(vm) as [string, any][]) {
@@ -15881,16 +16217,14 @@ ${orientationExtra}
             const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
             const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
             cachedLabels[String(entry.printifyVariantId)] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
-            // Build reverse lookup: sizeName:colorName → variantMap key
             const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
             nameToVmKey[nameKey] = key;
           }
         }
         const cachedShopifyCosts: Record<string, number> = {};
+        const cachedShopifyCostsBoth: Record<string, number> = {};
         for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-          // Try direct lookup first (in case keys happen to match)
           let vmEntry = vm[mapKey] as any;
-          // If no match, try bridging via name → id lookup
           if (!vmEntry?.printifyVariantId) {
             const bridgedKey = nameToVmKey[mapKey];
             if (bridgedKey) vmEntry = vm[bridgedKey] as any;
@@ -15898,12 +16232,19 @@ ${orientationExtra}
           if (vmEntry?.printifyVariantId && cachedCosts[String(vmEntry.printifyVariantId)] !== undefined) {
             cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
           }
+          if (vmEntry?.printifyVariantId && cachedCostsBoth[String(vmEntry.printifyVariantId)] !== undefined) {
+            cachedShopifyCostsBoth[String(shopifyVid)] = cachedCostsBoth[String(vmEntry.printifyVariantId)];
+          }
         }
         return res.json({
           costs: cachedCosts,
+          costsBoth: cachedCostsBoth,
           shopifyVariantCosts: cachedShopifyCosts,
+          shopifyVariantCostsBoth: cachedShopifyCostsBoth,
           printifyVariantLabels: cachedLabels,
           costsByNormalizedLabel: buildCostsByNormalizedLabel(cachedCosts, cachedLabels),
+          costsBothByNormalizedLabel: buildCostsByNormalizedLabel(cachedCostsBoth, cachedLabels),
+          supportsBothSides: Object.keys(cachedCostsBoth).length > 0,
           cached: true,
         });
       }
@@ -15918,27 +16259,44 @@ ${orientationExtra}
         ? JSON.parse(productType.baseMockupImages || "{}")
         : (productType.baseMockupImages || {});
 
-      let shopId = merchant.printifyShopId?.trim() ?? "";
-      if (shopId) {
+      let shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
+      const costApiToken = apiToken || process.env.PRINTIFY_API_TOKEN || "";
+      if (shopId && costApiToken) {
         try {
-          const resolved = await resolvePrintifyShopIdForProducts(apiToken, shopId);
+          const resolved = await resolvePrintifyShopIdForProducts(costApiToken, shopId);
           shopId = resolved.shopId;
-          if (resolved.corrected) {
+          if (resolved.corrected && merchant.printifyShopId?.trim()) {
             await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
           }
         } catch (resolveErr: any) {
           console.warn("[Printify Costs] Shop resolution failed (catalog lookup may still succeed):", resolveErr);
-          shopId = merchant.printifyShopId?.trim() ?? "";
+          shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
         }
       }
 
-      console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
-      let { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
-        shopId ?? "",
-        apiToken,
-        productType.printifyBlueprintId, productType.printifyProviderId,
-        printifyVariantIds, baseMockupImages
-      );
+      let costs: Record<string, number> = {};
+      let strategyUsed: string | null = null;
+      let diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
+
+      if (needsBothProbe) {
+        // Reuse front cache; only the missing both-tier needs probing.
+        costs = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
+        strategyUsed = "front_cache_both_probe";
+        console.log(
+          `[Printify Costs] Front cache hit for blueprint ${productType.printifyBlueprintId} but both-tier missing — probing front+back`,
+        );
+      } else {
+        console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
+        const waterfall = await fetchPrintifyCostsWaterfall(
+          shopId ?? "",
+          costApiToken,
+          productType.printifyBlueprintId, productType.printifyProviderId,
+          printifyVariantIds, baseMockupImages
+        );
+        costs = waterfall.costs;
+        strategyUsed = waterfall.strategyUsed;
+        diagnostics = waterfall.diagnostics;
+      }
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         const platformCosts = filterCostsToPrintifyVariantIds(
@@ -15949,9 +16307,6 @@ ${orientationExtra}
           console.log(
             `[Printify Costs] Waterfall failed; serving ${Object.keys(platformCosts).length} costs from platform catalog cache`,
           );
-          await storage.updateProductType(productTypeId, {
-            printifyCosts: serializePrintifyCostsCache(platformCosts),
-          });
           costs = platformCosts;
           strategyUsed = "platform_catalog_cache";
         }
@@ -15959,19 +16314,83 @@ ${orientationExtra}
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
+        // When the real issue is a fully-OOS provider, say so — not "Retry / wait a minute".
+        let oosStatusHint = productType.oosStatus ?? null;
+        let providerNameHint = parseOosProviderName(productType.oosDetail);
+        try {
+          const scan = await scanProductTypeStock(productType, apiToken);
+          oosStatusHint = scan.status;
+          providerNameHint = scan.providerName ?? providerNameHint;
+        } catch (scanErr: any) {
+          console.warn("[Printify Costs] OOS scan after cost failure:", scanErr?.message ?? scanErr);
+        }
+        if (oosStatusHint === "fully_oos") {
+          const via = providerNameHint ? ` for ${providerNameHint}` : "";
+          return res.status(502).json({
+            error: `Printify stock is currently unavailable${via}. Suggested retail can't be calculated until variants are back in stock.`,
+            code: "PRINTIFY_FULLY_OOS",
+            oosStatus: "fully_oos",
+            providerName: providerNameHint,
+            message: "The daily catalogue stock report will email when status changes. Use Scan stock now anytime.",
+            diagnostics,
+          });
+        }
         const lastErr = diagnostics.find((d) => d.error)?.error?.slice(0, 300);
         return res.status(502).json({
           error: "Failed to fetch production costs from Printify",
           message: lastErr || "All cost lookup strategies failed. Check Railway logs for diagnostics.",
           diagnostics,
+          oosStatus: oosStatusHint,
+          providerName: providerNameHint,
         });
       }
 
       console.log(`[Printify Costs] Success via "${strategyUsed}", extracted ${Object.keys(costs).length} costs`);
 
-      // Cache costs on the product type
+      // Probe front+back COGS when the blueprint has a separate back placeholder.
+      // Catalog/existing-product strategies usually reflect front-only placement.
+      let costsBoth: Record<string, number> = {};
+      const hasBackPlaceholder = needsBothProbe || (await detectHasBackPlaceholder());
+
+      if (hasBackPlaceholder && shopId?.trim() && costApiToken && !productType.isAllOverPrint) {
+        const mockupUrl: string | undefined =
+          baseMockupImages.primary ||
+          baseMockupImages.front ||
+          (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
+        const probeImageId = await ensureCostProbeImageId(costApiToken, mockupUrl);
+        if (probeImageId) {
+          const chunk = printifyVariantIds.slice(0, 10);
+          const bothProbe = await tryCreateTempProductForCosts(
+            shopId,
+            costApiToken,
+            productType.printifyBlueprintId,
+            productType.printifyProviderId,
+            chunk,
+            ["front", "back"],
+            { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 },
+          );
+          if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+            costsBoth = bothProbe.costs;
+            console.log(`[Printify Costs] Front+back probe extracted ${Object.keys(costsBoth).length} costs`);
+          } else {
+            console.warn(
+              `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
+            );
+          }
+        } else {
+          console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
+        }
+      } else if (hasBackPlaceholder && !shopId?.trim()) {
+        console.warn(
+          "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
+        );
+      }
+
+      // Cache front (+ optional both) costs on the product type
       await storage.updateProductType(productTypeId, {
-        printifyCosts: serializePrintifyCostsCache(costs),
+        printifyCosts: serializePrintifyCostsCache(
+          Object.keys(costsBoth).length > 0 ? { front: costs, both: costsBoth } : { front: costs },
+        ),
       });
 
       // Build variant-key → cost mapping
@@ -16018,10 +16437,13 @@ ${orientationExtra}
 
       return res.json({
         costs,
+        costsBoth,
         variantKeyCosts,
         shopifyVariantCosts,
         printifyVariantLabels,
         costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
+        costsBothByNormalizedLabel: buildCostsByNormalizedLabel(costsBoth, printifyVariantLabels),
+        supportsBothSides: Object.keys(costsBoth).length > 0,
         cached: false,
         strategyUsed,
       });
@@ -17382,13 +17804,15 @@ ${orientationExtra}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
       baseProductId?: string;
       productTypeId?: number;
       variantPrices?: Record<string, string>;
+      /** Front+back retail prices keyed like variantPrices — not written to Shopify base variants. */
+      variantPricesBoth?: Record<string, string>;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
       styleConfig?: unknown;
     };
@@ -17614,6 +18038,36 @@ ${orientationExtra}
     );
     const resolvedProductTypeId: number | null =
       matchedType?.id ?? incomingProductTypeId ?? ptForSync?.id ?? null;
+
+    // Persist front+back retail map on the product type (Shopify base variants stay front-only).
+    if (
+      resolvedProductTypeId &&
+      variantPricesBoth &&
+      typeof variantPricesBoth === "object" &&
+      Object.keys(variantPricesBoth).length > 0
+    ) {
+      for (const [vid, price] of Object.entries(variantPricesBoth)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid front+back price for variant ${vid}: "${price}". Must be a positive number.`,
+          });
+        }
+      }
+      const ptForBoth =
+        matchedType ||
+        ptForSync ||
+        (await storage.getProductType(resolvedProductTypeId));
+      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+        variantMap: ptForBoth?.variantMap,
+        shopifyVariantIds: ptForBoth?.shopifyVariantIds,
+        sizes: ptForBoth?.sizes,
+        frameColors: ptForBoth?.frameColors,
+      });
+      await storage.updateProductType(resolvedProductTypeId, {
+        variantPricesBoth: JSON.stringify(expandedBoth),
+      } as any);
+    }
 
     // ── Write variant prices to Shopify ──────────────────────────────────────
     if (variantPrices && typeof variantPrices === "object") {
@@ -18068,88 +18522,78 @@ ${orientationExtra}
     updated: Array<{ variantId: number; price: string; success: boolean; error?: string }>;
     successCount: number;
     totalCount: number;
+    unresolvedCount: number;
   }> {
     const { shop, accessToken, baseProductId, productType, variantPrices, onBaseVariantUpdated } = args;
 
-    const printifyToShopifyVariantId: Record<string, number> = {};
-    if (productType?.variantMap) {
-      const storedVm = typeof productType.variantMap === "string"
-        ? JSON.parse(productType.variantMap || "{}")
-        : (productType.variantMap || {});
-      const svIds = (typeof productType.shopifyVariantIds === "string"
-        ? JSON.parse(productType.shopifyVariantIds || "{}")
-        : (productType.shopifyVariantIds || {})) as Record<string, number>;
-      const ptSizes = (typeof productType.sizes === "string"
-        ? JSON.parse(productType.sizes || "[]")
-        : (productType.sizes || [])) as Array<{ id: string; name: string }>;
-      const ptColors = (typeof productType.frameColors === "string"
-        ? JSON.parse(productType.frameColors || "[]")
-        : (productType.frameColors || [])) as Array<{ id: string; name: string }>;
+    // Always load live Shopify variants so slash-color / casing mismatches still map.
+    // (Previously title fallback ran only when the id map was completely empty, so
+    // products like 75/96 succeeded partially and left the rest unresolved forever.)
+    let shopifyVariants: Array<{
+      id: number;
+      title?: string;
+      option1?: string;
+      option2?: string;
+    }> = [];
+    const allVariantsResult = await shopifyApiCall(
+      shop,
+      accessToken,
+      `products/${baseProductId}.json?fields=id,variants`,
+    );
+    shopifyVariants = allVariantsResult.data?.product?.variants ?? [];
 
-      const nameToShopifyId: Record<string, number> = {};
-      for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-        nameToShopifyId[mapKey] = shopifyVid as number;
-        const [kSizeId, kColorId] = mapKey.split(":");
-        const sizeName = ptSizes.find((s: any) => String(s.id) === kSizeId)?.name;
-        const colorName = ptColors.find((c: any) => String(c.id) === kColorId)?.name;
-        if (sizeName) {
-          const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
-          nameToShopifyId[nameKey] = shopifyVid as number;
-        }
-      }
+    const printifyToShopifyVariantId = buildPrintifyToShopifyVariantIdMap({
+      variantMap: productType?.variantMap,
+      shopifyVariantIds: productType?.shopifyVariantIds,
+      sizes: productType?.sizes,
+      frameColors: productType?.frameColors,
+      shopifyVariants,
+    });
 
-      for (const [vmKey, entry] of Object.entries(storedVm)) {
-        const e = entry as any;
-        if (!e.printifyVariantId) continue;
-        const [sizeId, colorId] = vmKey.split(":");
-        const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-        const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
-        const candidates = [
-          vmKey,
-          colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`,
-          `${sizeName}:${colorId}`,
-          `${sizeId}:${colorName ?? colorId}`,
-        ];
-        for (const candidate of candidates) {
-          if (nameToShopifyId[candidate]) {
-            printifyToShopifyVariantId[String(e.printifyVariantId)] = nameToShopifyId[candidate];
-            break;
-          }
-        }
-      }
+    console.log(
+      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}`,
+    );
 
-      if (Object.keys(printifyToShopifyVariantId).length === 0) {
-        const allVariantsResult = await shopifyApiCall(
-          shop, accessToken,
-          `products/${baseProductId}.json?fields=id,variants`,
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const putVariantPriceWithRetry = async (variantNum: number, formatted: string) => {
+      // Shopify REST leaky-bucket: large apparel catalogs (96 PUTs) often 429 without backoff.
+      let lastError = "Unknown error";
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
+          method: "PUT",
+          body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+        });
+        if (priceResult.ok) return priceResult;
+        lastError = priceResult.error || "Unknown error";
+        const isRateLimited =
+          /API error 429\b/i.test(lastError) ||
+          /rate limit/i.test(lastError) ||
+          /Exceeded 2 calls per second/i.test(lastError);
+        if (!isRateLimited || attempt === 5) break;
+        const waitMs = Math.min(8000, 400 * Math.pow(2, attempt));
+        console.warn(
+          `[sync-prices] rate-limited updating variant ${variantNum}; retry ${attempt + 1}/5 in ${waitMs}ms`,
         );
-        const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-        const titleToShopifyId: Record<string, number> = {};
-        for (const sv of allShopifyVariants) {
-          if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
-          if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
-          if (sv.option1 && sv.option2) titleToShopifyId[`${sv.option1} / ${sv.option2}`.toLowerCase()] = sv.id;
-        }
-        for (const [vmKey, entry] of Object.entries(storedVm)) {
-          const e = entry as any;
-          if (!e.printifyVariantId) continue;
-          const [sizeId, colorId] = vmKey.split(":");
-          const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-          const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
-          const shopifyId = (colorName ? titleToShopifyId[`${sizeName} / ${colorName}`.toLowerCase()] : undefined)
-            ?? titleToShopifyId[sizeName.toLowerCase()];
-          if (shopifyId) {
-            printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
-          }
-        }
+        await sleep(waitMs);
       }
-    }
-
-    console.log(`[sync-prices] printifyToShopifyVariantId: ${JSON.stringify(printifyToShopifyVariantId)}`);
+      return { ok: false as const, error: lastError };
+    };
 
     const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
 
     for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (!Number.isFinite(num) || num <= 0) {
+        updated.push({
+          variantId: 0,
+          price: String(price),
+          success: false,
+          error: `Refused to sync non-positive price "${price}" for "${vid}"`,
+        });
+        console.warn(`[sync-prices] refused non-positive price for ${vid}: ${price}`);
+        continue;
+      }
+
       let variantNum: number;
       if (String(vid).startsWith("printify:")) {
         const printifyId = String(vid).replace("printify:", "");
@@ -18158,14 +18602,16 @@ ${orientationExtra}
         variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
       }
       if (!variantNum) {
-        updated.push({ variantId: 0, price, success: false, error: `Could not resolve Shopify variant ID for key "${vid}"` });
+        updated.push({
+          variantId: 0,
+          price: String(price),
+          success: false,
+          error: `Could not resolve Shopify variant ID for key "${vid}"`,
+        });
         continue;
       }
-      const formatted = parseFloat(String(price)).toFixed(2);
-      const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
-        method: "PUT",
-        body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
-      });
+      const formatted = num.toFixed(2);
+      const priceResult = await putVariantPriceWithRetry(variantNum, formatted);
       if (priceResult.ok) {
         updated.push({ variantId: variantNum, price: formatted, success: true });
         if (onBaseVariantUpdated) {
@@ -18178,7 +18624,8 @@ ${orientationExtra}
     }
 
     const successCount = updated.filter((u) => u.success).length;
-    return { updated, successCount, totalCount: updated.length };
+    const unresolvedCount = updated.filter((u) => !u.success && u.variantId === 0).length;
+    return { updated, successCount, totalCount: updated.length, unresolvedCount };
   }
 
   app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
@@ -18191,7 +18638,10 @@ ${orientationExtra}
     const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
     if (!dbPage) return res.status(404).json({ error: "Page not found" });
 
-    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    const { variantPrices, variantPricesBoth } = req.body as {
+      variantPrices?: Record<string, string>;
+      variantPricesBoth?: Record<string, string>;
+    };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
@@ -18203,13 +18653,27 @@ ${orientationExtra}
         return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
       }
     }
+    if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      for (const [vid, price] of Object.entries(variantPricesBoth)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid front+back price for variant ${vid}: "${price}". Must be a positive number.`,
+          });
+        }
+      }
+    }
 
     const productTypes = await storage.getActiveProductTypes();
-    const matchedType = productTypes.find(
-      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
-    );
+    // Prefer the page's productTypeId — shopifyProductId match can hit a stale/wrong row.
+    const matchedType =
+      (dbPage.productTypeId
+        ? productTypes.find((pt: any) => Number(pt.id) === Number(dbPage.productTypeId))
+        : undefined) ||
+      (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined) ||
+      productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId));
 
-    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+    const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken!,
       baseProductId: dbPage.baseProductId,
@@ -18222,7 +18686,32 @@ ${orientationExtra}
       },
     });
 
-    return res.json({ success: true, updated, successCount, totalCount });
+    // Persist front+back retail on the product type for storefront “from $X” + ATC surcharge.
+    // Expand printify: blank keys so embed lookups by Shopify variant id succeed.
+    const ptId = matchedType?.id ?? (dbPage.productTypeId ? Number(dbPage.productTypeId) : null);
+    let bothKeyCount = 0;
+    if (ptId && variantPricesBoth && typeof variantPricesBoth === "object") {
+      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+        variantMap: matchedType?.variantMap,
+        shopifyVariantIds: matchedType?.shopifyVariantIds,
+        sizes: matchedType?.sizes,
+        frameColors: matchedType?.frameColors,
+      });
+      bothKeyCount = Object.keys(expandedBoth).length;
+      await storage.updateProductType(ptId, {
+        variantPricesBoth: JSON.stringify(expandedBoth),
+      } as any);
+    }
+
+    return res.json({
+      success: true,
+      updated,
+      successCount,
+      totalCount,
+      unresolvedCount,
+      bothPricesSaved: !!(ptId && bothKeyCount > 0),
+      bothPriceKeyCount: bothKeyCount,
+    });
   }));
 
   /** POST /api/admin/product-types/:id/sync-prices — resync Shopify variant prices from Products admin */
@@ -18253,7 +18742,10 @@ ${orientationExtra}
       });
     }
 
-    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    const { variantPrices, variantPricesBoth } = req.body as {
+      variantPrices?: Record<string, string>;
+      variantPricesBoth?: Record<string, string>;
+    };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
@@ -18263,8 +18755,18 @@ ${orientationExtra}
         return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
       }
     }
+    if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      for (const [vid, price] of Object.entries(variantPricesBoth)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid front+back price for variant ${vid}: "${price}". Must be a positive number.`,
+          });
+        }
+      }
+    }
 
-    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+    const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken,
       baseProductId: productType.shopifyProductId,
@@ -18272,7 +18774,76 @@ ${orientationExtra}
       variantPrices,
     });
 
-    return res.json({ success: true, updated, successCount, totalCount });
+    let bothKeyCount = 0;
+    if (variantPricesBoth && typeof variantPricesBoth === "object") {
+      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+        variantMap: productType.variantMap,
+        shopifyVariantIds: productType.shopifyVariantIds,
+        sizes: productType.sizes,
+        frameColors: productType.frameColors,
+      });
+      bothKeyCount = Object.keys(expandedBoth).length;
+      await storage.updateProductType(productTypeId, {
+        variantPricesBoth: JSON.stringify(expandedBoth),
+      } as any);
+    }
+
+    return res.json({
+      success: true,
+      updated,
+      successCount,
+      totalCount,
+      unresolvedCount,
+      bothPricesSaved: bothKeyCount > 0,
+      bothPriceKeyCount: bothKeyCount,
+    });
+  }));
+
+  /**
+   * POST /api/admin/product-types/:id/scan-stock — "Scan stock now" button.
+   * Re-checks Printify catalog availability for just this product's active
+   * variants and persists oosStatus/oosAvailableVariants/etc. No email —
+   * the daily catalogue scan (server/oos-catalogue-report.ts) owns that.
+   */
+  app.post("/api/admin/product-types/:id/scan-stock", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const productTypeId = parseInt(req.params.id, 10);
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    if (!merchant.printifyApiToken) {
+      return res.status(400).json({ error: "Printify is not connected for this merchant." });
+    }
+    if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+      return res.status(400).json({ error: "Product is missing a Printify blueprint/provider." });
+    }
+
+    const result = await scanProductTypeStock(productType, merchant.printifyApiToken);
+    return res.json({ success: true, result });
+  }));
+
+  /**
+   * POST /api/internal/oos-catalogue-scan — daily catalogue-wide Printify
+   * stock scan + email digest. Intended for an external scheduler (Railway
+   * Cron Job) hitting production once a day; the in-process daily interval
+   * (registered below) is a backup so the scan still runs without one
+   * configured. Both share the same 20h dedupe guard, so whichever fires
+   * first "wins" for the day. Requires header `x-oos-scan-secret` matching
+   * env `OOS_SCAN_SECRET` (endpoint is a no-op / 404 without that env set).
+   */
+  app.post("/api/internal/oos-catalogue-scan", asyncHandler(async (req: Request, res: Response) => {
+    const secret = process.env.OOS_SCAN_SECRET;
+    if (!secret) return res.status(404).json({ error: "Not found" });
+    if (req.header("x-oos-scan-secret") !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const result = await runOosCatalogueScan({ force: req.query.force === "1" });
+    return res.json({ ok: true, ...result });
   }));
 
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
@@ -18285,11 +18856,12 @@ ${orientationExtra}
     const shop: string = installation.shopDomain;
 
     try {
-      const productTypes = isPlatformAdminRequest(req)
-        ? await storage.getActiveProductTypes()
-        : installation.merchantId
-          ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
-          : [];
+      // Always scope to THIS shop's merchant catalog. Platform admins used to
+      // see every merchant's product types here, which made already-published
+      // products look like "(new — will be sent to store)" duplicates.
+      const productTypes = installation.merchantId
+        ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
+        : [];
 
       // Enrich products that are already on Shopify with live variant data.
       // Products not yet on Shopify are included with needsShopifySync: true.
@@ -18391,6 +18963,13 @@ ${orientationExtra}
             ? JSON.parse(pt.baseMockupImages || "{}")
             : (pt.baseMockupImages || {}),
           variants: dbVariants,
+          // Daily Printify stock scan (server/oos-catalogue-report.ts) — surfaces
+          // silent full/partial stockouts (e.g. baseball tee) without opening Resync Prices.
+          oosStatus: pt.oosStatus ?? null,
+          oosAvailableVariants: pt.oosAvailableVariants ?? null,
+          oosTotalVariants: pt.oosTotalVariants ?? null,
+          lastOosScanAt: pt.lastOosScanAt ?? null,
+          printifyProviderName: parseOosProviderName(pt.oosDetail) ?? null,
         });
       }
       return res.json({ blanks: enriched });
@@ -18570,8 +19149,27 @@ ${orientationExtra}
         return res.status(401).json({ error: "Invalid proxy signature" });
       }
     }
-    (req as any).proxyShop = query.shop ?? "";
+    // Same normalization as Admin/ATC — bare handles must match DB rows.
+    (req as any).proxyShop = normalizeMyshopifyShopDomain(query.shop ?? "");
     next();
+  }
+
+  /**
+   * List customizer pages for an App Proxy shop. Tries the normalized
+   * `*.myshopify.com` domain first, then the bare handle for legacy rows.
+   */
+  async function listCustomizerPagesForProxyShop(shop: string) {
+    const normalized = normalizeMyshopifyShopDomain(shop);
+    if (!normalized) return [];
+    let pages = await storage.listCustomizerPages(normalized);
+    if (pages.length) return pages;
+    const bare = normalized.endsWith(".myshopify.com")
+      ? normalized.slice(0, -".myshopify.com".length)
+      : "";
+    if (bare && bare !== normalized) {
+      pages = await storage.listCustomizerPages(bare);
+    }
+    return pages;
   }
 
   /**
@@ -18623,11 +19221,17 @@ ${orientationExtra}
     const shop: string = (req as any).proxyShop;
     if (!shop) return res.status(400).json({ error: "Missing shop" });
 
-    const [allPages, installation] = await Promise.all([
-      storage.listCustomizerPages(shop),
+    const [allPages, installation, merchantForGate] = await Promise.all([
+      listCustomizerPagesForProxyShop(shop),
       storage.getShopifyInstallationByShop(shop),
+      storage.getMerchantByShop(shop),
     ]);
 
+    // Locked setup-rail rule: pages aren't publicly mountable until Printify is
+    // connected, unless this specific page's signed merchant-preview token is
+    // present (scoped to one handle — doesn't unlock the rest of the shop).
+    const printifyConnected = isPrintifyConnected(merchantForGate);
+    const previewToken = req.query.appai_preview as string | undefined;
     const pages = allPages.map((p) => ({
       id: p.id,
       handle: p.handle,
@@ -18637,12 +19241,14 @@ ${orientationExtra}
       baseVariantTitle: p.baseVariantTitle,
       baseProductPrice: p.baseProductPrice,
       status: p.status,
+      publiclyMountable:
+        p.status === "active" && (printifyConnected || verifyPreviewToken(previewToken, shop, p.handle)),
     }));
 
     // Include fallback URL so embed can redirect disabled-page visitors
     const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
 
-    return res.json({ pages, fallbackUrl });
+    return res.json({ pages, fallbackUrl, shop });
   });
 
   /** Rewrites local /objects/... storage paths to go through the App Proxy so storefront can load them */
@@ -18658,10 +19264,30 @@ ${orientationExtra}
     const handle = (req.query.handle as string) || "";
     if (!shop || !handle) return res.status(400).json({ error: "Missing shop or handle" });
 
-    const page = await storage.getCustomizerPageByHandle(shop, handle);
+    let page = await storage.getCustomizerPageByHandle(shop, handle);
+    if (!page) {
+      const bare = shop.endsWith(".myshopify.com")
+        ? shop.slice(0, -".myshopify.com".length)
+        : "";
+      if (bare) page = await storage.getCustomizerPageByHandle(bare, handle);
+    }
     if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
     const installation = await storage.getShopifyInstallationByShop(shop);
+
+    // Locked setup-rail rule: no public customizer without Printify connected.
+    // A merchant's own signed preview link (appai_preview) bypasses this so
+    // they can see + tester-generate on the page before connecting.
+    const merchantForGate = await storage.getMerchantByShop(shop);
+    const previewOk = verifyPreviewToken(req.query.appai_preview as string | undefined, shop, page.handle);
+    if (!isPrintifyConnected(merchantForGate) && !previewOk) {
+      return res.status(404).json({
+        error: "Customizer page not found",
+        code: "PRINTIFY_NOT_CONNECTED",
+        fallbackUrl: installation?.customizerHubUrl ?? "/",
+      });
+    }
+
     if (installation?.accessToken && page.shopifyPageId) {
       ensureCustomizerBootHtml(shop, installation.accessToken, page.shopifyPageId)
         .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
@@ -19034,7 +19660,7 @@ ${orientationExtra}
       title: productTitle,
       handle: productHandle,
       body_html: `<p>${design.prompt}</p>`,
-      vendor: "AppAI Custom",
+      vendor: "AI Art Studio",
       product_type: "Custom",
       status: "active",
       published: true,   // Must be true for storefront /cart/add.js to accept
@@ -19144,6 +19770,215 @@ ${orientationExtra}
     }
 
     return res.json({ success: true });
+  }));
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MERCHANT SETUP RAIL — /api/appai/setup/*
+  // Forced-progression onboarding: silent trial → App Embed → pick a platform
+  // catalogue product → merchant-only preview → Printify connect gate.
+  // See docs/merchant-setup-rail.md.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** GET /api/appai/setup/status — setup rail readiness flags (silently starts the trial). */
+  app.get("/api/appai/setup/status", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const installation = await ensureTrialStarted(resolved.installation);
+    const merchant = await storage.getMerchantByShop(installation.shopDomain);
+    const status = await getMerchantSetupStatus(installation, merchant);
+    return res.json(status);
+  }));
+
+  /** POST /api/appai/setup/confirm-embed — merchant clicked "I've enabled it" on the App Embed step. */
+  app.post("/api/appai/setup/confirm-embed", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    await storage.updateShopifyInstallation(resolved.installation.id, {
+      embedConfirmedAt: new Date(),
+    } as any);
+    return res.json({ success: true });
+  }));
+
+  /** GET /api/appai/setup/catalog — published platform catalogue entries merchants can instantly activate. */
+  app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (_req: Request, res: Response) => {
+    const entries = await listMerchantImportableCatalog();
+    return res.json({
+      entries: entries.map((e) => ({
+        blueprintId: e.printifyBlueprintId,
+        label: e.label,
+        brand: e.brand ?? null,
+        category: e.category ?? null,
+        kind: e.kind,
+      })),
+    });
+  }));
+
+  /** GET /api/appai/setup/preview-url — mint a fresh signed merchant-preview link for an existing page. */
+  app.get("/api/appai/setup/preview-url", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const handle = String(req.query.handle || "");
+    if (!handle) return res.status(400).json({ error: "handle is required" });
+    const page = await storage.getCustomizerPageByHandle(resolved.installation.shopDomain, handle);
+    if (!page) return res.status(404).json({ error: "Page not found" });
+
+    return res.json({ url: buildPreviewUrl(resolved.installation.shopDomain, handle) });
+  }));
+
+  /**
+   * POST /api/appai/setup/activate-product — the setup rail's "instant" product
+   * activation: imports a published platform-catalogue blueprint using the
+   * PLATFORM's Printify token (public catalog reads only — never the
+   * merchant's own account), auto-creates the Shopify product, and creates an
+   * active customizer page — all without requiring the merchant to have
+   * connected Printify yet.
+   */
+  app.post("/api/appai/setup/activate-product", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const installation = await ensureTrialStarted(resolved.installation);
+    const shop = installation.shopDomain;
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const plan = getEffectivePlan(installation as any, shop);
+    if (plan.requiresPlan) {
+      return res.status(402).json({ error: "No active plan. Start a free trial to continue.", requiresPlan: true });
+    }
+
+    const blueprintId = parseInt(req.body?.blueprintId, 10);
+    if (!Number.isFinite(blueprintId)) {
+      return res.status(400).json({ error: "blueprintId is required" });
+    }
+
+    const entry = await getPlatformCatalogEntry(blueprintId);
+    if (!entry || !(await canMerchantImportEntry(entry))) {
+      return res.status(403).json({
+        error: "This product is not available in the AI Art Studio catalog yet.",
+        code: "BLUEPRINT_NOT_ALLOWED",
+      });
+    }
+
+    const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+    let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
+
+    if (!productType) {
+      const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
+      if (!platformPrintifyToken) {
+        console.error("[setup/activate-product] PRINTIFY_API_TOKEN not configured on the platform");
+        return res.status(503).json({ error: "Instant activation isn't available right now. Please try again shortly." });
+      }
+
+      // Auto-select a print provider for this blueprint using the platform
+      // token (public Printify catalog read — no merchant account required).
+      let providerId: number | undefined;
+      try {
+        const providersRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+          { headers: { Authorization: `Bearer ${platformPrintifyToken}` } },
+        );
+        if (providersRes.ok) {
+          const providers = await providersRes.json();
+          providerId = Array.isArray(providers) && providers.length > 0 ? Number(providers[0].id) : undefined;
+        }
+      } catch (e: any) {
+        console.warn("[setup/activate-product] provider lookup failed:", e?.message ?? e);
+      }
+      if (!providerId) {
+        return res.status(502).json({ error: "Could not reach the Printify catalog. Please try again shortly." });
+      }
+
+      const fakeReq: any = {
+        user: { claims: { sub: userId } },
+        shopDomain: shop,
+        body: { blueprintId, name: entry.label, description: undefined, providerId },
+      };
+      let capturedStatus = 200;
+      let capturedBody: any;
+      const fakeRes: any = {
+        status(code: number) { capturedStatus = code; return fakeRes; },
+        json(body: any) { capturedBody = body; return fakeRes; },
+      };
+      await handlePrintifyImportRequest(fakeReq, fakeRes, { printifyTokenOverride: platformPrintifyToken });
+      if (capturedStatus >= 400) {
+        return res.status(capturedStatus).json(capturedBody);
+      }
+      productType = capturedBody;
+    }
+
+    if (!productType) {
+      return res.status(500).json({ error: "Failed to activate product." });
+    }
+
+    // Auto-send the product to Shopify (unlisted) if it isn't there yet.
+    let shopifyProductId: string | undefined = productType.shopifyProductId ?? undefined;
+    if (!shopifyProductId) {
+      try {
+        const created = await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
+        shopifyProductId = created.shopifyProductId;
+      } catch (e: any) {
+        return res.status(400).json({ error: e?.message || "Failed to send product to Shopify." });
+      }
+    }
+
+    const prodResult = await shopifyApiCall(shop, installation.accessToken, `products/${shopifyProductId}.json?fields=id,title,handle,variants`);
+    if (!prodResult.ok || !prodResult.data?.product?.variants?.length) {
+      return res.status(500).json({ error: "Product was created but could not be loaded. Please try again." });
+    }
+    const product = prodResult.data.product;
+    const variant = product.variants[0];
+
+    // Unique customizer page handle derived from the catalog label.
+    const baseHandle = entry.label.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `product-${blueprintId}`;
+    let handle = baseHandle;
+    let suffix = 2;
+    while (await storage.getCustomizerPageByHandle(shop, handle)) {
+      handle = `${baseHandle}-${suffix++}`;
+    }
+
+    const activeCount = await storage.countActiveCustomizerPages(shop);
+    const { allowed: pageAllowed } = canCreatePage(plan.planName, activeCount);
+    const initialStatus = pageAllowed ? "active" : "disabled";
+
+    const pageBody = await shopifyApiCall(shop, installation.accessToken, "pages.json", {
+      method: "POST",
+      body: JSON.stringify({
+        page: { title: entry.label, handle, body_html: buildCustomizerBootHtml(), published: true },
+      }),
+    });
+    if (!pageBody.ok || !pageBody.data?.page?.id) {
+      return res.status(500).json({ error: `Failed to create Shopify page: ${pageBody.error ?? "unknown error"}` });
+    }
+    const shopifyPage = pageBody.data.page;
+
+    const styleConfig = defaultStyleConfigForDesignerType(productType.designerType);
+    const page = await storage.createCustomizerPage({
+      shop,
+      shopifyPageId: String(shopifyPage.id),
+      handle,
+      title: entry.label,
+      baseVariantId: String(variant.id),
+      baseProductId: String(variant.product_id ?? product.id),
+      baseProductHandle: product.handle,
+      baseProductTitle: product.title ?? "",
+      baseVariantTitle: variant.title ?? "",
+      baseProductPrice: variant.price ?? "",
+      productTypeId: productType.id,
+      styleConfig: styleConfig as any,
+      status: initialStatus,
+    });
+
+    return res.status(201).json({
+      page,
+      productTypeId: productType.id,
+      previewUrl: buildPreviewUrl(shop, handle),
+      storefrontUrl: `/pages/${handle}`,
+    });
   }));
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -19739,6 +20574,14 @@ ${orientationExtra}
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
+  const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");
+  registerBakeFlatPrintRoutes(app, {
+    storage,
+    isAuthenticated,
+    getAuthorizedInstallation,
+    resolveStorefrontProductType,
+    adminProductTypeAccessError,
+  });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);

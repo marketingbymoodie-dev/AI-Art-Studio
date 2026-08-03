@@ -41,7 +41,11 @@ export function stepPostGenGalleryIndex(
 ): number {
   const len = items.length;
   if (len <= 1) return 0;
-  let next = ((current % len) + len) % len;
+  // Out-of-range start (gallery shrank under the pointer) — clamp to the ends
+  // so a single click still lands on the expected neighbour.
+  const start =
+    current >= len ? len - 1 : current < 0 ? 0 : current;
+  let next = ((start % len) + len) % len;
   for (let n = 0; n < len; n++) {
     next = (next + delta + len) % len;
     if (!flatPlacerActive) return next;

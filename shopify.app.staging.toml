@@ -1,0 +1,42 @@
+# Staging Partner app — DEMO STORE ONLY
+# Deploy with: npm run shopify:deploy:staging
+# Never install this app on a live merchant shop.
+#
+client_id = "f7ec7df619bb8720c5f3f626dc7533ee"
+name = "AI Art Studio (Staging)"
+application_url = "https://ai-art-studio-staging.up.railway.app"
+embedded = true
+
+[build]
+# Staging may use `shopify app dev`; do not point that at production.
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-01"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/data_request" ]
+uri = "/shopify/webhooks/customers-data-request"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/redact" ]
+uri = "/shopify/webhooks/customers-redact"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "shop/redact" ]
+uri = "/shopify/webhooks/shop-redact"
+
+[access_scopes]
+scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks"
+
+[app_proxy]
+prefix = "apps"
+subpath = "appai"
+url = "https://ai-art-studio-staging.up.railway.app/api/proxy"
+
+[auth]
+redirect_urls = [
+  "https://ai-art-studio-staging.up.railway.app/auth/callback",
+  "https://ai-art-studio-staging.up.railway.app/shopify/callback",
+  "https://ai-art-studio-staging.up.railway.app/api/auth/callback"
+]

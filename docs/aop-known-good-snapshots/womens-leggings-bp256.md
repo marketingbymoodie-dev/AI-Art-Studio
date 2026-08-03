@@ -1,26 +1,25 @@
 # Women's Casual Leggings AOP (bp 256) — known-good snapshot
 
-**Status: VERIFIED WORKING (2026-07-27, merchant sign-off).**  
-Women's Casual Leggings **Place on item** and **Pattern** mode match in-app preview after hard refresh. Use this doc to restore this exact behavior if a later change regresses leggings AOP.
+**Status: UPDATED (2026-08-02).**  
+Builds on the 2026-07-27 Place/Pattern sign-off. This pin adds Reset-home UX, removes Replace artwork, moves Fine position into controls, and deferred mockup apply (no flash on every nudge).
 
 ## Pin commit (production)
 
 | Field | Value |
 |-------|--------|
-| **Commit** | `2fec2163da48f44b59643c0ee53e1965b2032458` (`2fec216`) |
+| **Commit** | `f56f8980d14a3c7e74ecca5bcf183cd4c6c0c664` (`f56f898`) |
 | **Branch** | `production` (Railway deploy target) |
-| **Date** | 2026-07-26 |
-| **Message** | Return to live editor on Front/Back click (leave Printers Mockup). |
+| **Date** | 2026-08-02 |
+| **Message** | Polish leggings AOP placer UX and defer mockup apply |
 
-Merchant sign-off (2026-07-27): Place + Pattern, Link sides / Mirror, rotate, Printers Mockup, Front/Back return to live editor — ready to lock.
+Prior verified pin (Place/Pattern core): `2fec216` (2026-07-26). Prefer this newer pin for UX/apply behaviour; keep `2fec216` stack if reverting only mesh/placement math.
 
 ### Stack this snapshot sits on
 
-These commits are on `production` at this pin and should stay together when reverting:
-
 | Commit | Summary |
 |--------|---------|
-| `2fec216` | **This pin** — Front/Back leave Printers Mockup → live editor |
+| `f56f898` | **This pin** — Reset beside Mirror (Link ON / Mirror OFF + locked placements); no Replace artwork; Fine position in controls; deferred apply |
+| `2fec216` | Front/Back leave Printers Mockup → live editor |
 | `7372c81` | Place rotate: bake artwork once (linked legs stay height-aligned) |
 | `07782aa` | Place-mode rotate handle on bounding box |
 | `3032153` | Off-unseen-side warning when art slides past panel edge |
@@ -38,7 +37,7 @@ Embed uses mesh placer when `product_types.panel_mapping_template` is set (non-e
 1. In **Hoodie Template Mapper**, publish/save the calibrated bp 256 template under a public slug (e.g. `womens-leggings-aop`).
 2. **Platform Catalog** → Women's Casual Leggings (blueprint **256**) → set **Panel mapping template** → Publish.
 3. Open **Test Generator** once (admin designer syncs catalog → product type) or the storefront customizer.
-4. Hard-refresh. HoodieAopPlacer with Part **Legs (Wearer's leg)**, Left/Right, **Link sides**, Mirror.
+4. Hard-refresh. HoodieAopPlacer with Part **Legs (Wearer's leg)**, Left/Right, **Link sides**, Mirror, **Reset** (beside Mirror).
 
 ## Mapper: symmetrical mesh
 
@@ -55,9 +54,16 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 |---------|---------|
 | Mode / view / part | Place / Front / Right leg |
 | Design groups | `right-leg` + `left-leg` (per-panel place) |
-| Place scale / offsets | Max **500%** (slider + bbox). Defaults (Link on): right `scale=3 ox=-113.2 oy=25.2`, left `scale=3 ox=7.3 oy=25.2` (X gap ≈ 120.5). Reset restores these. |
-| Link sides | **ON** — preserve **X gap** (+same dx); hard-sync **Y** (and scale). Toggle does not rewrite placements. |
-| Mirror | **OFF** (can combine with Link; while linked = art flip only) |
+| Place scale / offsets | Max **500%** (slider + bbox). Defaults (Link on): right `scale=3 ox=-113.2 oy=25.2`, left `scale=3 ox=7.3 oy=25.2` (X gap ≈ 120.5). |
+| Link sides | **ON** — preserve **X gap** (+same dx); hard-sync **Y** (and scale). |
+| Mirror | **OFF**. Turning Mirror **on** turns Link **off** and syncs left from right so the real mirror effect is visible. |
+| Reset | Beside Link/Mirror. Restores locked placements **and** Link ON / Mirror OFF / both legs enabled / active right-leg / **Front view**. |
+| Back view | Inspection only — Reset, canvas click, or any edit control returns to **Front**. |
+| Replace artwork | **Removed** — use top-level Upload / Generate. |
+| Fine position | Horizontal Left / Up / Down / Right in the **controls** column (former Replace slot). Not under the preview for leggings. |
+| Action bar | **Above** the preview: Edit Pattern / Reuse Artwork / Share (Download removed). |
+| Reuse Artwork | Dropdown of other live customizer pages; opens same-tab. Mismatched AR offers Open as-is vs Regenerate to fit (1 credit). |
+| Mockup sync | **Deferred** — live mesh preview while editing; flush on ATC, Back, page leave, or Printers Mockup. No 1.5s auto-apply flash. |
 | Gen AR | Tall single-leg panel AR (fallback `2:3`) |
 | Seam allowance | Mesh groups use `seamAllowance: 0`. Legacy PatternCustomizer used **70px** linear sew gap between L/R flats — not ported to mesh UV. |
 
@@ -65,8 +71,10 @@ After mapping one leg (`right_side` or `left_side`) with mask + mesh warp:
 
 - **Place on item** — per-leg contain-fit; Link sides union box; drag X inverted for on-body direction; rotate handle rotates motif without crotch height split; off-edge warning when art slides past unseen Front/Back.
 - **Pattern mode** — Link/Mirror tile symmetry at crotch; Back bridges tiled flats from Front mesh.
-- **Printers Mockup** — Front Person shown when ready; Front/Back/Place/Pattern return to live mesh editor (not stuck on person shot).
+- **Printers Mockup** — Front Person shown when ready; Front/Back/Place/Pattern return to live mesh editor (not stuck on person shot). Flushes latest placement before generating.
 - **Print DPI** — Place export long edge ~3200 (scale from mesh `sourceRect`, not Printify placeholder ~12k).
+- **Reset home** — after thrashing Link/Mirror, Reset restores dual-leg flow with Link on.
+- **Deferred apply** — nudging/scaling does not flash ATC / mockup refresh; ATC / Printers Mockup still get latest panels.
 
 Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's left/right).
 
@@ -76,7 +84,10 @@ Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's
 |---------|----------|
 | Place | Full motif contain-fit **per leg** (not continuous mural) |
 | Link sides | Toggle keeps L/R **offsetX** gap; while on, same **dx** + hard-sync **Y**/scale; union box; both Left/Right on; Artwork enabled / Reset act on both legs |
-| Mirror | Left art horizontally flipped; optionally copies right placement when turned on |
+| Mirror | Left art horizontally flipped; turning **on** also turns Link **off** and syncs left from right so the mirror is visible immediately |
+| Reset | Full home: Front view + locked L/R placements + Link ON + Mirror OFF (Place and Pattern Link/Mirror rows) |
+| Back view | Inspection only — Reset, canvas click, or any edit control returns to Front |
+| Fine position | Nudge arrows in controls (Left, Up, Down, Right) |
 | Place → Pattern | Link + Mirror forced **off** for clean tile symmetry; Place session snapshotted |
 | Pattern → Place | Restores last Place session Link/Mirror/placements/enabled |
 | Viewer | Top-left label: **Front View** / **Back View**; Front/Back leave Printers Mockup |
@@ -86,13 +97,15 @@ Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's
 | Rotate | Bottom-right handle (CW); `rotationDeg` baked into artwork once (not per-panel UV) |
 | Pattern + Link / Mirror | Extra flip on left_side; Back view bridges tiled flats from Front mesh |
 | Pattern tile size | Leg panels anchor tile grid at panel **center** (not crotch seam edge) |
+| Apply / mockups | `HoodieAopPlacerHandle.applyIfNeeded` — parent flushes on ATC / Back / visibility / Printers Mockup |
 
 ## Critical implementation (do not break casually)
 
 | Area | Path / invariant |
 |------|------------------|
 | Design groups | `shared/hoodieTemplate.ts` — `defaultLeggingsDesignGroups()` → `right-leg` / `left-leg`; normalize heals unified `legs` |
-| Placer UX | `HoodieAopPlacer` — Link / Mirror / Left / Right; `propagateLinkedDeltas`; `onEngageLiveEditor` clears person gallery |
+| Placer UX | `HoodieAopPlacer` — Link / Mirror / Reset / Fine position; `propagateLinkedDeltas`; `onEngageLiveEditor` clears person gallery |
+| Deferred apply | No debounced auto-apply. `applyIfNeeded` / `hasPendingChanges` via ref; `embed-design` `flushHoodieAopPlacer` |
 | Sampling / rotate | `aopPreview.ts` — per-leg place sampling; `bakeArtworkPlacementRotation`; `legsMirrored` / `legsLinked` XOR flip on `left_side` |
 | Handles | `DesignRectHandlesOverlay` — `invertOffsetX`, `rectOverride` (union when linked), rotate handle |
 | DPI | `printPanelOutputScale` uses mesh base long edge → ~3200, **not** placeholder 12k |
@@ -102,6 +115,8 @@ Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's
 **Invariant:** Do not reintroduce per-panel mesh `sourceRotation` for customer Place `rotationDeg` — that split linked legs at different heights. Bake once via `bakeArtworkPlacementRotation`.
 
 **Invariant:** Do not compute Place print DPI from Printify placeholder dims (~12k) applied to mockup-sized `sourceRect` (~750) — that yields ~7 DPI.
+
+**Invariant:** Do not reintroduce 1.5s debounced auto-apply on every placement change — that flashes ATC / mockup refresh. Flush only on ATC / Back / leave / Printers Mockup.
 
 ## Related files (touch with care)
 
@@ -122,11 +137,11 @@ Product: Printify blueprint **256**, panels `left_side` / `right_side` (wearer's
 ```bash
 git fetch origin
 git checkout production
-git reset --hard 2fec216
+git reset --hard f56f898
 git push --force-with-lease origin production
 ```
 
-**Warning:** drops any commits on `production` after `2fec216`.
+**Warning:** drops any commits on `production` after the pin.
 
 ### Option B — revert specific bad commits (surgical)
 
@@ -141,11 +156,11 @@ Prefer when other products' fixes after this pin must be kept.
 ### Option C — restore leggings-critical files from the pin
 
 ```bash
-git checkout 2fec216 -- client/src/components/hoodie-template-mapper/lib/aopPreview.ts
-git checkout 2fec216 -- client/src/components/designer/HoodieAopPlacer/index.tsx
-git checkout 2fec216 -- client/src/components/hoodie-template-mapper/DesignRectHandlesOverlay.tsx
-git checkout 2fec216 -- shared/hoodieTemplate.ts
-git checkout 2fec216 -- client/src/pages/embed-design.tsx
+git checkout f56f898 -- client/src/components/hoodie-template-mapper/lib/aopPreview.ts
+git checkout f56f898 -- client/src/components/designer/HoodieAopPlacer/index.tsx
+git checkout f56f898 -- client/src/components/hoodie-template-mapper/DesignRectHandlesOverlay.tsx
+git checkout f56f898 -- shared/hoodieTemplate.ts
+git checkout f56f898 -- client/src/pages/embed-design.tsx
 npm run build
 # commit + merge to production as usual
 ```
@@ -154,7 +169,7 @@ npm run build
 
 1. `npm run build` must pass.
 2. Hard refresh embed; re-apply leggings design.
-3. Re-check Place + Pattern, Link/Mirror, rotate, Printers Mockup, Front/Back → live editor.
+3. Re-check Place + Pattern, Link/Mirror, Reset home, Fine position in controls, deferred apply (no flash on nudge), Printers Mockup, Front/Back → live editor.
 
 ## Verification checklist (leggings 256)
 
@@ -169,8 +184,11 @@ npm run build
 - [x] Place rotate: motif rotates; Link sides stay height-aligned
 - [x] Printers Mockup → Front Person; Front/Back/Place/Pattern return to live editor
 - [x] Off-edge warning when art slides past unseen Front/Back
+- [x] Reset restores Link ON + Mirror OFF + locked dual-leg placements
+- [x] No Replace artwork; Fine position in controls column
+- [x] Nudge/scale does not flash ATC; flush on ATC / Printers Mockup / Back
 - [ ] ATC → checkout ok (shadow SKU — orthogonal; re-check if ATC paths change)
 
 ---
 
-*Snapshot recorded: 2026-07-27. Owner sign-off: Women's Casual Leggings AOP at production `2fec216`.*
+*Snapshot updated: 2026-08-02. Pin: production `f56f898`. Prior Place/Pattern sign-off: `2fec216` (2026-07-27).*

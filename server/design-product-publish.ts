@@ -143,7 +143,12 @@ async function buildFlatPlaceholders(
   }
   const designState = parseJson<Record<string, any>>(job.designState, {});
   const flatPlacerState = designState?.flatPlacerState as
-    | { placements?: Partial<Record<ViewName, FlatPlacement>>; enabled?: Partial<Record<ViewName, boolean>>; artworkUrl?: string }
+    | {
+        placements?: Partial<Record<ViewName, FlatPlacement>>;
+        enabled?: Partial<Record<ViewName, boolean>>;
+        artworkUrl?: string;
+        backgroundColor?: string | null;
+      }
     | undefined;
   const artworkUrl = (job.designImageUrl as string | null) || flatPlacerState?.artworkUrl || "";
   if (!artworkUrl) {
@@ -177,11 +182,17 @@ async function buildFlatPlaceholders(
     const placement = placements[view] ?? { scale: 1, offsetX: 0, offsetY: 0 };
     const placementRect = resolveFlatBakePlacementRect(flatCalibration, view, { sizeId, frameColorId: colorId });
     try {
+      const rawBg = flatPlacerState?.backgroundColor;
+      const backgroundColor =
+        typeof rawBg === "string" && /^#[0-9a-fA-F]{6}$/.test(rawBg.trim())
+          ? rawBg.trim()
+          : null;
       const baked = await bakeFlatPrintFile({
         artworkUrl,
         placement,
         printFileDims: { width: dims.width, height: dims.height },
         placementRect: placementRect ?? undefined,
+        backgroundColor,
       });
       const imageId = await uploadPrintFileToPrintify(apiToken, `design-${job.id}-${view}.png`, baked.buffer);
       placeholders.push({ position: view, images: [{ id: imageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
@@ -317,7 +328,7 @@ export async function createPersistentPrintifyProduct(
   const variantIds = resolvedVariants.map((v) => v.printifyVariantId);
   const requestBody = {
     title: title.slice(0, 250),
-    description: description || "AppAI Studio design product — artwork stored for automatic order fulfillment. Do not edit print areas manually.",
+    description: description || "AI Art Studio design product — artwork stored for automatic order fulfillment. Do not edit print areas manually.",
     blueprint_id: blueprintId,
     print_provider_id: providerId,
     variants: variantIds.map((id) => ({ id, price: 100, is_enabled: true })),

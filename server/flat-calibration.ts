@@ -32,6 +32,7 @@ import {
 } from "@shared/productVariantOptions";
 export { looksLikePhoneModelName };
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
+import { colorMatchesFrame, shopifyColorTokensEqual } from "@shared/shopifyVariantMatch";
 import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
@@ -45,6 +46,7 @@ import {
   shouldAllowFlatHarvest,
   shouldForceFlatTierDespiteProbe,
 } from "@shared/productLayoutPolicy";
+import { isPrintifyDecoratorUnavailableError } from "./printifyDecoratorErrors";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -200,7 +202,9 @@ const PROBE_ROWS = 8;
 const PROBE_MAX_SRC_SIDE = 1600;
 // scale=1 + vertical overscan fills the print area via clip-to-boundary
 // (Printify clamps placement scale at 1.0 and ignores uploaded image px size).
-const REG_VERTICAL_OVERSCAN = 1.12;
+// 1.12 under-filled DTG chest areas on Heavy Blend hoodies (dashed guide short
+// vs real print). 1.20 matches what Printify still accepts after width-fit clip.
+const REG_VERTICAL_OVERSCAN = 1.2;
 /** Harvest blanks for every resolved colour unless caller caps via maxBlankColors. */
 const DEFAULT_MAX_BLANK_COLORS = 64;
 
@@ -1943,7 +1947,916 @@ export type HarvestOptions = {
   /** Platform catalog override — harvest despite (AOP) in Printify title. */
   forceFlatHarvest?: boolean;
   fulfillmentLayout?: string | null;
+  /**
+   * Blank colour ids already present in a multi-provider canonical harvest.
+   * Skipped so a second provider only adds missing colorways (e.g. JAMS Black/Red
+   * after T Shirt and Sons harvested White/*).
+   */
+  skipBlankColorIds?: string[];
+  /**
+   * Multi-provider fill: harvest blank garment photos only — skip probe / reg /
+   * shading. Those steps call shop create and fail with Printify 6002 for
+   * decorators the harvest shop cannot use, before any blanks are uploaded.
+   * Also implied when `skipBlankColorIds` is non-empty.
+   */
+  blanksOnly?: boolean;
+  /**
+   * When Printify shop create is blocked (decorator 6002) and no Printify product
+   * exists for that provider, pull per-colour blank photos from the merchant's
+   * already-published Shopify listing (customizer base product).
+   */
+  shopifyBlankSource?: {
+    shopDomain: string;
+    accessToken: string;
+    productId: string;
+    /** size:color → Shopify variant id (from product_types.shopifyVariantIds) */
+    shopifyVariantIds?: Record<string, number | string>;
+  };
 };
+
+/** Normalize blank colour keys for multi-provider merge / skip matching. */
+export function normalizeHarvestBlankColorKey(id: string): string {
+  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+}
+
+/**
+ * Copy blank (and per-blank geometry) entries from `from` into `into` when the
+ * key is not already present. Returns how many blank keys were added.
+ */
+export function mergeFlatCalibrationBlanks(
+  into: FlatCalibrationManifest,
+  from: FlatCalibrationManifest | null | undefined,
+): number {
+  if (!from?.blanks) return 0;
+  if (!into.blanks) into.blanks = {};
+  let added = 0;
+  for (const [key, views] of Object.entries(from.blanks)) {
+    if (!views?.front && !views?.back) continue;
+    const existing = into.blanks[key];
+    if (existing?.front || existing?.back) continue;
+    into.blanks[key] = { ...views };
+    added += 1;
+    const geo = from.geometryByBlank?.[key];
+    if (geo) {
+      if (!into.geometryByBlank) into.geometryByBlank = {};
+      if (!into.geometryByBlank[key]) into.geometryByBlank[key] = geo;
+    }
+  }
+  return added;
+}
+
+/** Match a shop-product colour option title/id to a harvest colour entry. */
+function colorEntryMatchesOption(color: ColorEntry, optionTitle: string, optionId?: string | number): boolean {
+  const title = String(optionTitle || "");
+  if (colorMatchesFrame(title, color.name || color.id, color.id)) return true;
+  if (shopifyColorTokensEqual(title, color.id) || shopifyColorTokensEqual(title, color.name || "")) return true;
+  const want = normalizeHarvestBlankColorKey(color.id);
+  const wantName = normalizeHarvestBlankColorKey(color.name || color.id);
+  const titleKey = normalizeHarvestBlankColorKey(slugColorId(title));
+  const titleRaw = normalizeHarvestBlankColorKey(title);
+  if (titleKey === want || titleKey === wantName || titleRaw === want || titleRaw === wantName) return true;
+  if (optionId != null && optionId !== "") {
+    const idKey = normalizeHarvestBlankColorKey(String(optionId));
+    if (idKey === want || idKey === wantName) return true;
+  }
+  return false;
+}
+
+function shopifyImageSrcForVariant(variant: any, productImages: any[]): string | null {
+  if (variant?.featured_image?.src) return String(variant.featured_image.src);
+  if (variant?.image_id && productImages.length > 0) {
+    const img = productImages.find((i: any) => Number(i.id) === Number(variant.image_id));
+    if (img?.src) return String(img.src);
+  }
+  // Images that list this variant id (Admin API)
+  const byVariant = productImages.find((img: any) => {
+    const vids = Array.isArray(img?.variant_ids) ? img.variant_ids.map(Number) : [];
+    return img?.src && vids.includes(Number(variant?.id));
+  });
+  return byVariant?.src ? String(byVariant.src) : null;
+}
+
+/**
+ * Pull blank garment photos from a published Shopify listing when Printify
+ * decorator create is unavailable (common for US providers on EU harvest shops).
+ */
+export async function harvestBlanksFromShopifyProduct(args: {
+  shopDomain: string;
+  accessToken: string;
+  productId: string;
+  shopifyVariantIds?: Record<string, number | string>;
+  colors: ColorEntry[];
+  storageKey: string;
+  calibratorMode: boolean;
+  views: ViewName[];
+}): Promise<Record<string, Partial<Record<ViewName, string>>>> {
+  const {
+    accessToken,
+    productId,
+    shopifyVariantIds,
+    colors,
+    storageKey,
+    calibratorMode,
+    views,
+  } = args;
+  const shop = String(args.shopDomain || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .toLowerCase();
+  if (!shop || !accessToken || !productId || colors.length === 0) return {};
+
+  let product: any;
+  try {
+    const res = await fetch(`https://${shop}/admin/api/2025-10/products/${productId}.json`, {
+      headers: { "X-Shopify-Access-Token": accessToken },
+    });
+    if (!res.ok) {
+      console.warn(
+        `[flat-calibration] Shopify blank source ${shop}/products/${productId} → ${res.status}`,
+      );
+      return {};
+    }
+    product = (await res.json())?.product;
+  } catch (err) {
+    console.warn(
+      `[flat-calibration] Shopify blank source fetch failed:`,
+      (err as Error).message,
+    );
+    return {};
+  }
+  if (!product) return {};
+
+  const variants: any[] = Array.isArray(product.variants) ? product.variants : [];
+  const images: any[] = Array.isArray(product.images) ? product.images : [];
+  /** GraphQL often has per-variant image URLs when REST leaves image_id / variant_ids empty. */
+  const graphqlImageByVariantId = new Map<number, string>();
+  try {
+    const gqlRes = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `{
+          product(id: "gid://shopify/Product/${productId}") {
+            variants(first: 250) {
+              nodes {
+                legacyResourceId
+                image { url }
+                selectedOptions { name value }
+              }
+            }
+          }
+        }`,
+      }),
+    });
+    if (gqlRes.ok) {
+      const gqlJson = await gqlRes.json();
+      const nodes = gqlJson?.data?.product?.variants?.nodes || [];
+      for (const node of nodes) {
+        const vid = Number(node.legacyResourceId);
+        const url = node.image?.url;
+        if (Number.isFinite(vid) && url) graphqlImageByVariantId.set(vid, String(url));
+      }
+      console.log(
+        `[flat-calibration] Shopify GraphQL product ${productId}: ` +
+          `${graphqlImageByVariantId.size} variant image(s)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[flat-calibration] Shopify GraphQL variant images failed:`,
+      (err as Error).message,
+    );
+  }
+  const out: Record<string, Partial<Record<ViewName, string>>> = {};
+
+  const optionMatchesColor = (raw: string, color: ColorEntry): boolean => {
+    const name = color.name || color.id;
+    if (colorMatchesFrame(raw, name, color.id)) return true;
+    if (shopifyColorTokensEqual(raw, color.id) || shopifyColorTokensEqual(raw, name)) return true;
+    // "Black/ Red" (space after slash) vs slug black_red / name "Black/Red"
+    const compact = raw.replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+    if (colorMatchesFrame(compact, name, color.id)) return true;
+    if (shopifyColorTokensEqual(compact, color.id) || shopifyColorTokensEqual(compact, name)) {
+      return true;
+    }
+    return false;
+  };
+
+  /** AppAI publish SKUs look like `{blueprint}-{sizeId}-{colorId}`. */
+  const skuMatchesColor = (sku: string, color: ColorEntry): boolean => {
+    const s = String(sku || "").toLowerCase();
+    if (!s) return false;
+    const id = normalizeHarvestBlankColorKey(color.id);
+    const nameKey = normalizeHarvestBlankColorKey(color.name || "");
+    const parts = s.split("-");
+    const tail = parts[parts.length - 1] || "";
+    const tail2 = parts.length >= 2 ? `${parts[parts.length - 2]}_${parts[parts.length - 1]}` : "";
+    // 79-s-black_red → last segment may be black_red, or split across hyphens as black / red
+    if (normalizeHarvestBlankColorKey(tail) === id) return true;
+    if (nameKey && normalizeHarvestBlankColorKey(tail) === nameKey) return true;
+    if (normalizeHarvestBlankColorKey(tail2) === id) return true;
+    if (s.includes(`-${color.id.toLowerCase()}`)) return true;
+    if (s.endsWith(color.id.toLowerCase())) return true;
+    return false;
+  };
+
+  const variantsForColor = (color: ColorEntry): any[] => {
+    const hits: any[] = [];
+    const seen = new Set<string>();
+    const push = (v: any) => {
+      if (!v?.id) return;
+      const id = String(v.id);
+      if (seen.has(id)) return;
+      seen.add(id);
+      hits.push(v);
+    };
+
+    if (shopifyVariantIds && typeof shopifyVariantIds === "object") {
+      for (const [key, vid] of Object.entries(shopifyVariantIds)) {
+        const parts = String(key).split(":");
+        // Keys are `size:color` — colour is always the last segment (colour names may contain `/`).
+        const colorPart = parts.length >= 2 ? parts.slice(1).join(":") : String(key);
+        if (optionMatchesColor(colorPart, color)) {
+          push(variants.find((v) => String(v.id) === String(vid)));
+        }
+      }
+    }
+    for (const v of variants) {
+      const opts = [v.option1, v.option2, v.option3, v.title].filter(Boolean).map(String);
+      if (opts.some((o) => optionMatchesColor(o, color)) || skuMatchesColor(String(v.sku || ""), color)) {
+        push(v);
+      }
+    }
+    return hits;
+  };
+
+  // Pre-index images by variant id (Printify often attaches one mockup to every size of a colour).
+  const imageByVariantId = new Map<number, string>();
+  for (const img of images) {
+    if (!img?.src) continue;
+    const vids = Array.isArray(img.variant_ids) ? img.variant_ids.map(Number) : [];
+    for (const vid of vids) {
+      if (!imageByVariantId.has(vid)) imageByVariantId.set(vid, String(img.src));
+    }
+  }
+
+  const imageSrcForColor = (color: ColorEntry, colorVariants: any[]): string | null => {
+    for (const variant of colorVariants) {
+      const fromVariant = shopifyImageSrcForVariant(variant, images);
+      if (fromVariant) return fromVariant;
+      const mapped = imageByVariantId.get(Number(variant.id));
+      if (mapped) return mapped;
+      const gql = graphqlImageByVariantId.get(Number(variant.id));
+      if (gql) return gql;
+    }
+
+    // Alt / filename match (Printify mockup alts often include the colour title).
+    const altHit = images.find((img: any) => {
+      if (!img?.src) return false;
+      const alt = String(img.alt || "");
+      if (alt && optionMatchesColor(alt, color)) return true;
+      const file = decodeURIComponent(String(img.src).split("/").pop() || "");
+      return !!file && optionMatchesColor(file, color);
+    });
+    if (altHit?.src) return String(altHit.src);
+
+    // Deliberately NO featured-image fallback: Shopify hero images are usually a
+    // single colourway (bp79 shipped a white/black hero as the "black_red" blank).
+    // A missing blank is recoverable; a wrong blank ships to storefronts.
+    return null;
+  };
+
+  if (colors.length > 0) {
+    const sampleOpts = variants.slice(0, 8).map((v) =>
+      [v.option1, v.option2, v.option3].filter(Boolean).join(" / "),
+    );
+    const sampleSkus = variants.slice(0, 4).map((v) => v.sku).filter(Boolean);
+    console.log(
+      `[flat-calibration] Shopify product ${productId}: ${variants.length} variants, ` +
+        `${images.length} images; sample options=[${sampleOpts.join(" | ")}]` +
+        `${sampleSkus.length ? `; skus=[${sampleSkus.join(" | ")}]` : ""}` +
+        `; imageVariantLinks=${imageByVariantId.size}`,
+    );
+  }
+
+  for (const color of colors) {
+    const colorVariants = variantsForColor(color);
+    const src = imageSrcForColor(color, colorVariants);
+    if (!src) {
+      console.warn(
+        `[flat-calibration] Shopify blank: no image for ${color.id}` +
+          ` (product ${productId}, matchedVariants=${colorVariants.map((v) => v.id).join(",") || "none"})`,
+      );
+      continue;
+    }
+    try {
+      const buf = await downloadBuffer(src);
+      const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+      const perView: Partial<Record<ViewName, string>> = {};
+      // Shopify listings usually expose one hero image per colour — use as front blank.
+      const frontViews = views.includes("front") ? (["front"] as ViewName[]) : views.slice(0, 1);
+      for (const view of frontViews) {
+        const blankPath = calibratorMode
+          ? calibratorLayerPaths(storageKey, safe, view).blank
+          : `${storageKey}/blank-${safe}-${view}.jpg`;
+        perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
+      }
+      if (perView.front || perView.back) {
+        out[color.id] = perView;
+        console.log(
+          `[flat-calibration] blank ${color.id} from Shopify product ${productId}` +
+            ` (variants=${colorVariants.map((v) => v.id).join(",") || "alt"})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[flat-calibration] Shopify blank upload failed ${color.id}:`,
+        (err as Error).message,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * When shop create rejects a decorator (6002), pull blank photos from an existing
+ * Printify product already on that shop for the same blueprint + provider.
+ */
+async function harvestBlanksFromExistingShopProducts(args: {
+  token: string;
+  shopId: string;
+  blueprintId: number;
+  providerId: number;
+  colors: ColorEntry[];
+  storageKey: string;
+  calibratorMode: boolean;
+  views: ViewName[];
+}): Promise<Record<string, Partial<Record<ViewName, string>>>> {
+  const { token, shopId, blueprintId, providerId, colors, storageKey, calibratorMode, views } = args;
+  const needed = new Map(
+    colors.map((c) => [normalizeHarvestBlankColorKey(c.id), c] as const),
+  );
+  if (needed.size === 0) return {};
+
+  const out: Record<string, Partial<Record<ViewName, string>>> = {};
+  const maxPages = 8;
+
+  for (let page = 1; page <= maxPages && needed.size > 0; page++) {
+    let listData: any;
+    try {
+      listData = await pf<any>(
+        `/shops/${shopId}/products.json?limit=50&page=${page}`,
+        token,
+      );
+    } catch (err) {
+      console.warn(
+        `[flat-calibration] existing-product list failed shop=${shopId} page=${page}:`,
+        (err as Error).message,
+      );
+      break;
+    }
+    const products: any[] = Array.isArray(listData?.data)
+      ? listData.data
+      : Array.isArray(listData)
+        ? listData
+        : [];
+    if (products.length === 0) break;
+
+    for (const summary of products) {
+      if (needed.size === 0) break;
+      if (Number(summary.blueprint_id) !== blueprintId) continue;
+      if (Number(summary.print_provider_id) !== providerId) continue;
+      let product: any;
+      try {
+        product = await pf<any>(`/shops/${shopId}/products/${summary.id}.json`, token);
+      } catch {
+        continue;
+      }
+
+      const optionMeta = new Map<number, string>();
+      for (const opt of product.options || []) {
+        const optName = String(opt.name || "");
+        // Prefer colour axes; also keep non-size options (baseball body/sleeve titles).
+        const isSize = opt.type === "size" || /^size$/i.test(optName);
+        const isColor =
+          opt.type === "color" || /colou?r/i.test(optName) || /style|body|sleeve/i.test(optName);
+        if (isSize && !isColor) continue;
+        for (const v of opt.values || []) {
+          optionMeta.set(Number(v.id), String(v.title || v.id));
+        }
+      }
+      // If nothing looked like colour, index every option value (last resort).
+      if (optionMeta.size === 0) {
+        for (const opt of product.options || []) {
+          for (const v of opt.values || []) {
+            optionMeta.set(Number(v.id), String(v.title || v.id));
+          }
+        }
+      }
+
+      const variantColorKey = new Map<number, string>();
+      for (const variant of product.variants || []) {
+        const optIds = variantOptionValues(variant);
+        let matched: ColorEntry | undefined;
+        for (const optId of optIds) {
+          const title = optionMeta.get(Number(optId));
+          if (!title) continue;
+          for (const color of needed.values()) {
+            if (colorEntryMatchesOption(color, title, optId)) {
+              matched = color;
+              break;
+            }
+          }
+          if (matched) break;
+        }
+        if (matched) variantColorKey.set(Number(variant.id), matched.id);
+      }
+
+      const rawImages: any[] = Array.isArray(product.images) ? product.images : [];
+
+      for (const [normKey, color] of [...needed.entries()]) {
+        if (out[color.id]?.front || out[color.id]?.back) continue;
+        const variantIds = [...variantColorKey.entries()]
+          .filter(([, cid]) => cid === color.id)
+          .map(([vid]) => vid);
+        if (variantIds.length === 0) continue;
+
+        const colorImages = rawImages.filter((img) => {
+          if (!img?.src) return false;
+          const vids = Array.isArray(img.variant_ids) ? img.variant_ids.map(Number) : [];
+          // Empty variant_ids = shared mockup; only use when nothing variant-scoped exists.
+          return vids.length === 0 || vids.some((id: number) => variantIds.includes(id));
+        });
+        const scopedImages = colorImages.filter((img) => {
+          const vids = Array.isArray(img.variant_ids) ? img.variant_ids.map(Number) : [];
+          return vids.some((id: number) => variantIds.includes(id));
+        });
+        const pool = scopedImages.length > 0 ? scopedImages : colorImages;
+
+        const perView: Partial<Record<ViewName, string>> = {};
+        for (const view of views) {
+          const labeled = pool
+            .map((img) => ({ url: String(img.src), label: extractCameraLabel(String(img.src)) }))
+            .find((i) => i.label === view || i.label.includes(view));
+          let url: string | undefined = labeled?.url;
+          if (!url && view === "front") {
+            url = pool.find((img) => img?.is_default)?.src || pool[0]?.src;
+          }
+          if (!url) continue;
+          try {
+            const buf = await downloadBuffer(url);
+            const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+            const blankPath = calibratorMode
+              ? calibratorLayerPaths(storageKey, safe, view).blank
+              : `${storageKey}/blank-${safe}-${view}.jpg`;
+            perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
+          } catch (err) {
+            console.warn(
+              `[flat-calibration] existing-product blank upload failed ${color.id}/${view}:`,
+              (err as Error).message,
+            );
+          }
+        }
+        if (perView.front || perView.back) {
+          out[color.id] = perView;
+          needed.delete(normKey);
+          console.log(
+            `[flat-calibration] blank ${color.id} from existing shop product ${product.id} (provider ${providerId})`,
+          );
+        }
+      }
+    }
+
+    if (!listData?.next_page_url && (!listData?.last_page || page >= listData.last_page)) break;
+  }
+
+  return out;
+}
+
+/**
+ * Decorator-blocked providers (6002) refuse shop product *creation*, but Printify's
+ * images-api still renders any variant of an EXISTING shop product on the fly —
+ * and product *updates* are not blocked. Temporarily swap an existing product's
+ * print areas to a transparent PNG, capture plain-garment renders for the missing
+ * colours, then restore the original print areas. This is the only automated true
+ * blank source when a colourway exists solely at a blocked provider (e.g. bp79
+ * Black/Red at JAMS) — Shopify listing images are hero shots, not per-colour blanks.
+ */
+async function harvestBlanksByRenderingExistingProduct(args: {
+  token: string;
+  shopId: string;
+  blueprintId: number;
+  providerId: number;
+  colors: ColorEntry[];
+  storageKey: string;
+  calibratorMode: boolean;
+  views: ViewName[];
+}): Promise<Record<string, Partial<Record<ViewName, string>>>> {
+  const { token, shopId, blueprintId, providerId, colors, storageKey, calibratorMode, views } = args;
+  const out: Record<string, Partial<Record<ViewName, string>>> = {};
+  if (colors.length === 0) return out;
+
+  const candidates: any[] = [];
+  for (let page = 1; page <= 8; page++) {
+    let listData: any;
+    try {
+      listData = await pf<any>(`/shops/${shopId}/products.json?limit=50&page=${page}`, token);
+    } catch (err) {
+      console.warn(
+        `[flat-calibration] render-existing list failed shop=${shopId} page=${page}:`,
+        (err as Error).message,
+      );
+      break;
+    }
+    const products: any[] = Array.isArray(listData?.data) ? listData.data : [];
+    if (products.length === 0) break;
+    for (const p of products) {
+      if (Number(p.blueprint_id) === blueprintId && Number(p.print_provider_id) === providerId) {
+        candidates.push(p);
+      }
+    }
+    if (!listData?.next_page_url && (!listData?.last_page || page >= listData.last_page)) break;
+  }
+  if (candidates.length === 0) return out;
+
+  // Prefer our own disposable artifacts over real listings (swap is restore-safe
+  // either way, but a test product regenerating mockups is a non-event).
+  const looksDisposable = (p: any) =>
+    /__appai_calibration|appai\s*test|flat-test-order/i.test(String(p.title || ""));
+  candidates.sort((a, b) => Number(looksDisposable(b)) - Number(looksDisposable(a)));
+
+  for (const summary of candidates.slice(0, 3)) {
+    const stillNeeded = colors.filter((c) => !(out[c.id]?.front || out[c.id]?.back));
+    if (stillNeeded.length === 0) break;
+
+    let product: any;
+    try {
+      product = await pf<any>(`/shops/${shopId}/products/${summary.id}.json`, token);
+    } catch {
+      continue;
+    }
+
+    // Camera ids per view from the product's own mockup URLs:
+    // /mockup/{productId}/{variantId}/{cameraId}/...?camera_label={view}
+    const cameraByView = new Map<ViewName, string>();
+    for (const img of product.images || []) {
+      const src = String(img?.src || "");
+      const m = src.match(/\/mockup\/[^/]+\/\d+\/(\d+)\//);
+      if (!m) continue;
+      const label = extractCameraLabel(src);
+      for (const view of views) {
+        if (!cameraByView.has(view) && (label === view || label.includes(view))) {
+          cameraByView.set(view, m[1]);
+        }
+      }
+    }
+    if (cameraByView.size === 0) continue;
+
+    const productVariantIds = new Set<number>(
+      (product.variants || []).map((v: any) => Number(v.id)),
+    );
+    const optionMeta = new Map<number, string>();
+    for (const opt of product.options || []) {
+      for (const v of opt.values || []) {
+        optionMeta.set(Number(v.id), String(v.title || v.id));
+      }
+    }
+    const variantIdForColor = (color: ColorEntry): number | null => {
+      if (color.variantId && productVariantIds.has(Number(color.variantId))) {
+        return Number(color.variantId);
+      }
+      for (const variant of product.variants || []) {
+        for (const optId of variantOptionValues(variant)) {
+          const title = optionMeta.get(Number(optId));
+          if (title && colorEntryMatchesOption(color, title, optId)) return Number(variant.id);
+        }
+      }
+      return null;
+    };
+    const renderable = stillNeeded
+      .map((color) => ({ color, variantId: variantIdForColor(color) }))
+      .filter((x): x is { color: ColorEntry; variantId: number } => x.variantId != null);
+    if (renderable.length === 0) continue;
+
+    const originalPrintAreas = (product.print_areas || []).map((pa: any) => ({
+      variant_ids: pa.variant_ids,
+      placeholders: (pa.placeholders || []).map((pl: any) => ({
+        position: pl.position,
+        images: (pl.images || []).map((im: any) => ({
+          id: im.id,
+          x: im.x,
+          y: im.y,
+          scale: im.scale,
+          angle: im.angle,
+        })),
+      })),
+    }));
+
+    let swapped = false;
+    try {
+      const transparentId = await uploadImage(token, "blank.png", await transparentPng());
+      await pf<any>(`/shops/${shopId}/products/${product.id}.json`, token, {
+        method: "PUT",
+        body: JSON.stringify({
+          print_areas: [
+            {
+              variant_ids: [...productVariantIds],
+              placeholders: [
+                {
+                  position: originalPrintAreas[0]?.placeholders?.[0]?.position || "front",
+                  images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+                },
+              ],
+            },
+          ],
+        }),
+      });
+      swapped = true;
+      // Give the mockup generator a beat before requesting fresh renders.
+      await new Promise((r) => setTimeout(r, 2500));
+
+      for (const { color, variantId } of renderable) {
+        const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+        const perView: Partial<Record<ViewName, string>> = {};
+        for (const view of views) {
+          const camera = cameraByView.get(view);
+          if (!camera) continue;
+          // Unique filename busts images-api's render cache (pre-swap artwork).
+          const renderUrl = `https://images-api.printify.com/mockup/${product.id}/${variantId}/${camera}/appai-blank-${Date.now()}.jpg`;
+          try {
+            const buf = await downloadBuffer(renderUrl);
+            const blankPath = calibratorMode
+              ? calibratorLayerPaths(storageKey, safe, view).blank
+              : `${storageKey}/blank-${safe}-${view}.jpg`;
+            perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
+          } catch (err) {
+            console.warn(
+              `[flat-calibration] render-existing blank failed ${color.id}/${view}:`,
+              (err as Error).message,
+            );
+          }
+        }
+        if (perView.front || perView.back) {
+          out[color.id] = perView;
+          console.log(
+            `[flat-calibration] blank ${color.id} rendered from existing product ${product.id} (provider ${providerId})`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[flat-calibration] render-existing swap failed for product ${summary.id}:`,
+        (err as Error).message,
+      );
+    } finally {
+      if (swapped && originalPrintAreas.length > 0) {
+        try {
+          await pf<any>(`/shops/${shopId}/products/${product.id}.json`, token, {
+            method: "PUT",
+            body: JSON.stringify({ print_areas: originalPrintAreas }),
+          });
+        } catch (err) {
+          console.warn(
+            `[flat-calibration] failed to restore print areas on ${product.id}:`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Blank-photo-only harvest for multi-provider canonical fill. Skips probe/reg/shading
+ * so a decorator-unavailable provider can still contribute missing colorways.
+ */
+async function harvestBlanksOnlyPass(args: {
+  opts: HarvestOptions;
+  variants: any[];
+  viewLayout: HarvestViewLayout;
+  skipBlankKeys: Set<string>;
+  baseManifest: FlatCalibrationManifest;
+  storageKey: string;
+}): Promise<HarvestResult> {
+  const { opts, variants, viewLayout, skipBlankKeys, storageKey } = args;
+  const { productTypeId, name, blueprintId, providerId, token, shopId } = opts;
+  const calibratorMode = !!opts.calibratorMode;
+  const { manifestViews, printAreaPlaceholder, singlePrintSlot } = viewLayout;
+  const baseManifest: FlatCalibrationManifest = {
+    ...args.baseManifest,
+    tier: "flat",
+    blanks: {},
+  };
+  const createdProductIds: string[] = [];
+  const harvestWarnings: string[] = [];
+
+  try {
+    await ensureFlatCalibrationBucket();
+
+    let colors =
+      opts.colors && opts.colors.length > 0
+        ? opts.colors
+        : await resolveHarvestColors({
+            token,
+            blueprintId,
+            providerId,
+            variants,
+            productType:
+              opts.frameColors || opts.variantMap || opts.designerType || opts.sizes
+                ? {
+                    designerType: opts.designerType,
+                    frameColors: opts.frameColors,
+                    sizes: opts.sizes,
+                    variantMap: opts.variantMap,
+                  }
+                : null,
+          });
+    if (skipBlankKeys.size > 0) {
+      colors = colors.filter(
+        (c) => !skipBlankKeys.has(normalizeHarvestBlankColorKey(c.id)),
+      );
+    }
+    if (colors.length === 0) {
+      return {
+        tier: "flat",
+        status: "ready",
+        manifest: { ...baseManifest, blanks: {} },
+      };
+    }
+
+    const maxBlankColors = opts.maxBlankColors ?? DEFAULT_MAX_BLANK_COLORS;
+    colors = colors.slice(0, Math.max(1, maxBlankColors));
+    console.log(
+      `[flat-calibration] ${name} blanks-only (bp ${blueprintId} / provider ${providerId}): ` +
+        `${colors.length} colour(s): ${colors.map((c) => c.id).join(", ")}`,
+    );
+
+    let createBlocked: Error | null = null;
+    try {
+      const transparentId = await uploadImage(token, "blank.png", await transparentPng());
+      for (const color of colors) {
+        if (createBlocked) break;
+        try {
+          const placeholders = buildTransparentPrintPlaceholders(
+            manifestViews,
+            printAreaPlaceholder,
+            singlePrintSlot,
+            transparentId,
+          );
+          const blank = await createTempProduct(
+            token,
+            shopId,
+            blueprintId,
+            providerId,
+            color.variantId,
+            placeholders,
+          );
+          createdProductIds.push(blank.productId);
+          const blankImages = await pollMockups(token, shopId, blank.productId, blank.images);
+          const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+          const perView: Partial<Record<ViewName, string>> = {};
+          for (const view of manifestViews) {
+            const match = pickView(blankImages, view);
+            if (!match) continue;
+            const buf = await downloadBuffer(match.url);
+            const blankPath = calibratorMode
+              ? calibratorLayerPaths(storageKey, safe, view).blank
+              : `${storageKey}/blank-${safe}-${view}.jpg`;
+            perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
+          }
+          if (Object.keys(perView).length > 0) {
+            baseManifest.blanks[color.id] = perView;
+          }
+        } catch (err) {
+          const msg = (err as Error)?.message || String(err);
+          if (isPrintifyDecoratorUnavailableError(msg)) {
+            createBlocked = err as Error;
+            harvestWarnings.push(
+              `Provider ${providerId}: shop create unavailable — trying existing products (${msg.slice(0, 160)})`,
+            );
+            break;
+          }
+          harvestWarnings.push(`blank ${color.id}: ${msg.slice(0, 200)}`);
+          console.warn(`[flat-calibration] blanks-only ${color.id} failed:`, msg);
+        }
+      }
+    } catch (err) {
+      const msg = (err as Error)?.message || String(err);
+      if (isPrintifyDecoratorUnavailableError(msg)) {
+        createBlocked = err as Error;
+        harvestWarnings.push(
+          `Provider ${providerId}: shop create unavailable — trying existing products`,
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    let stillNeeded = colors.filter((c) => {
+      const b = baseManifest.blanks[c.id];
+      return !(b?.front || b?.back);
+    });
+    // True-blank renders first: swap an existing product's print to transparent and
+    // render via images-api. Stored product images (next pass) can carry artwork.
+    if (stillNeeded.length > 0) {
+      const fromRender = await harvestBlanksByRenderingExistingProduct({
+        token,
+        shopId,
+        blueprintId,
+        providerId,
+        colors: stillNeeded,
+        storageKey,
+        calibratorMode,
+        views: manifestViews,
+      });
+      for (const [id, viewsForColor] of Object.entries(fromRender)) {
+        baseManifest.blanks[id] = viewsForColor;
+      }
+      stillNeeded = colors.filter((c) => {
+        const b = baseManifest.blanks[c.id];
+        return !(b?.front || b?.back);
+      });
+    }
+    if (stillNeeded.length > 0) {
+      const fromExisting = await harvestBlanksFromExistingShopProducts({
+        token,
+        shopId,
+        blueprintId,
+        providerId,
+        colors: stillNeeded,
+        storageKey,
+        calibratorMode,
+        views: manifestViews,
+      });
+      for (const [id, views] of Object.entries(fromExisting)) {
+        baseManifest.blanks[id] = views;
+      }
+    }
+
+    stillNeeded = colors.filter((c) => {
+      const b = baseManifest.blanks[c.id];
+      return !(b?.front || b?.back);
+    });
+    const shopifySrc = opts.shopifyBlankSource;
+    if (stillNeeded.length > 0 && shopifySrc?.shopDomain && shopifySrc.accessToken && shopifySrc.productId) {
+      harvestWarnings.push(
+        `Provider ${providerId}: pulling missing blanks from Shopify product ${shopifySrc.productId}`,
+      );
+      const fromShopify = await harvestBlanksFromShopifyProduct({
+        shopDomain: shopifySrc.shopDomain,
+        accessToken: shopifySrc.accessToken,
+        productId: shopifySrc.productId,
+        shopifyVariantIds: shopifySrc.shopifyVariantIds,
+        colors: stillNeeded,
+        storageKey,
+        calibratorMode,
+        views: manifestViews,
+      });
+      for (const [id, views] of Object.entries(fromShopify)) {
+        baseManifest.blanks[id] = views;
+      }
+    }
+
+    const remaining = colors.filter((c) => {
+      const b = baseManifest.blanks[c.id];
+      return !(b?.front || b?.back);
+    });
+    if (remaining.length > 0) {
+      harvestWarnings.push(
+        `Provider ${providerId}: still missing blank(s) ${remaining.map((c) => c.id).join(", ")}`,
+      );
+    }
+    if (!manifestHasBlanks(baseManifest)) {
+      return {
+        tier: "flat",
+        status: "failed",
+        manifest: baseManifest,
+        error: createBlocked
+          ? createBlocked.message
+          : "blank garment photos could not be harvested (no colours resolved, create blocked, no Printify/Shopify product images)",
+        warnings: harvestWarnings,
+      };
+    }
+
+    return {
+      tier: "flat",
+      status: "ready",
+      manifest: baseManifest,
+      warnings: harvestWarnings.length > 0 ? harvestWarnings : undefined,
+    };
+  } finally {
+    for (const id of createdProductIds) await deleteTempProduct(token, shopId, id);
+    if (createdProductIds.length > 0) {
+      console.log(
+        `[flat-calibration] ${name} blanks-only: cleaned up ${createdProductIds.length} temp product(s).`,
+      );
+    }
+  }
+}
 
 /**
  * Harvest flat/mesh calibration for one product and upload assets to Supabase.
@@ -1992,9 +2905,60 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     return { tier: "reject", status: "failed", manifest: baseManifest, error: "Supabase flat-calibration bucket not configured" };
   }
 
-  const variantsData = await pf<any>(`/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`, token);
+  // Prefer full catalog so blank harvest can resolve every colour id (incl. OOS).
+  // Temp-product mockups for OOS colours may still fail later; in-stock colours harvest normally.
+  let variantsData: any;
+  try {
+    variantsData = await pf<any>(
+      `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
+      token,
+    );
+  } catch {
+    variantsData = await pf<any>(
+      `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      token,
+    );
+  }
   const variants: any[] = variantsData.variants || [];
   if (variants.length === 0) return { tier: "reject", status: "failed", manifest: baseManifest, error: "no variants from catalog" };
+
+  const skipBlankKeys = new Set(
+    (opts.skipBlankColorIds || []).map((id) => normalizeHarvestBlankColorKey(String(id))),
+  );
+  if (skipBlankKeys.size > 0) {
+    // Resolve colours early so multi-provider fill can no-op without probe/reg cost.
+    let previewColors =
+      opts.colors && opts.colors.length > 0
+        ? opts.colors
+        : await resolveHarvestColors({
+            token,
+            blueprintId,
+            providerId,
+            variants,
+            productType:
+              opts.frameColors || opts.variantMap || opts.designerType || opts.sizes
+                ? {
+                    designerType: opts.designerType,
+                    frameColors: opts.frameColors,
+                    sizes: opts.sizes,
+                    variantMap: opts.variantMap,
+                  }
+                : null,
+          });
+    previewColors = previewColors.filter(
+      (c) => !skipBlankKeys.has(normalizeHarvestBlankColorKey(c.id)),
+    );
+    if (previewColors.length === 0) {
+      console.log(
+        `[flat-calibration] ${name} (bp ${blueprintId} / provider ${providerId}): no new blank colours to harvest — skipping`,
+      );
+      return {
+        tier: "flat",
+        status: "ready",
+        manifest: { ...baseManifest, tier: "flat", blanks: {} },
+      };
+    }
+  }
 
   const viewLayout = resolveHarvestViewLayout(variants, opts, blueprintId);
   if ("error" in viewLayout) {
@@ -2006,6 +2970,20 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     };
   }
   const { manifestViews, placeholderDims, printAreaPlaceholder, singlePrintSlot } = viewLayout;
+
+  // Fill passes must not run probe/reg — those createTempProduct calls throw
+  // Printify 6002 for unavailable decorators before any blank photos upload.
+  const blanksOnly = !!opts.blanksOnly || skipBlankKeys.size > 0;
+  if (blanksOnly) {
+    return harvestBlanksOnlyPass({
+      opts,
+      variants,
+      viewLayout,
+      skipBlankKeys,
+      baseManifest,
+      storageKey,
+    });
+  }
 
   const representativeVariantId = variants[0].id;
   const createdProductIds: string[] = [];
@@ -2165,6 +3143,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
 
     // ── 3. BLANK pass per color/model -> plain garment photos ─────────────────
+    const harvestWarnings: string[] = [];
     let colors =
       opts.colors && opts.colors.length > 0
         ? opts.colors
@@ -2183,6 +3162,24 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
                   }
                 : null,
           });
+    if (skipBlankKeys.size > 0) {
+      const before = colors.length;
+      colors = colors.filter(
+        (c) => !skipBlankKeys.has(normalizeHarvestBlankColorKey(c.id)),
+      );
+      if (before !== colors.length) {
+        console.log(
+          `[flat-calibration] ${name}: skipped ${before - colors.length} blank(s) already harvested by another provider`,
+        );
+      }
+      if (colors.length === 0) {
+        return {
+          tier: productTier,
+          status: "ready",
+          manifest: baseManifest,
+        };
+      }
+    }
     if (colors.length === 0) {
       console.warn(
         `[flat-calibration] ${name} (pt ${productTypeId}): no colours resolved — using first catalog variant as default blank`,
@@ -2194,7 +3191,6 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       );
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
-    const harvestWarnings: string[] = [];
     const harvestSizes = parseJsonArray(opts.sizes);
     const apparelProduct = isApparelHarvestProduct(opts.designerType, harvestSizes);
     const decorPerSize =

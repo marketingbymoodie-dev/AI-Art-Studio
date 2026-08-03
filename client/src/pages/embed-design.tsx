@@ -12,7 +12,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
@@ -36,6 +44,7 @@ import {
 import HoodieAopPlacer, {
   type HoodieAopPlacerState,
   type HoodieAopPlacerApplyResult,
+  type HoodieAopPlacerHandle,
 } from "@/components/designer/HoodieAopPlacer";
 import { MOCKUP_PANEL_MAX_LONG_EDGE_PX } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import FlatProductPlacer, {
@@ -43,18 +52,36 @@ import FlatProductPlacer, {
   type FlatProductPlacerHandle,
   type FlatProductPlacerState,
   type FlatProductPlacerApplyResult,
+  type FlatTrimStatus,
 } from "@/components/designer/FlatProductPlacer";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
-import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey, resolveFlatBlank, normalizeFlatColorKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import {
+  resolveFlatBlankColorId,
+  resolveFlatPlacementGeometryKey,
+  resolveFlatBlank,
+  normalizeFlatColorKey,
+  withFlatAssetVersion,
+} from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
   detectStylePromptMismatch,
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
+import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
 import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
 import {
   canvasOrientationFromAspect,
@@ -110,6 +137,8 @@ import {
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
+import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
+import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
@@ -265,6 +294,11 @@ interface ProductTypeConfig {
   /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
   fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
+  /**
+   * Front+back retail prices keyed by shopify variant id and/or `sizeName:colorName`.
+   * Base Shopify variant prices remain front-only; this map drives “from $X” + ATC surcharge.
+   */
+  variantPricesBoth?: Record<string, string>;
 }
 
 type ProductInfoSectionsProps = {
@@ -430,6 +464,20 @@ function ensureContrastingForeground(
  * - data: URL → pass through (caller MUST use ensureHostedUrl before sending to backend APIs)
  * - Relative path (/objects/...) → prepend API_BASE
  */
+/**
+ * Preview chrome AR (CSS `w/h`). Never use extreme print-canvas ratios as the
+ * viewing window — e.g. body pillow 20×54 → ~0.37 makes a thin tall strip.
+ * Print placement still uses the real size AR; this only sizes the mockup box.
+ */
+function clampPreviewChromeAspectCss(arCss: string): string {
+  const parts = arCss.replace(":", "/").split("/").map(Number);
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return "3/4";
+  const r = parts[0] / parts[1];
+  if (r < 0.55) return "3/4"; // taller than ~9:16 → standard portrait chrome
+  if (r > 1.85) return "16/9"; // wider than ~16:9 → wide chrome, not a ribbon
+  return `${parts[0]}/${parts[1]}`;
+}
+
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
   if (isDataUrl(url)) return url;
@@ -596,64 +644,7 @@ function matchVariantBySizeColor(
   hasColors: boolean,
   frameColorId?: string,
 ): string | null {
-  if (catalog.length === 0) return null;
-
-  const sizeNorm = normalizeVariantToken(sizeName);
-  const frameNameNorm = normalizeVariantToken(frameName);
-  const frameIdNorm = frameColorId ? normalizeVariantToken(frameColorId) : "";
-
-  const colorTokenMatches = (raw: string): boolean => {
-    const opt = normalizeVariantToken(raw);
-    if (!opt) return false;
-    if (frameNameNorm && (opt.includes(frameNameNorm) || frameNameNorm.includes(opt))) {
-      return true;
-    }
-    if (frameIdNorm && (opt === frameIdNorm || opt.includes(frameIdNorm) || frameIdNorm.includes(opt))) {
-      return true;
-    }
-    return false;
-  };
-
-  const titleMatch = (v: VariantCatalogEntry) => {
-    const t = normalizeVariantToken(v.title || "");
-    if (!t) return false;
-    const hasSize = !sizeNorm || t.includes(sizeNorm) || sizeNorm.includes(t);
-    const hasFrame = !hasColors || !frameNameNorm && !frameIdNorm
-      ? true
-      : colorTokenMatches(v.title || "");
-    return hasSize && hasFrame;
-  };
-
-  const optionMatch = (v: VariantCatalogEntry) => {
-    const options = [v.option1, v.option2]
-      .filter(Boolean)
-      .map((o) => String(o));
-    if (options.length === 0) return false;
-    let sizeMatch = !sizeNorm;
-    let colorMatch = !hasColors || (!frameNameNorm && !frameIdNorm);
-    if (sizeNorm) {
-      sizeMatch = options.some((opt) => {
-        const o = normalizeVariantToken(opt);
-        return o.includes(sizeNorm) || sizeNorm.includes(o);
-      });
-    }
-    if (hasColors && (frameNameNorm || frameIdNorm)) {
-      colorMatch = options.some(colorTokenMatches);
-    }
-    return sizeMatch && colorMatch;
-  };
-
-  let match = catalog.find(titleMatch);
-  if (!match && sizeNorm) {
-    match = catalog.find((v) => normalizeVariantToken(v.title || "").includes(sizeNorm));
-  }
-  if (!match) {
-    match = catalog.find(optionMatch);
-  }
-  if (!match && catalog.length === 1) {
-    match = catalog[0];
-  }
-  return match ? String(match.id) : null;
+  return matchShopifyVariantBySizeColor(catalog, sizeName, frameName, hasColors, frameColorId);
 }
 
 function mapServerVariantsToCatalog(
@@ -705,6 +696,168 @@ function designSessionStorageKey(
       ? String(productTypeId)
       : "unknown";
   return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
+}
+
+/** Cross-product Reuse Artwork handoff (survives full page nav as fallback). */
+const REUSE_HANDOFF_KEY = "appai_reuse_handoff";
+
+type ReuseHandoff = {
+  jobId?: string | null;
+  artworkUrl?: string;
+  prompt?: string;
+  autoGenerate?: boolean;
+  ts: number;
+};
+
+/** Prefer parent storefront storage (same Shopify origin); fall back to iframe + localStorage. */
+function reuseStorageTargets(): Storage[] {
+  const out: Storage[] = [];
+  const pushUnique = (s: Storage | null | undefined) => {
+    if (!s) return;
+    if (!out.includes(s)) out.push(s);
+  };
+  try {
+    if (window.parent && window.parent !== window) {
+      pushUnique(window.parent.sessionStorage);
+      pushUnique(window.parent.localStorage);
+    }
+  } catch {
+    /* cross-origin parent */
+  }
+  try {
+    pushUnique(sessionStorage);
+    pushUnique(localStorage);
+  } catch {
+    /* private mode */
+  }
+  return out;
+}
+
+function writeReuseHandoff(data: Omit<ReuseHandoff, "ts">) {
+  const payload = JSON.stringify({ ...data, ts: Date.now() } as ReuseHandoff);
+  for (const store of reuseStorageTargets()) {
+    try {
+      store.setItem(REUSE_HANDOFF_KEY, payload);
+    } catch {
+      /* quota */
+    }
+  }
+}
+
+function readReuseHandoff(): ReuseHandoff | null {
+  for (const store of reuseStorageTargets()) {
+    try {
+      const raw = store.getItem(REUSE_HANDOFF_KEY);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as ReuseHandoff;
+      if (!parsed || Date.now() - (parsed.ts || 0) > 10 * 60 * 1000) {
+        store.removeItem(REUSE_HANDOFF_KEY);
+        continue;
+      }
+      return parsed;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+function clearReuseHandoff() {
+  for (const store of reuseStorageTargets()) {
+    try {
+      store.removeItem(REUSE_HANDOFF_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read image"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function fetchReuseArtworkBlob(imageUrl: string): Promise<Blob> {
+  const abs = toAbsoluteImageUrl(imageUrl);
+  if (!abs) throw new Error("Missing artwork URL");
+
+  // CRITICAL: never use window.fetch here — Shopify's storefront service worker
+  // intercepts fetch for /apps/appai/* and external URLs can hang forever.
+  // safeFetch uses XHR (see comment above xhrFetch).
+  const trySafeBlob = async (url: string, timeoutMs = 20000) => {
+    const res = await safeFetch(url, { credentials: "same-origin" }, timeoutMs);
+    if (!res.ok) throw new Error(`Failed to fetch artwork (${res.status})`);
+    return res.blob();
+  };
+
+  const candidates: string[] = [];
+  if (abs.startsWith("/")) {
+    candidates.push(abs.startsWith("/objects/") ? `/apps/appai${abs}` : abs);
+  } else if (abs.startsWith("http://") || abs.startsWith("https://")) {
+    try {
+      const u = new URL(abs);
+      if (u.origin === window.location.origin || u.pathname.startsWith("/apps/appai") || u.pathname.startsWith("/objects/")) {
+        let path = `${u.pathname}${u.search}`;
+        if (path.startsWith("/objects/")) path = `/apps/appai${path}`;
+        candidates.push(path);
+      }
+    } catch {
+      /* ignore */
+    }
+    candidates.push(abs);
+  }
+
+  let lastErr: unknown;
+  for (const url of candidates) {
+    try {
+      return await trySafeBlob(url);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  // Canvas fallback with a hard timeout (Image can hang if CDN blocks).
+  try {
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const timer = window.setTimeout(() => reject(new Error("Artwork image load timed out")), 15000);
+      img.onload = () => {
+        window.clearTimeout(timer);
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Canvas unavailable"));
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          canvas.toBlob(
+            (b) => (b ? resolve(b) : reject(new Error("Could not encode artwork"))),
+            "image/png",
+          );
+        } catch (e) {
+          reject(e);
+        }
+      };
+      img.onerror = () => {
+        window.clearTimeout(timer);
+        reject(new Error("Failed to load artwork image"));
+      };
+      img.src = abs;
+    });
+    return blob;
+  } catch (e) {
+    lastErr = e;
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error("Could not load artwork for reuse");
 }
 
 /** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
@@ -976,14 +1129,37 @@ function InfoCollapsible({
   );
 }
 
+/** Drop a leaked leading H1/H2 from another product's description HTML. */
+function sanitizeProductDescriptionHtml(
+  html: string,
+  productName: string | null | undefined,
+): string {
+  const raw = String(html || "").trim();
+  if (!raw) return "";
+  const name = String(productName || "").trim().toLowerCase();
+  if (!name) return raw;
+  return raw.replace(
+    /^\s*<(h[1-3])[^>]*>([\s\S]*?)<\/\1>\s*/i,
+    (full, _tag: string, inner: string) => {
+      const heading = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+      if (!heading) return "";
+      // Keep heading only when it clearly refers to this product.
+      if (heading.includes(name) || name.includes(heading)) return full;
+      return "";
+    },
+  );
+}
+
 function ProductInfoSections({
   description,
   sizeChart,
   sizeChartLoading,
   blueprintId,
   className,
-}: ProductInfoSectionsProps) {
-  const hasDetails = !!description;
+  productName,
+}: ProductInfoSectionsProps & { productName?: string | null }) {
+  const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
+  const hasDetails = !!safeDescription;
   const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
   if (!hasDetails && !hasSizeChartArea) return null;
 
@@ -993,7 +1169,7 @@ function ProductInfoSections({
         <InfoCollapsible title="Product Details">
           <div
             className="prose prose-sm max-w-none text-sm leading-relaxed text-muted-foreground"
-            dangerouslySetInnerHTML={{ __html: description || "" }}
+            dangerouslySetInnerHTML={{ __html: safeDescription }}
           />
         </InfoCollapsible>
       )}
@@ -1040,6 +1216,11 @@ export type TesterDesignStatus = {
    *   error  — the latest capture failed (check console)
    */
   aopPanels: 'none' | 'saving' | 'saved' | 'error';
+  /**
+   * Flat apparel faces currently past the dashed print guide (trim warning).
+   * Tester uses this to confirm before sending a clipped test order.
+   */
+  flatClipSides?: Array<'front' | 'back'>;
 };
 
 export interface EmbedDesignProps {
@@ -1103,16 +1284,29 @@ type PostGenGalleryItem =
 
 function formatPostGenMockupLabel(raw: string, fallback: string): string {
   const l = raw.toLowerCase();
-  if (l === "front" || l === "mockup 1") return "Front";
-  if (l === "back" || l === "mockup 2") return "Back";
-  if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
+  // Person / lifestyle first — never collapse these into plain Front/Back.
   if (isFrontPersonMockupLabel(raw)) return "Front Person";
   if (/\bside[\s-]*person\b/i.test(l)) return "Side Person";
   if (/\bback[\s-]*person\b/i.test(l)) return "Back Person";
   if (/\bon[\s-]*person\b/i.test(l)) return "On Person";
+  if (l.startsWith("printers") || l.startsWith("printify")) return "Printers Mockup";
   if (/lifestyle/i.test(l)) return "Lifestyle";
   if (/(context|room|home|bedroom|wall)/i.test(l)) return "Context";
+  if (l === "front" || l === "mockup 1") return "Front";
+  if (l === "back" || l === "mockup 2") return "Back";
   return raw || fallback;
+}
+
+/** Avoid two carousel chips both reading "Front" (mesh + Printify camera). */
+function uniquifyPostGenMockupLabel(
+  label: string,
+  seenPlainViews: Set<string>,
+): string {
+  if (label === "Front" || label === "Back") {
+    if (seenPlainViews.has(label)) return "Printers Mockup";
+    seenPlainViews.add(label);
+  }
+  return label;
 }
 
 /** Align with server — never treat flatlay "front side" as Lifestyle Context. */
@@ -1140,6 +1334,7 @@ function buildPostGenGalleryItems(
 
   // Prefer front/back first, then always include person cameras (Printers Mockup)
   // even when that exceeds the old 3-slot cap.
+  const seenPlainViews = new Set<string>();
   let printifyEntries: Array<{ url: string; label: string }> = [];
   if (printifyMockupImages.length > 0) {
     const person = printifyMockupImages.filter((img) =>
@@ -1154,14 +1349,20 @@ function buildPostGenGalleryItems(
     );
     printifyEntries = ordered.map((img, i) => ({
       url: img.url,
-      label: formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+      label: uniquifyPostGenMockupLabel(
+        formatPostGenMockupLabel(img.label, `View ${i + 1}`),
+        seenPlainViews,
+      ),
     }));
   } else {
     printifyEntries = printifyMockups.slice(0, 3).map((url, i) => ({
       url,
-      label: formatPostGenMockupLabel(
-        "",
-        i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`,
+      label: uniquifyPostGenMockupLabel(
+        formatPostGenMockupLabel(
+          "",
+          i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`,
+        ),
+        seenPlainViews,
       ),
     }));
   }
@@ -1389,6 +1590,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
   const loadDesignId = searchParams.get("loadDesignId") || "";
+  const parentReuseParams = (() => {
+    try {
+      return new URLSearchParams(window.parent.location.search);
+    } catch {
+      return new URLSearchParams();
+    }
+  })();
+  const reuseArtworkUrlParam =
+    parentReuseParams.get("reuseArtworkUrl") || searchParams.get("reuseArtworkUrl") || "";
+  const reusePromptParam =
+    parentReuseParams.get("reusePrompt") || searchParams.get("reusePrompt") || "";
+  const reuseJobIdParam =
+    parentReuseParams.get("reuseJobId") || searchParams.get("reuseJobId") || "";
+  const autoReuseGenerateParam =
+    (parentReuseParams.get("autoReuseGenerate") || searchParams.get("autoReuseGenerate") || "") === "1";
   // parentLoadDesignId: read loadDesignId directly from the parent page URL.
   // The iframe is served on the same Shopify domain as the parent, so window.parent.location
   // is accessible (no cross-origin restriction). This bypasses the Shopify CDN-cached liquid file.
@@ -1400,10 +1616,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return ''; // cross-origin guard (shouldn't happen on same domain)
     }
   })();
-  // bridgeLoadDesignId is set when the parent page sends AI_ART_STUDIO_LOAD_DESIGN via postMessage
+  // bridgeLoadDesignId is set by Saved Designs clicks / postMessage. Must win over a
+  // sticky parent ?loadDesignId= — otherwise clicking design A while the parent URL
+  // still has design B does nothing (same effective id) or re-opens B.
   const [bridgeLoadDesignId, setBridgeLoadDesignId] = useState("");
-  // The effective loadDesignId — prefer parent URL (most reliable), then bridge, then iframe URL param
-  const effectiveLoadDesignId = parentLoadDesignId || bridgeLoadDesignId || loadDesignId;
+  // Bumped on every Saved Designs click so re-selecting the same id still restores.
+  const [loadDesignNonce, setLoadDesignNonce] = useState(0);
+  const effectiveLoadDesignId = bridgeLoadDesignId || parentLoadDesignId || loadDesignId;
 
   // loadMockup: the gallery passes the clicked design's mockup URL so we can
   // paint it instantly while the full design data loads over the App Proxy
@@ -1435,6 +1654,36 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
   const [referencePreviews, setReferencePreviews] = useState<string[]>([]);
+  type ReusePageOption = {
+    handle: string;
+    title: string;
+    status?: string;
+    publiclyMountable?: boolean;
+  };
+  type ReuseDialogState = {
+    handle: string;
+    title: string;
+    designId: string | null;
+    artworkUrl: string;
+    prompt: string;
+  };
+  const [reusePages, setReusePages] = useState<ReusePageOption[]>([]);
+  const [reusePagesLoading, setReusePagesLoading] = useState(false);
+  const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
+  const [reuseBusy, setReuseBusy] = useState(false);
+  const [reuseBusyLabel, setReuseBusyLabel] = useState("Preparing artwork…");
+  const autoReuseGenerateDoneRef = useRef(false);
+  const autoReuseHydratedRef = useRef(false);
+  const autoReuseSeedingRef = useRef(false);
+  /** True while in-app Reuse regenerate is switching products (skip deep-link Phase A). */
+  const reuseInAppBusyRef = useRef(false);
+  /** Set when Reuse→Regenerate starts a paid generate — toast on success. */
+  const reuseRegeneratePendingToastRef = useRef(false);
+  const pendingReuseGenerateRef = useRef<{
+    prompt: string;
+    referenceImagesBase64: string[];
+  } | null>(null);
+  const [reuseGenerateTick, setReuseGenerateTick] = useState(0);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -1451,6 +1700,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Ref for the artwork column — used to auto-scroll on mobile after generation
   const artworkColumnRef = useRef<HTMLDivElement | null>(null);
+  /** Form/prompt column — phone viewer height is matched to this. */
+  const formColumnRef = useRef<HTMLDivElement | null>(null);
+  const [phoneViewerHeightPx, setPhoneViewerHeightPx] = useState<number | null>(
+    null,
+  );
   const scrollArtworkIntoViewOnMobile = useCallback((delayMs = 0) => {
     if (typeof window === 'undefined' || window.innerWidth >= 768) return;
     window.setTimeout(() => {
@@ -2084,6 +2338,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
    */
   const [hoodieAopPlacerState, setHoodieAopPlacerState] =
     useState<HoodieAopPlacerState | null>(null);
+  const hoodieAopPlacerRef = useRef<HoodieAopPlacerHandle>(null);
+  const [aopApplyStatus, setAopApplyStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [aopPlacementDirty, setAopPlacementDirty] = useState(false);
 
   /**
    * On-the-fly flat/mesh placer state + a graceful-fallback flag. When the
@@ -2098,7 +2357,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   /** Local placement/zoom changed since last Apply — blocks ATC / test order. */
   const [flatPlacementDirty, setFlatPlacementDirty] = useState(false);
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
-  const flatPlacementDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Bumps to force flat gallery re-raster / placer remount. */
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   /** True while framed flat decor is re-rastering after size/colour change. */
@@ -2107,18 +2365,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [lifestyleShotLoading, setLifestyleShotLoading] = useState(false);
   const [lifestyleShotError, setLifestyleShotError] = useState<string | null>(null);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
+  const flatTrimStatusRef = useRef<FlatTrimStatus>({
+    front: false,
+    back: false,
+    clippedSides: [],
+  });
+  const [flatClipConfirmOpen, setFlatClipConfirmOpen] = useState(false);
+  const flatClipConfirmProceedRef = useRef(false);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
   /** Latest flat front URLs — Printify lifestyle merge keeps these. */
   const flatFrontMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
   /** Mesh AOP local front/back — Printers Mockup (person) merge keeps these. */
   const aopBaseMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
-  /** Last AOP Front/Side/Back Person shots — re-attached after placer auto-apply. */
+  /** Last on-demand Printers shots (person and/or lifestyle/context) — re-attached after placer auto-apply. */
   const aopPersonMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
+  /** Timestamp of the last explicit arrow/dot click — recovery effects must not fight it. */
+  const lastManualGalleryNavRef = useRef(0);
   /**
-   * After Printers Mockup lands, keep selecting Front Person even if placer
-   * auto-apply / primary mockup fetch tries to reset the gallery index.
-   * Cleared when the customer manually steps to Artwork (or a non-person slide).
+   * After Printers Mockup lands, keep selecting that on-demand slide even if
+   * placer auto-apply / primary mockup fetch tries to reset the gallery index.
+   * Cleared when the customer manually steps to Artwork (or a non-on-demand slide).
    */
   const stickAopPersonGalleryRef = useRef(false);
 
@@ -2234,7 +2501,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return null;
     }
     const blank = resolveFlatBlank(productTypeConfig.flatCalibration, flatBlankColorId);
-    return blank?.front || null;
+    const front = blank?.front || null;
+    // Match FlatProductPlacer: pin harvest pixels to manifest.generatedAt so a
+    // re-upload at the same storage path can't leave the storefront on a stale
+    // browser/CDN cached blank (bp79 black_red shipped a wrong hero this way).
+    return front
+      ? withFlatAssetVersion(front, productTypeConfig.flatCalibration.generatedAt)
+      : null;
   }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration, flatBlankColorId]);
 
   const flatPlacerGeometryKey = useMemo(() => {
@@ -2355,11 +2628,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       for (const r of results) {
         if (!map[r.orientation]) map[r.orientation] = r.url;
       }
-      // Fallback: if only one catalog image, use it for every orientation.
-      if (Object.keys(map).length === 1 && urls[0]) {
-        map.horizontal = map.horizontal || urls[0];
-        map.vertical = map.vertical || urls[0];
-        map.square = map.square || urls[0];
+      // Fallback: only when there is literally one catalog image (not one
+      // orientation bucket among many square-padded gallery URLs).
+      if (Object.keys(map).length === 1 && urls.length === 1 && urls[0]) {
+        map.horizontal = urls[0];
+        map.vertical = urls[0];
+        map.square = urls[0];
       }
       setCatalogBlankByOrientation(map);
     });
@@ -2371,6 +2645,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     setCatalogPreviewIndex(0);
   }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
+
+  // Colour/size change: land on slide 0 (leading colour blank when present, else Primary).
+  useEffect(() => {
+    setCatalogPreviewIndex(0);
+  }, [selectedFrameColor, selectedSize]);
 
   const postGenGalleryItems = useMemo(
     () =>
@@ -2391,27 +2670,50 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [generatedDesign?.imageUrl, postGenGalleryItems.length]);
 
-  // After Printers Mockup, land on Front Person (and recover if apply/mockup
-  // rebuild resets the index). Keep Side/Back Person if the customer already
-  // stepped there.
+  // Preload every gallery slide as soon as items exist so stepping the
+  // carousel paints instantly instead of waiting on a cold fetch.
+  useEffect(() => {
+    for (const item of postGenGalleryItems) {
+      if (item.kind === "artwork") continue;
+      if (!item.url) continue;
+      const img = new Image();
+      img.decoding = "async";
+      img.src = item.url;
+    }
+  }, [postGenGalleryItems]);
+
+  // After Printers Mockup, land on the on-demand slide (Front Person or
+  // pillow lifestyle/context) and recover if apply/mockup rebuild resets the
+  // index. Keep Side/Back Person if the customer already stepped there.
+  // Never fight an explicit arrow click (lastManualGalleryNavRef window).
   useEffect(() => {
     if (!stickAopPersonGalleryRef.current) return;
+    if (Date.now() - lastManualGalleryNavRef.current < 1500) return;
     setSelectedMockupIndex((prev) => {
       const cur = postGenGalleryItems[prev];
-      if (cur?.kind === "mockup" && isPersonMockupLabel(cur.label)) return prev;
+      if (
+        cur?.kind === "mockup" &&
+        isPrintifyOnDemandMockupLabel(cur.label)
+      ) {
+        return prev;
+      }
       const idx = postGenGalleryItems.findIndex(
         (item) =>
-          item.kind === "mockup" && isPersonMockupLabel(item.label),
+          item.kind === "mockup" &&
+          isPrintifyOnDemandMockupLabel(item.label),
       );
       return idx >= 0 ? idx : prev;
     });
   }, [postGenGalleryItems]);
 
-  // Keep stick while the customer is actively viewing a person slide (so a
-  // placement auto-apply does not drop them). Cleared on mode switch / Artwork.
+  // Keep stick while viewing an on-demand Printers/lifestyle slide so a
+  // placement auto-apply does not drop them. Cleared on mode switch / Artwork.
   useEffect(() => {
     const item = postGenGalleryItems[selectedMockupIndex];
-    if (item?.kind === "mockup" && isPersonMockupLabel(item.label)) {
+    if (
+      item?.kind === "mockup" &&
+      isPrintifyOnDemandMockupLabel(item.label)
+    ) {
       stickAopPersonGalleryRef.current = true;
     }
   }, [selectedMockupIndex, postGenGalleryItems]);
@@ -2483,11 +2785,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return proxifyPrintifyPanelUrls(merged);
   }, [productTypeConfig]);
 
-  useEffect(() => {
-    if (productTypeConfig && !supportsPrintPlacementSelection && printPlacement !== "front") {
-      setPrintPlacement("front");
-    }
-  }, [productTypeConfig, supportsPrintPlacementSelection, printPlacement]);
+  // Do not force printPlacement back to "front" when Print Side is hidden.
+  // Flat crewnecks/hoodies drive front/back via PRINT ON FRONT/BACK toggles;
+  // resetting here fought both-tier pricing (and ATC surcharge).
 
   // Filter styles based on designerType and per-page styleConfig
   const filteredStylePresets = useMemo(() => {
@@ -2594,12 +2894,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       sizeConfig || { id: selectedSize, name: selectedSize },
       productTypeConfig?.aspectRatio,
     );
-    return (
-      bySize ||
-      catalogBlankByOrientation[sizeCanvasOrientation] ||
-      (sizeCanvasOrientation === "horizontal" && catalogPreviewImages[1]) ||
-      null
-    );
+    const primary = catalogPreviewImages[0] || null;
+    const primaryKey = primary ? mockupImageUrlKey(primary) : null;
+    const fromOrient = catalogBlankByOrientation[sizeCanvasOrientation] || null;
+    // Non-square sizes: reject Primary-as-orientation (square-padded broadcast false positive).
+    const fromOrientOk =
+      !!fromOrient &&
+      (sizeCanvasOrientation === "square" ||
+        !primaryKey ||
+        mockupImageUrlKey(fromOrient) !== primaryKey);
+    const galleryForOrientation =
+      sizeCanvasOrientation !== "square"
+        ? catalogPreviewImages.slice(1).find(Boolean) || null
+        : null;
+    return bySize || (fromOrientOk ? fromOrient : null) || galleryForOrientation || null;
   }, [
     hasMixedCanvasOrientation,
     sizeCanvasOrientation,
@@ -2741,6 +3049,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
+      variantPricesBoth:
+        dc.variantPricesBoth && typeof dc.variantPricesBoth === "object"
+          ? dc.variantPricesBoth
+          : {},
       isAllOverPrint: dc.isAllOverPrint || false,
       useAopCustomizer: dc.useAopCustomizer,
       storefrontMockupMode: dc.storefrontMockupMode ?? null,
@@ -3101,6 +3413,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
+            variantPricesBoth:
+              designerConfig.variantPricesBoth && typeof designerConfig.variantPricesBoth === "object"
+                ? designerConfig.variantPricesBoth
+                : {},
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             useAopCustomizer: designerConfig.useAopCustomizer,
             storefrontMockupMode: designerConfig.storefrontMockupMode ?? null,
@@ -3133,6 +3449,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
           }
           setProductTypeError(null);
+          // Replace sticky iframe displayName from a previous product
+          // (e.g. baseball tee title left on pillow/leggings). Keep a page title
+          // that still looks related to this product type name.
+          if (designerConfig.name) {
+            setActiveProductContext((prev) => {
+              const nextName = String(designerConfig.name);
+              const prevName = String(prev.displayName || "").trim();
+              const prevLower = prevName.toLowerCase();
+              const nextLower = nextName.toLowerCase();
+              const related =
+                !prevName ||
+                prevLower === nextLower ||
+                prevLower.includes(nextLower) ||
+                nextLower.includes(prevLower);
+              if (related) {
+                return {
+                  ...prev,
+                  productTypeId: String(designerConfig.id || prev.productTypeId),
+                };
+              }
+              return {
+                ...prev,
+                displayName: nextName,
+                productTitle: nextName,
+                productTypeId: String(designerConfig.id || prev.productTypeId),
+              };
+            });
+          }
         } else {
           // Designer endpoint failed - show explicit error, NO DEFAULT FALLBACK
           const errorBody = await designerRes.text();
@@ -3291,13 +3635,35 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Helper to apply a saved design record to the UI state
   const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
     const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
-    const absUrl = abs(imageUrl);
+    // Prefer the job row artwork — never a stale designState.artworkUrl from another product.
+    const preferredUrl =
+      imageUrl ||
+      (typeof ds?.artworkUrl === "string" ? ds.artworkUrl : "") ||
+      "";
+    const absUrl = abs(preferredUrl);
     if (!absUrl) return;
     lastAopPanelUrlsRef.current = null;
+    aopPersonMockupsRef.current = [];
+    aopBaseMockupsRef.current = [];
+    flatFrontMockupsRef.current = [];
+    stickAopPersonGalleryRef.current = false;
+    // Size/colour mockup cache is per-design — never reuse across designs.
+    mockupColorCacheRef.current = {};
+    currentMockupColorRef.current = "";
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
-    setFlatPlacerEditOpen(false);
+    // Keep flat placer open in the admin tester so dashed print guides + trim
+    // warnings stay visible after opening a saved design (merchant QA).
+    // Elsewhere close it so the customer lands on mockups immediately.
+    setFlatPlacerEditOpen(Boolean(isAdminTester && usesFlatOnTheFlyPreview));
+    if (isAdminTester && designId) {
+      const designPt = String(topLevel.productTypeId || "").trim();
+      const currentPt = String(productTypeId || "").trim();
+      if (!designPt || !currentPt || designPt === currentPt) {
+        emitTesterDesignStatus({ jobId: designId, aopPanels: "none" });
+      }
+    }
     // Immediately poll for a pre-existing shadow product for this design.
     // If the shadow product was created within the last 7 days, it will be returned
     // instantly and the Add to Cart will be instant without calling resolve-design-variant.
@@ -3347,10 +3713,46 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
         setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
       }
+      // Mesh composites matching the placer (not Printify cameras). Restore
+      // these as Front/Back so reopen matches what the customer last applied.
+      const savedPtForMesh = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
+      const currentPtForMesh = productTypeId ? String(productTypeId) : null;
+      const meshProductOk =
+        !savedPtForMesh || !currentPtForMesh || savedPtForMesh === currentPtForMesh;
+      if (
+        meshProductOk &&
+        ds.hoodieAopMockups &&
+        typeof ds.hoodieAopMockups === "object"
+      ) {
+        const meshImages: { url: string; label: string }[] = [];
+        const meshFront = abs(ds.hoodieAopMockups.front as string | undefined);
+        const meshBack = abs(ds.hoodieAopMockups.back as string | undefined);
+        if (meshFront) meshImages.push({ url: meshFront, label: "front" });
+        if (meshBack) meshImages.push({ url: meshBack, label: "back" });
+        if (meshImages.length > 0) {
+          aopBaseMockupsRef.current = meshImages;
+          const meshUrls = meshImages.map((i) => i.url);
+          setPrintifyMockupImages(meshImages);
+          setPrintifyMockups(meshUrls);
+          setSelectedMockupIndex(1);
+          setMockupsStale(false);
+          sendMockupsToParent(meshUrls);
+          if (!ds.aopPatternUrl && meshFront) setAopPatternUrl(meshFront);
+        }
+      }
       // Restore on-the-fly flat/mesh placer state so the customer resumes
       // their per-view placement mid-edit.
       if (ds.flatPlacerState && typeof ds.flatPlacerState === 'object') {
-        setFlatPlacerState(ds.flatPlacerState as FlatProductPlacerState);
+        const fps = ds.flatPlacerState as FlatProductPlacerState;
+        setFlatPlacerState(fps);
+        // Flat PRINT ON FRONT/BACK toggles are the source of truth for pricing on
+        // flat products (Print Side dropdown is often unused). Sync printPlacement
+        // so front+back retail / ATC surcharge apply to resumed designs.
+        const frontOn = fps.enabled?.front !== false;
+        const backOn = !!fps.enabled?.back;
+        if (frontOn && backOn) setPrintPlacement("both");
+        else if (backOn && !frontOn) setPrintPlacement("back");
+        else setPrintPlacement("front");
       }
       if (ds.flatMockups && typeof ds.flatMockups === "object") {
         const flatImages: { url: string; label: string }[] = [];
@@ -3360,11 +3762,77 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (backUrl) flatImages.push({ url: backUrl, label: "back" });
         if (flatImages.length > 0) {
           const flatUrls = flatImages.map((i) => i.url);
+          // Seed so colour-swap re-bake does not wipe restored BG until refresh.
+          flatFrontMockupsRef.current = flatImages;
           setPrintifyMockupImages(flatImages);
           setPrintifyMockups(flatUrls);
           setSelectedMockupIndex(1);
           setMockupsStale(false);
           sendMockupsToParent(flatUrls);
+        }
+      }
+      // Restore Printers Mockup / lifestyle shots saved after on-demand Printify.
+      const savedOnDemand = Array.isArray(ds.printersMockups)
+        ? (ds.printersMockups as Array<{ url?: string; label?: string }>)
+        : Array.isArray(ds.aopPersonMockups)
+          ? (ds.aopPersonMockups as Array<{ url?: string; label?: string }>)
+          : [];
+      if (savedOnDemand.length > 0) {
+        const onDemandImages = savedOnDemand
+          .map((img) => {
+            const url = abs(img.url);
+            if (!url) return null;
+            return {
+              url,
+              label: String(img.label || "printers"),
+            };
+          })
+          .filter((img): img is { url: string; label: string } => !!img);
+        if (onDemandImages.length > 0) {
+          // Keep ALL on-demand shots (person AND pillow printers/lifestyle) in
+          // the ref — a later placement apply re-merges from this ref, and
+          // person-only filtering silently dropped pillow Printers slides.
+          aopPersonMockupsRef.current = onDemandImages.filter((img) =>
+            isPrintifyOnDemandMockupLabel(img.label),
+          );
+          setPrintifyMockupImages((prev) => {
+            const bases =
+              prev.length > 0
+                ? prev.filter(
+                    (img) =>
+                      !isPrintifyOnDemandMockupLabel(img.label) &&
+                      /^(front|back|mockup 1|mockup 2)$/i.test(img.label || ""),
+                  )
+                : aopBaseMockupsRef.current.length > 0
+                  ? aopBaseMockupsRef.current
+                  : flatFrontMockupsRef.current;
+            const seen = new Set(bases.map((m) => mockupImageUrlKey(m.url)));
+            const merged = [...bases];
+            for (const extra of onDemandImages) {
+              const key = mockupImageUrlKey(extra.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(extra);
+            }
+            return merged;
+          });
+          setPrintifyMockups((prev) => {
+            const baseUrls =
+              aopBaseMockupsRef.current.length > 0
+                ? aopBaseMockupsRef.current.map((m) => m.url)
+                : flatFrontMockupsRef.current.length > 0
+                  ? flatFrontMockupsRef.current.map((m) => m.url)
+                  : prev.slice(0, 2);
+            const seen = new Set(baseUrls.map(mockupImageUrlKey));
+            const merged = [...baseUrls];
+            for (const extra of onDemandImages) {
+              const key = mockupImageUrlKey(extra.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(extra.url);
+            }
+            return merged;
+          });
         }
       }
     } else {
@@ -3395,16 +3863,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
     const mockupsMatchProduct =
       !savedProductTypeId || !currentProductTypeId || savedProductTypeId === currentProductTypeId;
-    if (mockups?.length && mockupsMatchProduct) {
+    // Mesh Front/Back already restored from hoodieAopMockups above — those match
+    // placer placement. Do not let Printify mockupUrls replace them (Printify
+    // warp often differs; that was "saved centered, reopen clipped").
+    const meshAlreadyRestored = aopBaseMockupsRef.current.length > 0;
+    if (mockups?.length && mockupsMatchProduct && !meshAlreadyRestored) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
-      // Restore aopPatternUrl so the ATC button is not blocked by the
-      // "useAopCustomizer && !aopPatternUrl" guard for saved AOP
-      // designs. The design URL is the same value set by onApply when applying fresh.
-      // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
-      if (absUrl) setAopPatternUrl(absUrl);
+      // ATC needs aopPatternUrl — use the cart/front mockup, never raw artwork
+      // (artwork overwrite made placement look "reset" on reopen).
       const durableMockups = useAopCustomizer
         ? absMockups.filter((url: string) => !isTemporaryPrintifyMockupUrl(url))
         : absMockups;
+      if (durableMockups[0]) {
+        setAopPatternUrl((prev) => prev || durableMockups[0]);
+      }
 
       if (durableMockups.length > 0) {
         setPrintifyMockups(durableMockups);
@@ -3417,6 +3889,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : (i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
           })),
         );
+        if (useAopCustomizer) {
+          aopBaseMockupsRef.current = durableMockups
+            .slice(0, 2)
+            .map((url: string, i: number) => ({
+              url,
+              label: i === 0 ? "front" : "back",
+            }));
+        }
         setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
         // The loaded mockups are already correct for this design — mark them fresh.
         // Without this, setTransform() called above triggers the stale-on-transform
@@ -3436,6 +3916,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setMockupsStale(true);
         sendMockupsToParent([]);
       }
+    } else if (mockups?.length && mockupsMatchProduct && meshAlreadyRestored) {
+      // Keep mesh Front/Back; still unlock ATC from restored pattern / mesh front.
+      setAopPatternUrl((prev) => prev || aopBaseMockupsRef.current[0]?.url || null);
+      currentMockupColorRef.current = topLevel.frameColor || "";
+      setMockupsStale(false);
     } else if (mockups?.length && !mockupsMatchProduct) {
       console.warn("[LoadDesign] Skipping mockup restore — saved design product type differs from active product");
       setPrintifyMockups([]);
@@ -3655,6 +4140,176 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     setBridgeLoadDesignId(designId);
+    setLoadDesignNonce((n) => n + 1);
+  }, [applyDesignerConfig, shopDomain]);
+
+  /** In-app customizer page switch (no full reload) — used by Reuse Artwork regenerate. */
+  const switchToCustomizerPageByHandle = useCallback(async (pageHandle: string) => {
+    if (!pageHandle) throw new Error("Missing customizer page handle");
+
+    setIsInAppProductSwitching(true);
+    setConfigLoading(true);
+    setProductTypeError(null);
+    setGeneratedDesign(null);
+    setDesignSource(null);
+    setShowPatternStep(false);
+    setAopPendingMotifUrl(null);
+    setAopPatternUrl(null);
+    setAopPlacementSettings(undefined);
+    setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+    setHoodieAopPlacerState(null);
+    setFlatPlacerState(null);
+    setFlatPlacerEditOpen(false);
+    setFlatApplyStatus("idle");
+    setFlatRenderFailed(false);
+    lastAopPanelUrlsRef.current = null;
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(0);
+    setMockupsStale(false);
+    setMockupTriggered(false);
+    setMockupLoading(false);
+    setMockupFailed(false);
+    setVariantError(null);
+    setPreShadowVariantId(null);
+    setPreShadowProductId(null);
+    loadDesignAppliedRef.current = false;
+    setBridgeLoadDesignId("");
+    setSelectedSize("");
+    setSelectedPreset("");
+    setSelectedStyleOption("");
+
+    const res = await safeFetch(`/apps/appai/customizer-page?handle=${encodeURIComponent(pageHandle)}`, {
+      credentials: "same-origin",
+    }, 30000);
+    if (!res.ok) {
+      setConfigLoading(false);
+      setIsInAppProductSwitching(false);
+      throw new Error(`Could not load customizer page "${pageHandle}" (${res.status})`);
+    }
+    const config = await res.json();
+    if (!config?.designerConfig) {
+      setConfigLoading(false);
+      setIsInAppProductSwitching(false);
+      throw new Error(`Customizer page "${pageHandle}" has no designer config`);
+    }
+
+    const baseVariant = config.baseVariantId ? String(config.baseVariantId) : "";
+    let targetVariants = Array.isArray(config.variants)
+      ? mapServerVariantsToCatalog(config.variants)
+      : [];
+
+    if (targetVariants.length === 0) {
+      const resolvedProductTypeId = config.productTypeId ? String(config.productTypeId) : "";
+      const resolvedHandle = config.baseProductHandle || "";
+      const fetchUrl = buildProductVariantsFetchUrl(
+        shopDomain,
+        resolvedProductTypeId,
+        resolvedHandle,
+      );
+      if (fetchUrl) {
+        try {
+          const variantRes = await safeFetch(fetchUrl);
+          if (variantRes.ok) {
+            const variantData = await variantRes.json();
+            if (Array.isArray(variantData.variants) && variantData.variants.length > 0) {
+              targetVariants = mapServerVariantsToCatalog(variantData.variants);
+            }
+          }
+        } catch (e) {
+          console.warn("[ReuseArtwork] Variant fallback fetch failed:", e);
+        }
+      }
+    }
+
+    const variantCatalogKey = `${config.productTypeId ? String(config.productTypeId) : "0"}|${config.baseProductHandle || pageHandle}`;
+    const configFrameColors = Array.isArray(config.designerConfig?.frameColors)
+      ? config.designerConfig.frameColors
+      : [];
+    const variantsHaveOptions = targetVariants.some((v) => v.option1 || v.option2);
+    if (targetVariants.length > 0 && (variantsHaveOptions || configFrameColors.length === 0)) {
+      variantsLoadedKeyRef.current = variantCatalogKey;
+      variantsFetchingKeyRef.current = "";
+    } else {
+      variantsLoadedKeyRef.current = "";
+      variantsFetchingKeyRef.current = "";
+    }
+
+    setVariants(targetVariants);
+    setVariantsFetched(targetVariants.length > 0);
+    setShopifyVariants(targetVariants);
+    const initialVariantId =
+      baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null);
+    setShopifyVariantId(initialVariantId);
+    setOverrideVariantId(initialVariantId);
+    baseVariantForShadowRef.current = initialVariantId ? normalizeVariantId(initialVariantId) : "";
+
+    setActiveProductContext({
+      productTypeId: config.productTypeId ? String(config.productTypeId) : "0",
+      productId: config.baseProductId ? String(config.baseProductId) : "",
+      productHandle: config.baseProductHandle || pageHandle,
+      productTitle: config.baseProductTitle || config.title || "Custom Product",
+      displayName: config.title || config.baseProductTitle || "Custom Product",
+      selectedVariant: baseVariant,
+      pageHandle,
+      designerConfig: config.designerConfig,
+      stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
+    });
+
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.pathname = `/pages/${pageHandle}`;
+      parentUrl.searchParams.delete("loadDesignId");
+      parentUrl.searchParams.delete("loadMockup");
+      parentUrl.searchParams.delete("loadProductName");
+      parentUrl.searchParams.delete("reuseArtworkUrl");
+      parentUrl.searchParams.delete("reusePrompt");
+      parentUrl.searchParams.delete("reuseJobId");
+      parentUrl.searchParams.delete("autoReuseGenerate");
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      /* parent may be inaccessible */
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    params.set("productTypeId", config.productTypeId ? String(config.productTypeId) : "0");
+    if (config.baseProductId) params.set("productId", String(config.baseProductId));
+    if (config.baseProductHandle || pageHandle) {
+      params.set("productHandle", config.baseProductHandle || pageHandle);
+    }
+    if (config.baseProductTitle || config.title) {
+      params.set("productTitle", config.baseProductTitle || config.title);
+    }
+    if (config.title) params.set("displayName", config.title);
+    if (baseVariant) params.set("selectedVariant", baseVariant);
+    params.delete("loadDesignId");
+    params.delete("loadMockup");
+    params.delete("reuseArtworkUrl");
+    params.delete("reusePrompt");
+    params.delete("reuseJobId");
+    params.delete("autoReuseGenerate");
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+
+    applyDesignerConfig(config.designerConfig, "SWITCH REUSE PRODUCT");
+    if (Array.isArray(config.stylePresets)) {
+      setStylePresets(config.stylePresets);
+    }
+    setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
+    setConfigLoading(false);
+    setIsInAppProductSwitching(false);
+
+    try {
+      window.parent.postMessage({
+        type: "AI_ART_STUDIO_PRODUCT_CONTEXT",
+        productTypeId: config.productTypeId ? String(config.productTypeId) : null,
+        productId: config.baseProductId ? String(config.baseProductId) : null,
+        productHandle: config.baseProductHandle || pageHandle,
+        selectedVariant: initialVariantId,
+        variants: targetVariants,
+      }, "*");
+    } catch {
+      /* ignore */
+    }
   }, [applyDesignerConfig, shopDomain]);
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
@@ -3679,8 +4334,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
       setMockupsStale(false);
+      // Design-agnostic caches must not leak between saved designs: the
+      // size/colour mockup cache held the PREVIOUS design's renders, so
+      // opening design B with the same size/colour repainted design A.
+      mockupColorCacheRef.current = {};
+      currentMockupColorRef.current = "";
+      aopBaseMockupsRef.current = [];
+      aopPersonMockupsRef.current = [];
+      flatFrontMockupsRef.current = [];
+      stickAopPersonGalleryRef.current = false;
     }
-  }, [effectiveLoadDesignId]);
+  }, [effectiveLoadDesignId, loadDesignNonce]);
+
+  /** Drop sticky loadDesignId from the URL so a remount can't revive the wrong design. */
+  const clearLoadDesignIdFromUrl = useCallback(() => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("loadDesignId");
+      url.searchParams.delete("loadMockup");
+      url.searchParams.delete("loadProductName");
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      /* ignore */
+    }
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.searchParams.delete("loadDesignId");
+      parentUrl.searchParams.delete("loadMockup");
+      parentUrl.searchParams.delete("loadProductName");
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      /* cross-origin guard */
+    }
+    setBridgeLoadDesignId("");
+  }, []);
 
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
@@ -3693,11 +4380,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       console.warn('[LoadDesign] Design not found in savedDesigns list! loadDesignId:', effectiveLoadDesignId);
       return;
     }
+    // Admin tester: never apply a saved design onto a different product type.
+    if (
+      isAdminTester &&
+      d.productTypeId != null &&
+      String(d.productTypeId) !== String(productTypeId)
+    ) {
+      console.warn(
+        "[LoadDesign] Refusing saved design for different productTypeId",
+        d.productTypeId,
+        "current",
+        productTypeId,
+      );
+      loadDesignAppliedRef.current = true;
+      clearLoadDesignIdFromUrl();
+      emitTesterDesignStatus({ jobId: null, aopPanels: "none" });
+      return;
+    }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, savedDesigns, configLoading]);
+  }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId]);
 
   // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
   // fetch the job status directly from the server
@@ -3714,6 +4418,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         .then(status => {
           if (!status || status.status !== 'complete') return;
           if (loadDesignAppliedRef.current) return; // list restored it in the meantime
+          if (
+            isAdminTester &&
+            status.productTypeId != null &&
+            String(status.productTypeId) !== String(productTypeId)
+          ) {
+            console.warn(
+              "[LoadDesign] Fallback refused: job productTypeId mismatch",
+              status.productTypeId,
+              productTypeId,
+            );
+            loadDesignAppliedRef.current = true;
+            clearLoadDesignIdFromUrl();
+            emitTesterDesignStatus({ jobId: null, aopPanels: "none" });
+            return;
+          }
           loadDesignAppliedRef.current = true;
           applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
         })
@@ -3721,7 +4440,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }, 2000);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, shopDomain, configLoading]);
+  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -4282,20 +5001,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               return;
             }
           }
-          const fronts = mergePersonViews
-            ? aopBaseMockupsRef.current.length > 0
+          // AOP mesh (person / lifestyle / product on-demand): keep placer Front/Back.
+          // Flat lifestyle/tapestry: keep flatFrontMockups.
+          const fronts =
+            mergePersonViews ||
+            ((mergeProductMockups || mergeContextOnly) &&
+              aopBaseMockupsRef.current.length > 0)
               ? aopBaseMockupsRef.current
-              : []
-            : flatFrontMockupsRef.current.length > 0
-              ? flatFrontMockupsRef.current
-              : [];
-          const mergedImages: Array<{ url: string; label: string }> = [...fronts];
-          const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
-          for (const extra of extras) {
-            const key = mockupImageUrlKey(extra.url);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const label = mergePersonViews
+              : flatFrontMockupsRef.current.length > 0
+                ? flatFrontMockupsRef.current
+                : [];
+          // Map raw Printify camera labels to gallery labels ONCE — the same
+          // mapped label must be used for the gallery, the on-demand ref, and
+          // persistence (raw "front" would collide with the base Front slide).
+          const labelForExtra = (extra: { url: string; label: string }) =>
+            mergePersonViews
               ? extra.label
               : mergeProductMockups
                 ? "printers"
@@ -4306,15 +5026,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     : /context/i.test(extra.label)
                       ? extra.label
                       : "context";
-            mergedImages.push({ url: extra.url, label });
+          const extrasLabeled = extras.map((e) => ({
+            url: e.url,
+            label: labelForExtra(e),
+          }));
+          const mergedImages: Array<{ url: string; label: string }> = [...fronts];
+          const seen = new Set(mergedImages.map((m) => mockupImageUrlKey(m.url)));
+          for (const extra of extrasLabeled) {
+            const key = mockupImageUrlKey(extra.url);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            mergedImages.push({ url: extra.url, label: extra.label });
           }
-          if (mergePersonViews) {
-            aopPersonMockupsRef.current = extras.map((e) => ({
-              url: e.url,
-              label: e.label,
-            }));
-            stickAopPersonGalleryRef.current = true;
-          }
+          // Keep person AND pillow lifestyle/product cameras across placer Apply.
+          aopPersonMockupsRef.current = extrasLabeled.map((e) => ({
+            url: e.url,
+            label: e.label,
+          }));
+          stickAopPersonGalleryRef.current = true;
           const mergedUrls = mergedImages.map((m) => m.url);
           setPrintifyMockupImages(mergedImages);
           setPrintifyMockups(mergedUrls);
@@ -4340,32 +5069,98 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             fronts.length,
             mergePersonViews ? "AOP base view(s)" : "flat front(s)",
           );
+          // Persist so Saved Designs / reopen keep Printers + lifestyle slides.
+          // (This path used to return before save-mockups, so person shots vanished.)
+          if (isStorefront && savedJobIdRef.current && shopDomain) {
+            const jobId = savedJobIdRef.current;
+            const persistUrls = mergedUrls.filter(
+              (u) =>
+                typeof u === "string" &&
+                (u.startsWith("http://") || u.startsWith("https://")),
+            );
+            if (persistUrls.length > 0) {
+              void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  jobId,
+                  shop: shopDomain,
+                  mockupUrls: persistUrls,
+                  ...(productId && baseVariantForShadowRef.current
+                    ? {
+                        baseProductId: productId,
+                        baseVariantId: baseVariantForShadowRef.current,
+                      }
+                    : {}),
+                }),
+              }).catch((e) => {
+                console.error("[Mockups] on-demand save-mockups failed:", e);
+              });
+            }
+            void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId,
+                shop: shopDomain,
+                designState: {
+                  printersMockups: extrasLabeled,
+                  ...(mergePersonViews
+                    ? { aopPersonMockups: extrasLabeled }
+                    : {}),
+                },
+              }),
+            }).catch((e) => {
+              console.error("[Mockups] on-demand save-state failed:", e);
+            });
+          }
           contextMergeOutcome = { ok: true, contextCount: extras.length };
           return;
         }
 
-        const finalImages =
-          useAopCustomizer && aopPersonMockupsRef.current.length > 0
-            ? (() => {
-                const seen = new Set(absImages.map((m: { url: string }) => mockupImageUrlKey(m.url)));
-                const merged = [...absImages];
-                for (const person of aopPersonMockupsRef.current) {
-                  const key = mockupImageUrlKey(person.url);
-                  if (seen.has(key)) continue;
-                  seen.add(key);
-                  merged.push(person);
-                }
-                return merged;
-              })()
-            : absImages;
+        // Mesh AOP: keep local placer Front/Back as the source of truth. Printify
+        // cameras are extras only — replacing them used to persist a different
+        // warp into mockupUrls so reopen no longer matched the saved placement.
+        const aopBases = useAopCustomizer ? aopBaseMockupsRef.current : [];
+        const finalImages = (() => {
+          if (aopBases.length > 0) {
+            const merged = [...aopBases];
+            const seen = new Set(merged.map((m) => mockupImageUrlKey(m.url)));
+            for (const img of absImages) {
+              const key = mockupImageUrlKey(img.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(img);
+            }
+            for (const person of aopPersonMockupsRef.current) {
+              const key = mockupImageUrlKey(person.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(person);
+            }
+            return merged;
+          }
+          if (useAopCustomizer && aopPersonMockupsRef.current.length > 0) {
+            const seen = new Set(absImages.map((m: { url: string }) => mockupImageUrlKey(m.url)));
+            const merged = [...absImages];
+            for (const person of aopPersonMockupsRef.current) {
+              const key = mockupImageUrlKey(person.url);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(person);
+            }
+            return merged;
+          }
+          return absImages;
+        })();
         const finalUrls = finalImages.map((m: { url: string }) => m.url);
         setPrintifyMockups(finalUrls);
         setPrintifyMockupImages(finalImages);
         if (stickAopPersonGalleryRef.current) {
-          const personIdx = finalImages.findIndex((m: { label: string }) =>
-            isPersonMockupLabel(m.label),
+          const onDemandIdx = finalImages.findIndex((m: { label: string }) =>
+            isPrintifyOnDemandMockupLabel(m.label),
           );
-          setSelectedMockupIndex(personIdx >= 0 ? 1 + personIdx : 1);
+          setSelectedMockupIndex(onDemandIdx >= 0 ? 1 + onDemandIdx : 1);
         } else {
           setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         }
@@ -4381,6 +5176,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // Use the always-current ref so we get the resolved variant even when
           // selectedVariantParam and overrideVariantId are both absent from the closure.
           const baseVariantForShadow = baseVariantForShadowRef.current;
+          // Prefer durable local mesh URLs for AOP so Saved Designs / reopen keep
+          // placer placement (Printify CDN URLs also expire).
+          const urlsToPersist =
+            aopBases.length > 0
+              ? finalUrls.filter(
+                  (u: string) =>
+                    typeof u === "string" &&
+                    (u.startsWith("http://") || u.startsWith("https://")),
+                )
+              : result.mockupUrls;
           console.log('[Mockups] Saving permanent mockup URLs to job:', savedJobIdRef.current);
           safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
             method: 'POST',
@@ -4388,7 +5193,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             body: JSON.stringify({
               jobId: savedJobIdRef.current,
               shop: shopDomain,
-              mockupUrls: result.mockupUrls,
+              mockupUrls: urlsToPersist,
               ...(productId && baseVariantForShadow ? { baseProductId: productId, baseVariantId: baseVariantForShadow } : {}),
             }),
           }).then(r => r.json()).then(saved => {
@@ -4429,7 +5234,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       const pollMockupJob = async (jobId: string) => {
         const started = Date.now();
-        const MAX_POLL_MS = 300_000;
+        // On-demand person/lifestyle merges must not sit on the 5‑minute primary
+        // budget — body pillows often finish with zero person cameras and used
+        // to leave the spinner spinning until this cap.
+        const MAX_POLL_MS = isOnDemandMerge ? 90_000 : 300_000;
         const POLL_RAMP_MS = [0, 500, 750, 1000, 1500];
         let pollIndex = 0;
 
@@ -4452,9 +5260,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }
 
           const pollResult = await pollResponse.json();
-          if (pollResult.status === 'done' && pollResult.mockupUrls?.length > 0) {
-            handleMockupSuccess({ ...pollResult, success: true });
-            return;
+          if (pollResult.status === "done") {
+            if (pollResult.mockupUrls?.length > 0) {
+              handleMockupSuccess({ ...pollResult, success: true });
+              return;
+            }
+            // Job finished with empty URLs (e.g. preferPersonViews, no cameras).
+            // Do not keep polling — that was the 2–5 minute hang.
+            throw new Error(
+              pollResult.error ||
+                (mergePersonViews
+                  ? "Printify returned no Front Person mockup for this product."
+                  : mergeProductMockups
+                    ? "Printify returned no mockups for this product."
+                    : "Printify returned no lifestyle/context views for this product."),
+            );
           }
           if (pollResult.status === 'failed') {
             throw new Error(pollResult.error || 'Mockup generation failed');
@@ -4483,6 +5303,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         await pollMockupJob(result.jobId);
       } else if (!result.success) {
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
+      } else if (isOnDemandMerge) {
+        throw new Error(
+          result.error ||
+            (mergePersonViews
+              ? "Printify returned no Front Person mockup for this product."
+              : mergeProductMockups
+                ? "Printify returned no mockups for this product."
+                : "Printify returned no lifestyle/context views for this product."),
+        );
       }
     } catch (error) {
       if (!isOnDemandMerge && requestSeq !== mockupRequestSeqRef.current) {
@@ -4557,12 +5386,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !mockupLoading &&
       !mockupFailed
     ) {
-      if (useAopCustomizer) {
-        console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
-        setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-        setAopPatternUrl(null);
-        setShowPatternStep(true);
-      } else if (usesFlatOnTheFlyPreview) {
+    if (useAopCustomizer) {
+      // Resume with saved placer state: keep aopPatternUrl / mockups; only open
+      // the placer. Clearing pattern URL forced a default re-apply path.
+      console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
+      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      setShowPatternStep(true);
+    } else if (usesFlatOnTheFlyPreview) {
         setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
@@ -4576,7 +5407,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
       }
     }
-  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview]);
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
@@ -4595,7 +5426,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (useAopCustomizer) {
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-      setAopPatternUrl(null);
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
       setShowPatternStep(true);
       return;
     }
@@ -4615,7 +5446,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       transform.x,
       transform.y
     );
-  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
+  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState]);
 
   /**
    * Admin tester (Printify zoom products): persist scale/position/size for the
@@ -5027,6 +5858,56 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     frameOptionsRedundantWithSizes,
   ]);
 
+  /**
+   * Pre-artwork browse carousel: optional colour/size-accurate blank leads, then
+   * merchant Primary + Gallery unchanged (never pixel-swapped under the Primary label).
+   */
+  const browsePlaceholderSlides = useMemo(() => {
+    type Slide = { url: string; label: string; kind: "color" | "primary" | "gallery" };
+    const slides: Slide[] = [];
+    const seen = new Set<string>();
+    const add = (url: string | null | undefined, label: string, kind: Slide["kind"]) => {
+      if (!url || typeof url !== "string") return;
+      const key = mockupImageUrlKey(url);
+      if (seen.has(key)) return;
+      seen.add(key);
+      slides.push({ url, label, kind });
+    };
+
+    const colorLead =
+      orientationBlankOverride || flatCalibrationBlankUrl || colorAwareBlankUrl || null;
+    const merchantPrimary = catalogPreviewImages[0] || null;
+    if (
+      colorLead &&
+      (!merchantPrimary || mockupImageUrlKey(colorLead) !== mockupImageUrlKey(merchantPrimary))
+    ) {
+      const colorLabel =
+        frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ||
+        selectedFrameColor ||
+        (orientationBlankOverride ? "Size" : "Colour");
+      add(colorLead, colorLabel, "color");
+    }
+
+    catalogPreviewImages.forEach((url, i) => {
+      add(url, i === 0 ? "Primary" : `View ${i + 1}`, i === 0 ? "primary" : "gallery");
+    });
+
+    return slides;
+  }, [
+    orientationBlankOverride,
+    flatCalibrationBlankUrl,
+    colorAwareBlankUrl,
+    catalogPreviewImages,
+    frameColorObjects,
+    selectedFrameColor,
+  ]);
+
+  useEffect(() => {
+    if (catalogPreviewIndex >= browsePlaceholderSlides.length) {
+      setCatalogPreviewIndex(0);
+    }
+  }, [browsePlaceholderSlides.length, catalogPreviewIndex]);
+
   const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
     const pick = (url: string | undefined): string => {
       if (!url) return "";
@@ -5239,13 +6120,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       flatPlacerOn &&
       (flatApplyStatus === "saving" || flatPlacementDirty)
     );
+    const aopSaveBlocking = !!(
+      showPatternStep &&
+      productTypeConfig?.panelMappingTemplate &&
+      aopApplyStatus === "saving"
+    );
+    const saveBlocking = flatSaveBlocking || aopSaveBlocking;
     const mockupsStaleBlocksCart = mockupsStale;
     const shouldDisable =
-      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || flatSaveBlocking;
-    const label = flatSaveBlocking
-      ? flatApplyStatus === "saving"
-        ? "Saving design\u2026"
-        : "Refresh Mockups to Continue"
+      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || saveBlocking;
+    const label = saveBlocking
+      ? "Saving design\u2026"
       : waitingForMockups
         ? "Generating preview\u2026"
         : mockupLoading
@@ -5256,7 +6141,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !flatSaveBlocking,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -5266,7 +6151,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -5415,6 +6300,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: imageUrl,
         prompt: prompt,
       });
+      if (reuseRegeneratePendingToastRef.current) {
+        reuseRegeneratePendingToastRef.current = false;
+        toast({
+          title: "Regenerated for this product",
+          description:
+            "1 credit used. The result may look similar on purpose — adjust placement, then Apply Pattern to Continue.",
+        });
+      }
       // Update credit balance from the async status response
       if (
         data.creditsRemaining !== undefined ||
@@ -5552,8 +6445,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? printPlacement === "back" || printPlacement === "both"
               : false,
           },
-          linkSides: true,
+          linkSides: false,
           artworkUrl: artworkAbs,
+          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
+          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
         });
       } else {
         setFlatPlacerState(null);
@@ -5567,6 +6462,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           : usesFlatOnTheFlyPreview
             ? "saving"
             : "saved",
+        flatClipSides: [],
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
@@ -5799,14 +6695,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const handleGenerate = async (options?: {
     skipStyleMismatchCheck?: boolean;
     overridePresetId?: string;
+    overridePrompt?: string;
+    overrideReferenceImagesBase64?: string[];
   }) => {
-    const effectivePresetId = options?.overridePresetId ?? selectedPreset;
+    let effectivePresetId = options?.overridePresetId ?? selectedPreset;
     if (options?.overridePresetId) {
       setSelectedPreset(options.overridePresetId);
     }
+    const effectivePrompt = options?.overridePrompt ?? prompt;
+    if (options?.overridePrompt != null) {
+      setPrompt(options.overridePrompt);
+    }
 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
-    if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
+    if (!effectivePrompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
       notifyInsufficientCredits();
@@ -5825,9 +6727,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     
     // Validate required fields
-    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-      alert("Please select an art style before generating");
-      return;
+    if (showPresetsParam && filteredStylePresets.length > 0 && effectivePresetId === "") {
+      if (options?.overrideReferenceImagesBase64?.length) {
+        effectivePresetId = filteredStylePresets[0]?.id || "";
+        if (effectivePresetId) setSelectedPreset(effectivePresetId);
+      } else {
+        alert("Please select an art style before generating");
+        return;
+      }
     }
     if (printSizes.length > 0 && selectedSize === "") {
       alert("Please select a size before generating");
@@ -5837,13 +6744,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Validate required style sub-option
     const activePreset = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (activePreset?.options?.required && selectedStyleOption === "") {
-      alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-      return;
+      if (!options?.overrideReferenceImagesBase64?.length) {
+        alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+        return;
+      }
     }
 
-    if (!options?.skipStyleMismatchCheck && activePreset && prompt.trim()) {
+    if (!options?.skipStyleMismatchCheck && activePreset && effectivePrompt.trim()) {
       const mismatch = detectStylePromptMismatch(
-        prompt,
+        effectivePrompt,
         activePreset.promptSuffix,
         activePreset.name,
       );
@@ -5862,19 +6771,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     // Build the prompt: prepend selected option fragment if present
-    let fullPrompt = prompt;
+    let fullPrompt = effectivePrompt;
     let resolvedBaseImageUrl: string | undefined;
     if (activePreset?.options && selectedStyleOption !== "") {
       const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
       if (selectedChoice) {
-        fullPrompt = `${selectedChoice.promptFragment}. ${prompt}`;
+        fullPrompt = `${selectedChoice.promptFragment}. ${effectivePrompt}`;
         if (selectedChoice.baseImageUrl) resolvedBaseImageUrl = selectedChoice.baseImageUrl;
       }
     }
     if (!resolvedBaseImageUrl && (activePreset as any)?.baseImageUrl) {
       resolvedBaseImageUrl = (activePreset as any).baseImageUrl;
     }
-    if (!shouldUseStyleReferenceImage(prompt, referenceImages.length > 0)) {
+    const hasReuseRefs = !!options?.overrideReferenceImagesBase64?.length;
+    if (!shouldUseStyleReferenceImage(effectivePrompt, referenceImages.length > 0 || hasReuseRefs)) {
       resolvedBaseImageUrl = undefined;
     }
     if (effectivePresetId && effectivePresetId !== "") {
@@ -5889,16 +6799,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     // Convert all reference images to base64
     const referenceImagesBase64: string[] = [];
-    for (const imgFile of referenceImages) {
-      const b64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(imgFile);
-      });
-      if (b64 && b64.length > 5 * 1024 * 1024) {
-        throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
+    if (options?.overrideReferenceImagesBase64?.length) {
+      for (const b64 of options.overrideReferenceImagesBase64) {
+        if (b64 && b64.length > 5 * 1024 * 1024) {
+          throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
+        }
+        referenceImagesBase64.push(b64);
       }
-      referenceImagesBase64.push(b64);
+    } else {
+      for (const imgFile of referenceImages) {
+        const b64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(imgFile);
+        });
+        if (b64 && b64.length > 5 * 1024 * 1024) {
+          throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
+        }
+        referenceImagesBase64.push(b64);
+      }
     }
 
     console.log('[Generate] clicked', {
@@ -5920,7 +6839,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     try {
       generateMutation.mutate({
         prompt: fullPrompt,
-        userPrompt: prompt, // raw user text — stored separately so it can be restored cleanly
+        userPrompt: effectivePrompt, // raw user text — stored separately so it can be restored cleanly
         size: selectedSize,
         // Prefer the live Colour selection — never silently force "black" (that
         // sent Black frames to Printify after the merchant picked White).
@@ -6070,8 +6989,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? printPlacement === "back" || printPlacement === "both"
               : false,
           },
-          linkSides: true,
+          linkSides: false,
           artworkUrl: artworkAbs,
+          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
+          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
         });
       } else {
         setFlatPlacerState(null);
@@ -6409,8 +7330,59 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return flatPlacerRef.current.applyIfNeeded(opts);
   }, []);
 
+  const flushHoodieAopPlacer = useCallback(async (opts?: { force?: boolean }) => {
+    if (!hoodieAopPlacerRef.current) return false;
+    const applied = await hoodieAopPlacerRef.current.applyIfNeeded(opts);
+    if (applied) setAopPlacementDirty(false);
+    return applied;
+  }, []);
+
+  /** ATC "Apply Pattern to Continue" — flush placement; stay in the editor. */
+  const handleApplyPatternToContinue = useCallback(() => {
+    if (!generatedDesign?.imageUrl) return;
+    // Already in the placer: flush panels (sets aopPatternUrl) but do NOT leave
+    // the editor — exiting made Printers Mockup unreachable and felt like a
+    // "saved design" hand-off.
+    if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+      toast({
+        title: "Saving placement…",
+        description: "You can use Printers Mockup or Add to Cart when ready.",
+      });
+      void flushHoodieAopPlacer({ force: true }).catch((err: any) => {
+        console.error("[AOP] Apply Pattern flush failed:", err);
+        toast({
+          title: "Could not apply pattern",
+          description: err?.message || "Try again, or use Back on the placer.",
+          variant: "destructive",
+        });
+      });
+      return;
+    }
+    // Placer not open — open it so the customer can place, then apply.
+    setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+    setShowPatternStep(true);
+    toast({
+      title: "Place your artwork",
+      description: "Adjust placement, then click Apply Pattern to Continue again.",
+    });
+  }, [
+    generatedDesign?.imageUrl,
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    flushHoodieAopPlacer,
+    toast,
+  ]);
+
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
+      // Mesh AOP: flush deferred placement before test order.
+      if (
+        useAopCustomizer &&
+        productTypeConfig?.panelMappingTemplate &&
+        (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
+      ) {
+        await flushHoodieAopPlacer({ force: true });
+      }
       // Printify zoom products: placement is persisted in the background; flush now.
       if (isAdminTester && !useAopCustomizer) {
         const ok = await persistAdminTesterPrintifyDesign();
@@ -6444,18 +7416,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
           return {
             ...prev,
-            placements: prev.linkSides
-              ? {
-                  front: { ...front, scale: nextScale },
-                  back: { ...back, scale: nextScale },
-                }
-              : {
-                  ...prev.placements,
-                  [prev.view]: {
-                    ...(prev.placements?.[prev.view] ?? front),
-                    scale: nextScale,
-                  },
-                },
+            linkSides: false,
+            placements: {
+              ...prev.placements,
+              [prev.view]: {
+                ...(prev.placements?.[prev.view] ?? front),
+                scale: nextScale,
+              },
+            },
           };
         });
         await new Promise((r) => setTimeout(r, 100));
@@ -6492,6 +7460,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     transform.scale,
     emitTesterDesignStatus,
     flushFlatPlacer,
+    flushHoodieAopPlacer,
+    aopPlacementDirty,
+    productTypeConfig?.panelMappingTemplate,
     isAdminTester,
     useAopCustomizer,
     persistAdminTesterPrintifyDesign,
@@ -6507,10 +7478,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
   }, [embeddedContext, flushDesignForTester]);
 
+  // Opening Saved Designs while a placer is mid-edit: flush the deferred apply
+  // NOW so the current design's latest placement is persisted before the
+  // customer clicks another design (otherwise reopen shows a stale placement).
+  useEffect(() => {
+    if (!showSavedDesigns) return;
+    if (flatPlacerEditOpen) void flushFlatPlacer({ force: true });
+    if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+      void flushHoodieAopPlacer({ force: true });
+    }
+  }, [
+    showSavedDesigns,
+    flatPlacerEditOpen,
+    flushFlatPlacer,
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    flushHoodieAopPlacer,
+  ]);
+
   useEffect(() => {
     const onHide = () => {
-      if (!flatPlacerEditOpen) return;
-      void flushFlatPlacer();
+      if (flatPlacerEditOpen) void flushFlatPlacer();
+      if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+        void flushHoodieAopPlacer();
+      }
     };
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", onHide);
@@ -6518,7 +7509,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onHide);
     };
-  }, [flatPlacerEditOpen, flushFlatPlacer]);
+  }, [
+    flatPlacerEditOpen,
+    flushFlatPlacer,
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    flushHoodieAopPlacer,
+  ]);
 
   // Generator Tester has no ATC — auto-Apply flat placement after generate so
   // test orders get current size/colour/artwork and status reaches "saved".
@@ -6650,20 +7647,60 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flushFlatPlacer,
   ]);
 
+  const handleFlatTrimStatusChange = useCallback(
+    (status: FlatTrimStatus) => {
+      flatTrimStatusRef.current = status;
+      if (isAdminTester) {
+        emitTesterDesignStatus({ flatClipSides: status.clippedSides });
+      }
+    },
+    [isAdminTester, emitTesterDesignStatus],
+  );
+
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
 
-    const flatEditorOpen = !!(
+    // Flat apparel: if either enabled face is past the dashed guide, confirm first.
+    if (
       usesFlatOnTheFlyPreview &&
-      generatedDesign?.imageUrl &&
       !flatRenderFailed &&
-      flatPlacerEditOpen
+      !flatClipConfirmProceedRef.current
+    ) {
+      const live = flatPlacerRef.current?.getTrimStatus();
+      const status = live ?? flatTrimStatusRef.current;
+      if (status.clippedSides.length > 0) {
+        setFlatClipConfirmOpen(true);
+        return;
+      }
+    }
+    flatClipConfirmProceedRef.current = false;
+
+    // Only re-raster/upload when placement actually changed — a clean Apply
+    // already left https mockup URLs ready for shadow SKU + cart.
+    const flatNeedsFlush = !!(
+      usesFlatOnTheFlyPreview &&
+      !flatRenderFailed &&
+      (flatPlacementDirty || flatPlacerRef.current?.hasPendingChanges())
     );
-    if (flatEditorOpen || flatPlacementDirty) {
+    if (flatNeedsFlush) {
       try {
         await flushFlatPlacer({ force: true });
         setFlatPlacementDirty(false);
+      } catch {
+        setVariantError("Couldn't save your placement. Please try again.");
+        return;
+      }
+    }
+
+    const aopNeedsFlush = !!(
+      useAopCustomizer &&
+      productTypeConfig?.panelMappingTemplate &&
+      (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
+    );
+    if (aopNeedsFlush) {
+      try {
+        await flushHoodieAopPlacer({ force: true });
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         return;
@@ -6813,8 +7850,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Resolve the unique design variant before adding to cart.
     // Fast path: use pre-created shadow variant if available (created in background after mockups).
     // Slow path: call resolve-design-variant on demand (creates shadow product synchronously).
+    // When Print Side includes back and a both-tier retail price exists, always resolve (or
+    // re-resolve) so the shadow SKU price matches the surcharge — never silently undercharge.
+    const atcSizeName =
+      printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize ?? "";
+    const atcColorName =
+      frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
+      selectedFrameColor ??
+      "";
+    const bothRetailForAtc =
+      printPlacementUsesBoth
+        ? resolveBothRetailDollars({
+            sizeName: atcSizeName,
+            colorName: atcColorName,
+            shopifyVariantId: normalizedVariant,
+          })
+        : null;
+    const bothPriceOverride =
+      bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
+
     let finalVariantId = normalizedVariant;
-    if (preShadowVariantId) {
+    if (preShadowVariantId && !bothPriceOverride) {
       // Instant — shadow product was pre-created in the background
       finalVariantId = preShadowVariantId;
       console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
@@ -6840,6 +7896,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             variantId: normalizedVariant,
             designId: properties['_design_id'],
             mockupUrl: mockupFullUrl,
+            ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
           }),
           signal: controller.signal,
         });
@@ -6999,11 +8056,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     result: HoodieAopPlacerApplyResult,
   ) => {
     setHoodieAopPlacerState(result.state);
-    // NOTE: Do NOT call `setShowPatternStep(false)` here. The placer is now
-    // live-editing — auto-apply fires 1.5 s after every change to keep the
-    // cart preview in sync, so closing the step on every apply would boot
-    // the customer out of the placer immediately after they open it. The
-    // customer leaves the placer via the explicit "Back" toolbar button.
+    setAopPlacementDirty(false);
+    // NOTE: Do NOT call `setShowPatternStep(false)` here. Apply is deferred
+    // (ATC / leave / Printers Mockup) — closing on every apply would boot
+    // the customer out of the placer. They leave via "Back".
 
     // Front is the canonical "preferred" mockup the cart references.
     const frontCanvas = result.renderView("front");
@@ -7042,23 +8098,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (backHosted) images.push({ url: backHosted, label: "back" });
 
       aopBaseMockupsRef.current = images;
-      const withPerson = [...images, ...aopPersonMockupsRef.current];
-      const withPersonUrls = withPerson.map((i) => i.url);
-      setPrintifyMockupImages(withPerson);
-      setPrintifyMockups(withPersonUrls);
+      // Keep on-demand Printers/lifestyle shots across placement applies —
+      // they are only replaced by a new Printers Mockup call or a new design.
+      const withOnDemand = [...images, ...aopPersonMockupsRef.current];
+      const withOnDemandUrls = withOnDemand.map((i) => i.url);
+      setPrintifyMockupImages(withOnDemand);
+      setPrintifyMockups(withOnDemandUrls);
       setSelectedMockupIndex((prev) => {
-        // Stick keeps Printers Mockup after placement edits; mode switch clears
-        // stick first so apply lands on Artwork / live editor.
+        // Stick keeps Printers Mockup (person or pillow lifestyle) after
+        // placement edits; mode switch clears stick so apply lands on live editor.
         if (
           !stickAopPersonGalleryRef.current ||
           aopPersonMockupsRef.current.length === 0
         ) {
           return 0;
         }
-        const personIdx = withPerson.findIndex((m) =>
-          isPersonMockupLabel(m.label),
+        const onDemandIdx = withOnDemand.findIndex((m) =>
+          isPrintifyOnDemandMockupLabel(m.label),
         );
-        return personIdx >= 0 ? 1 + personIdx : prev;
+        return onDemandIdx >= 0 ? 1 + onDemandIdx : prev;
       });
       // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
       // ATC. The hoodie placer has no separate "pattern" — the local
@@ -7169,10 +8227,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           body: JSON.stringify({
             jobId,
             shop: shopDomain,
+            productTypeId: productTypeId || undefined,
+            pageHandle: activeProductContext.pageHandle || undefined,
             designState: {
               hoodieAopPlacerState: result.state,
               aopPatternUrl: frontHosted,
               hoodieAopMockups: { front: frontHosted, back: backHosted },
+              productTypeId: productTypeId || undefined,
+              pageHandle: activeProductContext.pageHandle || undefined,
             },
           }),
         }).catch((e) => {
@@ -7199,7 +8261,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         };
         const frontAbs = toAbsoluteMockupUrl(frontHosted);
         const backAbs = toAbsoluteMockupUrl(backHosted);
-        const mockupUrls = [frontAbs, backAbs].filter(
+        // Include current on-demand Printers/lifestyle shots so Saved Designs /
+        // ATC reopen keep them (front/back-only overwrite dropped them before).
+        const onDemandAbs = aopPersonMockupsRef.current
+          .map((m) => toAbsoluteMockupUrl(m.url))
+          .filter((u): u is string => !!u && u.startsWith("http"));
+        const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
           (u): u is string => !!u,
         );
         if (mockupUrls.length > 0) {
@@ -7209,6 +8276,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
+              productTypeId: productTypeId || undefined,
               // Front first (gallery thumbnail), back second.
               mockupUrls,
             }),
@@ -7259,6 +8327,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     storefrontCustomerId,
     emitTesterDesignStatus,
     productTypeConfig,
+    productTypeId,
+    activeProductContext.pageHandle,
     selectedSize,
     selectedFrameColor,
     transform.scale,
@@ -7276,17 +8346,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         .filter((u): u is string => !!u);
       if (absUrls.length === 0) return;
 
+      const jobId = savedJobIdRef.current;
+      const baseVariantForShadow = baseVariantForShadowRef.current;
       try {
         await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            jobId: savedJobIdRef.current,
+            jobId,
             shop: shopDomain,
             mockupUrls: absUrls,
+            // Same PreShadow kickoff as Printify mockup save — ATC can use
+            // preShadowVariantId instantly once the poll lands.
+            ...(productId && baseVariantForShadow
+              ? { baseProductId: productId, baseVariantId: baseVariantForShadow }
+              : {}),
           }),
         });
         lastFlatGalleryMockupKeyRef.current = dedupeKey;
+        if (productId && baseVariantForShadow) {
+          startShadowVariantPoll(jobId, shopDomain, 3000);
+        }
         try {
           window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
         } catch {
@@ -7308,7 +8388,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         console.error("[FlatMockups] save-mockups failed:", e);
       }
     },
-    [isStorefront, shopDomain, storefrontCustomerId],
+    [isStorefront, shopDomain, storefrontCustomerId, productId, startShadowVariantPoll],
   );
 
   /**
@@ -7488,8 +8568,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         ? toAbsoluteImageUrl(generatedDesign.imageUrl)
         : s.artworkUrl;
       setFlatPlacerState({ ...s, artworkUrl });
-      // Keep Print Side dropdown aligned with PRINT ON FRONT/BACK toggles.
-      if (supportsPrintPlacementSelection) {
+      // Keep Print Side + pricing tier aligned with PRINT ON FRONT/BACK toggles
+      // (flat crewnecks/hoodies often have no Print Side dropdown).
+      {
         const derived: "front" | "back" | "both" =
           s.enabled.front && s.enabled.back
             ? "both"
@@ -7498,6 +8579,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : "front";
         setPrintPlacement((prev) => (prev === derived ? prev : derived));
       }
+      // Any edit while viewing Printers/Context → jump back to the live editor.
+      setSelectedMockupIndex(0);
       setFlatPlacementDirty(true);
       if (isAdminTester && savedJobIdRef.current) {
         emitTesterDesignStatus({
@@ -7505,58 +8588,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           aopPanels: "none",
         });
       }
-      // Debounced auto-Apply so scale/position reach the job before test order.
-      if (flatPlacementDebounceRef.current) {
-        clearTimeout(flatPlacementDebounceRef.current);
-      }
-      flatPlacementDebounceRef.current = setTimeout(() => {
-        void (async () => {
-          if (flatApplyInFlightRef.current) return;
-          // No force — skip if placer already matches last Apply (avoids save loop).
-          if (flatPlacerRef.current && !flatPlacerRef.current.hasPendingChanges()) {
-            setFlatPlacementDirty(false);
-            if (isAdminTester && savedJobIdRef.current) {
-              emitTesterDesignStatus({
-                jobId: savedJobIdRef.current,
-                aopPanels: "saved",
-              });
-            }
-            return;
-          }
-          flatApplyInFlightRef.current = true;
-          try {
-            if (isAdminTester && savedJobIdRef.current) {
-              emitTesterDesignStatus({
-                jobId: savedJobIdRef.current,
-                aopPanels: "saving",
-              });
-            }
-            const applied = await flushFlatPlacer();
-            if (applied) {
-              setFlatPlacementDirty(false);
-              setMockupsStale(false);
-            } else if (isAdminTester && savedJobIdRef.current) {
-              emitTesterDesignStatus({
-                jobId: savedJobIdRef.current,
-                aopPanels: "saved",
-              });
-              setFlatPlacementDirty(false);
-            }
-          } catch (e) {
-            console.warn("[FlatPlacer] debounced Apply failed:", e);
-            if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
-          } finally {
-            flatApplyInFlightRef.current = false;
-          }
-        })();
-      }, 700);
+      // Persist only on ATC / test order / leave editor / Printers Mockup —
+      // not on every nudge (that flashed "Saving design…" constantly).
     },
     [
       generatedDesign?.imageUrl,
       isAdminTester,
       emitTesterDesignStatus,
-      flushFlatPlacer,
-      supportsPrintPlacementSelection,
     ],
   );
 
@@ -7657,6 +8695,545 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       });
     }
   }, [toast]);
+
+  const parseAspectRatioValue = useCallback((ar: string | null | undefined): number | null => {
+    if (!ar) return null;
+    const parts = ar.replace("/", ":").split(":").map(Number);
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    return parts[0] / parts[1];
+  }, []);
+
+  const aspectRatiosDifferMuch = useCallback(
+    (a: string | null | undefined, b: string | null | undefined, tolerance = 0.2) => {
+      const ra = parseAspectRatioValue(a);
+      const rb = parseAspectRatioValue(b);
+      if (ra == null || rb == null) return false;
+      return Math.abs(ra - rb) / Math.max(ra, rb) > tolerance;
+    },
+    [parseAspectRatioValue],
+  );
+
+  const currentDesignAspectRatio = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (sizeConfig) {
+      return (
+        sizeConfig.aspectRatio ||
+        resolveSizeAspectRatio(sizeConfig, productTypeConfig?.aspectRatio) ||
+        productTypeConfig?.aspectRatio ||
+        "3:4"
+      );
+    }
+    return productTypeConfig?.aspectRatio || "3:4";
+  }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
+
+  const loadReusePages = useCallback(async () => {
+    if (!isStorefront && !isShopify) return;
+    setReusePagesLoading(true);
+    try {
+      const res = await safeFetch("/apps/appai/customizer-pages", { credentials: "same-origin" }, 20000);
+      if (!res.ok) throw new Error(`Failed to load products (${res.status})`);
+      const data = await res.json();
+      const pages: ReusePageOption[] = Array.isArray(data?.pages) ? data.pages : [];
+      const currentHandle = (activeProductContext.pageHandle || productHandle || "").toLowerCase();
+      setReusePages(
+        pages.filter(
+          (p) =>
+            p?.handle &&
+            p.publiclyMountable !== false &&
+            (p.status == null || p.status === "active") &&
+            String(p.handle).toLowerCase() !== currentHandle,
+        ),
+      );
+    } catch (err) {
+      console.warn("[ReuseArtwork] Failed to load customizer pages:", err);
+      setReusePages([]);
+    } finally {
+      setReusePagesLoading(false);
+    }
+  }, [isStorefront, isShopify, activeProductContext.pageHandle, productHandle]);
+
+  const navigateToReuseProduct = useCallback(
+    async (handle: string, opts: { designId?: string | null; regenerate?: boolean; artworkUrl?: string; prompt?: string }) => {
+      // Regenerate: stay in the iframe, switch product in-app, attach reference immediately.
+      // Full-page nav was dropping sessionStorage/URL handoff so Body Pillow landed blank.
+      if (opts.regenerate && opts.artworkUrl) {
+        const originalPrompt = (opts.prompt || "").trim();
+        const reusePromptText = originalPrompt
+          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
+          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+
+        writeReuseHandoff({
+          jobId: opts.designId || null,
+          artworkUrl: opts.artworkUrl,
+          prompt: originalPrompt,
+          autoGenerate: true,
+        });
+
+        reuseInAppBusyRef.current = true;
+        setReuseBusy(true);
+        setReuseBusyLabel("Preparing artwork…");
+        try {
+          setReuseBusyLabel("Loading artwork…");
+          const blob = await fetchReuseArtworkBlob(opts.artworkUrl);
+          const file = new File([blob], "reuse-artwork.png", {
+            type: blob.type || "image/png",
+          });
+          const preview = URL.createObjectURL(blob);
+          const b64 = await blobToDataUrl(blob);
+          if (!b64) throw new Error("Could not read artwork for reference");
+
+          setReuseBusyLabel("Switching product…");
+          await switchToCustomizerPageByHandle(handle);
+
+          setReferenceImages([file]);
+          setReferencePreviews([preview]);
+          setPrompt(reusePromptText);
+          pendingReuseGenerateRef.current = {
+            prompt: reusePromptText,
+            referenceImagesBase64: [b64],
+          };
+          autoReuseHydratedRef.current = true;
+          autoReuseSeedingRef.current = true;
+          autoReuseGenerateDoneRef.current = false;
+          clearReuseHandoff();
+          setReuseBusyLabel("Starting regenerate…");
+          reuseRegeneratePendingToastRef.current = true;
+          toast({
+            title: "Regenerating for this product",
+            description: "Using 1 credit to recreate the artwork for the new shape.",
+          });
+          setReuseGenerateTick((n) => n + 1);
+          setReuseBusy(false);
+          return;
+        } catch (err: any) {
+          console.error("[ReuseArtwork] in-app regenerate failed, falling back to page nav:", err);
+          setReuseBusyLabel("Opening product page…");
+          toast({
+            title: "Switching page…",
+            description: err?.message || "Retrying with a full page load.",
+          });
+          // Fall through to hard navigation with durable handoff.
+        } finally {
+          reuseInAppBusyRef.current = false;
+        }
+      }
+
+      // As-is: fork artwork onto a NEW job for the TARGET product. Never
+      // loadDesignId of the source job — that kept the tee's productTypeId
+      // so Saved Designs later opened the reuse source instead of leggings.
+      if (!opts.regenerate && opts.artworkUrl) {
+        writeReuseHandoff({
+          jobId: null,
+          artworkUrl: opts.artworkUrl,
+          prompt: opts.prompt,
+          autoGenerate: false,
+        });
+        setReuseBusy(true);
+        setReuseBusyLabel("Opening product…");
+        try {
+          const pageRes = await safeFetch(
+            `/apps/appai/customizer-page?handle=${encodeURIComponent(handle)}`,
+            { credentials: "same-origin" },
+            30000,
+          );
+          if (!pageRes.ok) throw new Error(`Could not load ${handle}`);
+          const pageConfig = await pageRes.json();
+          const targetProductTypeId = pageConfig?.productTypeId
+            ? String(pageConfig.productTypeId)
+            : "";
+          if (!targetProductTypeId) throw new Error("Target product has no product type");
+
+          await switchToCustomizerPageByHandle(handle);
+          const abs = toAbsoluteImageUrl(opts.artworkUrl);
+          let forkedJobId: string | null = null;
+          if (shopDomain) {
+            const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                shop: shopDomain,
+                artworkUrl: abs,
+                prompt: opts.prompt || "",
+                productTypeId: targetProductTypeId,
+                customerId: storefrontCustomerId || undefined,
+                pageHandle: handle,
+              }),
+            });
+            if (forkRes.ok) {
+              const forked = await forkRes.json();
+              if (forked?.jobId) forkedJobId = String(forked.jobId);
+            } else {
+              console.warn("[ReuseArtwork] fork-design failed:", forkRes.status);
+            }
+          }
+          savedJobIdRef.current = forkedJobId;
+          loadDesignAppliedRef.current = true;
+          setBridgeLoadDesignId(forkedJobId || "");
+          setGeneratedDesign({
+            id: forkedJobId || `reuse-${Date.now()}`,
+            imageUrl: abs,
+            prompt: opts.prompt || "",
+          });
+          if (opts.prompt) setPrompt(opts.prompt);
+          clearReuseHandoff();
+          setReuseBusy(false);
+          return;
+        } catch (err: any) {
+          console.error("[ReuseArtwork] in-app as-is failed, falling back to page nav:", err);
+          setReuseBusyLabel("Opening product page…");
+        } finally {
+          reuseInAppBusyRef.current = false;
+        }
+      }
+
+      const target = `/pages/${encodeURIComponent(handle)}`;
+      const params = new URLSearchParams();
+      if (opts.regenerate) {
+        writeReuseHandoff({
+          jobId: opts.designId || null,
+          artworkUrl: opts.artworkUrl,
+          prompt: opts.prompt,
+          autoGenerate: true,
+        });
+        params.set("autoReuseGenerate", "1");
+        if (opts.designId) params.set("reuseJobId", opts.designId);
+        // Always include artwork URL as fallback when handoff/job status fails.
+        if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
+        if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
+      } else if (opts.artworkUrl) {
+        writeReuseHandoff({
+          jobId: null,
+          artworkUrl: opts.artworkUrl,
+          prompt: opts.prompt,
+          autoGenerate: false,
+        });
+        params.set("reuseArtworkUrl", opts.artworkUrl);
+        if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
+      }
+      const qs = params.toString();
+      const url = qs ? `${target}?${qs}` : target;
+      setReuseBusy(true);
+      setReuseBusyLabel("Opening product page…");
+      try {
+        window.parent.location.href = url;
+      } catch {
+        window.location.href = url;
+      }
+    },
+    [switchToCustomizerPageByHandle, toast, shopDomain, storefrontCustomerId],
+  );
+
+  const resolveTargetAspectRatio = useCallback((config: any): string => {
+    const dc = config?.designerConfig || {};
+    const sizes = Array.isArray(dc.sizes) ? dc.sizes : [];
+    const first = sizes[0];
+    if (first && typeof first === "object") {
+      return (
+        first.aspectRatio ||
+        resolveSizeAspectRatio(
+          {
+            id: String(first.id || first.name || ""),
+            name: String(first.name || first.id || ""),
+            width: Number(first.width) || 0,
+            height: Number(first.height) || 0,
+          },
+          dc.aspectRatio,
+        ) ||
+        dc.aspectRatio ||
+        "3:4"
+      );
+    }
+    return dc.aspectRatio || "3:4";
+  }, []);
+
+  const handleReuseProductPick = useCallback(
+    async (page: ReusePageOption) => {
+      const artworkUrl = generatedDesign?.imageUrl
+        ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+        : "";
+      if (!artworkUrl) {
+        toast({
+          title: "No artwork to reuse",
+          description: "Generate or upload artwork first.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const designId =
+        savedJobIdRef.current ||
+        (generatedDesign?.id && !String(generatedDesign.id).startsWith("local-")
+          ? String(generatedDesign.id)
+          : null);
+      const reusePrompt = (prompt || generatedDesign?.prompt || "").trim();
+
+      try {
+        const res = await safeFetch(
+          `/apps/appai/customizer-page?handle=${encodeURIComponent(page.handle)}`,
+          { credentials: "same-origin" },
+          30000,
+        );
+        if (!res.ok) throw new Error(`Could not load ${page.handle}`);
+        const config = await res.json();
+        const targetAr = resolveTargetAspectRatio(config);
+        if (aspectRatiosDifferMuch(currentDesignAspectRatio, targetAr)) {
+          setReuseDialog({
+            handle: page.handle,
+            title: page.title || page.handle,
+            designId,
+            artworkUrl,
+            prompt: reusePrompt,
+          });
+          return;
+        }
+        navigateToReuseProduct(page.handle, {
+          designId,
+          artworkUrl,
+          prompt: reusePrompt,
+        });
+      } catch (err: any) {
+        console.error("[ReuseArtwork] pick failed:", err);
+        toast({
+          title: "Could not open product",
+          description: err?.message || "Please try again.",
+          variant: "destructive",
+        });
+      }
+    },
+    [
+      generatedDesign,
+      prompt,
+      currentDesignAspectRatio,
+      aspectRatiosDifferMuch,
+      resolveTargetAspectRatio,
+      navigateToReuseProduct,
+      toast,
+    ],
+  );
+
+  const clearReuseUrlParams = useCallback(() => {
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.searchParams.delete("reuseArtworkUrl");
+      parentUrl.searchParams.delete("reusePrompt");
+      parentUrl.searchParams.delete("reuseJobId");
+      parentUrl.searchParams.delete("autoReuseGenerate");
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      /* ignore */
+    }
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("reuseArtworkUrl");
+      params.delete("reusePrompt");
+      params.delete("reuseJobId");
+      params.delete("autoReuseGenerate");
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Deep-link fallback: open reused artwork as-is when no loadDesignId / regenerate.
+  useEffect(() => {
+    if (autoReuseGenerateParam) return;
+    if (effectiveLoadDesignId || generatedDesign?.imageUrl || configLoading) return;
+    if (autoReuseGenerateDoneRef.current) return;
+    const handoff = readReuseHandoff();
+    const artworkUrl = reuseArtworkUrlParam || handoff?.artworkUrl || "";
+    if (!artworkUrl || handoff?.autoGenerate) return;
+    autoReuseGenerateDoneRef.current = true;
+    const abs = toAbsoluteImageUrl(artworkUrl);
+    let promptText = "";
+    try {
+      promptText = reusePromptParam
+        ? decodeURIComponent(reusePromptParam)
+        : handoff?.prompt || "";
+    } catch {
+      promptText = reusePromptParam || handoff?.prompt || "";
+    }
+    setGeneratedDesign({
+      id: `reuse-${Date.now()}`,
+      imageUrl: abs,
+      prompt: promptText,
+    });
+    if (promptText) setPrompt(promptText);
+    clearReuseHandoff();
+    clearReuseUrlParams();
+  }, [
+    reuseArtworkUrlParam,
+    reusePromptParam,
+    autoReuseGenerateParam,
+    effectiveLoadDesignId,
+    generatedDesign?.imageUrl,
+    configLoading,
+    clearReuseUrlParams,
+  ]);
+
+  // Phase A: seed reference images + prompt as soon as reuse regenerate lands
+  // (do not wait for size/style — that was leaving Body Pillow blank).
+  useEffect(() => {
+    if (reuseInAppBusyRef.current) return;
+    const handoff = readReuseHandoff();
+    const wantsAuto =
+      autoReuseGenerateParam || handoff?.autoGenerate === true;
+    if (!wantsAuto) return;
+    if (autoReuseHydratedRef.current || autoReuseSeedingRef.current) return;
+    if (configLoading || !productTypeConfig) return;
+    if (generatedDesign?.imageUrl) return;
+
+    autoReuseSeedingRef.current = true;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const jobId = reuseJobIdParam || handoff?.jobId || "";
+        let artworkUrl = reuseArtworkUrlParam || handoff?.artworkUrl || "";
+        let originalPrompt = "";
+        try {
+          originalPrompt = reusePromptParam
+            ? decodeURIComponent(reusePromptParam)
+            : handoff?.prompt || "";
+        } catch {
+          originalPrompt = reusePromptParam || handoff?.prompt || "";
+        }
+
+        if (jobId && shopDomain) {
+          try {
+            const statusRes = await safeFetch(
+              `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shopDomain)}&t=${Date.now()}`,
+              { credentials: "include" },
+              30000,
+            );
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              if (status?.status === "complete" && status.imageUrl) {
+                artworkUrl = status.imageUrl;
+                if (!originalPrompt && status.prompt) originalPrompt = String(status.prompt);
+              }
+            }
+          } catch (e) {
+            console.warn("[ReuseArtwork] job status fetch failed, falling back to URL:", e);
+          }
+        }
+
+        if (!artworkUrl) {
+          throw new Error("No artwork available to reuse");
+        }
+
+        const blob = await fetchReuseArtworkBlob(artworkUrl);
+        if (cancelled) return;
+        const file = new File([blob], "reuse-artwork.png", {
+          type: blob.type || "image/png",
+        });
+        const preview = URL.createObjectURL(blob);
+        const b64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Failed to read reused artwork"));
+          reader.readAsDataURL(blob);
+        });
+        if (cancelled) return;
+
+        const reusePromptText = originalPrompt
+          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
+          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+
+        setReferenceImages([file]);
+        setReferencePreviews([preview]);
+        setPrompt(reusePromptText);
+        pendingReuseGenerateRef.current = {
+          prompt: reusePromptText,
+          referenceImagesBase64: b64 ? [b64] : [],
+        };
+        autoReuseHydratedRef.current = true;
+        clearReuseHandoff();
+        clearReuseUrlParams();
+      } catch (err: any) {
+        console.error("[ReuseArtwork] hydrate failed:", err);
+        autoReuseSeedingRef.current = false;
+        toast({
+          title: "Could not reuse artwork",
+          description: err?.message || "Please try again.",
+          variant: "destructive",
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (!autoReuseHydratedRef.current) {
+        autoReuseSeedingRef.current = false;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    autoReuseGenerateParam,
+    reuseArtworkUrlParam,
+    reuseJobIdParam,
+    reusePromptParam,
+    configLoading,
+    productTypeConfig,
+    generatedDesign?.imageUrl,
+    shopDomain,
+  ]);
+
+  // Phase B: after refs are seeded, pick defaults and generate (1 credit).
+  useEffect(() => {
+    if (!autoReuseHydratedRef.current) return;
+    if (autoReuseGenerateDoneRef.current) return;
+    if (configLoading || !productTypeConfig) return;
+    if (generateMutation.isPending || generatedDesign?.imageUrl) return;
+    const pending = pendingReuseGenerateRef.current;
+    if (!pending?.referenceImagesBase64?.length) return;
+
+    if (printSizes.length > 0 && !selectedSize) {
+      const first = printSizes[0];
+      if (first?.id) {
+        setSelectedSize(first.id);
+        if (frameOptionsRedundantWithSizes) {
+          const matched = resolveFrameColorForSize(first, frameColorObjects);
+          if (matched) setSelectedFrameColor(matched);
+        }
+      }
+      return;
+    }
+
+    autoReuseGenerateDoneRef.current = true;
+    pendingReuseGenerateRef.current = null;
+    reuseRegeneratePendingToastRef.current = true;
+    toast({
+      title: "Regenerating for this product",
+      description: "Using 1 credit to recreate the artwork for the new shape.",
+    });
+    void handleGenerate({
+      skipStyleMismatchCheck: true,
+      overridePrompt: pending.prompt,
+      overrideReferenceImagesBase64: pending.referenceImagesBase64,
+    }).catch((err: any) => {
+      console.error("[ReuseArtwork] auto-generate failed:", err);
+      autoReuseGenerateDoneRef.current = false;
+      pendingReuseGenerateRef.current = pending;
+      reuseRegeneratePendingToastRef.current = false;
+      toast({
+        title: "Could not start regenerate",
+        description: err?.message || "Reference image is ready — pick style/size and Generate.",
+        variant: "destructive",
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    reuseGenerateTick,
+    referenceImages.length,
+    referencePreviews.length,
+    selectedSize,
+    printSizes,
+    configLoading,
+    productTypeConfig,
+    generateMutation.isPending,
+    generatedDesign?.imageUrl,
+    frameOptionsRedundantWithSizes,
+    frameColorObjects,
+  ]);
 
   useEffect(() => {
     const DB = debugBridge;
@@ -7910,6 +9487,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         loadDesignAppliedRef.current = false;
         // Set the bridge-provided loadDesignId into state so the restore effect can use it
         setBridgeLoadDesignId(bridgeLoadId);
+        setLoadDesignNonce((n) => n + 1);
       }
 
       if (type === "AI_ART_STUDIO_SWITCH_SAVED_DESIGN" && event.data.design) {
@@ -8468,6 +10046,43 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
+  // Phone cases: match viewing-card height to the form column's CONTENT
+  // (prompt baseline). Do not use getBoundingClientRect on the column itself —
+  // grid stretch inflates that and feedback-loops into a giant empty card.
+  useEffect(() => {
+    if (!flatEdgeWrapMode || !flatPlacerActive) {
+      setPhoneViewerHeightPx(null);
+      return;
+    }
+    const form = formColumnRef.current;
+    if (!form) return;
+    const sync = () => {
+      const kids = Array.from(form.children) as HTMLElement[];
+      if (kids.length === 0) return;
+      const first = kids[0];
+      const last = kids[kids.length - 1];
+      const style = getComputedStyle(form);
+      const padTop = parseFloat(style.paddingTop) || 0;
+      const padBottom = parseFloat(style.paddingBottom) || 0;
+      const contentH =
+        last.offsetTop + last.offsetHeight - first.offsetTop + padTop + padBottom;
+      const capped = Math.min(
+        Math.max(200, Math.round(contentH)),
+        Math.floor(window.innerHeight * 0.9),
+      );
+      setPhoneViewerHeightPx((prev) => (prev === capped ? prev : capped));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(form);
+    for (const kid of Array.from(form.children)) ro.observe(kid);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [flatEdgeWrapMode, flatPlacerActive]);
+
   // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
   useEffect(() => {
     if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
@@ -8478,13 +10093,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
   }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
 
-  // Framed decor + catalog blanks + tapestry + folded/flat totes share on-demand Printify.
+  // Framed decor + catalog blanks + tapestry + phone cases + folded/flat totes share on-demand Printify.
   const canRequestLifestyleShot = !!(
     (flatDecorMode ||
       isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
       flatFabricWeave ||
+      flatEdgeWrapMode ||
       toteFoldedLayout ||
-      (flatPlacerEligible && !isApparel && !flatEdgeWrapMode)) &&
+      (flatPlacerEligible && !isApparel)) &&
     flatPlacerEligible &&
     productTypeConfig?.hasPrintifyMockups &&
     selectedSize &&
@@ -8494,11 +10110,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     isPrintifyOnDemandMockupLabel(img.label),
   );
   /** Shimmer/clickable only after generate + placement settled; dims when dirty. */
+  // Allow click while dirty — requestLifestyleShot flushes placement first.
+  // (Dirty no longer auto-clears on nudge; blocking here would strand Printers Mockup.)
   const lifestyleShotActive = !!(
     canRequestLifestyleShot &&
     generatedDesign?.imageUrl &&
     !lifestyleShotLoading &&
-    !flatPlacementDirty &&
     flatApplyStatus !== "saving" &&
     flatApplyStatus !== "error"
   );
@@ -8518,14 +10135,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     showPatternStep &&
     !!productTypeConfig?.panelMappingTemplate &&
     selectedPostGenItem?.kind === "mockup" &&
-    isPersonMockupLabel(selectedPostGenItem.label)
+    isPrintifyOnDemandMockupLabel(selectedPostGenItem.label)
       ? selectedPostGenItem.url
       : null;
   const hoodieCanvasOverrideLabel = hoodieCanvasOverrideUrl
-    ? formatPostGenMockupLabel(selectedPostGenItem?.label ?? "", "Front Person")
+    ? formatPostGenMockupLabel(
+        selectedPostGenItem?.label ?? "",
+        isPersonMockupLabel(selectedPostGenItem?.label ?? "")
+          ? "Front Person"
+          : "Lifestyle",
+      )
     : null;
 
-  /** Mesh AOP on-demand Front Person (Printers Mockup). */
+  /** Mesh AOP on-demand Front Person / pillow in-situ (Printers Mockup). */
   const canRequestAopPrintersMockup = !!(
     useAopCustomizer &&
     productTypeConfig?.panelMappingTemplate &&
@@ -8533,15 +10155,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize &&
     generatedDesign?.imageUrl
   );
-  const hasAopPersonMockup = printifyMockupImages.some((img) =>
-    isPersonMockupLabel(img.label),
+  const hasAopPersonMockup = printifyMockupImages.some(
+    (img) =>
+      isPersonMockupLabel(img.label) ||
+      isPrintifyContextMockupLabel(img.label) ||
+      /^printers/i.test(img.label || ""),
   );
+  // Active as soon as artwork + size exist. Do not wait for aopPatternUrl —
+  // deferred mesh apply left that null, so Printers Mockup stayed disabled
+  // until Apply (and Apply used to exit the editor). The button force-applies first.
   const aopPrintersMockupActive = !!(
     canRequestAopPrintersMockup &&
     !lifestyleShotLoading &&
-    !mockupLoading &&
-    (!!aopPatternUrl ||
-      printifyMockupImages.some((img) => img.label === "front"))
+    !mockupLoading
   );
 
   const requestAopPrintersMockup = useCallback(
@@ -8558,12 +10184,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setLifestyleShotLoading(true);
       setLifestyleShotError(null);
       lastAopPanelUrlsRef.current = panels;
+      // Body/lumbar pillows have no Front Person cameras — request in-situ
+      // lifestyle/context (bed/room). Fall back to product cameras if none.
+      const isPillowAop = isPillowWrapBlueprint(
+        productTypeConfig.printifyBlueprintId,
+      );
       try {
         const designUrl =
           aopPatternUrl ||
           aopBaseMockupsRef.current[0]?.url ||
           toAbsoluteImageUrl(generatedDesign.imageUrl);
-        const result = await fetchPrintifyMockups(
+        const fetchOpts = isPillowAop
+          ? { mergeContextOnly: true }
+          : { mergePersonViews: true };
+        let result = await fetchPrintifyMockups(
           designUrl,
           productTypeConfig.id,
           selectedSize!,
@@ -8576,8 +10210,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           panels,
           undefined,
           hoodieAopPlacerState?.backgroundColor,
-          { mergePersonViews: true },
+          fetchOpts,
         );
+        let pillowUsedProductCameras = false;
+        if (!result.ok && isPillowAop) {
+          console.warn(
+            "[Mockups] Pillow lifestyle/context unavailable, trying product cameras:",
+            result.error,
+          );
+          pillowUsedProductCameras = true;
+          result = await fetchPrintifyMockups(
+            designUrl,
+            productTypeConfig.id,
+            selectedSize!,
+            selectedFrameColor || "default",
+            100,
+            50,
+            50,
+            designUrl,
+            undefined,
+            panels,
+            undefined,
+            hoodieAopPlacerState?.backgroundColor,
+            { mergeProductMockups: true },
+          );
+        }
         if (!result.ok) {
           const msg = result.error || "Printers mockup failed";
           setLifestyleShotError(msg);
@@ -8590,8 +10247,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         toast({
           title: "Printers mockup ready",
-          description:
-            "Showing Front Person — use the arrows under the preview to switch views.",
+          description: isPillowAop
+            ? pillowUsedProductCameras
+              ? "Printify has no lifestyle scene for this pillow — showing the printer's product mockup instead."
+              : "Showing in-situ lifestyle view — use the arrows under the preview to switch."
+            : "Showing Front Person — use the arrows under the preview to switch views.",
         });
       } finally {
         setLifestyleShotLoading(false);
@@ -8600,6 +10260,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [
       canRequestAopPrintersMockup,
       productTypeConfig?.id,
+      productTypeConfig?.printifyBlueprintId,
       generatedDesign?.imageUrl,
       lifestyleShotLoading,
       fetchPrintifyMockups,
@@ -8626,23 +10287,74 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       await flushFlatPlacer({ force: true });
     }
     const front = flatPlacerState?.placements?.front;
-    const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
-    // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
-    const scalePct = Math.round(
-      coverScale * FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR * 100,
-    );
-    const xPct = Math.round(
-      Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
-    );
-    const yPct = Math.round(
-      Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)),
-    );
     setLifestyleShotLoading(true);
     setLifestyleShotError(null);
-    const isTapestryPrinters = flatFabricWeave;
+    const isPrintersMockup = flatFabricWeave || flatEdgeWrapMode;
     try {
+      let designUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+      let scalePct: number;
+      let xPct: number;
+      let yPct: number;
+
+      // Phone cases: bake full print canvas (bg + placement) like order
+      // fulfillment, then ask Printify at scale=1 center — raw art + approximate
+      // scale omitted the background and mismatched artwork size.
+      if (flatEdgeWrapMode) {
+        const bakeEndpoint = isStorefront
+          ? `${API_BASE}/api/storefront/bake-flat-print`
+          : `${API_BASE}/api/mockup/bake-flat-print`;
+        const phoneColor =
+          isPhoneCaseProduct && !frameColorsArePhoneModels
+            ? "default"
+            : selectedFrameColor || "default";
+        const bakeRes = await safeFetch(bakeEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(isStorefront ? { shop: shopDomain } : {}),
+            productTypeId: productTypeConfig.id,
+            artworkUrl: designUrl,
+            sizeId: selectedSize,
+            colorId: phoneColor,
+            placement: front ?? { scale: 1, offsetX: 0, offsetY: 0 },
+            backgroundColor: flatPlacerState?.backgroundColor ?? null,
+            view: "front",
+          }),
+        }, 120_000);
+        const bakeJson = await bakeRes.json().catch(() => ({}));
+        if (!bakeRes.ok || !bakeJson?.url) {
+          const msg =
+            typeof bakeJson?.error === "string"
+              ? bakeJson.error
+              : "Could not bake print file for printers mockup";
+          setLifestyleShotError(msg);
+          toast({
+            title: "Printers mockup unavailable",
+            description: msg,
+            variant: "destructive",
+          });
+          return;
+        }
+        designUrl = toAbsoluteImageUrl(String(bakeJson.url));
+        scalePct = 100;
+        xPct = 50;
+        yPct = 50;
+      } else {
+        const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
+        // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
+        scalePct = Math.round(
+          coverScale * FLAT_LIFESTYLE_PRINTIFY_SCALE_FACTOR * 100,
+        );
+        xPct = Math.round(
+          Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)),
+        );
+        yPct = Math.round(
+          Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)),
+        );
+      }
+
       const result = await fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        designUrl,
         productTypeConfig.id,
         selectedSize!,
         selectedFrameColor || "default",
@@ -8654,17 +10366,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         undefined,
         undefined,
         undefined,
-        isTapestryPrinters
+        isPrintersMockup
           ? { mergeProductMockups: true }
           : { mergeContextOnly: true },
       );
       if (!result.ok) {
         const msg =
           result.error ||
-          (isTapestryPrinters ? "Printers mockup failed" : "Lifestyle shot failed");
+          (isPrintersMockup ? "Printers mockup failed" : "Lifestyle shot failed");
         setLifestyleShotError(msg);
         toast({
-          title: isTapestryPrinters
+          title: isPrintersMockup
             ? "Printers mockup unavailable"
             : "Lifestyle shot unavailable",
           description: msg,
@@ -8673,9 +10385,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         return;
       }
       toast({
-        title: isTapestryPrinters ? "Printers mockup ready" : "Lifestyle shot ready",
-        description: isTapestryPrinters
-          ? "Showing the printer’s woven mockup — use the dots or arrows to switch views."
+        title: isPrintersMockup ? "Printers mockup ready" : "Lifestyle shot ready",
+        description: isPrintersMockup
+          ? flatEdgeWrapMode
+            ? "Showing the printer’s mockup — use the dots or arrows to switch views. Editing returns to Front."
+            : "Showing the printer’s woven mockup — use the dots or arrows to switch views."
           : "Showing On Person — use the dots or arrows under the preview to switch views. Front/Back returns to the editor.",
       });
     } finally {
@@ -8689,10 +10403,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     lifestyleShotLoading,
     flushFlatPlacer,
     flatPlacerState?.placements?.front,
+    flatPlacerState?.backgroundColor,
     fetchPrintifyMockups,
     selectedSize,
     selectedFrameColor,
     flatFabricWeave,
+    flatEdgeWrapMode,
+    isStorefront,
+    shopDomain,
+    isPhoneCaseProduct,
+    frameColorsArePhoneModels,
     toast,
   ]);
 
@@ -8703,6 +10423,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const flatPlacerSaveBlocking = !!(
     flatPlacerActive && flatApplyStatus === "saving"
+  );
+  const aopPlacerSaveBlocking = !!(
+    showPatternStep &&
+    productTypeConfig?.panelMappingTemplate &&
+    aopApplyStatus === "saving"
   );
 
   // Stable identity for keeping on-demand Printers/Context slides across re-rasters.
@@ -8716,10 +10441,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!flatPlacerEligible) return;
     currentMockupColorRef.current = "";
     lastFlatGalleryMockupKeyRef.current = "";
-    if (flatDecorMode && generatedDesign?.imageUrl) {
+    // Stay on a mockup slide (Front) while the new blank rasters — jumping to
+    // index 0 flashed raw Artwork between colour changes on crew tees.
+    setSelectedMockupIndex((prev) => (prev >= 1 ? 1 : prev));
+    if (generatedDesign?.imageUrl) {
       setFlatMockupRefreshing(true);
     }
-  }, [flatPlacerEligible, flatBlankColorId, selectedSize, flatDecorMode, generatedDesign?.imageUrl]);
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize, generatedDesign?.imageUrl]);
 
   const handleRefreshFlatMockups = useCallback(() => {
     setMockupError(null);
@@ -8734,17 +10462,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setFlatPlacerState((prev) => {
       if (!prev) return prev;
       const front = prev.placements?.front ?? { scale: 1, offsetX: 0, offsetY: 0 };
-      const back = prev.placements?.back ?? { scale: 1, offsetX: 0, offsetY: 0 };
-      const placements = prev.linkSides
-        ? {
-            front: { ...front, scale: nextScale },
-            back: { ...back, scale: nextScale },
-          }
-        : {
-            ...prev.placements,
-            [prev.view]: { ...(prev.placements?.[prev.view] ?? front), scale: nextScale },
-          };
-      return { ...prev, placements };
+      return {
+        ...prev,
+        linkSides: false,
+        placements: {
+          ...prev.placements,
+          [prev.view]: { ...(prev.placements?.[prev.view] ?? front), scale: nextScale },
+        },
+      };
     });
 
     setFlatMockupRefreshNonce((n) => n + 1);
@@ -8814,8 +10539,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ? printPlacement === "back" || printPlacement === "both"
               : (flatPlacerState?.enabled?.back ?? false),
           },
-          linkSides: flatPlacerState?.linkSides ?? true,
+          linkSides: false,
           artworkUrl,
+          backgroundColor: flatPlacerState?.backgroundColor ?? null,
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
         if (
@@ -8826,7 +10552,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // Front already cached — lifestyle/context is on-demand (Lifestyle Shot).
           return;
         }
-        if (flatDecorMode) setFlatMockupRefreshing(true);
+        setFlatMockupRefreshing(true);
         const images: { url: string; label: string }[] = [];
         for (const view of views) {
           const dataUrl = await renderFlatMockupDataUrl(
@@ -8940,7 +10666,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setMockupsStale(false);
   }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
 
-  // Build a price map from shopifyVariants, keyed by size id
+  const bothPricesMap = productTypeConfig?.variantPricesBoth || {};
+  const hasBothRetailPrices = Object.keys(bothPricesMap).length > 0;
+  // Surcharge when BOTH sides are printed — from Print Side dropdown OR flat
+  // PRINT ON FRONT + PRINT ON BACK toggles (saved designs often only set the latter).
+  const flatBothEnabled =
+    !!flatPlacerEligible &&
+    flatPlacerState?.enabled?.front !== false &&
+    !!flatPlacerState?.enabled?.back;
+  const printPlacementUsesBoth = printPlacement === "both" || flatBothEnabled;
+
+  /** Resolve front+back retail ($) for a size/color (or the active Shopify variant). */
+  const resolveBothRetailDollars = useCallback(
+    (opts?: { sizeName?: string; colorName?: string; shopifyVariantId?: string | null }) => {
+      if (!hasBothRetailPrices) return null;
+      return resolveBothRetailDollarsFromMap(bothPricesMap, {
+        sizeName: opts?.sizeName,
+        colorName: opts?.colorName,
+        shopifyVariantId: opts?.shopifyVariantId,
+      });
+    },
+    [bothPricesMap, hasBothRetailPrices],
+  );
+
+  // Build a price map from shopifyVariants, keyed by size id.
+  // When Print Side includes back and both-tier retail exists, show/charge that tier.
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
@@ -8972,7 +10722,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       if (matchedVariant?.price) {
-        const priceNum = parseFloat(matchedVariant.price);
+        let priceNum = parseFloat(matchedVariant.price);
+        if (printPlacementUsesBoth) {
+          const both = resolveBothRetailDollars({
+            sizeName: size.name,
+            colorName: frameName,
+            shopifyVariantId: matchedVariant.id,
+          });
+          if (both != null) priceNum = both;
+        }
         if (priceNum > 0) {
           priceMap[size.id] = Math.round(priceNum * 100);
         }
@@ -8980,7 +10738,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     return priceMap;
-  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor, showFrameColorSelector])
+  }, [
+    shopifyVariants,
+    printSizes,
+    frameColorObjects,
+    selectedFrameColor,
+    showFrameColorSelector,
+    printPlacementUsesBoth,
+    resolveBothRetailDollars,
+  ])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
@@ -9152,22 +10918,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
-    if (isInAppProductSwitching) {
+    if (isInAppProductSwitching || reuseBusy) {
       return (
-        <div className="min-h-[520px] flex items-center justify-center bg-[#f4f4f5]" data-testid="container-loading">
-          <style>{'@keyframes appai-iframe-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}'}</style>
-          <div
-            className="text-[34px] max-sm:text-[28px] font-extrabold leading-tight tracking-[-0.04em] text-transparent bg-clip-text"
-            style={{
-              backgroundImage: 'linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
-              backgroundSize: '200% auto',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              animation: 'appai-iframe-title-shimmer 2.4s linear infinite',
-            }}
-          >
-            Loading AI Art Studio
-          </div>
+        <div
+          className="min-h-[520px] flex flex-col items-center justify-center gap-3 bg-[#f4f4f5]"
+          data-testid="container-loading-reuse"
+        >
+          <Loader2 className="h-8 w-8 animate-spin text-foreground" />
+          <p className="text-sm font-medium text-foreground">
+            {reuseBusy ? reuseBusyLabel : "Loading AI Art Studio"}
+          </p>
         </div>
       );
     }
@@ -9239,6 +10999,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           ) : (
             <Button
               onClick={() => {
+                if (useAopCustomizer && !aopPatternUrl) {
+                  handleApplyPatternToContinue();
+                  return;
+                }
                 if (atcMockupsStaleBlocks) {
                   if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                     if (generatedDesign?.imageUrl) {
@@ -9273,7 +11037,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -9282,7 +11046,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Adding to Cart...</span>
                 </>
-              ) : flatPlacerSaveBlocking ? (
+              ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">
@@ -9428,7 +11192,143 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   };
 
   return (
-    <div className={`p-2 sm:p-3 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+    <div
+      className={`p-2 sm:p-3 relative ${
+        isEmbedded || isStorefront || isAdminTester || isMerchantStudio
+          ? "bg-transparent"
+          : "bg-background min-h-screen"
+      }`}
+    >
+      {reuseBusy && (
+        <div
+          className="fixed inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-[1px]"
+          data-testid="overlay-reuse-busy"
+          aria-busy="true"
+          aria-live="polite"
+        >
+          <Loader2 className="h-8 w-8 animate-spin text-foreground" />
+          <p className="text-sm font-medium text-foreground px-4 text-center">{reuseBusyLabel}</p>
+        </div>
+      )}
+      <AlertDialog open={flatClipConfirmOpen} onOpenChange={setFlatClipConfirmOpen}>
+        <AlertDialogContent data-testid="dialog-flat-clip-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Artwork extends past the print area</AlertDialogTitle>
+            <AlertDialogDescription>
+              {(() => {
+                const sides = (
+                  flatPlacerRef.current?.getTrimStatus() ?? flatTrimStatusRef.current
+                ).clippedSides;
+                const label =
+                  sides.length === 2
+                    ? "front and back"
+                    : sides[0] === "back"
+                      ? "the back"
+                      : "the front";
+                return (
+                  <>
+                    Your design on {label} is larger than the printable area and will be
+                    trimmed on the product. Continue only if you are happy with that
+                    cropping.
+                  </>
+                );
+              })()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-flat-clip-cancel">
+              Go back and adjust
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="button-flat-clip-continue"
+              onClick={() => {
+                flatClipConfirmProceedRef.current = true;
+                setFlatClipConfirmOpen(false);
+                void handleAddToCart();
+              }}
+            >
+              Continue with clipped artwork
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!reuseDialog}
+        onOpenChange={(open) => {
+          if (!open) setReuseDialog(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-reuse-artwork-ar">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Different product shape</AlertDialogTitle>
+            <AlertDialogDescription>
+              {reuseDialog
+                ? `${reuseDialog.title} has a different aspect ratio than your current artwork. Open it as-is, or regenerate to fit (uses 1 credit).`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel disabled={reuseBusy} data-testid="button-reuse-cancel">
+              Cancel
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={reuseBusy}
+              data-testid="button-reuse-open-asis"
+              onClick={() => {
+                if (!reuseDialog || reuseBusy) return;
+                const d = reuseDialog;
+                setReuseDialog(null);
+                void navigateToReuseProduct(d.handle, {
+                  designId: d.designId,
+                  artworkUrl: d.artworkUrl,
+                  prompt: d.prompt,
+                });
+              }}
+            >
+              Open as-is
+            </Button>
+            <Button
+              type="button"
+              disabled={reuseBusy}
+              data-testid="button-reuse-regenerate"
+              onClick={() => {
+                if (!reuseDialog || reuseBusy) return;
+                const d = reuseDialog;
+                setReuseBusy(true);
+                setReuseBusyLabel("Preparing artwork…");
+                setReuseDialog(null);
+                void navigateToReuseProduct(d.handle, {
+                  regenerate: true,
+                  designId: d.designId,
+                  artworkUrl: d.artworkUrl,
+                  prompt: d.prompt,
+                }).catch((err: any) => {
+                  console.error("[ReuseArtwork] regenerate click failed:", err);
+                  setReuseBusy(false);
+                  toast({
+                    title: "Could not reuse artwork",
+                    description: err?.message || "Please try again.",
+                    variant: "destructive",
+                  });
+                });
+              }}
+            >
+              {reuseBusy ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Working…
+                </>
+              ) : (
+                "Regenerate to fit (1 credit)"
+              )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={!!styleMismatchDialog} onOpenChange={(open) => !open && setStyleMismatchDialog(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -9626,15 +11526,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         <div
           className={`grid grid-cols-1 gap-3 sm:gap-4 ${
             (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-              ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
+              ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)] lg:items-start"
               : "md:grid-cols-2"
           }`}
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div
+            ref={formColumnRef}
             className={`space-y-2.5 order-1 ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-                ? "lg:order-3 lg:col-start-3"
+                ? "lg:order-3 lg:col-start-3 lg:self-start"
                 : "md:order-2"
             }`}
           >
@@ -9917,6 +11818,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 <div
                                   className="rounded-md overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors"
                                   onClick={() => {
+                                    const clickedId = String(d.id || "");
+                                    if (!clickedId) return;
                                     setShowSavedDesigns(false);
                                     // If this design belongs to a different product type, switch
                                     // the iframe's active customizer context without navigating the
@@ -9957,23 +11860,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                         }
                                       })();
                                     } else {
-                                      // Same product → load IN-PLACE. No iframe reload means no
-                                      // blank/stale frame and no flash: we just update the URLs
-                                      // (so a manual refresh still restores this design) and bump
-                                      // bridgeLoadDesignId, which drives the restore effect to swap
-                                      // the design via React state. The placer remounts cleanly
-                                      // because its key includes generatedDesign.id.
+                                      // Same product → load IN-PLACE. Bridge id is the source of
+                                      // truth (must win over sticky parent ?loadDesignId=).
+                                      loadDesignAppliedRef.current = false;
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
-                                        parentUrl.searchParams.set('loadDesignId', d.id);
+                                        parentUrl.searchParams.set('loadDesignId', clickedId);
+                                        const mockupSrc =
+                                          d.mockupUrls && d.mockupUrls.length > 0
+                                            ? d.mockupUrls[0]
+                                            : "";
+                                        if (mockupSrc) {
+                                          parentUrl.searchParams.set(
+                                            "loadMockup",
+                                            toAbsoluteImageUrl(mockupSrc),
+                                          );
+                                        } else {
+                                          parentUrl.searchParams.delete("loadMockup");
+                                        }
                                         window.parent.history.replaceState({}, '', parentUrl.toString());
                                       } catch {
                                         // cross-origin guard — fall back to iframe-only
                                       }
                                       const params = new URLSearchParams(window.location.search);
-                                      params.set('loadDesignId', d.id);
+                                      params.set('loadDesignId', clickedId);
                                       window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                      setBridgeLoadDesignId(d.id);
+                                      setBridgeLoadDesignId(clickedId);
+                                      setLoadDesignNonce((n) => n + 1);
                                     }
                                   }}
                                 >
@@ -10128,15 +12041,35 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   className="text-lg font-bold leading-tight"
                   data-testid="text-product-title"
                 >
-                  {productTypeConfig?.name || displayName || productTitle}
+                  {displayName || productTypeConfig?.name || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
                   const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
                   const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
                   if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
+                  const frontPrice = parseFloat(selected.price);
+                  const sizeName =
+                    printSizes.find((s) => s.id === selectedSize)?.name ??
+                    selected.option1 ??
+                    "";
+                  const colorName =
+                    frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
+                    selected.option2 ??
+                    "";
+                  const bothPrice = resolveBothRetailDollars({
+                    sizeName,
+                    colorName,
+                    shopifyVariantId: selected.id,
+                  });
+                  const showFrom =
+                    hasBothRetailPrices &&
+                    !printPlacementUsesBoth &&
+                    bothPrice != null &&
+                    bothPrice > frontPrice;
+                  const display = printPlacementUsesBoth && bothPrice != null ? bothPrice : frontPrice;
                   return (
                     <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                      ${parseFloat(selected.price).toFixed(2)}
+                      {showFrom ? `from $${frontPrice.toFixed(2)}` : `$${display.toFixed(2)}`}
                     </p>
                   );
                 })()}
@@ -10161,6 +12094,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     ) : (
                       <Button
                         onClick={() => {
+                          if (useAopCustomizer && !aopPatternUrl) {
+                            handleApplyPatternToContinue();
+                            return;
+                          }
                           if (atcMockupsStaleBlocks) {
                             if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                               if (generatedDesign?.imageUrl) {
@@ -10196,7 +12133,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
@@ -10205,7 +12142,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Adding to Cart...</span>
                           </>
-                        ) : flatPlacerSaveBlocking ? (
+                        ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">
@@ -10644,7 +12581,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               front: nextPlacement === "front" || nextPlacement === "both",
                               back: nextPlacement === "back" || nextPlacement === "both",
                             },
-                            linkSides: prev?.linkSides ?? true,
+                            linkSides: false,
+                            backgroundColor: prev?.backgroundColor ?? null,
                           }));
                           currentMockupColorRef.current = "";
                           lastFlatGalleryMockupKeyRef.current = "";
@@ -10798,6 +12736,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 <ProductInfoSections
                   className="hidden md:block"
                   description={productTypeConfig?.description}
+                  productName={productTypeConfig?.name || displayName}
                   sizeChart={sizeChart}
                   sizeChartLoading={sizeChartLoading}
                   blueprintId={productTypeConfig?.printifyBlueprintId}
@@ -10815,7 +12754,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             ref={artworkColumnRef}
             className={`order-2 min-w-0 w-full ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
-                ? "lg:order-1 lg:col-span-2 flex flex-col min-h-0"
+                ? "lg:order-1 lg:col-span-2 flex min-h-0 flex-col"
                 : "space-y-3 md:order-1"
             }`}
           >
@@ -10824,11 +12763,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {showPatternStep && aopPendingMotifUrl ? (
               productTypeConfig?.panelMappingTemplate ? (
                 <div className="relative flex flex-col gap-2 min-h-0">
-                  {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
-                      The placer auto-saves on every change (no Apply button) —
-                      handleHoodieAopApply is fired ~1.5 s after the customer's
-                      last edit and uploads the local front+back render to
-                      Supabase so the cart preview is always in sync. */}
+                  {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
+                      (not on every nudge). */}
                   {(isStorefront || isShopify) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
@@ -10836,8 +12772,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         variant="outline"
                         size="sm"
                         className="flex-1 min-w-0"
-                        onClick={() => setShowPatternStep(false)}
-                        title="Return to product preview without applying"
+                        onClick={() => {
+                          void flushHoodieAopPlacer().finally(() => {
+                            setShowPatternStep(false);
+                          });
+                        }}
+                        title="Save placement and return to product preview"
                         data-testid="button-back-from-hoodie-placer"
                       >
                         <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
@@ -10868,6 +12808,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // mid-edit is handled by `hoodieAopPlacerState` flowing
                     // back in via initialState below.
                     key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
+                    ref={hoodieAopPlacerRef}
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
@@ -10886,19 +12827,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         emitTesterDesignStatus({ aopPanels: "none" });
                       }
                       setHoodieAopPlacerState(s);
+                      setAopPlacementDirty(true);
                     }}
                     onApply={handleHoodieAopApply}
-                    // Resuming a saved design (we have a restored placer
-                    // state) → don't re-render + re-upload on open. The saved
-                    // mockup is already restored into the preview, so firing
-                    // the auto-apply here would just replay the grey scanning
-                    // animation for no reason. This flag is true immediately
-                    // from the restored state (no async/timing gap), so the
-                    // initial apply is reliably skipped. Fresh designs (no
-                    // restored state) still auto-apply once to generate the
-                    // initial cart image. Broken/missing thumbnails are already
-                    // repaired server-side at read time, so we no longer need
-                    // to heal-on-open.
+                    onApplyStatusChange={(s) => {
+                      setAopApplyStatus(s);
+                      if (s === "saved") setAopPlacementDirty(false);
+                    }}
+                    // Resume: skip one-shot initial apply (mockup already persisted).
+                    // Fresh designs still apply once for the first cart image.
                     skipInitialAutoApply={!!hoodieAopPlacerState}
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
@@ -10915,7 +12852,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               : "Printers Mockup",
                             loadingLabel: "Generating printers mockup…",
                             idleHint:
-                              "Finish placement (or generate artwork) to enable Printers Mockup",
+                              "Wait for the current mockup to finish, then try again",
                             error: lifestyleShotError,
                           }
                         : null
@@ -10930,6 +12867,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Previous"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            // Clear stick first so a concurrent gallery rebuild
+                            // cannot snap the index back to Front Person mid-step.
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = false;
                             const next = stepPostGenGalleryIndex(
                               i,
                               -1,
@@ -10939,7 +12880,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             const item = postGenGalleryItems[next];
                             stickAopPersonGalleryRef.current = !!(
                               item?.kind === "mockup" &&
-                              isPersonMockupLabel(item.label)
+                              isPrintifyOnDemandMockupLabel(item.label)
                             );
                             return next;
                           })
@@ -10954,6 +12895,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         aria-label="Next"
                         onClick={() =>
                           setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = false;
                             const next = stepPostGenGalleryIndex(
                               i,
                               1,
@@ -10963,7 +12906,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             const item = postGenGalleryItems[next];
                             stickAopPersonGalleryRef.current = !!(
                               item?.kind === "mockup" &&
-                              isPersonMockupLabel(item.label)
+                              isPrintifyOnDemandMockupLabel(item.label)
                             );
                             return next;
                           })
@@ -11150,7 +13093,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               // On-the-fly flat/mesh local mockup placer (replaces the Printify
               // mockup flow for calibrated flat/mesh products). Falls back to
               // the Printify flow automatically if the renderer/assets fail.
-              <div className="flex flex-col gap-2 min-h-0">
+              <div className="flex min-h-0 flex-col gap-2">
                 {(isStorefront || isShopify) && (
                   <div className="flex w-full gap-2 justify-stretch">
                     <Button
@@ -11159,7 +13102,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       size="sm"
                       className="flex-1 min-w-0"
                       onClick={() => {
-                        void flushFlatPlacer().finally(() => setFlatPlacerEditOpen(false));
+                        void flushFlatPlacer().finally(() => {
+                          setFlatPlacerEditOpen(false);
+                          // Prefer Front composite over Artwork (avoids blank+art stack).
+                          const frontIdx = postGenGalleryItems.findIndex(
+                            (item) => item.kind === "mockup",
+                          );
+                          if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                        });
                       }}
                       data-testid="button-back-flat-placer"
                     >
@@ -11225,6 +13175,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     onViewChange={handleFlatPlacerViewChange}
                     onApply={handleFlatApply}
                     onApplyStatusChange={setFlatApplyStatus}
+                    onTrimStatusChange={handleFlatTrimStatusChange}
                     onAssetsFailed={handleFlatAssetsFailed}
                     edgeWrapMode={flatEdgeWrapMode}
                     decorMode={flatDecorMode}
@@ -11242,25 +13193,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
                     canvasOverrideUrl={flatCanvasOverrideUrl}
                     canvasOverrideLabel={flatCanvasOverrideLabel}
+                    viewerHeightPx={
+                      flatEdgeWrapMode ? phoneViewerHeightPx : null
+                    }
                     lifestyleAction={
                       canRequestLifestyleShot
                         ? {
                             onClick: () => void requestLifestyleShot(),
                             loading: lifestyleShotLoading,
                             active: lifestyleShotActive,
-                            label: flatFabricWeave
-                              ? hasLifestyleShot
-                                ? "Refresh Printers Mockup"
-                                : "Printers Mockup"
-                              : hasLifestyleShot
-                                ? "Refresh Lifestyle Shot"
-                                : "Lifestyle Shot",
-                            loadingLabel: flatFabricWeave
-                              ? "Generating printers mockup…"
-                              : "Generating lifestyle…",
-                            idleHint: flatFabricWeave
-                              ? "Finish placement (or generate artwork) to enable Printers Mockup"
-                              : "Finish placement (or generate artwork) to enable Lifestyle Shot",
+                            label:
+                              flatFabricWeave || flatEdgeWrapMode
+                                ? hasLifestyleShot
+                                  ? "Refresh Printers Mockup"
+                                  : "Printers Mockup"
+                                : hasLifestyleShot
+                                  ? "Refresh Lifestyle Shot"
+                                  : "Lifestyle Shot",
+                            loadingLabel:
+                              flatFabricWeave || flatEdgeWrapMode
+                                ? "Generating printers mockup…"
+                                : "Generating lifestyle…",
+                            idleHint:
+                              flatFabricWeave || flatEdgeWrapMode
+                                ? "Finish placement (or generate artwork) to enable Printers Mockup"
+                                : "Finish placement (or generate artwork) to enable Lifestyle Shot",
                             error: lifestyleShotError,
                           }
                         : null
@@ -11275,9 +13232,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Previous"
                         onClick={() =>
-                          setSelectedMockupIndex((i) =>
-                            stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
-                          )
+                          setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = false;
+                            return stepPostGenGalleryIndex(
+                              i,
+                              -1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                          })
                         }
                         className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                         data-testid="button-flat-gallery-prev"
@@ -11288,9 +13252,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         type="button"
                         aria-label="Next"
                         onClick={() =>
-                          setSelectedMockupIndex((i) =>
-                            stepPostGenGalleryIndex(i, 1, postGenGalleryItems, true),
-                          )
+                          setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = false;
+                            return stepPostGenGalleryIndex(
+                              i,
+                              1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                          })
                         }
                         className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
                         data-testid="button-flat-gallery-next"
@@ -11304,15 +13275,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 {showsPrintifyMockupPreview &&
                   generatedDesign?.imageUrl &&
                   postGenGalleryItems.length > 1 && (
-                  <div className="flex justify-center gap-3 mt-1 lg:pr-80" data-testid="flat-placer-gallery-dots">
+                  <div
+                    className={`flex justify-center gap-3 mt-1 lg:pr-80${
+                      flatEdgeWrapMode ? " shrink-0" : ""
+                    }`}
+                    data-testid="flat-placer-gallery-dots"
+                  >
                     {postGenGalleryItems.map((item, idx) => {
                       if (!isFlatPlacerGalleryReachable(item)) return null;
                       return (
                         <button
                           key={`${item.kind}-${idx}`}
                           type="button"
-                          onClick={() => setSelectedMockupIndex(idx)}
-                          aria-label={item.label}
+                          onClick={() => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = !!(
+                              item.kind === "mockup" &&
+                              isPrintifyOnDemandMockupLabel(item.label)
+                            );
+                            setSelectedMockupIndex(idx);
+                          }}
+                          aria-label={
+                            item.kind === "artwork" && flatEdgeWrapMode
+                              ? "Front"
+                              : item.label
+                          }
                           className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
                             selectedMockupIndex === idx
                               ? "opacity-100"
@@ -11333,7 +13320,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 : "text-muted-foreground"
                             }`}
                           >
-                            {item.label}
+                            {item.kind === "artwork" && flatEdgeWrapMode
+                              ? "Front"
+                              : item.label}
                           </span>
                         </button>
                       );
@@ -11342,16 +13331,165 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 )}
               </div>
             ) : (<>
+            {/* Edit / Reuse / Share — above the viewing window (closed preview) */}
+            {generatedDesign?.imageUrl && !showPatternStep && !flatPlacerEditOpen && (
+              <div
+                className="flex items-center justify-between gap-2 flex-wrap pb-2"
+                data-testid="container-artwork-actions-top"
+              >
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  {useAopCustomizer && !flatPlacerEligible && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (generatedDesign?.imageUrl) {
+                          setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                        }
+                        setShowPatternStep(true);
+                      }}
+                      className="shrink-0"
+                      data-testid="button-edit-pattern"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                      <span className="text-xs">Edit Pattern</span>
+                    </Button>
+                  )}
+                  {flatPlacerEligible && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFlatPlacerEditOpen(true)}
+                      className="shrink-0"
+                      data-testid="button-edit-flat-placement"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                      <span className="text-xs">Edit Placement</span>
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  <DropdownMenu
+                    onOpenChange={(open) => {
+                      if (open) void loadReusePages();
+                    }}
+                  >
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!generatedDesign?.imageUrl}
+                        className="shrink-0"
+                        data-testid="button-reuse-artwork"
+                      >
+                        <Layers className="w-4 h-4 mr-1" />
+                        <span className="text-xs">Reuse Artwork</span>
+                        <ChevronDown className="w-3 h-3 ml-1 opacity-70" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto min-w-[12rem]">
+                      <DropdownMenuLabel className="text-xs">Other products</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {reusePagesLoading ? (
+                        <DropdownMenuItem disabled>
+                          <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+                          Loading…
+                        </DropdownMenuItem>
+                      ) : reusePages.length === 0 ? (
+                        <DropdownMenuItem disabled data-testid="reuse-artwork-empty">
+                          No other products available
+                        </DropdownMenuItem>
+                      ) : (
+                        reusePages.map((p) => (
+                          <DropdownMenuItem
+                            key={p.handle}
+                            onSelect={() => {
+                              void handleReuseProductPick(p);
+                            }}
+                            data-testid={`reuse-artwork-item-${p.handle}`}
+                          >
+                            <span className="truncate">{p.title || p.handle}</span>
+                          </DropdownMenuItem>
+                        ))
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleShare}
+                    disabled={isSharing || !generatedDesign?.imageUrl}
+                    className="shrink-0"
+                    data-testid="button-share"
+                  >
+                    {isSharing ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <Share2 className="w-4 h-4 mr-1" />
+                    )}
+                    <span className="text-xs">Share</span>
+                  </Button>
+                </div>
+              </div>
+            )}
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               ref={previewLandingRef}
               className="mx-auto rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
+                  // Post-gen: catalog Views + Printers/lifestyle shots are square-ish
+                  // product photos — match the editor's square chrome instead of the
+                  // print-canvas AR (tall phone canvas gave huge white bars on View 2).
+                  if (generatedDesign?.imageUrl) {
+                    const slide = postGenGalleryItems[selectedMockupIndex];
+                    if (
+                      slide &&
+                      (slide.kind === "catalog" ||
+                        (slide.kind === "mockup" &&
+                          isPrintifyOnDemandMockupLabel(slide.label)))
+                    ) {
+                      return "1/1";
+                    }
+                  }
+                  // Pre-artwork browse: standard square window (faux-suede-pillow reference).
+                  // Decor keeps size AR — window shape is the size/orientation cue there.
+                  // Phone / edge-wrap: always 1:1 browse even if import mis-tagged as framed-print.
+                  if (
+                    !generatedDesign?.imageUrl &&
+                    (isPhoneCaseProduct || flatEdgeWrapMode)
+                  ) {
+                    return "1/1";
+                  }
+                  // AOP pillows with mixed Square/Horizontal: only leave 1:1 when a real
+                  // orientation blank exists (catalog/Shopify) — otherwise keep square chrome.
+                  if (
+                    !generatedDesign?.imageUrl &&
+                    productTypeConfig?.designerType === "pillow" &&
+                    hasMixedCanvasOrientation &&
+                    !orientationBlankOverride
+                  ) {
+                    return "1/1";
+                  }
+                  if (
+                    !generatedDesign?.imageUrl &&
+                    !hasMixedCanvasOrientation &&
+                    !flatDecorMode &&
+                    productTypeConfig?.designerType !== "framed-print" &&
+                    !isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId)
+                  ) {
+                    return "1/1";
+                  }
                   // Mugs/tumblers: the blank product photo is a tall portrait shot.
                   // The DB aspectRatio for mugs is the wrap-around print area (wide),
                   // but the container should be portrait so the full tumbler is visible.
                   if (productTypeConfig?.designerType === "mug") return "3/4";
+                  // Mesh / AOP viewing chrome: never follow extreme print-panel ARs
+                  // (body pillow 20×54, tall leg panels) — those make a thin strip.
+                  // Match pre-gen browse + placer: square window, letterbox the product.
+                  if (useAopCustomizer || productTypeConfig?.panelMappingTemplate) {
+                    return "1/1";
+                  }
                   // Prefer resolved size AR (id/name inch tokens) so landscape sizes
                   // like 24×18 / 88×68 update the blank box even if width/height are stale.
                   if (selectedSizeConfig) {
@@ -11359,7 +13497,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedSizeConfig,
                       productTypeConfig?.aspectRatio,
                     );
-                    if (ar) return ar.replace(":", "/");
+                    if (ar) return clampPreviewChromeAspectCss(ar.replace(":", "/"));
                   }
                   // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
                   // but each printable face is 1:1 — keep the placeholder square before size pick.
@@ -11378,10 +13516,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       firstSize,
                       productTypeConfig?.aspectRatio,
                     );
-                    if (ar) return ar.replace(":", "/");
+                    if (ar) return clampPreviewChromeAspectCss(ar.replace(":", "/"));
                   }
                   const ar = productTypeConfig?.aspectRatio || "3:4";
-                  return ar.replace(":", "/");
+                  return clampPreviewChromeAspectCss(ar.replace(":", "/"));
                 })(),
                 // Cap height without forcing full width — otherwise maxHeight + w-full
                 // shortens the box and object-cover chops the top (frame hangers).
@@ -11465,24 +13603,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={(() => {
-                        // Catalog carousel (Primary / View 2 / …) must win while
-                        // browsing placeholders — size-accurate blanks otherwise
-                        // pin every slide to the same flat/Shopify photo.
-                        const browsingCatalog =
-                          !generatedDesign?.imageUrl && catalogPreviewImages.length > 1;
-                        if (browsingCatalog && catalogPreviewIndex > 0) {
-                          return catalogPreviewImages[catalogPreviewIndex] || null;
+                        // Pre-artwork: browse slides own their pixels (colour lead +
+                        // merchant Primary/Views). Never swap Primary under the hood.
+                        if (!generatedDesign?.imageUrl) {
+                          return (
+                            browsePlaceholderSlides[catalogPreviewIndex]?.url ||
+                            browsePlaceholderSlides[0]?.url ||
+                            null
+                          );
                         }
-                        // Size-keyed catalog blanks (comforter / wall decals) beat a
-                        // shared Shopify lifestyle image that does not change with size.
                         return (
                           orientationBlankOverride ||
                           flatCalibrationBlankUrl ||
                           colorAwareBlankUrl ||
-                          catalogPreviewImages[catalogPreviewIndex] ||
                           catalogPreviewImages[0] ||
                           null
                         );
+                      })()}
+                      blankImageFallbackUrl={(() => {
+                        // Prefer the next browse slide, then merchant Primary.
+                        if (!generatedDesign?.imageUrl) {
+                          const current =
+                            browsePlaceholderSlides[catalogPreviewIndex]?.url || null;
+                          const next = browsePlaceholderSlides.find(
+                            (s) => s.url !== current,
+                          )?.url;
+                          return next || catalogPreviewImages[0] || null;
+                        }
+                        const primary = catalogPreviewImages[0] || null;
+                        const preferred =
+                          orientationBlankOverride ||
+                          flatCalibrationBlankUrl ||
+                          colorAwareBlankUrl ||
+                          null;
+                        if (preferred && primary && preferred !== primary) return primary;
+                        return catalogPreviewImages.find((u) => u !== preferred) || null;
                       })()}
                       aspectRatio={
                         (selectedSizeConfig
@@ -11494,28 +13649,32 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         selectedSizeConfig?.aspectRatio ||
                         productTypeConfig?.aspectRatio
                       }
-                      // Cover crops framed mockups (hangers / landscape) against the box.
+                      // Contain for apparel/framed so tall hoodie blanks fit;
+                      // cover only for remaining lifestyle composites.
                       mockupFit={
                         flatEdgeWrapMode ||
                         flatDecorMode ||
-                        productTypeConfig?.designerType === "framed-print"
+                        productTypeConfig?.designerType === "framed-print" ||
+                        productTypeConfig?.designerType === "apparel"
                           ? "contain"
                           : "cover"
                       }
+                      // Browse-mode square window: never crop tall phone-case / mug blanks.
+                      blankFit={!generatedDesign?.imageUrl ? "contain" : undefined}
                     />
                   );
                 })()}
               </div>
 
               {/* Catalog placeholder carousel — before customer generates artwork */}
-              {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+              {isStorefront && !generatedDesign?.imageUrl && browsePlaceholderSlides.length > 1 && (
                 <>
                   <button
                     type="button"
                     aria-label="Previous placeholder"
                     onClick={() =>
                       setCatalogPreviewIndex((i) =>
-                        (i - 1 + catalogPreviewImages.length) % catalogPreviewImages.length,
+                        (i - 1 + browsePlaceholderSlides.length) % browsePlaceholderSlides.length,
                       )
                     }
                     className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
@@ -11526,7 +13685,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     type="button"
                     aria-label="Next placeholder"
                     onClick={() =>
-                      setCatalogPreviewIndex((i) => (i + 1) % catalogPreviewImages.length)
+                      setCatalogPreviewIndex((i) => (i + 1) % browsePlaceholderSlides.length)
                     }
                     className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
                   >
@@ -11542,9 +13701,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       type="button"
                       aria-label="Previous"
                     onClick={() =>
-                      setSelectedMockupIndex((i) =>
-                        stepPostGenGalleryIndex(i, -1, postGenGalleryItems, false),
-                      )
+                      setSelectedMockupIndex((i) => {
+                        // Explicit carousel step — don't let person-stick snap back.
+                        lastManualGalleryNavRef.current = Date.now();
+                        stickAopPersonGalleryRef.current = false;
+                        return stepPostGenGalleryIndex(
+                          i,
+                          -1,
+                          postGenGalleryItems,
+                          false,
+                        );
+                      })
                     }
                       className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                     >
@@ -11554,9 +13721,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       type="button"
                       aria-label="Next"
                     onClick={() =>
-                      setSelectedMockupIndex((i) =>
-                        stepPostGenGalleryIndex(i, 1, postGenGalleryItems, false),
-                      )
+                      setSelectedMockupIndex((i) => {
+                        lastManualGalleryNavRef.current = Date.now();
+                        stickAopPersonGalleryRef.current = false;
+                        return stepPostGenGalleryIndex(
+                          i,
+                          1,
+                          postGenGalleryItems,
+                          false,
+                        );
+                      })
                     }
                       className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
                     >
@@ -11611,14 +13785,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             </div>
 
             {/* Catalog placeholder indicators — before artwork exists */}
-            {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+            {isStorefront && !generatedDesign?.imageUrl && browsePlaceholderSlides.length > 1 && (
                 <div className="flex justify-center gap-3 mt-1">
-                {catalogPreviewImages.map((_, idx) => (
+                {browsePlaceholderSlides.map((slide, idx) => (
                     <button
-                      key={idx}
+                      key={`${slide.kind}-${idx}`}
                     type="button"
                     onClick={() => setCatalogPreviewIndex(idx)}
-                    aria-label={`Placeholder image ${idx + 1}`}
+                    aria-label={slide.label}
                     className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
                       catalogPreviewIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
                     }`}
@@ -11635,7 +13809,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         catalogPreviewIndex === idx ? "text-foreground" : "text-muted-foreground"
                       }`}
                     >
-                      {idx === 0 ? "Primary" : `View ${idx + 1}`}
+                      {slide.label}
                     </span>
                   </button>
                 ))}
@@ -11649,7 +13823,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <button
                     key={`${item.kind}-${idx}`}
                       type="button"
-                      onClick={() => setSelectedMockupIndex(idx)}
+                      onClick={() => {
+                        lastManualGalleryNavRef.current = Date.now();
+                        stickAopPersonGalleryRef.current = !!(
+                          item.kind === "mockup" &&
+                          isPrintifyOnDemandMockupLabel(item.label)
+                        );
+                        setSelectedMockupIndex(idx);
+                      }}
                     aria-label={item.label}
                       className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
                         selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
@@ -11681,8 +13862,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 disabled={!generatedDesign?.imageUrl}
                 showDragHint={canShowDragHint}
                 extraActions={
+                  showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups ? (
                   <div className="flex items-center gap-2">
-                    {showsPrintifyMockupPreview && productTypeConfig?.hasPrintifyMockups && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -11728,127 +13909,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         )}
                         <span className="text-xs">Refresh Mockups</span>
                       </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                      disabled={!generatedDesign?.imageUrl}
-                      data-testid="button-download-artwork"
-                      className="shrink-0"
-                    >
-                      <Download className="w-4 h-4 mr-1" />
-                      <span className="text-xs">Download Artwork</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleShare}
-                      disabled={isSharing || !generatedDesign?.imageUrl}
-                      data-testid="button-share"
-                      className="shrink-0"
-                    >
-                      {isSharing ? (
-                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                      ) : (
-                        <Share2 className="w-4 h-4 mr-1" />
-                      )}
-                      <span className="text-xs">Share</span>
-                    </Button>
                   </div>
+                  ) : undefined
                 }
               />
-            )}
-
-            {generatedDesign?.imageUrl && flatPlacerEligible && !flatPlacerEditOpen && (
-              <div className="flex items-center justify-between pt-2 border-t gap-2 flex-wrap">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setFlatPlacerEditOpen(true)}
-                  className="shrink-0"
-                  data-testid="button-edit-flat-placement"
-                >
-                  <RefreshCw className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Edit Placement</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                  disabled={!generatedDesign?.imageUrl}
-                  data-testid="button-download-artwork-flat"
-                  className="shrink-0"
-                >
-                  <Download className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Download Artwork</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleShare}
-                  disabled={isSharing || !generatedDesign?.imageUrl}
-                  data-testid="button-share-flat"
-                  className="shrink-0"
-                >
-                  {isSharing ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                  ) : (
-                    <Share2 className="w-4 h-4 mr-1" />
-                  )}
-                  <span className="text-xs">Share</span>
-                </Button>
-              </div>
-            )}
-
-            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply).
-                Mutually exclusive with flat placer — never show both editor entry points. */}
-            {generatedDesign?.imageUrl && useAopCustomizer && !flatPlacerEligible && !showPatternStep && (
-              <div className="flex items-center justify-between pt-2 border-t gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    // Saved designs already have mockups — aopPendingMotifUrl is never set by the
-                    // auto-open effect in that case, so PatternCustomizer would not mount without this.
-                    if (generatedDesign?.imageUrl) {
-                      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                    }
-                    setShowPatternStep(true);
-                  }}
-                  className="shrink-0"
-                  data-testid="button-edit-pattern"
-                >
-                  <RefreshCw className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Edit Pattern</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
-                  disabled={!generatedDesign?.imageUrl}
-                  data-testid="button-download-artwork-aop"
-                  className="shrink-0"
-                >
-                  <Download className="w-4 h-4 mr-1" />
-                  <span className="text-xs">Download Artwork</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleShare}
-                  disabled={isSharing || !generatedDesign?.imageUrl}
-                  data-testid="button-share-aop"
-                  className="shrink-0"
-                >
-                  {isSharing ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                  ) : (
-                    <Share2 className="w-4 h-4 mr-1" />
-                  )}
-                  <span className="text-xs">Share</span>
-                </Button>
-              </div>
             )}
 
             {/* Mockup error status */}
@@ -11917,6 +13981,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <ProductInfoSections
                 className="md:hidden border-t pt-4 mt-2"
                 description={productTypeConfig?.description}
+                productName={productTypeConfig?.name || displayName}
                 sizeChart={sizeChart}
                 sizeChartLoading={sizeChartLoading}
                 blueprintId={productTypeConfig?.printifyBlueprintId}

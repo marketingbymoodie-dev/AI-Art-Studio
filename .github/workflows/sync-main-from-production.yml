@@ -1,0 +1,105 @@
+# Keep GitHub main aligned with production after each go-live.
+# Opens a PR (main is protected) and enables auto-merge when allowed.
+#
+# Required repo setting (one-time):
+#   Settings -> Actions -> General -> Workflow permissions
+#   -> "Read and write permissions" (+ allow creating/approving PRs if shown)
+
+name: Sync main from production
+
+"on":
+  push:
+    branches:
+      - production
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-main-from-production
+  cancel-in-progress: true
+
+jobs:
+  sync-main:
+    name: Sync main from production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open or update sync PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git fetch origin main production --prune
+
+          MAIN_SHA="$(git rev-parse origin/main)"
+          PROD_SHA="$(git rev-parse origin/production)"
+
+          {
+            echo "## Sync main from production"
+            echo ""
+            echo "| Branch | Commit |"
+            echo "| --- | --- |"
+            echo "| main | \`${MAIN_SHA}\` |"
+            echo "| production | \`${PROD_SHA}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$MAIN_SHA" = "$PROD_SHA" ]; then
+            echo "main already matches production - nothing to do."
+            echo "### Already in sync" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          AHEAD="$(git rev-list --count origin/main..origin/production)"
+          echo "production is ${AHEAD} commit(s) ahead of main."
+
+          git checkout -B sync/main-from-production origin/production
+          echo "Pushing sync/main-from-production..."
+          git push -f origin sync/main-from-production
+
+          PR_NUMBER="$(gh pr list --base main --head sync/main-from-production --state open --json number -q '.[0].number' || true)"
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            echo "Creating PR..."
+            gh pr create \
+              --base main \
+              --head sync/main-from-production \
+              --title "Sync main with production" \
+              --body "Automated sync after a production go-live. Keeps protected main aligned with production (Railway live). No app behavior change."
+            PR_NUMBER="$(gh pr list --base main --head sync/main-from-production --state open --json number -q '.[0].number')"
+          fi
+
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            echo "::error::Failed to create or find sync PR"
+            exit 1
+          fi
+
+          echo "Sync PR: #${PR_NUMBER}"
+          echo "### Pull request" >> "$GITHUB_STEP_SUMMARY"
+          echo "Opened/updated PR #${PR_NUMBER}: sync/main-from-production -> main" >> "$GITHUB_STEP_SUMMARY"
+          echo "PR_URL=$(gh pr view "${PR_NUMBER}" --json url -q .url)" >> "$GITHUB_STEP_SUMMARY"
+
+          if gh pr merge "${PR_NUMBER}" --auto --merge; then
+            echo "Auto-merge enabled for PR #${PR_NUMBER}."
+            echo "Auto-merge enabled." >> "$GITHUB_STEP_SUMMARY"
+          elif gh pr merge "${PR_NUMBER}" --merge; then
+            echo "Merged PR #${PR_NUMBER}."
+            echo "Merged immediately." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Could not auto-merge PR #${PR_NUMBER}. Merge it manually in GitHub Pull requests."
+            echo "**Action needed:** merge PR #${PR_NUMBER} manually." >> "$GITHUB_STEP_SUMMARY"
+          fi

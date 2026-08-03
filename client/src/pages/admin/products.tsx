@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical, DollarSign } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical, DollarSign, Crosshair } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -131,6 +131,8 @@ export default function AdminProducts() {
   const [selectedSizeIds, setSelectedSizeIds] = useState<Set<string>>(new Set());
   const [selectedColorIds, setSelectedColorIds] = useState<Set<string>>(new Set());
   const [variantDataLoading, setVariantDataLoading] = useState(false);
+  /** False until a successful variants fetch for the current blueprint/provider. */
+  const [variantsReady, setVariantsReady] = useState(false);
   
   // Edit variants for existing product
   const [editVariantsOpen, setEditVariantsOpen] = useState(false);
@@ -142,6 +144,7 @@ export default function AdminProducts() {
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
   const [layoutPolicyMutatingId, setLayoutPolicyMutatingId] = useState<number | null>(null);
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
+  const [pullCanonicalMutatingId, setPullCanonicalMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
@@ -255,14 +258,28 @@ export default function AdminProducts() {
     enabled: !!selectedBlueprint,
   });
 
-  // Calculate variant count based on selections
+  // Calculate variant count from current checkboxes. Import flow gates save on
+  // variantsReady separately; Edit Variants must still show a real total (sizes×colors)
+  // even when variantsReady is false from a prior import dialog.
   const variantCount = useMemo(() => {
-    const sizeCount = selectedSizeIds.size || 1;
-    const colorCount = selectedColorIds.size || (availableColors.length === 0 ? 1 : 0);
-    return sizeCount * (colorCount || 1);
+    const sizeCount = selectedSizeIds.size;
+    if (sizeCount === 0) return 0;
+    const colorCount =
+      availableColors.length === 0 ? 1 : selectedColorIds.size;
+    if (availableColors.length > 0 && colorCount === 0) return 0;
+    return sizeCount * colorCount;
   }, [selectedSizeIds.size, selectedColorIds.size, availableColors.length]);
-  
-  const isVariantCountValid = variantCount <= 100 && variantCount > 0;
+
+  const isEditVariantCountValid =
+    availableSizes.length > 0 &&
+    variantCount > 0 &&
+    variantCount <= 100;
+
+  const isVariantCountValid =
+    variantsReady &&
+    availableSizes.length > 0 &&
+    variantCount > 0 &&
+    variantCount <= 100;
 
   const importPrintifyMutation = useMutation({
     mutationFn: async (data: { 
@@ -482,6 +499,31 @@ export default function AdminProducts() {
     onSettled: () => setLayoutPolicyMutatingId(null),
   });
 
+  const pullCanonicalCalibrationMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setPullCanonicalMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/calibrate-flat`, {
+        forceFromCanonical: true,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({
+        title: "Canonical calibration pulled",
+        description: "Storefront / Generator Tester will use the platform harvest after a hard refresh.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not pull canonical calibration",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => setPullCanonicalMutatingId(null),
+  });
+
   // Send a DRAFT test order to Printify
   // print file matches the on-screen design before going live. Never produces
   // or charges — it creates a draft Printify order only.
@@ -609,6 +651,11 @@ export default function AdminProducts() {
     if (!selectedBlueprint || !selectedProvider) return;
     
     setVariantDataLoading(true);
+    setVariantsReady(false);
+    setAvailableSizes([]);
+    setAvailableColors([]);
+    setSelectedSizeIds(new Set());
+    setSelectedColorIds(new Set());
     try {
       const url = `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`;
       
@@ -616,15 +663,26 @@ export default function AdminProducts() {
       if (!response.ok) throw new Error("Failed to fetch variants");
       
       const data = await response.json();
-      setAvailableSizes(data.sizes || []);
-      setAvailableColors(data.colors || []);
+      const sizes: VariantOption[] = data.sizes || [];
+      const colors: VariantOption[] = data.colors || [];
+      if (sizes.length === 0) {
+        throw new Error("Printify returned no sizes for this supplier");
+      }
+      setAvailableSizes(sizes);
+      setAvailableColors(colors);
       
       // Select all by default
-      setSelectedSizeIds(new Set(data.sizes?.map((s: VariantOption) => s.id) || []));
-      setSelectedColorIds(new Set(data.colors?.map((c: VariantOption) => c.id) || []));
+      setSelectedSizeIds(new Set(sizes.map((s) => s.id)));
+      setSelectedColorIds(new Set(colors.map((c) => c.id)));
+      setVariantsReady(true);
     } catch (e) {
       console.error("Failed to load variant data:", e);
-      toast({ title: "Failed to load variants", variant: "destructive" });
+      setVariantsReady(false);
+      toast({
+        title: "Failed to load variants",
+        description: "Retry before importing — Import is disabled until sizes/colours load successfully.",
+        variant: "destructive",
+      });
     } finally {
       setVariantDataLoading(false);
     }
@@ -643,16 +701,35 @@ export default function AdminProducts() {
     setVariantSelectionOpen(true);
     setPlaceholderPrimaryUrl("");
     setPlaceholderGalleryUrls(new Set());
+    setVariantsReady(false);
     await loadVariantData();
   };
 
   const handleImportBlueprint = async () => {
     if (!selectedBlueprint || !selectedProvider) return;
-    if (!isVariantCountValid) return;
+    if (!isVariantCountValid) {
+      toast({
+        title: "Variants not ready",
+        description: "Wait for sizes/colours to load, or click Retry if the last load failed.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Same blueprint may already exist via another supplier — keep titles distinct
+    // (matches server uniqueness on blueprint+provider and the "separate EU/US listing" copy).
+    const otherProviderOwnsBlueprint = (productTypes || []).some(
+      (pt) =>
+        pt.printifyBlueprintId === selectedBlueprint.id &&
+        Number(pt.printifyProviderId) !== Number(selectedProvider.id),
+    );
+    const importName = otherProviderOwnsBlueprint
+      ? `${selectedBlueprint.title} — ${selectedProvider.title}`
+      : selectedBlueprint.title;
     
     importPrintifyMutation.mutate({
       blueprintId: selectedBlueprint.id,
-      name: selectedBlueprint.title,
+      name: importName,
       description: selectedBlueprint.description,
       providerId: selectedProvider?.id,
       selectedSizeIds: Array.from(selectedSizeIds),
@@ -1066,7 +1143,21 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
-                      {/* Calibration lives in Platform Catalog (Flat calibrator) — not shown here. */}
+                      {/* Calibration harvest lives in Platform Catalog; pull overwrites stale merchant harvest. */}
+                      {showOperatorCalibrationTools &&
+                        (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => pullCanonicalCalibrationMutation.mutate(pt.id)}
+                          disabled={pullCanonicalMutatingId === pt.id}
+                          title="Replace this product's flatCalibration with the platform canonical harvest (e.g. after reharvesting blueprint 77)."
+                          data-testid={`button-pull-canonical-${pt.id}`}
+                        >
+                          <Crosshair className={`h-3 w-3 mr-1 ${pullCanonicalMutatingId === pt.id ? "animate-pulse" : ""}`} />
+                          Pull canonical calibration
+                        </Button>
+                      )}
                       {showOperatorCalibrationTools && productSupportsTestPrintifyOrder(pt) && (
                         <Button
                           variant="outline"
@@ -1389,6 +1480,18 @@ export default function AdminProducts() {
                   ) : (
                     <p className="text-sm text-destructive">No supplier selected — go back and pick one.</p>
                   )}
+                  {selectedProvider &&
+                    (productTypes || []).some(
+                      (pt) =>
+                        pt.printifyBlueprintId === selectedBlueprint.id &&
+                        Number(pt.printifyProviderId) !== Number(selectedProvider.id),
+                    ) && (
+                      <p className="text-xs text-amber-800 mt-1">
+                        You already have this blueprint via another supplier. It will import as
+                        {" "}“{selectedBlueprint.title} — {selectedProvider.title}” so the listings stay distinct
+                        (rename after import if you prefer e.g. “UK/EU Only”).
+                      </p>
+                    )}
                 </div>
               )}
               
@@ -1400,7 +1503,18 @@ export default function AdminProducts() {
                 </span>
               </div>
               
-              {!isVariantCountValid && (
+              {!variantsReady && !variantDataLoading && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 space-y-2">
+                  <p className="text-sm text-destructive">
+                    Sizes/colours didn’t load for this supplier. Import is disabled until they load successfully.
+                  </p>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void loadVariantData()}>
+                    Retry load variants
+                  </Button>
+                </div>
+              )}
+
+              {variantsReady && variantCount > 100 && (
                 <p className="text-sm text-red-600">
                   Shopify allows maximum 100 variants. Deselect some options to continue.
                 </p>
@@ -1503,8 +1617,10 @@ export default function AdminProducts() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm font-medium">Placeholder Images</Label>
-                      <span className="text-xs text-muted-foreground">
-                        Choose 1 primary and up to 3 gallery images
+                      <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                        Choose 1 primary and up to 3 gallery images. Primary is your marketing
+                        hero — on the storefront the selected colour blank leads when available;
+                        your Primary stays in the carousel.
                       </span>
                     </div>
                     {placeholderOptionsLoading ? (
@@ -1568,7 +1684,13 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleImportBlueprint}
-                  disabled={!selectedProvider || !isVariantCountValid || importPrintifyMutation.isPending}
+                  disabled={
+                    !selectedProvider ||
+                    !variantsReady ||
+                    !isVariantCountValid ||
+                    variantDataLoading ||
+                    importPrintifyMutation.isPending
+                  }
                 >
                   {importPrintifyMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -1596,12 +1718,17 @@ export default function AdminProducts() {
               {/* Variant Count Display */}
               <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
                 <span className="text-sm font-medium">Total Variants:</span>
-                <span className={`text-lg font-bold ${isVariantCountValid ? 'text-green-600' : 'text-red-600'}`}>
+                <span className={`text-lg font-bold ${isEditVariantCountValid ? 'text-green-600' : 'text-red-600'}`}>
                   {variantCount}
                 </span>
               </div>
               
-              {!isVariantCountValid && (
+              {variantCount === 0 && (
+                <p className="text-sm text-red-600">
+                  Select at least one size and one colour to continue.
+                </p>
+              )}
+              {variantCount > 100 && (
                 <p className="text-sm text-red-600">
                   Shopify allows maximum 100 variants. Deselect some options to continue.
                 </p>
@@ -1703,7 +1830,7 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleSaveVariants}
-                  disabled={!isVariantCountValid || updateVariantsMutation.isPending}
+                  disabled={!isEditVariantCountValid || updateVariantsMutation.isPending}
                 >
                   {updateVariantsMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />

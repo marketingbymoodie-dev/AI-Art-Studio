@@ -51,6 +51,10 @@
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
     }
+    ['autoReuseGenerate', 'reuseJobId', 'reuseArtworkUrl', 'reusePrompt', 'loadDesignId', 'loadMockup'].forEach(function (key) {
+      var val = urlParams.get(key);
+      if (val) params.set(key, val);
+    });
 
     const iframe = document.createElement('iframe');
     iframe.src = appUrl + '/embed/design?' + params.toString();

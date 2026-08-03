@@ -37,8 +37,10 @@ import {
   Globe,
   Crosshair,
   Shirt,
+  Sparkles,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
+import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
@@ -46,6 +48,7 @@ interface AdminLayoutProps {
 
 const menuItems = [
   { title: "Dashboard", url: "/admin", icon: BarChart3 },
+  { title: "Setup", url: "/admin/setup", icon: Sparkles },
   { title: "Products Import", url: "/admin/products", icon: Package },
   { title: "Art Generator Tester", url: "/admin/create-product", icon: Plus },
   { title: "Customizer Pages", url: "/admin/customizer-pages", icon: LayoutTemplate },
@@ -296,6 +299,8 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           {children}
         </div>
       </SidebarInset>
+
+      <PrintifyNagModal />
 
       {/* Dev-only debug banner — remove or disable in production */}
       {import.meta.env.DEV && (

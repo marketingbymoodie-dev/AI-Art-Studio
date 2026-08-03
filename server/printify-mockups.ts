@@ -1484,10 +1484,13 @@ export async function generatePrintifyMockup(
       const pollStarted = Date.now();
       // Single-view / lifestyle / person supplement: short budget. Full poll when create returned nothing.
       // Lifestyle / person shots get a longer short-poll so those cameras can arrive.
+      // Person/context cameras trickle in after flat lays on apparel; pillows
+      // often never get them. Cap the wait (~20–30s) so Printers Mockup fails
+      // fast instead of burning ~2 minutes then returning nothing.
       const pollRetries =
         supplementInline && mockupData
           ? preferContextViews || preferPersonViews
-            ? 28
+            ? 12
             : 5
           : 60;
       try {
@@ -1580,6 +1583,23 @@ export async function generatePrintifyMockup(
         `[Printify Mockup] Person selection: ${selected.map((s) => s.label).join(", ") || "(none)"} ` +
           `from ${mockupData.images.length} camera(s): ${mockupData.images.map((i) => i.label).join(", ")}`,
       );
+    }
+
+    // Prefer-person / prefer-context with zero matching cameras must fail —
+    // success+empty URLs left the client polling until timeout.
+    if ((preferPersonViews || preferContextViews) && selected.length === 0) {
+      const available =
+        mockupData.images.map((i) => i.label).filter(Boolean).join(", ") ||
+        "(none)";
+      return {
+        success: false,
+        mockupUrls: [],
+        mockupImages: [],
+        source: "fallback",
+        error: preferPersonViews
+          ? `Printify returned no Front/Side/Back Person mockup for this product (cameras: ${available}).`
+          : `Printify returned no lifestyle/context mockup for this product (cameras: ${available}).`,
+      };
     }
 
     return {

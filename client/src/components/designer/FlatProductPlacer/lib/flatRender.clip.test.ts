@@ -30,17 +30,35 @@ describe("clipFlatArtToPrintArea", () => {
     expect(raw.globalCompositeOperation).toBe("source-over");
   });
 
-  it("uses pixel mask when present", () => {
+  it("uses pixel mask then erases the four margins outside the guide rect", () => {
     const { actx, raw } = mockCtx();
     const mask = { naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement;
     const mode = clipFlatArtToPrintArea(actx, {
       mask,
-      rect: { x: 0, y: 0, width: 100, height: 100 },
+      rect: { x: 10, y: 20, width: 100, height: 200 },
       canvasW: 1024,
       canvasH: 1024,
     });
-    expect(mode).toBe("mask");
+    expect(mode).toBe("mask+rect");
     expect(raw.drawImage).toHaveBeenCalled();
+    // destination-out margin erases: left, right, top, bottom of the rect.
+    expect(raw.fillRect).toHaveBeenCalledWith(0, 0, 10, 1024); // left
+    expect(raw.fillRect).toHaveBeenCalledWith(110, 0, 1024 - 110, 1024); // right
+    expect(raw.fillRect).toHaveBeenCalledWith(0, 0, 1024, 20); // top
+    expect(raw.fillRect).toHaveBeenCalledWith(0, 220, 1024, 1024 - 220); // bottom
+    expect(raw.globalCompositeOperation).toBe("source-over");
+  });
+
+  it("skips margin erases that would be zero-sized (guide spans full canvas)", () => {
+    const { actx, raw } = mockCtx();
+    const mask = { naturalWidth: 512, naturalHeight: 512 } as HTMLImageElement;
+    const mode = clipFlatArtToPrintArea(actx, {
+      mask,
+      rect: { x: 0, y: 0, width: 512, height: 512 },
+      canvasW: 512,
+      canvasH: 512,
+    });
+    expect(mode).toBe("mask+rect");
     expect(raw.fillRect).not.toHaveBeenCalled();
   });
 });

@@ -73,6 +73,9 @@ type CalibratorState = {
   harvestComplete?: boolean;
   harvestOutcome?: "none" | "ready" | "unsupported" | "failed";
   harvestError?: string;
+  /** Providers skipped during multi-provider blank fill (e.g. Printify decorator 6002). */
+  harvestWarnings?: string[];
+  harvestProviderIds?: number[];
   modelPickerLabel?: "phone" | "variant" | null;
   edgeWrap?: boolean;
   models: ModelAssets[];
@@ -90,11 +93,15 @@ function defaultEntry(): CalibratorModelEntry {
   };
 }
 
-function loadImage(url: string | null): Promise<HTMLImageElement | null> {
+function loadImage(
+  url: string | null,
+  opts?: { cors?: boolean },
+): Promise<HTMLImageElement | null> {
   if (!url) return Promise.resolve(null);
+  const cors = opts?.cors !== false;
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    if (cors) img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = url;
@@ -103,8 +110,12 @@ function loadImage(url: string | null): Promise<HTMLImageElement | null> {
 
 async function loadImageFirst(...urls: (string | null | undefined)[]): Promise<HTMLImageElement | null> {
   for (const url of urls) {
-    const img = await loadImage(url ?? null);
-    if (img) return img;
+    if (!url) continue;
+    // Prefer CORS so canvas export works; fall back without CORS for display.
+    const withCors = await loadImage(url, { cors: true });
+    if (withCors) return withCors;
+    const displayOnly = await loadImage(url, { cors: false });
+    if (displayOnly) return displayOnly;
   }
   return null;
 }
@@ -140,7 +151,9 @@ function buildCalibratorView(
     ...baseView,
     maskUrl: baseView.maskUrl ?? assets.mask ?? null,
     shadingUrl: baseView.shadingUrl ?? assets.shading ?? null,
-    shadingMode: baseView.shadingMode === "blank" ? "map" : baseView.shadingMode ?? "map",
+    // Keep harvested mode: apparel is "blank" (multiply garment). Forcing "map"
+    // was a phone-case calibrator habit and can crush apparel previews to black.
+    shadingMode: baseView.shadingMode === "map" ? "map" : "blank",
   };
 }
 
@@ -242,6 +255,7 @@ export default function FlatCalibrationMapperPage() {
   });
   const [harvestPhase, setHarvestPhase] = useState<"idle" | "running" | "complete">("idle");
   const [weavePreview, setWeavePreview] = useState(false);
+  const [blankLoadError, setBlankLoadError] = useState<string | null>(null);
   const [weaveCfg, setWeaveCfgState] = useState<WeaveConfig>(() => getWeaveConfig());
 
   const patchWeave = useCallback((patch: Partial<WeaveConfig>) => {
@@ -269,9 +283,13 @@ export default function FlatCalibrationMapperPage() {
   useEffect(() => {
     if (data?.harvestComplete && harvestPhase === "running") {
       setHarvestPhase("complete");
+      const warns = data.harvestWarnings?.filter(Boolean) ?? [];
       toast({
-        title: "Harvest complete",
-        description: "Assets are ready — align layers and save, then publish from Platform Catalog.",
+        title: warns.length ? "Harvest complete (some providers skipped)" : "Harvest complete",
+        description: warns.length
+          ? warns.slice(0, 2).join(" · ")
+          : "Assets are ready — align layers and save, then publish from Platform Catalog.",
+        variant: warns.length ? "destructive" : undefined,
       });
     } else if (data?.harvestComplete && harvestPhase === "idle") {
       setHarvestPhase("complete");
@@ -286,7 +304,14 @@ export default function FlatCalibrationMapperPage() {
         variant: "destructive",
       });
     }
-  }, [data?.harvestComplete, data?.harvestOutcome, data?.harvestError, harvestPhase, toast]);
+  }, [
+    data?.harvestComplete,
+    data?.harvestOutcome,
+    data?.harvestError,
+    data?.harvestWarnings,
+    harvestPhase,
+    toast,
+  ]);
 
   useEffect(() => {
     if (models.length > 0 && !selectedModelId) {
@@ -403,12 +428,23 @@ export default function FlatCalibrationMapperPage() {
     const model = selectedModel;
     if (!canvas || !model) return;
 
-    const view = buildCalibratorView(model.baseView, model.assets);
-    if (!view) {
+    const paintPlaceholder = (message: string) => {
       canvas.width = 420;
       canvas.height = 280;
       const ctx = canvas.getContext("2d");
-      ctx?.fillRect(0, 0, canvas.width, canvas.height);
+      if (!ctx) return;
+      ctx.fillStyle = "#f4f4f5";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#71717a";
+      ctx.font = "13px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(message, canvas.width / 2, canvas.height / 2);
+    };
+
+    const view = buildCalibratorView(model.baseView, model.assets);
+    if (!view) {
+      setBlankLoadError("No harvest geometry (printFileDims) for this variant.");
+      paintPlaceholder("No harvest geometry for this variant");
       return;
     }
 
@@ -420,7 +456,16 @@ export default function FlatCalibrationMapperPage() {
       loadImage(testArtUrl),
     ]);
 
-    if (!blankImg) return;
+    if (!blankImg) {
+      setBlankLoadError(
+        model.assets.blank
+          ? "Blank URL is set but the image failed to load (404/CORS). Click Refresh, or Wipe + harvest again."
+          : "No blank asset URL for this variant — Wipe + harvest did not upload blanks.",
+      );
+      paintPlaceholder("Blank failed to load — see message below");
+      return;
+    }
+    setBlankLoadError(null);
 
     const layerOnlyPink = activeLayer === "pink" && showPink;
     const layerOnlyMask = activeLayer === "mask" && showMask && !showBlank && !showShading && !artImg;
@@ -503,6 +548,8 @@ export default function FlatCalibrationMapperPage() {
     weavePreview,
     weaveCfg,
   ]);
+
+  // blankLoadError is set inside renderPreview; not a render dependency.
 
   useEffect(() => {
     void renderPreview();
@@ -655,6 +702,25 @@ export default function FlatCalibrationMapperPage() {
               </>
             )}
           </p>
+        )}
+
+        {!!data?.harvestWarnings?.length && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-900 dark:text-amber-100 space-y-1">
+            <p className="font-medium">Some print providers could not supply blanks</p>
+            <ul className="list-disc pl-5 space-y-0.5">
+              {data.harvestWarnings.map((w, i) => (
+                <li key={i} className="break-words">
+                  {w}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs opacity-80">
+              Missing colours are filled from other catalog providers, existing Printify products,
+              or the listing&apos;s Shopify product images when a decorator can&apos;t create on
+              the harvest shop. Listings stay provider-scoped — only the shared blank pool is
+              affected.
+            </p>
+          </div>
         )}
 
         {isLoading ? (
@@ -1021,7 +1087,12 @@ export default function FlatCalibrationMapperPage() {
                   ? "Blue dashed = print canvas — scale artwork until it covers all four edges. Drag handles or use sidebar nudge. Blank redraws cameras and rounded case lip on top of art."
                   : "Dashed outline = printable area on the mockup — artwork is clipped to the harvested mask. Nudge blank, mask, and shading layers if registration is off."}
               </p>
-              {selectedModel && !selectedModel.assets.blank && (
+              {blankLoadError && (
+                <p className="mt-1 max-w-md self-center text-xs text-amber-800">
+                  {blankLoadError}
+                </p>
+              )}
+              {selectedModel && !selectedModel.assets.blank && !blankLoadError && (
                 <p className="mt-1 text-xs text-amber-700">
                   No blank asset for this model — run Wipe + harvest first.
                 </p>

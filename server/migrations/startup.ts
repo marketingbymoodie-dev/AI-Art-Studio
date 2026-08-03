@@ -39,6 +39,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "variant_prices_both",         type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "is_all_over_print",           type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "product_types",         column: "placeholder_positions",       type: "TEXT DEFAULT '[]'" },
   { table: "style_presets",         column: "base_image_url",              type: "TEXT" },
@@ -71,6 +72,12 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
+  { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
+  { table: "product_types",         column: "last_oos_scan_at",            type: "TIMESTAMP" },
+  { table: "product_types",         column: "oos_available_variants",      type: "INTEGER" },
+  { table: "product_types",         column: "oos_total_variants",          type: "INTEGER" },
+  { table: "product_types",         column: "oos_status",                  type: "TEXT" },
+  { table: "product_types",         column: "oos_detail",                  type: "TEXT DEFAULT '{}'" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -550,6 +557,21 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "shopify_order_id"    TEXT,
         "cart_token"          TEXT,
         "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "oos_catalogue_scans",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "oos_catalogue_scans" (
+        "id"                SERIAL PRIMARY KEY,
+        "ran_at"            TIMESTAMP DEFAULT NOW() NOT NULL,
+        "products_scanned"  INTEGER NOT NULL DEFAULT 0,
+        "fully_oos_count"   INTEGER NOT NULL DEFAULT 0,
+        "critical_count"    INTEGER NOT NULL DEFAULT 0,
+        "error_count"       INTEGER NOT NULL DEFAULT 0,
+        "email_sent"        BOOLEAN NOT NULL DEFAULT FALSE,
+        "created_at"        TIMESTAMP DEFAULT NOW() NOT NULL
       )
     `,
   },

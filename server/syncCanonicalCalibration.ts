@@ -27,10 +27,14 @@ export async function syncProductTypeFromCanonicalCalibration(
     printifyBlueprintId: number | null;
     flatCalibration?: unknown;
   },
-  options?: { allowUnpublishedHarvest?: boolean },
+  options?: { allowUnpublishedHarvest?: boolean; forceOverwrite?: boolean },
 ): Promise<{ synced: boolean; productType?: Awaited<ReturnType<typeof storage.getProductType>> }> {
   if (!productType.printifyBlueprintId) return { synced: false };
-  if (parseFlatCalibrationManifest(productType.flatCalibration)) return { synced: false };
+  // Default: only seed when the merchant PT has no usable calibration.
+  // forceOverwrite: replace stale merchant harvest with platform canonical (bp77 etc.).
+  if (!options?.forceOverwrite && parseFlatCalibrationManifest(productType.flatCalibration)) {
+    return { synced: false };
+  }
 
   const catalogEntry = await getPlatformCatalogEntry(productType.printifyBlueprintId);
   if (catalogEntry?.kind !== "flat") return { synced: false };
@@ -58,7 +62,7 @@ export async function syncProductTypeFromCanonicalCalibration(
 
   const updated = await storage.getProductType(productType.id);
   console.log(
-    `[flat-calibration] synced canonical calibration onto pt ${productType.id} (${productType.name}) from bp ${productType.printifyBlueprintId}`,
+    `[flat-calibration] ${options?.forceOverwrite ? "force-" : ""}synced canonical calibration onto pt ${productType.id} (${productType.name}) from bp ${productType.printifyBlueprintId}`,
   );
   return { synced: true, productType: updated ?? undefined };
 }

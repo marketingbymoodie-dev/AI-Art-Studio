@@ -304,6 +304,27 @@ export function orientFlatViewCalibrationLandscape(
   };
 }
 
+/**
+ * Calibration assets (mask/shading/blanks) live at STABLE canonical URLs that
+ * are overwritten in place on re-harvest (e.g. `canonical/77/v1/mask-front.png`).
+ * Browser and CDN caches can keep serving the pre-harvest copy while the
+ * manifest JSON is already new — the dashed guide and the pixel clip then
+ * derive from different geometry and the placer visibly lies (art past the
+ * guide). Pinning every asset request to the manifest generation guarantees a
+ * re-harvest always busts those caches.
+ */
+export function withFlatAssetVersion(
+  url: string | null | undefined,
+  version: string | null | undefined,
+): string {
+  if (!url) return url ?? "";
+  if (!version) return url;
+  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+  const v = encodeURIComponent(version.replace(/[^0-9A-Za-z]/g, "").slice(0, 24));
+  if (!v) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}cv=${v}`;
+}
+
 export function loadFlatImage(
   url: string,
   opts?: { cors?: boolean },
@@ -420,14 +441,23 @@ export async function loadFlatViewAssets(
       calib.shadingMode === "map" ||
       !!calib.printBoundsNormalized);
 
+  // Version-pin harvest assets so a re-harvest can't pair a fresh manifest
+  // with stale cached pixels (blankUrlOverride is a catalog photo — leave it).
+  const assetVersion = manifest.generatedAt;
+  const versionedBlankUrl =
+    view === "front" && opts?.blankUrlOverride
+      ? blankUrl
+      : withFlatAssetVersion(blankUrl, assetVersion);
   const [b, m, s] = await Promise.all([
-    loadFlatImage(blankUrl),
+    loadFlatImage(versionedBlankUrl),
     // Shared harvest masks are 2:3-shaped — drop them when the guide was
     // rebuilt for the catalog size AR or they clip the wrong silhouette.
     !refitCatalogSizeGuide && calib.maskUrl
-      ? loadFlatImage(calib.maskUrl)
+      ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, assetVersion))
       : Promise.resolve(null),
-    shouldLoadShading ? loadFlatImage(calib.shadingUrl!) : Promise.resolve(null),
+    shouldLoadShading
+      ? loadFlatImage(withFlatAssetVersion(calib.shadingUrl!, assetVersion))
+      : Promise.resolve(null),
   ]);
   if (!b) return null;
   // Catalog-blank refit already has the correct AR — don't rotate harvest masks.

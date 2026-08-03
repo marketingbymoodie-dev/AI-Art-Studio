@@ -195,7 +195,8 @@ async function deleteProduct(token: string, shopId: string, productId: string): 
 // yielding the true print-area rect + pixel-exact silhouette (incl. occlusion
 // such as a hoodie's hood notch). Horizontal fill is automatic — at scale=1 the
 // rendered width always equals the print-area width.
-const REG_VERTICAL_OVERSCAN = 1.12;
+// Keep in sync with server/flat-calibration.ts REG_VERTICAL_OVERSCAN.
+const REG_VERTICAL_OVERSCAN = 1.2;
 
 async function magentaPng(targetW: number, targetH: number): Promise<Buffer> {
   // Printify caches mockups on image CONTENT, so we stamp a unique random speck
