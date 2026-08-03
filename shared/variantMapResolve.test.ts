@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  capVariantSelectionForShopifyLimit,
+  countActiveVariantMapKeys,
   resolveVariantForSizeOnly,
   resolveVariantFromMap,
+  SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
 } from "./variantMapResolve";
 
 describe("resolveVariantForSizeOnly", () => {
@@ -33,5 +36,40 @@ describe("resolveVariantFromMap vs junk phone colour", () => {
 
   it("size-only helper recovers the variant", () => {
     expect(resolveVariantForSizeOnly(phoneMap, "iphone_13")?.entry.printifyVariantId).toBe(101);
+  });
+});
+
+describe("capVariantSelectionForShopifyLimit", () => {
+  function denseMap(sizes: string[], colors: string[]) {
+    const map: Record<string, { printifyVariantId: number; providerId: number }> = {};
+    let id = 1;
+    for (const s of sizes) {
+      for (const c of colors) {
+        map[`${s}:${c}`] = { printifyVariantId: id++, providerId: 1 };
+      }
+    }
+    return map;
+  }
+
+  it("keeps all sizes and trims colors to stay under 100", () => {
+    const sizes = ["xs", "s", "m", "l", "xl", "2xl"];
+    const colors = Array.from({ length: 20 }, (_, i) => `c${i}`);
+    const map = denseMap(sizes, colors);
+    expect(countActiveVariantMapKeys(map, sizes, colors)).toBe(120);
+
+    const capped = capVariantSelectionForShopifyLimit(sizes, colors, map);
+    expect(capped.capped).toBe(true);
+    expect(capped.variantCount).toBeLessThanOrEqual(SHOPIFY_MAX_VARIANTS_PER_PRODUCT);
+    expect(capped.sizeIds).toEqual(sizes);
+    expect(capped.colorIds.length).toBe(16); // 6 * 16 = 96
+  });
+
+  it("no-ops when already under the limit", () => {
+    const sizes = ["s", "m"];
+    const colors = ["black", "white"];
+    const map = denseMap(sizes, colors);
+    const capped = capVariantSelectionForShopifyLimit(sizes, colors, map);
+    expect(capped.capped).toBe(false);
+    expect(capped.variantCount).toBe(4);
   });
 });

@@ -35,6 +35,7 @@ import {
   resolveVariantFromMap,
   variantMapKey,
   countActiveVariantMapKeys,
+  capVariantSelectionForShopifyLimit,
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
@@ -13563,7 +13564,7 @@ ${orientationExtra}
   async function handlePrintifyImportRequest(
     req: any,
     res: any,
-    opts?: { printifyTokenOverride?: string },
+    opts?: { printifyTokenOverride?: string; autoCapVariants?: boolean },
   ) {
     try {
       const userId = req.user.claims.sub;
@@ -14469,19 +14470,47 @@ ${orientationExtra}
         height: placeholderDimensions[pos].height,
       }));
 
-      const importSizeIds: string[] = Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
+      let importSizeIds: string[] = Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
         ? selectedSizeIds
         : sizes.map((s: { id: string }) => s.id);
-      const importColorIds: string[] = Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+      let importColorIds: string[] = Array.isArray(selectedColorIds) && selectedColorIds.length > 0
         ? selectedColorIds
         : frameColors.map((c: { id: string }) => c.id);
-      const importVariantCount = countActiveVariantMapKeys(variantMap, importSizeIds, importColorIds);
+      let importVariantCount = countActiveVariantMapKeys(variantMap, importSizeIds, importColorIds);
+      const explicitVariantPick =
+        (Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0) ||
+        (Array.isArray(selectedColorIds) && selectedColorIds.length > 0);
+      // Setup → Activate has no size/color picker. Auto-trim to Shopify's 100
+      // variant cap (prefer all sizes, fewer colors). Products Import still
+      // errors when the merchant explicitly picks too many.
       if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-        return res.status(400).json({
-          error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
-          code: "SHOPIFY_VARIANT_LIMIT",
-          variantCount: importVariantCount,
-        });
+        if (opts?.autoCapVariants || !explicitVariantPick) {
+          const capped = capVariantSelectionForShopifyLimit(
+            importSizeIds,
+            importColorIds,
+            variantMap,
+          );
+          importSizeIds = capped.sizeIds;
+          importColorIds = capped.colorIds;
+          importVariantCount = capped.variantCount;
+          console.log(
+            `[Import] Auto-capped blueprint ${blueprintIdNum} to ${importVariantCount} variants ` +
+              `(${importSizeIds.length} sizes × ${importColorIds.length} colors)`,
+          );
+          if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+            return res.status(400).json({
+              error: `Too many variants (${importVariantCount}) even after auto-select. Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product.`,
+              code: "SHOPIFY_VARIANT_LIMIT",
+              variantCount: importVariantCount,
+            });
+          }
+        } else {
+          return res.status(400).json({
+            error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
+            code: "SHOPIFY_VARIANT_LIMIT",
+            variantCount: importVariantCount,
+          });
+        }
       }
 
       const importPrintifyVariantIds = [
@@ -20195,7 +20224,10 @@ ${orientationExtra}
         status(code: number) { capturedStatus = code; return fakeRes; },
         json(body: any) { capturedBody = body; return fakeRes; },
       };
-      await handlePrintifyImportRequest(fakeReq, fakeRes, { printifyTokenOverride: platformPrintifyToken });
+      await handlePrintifyImportRequest(fakeReq, fakeRes, {
+        printifyTokenOverride: platformPrintifyToken,
+        autoCapVariants: true,
+      });
       if (capturedStatus >= 400) {
         return res.status(capturedStatus).json(capturedBody);
       }
