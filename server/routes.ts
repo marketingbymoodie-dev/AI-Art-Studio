@@ -14566,16 +14566,9 @@ ${orientationExtra}
         variantMap: JSON.stringify(variantMap),
         // Empty [] from a failed/partial variants wizard must mean "select all", not
         // "intentionally none" (that would hide storefront color/size dropdowns).
-        selectedSizeIds: JSON.stringify(
-          Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
-            ? selectedSizeIds
-            : sizes.map((s: { id: string }) => s.id),
-        ),
-        selectedColorIds: JSON.stringify(
-          Array.isArray(selectedColorIds) && selectedColorIds.length > 0
-            ? selectedColorIds
-            : frameColors.map((c: { id: string }) => c.id),
-        ),
+        // Use importSizeIds / importColorIds (may be auto-capped for Setup Activate).
+        selectedSizeIds: JSON.stringify(importSizeIds),
+        selectedColorIds: JSON.stringify(importColorIds),
         aspectRatio,
         printShape,
         // Store only physical dimensions (inches) for unit consistency
