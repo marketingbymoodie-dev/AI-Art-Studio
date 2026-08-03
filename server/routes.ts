@@ -20032,13 +20032,34 @@ ${orientationExtra}
     const resolved = await resolveShopInstallationForSetup(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
-    const updated = await storage.updateShopifyInstallation(resolved.installation.id, {
-      embedConfirmedAt: new Date(),
-    } as any);
-    if (!updated) {
-      return res.status(500).json({ error: "Failed to save embed confirmation" });
+    try {
+      // Fresh staging DBs can miss this column if an earlier startup migration failed.
+      await pool.query(
+        `ALTER TABLE "shopify_installations" ADD COLUMN IF NOT EXISTS "embed_confirmed_at" TIMESTAMP`,
+      );
+
+      const now = new Date();
+      const result = await pool.query(
+        `UPDATE "shopify_installations"
+         SET "embed_confirmed_at" = $1
+         WHERE "id" = $2
+         RETURNING "id", "embed_confirmed_at"`,
+        [now, resolved.installation.id],
+      );
+      if (!result.rowCount) {
+        return res.status(500).json({ error: "Installation row not found while saving embed confirmation" });
+      }
+      return res.json({
+        success: true,
+        embedConfirmedAt: result.rows[0].embed_confirmed_at,
+      });
+    } catch (err: any) {
+      console.error("[confirm-embed] failed:", err?.message ?? err);
+      return res.status(500).json({
+        error: "Failed to save embed confirmation",
+        details: String(err?.message ?? err),
+      });
     }
-    return res.json({ success: true, embedConfirmedAt: updated.embedConfirmedAt });
   }));
 
   /** GET /api/appai/setup/catalog — published platform catalogue entries merchants can instantly activate. */
