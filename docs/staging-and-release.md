@@ -58,6 +58,23 @@ That publishes theme/checkout extensions to the **staging** Partner app only.
 
 **Install Shopify CLI once** (Windows): follow [Shopify CLI install](https://shopify.dev/docs/api/shopify-cli). You only need the terminal for Shopify extension deploy / occasional `shopify app dev` — not for every code edit.
 
+### B0b. Copy curated Platform Catalog (once)
+
+Staging Postgres does **not** inherit production’s `platform_catalog_blueprints`.
+Calibrations / panel templates in Supabase are already shared — you only copy the
+allowlist rows (no re-harvest).
+
+From the repo (use each Postgres **Variables → `DATABASE_PUBLIC_URL`** if your PC
+cannot reach the private `DATABASE_URL`):
+
+```powershell
+$env:SOURCE_DATABASE_URL = "<production DATABASE_PUBLIC_URL>"
+$env:TARGET_DATABASE_URL = "<staging DATABASE_PUBLIC_URL>"
+npm run sync:platform-catalog
+```
+
+Then hard-refresh **Platform Catalog** on the staging app.
+
 ### B0. Fresh staging database (required once)
 
 Railway Staging Postgres starts **empty**. Production schema is NOT copied when you
