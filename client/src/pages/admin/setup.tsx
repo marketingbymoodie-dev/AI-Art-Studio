@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useSetupStatus } from "@/hooks/use-setup-status";
+import { useSetupStatus, type MerchantSetupStatus } from "@/hooks/use-setup-status";
 import { getShopifyParams } from "@/lib/shopify";
 import AdminLayout from "@/components/admin-layout";
 import ConfettiBurst from "@/components/admin/ConfettiBurst";
@@ -115,11 +115,23 @@ export default function AdminSetupPage() {
   const confirmEmbedMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/appai/setup/confirm-embed");
-      return res.json();
+      return res.json() as Promise<{ success?: boolean; error?: string }>;
     },
     onSuccess: () => {
+      queryClient.setQueryData(["/api/appai/setup/status"], (prev: MerchantSetupStatus | undefined) =>
+        prev
+          ? { ...prev, embedEnabledGuess: true, nextStep: prev.pagesCount > 0 ? prev.nextStep : "choose_product" }
+          : prev,
+      );
       queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
       toast({ title: "Got it!", description: "App Embed marked as enabled." });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Couldn't save that yet",
+        description: err.message || "Try reopening the app from Shopify Admin, then click again.",
+        variant: "destructive",
+      });
     },
   });
 

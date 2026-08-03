@@ -17039,6 +17039,39 @@ ${orientationExtra}
     return { ok: true, installation };
   }
 
+  /**
+   * Setup-rail resolver: prefer a live token, but still allow progress flags
+   * (embed confirmed, trial, etc.) when the install row exists with a stale /
+   * placeholder token — common right after a fresh staging install.
+   */
+  async function resolveShopInstallationForSetup(req: any): Promise<
+    | { ok: true; installation: any }
+    | { ok: false; status: number; error: string; reinstallUrl?: string }
+  > {
+    const authorized = await resolveShopInstallation(req);
+    if (authorized.ok) return authorized;
+
+    const rawDomain = req.shopDomain as string | undefined;
+    if (!rawDomain) return authorized;
+
+    const shopDomain = rawDomain.toLowerCase().replace(/^https?:\/\//, "");
+    const raw = await storage.getShopifyInstallationByShop(shopDomain);
+    if (!raw) return authorized;
+    if (raw.status === "uninstalled") {
+      return {
+        ok: false,
+        status: 403,
+        error: "SHOP_NOT_ACTIVE",
+        reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`,
+      };
+    }
+
+    console.log(
+      `[resolver:setup] Using installation ${shopDomain} with status=${raw.status} (token not fully authorized)`,
+    );
+    return { ok: true, installation: raw };
+  }
+
   // ==================== MERCHANT DESIGN STUDIO IDENTITY ====================
   // Merchants create designs through the SAME storefront customizer real customers use
   // (client renders EmbedDesign in-process with embeddedContext.mode = 'merchant-studio'),
@@ -19985,7 +20018,7 @@ ${orientationExtra}
 
   /** GET /api/appai/setup/status — setup rail readiness flags (silently starts the trial). */
   app.get("/api/appai/setup/status", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const resolved = await resolveShopInstallation(req);
+    const resolved = await resolveShopInstallationForSetup(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const installation = await ensureTrialStarted(resolved.installation);
@@ -19996,13 +20029,16 @@ ${orientationExtra}
 
   /** POST /api/appai/setup/confirm-embed — merchant clicked "I've enabled it" on the App Embed step. */
   app.post("/api/appai/setup/confirm-embed", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const resolved = await resolveShopInstallation(req);
+    const resolved = await resolveShopInstallationForSetup(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
-    await storage.updateShopifyInstallation(resolved.installation.id, {
+    const updated = await storage.updateShopifyInstallation(resolved.installation.id, {
       embedConfirmedAt: new Date(),
     } as any);
-    return res.json({ success: true });
+    if (!updated) {
+      return res.status(500).json({ error: "Failed to save embed confirmation" });
+    }
+    return res.json({ success: true, embedConfirmedAt: updated.embedConfirmedAt });
   }));
 
   /** GET /api/appai/setup/catalog — published platform catalogue entries merchants can instantly activate. */
