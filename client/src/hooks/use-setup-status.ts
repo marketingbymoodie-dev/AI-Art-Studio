@@ -14,6 +14,8 @@ export interface MerchantSetupStatus {
   planStatus: string | null;
   quota: { used: number; limit: number | null; plan: string | null };
   nextStep: SetupNextStep;
+  shopAuthorized?: boolean;
+  reconnectUrl?: string | null;
 }
 
 /** Shared setup-rail status query — used by both /admin/setup and the daily Printify nag modal. */

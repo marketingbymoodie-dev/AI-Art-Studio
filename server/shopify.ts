@@ -62,7 +62,9 @@ export async function registerCartScript(shop: string, accessToken: string): Pro
 }
 
 function getAppUrl(): string {
-  const appUrl = process.env.APP_URL;
+  // Staging often sets PUBLIC_APP_URL only; OAuth redirect_uri must be the
+  // public Railway URL — never localhost — or Shopify install never saves a token.
+  const appUrl = process.env.APP_URL || process.env.PUBLIC_APP_URL;
   if (appUrl) {
     return appUrl.replace(/\/$/, "");
   }
@@ -435,9 +437,7 @@ if (res.locals.shopify?.session?.shop) {
     const installation = await storage.getShopifyInstallationByShop(shop);
     if (installation) {
       // Guard against a late-arriving uninstall webhook overwriting a fresh reinstall.
-      // Shopify can deliver the app/uninstalled webhook seconds to minutes after removal.
-      // If the installation was updated within the last 90 seconds, a new OAuth just
-      // completed — skip marking it uninstalled so the fresh token is preserved.
+      // Shopify can deliver app/uninstalled seconds to minutes after removal.
       const ageMs = Date.now() - new Date(installation.installedAt).getTime();
       if (ageMs < 90_000) {
         console.warn(
@@ -445,6 +445,21 @@ if (res.locals.shopify?.session?.shop) {
           `installation is only ${Math.round(ageMs / 1000)}s old (fresh reinstall detected)`
         );
         return res.status(200).send("OK");
+      }
+      // Stronger guard: if the stored token still works, the app was reinstalled
+      // and this webhook is stale (can arrive well after the 90s window).
+      if (
+        installation.accessToken &&
+        installation.accessToken !== "NEEDS_RECONNECT" &&
+        installation.status === "active"
+      ) {
+        const stillValid = await validateShopifyToken(shop, installation.accessToken);
+        if (stillValid.valid) {
+          console.warn(
+            `[uninstall-webhook] Skipping stale uninstall for ${shop} — access token still valid (reinstalled)`,
+          );
+          return res.status(200).send("OK");
+        }
       }
       await storage.updateShopifyInstallation(installation.id, {
         status: "uninstalled",

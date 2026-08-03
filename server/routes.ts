@@ -17023,8 +17023,13 @@ ${orientationExtra}
         console.log(`[resolver] SHOP_NOT_CONNECTED: ${shopDomain}`);
         return { ok: false, status: 400, error: "SHOP_NOT_CONNECTED" };
       }
-      if (raw.status === "token_invalid") {
-        console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain}`);
+      const needsOAuth =
+        raw.status === "token_invalid" ||
+        raw.status === "needs_reconnect" ||
+        !raw.accessToken ||
+        raw.accessToken === "NEEDS_RECONNECT";
+      if (needsOAuth) {
+        console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain} (status=${raw.status})`);
         return {
           ok: false,
           status: 401,

@@ -90,7 +90,7 @@ old build or migrations failed — redeploy Staging and check startup logs.
 
 | Variable | Staging value |
 |----------|----------------|
-| `APP_URL` / `PUBLIC_APP_URL` | Staging Railway HTTPS URL |
+| `APP_URL` / `PUBLIC_APP_URL` | Staging Railway HTTPS URL (set **both** to the same URL if unsure — OAuth uses these for `/shopify/callback`) |
 | `SHOPIFY_API_KEY` | Staging app **Client ID** |
 | `SHOPIFY_API_SECRET` | Staging app **Client secret** |
 | `DATABASE_URL` | **New** staging Postgres only |

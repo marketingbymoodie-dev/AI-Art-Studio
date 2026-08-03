@@ -93,6 +93,25 @@ export interface MerchantSetupStatus {
   planStatus: string | null;
   quota: { used: number; limit: number | null; plan: string | null };
   nextStep: SetupNextStep;
+  /** False when we only have a placeholder install row (no offline OAuth token yet). */
+  shopAuthorized: boolean;
+  /** Absolute URL to complete classic OAuth and store an Admin API token. */
+  reconnectUrl: string | null;
+}
+
+function isShopAuthorized(installation: ShopifyInstallation): boolean {
+  const token = installation.accessToken || "";
+  return (
+    installation.status === "active" &&
+    !!token &&
+    token !== "NEEDS_RECONNECT"
+  );
+}
+
+function buildReconnectUrl(shop: string): string {
+  const base = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "");
+  const path = `/shopify/install?shop=${encodeURIComponent(shop)}`;
+  return base ? `${base}${path}` : path;
 }
 
 /** Aggregate the setup rail's readiness flags for a shop. */
@@ -103,6 +122,7 @@ export async function getMerchantSetupStatus(
   const plan = getEffectivePlan(installation as any, installation.shopDomain);
   const printifyConnected = isPrintifyConnected(merchant);
   const embedEnabledGuess = !!(installation as any).embedConfirmedAt;
+  const shopAuthorized = isShopAuthorized(installation);
 
   const [pagesCount, activePagesCount, quota] = await Promise.all([
     storage.countCustomizerPages(installation.shopDomain),
@@ -129,5 +149,7 @@ export async function getMerchantSetupStatus(
       plan: quota.planName,
     },
     nextStep,
+    shopAuthorized,
+    reconnectUrl: shopAuthorized ? null : buildReconnectUrl(installation.shopDomain),
   };
 }

@@ -200,11 +200,41 @@ export default function AdminSetupPage() {
           </p>
         </div>
 
+        {status && status.shopAuthorized === false && status.reconnectUrl && (
+          <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium">Finish connecting this shop</p>
+                <p className="text-sm text-muted-foreground">
+                  Shopify opened the app, but we still need one approval step to save an Admin API
+                  token (needed to Activate products). This is different from uninstalling.
+                </p>
+              </div>
+              <Button
+                asChild
+                data-testid="button-reconnect-shopify"
+              >
+                <a href={status.reconnectUrl} target="_top" rel="noopener noreferrer">
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Connect Shopify
+                </a>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Step 1 — Install & permissions (always complete by the time this page loads) */}
-        <StepShell number={1} title="Install the app" done>
-          <p className="text-sm text-muted-foreground">
-            Done — you've installed AI Art Studio and approved the required permissions.
-          </p>
+        <StepShell number={1} title="Install the app" done={status?.shopAuthorized !== false}>
+          {status?.shopAuthorized === false ? (
+            <p className="text-sm text-muted-foreground">
+              Almost done — click <strong>Connect Shopify</strong> above, approve permissions, then
+              come back here to Activate a product.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Done — you've installed AI Art Studio and approved the required permissions.
+            </p>
+          )}
         </StepShell>
 
         {/* Step 2 — Enable App Embed */}
