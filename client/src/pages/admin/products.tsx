@@ -846,7 +846,9 @@ export default function AdminProducts() {
           <div>
             <h1 className="text-2xl font-bold" data-testid="text-products-title">Products Catalogue</h1>
             <p className="text-muted-foreground">
-              Browse ready-to-go products, Create Page to go Live, then manage pricing and variants below.
+              Try products in Preview Studio (in-app). Create Page chooses your Printify supplier and applies
+              suggested retail before going Live — provider, pricing, variants, and Art Styles live on the
+              Customizer Page.
             </p>
           </div>
           <Button
@@ -859,12 +861,13 @@ export default function AdminProducts() {
           </Button>
         </div>
 
-        <CatalogActivateSection mode="catalogue" />
+        <CatalogActivateSection mode="catalogue" title="Ready-to-go products" />
 
         <div>
           <h2 className="text-lg font-semibold mb-1">Your product types</h2>
           <p className="text-sm text-muted-foreground mb-4">
-            Previewed and Live products appear here for pricing, variants, and Shopify sync.
+            Products you&apos;ve previewed or imported. Print provider, pricing, variants, and Art Styles are
+            managed on Customizer Pages when you Create Page or edit a Live page.
           </p>
         </div>
 

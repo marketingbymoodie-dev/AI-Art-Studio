@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
+import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -226,6 +227,14 @@ export default function AdminCreateProduct() {
               Printify test order when you&apos;re ready. This does not put a page on your storefront — use
               Customizer Pages → Create Page for that (supplier + suggested pricing required).
               Delete test orders in Printify if automatic fulfilment is enabled.
+            </p>
+            <p className="text-sm text-muted-foreground max-w-2xl mt-2">
+              <span className="font-medium text-foreground">NB:</span> Art Styles can be changed and even
+              custom-created for each product. Check the{" "}
+              <Link href="/admin/styles" className="underline font-medium text-foreground">
+                Art Styles
+              </Link>{" "}
+              tab.
             </p>
           </div>
           {selectedProductTypeId && (

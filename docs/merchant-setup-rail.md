@@ -1,25 +1,28 @@
-# Merchant setup rail (in-app Preview → gated Live)
+# Merchant setup rail (setup → Products Catalogue → gated Live)
 
-Brand-new merchants: install → enable App Embed → **Preview in-app** (Preview
-Studio) → connect Printify → **Create Page** (supplier + suggested retail) → Live.
+Brand-new merchants: install → enable App Embed → connect Printify → **Products
+Catalogue** (Preview in-app and/or Create Page with supplier + suggested retail)
+→ Live.
 
-Goal: try the art studio **before** Printify, without creating a storefront
-Customizer Page that can go Live at $0 with the wrong supplier.
+Goal: finish core setup first, then choose products from the catalogue. Preview
+never creates a storefront page that can go Live at $0 with the wrong supplier.
 
 ## Flow
 
 1. **Install + permissions** — Shopify OAuth → `/admin/setup`.
 2. **Enable the App Embed** — theme editor (merchant-only; cannot be automated).
-3. **Preview a product** — platform catalogue card → imports a `product_type`
-   only (platform `PRINTIFY_API_TOKEN`). Opens **Preview Studio**
-   (`/admin/create-product`) — full designer in-app. **No** Shopify Online Store
-   page and **no** `customizer_pages` row.
-4. **Connect Printify** — Settings: API token + Shop ID (Detect).
-5. **Create Page** — Customizer Pages wizard:
-   - Page info
-   - **Print supplier** (merchant token; can differ from Preview’s temp provider)
-   - **Pricing** — Printify costs **required**; suggested retail auto-applied
-   - Confirm → Live (`status: "active"`)
+3. **Connect Printify** — Settings: API token + Shop ID (Detect).
+4. **Products Catalogue** (prompted at end of setup) —
+   - **Preview** — imports a `product_type` only (platform `PRINTIFY_API_TOKEN`),
+     opens **Preview Studio** (`/admin/create-product`). **No** Shopify Online
+     Store page and **no** `customizer_pages` row.
+   - **Create Page** — Customizer Pages wizard:
+     - Page info
+     - **Print supplier** (merchant token)
+     - **Pricing** — Printify costs **required**; suggested retail auto-applied
+     - Confirm → Live (`status: "active"`)
+   - Provider, pricing, variants, and Art Styles are managed on the Customizer
+     Page (not as “settings below” on the catalogue).
 
 ## Locked rules
 
@@ -46,5 +49,6 @@ Customizer Page that can go Live at $0 with the wrong supplier.
 | Catalogue / Preview cards | `client/src/components/admin/CatalogActivateSection.tsx` |
 | Preview Studio | `client/src/pages/admin/create-product.tsx` |
 | Create Page wizard | `client/src/pages/admin/customizer-pages.tsx` |
+| Art Styles | `client/src/pages/admin/styles.tsx` |
 | Preview import (PT only) | `POST /api/appai/setup/activate-product` in `server/routes.ts` |
 | Setup status | `server/merchant-setup.ts` |

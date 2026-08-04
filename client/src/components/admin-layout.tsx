@@ -52,7 +52,7 @@ const menuItems = [
   { title: "Products Catalogue", url: "/admin/products", icon: Package },
   { title: "Preview Studio", url: "/admin/create-product", icon: Plus },
   { title: "Customizer Pages", url: "/admin/customizer-pages", icon: LayoutTemplate },
-  { title: "Styles", url: "/admin/styles", icon: Palette },
+  { title: "Art Styles", url: "/admin/styles", icon: Palette },
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },

@@ -137,9 +137,9 @@ export async function getMerchantSetupStatus(
     peekMerchantGenerationQuota(installation),
   ]);
 
+  // Preview / catalogue is not a setup step — after embed + Printify, point merchants to Products Catalogue.
   let nextStep: SetupNextStep = "done";
   if (!embedEnabledGuess) nextStep = "enable_embed";
-  else if (productTypesCount === 0 && pagesCount === 0) nextStep = "choose_product";
   else if (!printifyConnected) nextStep = "connect_printify";
 
   return {

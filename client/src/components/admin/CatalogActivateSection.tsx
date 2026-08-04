@@ -73,7 +73,7 @@ export default function CatalogActivateSection({
     mode === "catalogue" ? "Products Catalogue" : "Preview a Customizer Product";
   const defaultDescription =
     mode === "catalogue"
-      ? "Try products in Preview Studio (in-app). Create Page chooses your Printify supplier and applies suggested retail before going Live."
+      ? "Try products in Preview Studio (in-app). Create Page chooses your Printify supplier and applies suggested retail before going Live — provider, pricing, variants, and Art Styles live on the Customizer Page."
       : "Preview opens the studio inside the app — no storefront page yet. Connect Printify, then Create Page to pick a supplier and set prices.";
 
   const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({

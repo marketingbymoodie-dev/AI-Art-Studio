@@ -1,18 +1,20 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useSetupStatus, type MerchantSetupStatus } from "@/hooks/use-setup-status";
 import { getShopifyParams } from "@/lib/shopify";
 import AdminLayout from "@/components/admin-layout";
-import CatalogActivateSection from "@/components/admin/CatalogActivateSection";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
+  ArrowRight,
   CheckCircle2,
   ExternalLink,
   Info,
   Loader2,
+  Package,
   Sparkles,
   Store,
 } from "lucide-react";
@@ -92,7 +94,11 @@ export default function AdminSetupPage() {
     onSuccess: () => {
       queryClient.setQueryData(["/api/appai/setup/status"], (prev: MerchantSetupStatus | undefined) =>
         prev
-          ? { ...prev, embedEnabledGuess: true, nextStep: prev.pagesCount > 0 ? prev.nextStep : "choose_product" }
+          ? {
+              ...prev,
+              embedEnabledGuess: true,
+              nextStep: prev.printifyConnected ? "done" : "connect_printify",
+            }
           : prev,
       );
       queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
@@ -110,9 +116,8 @@ export default function AdminSetupPage() {
   });
 
   const embedDone = !!status?.embedEnabledGuess;
-  const hasPreviewed =
-    (status?.productTypesCount ?? 0) > 0 || (status?.pagesCount ?? 0) > 0;
   const printifyDone = !!status?.printifyConnected;
+  const setupComplete = embedDone && printifyDone;
 
   const normalizedShop = shopDomain
     ? shopDomain.includes(".")
@@ -132,7 +137,7 @@ export default function AdminSetupPage() {
             Get set up
           </h1>
           <p className="text-muted-foreground">
-            A few quick steps and your AI product customizer will be ready to show customers.
+            A few quick steps, then open Products Catalogue to Preview or Create a Live page.
           </p>
         </div>
 
@@ -143,7 +148,7 @@ export default function AdminSetupPage() {
                 <p className="text-sm font-medium">Finish connecting this shop</p>
                 <p className="text-sm text-muted-foreground">
                   Shopify opened the app, but we still need one approval step to save an Admin API
-                  token (needed to Preview products). This is different from uninstalling.
+                  token (needed for Preview and Create Page). This is different from uninstalling.
                 </p>
               </div>
               <Button asChild data-testid="button-reconnect-shopify">
@@ -164,7 +169,7 @@ export default function AdminSetupPage() {
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Done — you've installed AI Art Studio and approved the required permissions.
+              Done — you&apos;ve installed AI Art Studio and approved the required permissions.
             </p>
           )}
         </StepShell>
@@ -212,38 +217,30 @@ export default function AdminSetupPage() {
                 data-testid="button-confirm-embed"
               >
                 {confirmEmbedMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                I've enabled it
+                I&apos;ve enabled it
               </Button>
             )}
           </div>
           {!embedDone && (
             <p className="text-xs text-muted-foreground mt-2">
-              In the theme editor: App Embeds (left sidebar) → toggle on "AI Art Studio Embed" → Save.
+              In the theme editor: App Embeds (left sidebar) → toggle on &quot;AI Art Studio Embed&quot; → Save.
             </p>
           )}
         </StepShell>
 
-        <StepShell number={3} title="Preview a Customizer Product" done={hasPreviewed} locked={!embedDone}>
+        <StepShell number={3} title="Connect Printify to go Live" done={printifyDone} locked={!embedDone}>
           {!embedDone ? (
             <p className="text-sm text-muted-foreground">Enable the App Embed above to unlock this step.</p>
-          ) : (
-            <CatalogActivateSection mode="preview" />
-          )}
-        </StepShell>
-
-        <StepShell number={4} title="Connect Printify to go Live" done={printifyDone} locked={!hasPreviewed}>
-          {!hasPreviewed ? (
-            <p className="text-sm text-muted-foreground">Preview a product above to unlock this step.</p>
           ) : printifyDone ? (
             <p className="text-sm text-muted-foreground">
-              Printify is connected. Use Customizer Pages → Create Page to pick a supplier, apply
-              suggested prices, and go Live.
+              Printify is connected. When you Create Page, you&apos;ll choose a print supplier and apply
+              suggested retail prices before going Live.
             </p>
           ) : (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                In-app Preview does not create a customer-facing page. Connect Printify (Settings), then
-                Create Page to choose a print supplier and set retail prices before going Live.
+                Connect your Printify API token and Shop ID in Settings. You can still Preview products
+                in-app without Printify; Live pages need it for supplier and pricing.
               </p>
               <Button asChild data-testid="button-connect-printify">
                 <a href="/admin/settings">
@@ -254,6 +251,31 @@ export default function AdminSetupPage() {
             </div>
           )}
         </StepShell>
+
+        {setupComplete && (
+          <Card className="border-primary/30 bg-primary/5">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  Setup complete — next: Products Catalogue
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Preview products in Preview Studio (in-app), or Create Page to pick a Printify supplier,
+                  set suggested prices, and go Live. Provider, pricing, variants, and Art Styles are
+                  configured on the Customizer Page.
+                </p>
+              </div>
+              <Button asChild data-testid="button-setup-open-catalogue">
+                <Link href="/admin/products">
+                  <Package className="h-4 w-4 mr-2" />
+                  Open Products Catalogue
+                  <ArrowRight className="h-4 w-4 ml-2" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         {statusLoading && (
           <p className="text-xs text-muted-foreground">Loading your setup status…</p>
