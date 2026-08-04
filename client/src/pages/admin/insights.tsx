@@ -41,6 +41,19 @@ type PiVariant = {
   available: boolean;
 };
 
+type BlankVariant = { id: string; title: string };
+type Blank = {
+  productTypeId: number;
+  variants: BlankVariant[];
+};
+
+type CalcVariant = {
+  key: string;
+  label: string;
+  cogsCents: number | null;
+  shippingCents: number | null;
+};
+
 const PLAN_PRICES_USD: Record<string, number> = {
   starter: 29,
   dabbler: 49,
@@ -55,6 +68,37 @@ const PLAN_DISPLAY_NAMES: Record<string, string> = {
   pro: "Pro",
   pro_plus: "Pro Plus",
 };
+
+/** Prefer front-area COGS; otherwise first row per supplier variant (AOP may not use "front"). */
+function pickPiVariantsForCalculator(list: PiVariant[]): CalcVariant[] {
+  const bySupplier = new Map<string, PiVariant[]>();
+  for (const v of list) {
+    const id = String(v.supplierVariantId || "");
+    if (!id) continue;
+    const arr = bySupplier.get(id) ?? [];
+    arr.push(v);
+    bySupplier.set(id, arr);
+  }
+  const out: CalcVariant[] = [];
+  for (const [id, rows] of bySupplier) {
+    const preferred =
+      rows.find((r) => r.printAreaKey === "front") ||
+      rows.find((r) => r.printAreaKey !== "both") ||
+      rows[0];
+    if (!preferred) continue;
+    const label =
+      preferred.variantName ||
+      [preferred.size, preferred.color].filter(Boolean).join(" / ") ||
+      id;
+    out.push({
+      key: `${id}:${preferred.printAreaKey || "front"}`,
+      label,
+      cogsCents: preferred.baseCogsCents ?? null,
+      shippingCents: preferred.shippingFirstItemUsCents ?? null,
+    });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
 
 export default function AdminInsightsPage() {
   const { data: planData } = usePlanGenerationQuota();
@@ -73,7 +117,11 @@ export default function AdminInsightsPage() {
     },
   });
 
-  const { data: piData, isLoading: piLoading } = useQuery<{
+  const {
+    data: piData,
+    isLoading: piLoading,
+    error: piError,
+  } = useQuery<{
     variants: PiVariant[];
     productType?: ProductTypeRow;
   }>({
@@ -89,14 +137,34 @@ export default function AdminInsightsPage() {
     enabled: !!productTypeId,
   });
 
-  const variants = useMemo(() => {
-    const list = piData?.variants ?? [];
-    return list.filter((v) => v.printAreaKey === "front" || !v.printAreaKey);
-  }, [piData?.variants]);
+  const { data: blanksData } = useQuery<{ blanks: Blank[] }>({
+    queryKey: ["/api/appai/blanks"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/appai/blanks");
+      if (!res.ok) return { blanks: [] };
+      return res.json();
+    },
+    enabled: !!productTypeId,
+  });
+
+  const variants = useMemo((): CalcVariant[] => {
+    const fromPi = pickPiVariantsForCalculator(piData?.variants ?? []);
+    if (fromPi.length > 0) return fromPi;
+
+    // Fallback: catalog blank titles when Product Sync has not written PI rows yet.
+    const blank = blanksData?.blanks?.find((b) => String(b.productTypeId) === productTypeId);
+    if (!blank?.variants?.length) return [];
+    return blank.variants.map((v) => ({
+      key: v.id,
+      label: v.title,
+      cogsCents: null,
+      shippingCents: null,
+    }));
+  }, [piData?.variants, blanksData?.blanks, productTypeId]);
 
   const selectedVariant = useMemo(() => {
     if (!variantKey) return null;
-    return variants.find((v) => `${v.supplierVariantId}:${v.printAreaKey}` === variantKey) ?? null;
+    return variants.find((v) => v.key === variantKey) ?? null;
   }, [variantKey, variants]);
 
   const planName = planData?.planName || "starter";
@@ -108,8 +176,8 @@ export default function AdminInsightsPage() {
     productTypes?.find((p) => String(p.id) === productTypeId)?.defaultMarkupPercent ??
     DEFAULT_MARKUP_PERCENT;
 
-  const cogsCents = selectedVariant?.baseCogsCents ?? null;
-  const shippingCents = selectedVariant?.shippingFirstItemUsCents ?? null;
+  const cogsCents = selectedVariant?.cogsCents ?? null;
+  const shippingCents = selectedVariant?.shippingCents ?? null;
   const landedCents =
     cogsCents != null ? cogsCents + (shippingCents != null && shippingCents > 0 ? shippingCents : 0) : null;
 
@@ -127,6 +195,10 @@ export default function AdminInsightsPage() {
     subscriptionUsd: planPrice,
   });
   const breakEven = subscriptionBreakEvenUnits(planPrice, profitPerSale);
+
+  const piHasCosts = (piData?.variants ?? []).some(
+    (v) => v.baseCogsCents != null && Number.isFinite(v.baseCogsCents),
+  );
 
   return (
     <AdminLayout>
@@ -151,7 +223,7 @@ export default function AdminInsightsPage() {
               <div className="space-y-2">
                 <Label>Product</Label>
                 <Select
-                  value={productTypeId}
+                  value={productTypeId || undefined}
                   onValueChange={(v) => {
                     setProductTypeId(v);
                     setVariantKey("");
@@ -161,7 +233,7 @@ export default function AdminInsightsPage() {
                   <SelectTrigger>
                     <SelectValue placeholder="Select a product" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent position="popper" className="z-[100]">
                     {(productTypes ?? []).map((pt) => (
                       <SelectItem key={pt.id} value={String(pt.id)}>
                         {pt.name}
@@ -177,29 +249,38 @@ export default function AdminInsightsPage() {
                 <Label>Variant</Label>
                 {piLoading ? (
                   <Skeleton className="h-10 w-full" />
+                ) : piError ? (
+                  <p className="text-sm text-destructive">{(piError as Error).message}</p>
+                ) : variants.length === 0 ? (
+                  <p className="text-sm text-muted-foreground rounded-md border p-3">
+                    No variants available yet. Open{" "}
+                    <span className="font-medium">Products Catalogue</span>, run{" "}
+                    <span className="font-medium">Product Sync</span> on this product, then return here.
+                  </p>
                 ) : (
-                  <Select value={variantKey} onValueChange={setVariantKey}>
+                  <Select
+                    value={variantKey || undefined}
+                    onValueChange={setVariantKey}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Select a variant" />
                     </SelectTrigger>
-                    <SelectContent>
-                      {variants.map((v) => {
-                        const key = `${v.supplierVariantId}:${v.printAreaKey}`;
-                        const label =
-                          v.variantName ||
-                          [v.size, v.color].filter(Boolean).join(" / ") ||
-                          v.supplierVariantId;
-                        return (
-                          <SelectItem key={key} value={key}>
-                            {label}
-                            {v.baseCogsCents != null
-                              ? ` — $${(v.baseCogsCents / 100).toFixed(2)} COGS`
-                              : " — no COGS"}
-                          </SelectItem>
-                        );
-                      })}
+                    <SelectContent position="popper" className="z-[100] max-h-72">
+                      {variants.map((v) => (
+                        <SelectItem key={v.key} value={v.key}>
+                          {v.label}
+                          {v.cogsCents != null
+                            ? ` — $${(v.cogsCents / 100).toFixed(2)} COGS`
+                            : " — no COGS yet"}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                )}
+                {variants.length > 0 && !piHasCosts && (
+                  <p className="text-xs text-amber-800">
+                    COGS not in Product Intelligence yet — run Product Sync on this product to fill costs.
+                  </p>
                 )}
               </div>
             )}
