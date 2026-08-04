@@ -11158,6 +11158,51 @@ ${orientationExtra}
     }
   });
 
+  /** Pull Printify blueprint description when a product type was imported without one. */
+  app.post(
+    "/api/admin/product-types/:id/refresh-description",
+    isAuthenticated,
+    asyncHandler(async (req: any, res: Response) => {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: "Invalid product type ID" });
+      }
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const productType = await storage.getProductType(id);
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+      if (!productType?.printifyBlueprintId) {
+        return res.status(400).json({ error: "Not a Printify catalog product", code: "NO_BLUEPRINT" });
+      }
+
+      const existing = String(productType.description || "").trim();
+      if (existing) {
+        return res.json({ description: productType.description, refreshed: false });
+      }
+
+      const token = resolveCatalogPrintifyToken(merchant);
+      if (!token) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const fetched = await fetchPrintifyBlueprintDescriptionHtml(
+        token,
+        Number(productType.printifyBlueprintId),
+      );
+      if (!fetched) {
+        return res.status(404).json({ error: "No description found on Printify for this blueprint" });
+      }
+
+      const updated = await storage.updateProductType(id, { description: fetched });
+      return res.json({ description: updated?.description ?? fetched, refreshed: true });
+    }),
+  );
+
   app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -13615,6 +13660,9 @@ ${orientationExtra}
       }
 
       const blueprintIdNum = parseInt(blueprintId, 10);
+      // Create Page / import often omit description — filled from Printify blueprint JSON below.
+      let resolvedDescription = typeof description === "string" ? description.trim() : "";
+
       const catalogEntry = await getPlatformCatalogEntry(blueprintIdNum);
       const isOperator = isPlatformAdminRequest(req);
 
@@ -13709,6 +13757,17 @@ ${orientationExtra}
           Number(pt.printifyProviderId) === providerId,
       );
       if (alreadyImported) {
+        // Backfill description if Create Page / earlier import left it empty.
+        if (!String(alreadyImported.description || "").trim()) {
+          const fetched = await fetchPrintifyBlueprintDescriptionHtml(printifyToken, blueprintIdNum);
+          if (fetched) {
+            try {
+              await storage.updateProductType(alreadyImported.id, { description: fetched });
+            } catch (e: any) {
+              console.warn("[printify-import] description backfill failed:", e?.message ?? e);
+            }
+          }
+        }
         const providerTitle =
           (providers as Array<{ id: number; title?: string }>).find((p) => Number(p.id) === providerId)?.title ||
           `provider #${providerId}`;
@@ -13738,6 +13797,10 @@ ${orientationExtra}
       let blueprintColorOptionName: string | null = null; // Actual option name from Printify (e.g. "Material", "Fabric", "Color")
       if (blueprintResponse.ok) {
         const blueprintData = await blueprintResponse.json();
+        if (!resolvedDescription) {
+          const rawDesc = typeof blueprintData?.description === "string" ? blueprintData.description.trim() : "";
+          if (rawDesc) resolvedDescription = sanitizeDesignProductDescriptionHtml(rawDesc);
+        }
         // Extract the non-size option from blueprint options
         // First try color-type options, then fall back to any non-size option
         const colorOptions = blueprintData.options?.find((opt: any) => 
@@ -14588,7 +14651,7 @@ ${orientationExtra}
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
-        description: description || null,
+        description: resolvedDescription || null,
         printifyBlueprintId: blueprintIdNum,
         printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
@@ -17341,6 +17404,25 @@ ${orientationExtra}
       .replace(/javascript:/gi, "");
   }
 
+  /** Fetch + sanitize Printify catalog blueprint description (used by import / Create Page / activate). */
+  async function fetchPrintifyBlueprintDescriptionHtml(
+    printifyToken: string,
+    blueprintId: number,
+  ): Promise<string | null> {
+    try {
+      const bpRes = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
+        headers: { Authorization: `Bearer ${printifyToken}` },
+      });
+      if (!bpRes.ok) return null;
+      const bp = await bpRes.json();
+      const raw = typeof bp?.description === "string" ? bp.description.trim() : "";
+      return raw ? sanitizeDesignProductDescriptionHtml(raw) : null;
+    } catch (e: any) {
+      console.warn("[printify] blueprint description fetch failed:", e?.message ?? e);
+      return null;
+    }
+  }
+
   /** Mirrors client/src/components/SizeChartTable.tsx's inch→cm conversion so the standalone
    *  product description shows the same numbers as the customizer's metric toggle. */
   function sizeChartLabelUsesInches(label: string): boolean {
@@ -18037,6 +18119,28 @@ ${orientationExtra}
       const accessErr = adminProductTypeAccessError(req, ptForSync, merchant);
       if (accessErr) {
         return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+
+      // Ensure Shopify gets Printify's catalog description even if Create Page import omitted it.
+      if (
+        ptForSync?.printifyBlueprintId &&
+        !String(ptForSync.description || "").trim()
+      ) {
+        const token = resolveCatalogPrintifyToken(merchant);
+        if (token) {
+          const fetched = await fetchPrintifyBlueprintDescriptionHtml(
+            token,
+            Number(ptForSync.printifyBlueprintId),
+          );
+          if (fetched) {
+            try {
+              await storage.updateProductType(ptForSync.id, { description: fetched });
+              ptForSync.description = fetched;
+            } catch (e: any) {
+              console.warn("[customizer-pages] description backfill failed:", e?.message ?? e);
+            }
+          }
+        }
       }
 
       const ptVariantMap =
@@ -20357,18 +20461,7 @@ ${orientationExtra}
     const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
 
     async function fetchBlueprintDescription(token: string): Promise<string | null> {
-      try {
-        const bpRes = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!bpRes.ok) return null;
-        const bp = await bpRes.json();
-        const raw = typeof bp?.description === "string" ? bp.description.trim() : "";
-        return raw ? sanitizeDesignProductDescriptionHtml(raw) : null;
-      } catch (e: any) {
-        console.warn("[setup/activate-product] blueprint description fetch failed:", e?.message ?? e);
-        return null;
-      }
+      return fetchPrintifyBlueprintDescriptionHtml(token, blueprintId);
     }
 
     if (!productType) {

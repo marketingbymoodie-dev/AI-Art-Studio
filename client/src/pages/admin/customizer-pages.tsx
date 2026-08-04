@@ -481,7 +481,32 @@ export default function AdminCustomizerPages() {
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
-  }, [editTarget?.id, editBlank?.productTypeId]);
+  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description]);
+
+  // Backfill Printify catalog copy when Create Page left description empty.
+  useEffect(() => {
+    if (!editTarget || !editBlank?.productTypeId) return;
+    if (String(editBlank.description || "").trim()) return;
+    if (!editBlank.printifyBlueprintId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiRequest(
+          "POST",
+          `/api/admin/product-types/${editBlank.productTypeId}/refresh-description`,
+        );
+        const data = await res.json();
+        if (cancelled || !data?.description) return;
+        setEditDescription(plainTextFromHtml(data.description));
+        queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      } catch {
+        /* Printify may have no description — leave empty */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description, editBlank?.printifyBlueprintId]);
 
   useEffect(() => {
     if (!editTarget) {
