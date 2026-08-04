@@ -62,6 +62,8 @@ export default function CatalogActivateSection({
   const [, navigate] = useLocation();
   const { data: status } = useSetupStatus();
   const [pendingBlueprintId, setPendingBlueprintId] = useState<number | null>(null);
+  /** Create Page may prepare a product_type first (no Preview required). */
+  const [creatingBlueprintId, setCreatingBlueprintId] = useState<number | null>(null);
   const [previewsByBlueprint, setPreviewsByBlueprint] = useState<Record<number, PreviewResult>>({});
   const [openDetails, setOpenDetails] = useState<Record<number, boolean>>({});
   const [search, setSearch] = useState("");
@@ -73,7 +75,7 @@ export default function CatalogActivateSection({
     mode === "catalogue" ? "Products Catalogue" : "Preview a Customizer Product";
   const defaultDescription =
     mode === "catalogue"
-      ? "Try products in Preview Studio (in-app). Create Page chooses your Printify supplier and applies suggested retail before going Live — provider, pricing, variants, and Art Styles live on the Customizer Page."
+      ? "Every product below is ready — Preview in-app, or Create Page (Printify supplier + suggested retail) without Previewing first. Provider, pricing, variants, and Art Styles live on the Customizer Page."
       : "Preview opens the studio inside the app — no storefront page yet. Connect Printify, then Create Page to pick a supplier and set prices.";
 
   const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({
@@ -146,39 +148,65 @@ export default function CatalogActivateSection({
     shipsToFilter,
   ]);
 
-  const previewMutation = useMutation({
-    mutationFn: async (blueprintId: number) => {
-      const res = await apiFetch("/api/appai/setup/activate-product", {
-        method: "POST",
-        body: JSON.stringify({ blueprintId }),
-      });
-      const body = await res.json().catch(() => ({} as Record<string, unknown>));
-      if (!res.ok) {
-        const code = String(body.error || "");
-        if (code === "SHOP_NOT_ACTIVE" || code === "REAUTH_REQUIRED" || code === "SHOP_NOT_CONNECTED") {
-          throw new Error(
-            "This shop needs a fresh app connection. Open AI Art Studio again from Shopify Admin → Apps, then retry Preview.",
-          );
-        }
+  async function activateCatalogProduct(blueprintId: number): Promise<PreviewResult> {
+    const res = await apiFetch("/api/appai/setup/activate-product", {
+      method: "POST",
+      body: JSON.stringify({ blueprintId }),
+    });
+    const body = await res.json().catch(() => ({} as Record<string, unknown>));
+    if (!res.ok) {
+      const code = String(body.error || "");
+      if (code === "SHOP_NOT_ACTIVE" || code === "REAUTH_REQUIRED" || code === "SHOP_NOT_CONNECTED") {
         throw new Error(
-          (typeof body.error === "string" && body.error) || "Failed to prepare this product for preview.",
+          "This shop needs a fresh app connection. Open AI Art Studio again from Shopify Admin → Apps, then retry.",
         );
       }
-      return { blueprintId, result: body as PreviewResult };
+      throw new Error(
+        (typeof body.error === "string" && body.error) || "Failed to prepare this product.",
+      );
+    }
+    return body as PreviewResult;
+  }
+
+  function invalidateAfterActivate(blueprintId: number, result: PreviewResult) {
+    setPreviewsByBlueprint((prev) => ({ ...prev, [blueprintId]: result }));
+    queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/catalog"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+  }
+
+  const previewMutation = useMutation({
+    mutationFn: async (blueprintId: number) => {
+      const result = await activateCatalogProduct(blueprintId);
+      return { blueprintId, result };
     },
     onMutate: (blueprintId) => setPendingBlueprintId(blueprintId),
     onSuccess: ({ blueprintId, result }) => {
-      setPreviewsByBlueprint((prev) => ({ ...prev, [blueprintId]: result }));
       setPendingBlueprintId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/catalog"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      invalidateAfterActivate(blueprintId, result);
       navigate(result.openInAppPath || `/admin/create-product?productTypeId=${result.productTypeId}`);
     },
     onError: (err: Error) => {
       setPendingBlueprintId(null);
       toast({ title: "Couldn't open preview", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const createPageMutation = useMutation({
+    mutationFn: async (blueprintId: number) => {
+      const result = await activateCatalogProduct(blueprintId);
+      return { blueprintId, result };
+    },
+    onMutate: (blueprintId) => setCreatingBlueprintId(blueprintId),
+    onSuccess: ({ blueprintId, result }) => {
+      setCreatingBlueprintId(null);
+      invalidateAfterActivate(blueprintId, result);
+      navigate(`/admin/customizer-pages?createForProductType=${result.productTypeId}`);
+    },
+    onError: (err: Error) => {
+      setCreatingBlueprintId(null);
+      toast({ title: "Couldn't start Create Page", description: err.message, variant: "destructive" });
     },
   });
 
@@ -207,7 +235,13 @@ export default function CatalogActivateSection({
       navigate("/admin/settings");
       return;
     }
-    navigate(`/admin/customizer-pages?createFromBlueprint=${entry.blueprintId}`);
+    const existing = resolvePreview(entry);
+    if (existing?.productTypeId) {
+      navigate(`/admin/customizer-pages?createForProductType=${existing.productTypeId}`);
+      return;
+    }
+    // Prepare product_type on demand — Preview is not required.
+    createPageMutation.mutate(entry.blueprintId);
   }
 
   const totalCount = catalogData?.entries?.length ?? 0;
@@ -252,6 +286,8 @@ export default function CatalogActivateSection({
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {visibleEntries.map((entry) => {
                 const isPending = previewMutation.isPending && pendingBlueprintId === entry.blueprintId;
+                const isCreating =
+                  createPageMutation.isPending && creatingBlueprintId === entry.blueprintId;
                 const preview = resolvePreview(entry);
                 const detailsOpen = !!openDetails[entry.blueprintId];
                 const justCreated =
@@ -337,9 +373,12 @@ export default function CatalogActivateSection({
                         size="sm"
                         variant={preview ? "outline" : "default"}
                         className="w-full"
+                        disabled={isCreating || isPending}
                         onClick={() => handleCreatePage(entry)}
+                        data-testid={`button-create-page-${entry.blueprintId}`}
                       >
-                        Create Page
+                        {isCreating && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
+                        {isCreating ? "Preparing…" : "Create Page"}
                       </Button>
                     </div>
                   </div>

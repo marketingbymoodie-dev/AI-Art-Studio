@@ -846,8 +846,8 @@ export default function AdminProducts() {
           <div>
             <h1 className="text-2xl font-bold" data-testid="text-products-title">Products Catalogue</h1>
             <p className="text-muted-foreground">
-              Try products in Preview Studio (in-app). Create Page chooses your Printify supplier and applies
-              suggested retail before going Live — provider, pricing, variants, and Art Styles live on the
+              Every product below is ready — Preview in-app, or Create Page (Printify supplier + suggested
+              retail) without Previewing first. Provider, pricing, variants, and Art Styles live on the
               Customizer Page.
             </p>
           </div>

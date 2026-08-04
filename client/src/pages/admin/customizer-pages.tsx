@@ -324,6 +324,39 @@ export default function AdminCustomizerPages() {
     // Always on (not just create/edit) — the pages list badge below needs oosStatus per row.
   });
 
+  // Platform catalogue — so Create Page can list every ready-to-go product, not only imports.
+  const { data: setupCatalogData } = useQuery<{
+    entries: Array<{ blueprintId: number; label: string; existingProductType?: { id: number } | null }>;
+  }>({
+    queryKey: ["/api/appai/setup/catalog"],
+    enabled: createOpen || pendingCreateBlueprintId != null,
+  });
+
+  /** Import a catalogue blueprint as a product_type (Preview not required). */
+  const ensureCatalogProductMutation = useMutation({
+    mutationFn: async (blueprintId: number) => {
+      const res = await apiRequest("POST", "/api/appai/setup/activate-product", { blueprintId });
+      return res.json() as Promise<{ productTypeId: number }>;
+    },
+    onSuccess: async (data) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/catalog"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+      const blanks = queryClient.getQueryData<{ blanks: Blank[] }>(["/api/appai/blanks"])?.blanks ?? [];
+      const match = blanks.find((b) => b.productTypeId === data.productTypeId);
+      setFormProductId(match?.productId ? match.productId : `pt:${data.productTypeId}`);
+      setCreateOpen(true);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Couldn't prepare product",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      });
+    },
+  });
+
   // Open the create wizard as soon as we know a deep-linked product is pending.
   useEffect(() => {
     if (pendingCreateProductTypeId != null || pendingCreateBlueprintId != null) setCreateOpen(true);
@@ -336,6 +369,9 @@ export default function AdminCustomizerPages() {
     const match = blanksData.blanks.find((b) => b.productTypeId === pendingCreateProductTypeId);
     if (match) {
       setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+    } else if (!ensureCatalogProductMutation.isPending) {
+      // Product type exists but blanks not ready yet — still select by pt id.
+      setFormProductId(`pt:${pendingCreateProductTypeId}`);
     }
     setPendingCreateProductTypeId(null);
     const url = new URL(window.location.href);
@@ -343,25 +379,24 @@ export default function AdminCustomizerPages() {
     window.history.replaceState({}, "", url.toString());
   }, [pendingCreateProductTypeId, blanksData]);
 
-  // Catalogue Create Page: pre-select blank by Printify blueprint id.
+  // Catalogue Create Page: pre-select by blueprint, or prepare product_type on demand.
   useEffect(() => {
     if (pendingCreateBlueprintId == null) return;
-    if (!blanksData?.blanks) return;
-    const match = blanksData.blanks.find((b) => b.printifyBlueprintId === pendingCreateBlueprintId);
-    if (match) {
-      setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
-      setCreateOpen(true);
-    } else {
-      toast({
-        title: "Preview this product first",
-        description: "Open Products Catalogue, Preview the product once, then Create Page.",
-      });
-    }
+    if (blanksData === undefined) return;
+    const bpId = pendingCreateBlueprintId;
+    const match = blanksData.blanks.find((b) => b.printifyBlueprintId === bpId);
     setPendingCreateBlueprintId(null);
     const url = new URL(window.location.href);
     url.searchParams.delete("createFromBlueprint");
     window.history.replaceState({}, "", url.toString());
-  }, [pendingCreateBlueprintId, blanksData, toast]);
+    if (match) {
+      setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+      setCreateOpen(true);
+      return;
+    }
+    setCreateOpen(true);
+    ensureCatalogProductMutation.mutate(bpId);
+  }, [pendingCreateBlueprintId, blanksData]);
 
   const { data: adminStyles = [] } = useQuery<Array<{ id: number; name: string; category?: string | null }>>({
     queryKey: ["/api/admin/styles"],
@@ -623,9 +658,10 @@ export default function AdminCustomizerPages() {
   }
 
   /** Derive variants for the currently-selected product (Step 2 pricing) */
-  const selectedBlank = (blanksData?.blanks ?? []).find(
-    (b) => (b.productId ? b.productId : `pt:${b.productTypeId}`) === formProductId
-  );
+  const selectedBlank = (blanksData?.blanks ?? []).find((b) => {
+    const canonical = b.productId ? b.productId : `pt:${b.productTypeId}`;
+    return canonical === formProductId || formProductId === `pt:${b.productTypeId}`;
+  });
 
   /**
    * Deduplicate variants by full label — keeps all distinct variants including
@@ -1274,17 +1310,32 @@ export default function AdminCustomizerPages() {
                     {/* Product first */}
                     <div>
                       <Label>Product</Label>
-                      {blanksLoading ? (
+                      {blanksLoading || ensureCatalogProductMutation.isPending ? (
                         <div className="mt-1 flex h-10 items-center gap-2 rounded-md border border-input bg-muted/30 px-3">
                           <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">Loading Products…</span>
+                          <span className="text-sm text-muted-foreground">
+                            {ensureCatalogProductMutation.isPending
+                              ? "Preparing product from catalogue…"
+                              : "Loading Products…"}
+                          </span>
                         </div>
-                      ) : (blanksData?.blanks ?? []).length === 0 ? (
+                      ) : (blanksData?.blanks ?? []).length === 0 &&
+                        (setupCatalogData?.entries ?? []).length === 0 ? (
                         <p className="text-sm text-destructive mt-1">
-                          No products found. Import products from Printify first.
+                          No products found. Open Products Catalogue or ask an operator to publish items.
                         </p>
                       ) : (
-                        <Select value={formProductId} onValueChange={(val) => { setFormProductId(val); }}>
+                        <Select
+                          value={formProductId}
+                          onValueChange={(val) => {
+                            if (val.startsWith("bp:")) {
+                              const bpId = parseInt(val.slice(3), 10);
+                              if (Number.isFinite(bpId)) ensureCatalogProductMutation.mutate(bpId);
+                              return;
+                            }
+                            setFormProductId(val);
+                          }}
+                        >
                           <SelectTrigger className="mt-1">
                             <SelectValue placeholder="Select a product…" />
                           </SelectTrigger>
@@ -1300,6 +1351,24 @@ export default function AdminCustomizerPages() {
                                 </SelectItem>
                               );
                             })}
+                            {(setupCatalogData?.entries ?? [])
+                              .filter((entry) => {
+                                const blanks = blanksData?.blanks ?? [];
+                                return !blanks.some(
+                                  (b) =>
+                                    b.printifyBlueprintId === entry.blueprintId ||
+                                    (entry.existingProductType != null &&
+                                      b.productTypeId === entry.existingProductType.id),
+                                );
+                              })
+                              .map((entry) => (
+                                <SelectItem
+                                  key={`bp:${entry.blueprintId}`}
+                                  value={`bp:${entry.blueprintId}`}
+                                >
+                                  {entry.label} (from catalogue — will be prepared)
+                                </SelectItem>
+                              ))}
                           </SelectContent>
                         </Select>
                       )}
