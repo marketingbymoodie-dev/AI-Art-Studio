@@ -12987,9 +12987,11 @@ ${orientationExtra}
 
       const providers = await response.json();
       
-      // Fetch detailed info for each provider to get location data
+      // Fetch detailed info for each provider to get location data + optional cached min cost
       const enrichedProviders = await Promise.all(
         providers.map(async (provider: any) => {
+          let location = provider.location;
+          let fulfillment_countries = provider.fulfillment_countries || [];
           try {
             const detailResponse = await fetch(
               `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
@@ -13003,16 +13005,35 @@ ${orientationExtra}
             
             if (detailResponse.ok) {
               const details = await detailResponse.json();
-              return {
-                ...provider,
-                location: details.location,
-                fulfillment_countries: details.fulfillment_countries || [],
-              };
+              location = details.location ?? location;
+              fulfillment_countries = details.fulfillment_countries || fulfillment_countries;
             }
           } catch (err) {
             console.error(`Error fetching provider ${provider.id} details:`, err);
           }
-          return provider;
+
+          // Min production cost from any merchant/platform cache for this blueprint+provider (cents).
+          // Printify's public provider API does not expose ratings or live "from" prices.
+          let pricingFromCents: number | null = null;
+          try {
+            const cachedCosts = await findPlatformCostsForBlueprint(blueprintId, Number(provider.id));
+            const vals = Object.values(cachedCosts).filter((n) => Number.isFinite(n) && n > 0);
+            if (vals.length > 0) pricingFromCents = Math.min(...vals);
+          } catch {
+            // ignore cache lookup failures
+          }
+
+          return {
+            ...provider,
+            location,
+            fulfillment_countries,
+            decoration_methods: Array.isArray(provider.decoration_methods)
+              ? provider.decoration_methods
+              : [],
+            pricingFromCents,
+            // Pass through if Printify ever includes it; usually absent.
+            rating: typeof provider.rating === "number" ? provider.rating : null,
+          };
         })
       );
       
@@ -19303,6 +19324,11 @@ ${orientationExtra}
           }
         }
 
+        const allSizes = JSON.parse(pt.sizes || pt.frameSizes || "[]");
+        const allColors = JSON.parse(pt.frameColors || "[]");
+        const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
+        const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
+
         enriched.push({
           productTypeId: pt.id,
           productId: resolvedProductId,
@@ -19314,6 +19340,10 @@ ${orientationExtra}
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
           printifyVariantLabels: pvLabels,
+          sizes: allSizes,
+          frameColors: allColors,
+          selectedSizeIds: savedSizeIds,
+          selectedColorIds: savedColorIds,
           description: pt.description ?? "",
           baseMockupImages: typeof pt.baseMockupImages === "string"
             ? JSON.parse(pt.baseMockupImages || "{}")
