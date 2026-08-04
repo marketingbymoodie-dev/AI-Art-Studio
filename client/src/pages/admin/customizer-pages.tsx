@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo, useEffect } from "react";
+import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -137,6 +137,11 @@ interface Blank {
 
 function slugify(str: string): string {
   return str.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/** Drop " — Printify Choice" / supplier suffixes from product or page titles (never show in H1). */
+function stripProviderSuffix(name: string): string {
+  return name.replace(/\s+[—–-]\s+.+$/u, "").trim();
 }
 
 function plainTextFromHtml(value: string | null | undefined): string {
@@ -295,6 +300,8 @@ export default function AdminCustomizerPages() {
   const [wizardColorIds, setWizardColorIds] = useState<Set<string>>(new Set());
   const [wizardVariantsLoading, setWizardVariantsLoading] = useState(false);
   const [wizardVariantsReady, setWizardVariantsReady] = useState(false);
+  /** Tracks blueprint:provider already prepared so costs can prefetch during Variants. */
+  const preparedProviderKeyRef = useRef<string | null>(null);
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
   /** Front+back retail prices — only used when Printify costs include a both-sides tier. */
   const [variantPricesBoth, setVariantPricesBoth] = useState<Record<string, string>>({});
@@ -682,6 +689,7 @@ export default function AdminCustomizerPages() {
   /** Simplify a Printify product name to a short page title.
    *  e.g. "Custom Spun Polyester Square Pillow" → "Square Pillow"
    *       "Premium Unisex Crewneck Sweatshirt" → "Crewneck Sweatshirt"
+   *  Always strips supplier suffixes like " — Printify Choice".
    */
   function simplifyProductName(name: string): string {
     const STRIP_WORDS = [
@@ -689,7 +697,7 @@ export default function AdminCustomizerPages() {
       "basic", "standard", "all-over", "all over", "print",
       "sublimation", "sublimated", "dye", "digital",
     ];
-    let words = name.split(/\s+/);
+    let words = stripProviderSuffix(name).split(/\s+/);
     // Remove leading words that match the strip list
     while (words.length > 1 && STRIP_WORDS.includes(words[0].toLowerCase().replace(/[^a-z]/g, ""))) {
       words = words.slice(1);
@@ -742,7 +750,11 @@ export default function AdminCustomizerPages() {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
       return res.json();
     },
-    enabled: (costsOpen || formStep === 4) && !!selectedBlank?.productTypeId,
+    // Prefetch during Variants (step 3) once the product type is on the chosen supplier.
+    enabled:
+      (costsOpen || formStep >= 3) &&
+      !!selectedBlank?.productTypeId &&
+      (wizardProviderId == null || selectedBlank.printifyProviderId === wizardProviderId),
     retry: false,
   });
 
@@ -1145,21 +1157,34 @@ export default function AdminCustomizerPages() {
     }
   }
 
-  /** Apply supplier (+ optional re-import) with chosen sizes/colors, then Pricing. */
-  const applySupplierAndVariantsMutation = useMutation({
-    mutationFn: async () => {
+  /**
+   * Switch product type onto the chosen Printify supplier (clean title — no " — Provider" in H1).
+   * Used for silent prep during Variants + final apply.
+   */
+  const ensureWizardProvider = useCallback(
+    async (args: {
+      sizeIds: string[];
+      colorIds: string[];
+      quiet?: boolean;
+    }): Promise<{ productId: string; alreadyImported: boolean; existingProductName?: string }> => {
       if (!selectedBlank?.printifyBlueprintId || wizardProviderId == null) {
         throw new Error("Choose a print provider before continuing.");
       }
-      if (!wizardVariantCountValid) {
-        throw new Error("Select sizes/colours within Shopify’s 100-variant limit.");
-      }
-      const providerTitle = wizardProvidersData?.find((p) => p.id === wizardProviderId)?.title;
       const sameProvider = wizardProviderId === selectedBlank.printifyProviderId;
-      const sizeIds = Array.from(wizardSizeIds);
-      const colorIds = Array.from(wizardColorIds);
+      const sizeIds = args.sizeIds;
+      const colorIds = args.colorIds;
 
       if (sameProvider && selectedBlank.productTypeId) {
+        const cleanName = stripProviderSuffix(selectedBlank.title);
+        if (cleanName && cleanName !== selectedBlank.title) {
+          try {
+            await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}`, {
+              name: cleanName,
+            });
+          } catch {
+            // non-fatal — variants still save
+          }
+        }
         const res = await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}/variants`, {
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
@@ -1168,11 +1193,11 @@ export default function AdminCustomizerPages() {
         return {
           productId: selectedBlank.productId ? selectedBlank.productId : `pt:${selectedBlank.productTypeId}`,
           alreadyImported: false,
-          existingProductName: undefined as string | undefined,
         };
       }
 
-      const name = `${selectedBlank.title.replace(/\s+[—-]\s+.+$/, "")} — ${providerTitle ?? `Provider #${wizardProviderId}`}`;
+      // Never append supplier to the product name — that leaked into storefront H1s.
+      const name = stripProviderSuffix(selectedBlank.title) || selectedBlank.title;
       try {
         const res = await apiRequest("POST", "/api/admin/printify/import", {
           blueprintId: selectedBlank.printifyBlueprintId,
@@ -1185,7 +1210,6 @@ export default function AdminCustomizerPages() {
         return {
           productId: data?.shopifyProductId ? String(data.shopifyProductId) : `pt:${data?.id}`,
           alreadyImported: false,
-          existingProductName: undefined as string | undefined,
         };
       } catch (err: any) {
         const text = err instanceof Error ? err.message : String(err);
@@ -1198,10 +1222,21 @@ export default function AdminCustomizerPages() {
                 selectedSizeIds: sizeIds,
                 selectedColorIds: colorIds,
               });
+              // Rename away any legacy " — Provider" suffix on the product type.
+              const cleanName = stripProviderSuffix(String(payload.existingProductName || name)) || name;
+              if (payload.existingProductName && cleanName !== payload.existingProductName) {
+                try {
+                  await apiRequest("PATCH", `/api/admin/product-types/${payload.existingProductTypeId}`, {
+                    name: cleanName,
+                  });
+                } catch {
+                  // non-fatal
+                }
+              }
               return {
                 productId: `pt:${payload.existingProductTypeId}`,
                 alreadyImported: true,
-                existingProductName: payload.existingProductName as string | undefined,
+                existingProductName: cleanName,
               };
             }
           } catch {
@@ -1210,6 +1245,70 @@ export default function AdminCustomizerPages() {
         }
         throw err;
       }
+    },
+    [selectedBlank, wizardProviderId],
+  );
+
+  /** Silent supplier prep as soon as Variants loads — unlocks costs prefetch while merchant picks sizes. */
+  const prepareProviderMutation = useMutation({
+    mutationFn: async () => {
+      if (!wizardSizes.length) throw new Error("Variants not loaded yet");
+      return ensureWizardProvider({
+        sizeIds: wizardSizes.map((s) => s.id),
+        colorIds: wizardColors.map((c) => c.id),
+        quiet: true,
+      });
+    },
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+      setFormProductId(result.productId);
+      // Kick costs fetch (enabled once blanks show matching provider).
+      void queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+    },
+    onError: (err: Error) => {
+      // Quiet — merchant can still finish Variants; final Next will retry.
+      console.warn("[create-page] background provider prep failed:", err.message);
+      preparedProviderKeyRef.current = null;
+    },
+  });
+
+  // When Variants step is ready, prepare the chosen supplier in the background (costs start loading).
+  useEffect(() => {
+    if (formStep !== 3) return;
+    if (!wizardVariantsReady || wizardProviderId == null || !selectedBlank?.printifyBlueprintId) return;
+    const key = `${selectedBlank.printifyBlueprintId}:${wizardProviderId}`;
+    if (selectedBlank.printifyProviderId === wizardProviderId) {
+      preparedProviderKeyRef.current = key;
+      return;
+    }
+    if (preparedProviderKeyRef.current === key || prepareProviderMutation.isPending) return;
+    preparedProviderKeyRef.current = key;
+    prepareProviderMutation.mutate();
+  }, [
+    formStep,
+    wizardVariantsReady,
+    wizardProviderId,
+    selectedBlank?.printifyBlueprintId,
+    selectedBlank?.printifyProviderId,
+    prepareProviderMutation.isPending,
+  ]);
+
+  useEffect(() => {
+    preparedProviderKeyRef.current = null;
+  }, [wizardProviderId]);
+
+  /** Apply final size/colour picks, then Pricing (costs often already warm from background prep). */
+  const applySupplierAndVariantsMutation = useMutation({
+    mutationFn: async () => {
+      if (!wizardVariantCountValid) {
+        throw new Error("Select sizes/colours within Shopify’s 100-variant limit.");
+      }
+      return ensureWizardProvider({
+        sizeIds: Array.from(wizardSizeIds),
+        colorIds: Array.from(wizardColorIds),
+      });
     },
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
@@ -1325,6 +1424,13 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
+    if (prepareProviderMutation.isPending) {
+      toast({
+        title: "Almost ready",
+        description: "Finishing supplier setup so pricing can stay warm — try Next again in a moment.",
+      });
+      return;
+    }
     applySupplierAndVariantsMutation.mutate();
   }
 
@@ -1394,7 +1500,7 @@ export default function AdminCustomizerPages() {
       formCustomPlaceholder,
     );
     createMutation.mutate({
-      title: formTitle,
+      title: stripProviderSuffix(formTitle.trim()) || formTitle.trim(),
       handle: formHandle,
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
@@ -1874,6 +1980,22 @@ export default function AdminCustomizerPages() {
                         <strong>{wizardProviderLabel ?? "this supplier"}</strong>. Shopify allows up to{" "}
                         {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants.
                       </p>
+                      {(prepareProviderMutation.isPending ||
+                        (costsLoading && formStep === 3) ||
+                        (costsAvailable && formStep === 3)) && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+                          {(prepareProviderMutation.isPending || (costsLoading && !costsAvailable)) && (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          )}
+                          {prepareProviderMutation.isPending
+                            ? "Preparing supplier in the background…"
+                            : costsLoading && !costsAvailable
+                              ? "Loading suggested pricing in the background — this can take up to a minute."
+                              : costsAvailable
+                                ? "Suggested pricing is ready — continue when you’ve finished picking variants."
+                                : null}
+                        </p>
+                      )}
                       <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
                         <span className="text-sm font-medium">Total variants</span>
                         <span
