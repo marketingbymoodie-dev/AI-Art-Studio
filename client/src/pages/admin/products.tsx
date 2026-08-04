@@ -147,6 +147,10 @@ export default function AdminProducts() {
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
   const [pullCanonicalMutatingId, setPullCanonicalMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
+  const [pricingTarget, setPricingTarget] = useState<ProductType | null>(null);
+  const [pricingStrategyDraft, setPricingStrategyDraft] = useState("notify_only");
+  const [pricingMarkupDraft, setPricingMarkupDraft] = useState("60");
+  const [pricingMinMarginDraft, setPricingMinMarginDraft] = useState("");
   const [productSyncMutatingId, setProductSyncMutatingId] = useState<number | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
@@ -526,6 +530,34 @@ export default function AdminProducts() {
       toast({ title: "Failed to update layout policy", description: error.message, variant: "destructive" });
     },
     onSettled: () => setLayoutPolicyMutatingId(null),
+  });
+
+  const savePricingStrategyMutation = useMutation({
+    mutationFn: async (data: {
+      id: number;
+      pricingStrategy: string;
+      defaultMarkupPercent: number | null;
+      minMarginPercent: number | null;
+    }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        pricingStrategy: data.pricingStrategy,
+        defaultMarkupPercent: data.defaultMarkupPercent,
+        minMarginPercent: data.minMarginPercent,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to save pricing strategy");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      setPricingTarget(null);
+      toast({ title: "Pricing strategy saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not save pricing strategy", description: error.message, variant: "destructive" });
+    },
   });
 
   const pullCanonicalCalibrationMutation = useMutation({
@@ -1227,6 +1259,24 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setPricingTarget(pt);
+                          setPricingStrategyDraft((pt as any).pricingStrategy || "notify_only");
+                          setPricingMarkupDraft(String((pt as any).defaultMarkupPercent ?? 60));
+                          setPricingMinMarginDraft(
+                            (pt as any).minMarginPercent != null
+                              ? String((pt as any).minMarginPercent)
+                              : "",
+                          );
+                        }}
+                        title="Maintain margin, hold retail, or notify-only when COGS change"
+                        data-testid={`button-pricing-strategy-${pt.id}`}
+                      >
+                        Pricing strategy
+                      </Button>
                       {/* Calibration harvest lives in Platform Catalog; pull overwrites stale merchant harvest. */}
                       {showOperatorCalibrationTools &&
                         (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
@@ -1928,6 +1978,82 @@ export default function AdminProducts() {
           title={resyncPricesTarget?.name ?? ""}
           productTypeId={resyncPricesTarget?.id ?? 0}
         />
+
+        <Dialog open={!!pricingTarget} onOpenChange={(v) => { if (!v) setPricingTarget(null); }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Pricing strategy — {pricingTarget?.name}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-2">
+              <div className="space-y-2">
+                <Label>When supplier costs change</Label>
+                <Select value={pricingStrategyDraft} onValueChange={setPricingStrategyDraft}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="notify_only">Notify only (default)</SelectItem>
+                    <SelectItem value="maintain_margin">Maintain margin (auto Resync)</SelectItem>
+                    <SelectItem value="maintain_price">Maintain retail price</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Maintain margin uses Product Sync + your markup to push Shopify retail. Never silently
+                  undercuts your floor when min margin is set.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="pricing-markup">Default markup %</Label>
+                <Input
+                  id="pricing-markup"
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={pricingMarkupDraft}
+                  onChange={(e) => setPricingMarkupDraft(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="pricing-min-margin">Minimum margin % (optional)</Label>
+                <Input
+                  id="pricing-min-margin"
+                  type="number"
+                  min={0}
+                  max={99}
+                  placeholder="e.g. 35"
+                  value={pricingMinMarginDraft}
+                  onChange={(e) => setPricingMinMarginDraft(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setPricingTarget(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={savePricingStrategyMutation.isPending || !pricingTarget}
+                  onClick={() => {
+                    if (!pricingTarget) return;
+                    const markup = parseInt(pricingMarkupDraft, 10);
+                    const minM = pricingMinMarginDraft.trim()
+                      ? parseInt(pricingMinMarginDraft, 10)
+                      : null;
+                    savePricingStrategyMutation.mutate({
+                      id: pricingTarget.id,
+                      pricingStrategy: pricingStrategyDraft,
+                      defaultMarkupPercent: Number.isFinite(markup) ? markup : null,
+                      minMarginPercent: minM != null && Number.isFinite(minM) ? minM : null,
+                    });
+                  }}
+                >
+                  {savePricingStrategyMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : null}
+                  Save
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </AdminLayout>
   );

@@ -38,6 +38,8 @@ import {
   Crosshair,
   Shirt,
   Sparkles,
+  Activity,
+  Calculator,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -56,12 +58,14 @@ const menuItems = [
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
+  { title: "Profit Insights", url: "/admin/insights", icon: Calculator },
   { title: "Settings", url: "/admin/settings", icon: Settings },
 ];
 
 const platformMenuItems = [
   { title: "Operator Catalog", url: "/admin/platform/operator-catalog", icon: Package },
   { title: "Platform Catalog", url: "/admin/platform/catalog", icon: Globe },
+  { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];

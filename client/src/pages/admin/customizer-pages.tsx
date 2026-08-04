@@ -292,6 +292,9 @@ export default function AdminCustomizerPages() {
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
   const [editDescription, setEditDescription] = useState("");
+  const [editPricingStrategy, setEditPricingStrategy] = useState("notify_only");
+  const [editMarkupPercent, setEditMarkupPercent] = useState("60");
+  const [editMinMarginPercent, setEditMinMarginPercent] = useState("");
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
   const [editCustomPlaceholder, setEditCustomPlaceholder] = useState("");
@@ -478,6 +481,11 @@ export default function AdminCustomizerPages() {
     if (!editTarget || !editBlank) return;
     const images = editBlank.baseMockupImages || {};
     setEditDescription(plainTextFromHtml(editBlank.description));
+    setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
+    setEditMarkupPercent(String((editBlank as any).defaultMarkupPercent ?? 60));
+    setEditMinMarginPercent(
+      (editBlank as any).minMarginPercent != null ? String((editBlank as any).minMarginPercent) : "",
+    );
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
@@ -605,6 +613,23 @@ export default function AdminCustomizerPages() {
         styleConfig: editStyleConfig,
         baseMockupImages: curated,
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update customizer page");
+      }
+      if (editBlank?.productTypeId) {
+        const markup = parseInt(editMarkupPercent, 10);
+        const minM = editMinMarginPercent.trim() ? parseInt(editMinMarginPercent, 10) : null;
+        const ptRes = await apiRequest("PATCH", `/api/admin/product-types/${editBlank.productTypeId}`, {
+          pricingStrategy: editPricingStrategy,
+          defaultMarkupPercent: Number.isFinite(markup) ? markup : null,
+          minMarginPercent: minM != null && Number.isFinite(minM) ? minM : null,
+        });
+        if (!ptRes.ok) {
+          const body = await ptRes.json().catch(() => ({}));
+          throw new Error(body.error || "Page saved but pricing strategy failed");
+        }
+      }
       return res.json();
     },
     onSuccess: () => {
@@ -885,21 +910,7 @@ export default function AdminCustomizerPages() {
     },
   });
 
-  // Force Printify waterfall by clearing JSON cache (legacy path; prefer Product Sync).
-  const clearCostsMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/admin/printify/costs/clear-cache");
-      if (!res.ok) throw new Error("Failed to clear costs cache");
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
-      toast({ title: "Costs cache cleared", description: "Fetching fresh Printify production costs…" });
-    },
-    onError: () => {
-      toast({ title: "Refresh failed", description: "Could not clear costs cache. Please try again.", variant: "destructive" });
-    },
-  });
+  // Refresh costs → Product Sync (sole preferred path). Legacy clear-cache removed from UI.
 
   // Shipping rates query
   const { data: shippingData, isLoading: shippingLoading } = useQuery<{
@@ -2401,10 +2412,15 @@ export default function AdminCustomizerPages() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  onClick={() => clearCostsMutation.mutate()}
-                                  disabled={clearCostsMutation.isPending || costsLoading}
+                                  onClick={() => {
+                                    if (!selectedBlank?.productTypeId) return;
+                                    productSyncMutation.mutate(selectedBlank.productTypeId, {
+                                      onSuccess: () => void refetchCosts(),
+                                    });
+                                  }}
+                                  disabled={productSyncMutation.isPending || costsLoading}
                                 >
-                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${productSyncMutation.isPending ? 'animate-spin' : ''}`} />
                                   Refresh Costs
                                 </Button>
                               </div>
@@ -2731,12 +2747,16 @@ export default function AdminCustomizerPages() {
                           size="sm"
                           className="h-8"
                           onClick={() => {
-                            clearCostsMutation.mutate(undefined, {
+                            if (!selectedBlank?.productTypeId) return;
+                            productSyncMutation.mutate(selectedBlank.productTypeId, {
                               onSuccess: () => void refetchCosts(),
                             });
                           }}
-                          disabled={clearCostsMutation.isPending}
+                          disabled={productSyncMutation.isPending}
                         >
+                          {productSyncMutation.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          ) : null}
                           Refresh costs
                         </Button>
                       </p>
@@ -3358,6 +3378,47 @@ export default function AdminCustomizerPages() {
                 <p className="text-xs text-muted-foreground">
                   Saved locally and synced to the linked Shopify product description.
                 </p>
+              </div>
+
+              <div className="space-y-3 rounded-md border p-3">
+                <p className="text-sm font-medium">Pricing strategy</p>
+                <div className="space-y-2">
+                  <Label>When supplier costs change</Label>
+                  <Select value={editPricingStrategy} onValueChange={setEditPricingStrategy}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="notify_only">Notify only</SelectItem>
+                      <SelectItem value="maintain_margin">Maintain margin (auto Resync)</SelectItem>
+                      <SelectItem value="maintain_price">Maintain retail price</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-markup">Markup %</Label>
+                    <Input
+                      id="edit-markup"
+                      type="number"
+                      min={0}
+                      value={editMarkupPercent}
+                      onChange={(e) => setEditMarkupPercent(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-min-margin">Min margin %</Label>
+                    <Input
+                      id="edit-min-margin"
+                      type="number"
+                      min={0}
+                      max={99}
+                      placeholder="optional"
+                      value={editMinMarginPercent}
+                      onChange={(e) => setEditMinMarginPercent(e.target.value)}
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="rounded-md border p-3 space-y-2">

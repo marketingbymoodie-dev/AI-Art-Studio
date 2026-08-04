@@ -175,3 +175,26 @@ export function isVariantKeyAvailable(
   if (!status) return true; // unknown → allow (pre-sync)
   return status === "in_stock";
 }
+
+/** Units needed to cover a monthly subscription fee from per-sale profit. */
+export function subscriptionBreakEvenUnits(
+  monthlyPlanUsd: number,
+  profitPerSaleCents: number | null | undefined,
+): number | null {
+  if (!Number.isFinite(monthlyPlanUsd) || monthlyPlanUsd <= 0) return 0;
+  if (profitPerSaleCents == null || !Number.isFinite(profitPerSaleCents) || profitPerSaleCents <= 0) {
+    return null;
+  }
+  return Math.ceil((monthlyPlanUsd * 100) / profitPerSaleCents);
+}
+
+export function monthlyNetProfitCents(args: {
+  profitPerSaleCents: number | null | undefined;
+  monthlySales: number;
+  subscriptionUsd: number;
+}): number | null {
+  if (args.profitPerSaleCents == null || !Number.isFinite(args.profitPerSaleCents)) return null;
+  const sales = Number.isFinite(args.monthlySales) ? Math.max(0, args.monthlySales) : 0;
+  const subCents = Math.round((Number(args.subscriptionUsd) || 0) * 100);
+  return Math.round(args.profitPerSaleCents * sales - subCents);
+}

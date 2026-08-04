@@ -118,6 +118,8 @@ import {
   runCatalogueProductSync,
   getProductIntelligence,
   listRecentSyncRuns,
+  listRecentSyncEvents,
+  getCatalogueHealthOverview,
   getVariantCostHistory,
   ensureBackfillForProductType,
   syncProductTypeIntelligence,
@@ -127,6 +129,8 @@ import {
   parseVariantAvailabilityMap,
   unavailableVariantKeys,
   isVariantKeyAvailable,
+  resolveEffectivePricingStrategy,
+  suggestedRetailDollarsString,
 } from "@shared/productIntelligence";
 import {
   planMaxOverageBudgetCents,
@@ -16357,14 +16361,31 @@ ${orientationExtra}
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
       }
 
-      // Product Intelligence first — avoid Printify temp-product waterfall when DB covers variants.
+      // Product Intelligence first. Force refresh prefers Product Sync (not the temp-product waterfall).
+      // Escape hatch: ?legacy=1 keeps the Printify waterfall for operator debugging.
       const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
-      if (!forceRefresh) {
+      const useLegacyWaterfall = req.query.legacy === "1";
+      const apiToken = merchant.printifyApiToken;
+
+      if (forceRefresh && !useLegacyWaterfall && apiToken) {
+        const synced = await syncProductTypeIntelligence(productType, apiToken, { source: "manual" });
+        const fresh = (await storage.getProductType(productTypeId)) || productType;
+        const fromPi = await costsResponseFromProductIntelligence(fresh);
+        if (fromPi) {
+          return res.json({
+            ...fromPi,
+            refreshedVia: "product_sync",
+            productHealth: synced.productHealth,
+            priceChanges: synced.priceChanges,
+            availabilityChanges: synced.availabilityChanges,
+          });
+        }
+        // Fall through to waterfall when catalog sync did not yield COGS coverage.
+      } else if (!forceRefresh) {
         const fromPi = await costsResponseFromProductIntelligence(productType);
         if (fromPi) return res.json(fromPi);
       }
 
-      const apiToken = merchant.printifyApiToken;
       if (!apiToken) {
         return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
       }
@@ -19250,7 +19271,66 @@ ${orientationExtra}
     const result = await syncProductTypeIntelligence(fresh!, merchant.printifyApiToken, {
       source: "manual",
     });
-    return res.json({ success: result.ok, result });
+
+    // Maintain Margin: push suggested retail via the existing Resync Prices writer.
+    let retailAutoUpdate: { attempted: boolean; successCount?: number; totalCount?: number; error?: string } = {
+      attempted: false,
+    };
+    const after = (await storage.getProductType(productTypeId)) || fresh!;
+    const strategy = resolveEffectivePricingStrategy(after.pricingStrategy, after.defaultMarkupPercent);
+    if (
+      result.ok &&
+      strategy === "maintain_margin" &&
+      after.shopifyProductId &&
+      after.defaultMarkupPercent != null
+    ) {
+      retailAutoUpdate.attempted = true;
+      try {
+        const costsPi = await costsResponseFromProductIntelligence(after);
+        const costs = costsPi?.costs || {};
+        const variantPrices: Record<string, string> = {};
+        for (const [vid, cents] of Object.entries(costs)) {
+          const suggested = suggestedRetailDollarsString(cents, after.defaultMarkupPercent!);
+          if (suggested) variantPrices[`printify:${vid}`] = suggested;
+        }
+        if (Object.keys(variantPrices).length === 0) {
+          retailAutoUpdate.error = "No COGS available to build suggested retail";
+        } else {
+          const shop =
+            after.shopifyShopDomain ||
+            merchant.shopDomain ||
+            "";
+          const installation = shop
+            ? await storage.getShopifyInstallationByShop(shop)
+            : null;
+          if (!installation?.accessToken) {
+            retailAutoUpdate.error = "No Shopify installation for retail push";
+          } else {
+            const applied = await applyShopifyVariantPrices({
+              shop: installation.shopDomain,
+              accessToken: installation.accessToken,
+              baseProductId: after.shopifyProductId,
+              productType: after,
+              variantPrices,
+            });
+            retailAutoUpdate.successCount = applied.successCount;
+            retailAutoUpdate.totalCount = applied.totalCount;
+            if (applied.successCount < applied.totalCount) {
+              await storage.updateProductType(after.id, {
+                productHealth: "attention_required",
+              } as any);
+            }
+          }
+        }
+      } catch (e: any) {
+        retailAutoUpdate.error = e?.message || String(e);
+        await storage.updateProductType(after.id, {
+          productHealth: "attention_required",
+        } as any);
+      }
+    }
+
+    return res.json({ success: result.ok, result, retailAutoUpdate });
   }));
 
   /** POST /api/admin/product-intelligence/sync-all — catalogue Product Sync */
@@ -19273,6 +19353,31 @@ ${orientationExtra}
     }
     const runs = await listRecentSyncRuns(30);
     return res.json({ runs });
+  }));
+
+  /** GET /api/admin/product-intelligence/events — recent change feed (operators) */
+  app.get("/api/admin/product-intelligence/events", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const syncRunId =
+      typeof req.query.syncRunId === "string" ? parseInt(req.query.syncRunId, 10) : undefined;
+    const eventType = typeof req.query.eventType === "string" ? req.query.eventType : undefined;
+    const events = await listRecentSyncEvents({
+      limit: 100,
+      syncRunId: Number.isFinite(syncRunId) ? syncRunId : undefined,
+      eventType: eventType || undefined,
+    });
+    return res.json({ events });
+  }));
+
+  /** GET /api/admin/product-intelligence/health — catalogue health summary (operators) */
+  app.get("/api/admin/product-intelligence/health", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const overview = await getCatalogueHealthOverview();
+    return res.json(overview);
   }));
 
   /** GET /api/admin/product-intelligence/:productTypeId */
@@ -19462,6 +19567,9 @@ ${orientationExtra}
           printifyProviderName: parseOosProviderName(pt.oosDetail) ?? null,
           productHealth: (pt as any).productHealth ?? "healthy",
           lastProductSyncAt: (pt as any).lastProductSyncAt ?? null,
+          pricingStrategy: (pt as any).pricingStrategy ?? "notify_only",
+          defaultMarkupPercent: (pt as any).defaultMarkupPercent ?? null,
+          minMarginPercent: (pt as any).minMarginPercent ?? null,
           variantAvailability: parseVariantAvailabilityMap((pt as any).variantAvailability),
           unavailableVariantKeys: unavailableVariantKeys(
             parseVariantAvailabilityMap((pt as any).variantAvailability),

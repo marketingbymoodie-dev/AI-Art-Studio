@@ -4,8 +4,10 @@ import {
   isNonPositiveRetailPrice,
   merchantMarginPercent,
   merchantProfitCents,
+  monthlyNetProfitCents,
   resolveEffectivePricingStrategy,
   roundUpTo95,
+  subscriptionBreakEvenUnits,
   suggestedRetailCents,
   unavailableVariantKeys,
 } from "./productIntelligence";
@@ -68,5 +70,16 @@ describe("unavailableVariantKeys", () => {
         "xxl:black": "removed",
       }),
     ).toEqual(["xl:black", "xxl:black"]);
+  });
+});
+
+describe("subscription ROI helpers", () => {
+  it("computes break-even units and monthly net", () => {
+    // $29 plan, $10 profit/sale → 3 units
+    expect(subscriptionBreakEvenUnits(29, 1000)).toBe(3);
+    expect(monthlyNetProfitCents({ profitPerSaleCents: 1000, monthlySales: 5, subscriptionUsd: 29 })).toBe(
+      5000 - 2900,
+    );
+    expect(subscriptionBreakEvenUnits(29, 0)).toBeNull();
   });
 });

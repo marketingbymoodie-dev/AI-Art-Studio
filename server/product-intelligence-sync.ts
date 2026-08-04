@@ -428,12 +428,33 @@ export async function syncProductTypeIntelligence(
       });
     }
 
+    // Margin signal: if merchant set a floor and we have COGS, flag when typical
+    // suggested retail at stored markup would breach min margin vs that COGS
+    // (retail auto-update is separate — Resync Prices / maintain_margin).
+    let marginBelowThreshold = false;
+    const minMargin = pt.minMarginPercent;
+    const markup = pt.defaultMarkupPercent;
+    if (
+      minMargin != null &&
+      Number.isFinite(minMargin) &&
+      markup != null &&
+      Number.isFinite(markup) &&
+      Object.keys(frontCosts).length > 0
+    ) {
+      const sampleCogs = Object.values(frontCosts).find((c) => c > 0);
+      if (sampleCogs != null) {
+        const impliedMargin = (markup / (100 + markup)) * 100;
+        marginBelowThreshold = impliedMargin + 0.01 < minMargin;
+      }
+    }
+
     const health = computeProductHealth({
       fullyOos: summary.status === "fully_oos",
       partialOos: summary.status === "critical",
       priceChanged: priceChanges > 0,
       availabilityChanged: availabilityChanges > 0 || removedVariants > 0,
       newOrRemovedVariants: newVariants > 0 || removedVariants > 0,
+      marginBelowThreshold,
     });
 
     const printifyCosts = serializePrintifyCostsCache(
@@ -698,6 +719,76 @@ export async function listRecentSyncRuns(limit = 20) {
     .from(catalogSyncRuns)
     .orderBy(desc(catalogSyncRuns.startedAt))
     .limit(limit);
+}
+
+export async function listRecentSyncEvents(opts: {
+  limit?: number;
+  syncRunId?: number;
+  eventType?: string;
+} = {}) {
+  const limit = opts.limit ?? 100;
+  const conditions = [];
+  if (opts.syncRunId != null && Number.isFinite(opts.syncRunId)) {
+    conditions.push(eq(catalogSyncEvents.syncRunId, opts.syncRunId));
+  }
+  if (opts.eventType) {
+    conditions.push(eq(catalogSyncEvents.eventType, opts.eventType));
+  }
+  if (conditions.length === 0) {
+    return db.select().from(catalogSyncEvents).orderBy(desc(catalogSyncEvents.createdAt)).limit(limit);
+  }
+  return db
+    .select()
+    .from(catalogSyncEvents)
+    .where(conditions.length === 1 ? conditions[0]! : and(...conditions))
+    .orderBy(desc(catalogSyncEvents.createdAt))
+    .limit(limit);
+}
+
+/** Operator overview: health counts + products needing attention. */
+export async function getCatalogueHealthOverview(limit = 80) {
+  const pts = (await storage.getActiveProductTypes()).filter(
+    (pt) => pt.printifyBlueprintId != null && pt.printifyProviderId != null,
+  );
+  const counts = { healthy: 0, needs_review: 0, attention_required: 0, unknown: 0 };
+  const attention: Array<{
+    id: number;
+    name: string;
+    merchantId: string | null;
+    productHealth: string;
+    lastProductSyncAt: Date | null;
+    oosStatus: string | null;
+    pricingStrategy: string;
+  }> = [];
+  for (const pt of pts) {
+    const h = String(pt.productHealth || "unknown");
+    if (h === "healthy") counts.healthy++;
+    else if (h === "needs_review") counts.needs_review++;
+    else if (h === "attention_required") counts.attention_required++;
+    else counts.unknown++;
+    if (h === "needs_review" || h === "attention_required") {
+      attention.push({
+        id: pt.id,
+        name: pt.name,
+        merchantId: pt.merchantId ?? null,
+        productHealth: h,
+        lastProductSyncAt: pt.lastProductSyncAt ?? null,
+        oosStatus: pt.oosStatus ?? null,
+        pricingStrategy: pt.pricingStrategy ?? "notify_only",
+      });
+    }
+  }
+  attention.sort((a, b) => {
+    if (a.productHealth !== b.productHealth) {
+      return a.productHealth === "attention_required" ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+  return {
+    total: pts.length,
+    counts,
+    attention: attention.slice(0, limit),
+  };
 }
 
 export async function getVariantCostHistory(

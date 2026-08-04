@@ -20,6 +20,7 @@ import FlatCalibrationMapperPage from "@/pages/flat-calibration-mapper";
 import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
 import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
+import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
 import NotFound from "@/pages/not-found";
 
 import AdminSetupPage from "@/pages/admin/setup";
@@ -33,6 +34,7 @@ import AdminCreateProduct from "@/pages/admin/create-product";
 import AdminCustomizerPages from "@/pages/admin/customizer-pages";
 import AdminDesignStudio from "@/pages/admin/design-studio";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
+import AdminInsights from "@/pages/admin/insights";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -58,6 +60,7 @@ function AppRouter() {
       <Route path="/admin/platform/catalog" component={PlatformCatalogPage} />
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
+      <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
@@ -75,6 +78,7 @@ function AppRouter() {
       <Route path="/admin/customizer-pages" component={AdminCustomizerPages} />
       <Route path="/admin/design-studio" component={AdminDesignStudio} />
       <Route path="/admin/plan" component={AdminPlanPicker} />
+      <Route path="/admin/insights" component={AdminInsights} />
       <Route path="/admin" component={AdminDashboard} />
 
       {/* DEV-ONLY: Storefront preview launcher */}

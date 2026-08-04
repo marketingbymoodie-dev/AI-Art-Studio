@@ -14,6 +14,11 @@ import {
 } from "@/components/ui/dialog";
 import { DollarSign, Loader2, RefreshCw } from "lucide-react";
 import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
+import {
+  DEFAULT_MARKUP_PERCENT,
+  isNonPositiveRetailPrice,
+  roundUpTo95,
+} from "@shared/productIntelligence";
 
 type BlankVariant = { id: string; title: string; price?: string };
 
@@ -37,17 +42,9 @@ type CostsResponse = {
   cached: boolean;
 };
 
-function roundUpTo95(raw: number): number {
-  return Math.ceil(raw) - 0.05;
-}
-
 /** True when the field is empty or would sync as $0 / free. */
 function isZeroOrEmptyPrice(value: string | undefined | null): boolean {
-  if (value == null) return true;
-  const trimmed = String(value).trim();
-  if (!trimmed) return true;
-  const num = parseFloat(trimmed);
-  return !Number.isFinite(num) || num <= 0;
+  return isNonPositiveRetailPrice(value);
 }
 
 function resolveVariantCostCents(
@@ -124,7 +121,7 @@ export default function ResyncPricesDialog({
   const [pricesMap, setPricesMap] = useState<Record<string, string>>({});
   const [pricesBothMap, setPricesBothMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
-  const [markupPercent, setMarkupPercent] = useState(60);
+  const [markupPercent, setMarkupPercent] = useState(DEFAULT_MARKUP_PERCENT);
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
@@ -158,10 +155,11 @@ export default function ResyncPricesDialog({
     enabled: open && !!productTypeId,
   });
 
-  /** Existing front+back retail map saved on the product type (if any). */
+  /** Existing front+back retail map + markup saved on the product type (if any). */
   const { data: productTypeRow } = useQuery<{
     id: number;
     variantPricesBoth?: string | Record<string, string> | null;
+    defaultMarkupPercent?: number | null;
   }>({
     queryKey: ["/api/admin/product-types", productTypeId, "resync-both"],
     queryFn: async () => {
@@ -172,6 +170,13 @@ export default function ResyncPricesDialog({
     },
     enabled: open && !!productTypeId,
   });
+
+  useEffect(() => {
+    if (!open) return;
+    const m = productTypeRow?.defaultMarkupPercent;
+    if (m != null && Number.isFinite(m)) setMarkupPercent(m);
+    else setMarkupPercent(DEFAULT_MARKUP_PERCENT);
+  }, [open, productTypeRow?.defaultMarkupPercent]);
 
   const existingBothPrices = useMemo(() => {
     const raw = productTypeRow?.variantPricesBoth;
