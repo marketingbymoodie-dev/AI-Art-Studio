@@ -32,6 +32,7 @@ import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
+import CatalogFilterBar from "@/components/admin/CatalogFilterBar";
 import PlanPicker from "./plan-picker";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 import CustomizerPageStyleSelector from "@/components/admin/CustomizerPageStyleSelector";
@@ -238,6 +239,9 @@ export default function AdminCustomizerPages() {
   const [pendingPromotePageId, setPendingPromotePageId] = useState<string | null>(() => {
     return new URLSearchParams(window.location.search).get("promote");
   });
+  const [listSearch, setListSearch] = useState("");
+  const [listCategory, setListCategory] = useState("all");
+  const [listStatus, setListStatus] = useState("all");
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
@@ -1068,7 +1072,44 @@ export default function AdminCustomizerPages() {
     });
   }
 
+  const { data: catalogForFilters } = useQuery<{
+    entries: Array<{ blueprintId: number; category: string | null }>;
+  }>({
+    queryKey: ["/api/appai/setup/catalog"],
+  });
+
+  const categoryByBlueprint = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const e of catalogForFilters?.entries ?? []) {
+      if (e.category) map.set(e.blueprintId, e.category);
+    }
+    return map;
+  }, [catalogForFilters?.entries]);
+
   const pages = pagesData?.pages ?? [];
+  const filteredPages = useMemo(() => {
+    const q = listSearch.trim().toLowerCase();
+    return pages.filter((page) => {
+      if (listStatus !== "all" && page.status !== listStatus) return false;
+      if (q) {
+        const hay = [page.title, page.handle, page.baseProductTitle]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (listCategory !== "all") {
+        const blank = blanksData?.blanks.find((b) => b.productTypeId === page.productTypeId);
+        const cat =
+          blank?.printifyBlueprintId != null
+            ? categoryByBlueprint.get(blank.printifyBlueprintId)
+            : undefined;
+        if (cat !== listCategory) return false;
+      }
+      return true;
+    });
+  }, [pages, listSearch, listStatus, listCategory, blanksData?.blanks, categoryByBlueprint]);
+
   const limit = pagesData?.limit ?? 0;
   const count = pagesData?.count ?? 0;
   const planName = pagesData?.planName ?? null;
@@ -2113,6 +2154,21 @@ export default function AdminCustomizerPages() {
             <GenerationQuotaUsage onUpgradeClick={() => navigate("/admin/plan")} />
 
             {/* ── PAGES LIST ── */}
+            {pages.length > 0 && (
+              <CatalogFilterBar
+                search={listSearch}
+                onSearchChange={setListSearch}
+                category={listCategory}
+                onCategoryChange={setListCategory}
+                showShippingFilters={false}
+                showStatusFilter
+                statusFilter={listStatus}
+                onStatusFilterChange={setListStatus}
+                resultCount={filteredPages.length}
+                totalCount={pages.length}
+                searchPlaceholder="Search pages..."
+              />
+            )}
             {pagesLoading ? (
               <div className="space-y-3">
                 {[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full rounded-lg" />)}
@@ -2131,9 +2187,15 @@ export default function AdminCustomizerPages() {
                   </Button>
                 </CardContent>
               </Card>
+            ) : filteredPages.length === 0 ? (
+              <Card>
+                <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                  No pages match these filters.
+                </CardContent>
+              </Card>
             ) : (
               <div className="space-y-3">
-                {pages.map((page) => {
+                {filteredPages.map((page) => {
                   const blank = blanksData?.blanks.find((b) => b.productTypeId === page.productTypeId);
                   const oosStatus = blank?.oosStatus;
                   const oosBadgeLabel =

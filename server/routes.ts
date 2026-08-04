@@ -18112,6 +18112,32 @@ ${orientationExtra}
         code: "PRINTIFY_NOT_CONNECTED",
       });
     }
+
+    // Second page for the same product only when Printify is connected + unique H1/title.
+    if (incomingProductTypeId) {
+      const existingForType = (await storage.listCustomizerPagesByProductTypeId(incomingProductTypeId)).filter(
+        (p) => p.shop === shop,
+      );
+      if (existingForType.length > 0) {
+        if (!isPrintifyConnected(merchant)) {
+          return res.status(409).json({
+            error:
+              "A customizer page already exists for this product. Open it from Customizer Pages, or connect Printify to create another page with a unique title.",
+            code: "PAGE_EXISTS",
+            existingPageId: existingForType[0].id,
+          });
+        }
+        const titleNorm = title.trim().toLowerCase();
+        if (existingForType.some((p) => p.title.trim().toLowerCase() === titleNorm)) {
+          return res.status(409).json({
+            error:
+              'Choose a unique page title for this product (for example add "UK/EU Only" to the H1).',
+            code: "TITLE_NOT_UNIQUE",
+          });
+        }
+      }
+    }
+
     const initialStatus = allowed ? "active" : "disabled";
 
     // Resolve variant + product info via Admin API.
@@ -20147,9 +20173,46 @@ ${orientationExtra}
     }
   }));
 
-  /** GET /api/appai/setup/catalog — published platform catalogue entries merchants can instantly activate. */
-  app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (_req: Request, res: Response) => {
+  /** GET /api/appai/setup/catalog — published platform catalogue + any existing page per blueprint. */
+  app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const entries = await listMerchantImportableCatalog();
+    const resolved = await resolveShopInstallation(req);
+    const existingByBlueprint = new Map<
+      number,
+      { id: string; handle: string; title: string; status: string; previewUrl: string; productTypeId: number | null }
+    >();
+
+    if (resolved.ok) {
+      const shop = resolved.installation.shopDomain;
+      const pages = await storage.listCustomizerPages(shop);
+      let merchant =
+        (resolved.installation.merchantId
+          ? await storage.getMerchant(resolved.installation.merchantId)
+          : null) || (await storage.getMerchantByShop(shop));
+      const types = merchant ? await storage.getProductTypesByMerchant(merchant.id) : [];
+      const typeById = new Map(types.map((t) => [t.id, t]));
+
+      const rank = (status: string) =>
+        status === "preview" ? 0 : status === "active" ? 1 : 2;
+
+      for (const page of pages) {
+        const pt = page.productTypeId != null ? typeById.get(page.productTypeId) : undefined;
+        const bp = pt?.printifyBlueprintId;
+        if (bp == null) continue;
+        const prev = existingByBlueprint.get(bp);
+        if (!prev || rank(page.status) < rank(prev.status)) {
+          existingByBlueprint.set(bp, {
+            id: page.id,
+            handle: page.handle,
+            title: page.title,
+            status: page.status,
+            previewUrl: buildPreviewUrl(shop, page.handle),
+            productTypeId: page.productTypeId,
+          });
+        }
+      }
+    }
+
     return res.json({
       entries: entries.map((e) => ({
         blueprintId: e.printifyBlueprintId,
@@ -20157,6 +20220,7 @@ ${orientationExtra}
         brand: e.brand ?? null,
         category: e.category ?? null,
         kind: e.kind,
+        existingPage: existingByBlueprint.get(e.printifyBlueprintId) ?? null,
       })),
     });
   }));
@@ -20231,8 +20295,25 @@ ${orientationExtra}
     const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
     let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
 
+    const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
+
+    // Pull Printify blueprint description so Product Details show on the preview page.
+    async function fetchBlueprintDescription(token: string): Promise<string | null> {
+      try {
+        const bpRes = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!bpRes.ok) return null;
+        const bp = await bpRes.json();
+        const raw = typeof bp?.description === "string" ? bp.description.trim() : "";
+        return raw ? sanitizeDesignProductDescriptionHtml(raw) : null;
+      } catch (e: any) {
+        console.warn("[setup/activate-product] blueprint description fetch failed:", e?.message ?? e);
+        return null;
+      }
+    }
+
     if (!productType) {
-      const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
       if (!platformPrintifyToken) {
         console.error("[setup/activate-product] PRINTIFY_API_TOKEN not configured on the platform");
         return res.status(503).json({ error: "Instant activation isn't available right now. Please try again shortly." });
@@ -20257,10 +20338,11 @@ ${orientationExtra}
         return res.status(502).json({ error: "Could not reach the Printify catalog. Please try again shortly." });
       }
 
+      const description = await fetchBlueprintDescription(platformPrintifyToken);
       const fakeReq: any = {
         user: { claims: { sub: userId } },
         shopDomain: shop,
-        body: { blueprintId, name: entry.label, description: undefined, providerId },
+        body: { blueprintId, name: entry.label, description: description ?? undefined, providerId },
       };
       let capturedStatus = 200;
       let capturedBody: any;
@@ -20280,6 +20362,32 @@ ${orientationExtra}
 
     if (!productType) {
       return res.status(500).json({ error: "Failed to activate product." });
+    }
+
+    // Backfill empty description on already-imported types (older Preview runs).
+    if (!String(productType.description || "").trim() && platformPrintifyToken) {
+      const description = await fetchBlueprintDescription(platformPrintifyToken);
+      if (description) {
+        await storage.updateProductType(productType.id, { description });
+        productType = { ...productType, description };
+      }
+    }
+
+    // Preview never creates a second page for the same product type — reuse the existing one.
+    // A second Live page (unique H1) is only via Create Page after the merchant connects Printify.
+    const existingForType = await storage.listCustomizerPagesByProductTypeId(productType.id);
+    const shopPages = existingForType.filter((p) => p.shop === shop);
+    const rank = (status: string) =>
+      status === "preview" ? 0 : status === "active" ? 1 : 2;
+    const reused = shopPages.slice().sort((a, b) => rank(a.status) - rank(b.status))[0];
+    if (reused) {
+      return res.status(200).json({
+        page: reused,
+        productTypeId: productType.id,
+        previewUrl: buildPreviewUrl(shop, reused.handle),
+        storefrontUrl: `/pages/${reused.handle}`,
+        reused: true,
+      });
     }
 
     // Auto-send the product to Shopify (unlisted) if it isn't there yet.
@@ -20344,6 +20452,7 @@ ${orientationExtra}
       productTypeId: productType.id,
       previewUrl: buildPreviewUrl(shop, handle),
       storefrontUrl: `/pages/${handle}`,
+      reused: false,
     });
   }));
 
