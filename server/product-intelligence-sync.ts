@@ -872,18 +872,25 @@ export async function costsResponseFromProductIntelligence(productType: ProductT
     const n = Number(vid);
     if (!Number.isFinite(n) || !currentIds.has(n)) continue;
     if (row.baseCogsCents == null || !Number.isFinite(row.baseCogsCents)) continue;
-    if (row.printAreaKey === "both") {
+    const area = String(row.printAreaKey || "front").toLowerCase();
+    if (area === "both" || area === "front+back" || area === "front_back") {
       costsBoth[vid] = row.baseCogsCents;
-    } else if (row.printAreaKey === "front") {
-      costs[vid] = row.baseCogsCents;
+    } else {
+      // "front" and AOP / other single-area keys all count as base (front) COGS.
+      if (costs[vid] == null) costs[vid] = row.baseCogsCents;
     }
     if (row.variantName) labels[vid] = row.variantName;
   }
 
-  // Require front coverage for every active variant before short-circuiting Printify.
+  // Prefer full coverage; if incomplete but we have usable COGS, still return PI
+  // (Create Page / Refresh should not hard-fail when most variants are priced).
+  let covered = 0;
   for (const id of currentIds) {
-    if (costs[String(id)] == null && costs[String(Number(id))] == null) return null;
+    if (costs[String(id)] != null || costs[String(Number(id))] != null) covered++;
   }
+  if (covered === 0) return null;
+  const coverageRatio = covered / currentIds.size;
+  if (coverageRatio < 0.5 && covered < 4) return null;
 
   const sizes = JSON.parse(productType.sizes || "[]") as Array<{ id: string; name: string }>;
   const frameColors = JSON.parse(productType.frameColors || "[]") as Array<{ id: string; name: string }>;

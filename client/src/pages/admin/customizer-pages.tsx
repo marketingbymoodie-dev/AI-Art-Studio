@@ -121,6 +121,8 @@ interface WizardProvider {
   fulfillment_countries?: string[];
   decoration_methods?: string[];
   pricingFromCents?: number | null;
+  variantCount?: number | null;
+  supportsBothSides?: boolean;
   rating?: number | null;
 }
 
@@ -812,15 +814,23 @@ export default function AdminCustomizerPages() {
     refetch: refetchCosts,
   } = useQuery<{
     costs: Record<string, number>;
+    costsBoth?: Record<string, number>;
     shopifyVariantCosts: Record<string, number>;
+    shopifyVariantCostsBoth?: Record<string, number>;
     printifyVariantLabels: Record<string, string>;
     costsByNormalizedLabel?: Record<string, number>;
+    costsBothByNormalizedLabel?: Record<string, number>;
+    supportsBothSides?: boolean;
     cached: boolean;
     warning?: string;
   }>({
     queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to fetch production costs from Printify");
+      }
       return res.json();
     },
     // Prefetch during Variants (step 3) once the product type is on the chosen supplier.
@@ -2082,6 +2092,10 @@ export default function AdminCustomizerPages() {
                               provider.pricingFromCents != null && provider.pricingFromCents > 0
                                 ? (provider.pricingFromCents / 100).toFixed(2)
                                 : null;
+                            const variantLabel =
+                              provider.variantCount != null && provider.variantCount > 0
+                                ? `${provider.variantCount} variants`
+                                : null;
                             return (
                               <button
                                 key={provider.id}
@@ -2099,15 +2113,17 @@ export default function AdminCustomizerPages() {
                                       : "Shipping origin unknown"}
                                     {shipsTo ? ` · Ships to ${shipsTo}${((provider.fulfillment_countries ?? []).length > 6) ? "…" : ""}` : ""}
                                   </span>
-                                  {(methods || fromPrice || provider.rating != null) && (
-                                    <span className="text-xs text-muted-foreground block">
-                                      {methods ? methods : null}
-                                      {methods && (fromPrice || provider.rating != null) ? " · " : ""}
-                                      {fromPrice ? `From ~$${fromPrice}` : null}
-                                      {fromPrice && provider.rating != null ? " · " : ""}
-                                      {provider.rating != null ? `Rating ${provider.rating.toFixed(1)}` : null}
-                                    </span>
-                                  )}
+                                  <span className="text-xs text-muted-foreground block">
+                                    {[
+                                      methods || null,
+                                      fromPrice ? `From ~$${fromPrice}` : "From price pending sync",
+                                      variantLabel,
+                                      provider.supportsBothSides ? "Front + back print" : null,
+                                      provider.rating != null ? `Rating ${provider.rating.toFixed(1)}` : null,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </span>
                                 </span>
                                 <span className="flex items-center gap-2 shrink-0">
                                   {isCurrent && (
@@ -2719,9 +2735,45 @@ export default function AdminCustomizerPages() {
                       <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
                         <span>
                           {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
-                          {" "}Click Refresh costs or wait a moment — lookup can take up to a minute for apparel with many variants.
+                          {" "}Retry runs Product Sync then a Printify cost probe — apparel can take up to a minute.
                         </span>
-                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          disabled={productSyncMutation.isPending || costsLoading}
+                          onClick={async () => {
+                            const ptId = selectedBlank?.productTypeId;
+                            if (ptId) {
+                              try {
+                                await productSyncMutation.mutateAsync(ptId);
+                              } catch {
+                                /* still try legacy costs */
+                              }
+                            }
+                            try {
+                              const res = await apiRequest(
+                                "GET",
+                                `/api/admin/printify/costs/${ptId}?legacy=1`,
+                              );
+                              if (res.ok) {
+                                const data = await res.json();
+                                queryClient.setQueryData(
+                                  ["/api/admin/printify/costs", ptId],
+                                  data,
+                                );
+                                return;
+                              }
+                            } catch {
+                              /* fall through */
+                            }
+                            void refetchCosts();
+                          }}
+                        >
+                          {productSyncMutation.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          ) : null}
                           Retry
                         </Button>
                       </p>
@@ -2772,7 +2824,39 @@ export default function AdminCustomizerPages() {
                           “from $front” and charges the front+back price when Print on Back is on.
                         </p>
                       )}
-                      {selectedVariants.map((v) => (
+                      {selectedVariants.map((v) => {
+                        const frontLabelToCost: Record<string, number> = {};
+                        if (costsData?.printifyVariantLabels && costsData.costs) {
+                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                            const c = costsData.costs[printifyVid];
+                            if (c != null) frontLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
+                          }
+                        }
+                        const bothLabelToCost: Record<string, number> = {};
+                        if (supportsBothSidePricing && costsData?.printifyVariantLabels && costsData.costsBoth) {
+                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                            const c = costsData.costsBoth[printifyVid];
+                            if (c != null) bothLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
+                          }
+                        }
+                        const frontCogs = costsData
+                          ? resolveBlankVariantCostCents(v, costsData, frontLabelToCost)
+                          : undefined;
+                        const bothCogs =
+                          supportsBothSidePricing && costsData
+                            ? resolveBlankVariantCostCents(
+                                v,
+                                { ...costsData, costs: costsData.costsBoth || {} },
+                                bothLabelToCost,
+                              )
+                            : undefined;
+                        const retailN = parseFloat(variantPrices[v.id] || "");
+                        const frontProfit =
+                          Number.isFinite(retailN) && frontCogs != null
+                            ? retailN - frontCogs / 100
+                            : null;
+
+                        return (
                         <div key={v.id} className="space-y-1.5">
                           <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
                           <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
@@ -2798,6 +2882,17 @@ export default function AdminCustomizerPages() {
                                   onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
                                 />
                               </div>
+                              <p className="text-[10px] text-muted-foreground">
+                                {frontCogs != null
+                                  ? `COGS $${(frontCogs / 100).toFixed(2)}${
+                                      frontProfit != null
+                                        ? ` · Profit $${frontProfit.toFixed(2)}`
+                                        : ""
+                                    }`
+                                  : costsAvailable
+                                    ? "COGS unavailable for this variant"
+                                    : "COGS loading…"}
+                              </p>
                             </div>
                             {supportsBothSidePricing && (
                               <div className="space-y-1">
@@ -2816,6 +2911,15 @@ export default function AdminCustomizerPages() {
                                     onChange={(e) => setVariantPricesBoth({ ...variantPricesBoth, [v.id]: e.target.value })}
                                   />
                                 </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                  {bothCogs != null
+                                    ? `COGS $${(bothCogs / 100).toFixed(2)}${(() => {
+                                        const bothRetail = parseFloat(variantPricesBoth[v.id] || "");
+                                        if (!Number.isFinite(bothRetail)) return "";
+                                        return ` · Profit $${(bothRetail - bothCogs / 100).toFixed(2)}`;
+                                      })()}`
+                                    : "Front+back COGS pending — open Printify Costs or Retry"}
+                                </p>
                               </div>
                             )}
                           </div>
@@ -2823,7 +2927,8 @@ export default function AdminCustomizerPages() {
                             <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div className="flex gap-2 pt-2 shrink-0">

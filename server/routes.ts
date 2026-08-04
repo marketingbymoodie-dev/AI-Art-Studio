@@ -13035,57 +13035,102 @@ ${orientationExtra}
       }
 
       const providers = await response.json();
-      
-      // Fetch detailed info for each provider to get location data + optional cached min cost
-      const enrichedProviders = await Promise.all(
-        providers.map(async (provider: any) => {
-          let location = provider.location;
-          let fulfillment_countries = provider.fulfillment_countries || [];
-          try {
-            const detailResponse = await fetch(
-              `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
-              {
-                headers: {
-                  "Authorization": `Bearer ${printifyToken}`,
-                  "Content-Type": "application/json"
+      const providerList = Array.isArray(providers) ? providers : [];
+
+      // Enrich each provider: location, catalog "from" price, variant count (bounded concurrency).
+      const enrichedProviders: any[] = [];
+      const CONCURRENCY = 3;
+      for (let i = 0; i < providerList.length; i += CONCURRENCY) {
+        const chunk = providerList.slice(i, i + CONCURRENCY);
+        const chunkResults = await Promise.all(
+          chunk.map(async (provider: any) => {
+            let location = provider.location;
+            let fulfillment_countries = provider.fulfillment_countries || [];
+            try {
+              const detailResponse = await fetch(
+                `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${printifyToken}`,
+                    "Content-Type": "application/json",
+                  },
+                },
+              );
+              if (detailResponse.ok) {
+                const details = await detailResponse.json();
+                location = details.location ?? location;
+                fulfillment_countries = details.fulfillment_countries || fulfillment_countries;
+              }
+            } catch (err) {
+              console.error(`Error fetching provider ${provider.id} details:`, err);
+            }
+
+            let pricingFromCents: number | null = null;
+            let variantCount: number | null = null;
+            let supportsBothSides = false;
+
+            try {
+              const cachedCosts = await findPlatformCostsForBlueprint(blueprintId, Number(provider.id));
+              const cachedVals = Object.values(cachedCosts).filter((n) => Number.isFinite(n) && n > 0);
+              if (cachedVals.length > 0) pricingFromCents = Math.min(...cachedVals);
+            } catch {
+              /* ignore */
+            }
+
+            try {
+              const vRes = await fetch(
+                `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${provider.id}/variants.json?show-out-of-stock=1`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${printifyToken}`,
+                    "Content-Type": "application/json",
+                  },
+                },
+              );
+              if (vRes.ok) {
+                const vData = await vRes.json();
+                const variants = Array.isArray(vData?.variants)
+                  ? vData.variants
+                  : Array.isArray(vData)
+                    ? vData
+                    : [];
+                variantCount = variants.length;
+                const catalogCosts = extractCostsFromCatalogVariants(variants);
+                const vals = Object.values(catalogCosts).filter((n) => Number.isFinite(n) && n > 0);
+                if (vals.length > 0) {
+                  const minCatalog = Math.min(...vals);
+                  pricingFromCents =
+                    pricingFromCents == null ? minCatalog : Math.min(pricingFromCents, minCatalog);
+                }
+                for (const sample of variants.slice(0, 12)) {
+                  const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+                  if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) {
+                    supportsBothSides = true;
+                    break;
+                  }
                 }
               }
-            );
-            
-            if (detailResponse.ok) {
-              const details = await detailResponse.json();
-              location = details.location ?? location;
-              fulfillment_countries = details.fulfillment_countries || fulfillment_countries;
+            } catch (err) {
+              console.warn(`[providers] variants enrich failed for provider ${provider.id}:`, err);
             }
-          } catch (err) {
-            console.error(`Error fetching provider ${provider.id} details:`, err);
-          }
 
-          // Min production cost from any merchant/platform cache for this blueprint+provider (cents).
-          // Printify's public provider API does not expose ratings or live "from" prices.
-          let pricingFromCents: number | null = null;
-          try {
-            const cachedCosts = await findPlatformCostsForBlueprint(blueprintId, Number(provider.id));
-            const vals = Object.values(cachedCosts).filter((n) => Number.isFinite(n) && n > 0);
-            if (vals.length > 0) pricingFromCents = Math.min(...vals);
-          } catch {
-            // ignore cache lookup failures
-          }
+            return {
+              ...provider,
+              location,
+              fulfillment_countries,
+              decoration_methods: Array.isArray(provider.decoration_methods)
+                ? provider.decoration_methods
+                : [],
+              pricingFromCents,
+              variantCount,
+              supportsBothSides,
+              rating: typeof provider.rating === "number" ? provider.rating : null,
+            };
+          }),
+        );
+        enrichedProviders.push(...chunkResults);
+      }
 
-          return {
-            ...provider,
-            location,
-            fulfillment_countries,
-            decoration_methods: Array.isArray(provider.decoration_methods)
-              ? provider.decoration_methods
-              : [],
-            pricingFromCents,
-            // Pass through if Printify ever includes it; usually absent.
-            rating: typeof provider.rating === "number" ? provider.rating : null,
-          };
-        })
-      );
-      
       res.json(enrichedProviders);
     } catch (error) {
       console.error("Error fetching print providers:", error);
@@ -16367,25 +16412,6 @@ ${orientationExtra}
       const useLegacyWaterfall = req.query.legacy === "1";
       const apiToken = merchant.printifyApiToken;
 
-      if (forceRefresh && !useLegacyWaterfall && apiToken) {
-        const synced = await syncProductTypeIntelligence(productType, apiToken, { source: "manual" });
-        const fresh = (await storage.getProductType(productTypeId)) || productType;
-        const fromPi = await costsResponseFromProductIntelligence(fresh);
-        if (fromPi) {
-          return res.json({
-            ...fromPi,
-            refreshedVia: "product_sync",
-            productHealth: synced.productHealth,
-            priceChanges: synced.priceChanges,
-            availabilityChanges: synced.availabilityChanges,
-          });
-        }
-        // Fall through to waterfall when catalog sync did not yield COGS coverage.
-      } else if (!forceRefresh) {
-        const fromPi = await costsResponseFromProductIntelligence(productType);
-        if (fromPi) return res.json(fromPi);
-      }
-
       if (!apiToken) {
         return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
       }
@@ -16432,6 +16458,34 @@ ${orientationExtra}
           return false;
         }
         return false;
+      }
+
+      if (forceRefresh && !useLegacyWaterfall) {
+        const synced = await syncProductTypeIntelligence(productType, apiToken, { source: "manual" });
+        const fresh = (await storage.getProductType(productTypeId)) || productType;
+        const fromPi = await costsResponseFromProductIntelligence(fresh);
+        if (fromPi) {
+          const needsBothProbe =
+            Object.keys(fromPi.costsBoth || {}).length === 0 && (await detectHasBackPlaceholder());
+          if (!needsBothProbe) {
+            return res.json({
+              ...fromPi,
+              refreshedVia: "product_sync",
+              productHealth: synced.productHealth,
+              priceChanges: synced.priceChanges,
+              availabilityChanges: synced.availabilityChanges,
+            });
+          }
+          // Fall through to waterfall to fill front+back COGS.
+        }
+      } else if (!forceRefresh) {
+        const fromPi = await costsResponseFromProductIntelligence(productType);
+        if (fromPi) {
+          const needsBothProbe =
+            Object.keys(fromPi.costsBoth || {}).length === 0 && (await detectHasBackPlaceholder());
+          if (!needsBothProbe) return res.json(fromPi);
+          // Fall through to waterfall to fill front+back COGS.
+        }
       }
 
       const needsBothProbe = frontCacheHits && !bothCacheHits && (await detectHasBackPlaceholder());

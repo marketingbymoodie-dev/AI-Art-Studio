@@ -52,6 +52,7 @@ export default function PlanGenerationEstimator({
   );
   const [gensPerSale, setGensPerSale] = useState(String(DEFAULT_GENS_PER_SALE));
   const [costPerGen, setCostPerGen] = useState(String(DEFAULT_PLATFORM_COST_PER_GEN_USD));
+  const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(FREE_GENS_PER_VISITOR));
 
   const lines = controlledLines ?? internalLines;
   const setLines = (next: MixLine[]) => {
@@ -61,20 +62,36 @@ export default function PlanGenerationEstimator({
 
   const gensN = parseFloat(gensPerSale);
   const costN = parseFloat(costPerGen);
+  const freeN = parseFloat(freeGensPerVisitor);
   const units = totalMonthlyUnits(lines);
   const pagesNeeded = pagesNeededFromMix(lines);
   const estimatedGens = estimateMonthlyGenerations({
     totalUnits: units,
     gensPerSale: Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE,
   });
+  const maxFreeGensIfFullyUsed = Math.ceil(
+    units * (Number.isFinite(freeN) && freeN >= 0 ? freeN : FREE_GENS_PER_VISITOR),
+  );
   const aiCost = platformAiCostUsd(
     estimatedGens,
+    Number.isFinite(costN) ? costN : DEFAULT_PLATFORM_COST_PER_GEN_USD,
+  );
+  const aiCostIfFullFree = platformAiCostUsd(
+    maxFreeGensIfFullyUsed,
     Number.isFinite(costN) ? costN : DEFAULT_PLATFORM_COST_PER_GEN_USD,
   );
   const recommendation = useMemo(
     () => recommendPlan({ pagesNeeded, estimatedGens }),
     [pagesNeeded, estimatedGens],
   );
+  const recommendationFullFree = useMemo(
+    () => recommendPlan({ pagesNeeded, estimatedGens: maxFreeGensIfFullyUsed }),
+    [pagesNeeded, maxFreeGensIfFullyUsed],
+  );
+  const suggestedPlanProfit =
+    recommendation.fits && recommendation.priceUsd != null
+      ? Math.round((recommendation.priceUsd - aiCost) * 100) / 100
+      : null;
 
   return (
     <Card>
@@ -182,10 +199,17 @@ export default function PlanGenerationEstimator({
             />
           </div>
           <div className="space-y-1">
-            <Label>Free gens / visitor</Label>
-            <Input value={FREE_GENS_PER_VISITOR} disabled />
+            <Label htmlFor="free-gens-visitor">Free gens / visitor</Label>
+            <Input
+              id="free-gens-visitor"
+              type="number"
+              min={0}
+              step={1}
+              value={freeGensPerVisitor}
+              onChange={(e) => setFreeGensPerVisitor(e.target.value)}
+            />
             <p className="text-[11px] text-muted-foreground">
-              Comes off the merchant plan allowance
+              Comes off the merchant plan allowance (live store default is {FREE_GENS_PER_VISITOR})
             </p>
           </div>
         </div>
@@ -199,12 +223,17 @@ export default function PlanGenerationEstimator({
             <div className="text-muted-foreground">Est. gens / month</div>
             <div className="text-xl font-semibold">{estimatedGens}</div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {units} units × {Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE} gens
+              {units} units × {Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE} gens (guess)
             </p>
           </div>
           <div className="rounded-md border p-3">
-            <div className="text-muted-foreground">Platform AI cost</div>
+            <div className="text-muted-foreground">Platform AI cost (guess)</div>
             <div className="text-xl font-semibold">${aiCost.toFixed(2)}</div>
+            {suggestedPlanProfit != null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Plan − AI ≈ ${suggestedPlanProfit.toFixed(2)}/mo
+              </p>
+            )}
           </div>
           <div className="rounded-md border p-3">
             <div className="text-muted-foreground">Suggested plan</div>
@@ -217,6 +246,18 @@ export default function PlanGenerationEstimator({
               </p>
             )}
           </div>
+        </div>
+
+        <div className="rounded-md border border-amber-200 bg-amber-50/60 p-3 text-sm space-y-1">
+          <p className="font-medium text-amber-950">If every sale burned the full free allotment</p>
+          <p className="text-amber-900/90">
+            {units} units × {Number.isFinite(freeN) ? freeN : FREE_GENS_PER_VISITOR} free gens ={" "}
+            <span className="font-semibold">{maxFreeGensIfFullyUsed}</span> gens/mo · platform cost{" "}
+            <span className="font-semibold">${aiCostIfFullFree.toFixed(2)}</span>
+            {recommendationFullFree.fits
+              ? ` · needs ${recommendationFullFree.displayName}`
+              : " · no current plan covers this ceiling"}
+          </p>
         </div>
 
         <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
