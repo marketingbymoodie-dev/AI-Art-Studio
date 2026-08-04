@@ -20,7 +20,8 @@ Single source of truth for catalogue COGS, shipping snapshots, variant availabil
 | **Operator Catalog** | Operator | Tag / publish / block blueprints (allow-list) |
 | **Products → Product Sync / Pricing strategy / Resync Prices** | Merchant | Per-product sync, strategy, Shopify retail |
 | **Customizer Pages → Pricing** | Merchant | Costs from PI, refresh via Product Sync, strategy on Edit |
-| **Profit Insights** (`/admin/insights`) | Merchant | Profit + subscription ROI calculators |
+| **Profit Insights** (`/admin/insights`) | Merchant | Multi-product profit mix + plan-fit suggestion |
+| **Product Intelligence → Plan estimator** | Operator | Plan page/gen sandbox ($0.05/gen, provisional gens/sale) |
 | **Credits / Plan** | Merchant | AI generation quota (not COGS) |
 
 ## Data model

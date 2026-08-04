@@ -15,6 +15,7 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, RefreshCw } from "lucide-react";
+import PlanGenerationEstimator from "@/components/admin/PlanGenerationEstimator";
 
 type SyncRun = {
   id: number;
@@ -187,6 +188,8 @@ export default function PlatformProductIntelligencePage() {
             Sync all products
           </Button>
         </div>
+
+        <PlanGenerationEstimator />
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
