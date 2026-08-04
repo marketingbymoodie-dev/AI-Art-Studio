@@ -29,6 +29,29 @@ import {
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+
+/** Prefer all sizes, drop colours from the end until ≤ Shopify max (UI / prep helper). */
+function trimSelectionToShopifyMax(
+  sizeIds: string[],
+  colorIds: string[],
+): { sizeIds: string[]; colorIds: string[]; count: number; capped: boolean } {
+  let sizes = sizeIds.filter(Boolean);
+  let colors = colorIds.filter(Boolean);
+  const countOf = () => sizes.length * (colors.length > 0 ? colors.length : 1);
+  if (sizes.length === 0) {
+    return { sizeIds: sizes, colorIds: colors, count: 0, capped: false };
+  }
+  if (countOf() <= SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+    return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: false };
+  }
+  while (colors.length > 1 && countOf() > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+    colors = colors.slice(0, -1);
+  }
+  while (sizes.length > 1 && countOf() > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+    sizes = sizes.slice(0, -1);
+  }
+  return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: true };
+}
 import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
@@ -1021,20 +1044,20 @@ export default function AdminCustomizerPages() {
         setEditColors(colors);
         const savedSizes = editBlank.selectedSizeIds ?? [];
         const savedColors = editBlank.selectedColorIds ?? [];
-        setEditSizeIds(
-          new Set(
-            (savedSizes.length ? savedSizes : sizes.map((s) => s.id)).filter((id) =>
-              sizes.some((s) => s.id === id),
-            ),
-          ),
+        let nextSizes = (savedSizes.length ? savedSizes : sizes.map((s) => s.id)).filter((id) =>
+          sizes.some((s) => s.id === id),
         );
-        setEditColorIds(
-          new Set(
-            (savedColors.length ? savedColors : colors.map((c) => c.id)).filter((id) =>
-              colors.some((c) => c.id === id),
-            ),
-          ),
+        let nextColors = (savedColors.length ? savedColors : colors.map((c) => c.id)).filter((id) =>
+          colors.some((c) => c.id === id),
         );
+        // Never open the editor with an illegal over-limit selection (legacy or "select all").
+        const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+        if (trimmed.capped) {
+          nextSizes = trimmed.sizeIds;
+          nextColors = trimmed.colorIds;
+        }
+        setEditSizeIds(new Set(nextSizes));
+        setEditColorIds(new Set(nextColors));
       } catch {
         if (!cancelled) {
           setEditSizes(editBlank.sizes ?? []);
@@ -1134,16 +1157,17 @@ export default function AdminCustomizerPages() {
       const sameProvider = providerId === selectedBlank?.printifyProviderId;
       const savedSizes = selectedBlank?.selectedSizeIds ?? [];
       const savedColors = selectedBlank?.selectedColorIds ?? [];
-      if (sameProvider && savedSizes.length > 0) {
-        setWizardSizeIds(new Set(savedSizes.filter((id) => sizes.some((s) => s.id === id))));
-      } else {
-        setWizardSizeIds(new Set(sizes.map((s) => s.id)));
-      }
-      if (sameProvider && savedColors.length > 0 && colors.length > 0) {
-        setWizardColorIds(new Set(savedColors.filter((id) => colors.some((c) => c.id === id))));
-      } else {
-        setWizardColorIds(new Set(colors.map((c) => c.id)));
-      }
+      let nextSizes =
+        sameProvider && savedSizes.length > 0
+          ? savedSizes.filter((id) => sizes.some((s) => s.id === id))
+          : sizes.map((s) => s.id);
+      let nextColors =
+        sameProvider && savedColors.length > 0 && colors.length > 0
+          ? savedColors.filter((id) => colors.some((c) => c.id === id))
+          : colors.map((c) => c.id);
+      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+      setWizardSizeIds(new Set(trimmed.sizeIds));
+      setWizardColorIds(new Set(trimmed.colorIds));
       setWizardVariantsReady(true);
     } catch (e: any) {
       setWizardVariantsReady(false);
@@ -1253,9 +1277,14 @@ export default function AdminCustomizerPages() {
   const prepareProviderMutation = useMutation({
     mutationFn: async () => {
       if (!wizardSizes.length) throw new Error("Variants not loaded yet");
+      // Explicit full pick can exceed Shopify’s 100 — trim before import (same as Setup auto-cap).
+      const trimmed = trimSelectionToShopifyMax(
+        wizardSizes.map((s) => s.id),
+        wizardColors.map((c) => c.id),
+      );
       return ensureWizardProvider({
-        sizeIds: wizardSizes.map((s) => s.id),
-        colorIds: wizardColors.map((c) => c.id),
+        sizeIds: trimmed.sizeIds,
+        colorIds: trimmed.colorIds,
         quiet: true,
       });
     },
@@ -1335,17 +1364,20 @@ export default function AdminCustomizerPages() {
     },
   });
 
+  const editVariantCount =
+    editSizeIds.size * (editColors.length === 0 ? 1 : editColorIds.size);
+  const editVariantOverLimit = editVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
+
   const editVariantsMutation = useMutation({
     mutationFn: async () => {
       if (!editBlank?.productTypeId) throw new Error("No product linked");
-      const sizeCount = editSizeIds.size;
-      const colorCount = editColors.length === 0 ? 1 : editColorIds.size;
-      const total = sizeCount * colorCount;
-      if (sizeCount === 0 || (editColors.length > 0 && editColorIds.size === 0)) {
+      if (editSizeIds.size === 0 || (editColors.length > 0 && editColorIds.size === 0)) {
         throw new Error("Select at least one size and colour.");
       }
-      if (total > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-        throw new Error(`Too many variants (${total}). Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`);
+      if (editVariantOverLimit) {
+        throw new Error(
+          `Too many variants (${editVariantCount}). Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Deselect colours/sizes or use Auto-trim.`,
+        );
       }
       const res = await apiRequest("PATCH", `/api/admin/product-types/${editBlank.productTypeId}/variants`, {
         selectedSizeIds: Array.from(editSizeIds),
@@ -3318,20 +3350,48 @@ export default function AdminCustomizerPages() {
               </div>
 
               <div className="rounded-md border p-3 space-y-3">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <Label>Variants (sizes &amp; colours)</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={editVariantsMutation.isPending || editVariantsLoading}
-                    onClick={() => editVariantsMutation.mutate()}
-                  >
-                    {editVariantsMutation.isPending ? (
-                      <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                    ) : null}
-                    Save variants
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {editVariantOverLimit && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={editVariantsLoading}
+                        onClick={() => {
+                          const trimmed = trimSelectionToShopifyMax(
+                            Array.from(editSizeIds),
+                            Array.from(editColorIds),
+                          );
+                          setEditSizeIds(new Set(trimmed.sizeIds));
+                          setEditColorIds(new Set(trimmed.colorIds));
+                          toast({
+                            title: "Trimmed to Shopify limit",
+                            description: `Kept ${trimmed.count} variants (all sizes where possible, fewer colours). Save to apply.`,
+                          });
+                        }}
+                      >
+                        Auto-trim to {SHOPIFY_MAX_VARIANTS_PER_PRODUCT}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        editVariantsMutation.isPending ||
+                        editVariantsLoading ||
+                        editVariantOverLimit
+                      }
+                      onClick={() => editVariantsMutation.mutate()}
+                    >
+                      {editVariantsMutation.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : null}
+                      Save variants
+                    </Button>
+                  </div>
                 </div>
                 {editVariantsLoading ? (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
@@ -3339,15 +3399,21 @@ export default function AdminCustomizerPages() {
                   </div>
                 ) : (
                   <>
-                    <p className="text-xs text-muted-foreground">
-                      Selected:{" "}
-                      {editSizeIds.size *
-                        (editColors.length === 0 ? 1 : editColorIds.size)}{" "}
-                      / {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} max
+                    <p
+                      className={`text-xs font-medium ${
+                        editVariantOverLimit ? "text-destructive" : "text-muted-foreground"
+                      }`}
+                    >
+                      Selected: {editVariantCount} / {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} max
+                      {editVariantOverLimit
+                        ? " — over Shopify’s limit. Deselect colours or Auto-trim before saving."
+                        : ""}
                     </p>
                     {editSizes.length > 0 && (
                       <div className="space-y-1">
-                        <p className="text-xs font-medium">Sizes</p>
+                        <p className="text-xs font-medium">
+                          Sizes ({editSizeIds.size}/{editSizes.length})
+                        </p>
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-32 overflow-y-auto border rounded-md p-2">
                           {editSizes.map((size) => (
                             <label key={size.id} className="flex items-center gap-2 text-sm cursor-pointer">
@@ -3370,10 +3436,15 @@ export default function AdminCustomizerPages() {
                     )}
                     {editColors.length > 0 && (
                       <div className="space-y-1">
-                        <p className="text-xs font-medium">Colours</p>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-32 overflow-y-auto border rounded-md p-2">
+                        <p className="text-xs font-medium">
+                          Colours ({editColorIds.size}/{editColors.length})
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-40 overflow-y-auto border rounded-md p-2">
                           {editColors.map((color) => (
-                            <label key={color.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                            <label
+                              key={color.id}
+                              className="flex items-center gap-2 text-sm cursor-pointer p-1 hover:bg-muted rounded"
+                            >
                               <Checkbox
                                 checked={editColorIds.has(color.id)}
                                 onCheckedChange={() => {
@@ -3385,7 +3456,18 @@ export default function AdminCustomizerPages() {
                                   });
                                 }}
                               />
-                              {color.name}
+                              <span
+                                className="w-4 h-4 rounded-full border border-border flex-shrink-0 flex items-center justify-center text-[8px] text-muted-foreground"
+                                style={
+                                  color.hex
+                                    ? { backgroundColor: color.hex }
+                                    : { backgroundColor: "var(--muted)" }
+                                }
+                                title={color.hex || "No swatch"}
+                              >
+                                {!color.hex && color.name?.charAt(0).toUpperCase()}
+                              </span>
+                              <span className="truncate">{color.name}</span>
                             </label>
                           ))}
                         </div>
