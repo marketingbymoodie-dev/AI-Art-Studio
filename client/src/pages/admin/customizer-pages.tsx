@@ -1377,6 +1377,22 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
+    if (handleAlreadyUsed) {
+      toast({
+        title: "URL already in use",
+        description: `“/pages/${handleAlreadyUsed.handle}” is used by “${handleAlreadyUsed.title}”. Change the URL handle (or title) before continuing.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (titleAlreadyUsedForProduct) {
+      toast({
+        title: "Page title already used for this product",
+        description: `“${titleAlreadyUsedForProduct.title}” already exists (${titleAlreadyUsedForProduct.status === "active" ? "Live" : titleAlreadyUsedForProduct.status}). Use a unique title (e.g. add “UK/EU Only”).`,
+        variant: "destructive",
+      });
+      return;
+    }
     if (selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
       toast({
         title: "Too many variants for Shopify",
@@ -1526,6 +1542,60 @@ export default function AdminCustomizerPages() {
   }, [catalogForFilters?.entries]);
 
   const pages = pagesData?.pages ?? [];
+
+  /** productTypeId → Live / any customizer pages (for Create dropdown labels + uniqueness). */
+  const pagesForProductType = useMemo(() => {
+    const map = new Map<number, CustomizerPage[]>();
+    for (const p of pages) {
+      if (p.productTypeId == null) continue;
+      const list = map.get(p.productTypeId) ?? [];
+      list.push(p);
+      map.set(p.productTypeId, list);
+    }
+    return map;
+  }, [pages]);
+
+  const liveProductTypeIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of pages) {
+      if (p.status === "active" && p.productTypeId != null) ids.add(p.productTypeId);
+    }
+    return ids;
+  }, [pages]);
+
+  const sortedCreateBlanks = useMemo(() => {
+    const blanks = [...(blanksData?.blanks ?? [])];
+    blanks.sort((a, b) => {
+      const aLive = liveProductTypeIds.has(a.productTypeId) ? 0 : 1;
+      const bLive = liveProductTypeIds.has(b.productTypeId) ? 0 : 1;
+      if (aLive !== bLive) return aLive - bLive;
+      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+    });
+    return blanks;
+  }, [blanksData?.blanks, liveProductTypeIds]);
+
+  const handleAlreadyUsed = useMemo(() => {
+    const h = formHandle.trim();
+    if (!h) return null;
+    return pages.find((p) => p.handle === h) ?? null;
+  }, [formHandle, pages]);
+
+  const titleAlreadyUsedForProduct = useMemo(() => {
+    if (!selectedBlank || !formTitle.trim()) return null;
+    const titleNorm = formTitle.trim().toLowerCase();
+    return (
+      pages.find(
+        (p) =>
+          p.productTypeId === selectedBlank.productTypeId &&
+          p.title.trim().toLowerCase() === titleNorm,
+      ) ?? null
+    );
+  }, [formTitle, pages, selectedBlank]);
+
+  const existingPagesForSelectedProduct = selectedBlank
+    ? pagesForProductType.get(selectedBlank.productTypeId) ?? []
+    : [];
+
   const filteredPages = useMemo(() => {
     const q = listSearch.trim().toLowerCase();
     return pages.filter((page) => {
@@ -1673,11 +1743,13 @@ export default function AdminCustomizerPages() {
                             <SelectValue placeholder="Select a product…" />
                           </SelectTrigger>
                           <SelectContent>
-                            {(blanksData?.blanks ?? []).map((blank) => {
+                            {sortedCreateBlanks.map((blank) => {
                               const val = blank.productId ? blank.productId : `pt:${blank.productTypeId}`;
+                              const isLive = liveProductTypeIds.has(blank.productTypeId);
                               return (
                                 <SelectItem key={val} value={val}>
                                   {blank.title}
+                                  {isLive ? " (Live)" : ""}
                                   {blank.needsShopifySync
                                     ? " (not on this store yet — will be created)"
                                     : ""}
@@ -1705,12 +1777,25 @@ export default function AdminCustomizerPages() {
                           </SelectContent>
                         </Select>
                       )}
+                      {selectedBlank && existingPagesForSelectedProduct.length > 0 && (
+                        <p className="text-xs text-amber-800 mt-1 rounded-md border border-amber-200 bg-amber-50 p-2">
+                          This product already has{" "}
+                          {existingPagesForSelectedProduct.length === 1
+                            ? "a customizer page"
+                            : `${existingPagesForSelectedProduct.length} customizer pages`}
+                          {" "}
+                          (
+                          {existingPagesForSelectedProduct
+                            .map((p) => `${p.title} · /pages/${p.handle}${p.status === "active" ? " · Live" : ""}`)
+                            .join("; ")}
+                          ). Use a unique page title and URL handle, or edit the existing page instead.
+                        </p>
+                      )}
                       {selectedBlank?.needsShopifySync ? (
                         <p className="text-xs text-muted-foreground mt-1">
-                          This catalog product is not linked to a Shopify product in this store
-                          (or the link is stale). Finishing this page will create/send it to the
-                          store. Having a customizer page elsewhere does not mean it is already
-                          on Shopify here.
+                          This product is not on Shopify in this store yet — finishing Create Page will
+                          send it. Deleting a customizer page does not remove the Shopify product, so
+                          products that were already sent stay listed without “will be created”.
                         </p>
                       ) : null}
                       {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
@@ -1742,6 +1827,13 @@ export default function AdminCustomizerPages() {
                       <p className="text-xs text-muted-foreground mt-1">
                         Auto-filled from product name — feel free to edit.
                       </p>
+                      {titleAlreadyUsedForProduct && (
+                        <p className="text-xs text-destructive mt-1 font-medium">
+                          This title is already used for this product
+                          {titleAlreadyUsedForProduct.status === "active" ? " (Live)" : ""}. Choose a
+                          unique title before continuing.
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -1755,12 +1847,19 @@ export default function AdminCustomizerPages() {
                           placeholder="custom-pillow"
                           value={formHandle}
                           onChange={(e) => { setHandleTouched(true); setFormHandle(slugify(e.target.value)); }}
-                          className="rounded-l-none"
+                          className={`rounded-l-none ${handleAlreadyUsed ? "border-destructive" : ""}`}
                         />
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Storefront URL: /pages/{formHandle || "..."}
-                      </p>
+                      {handleAlreadyUsed ? (
+                        <p className="text-xs text-destructive mt-1 font-medium">
+                          /pages/{formHandle} is already used by “{handleAlreadyUsed.title}”. Change the
+                          handle before continuing.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Storefront URL: /pages/{formHandle || "..."}
+                        </p>
+                      )}
                     </div>
 
                     {selectedBlank && (
@@ -1869,6 +1968,8 @@ export default function AdminCustomizerPages() {
                         !formHandle.trim() ||
                         !formProductId ||
                         !!formStyleError ||
+                        !!handleAlreadyUsed ||
+                        !!titleAlreadyUsedForProduct ||
                         selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
                       }
                       onClick={advanceToStep2}
