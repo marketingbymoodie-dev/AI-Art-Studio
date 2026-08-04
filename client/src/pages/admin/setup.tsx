@@ -110,7 +110,8 @@ export default function AdminSetupPage() {
   });
 
   const embedDone = !!status?.embedEnabledGuess;
-  const hasPage = (status?.pagesCount ?? 0) > 0;
+  const hasPreviewed =
+    (status?.productTypesCount ?? 0) > 0 || (status?.pagesCount ?? 0) > 0;
   const printifyDone = !!status?.printifyConnected;
 
   const normalizedShop = shopDomain
@@ -222,7 +223,7 @@ export default function AdminSetupPage() {
           )}
         </StepShell>
 
-        <StepShell number={3} title="Preview a Customizer Product" done={hasPage} locked={!embedDone}>
+        <StepShell number={3} title="Preview a Customizer Product" done={hasPreviewed} locked={!embedDone}>
           {!embedDone ? (
             <p className="text-sm text-muted-foreground">Enable the App Embed above to unlock this step.</p>
           ) : (
@@ -230,24 +231,24 @@ export default function AdminSetupPage() {
           )}
         </StepShell>
 
-        <StepShell number={4} title="Connect Printify to go Live" done={printifyDone} locked={!hasPage}>
-          {!hasPage ? (
+        <StepShell number={4} title="Connect Printify to go Live" done={printifyDone} locked={!hasPreviewed}>
+          {!hasPreviewed ? (
             <p className="text-sm text-muted-foreground">Preview a product above to unlock this step.</p>
           ) : printifyDone ? (
             <p className="text-sm text-muted-foreground">
-              Printify is connected. Use Customizer Pages to set pages Live and manage provider,
-              variants, and pricing.
+              Printify is connected. Use Customizer Pages → Create Page to pick a supplier, apply
+              suggested prices, and go Live.
             </p>
           ) : (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Preview pages are for you only. Connect Printify on Customizer Pages before customers
-                can see a Live page and orders can be fulfilled.
+                In-app Preview does not create a customer-facing page. Connect Printify (Settings), then
+                Create Page to choose a print supplier and set retail prices before going Live.
               </p>
               <Button asChild data-testid="button-connect-printify">
-                <a href="/admin/customizer-pages">
+                <a href="/admin/settings">
                   <Store className="h-4 w-4 mr-2" />
-                  Open Customizer Pages
+                  Open Settings
                 </a>
               </Button>
             </div>

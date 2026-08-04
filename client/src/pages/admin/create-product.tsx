@@ -219,13 +219,13 @@ export default function AdminCreateProduct() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Art Generator Tester</h1>
+            <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Preview Studio</h1>
             <p className="text-muted-foreground max-w-2xl">
-              Test each Customizer page with an artwork generation
-              {canSaveDesigns ? ", optionally save to My Designs," : ""} then send a test order to Printify to check
-              the output matches your mockup here. Size and placement sync for Printify automatically in the
-              background — you don&apos;t need a separate save step before the test order. Important! Delete your
-              test orders in your Printify admin immediately if you have automatic fulfilment already enabled there.
+              Try the AI art studio on your imported products before creating a Live Customizer Page.
+              Generate artwork{canSaveDesigns ? ", optionally save to My Designs," : ""} and send a draft
+              Printify test order when you&apos;re ready. This does not put a page on your storefront — use
+              Customizer Pages → Create Page for that (supplier + suggested pricing required).
+              Delete test orders in Printify if automatic fulfilment is enabled.
             </p>
           </div>
           {selectedProductTypeId && (

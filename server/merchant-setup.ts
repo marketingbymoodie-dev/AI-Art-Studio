@@ -89,6 +89,8 @@ export interface MerchantSetupStatus {
   printifyConnected: boolean;
   pagesCount: number;
   activePagesCount: number;
+  /** Imported product types (in-app Preview) — unlocks Setup step 3 without a Live page. */
+  productTypesCount: number;
   planName: string | null;
   planStatus: string | null;
   quota: { used: number; limit: number | null; plan: string | null };
@@ -124,6 +126,11 @@ export async function getMerchantSetupStatus(
   const embedEnabledGuess = !!(installation as any).embedConfirmedAt;
   const shopAuthorized = isShopAuthorized(installation);
 
+  const productTypes = merchant
+    ? await storage.getProductTypesByMerchant(merchant.id)
+    : [];
+  const productTypesCount = productTypes.length;
+
   const [pagesCount, activePagesCount, quota] = await Promise.all([
     storage.countCustomizerPages(installation.shopDomain),
     storage.countActiveCustomizerPages(installation.shopDomain),
@@ -132,7 +139,7 @@ export async function getMerchantSetupStatus(
 
   let nextStep: SetupNextStep = "done";
   if (!embedEnabledGuess) nextStep = "enable_embed";
-  else if (pagesCount === 0) nextStep = "choose_product";
+  else if (productTypesCount === 0 && pagesCount === 0) nextStep = "choose_product";
   else if (!printifyConnected) nextStep = "connect_printify";
 
   return {
@@ -141,6 +148,7 @@ export async function getMerchantSetupStatus(
     printifyConnected,
     pagesCount,
     activePagesCount,
+    productTypesCount,
     planName: plan.planName,
     planStatus: plan.planStatus,
     quota: {

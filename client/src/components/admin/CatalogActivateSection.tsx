@@ -16,15 +16,12 @@ import {
 } from "@/components/ui/collapsible";
 import ConfettiBurst from "@/components/admin/ConfettiBurst";
 import CatalogFilterBar from "@/components/admin/CatalogFilterBar";
-import { ChevronDown, ExternalLink, Loader2, PartyPopper } from "lucide-react";
+import { ChevronDown, Loader2, PartyPopper, Sparkles } from "lucide-react";
 
-interface ExistingPage {
-  id: string;
-  handle: string;
-  title: string;
-  status: string;
-  previewUrl: string;
-  productTypeId: number | null;
+interface ExistingProductType {
+  id: number;
+  name: string;
+  printifyProviderId: number | null;
 }
 
 interface CatalogEntry {
@@ -33,14 +30,13 @@ interface CatalogEntry {
   brand: string | null;
   category: string | null;
   kind: "printify" | "flat" | "aop" | "blocked";
-  existingPage?: ExistingPage | null;
+  existingProductType?: ExistingProductType | null;
 }
 
 interface PreviewResult {
-  page: { id: string | number; handle: string; title: string; status?: string };
   productTypeId: number;
-  previewUrl: string;
-  storefrontUrl: string;
+  productTypeName?: string;
+  openInAppPath: string;
   reused?: boolean;
 }
 
@@ -50,8 +46,8 @@ type ShippingMeta = { shipsFrom?: string[]; shipsTo?: string[] };
 
 /**
  * Platform catalog cards.
- * - preview mode (Setup): Preview many products; per-card Preview Your Page.
- * - catalogue mode (Products Catalogue): same preview CTA + Create Page / Add to store.
+ * Preview → import product_type only, open Preview Studio in-app.
+ * Create Page → Customizer Pages wizard (provider + cost-based pricing → Live).
  */
 export default function CatalogActivateSection({
   mode = "preview",
@@ -77,8 +73,8 @@ export default function CatalogActivateSection({
     mode === "catalogue" ? "Products Catalogue" : "Preview a Customizer Product";
   const defaultDescription =
     mode === "catalogue"
-      ? "Browse ready-to-go products. Preview once per product — reopen anytime. Create Page / Add to store after connecting Printify."
-      : "Preview a product from our ready-to-go catalog. Preview once per product; reopen the same page anytime. No Printify account needed until you go Live.";
+      ? "Try products in Preview Studio (in-app). Create Page chooses your Printify supplier and applies suggested retail before going Live."
+      : "Preview opens the studio inside the app — no storefront page yet. Connect Printify, then Create Page to pick a supplier and set prices.";
 
   const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({
     queryKey: ["/api/appai/setup/catalog"],
@@ -165,7 +161,7 @@ export default function CatalogActivateSection({
           );
         }
         throw new Error(
-          (typeof body.error === "string" && body.error) || "Failed to preview this product.",
+          (typeof body.error === "string" && body.error) || "Failed to prepare this product for preview.",
         );
       }
       return { blueprintId, result: body as PreviewResult };
@@ -175,16 +171,14 @@ export default function CatalogActivateSection({
       setPreviewsByBlueprint((prev) => ({ ...prev, [blueprintId]: result }));
       setPendingBlueprintId(null);
       queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
       queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/catalog"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      if (result.previewUrl) {
-        window.open(result.previewUrl, "_blank");
-      }
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      navigate(result.openInAppPath || `/admin/create-product?productTypeId=${result.productTypeId}`);
     },
     onError: (err: Error) => {
       setPendingBlueprintId(null);
-      toast({ title: "Couldn't preview that product", description: err.message, variant: "destructive" });
+      toast({ title: "Couldn't open preview", description: err.message, variant: "destructive" });
     },
   });
 
@@ -193,46 +187,24 @@ export default function CatalogActivateSection({
   function resolvePreview(entry: CatalogEntry): PreviewResult | null {
     const local = previewsByBlueprint[entry.blueprintId];
     if (local) return local;
-    if (entry.existingPage) {
+    if (entry.existingProductType) {
       return {
-        page: {
-          id: entry.existingPage.id,
-          handle: entry.existingPage.handle,
-          title: entry.existingPage.title,
-          status: entry.existingPage.status,
-        },
-        productTypeId: entry.existingPage.productTypeId ?? 0,
-        previewUrl: entry.existingPage.previewUrl,
-        storefrontUrl: `/pages/${entry.existingPage.handle}`,
+        productTypeId: entry.existingProductType.id,
+        productTypeName: entry.existingProductType.name,
+        openInAppPath: `/admin/create-product?productTypeId=${entry.existingProductType.id}`,
         reused: true,
       };
     }
     return null;
   }
 
-  function handleCreatePage(entry: CatalogEntry, existing?: PreviewResult | null) {
+  function handleCreatePage(entry: CatalogEntry) {
     if (!printifyDone) {
       toast({
         title: "Connect Printify first",
-        description: "Open Customizer Pages and connect Printify before setting a page Live.",
+        description: "Create Page needs your Printify token and Shop ID so we can load suppliers and suggested prices.",
       });
-      navigate("/admin/customizer-pages");
-      return;
-    }
-    if (existing?.page?.id) {
-      navigate(`/admin/customizer-pages?promote=${existing.page.id}`);
-      return;
-    }
-    navigate(`/admin/customizer-pages?createFromBlueprint=${entry.blueprintId}`);
-  }
-
-  function handleCreateAnother(entry: CatalogEntry) {
-    if (!printifyDone) {
-      toast({
-        title: "Connect Printify first",
-        description: "A second page for the same product needs your Printify token and a unique title.",
-      });
-      navigate("/admin/customizer-pages");
+      navigate("/admin/settings");
       return;
     }
     navigate(`/admin/customizer-pages?createFromBlueprint=${entry.blueprintId}`);
@@ -298,13 +270,7 @@ export default function CatalogActivateSection({
                       <div className="flex flex-col items-end gap-1 shrink-0">
                         <Badge variant="outline">{entry.kind}</Badge>
                         {preview && (
-                          <Badge variant={preview.page.status === "active" ? "default" : "secondary"}>
-                            {preview.page.status === "active"
-                              ? "Live"
-                              : preview.page.status === "disabled"
-                                ? "Disabled"
-                                : "Preview available"}
-                          </Badge>
+                          <Badge variant="secondary">Ready in app</Badge>
                         )}
                       </div>
                     </div>
@@ -332,54 +298,31 @@ export default function CatalogActivateSection({
                         <CollapsibleContent className="text-xs text-muted-foreground space-y-1 pb-1">
                           <p>Printify blueprint {entry.blueprintId}</p>
                           <p>Kind: {entry.kind}</p>
-                          {preview && (
-                            <p>
-                              Page: /pages/{preview.page.handle} ({preview.page.status || "preview"})
-                            </p>
-                          )}
+                          {preview && <p>Imported product type #{preview.productTypeId}</p>}
                         </CollapsibleContent>
                       </Collapsible>
                     )}
 
-                    {preview ? (
-                      <div className="space-y-2 mt-auto">
-                        <div className="flex items-center gap-1.5 text-sm text-green-700 dark:text-green-400">
-                          <PartyPopper className="h-4 w-4" />
-                          {preview.page.status === "active" ? "Live page ready" : "Ready to preview"}
-                        </div>
-                        <Button
-                          size="sm"
-                          className="w-full shimmer-btn"
-                          onClick={() => window.open(preview.previewUrl, "_blank")}
-                          data-testid={`button-open-preview-${entry.blueprintId}`}
-                        >
-                          <span className="relative z-10 flex items-center justify-center">
-                            <ExternalLink className="h-3.5 w-3.5 mr-2" />
-                            Preview Your Page
-                          </span>
-                        </Button>
-                        {preview.page.status !== "active" ? (
+                    <div className="flex flex-col gap-2 mt-auto">
+                      {preview ? (
+                        <>
+                          <div className="flex items-center gap-1.5 text-sm text-green-700 dark:text-green-400">
+                            <PartyPopper className="h-4 w-4" />
+                            Ready in Preview Studio
+                          </div>
                           <Button
                             size="sm"
-                            variant="outline"
-                            className="w-full"
-                            onClick={() => handleCreatePage(entry, preview)}
+                            className="w-full shimmer-btn"
+                            onClick={() => navigate(preview.openInAppPath)}
+                            data-testid={`button-open-preview-${entry.blueprintId}`}
                           >
-                            Add to store
+                            <span className="relative z-10 flex items-center justify-center">
+                              <Sparkles className="h-3.5 w-3.5 mr-2" />
+                              Open Preview Studio
+                            </span>
                           </Button>
-                        ) : printifyDone ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="w-full"
-                            onClick={() => handleCreateAnother(entry)}
-                          >
-                            Create another page
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-2 mt-auto">
+                        </>
+                      ) : (
                         <Button
                           size="sm"
                           disabled={isPending}
@@ -389,13 +332,16 @@ export default function CatalogActivateSection({
                           {isPending && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
                           Preview
                         </Button>
-                        {mode === "catalogue" && (
-                          <Button size="sm" variant="outline" onClick={() => handleCreatePage(entry, null)}>
-                            Create Page
-                          </Button>
-                        )}
-                      </div>
-                    )}
+                      )}
+                      <Button
+                        size="sm"
+                        variant={preview ? "outline" : "default"}
+                        className="w-full"
+                        onClick={() => handleCreatePage(entry)}
+                      >
+                        Create Page
+                      </Button>
+                    </div>
                   </div>
                 );
               })}

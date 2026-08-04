@@ -18140,6 +18140,35 @@ ${orientationExtra}
 
     const initialStatus = allowed ? "active" : "disabled";
 
+    // Live Create Page requires an explicit print provider + positive retail prices.
+    // (Disabled overflow pages may still be created; Set Live is gated on PATCH.)
+    if (initialStatus === "active") {
+      const ptForLiveGate =
+        ptForSync ||
+        (incomingProductTypeId ? await storage.getProductType(incomingProductTypeId) : undefined);
+      if (ptForLiveGate && !ptForLiveGate.printifyProviderId) {
+        return res.status(400).json({
+          error: "Choose a Printify print provider before creating a Live customizer page.",
+          code: "PROVIDER_REQUIRED",
+        });
+      }
+      if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+        return res.status(400).json({
+          error: "Suggested retail prices from Printify are required before creating a Live customizer page.",
+          code: "PRICES_REQUIRED",
+        });
+      }
+      for (const [vid, price] of Object.entries(variantPrices)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.`,
+            code: "PRICES_REQUIRED",
+          });
+        }
+      }
+    }
+
     // Resolve variant + product info via Admin API.
     // New flow: merchant selects a product → fetch product and use its first variant.
     // Legacy flow: merchant sends baseVariantId directly → look up variant then product.
@@ -18547,6 +18576,19 @@ ${orientationExtra}
           return res.status(400).json({
             error: "Connect Printify in Settings before setting a page Live.",
             code: "PRINTIFY_NOT_CONNECTED",
+          });
+        }
+        const livePrice = parseFloat(String(dbPage.baseProductPrice || "0"));
+        if (!Number.isFinite(livePrice) || livePrice <= 0) {
+          return res.status(400).json({
+            error: "Set retail prices (Resync Prices or Create Page pricing) before setting a page Live.",
+            code: "PRICES_REQUIRED",
+          });
+        }
+        if (linkedProductTypeEarly && !linkedProductTypeEarly.printifyProviderId) {
+          return res.status(400).json({
+            error: "Choose a Printify print provider before setting a page Live.",
+            code: "PROVIDER_REQUIRED",
           });
         }
         // Plan limit check — Live (active) pages only
@@ -20173,41 +20215,30 @@ ${orientationExtra}
     }
   }));
 
-  /** GET /api/appai/setup/catalog — published platform catalogue + any existing page per blueprint. */
+  /** GET /api/appai/setup/catalog — published platform catalogue + imported product types. */
   app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const entries = await listMerchantImportableCatalog();
     const resolved = await resolveShopInstallation(req);
     const existingByBlueprint = new Map<
       number,
-      { id: string; handle: string; title: string; status: string; previewUrl: string; productTypeId: number | null }
+      { id: number; name: string; printifyProviderId: number | null }
     >();
 
     if (resolved.ok) {
       const shop = resolved.installation.shopDomain;
-      const pages = await storage.listCustomizerPages(shop);
       let merchant =
         (resolved.installation.merchantId
           ? await storage.getMerchant(resolved.installation.merchantId)
           : null) || (await storage.getMerchantByShop(shop));
       const types = merchant ? await storage.getProductTypesByMerchant(merchant.id) : [];
-      const typeById = new Map(types.map((t) => [t.id, t]));
-
-      const rank = (status: string) =>
-        status === "preview" ? 0 : status === "active" ? 1 : 2;
-
-      for (const page of pages) {
-        const pt = page.productTypeId != null ? typeById.get(page.productTypeId) : undefined;
-        const bp = pt?.printifyBlueprintId;
+      for (const pt of types) {
+        const bp = pt.printifyBlueprintId;
         if (bp == null) continue;
-        const prev = existingByBlueprint.get(bp);
-        if (!prev || rank(page.status) < rank(prev.status)) {
+        if (!existingByBlueprint.has(bp)) {
           existingByBlueprint.set(bp, {
-            id: page.id,
-            handle: page.handle,
-            title: page.title,
-            status: page.status,
-            previewUrl: buildPreviewUrl(shop, page.handle),
-            productTypeId: page.productTypeId,
+            id: pt.id,
+            name: pt.name,
+            printifyProviderId: pt.printifyProviderId ?? null,
           });
         }
       }
@@ -20220,7 +20251,7 @@ ${orientationExtra}
         brand: e.brand ?? null,
         category: e.category ?? null,
         kind: e.kind,
-        existingPage: existingByBlueprint.get(e.printifyBlueprintId) ?? null,
+        existingProductType: existingByBlueprint.get(e.printifyBlueprintId) ?? null,
       })),
     });
   }));
@@ -20239,12 +20270,10 @@ ${orientationExtra}
   }));
 
   /**
-   * POST /api/appai/setup/activate-product — the setup rail's "instant" product
-   * activation: imports a published platform-catalogue blueprint using the
-   * PLATFORM's Printify token (public catalog reads only — never the
-   * merchant's own account), auto-creates the Shopify product, and creates an
-   * active customizer page — all without requiring the merchant to have
-   * connected Printify yet.
+   * POST /api/appai/setup/activate-product — in-app Preview only.
+   * Imports a published platform-catalogue blueprint as a merchant product_type
+   * (platform Printify catalog token). Does NOT create a Shopify Online Store
+   * page or customizer_pages row — Live pages come only from Create Page.
    */
   app.post("/api/appai/setup/activate-product", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
@@ -20260,7 +20289,7 @@ ${orientationExtra}
           resolved.error === "SHOP_NOT_ACTIVE" ||
           resolved.error === "REAUTH_REQUIRED" ||
           resolved.error === "SHOP_NOT_CONNECTED"
-            ? "Reconnect the app from Shopify Admin so we can save a fresh access token, then retry Activate."
+            ? "Reconnect the app from Shopify Admin so we can save a fresh access token, then retry Preview."
             : undefined,
       });
     }
@@ -20268,7 +20297,6 @@ ${orientationExtra}
     const installation = await ensureTrialStarted(resolved.installation);
     const shop = installation.shopDomain;
     const userId = req.user.claims.sub;
-    // Fresh staging DBs often have an install row before /api/merchant has run.
     let merchant = await storage.getMerchantByUserId(userId);
     if (!merchant) {
       merchant = await storage.getOrCreateShopifyMerchant(shop);
@@ -20294,10 +20322,10 @@ ${orientationExtra}
 
     const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
     let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
+    const reused = !!productType;
 
     const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
 
-    // Pull Printify blueprint description so Product Details show on the preview page.
     async function fetchBlueprintDescription(token: string): Promise<string | null> {
       try {
         const bpRes = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
@@ -20316,11 +20344,10 @@ ${orientationExtra}
     if (!productType) {
       if (!platformPrintifyToken) {
         console.error("[setup/activate-product] PRINTIFY_API_TOKEN not configured on the platform");
-        return res.status(503).json({ error: "Instant activation isn't available right now. Please try again shortly." });
+        return res.status(503).json({ error: "Instant preview isn't available right now. Please try again shortly." });
       }
 
-      // Auto-select a print provider for this blueprint using the platform
-      // token (public Printify catalog read — no merchant account required).
+      // Temporary provider for in-app mockups only — Create Page forces a merchant pick.
       let providerId: number | undefined;
       try {
         const providersRes = await fetch(
@@ -20361,10 +20388,9 @@ ${orientationExtra}
     }
 
     if (!productType) {
-      return res.status(500).json({ error: "Failed to activate product." });
+      return res.status(500).json({ error: "Failed to prepare product for preview." });
     }
 
-    // Backfill empty description on already-imported types (older Preview runs).
     if (!String(productType.description || "").trim() && platformPrintifyToken) {
       const description = await fetchBlueprintDescription(platformPrintifyToken);
       if (description) {
@@ -20373,86 +20399,11 @@ ${orientationExtra}
       }
     }
 
-    // Preview never creates a second page for the same product type — reuse the existing one.
-    // A second Live page (unique H1) is only via Create Page after the merchant connects Printify.
-    const existingForType = await storage.listCustomizerPagesByProductTypeId(productType.id);
-    const shopPages = existingForType.filter((p) => p.shop === shop);
-    const rank = (status: string) =>
-      status === "preview" ? 0 : status === "active" ? 1 : 2;
-    const reused = shopPages.slice().sort((a, b) => rank(a.status) - rank(b.status))[0];
-    if (reused) {
-      return res.status(200).json({
-        page: reused,
-        productTypeId: productType.id,
-        previewUrl: buildPreviewUrl(shop, reused.handle),
-        storefrontUrl: `/pages/${reused.handle}`,
-        reused: true,
-      });
-    }
-
-    // Auto-send the product to Shopify (unlisted) if it isn't there yet.
-    let shopifyProductId: string | undefined = productType.shopifyProductId ?? undefined;
-    if (!shopifyProductId) {
-      try {
-        const created = await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
-        shopifyProductId = created.shopifyProductId;
-      } catch (e: any) {
-        return res.status(400).json({ error: e?.message || "Failed to send product to Shopify." });
-      }
-    }
-
-    const prodResult = await shopifyApiCall(shop, installation.accessToken, `products/${shopifyProductId}.json?fields=id,title,handle,variants`);
-    if (!prodResult.ok || !prodResult.data?.product?.variants?.length) {
-      return res.status(500).json({ error: "Product was created but could not be loaded. Please try again." });
-    }
-    const product = prodResult.data.product;
-    const variant = product.variants[0];
-
-    // Unique customizer page handle derived from the catalog label.
-    const baseHandle = entry.label.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `product-${blueprintId}`;
-    let handle = baseHandle;
-    let suffix = 2;
-    while (await storage.getCustomizerPageByHandle(shop, handle)) {
-      handle = `${baseHandle}-${suffix++}`;
-    }
-
-    // Setup / catalogue Preview always creates a draft page — does not consume Live plan slots.
-    const initialStatus = "preview";
-
-    const pageBody = await shopifyApiCall(shop, installation.accessToken, "pages.json", {
-      method: "POST",
-      body: JSON.stringify({
-        page: { title: entry.label, handle, body_html: buildCustomizerBootHtml(), published: true },
-      }),
-    });
-    if (!pageBody.ok || !pageBody.data?.page?.id) {
-      return res.status(500).json({ error: `Failed to create Shopify page: ${pageBody.error ?? "unknown error"}` });
-    }
-    const shopifyPage = pageBody.data.page;
-
-    const styleConfig = defaultStyleConfigForDesignerType(productType.designerType);
-    const page = await storage.createCustomizerPage({
-      shop,
-      shopifyPageId: String(shopifyPage.id),
-      handle,
-      title: entry.label,
-      baseVariantId: String(variant.id),
-      baseProductId: String(variant.product_id ?? product.id),
-      baseProductHandle: product.handle,
-      baseProductTitle: product.title ?? "",
-      baseVariantTitle: variant.title ?? "",
-      baseProductPrice: variant.price ?? "",
+    return res.status(reused ? 200 : 201).json({
       productTypeId: productType.id,
-      styleConfig: styleConfig as any,
-      status: initialStatus,
-    });
-
-    return res.status(201).json({
-      page,
-      productTypeId: productType.id,
-      previewUrl: buildPreviewUrl(shop, handle),
-      storefrontUrl: `/pages/${handle}`,
-      reused: false,
+      productTypeName: productType.name ?? entry.label,
+      reused,
+      openInAppPath: `/admin/create-product?productTypeId=${productType.id}`,
     });
   }));
 

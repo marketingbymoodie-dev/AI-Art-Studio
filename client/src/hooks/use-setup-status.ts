@@ -10,6 +10,7 @@ export interface MerchantSetupStatus {
   printifyConnected: boolean;
   pagesCount: number;
   activePagesCount: number;
+  productTypesCount?: number;
   planName: string | null;
   planStatus: string | null;
   quota: { used: number; limit: number | null; plan: string | null };
