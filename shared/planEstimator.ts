@@ -6,6 +6,7 @@
  */
 
 import { STOREFRONT_FREE_GENERATION_DEFAULT } from "./storefront-credits";
+import { extractDimensionalKey } from "./productVariantOptions";
 
 /** Working average platform cost per AI generation (USD). */
 export const DEFAULT_PLATFORM_COST_PER_GEN_USD = 0.05;
@@ -224,8 +225,9 @@ export function looksLikeSizeToken(raw: string | null | undefined): boolean {
   if (!t) return false;
   if (/^(xxs|xs|s|m|l|xl|2xl|3xl|4xl|5xl|xxl|xxx?l)$/i.test(t)) return true;
   if (/^(one\s*size|onesize|os)$/i.test(t)) return true;
-  // 16" x 16", 18 x 18 in, etc.
-  if (/\d+(\.\d+)?\s*("|″|in|inch|inches)?\s*[x×]\s*\d+/i.test(t)) return true;
+  // Comforter / tapestry dims — same permissive parser as storefront import
+  // (handles `104''_x_88"`, `68-x-88`, `88 × 88`, etc.).
+  if (extractDimensionalKey(t)) return true;
   // Bare numeric sizes (e.g. phone case models are handled via labels elsewhere)
   if (/^\d+(\.\d+)?\s*("|″|in)?$/i.test(t)) return true;
   return false;
@@ -233,6 +235,8 @@ export function looksLikeSizeToken(raw: string | null | undefined): boolean {
 
 export function normalizeApparelSize(raw: string): string {
   const t = String(raw || "").trim();
+  const dim = extractDimensionalKey(t);
+  if (dim) return dim;
   if (/^(xxl)$/i.test(t)) return "2XL";
   if (/^(xxxl)$/i.test(t)) return "3XL";
   if (/^(xxs|xs|s|m|l|xl|2xl|3xl|4xl|5xl)$/i.test(t)) return t.toUpperCase();
@@ -240,9 +244,14 @@ export function normalizeApparelSize(raw: string): string {
   return t;
 }
 
-/** Merchant-facing size names (S→Small, M→Med, L→Lge). */
+/** Merchant-facing size names (S→Small, M→Med, L→Lge; 104x88 → 104" x 88"). */
 export function formatSizeForDisplay(size: string): string {
   const n = normalizeApparelSize(size);
+  const dim = extractDimensionalKey(n);
+  if (dim) {
+    const [w, h] = dim.split("x");
+    return `${w}" x ${h}"`;
+  }
   const map: Record<string, string> = {
     S: "Small",
     M: "Med",
@@ -263,6 +272,11 @@ export function sizeSortRank(size: string): number {
   const idx = (APPAREL_SIZE_ORDER as readonly string[]).indexOf(n);
   if (idx >= 0) return idx;
   if (/^one\s*size$/i.test(n)) return 200;
+  const dimKey = extractDimensionalKey(n);
+  if (dimKey) {
+    const [w, h] = dimKey.split("x").map(Number);
+    return 1000 + w * 1000 + h;
+  }
   const dim = n.match(/(\d+(?:\.\d+)?)/);
   if (dim) return 1000 + parseFloat(dim[1]!);
   return 5000;
@@ -434,11 +448,22 @@ export function priceDriversFromCostsPayload(args: {
     });
   }
 
-  // Labels-only fallback (no COGS yet) — one row per size from labels.
-  if (rows.length === 0 && Object.keys(labels).length > 0) {
+  // Union label sizes even when some COGS rows already parsed — otherwise a
+  // size with a quirky Printify token (or missing cost) disappears from Insights
+  // while smaller sizes with clean labels still show (comforter 104" x 88").
+  if (Object.keys(labels).length > 0) {
+    const haveFrontSize = new Set(
+      rows
+        .filter((r) => normalizePrintAreaKey(r.printAreaKey) === "front")
+        .map((r) => normalizeApparelSize(String(r.size || "")).toLowerCase())
+        .filter(Boolean),
+    );
     for (const [vid, label] of Object.entries(labels)) {
       const parsed = parseSizeColorFromLabel(label);
       if (!parsed.size) continue;
+      const key = parsed.size.toLowerCase();
+      if (haveFrontSize.has(key)) continue;
+      haveFrontSize.add(key);
       rows.push({
         supplierVariantId: vid,
         size: parsed.size,

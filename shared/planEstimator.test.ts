@@ -181,4 +181,51 @@ describe("priceDriversFromCostsPayload / One size filter", () => {
     expect(drivers.map((d) => d.label)).toEqual(["Small — Front", "Med — Front"]);
     expect(drivers.every((d) => d.cogsCents == null)).toBe(true);
   });
+
+  it("keeps comforter 104x88 when Printify uses '' / _x_ tokens", () => {
+    const drivers = priceDriversFromCostsPayload({
+      costs: {
+        "1": 11882,
+        "2": 12544,
+        "3": 13511,
+        "4": 16000,
+      },
+      printifyVariantLabels: {
+        "1": `68" x 88"`,
+        "2": `68" x 92"`,
+        "3": `88" x 88"`,
+        "4": `104''_x_88"`,
+      },
+    });
+    expect(drivers.map((d) => d.label)).toEqual([
+      `68" x 88" — Front`,
+      `68" x 92" — Front`,
+      `88" x 88" — Front`,
+      `104" x 88" — Front`,
+    ]);
+    expect(drivers.find((d) => d.size === "104x88")?.cogsCents).toBe(16000);
+  });
+
+  it("unions a label-only comforter size when COGS skipped that variant", () => {
+    const drivers = priceDriversFromCostsPayload({
+      costs: {
+        "1": 11882,
+        "2": 12544,
+        "3": 13511,
+      },
+      printifyVariantLabels: {
+        "1": `68" x 88"`,
+        "2": `68" x 92"`,
+        "3": `88" x 88"`,
+        "4": `104'' x 88''`,
+      },
+    });
+    expect(drivers.map((d) => d.label)).toEqual([
+      `68" x 88" — Front`,
+      `68" x 92" — Front`,
+      `88" x 88" — Front`,
+      `104" x 88" — Front`,
+    ]);
+    expect(drivers.find((d) => d.size === "104x88")?.cogsCents).toBeNull();
+  });
 });
