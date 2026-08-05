@@ -11078,7 +11078,9 @@ ${orientationExtra}
 
       const types = isPlatformAdminRequest(req)
         ? await storage.getActiveProductTypes()
-        : (await storage.getProductTypesByMerchant(merchant.id)).filter((pt) => pt.isActive);
+        : (await storage.getProductTypesByMerchant(merchant.id)).filter(
+            (pt) => pt.isActive && !(pt as any).isPlatformCatalogRef,
+          );
 
       res.json(types);
     } catch (error) {
@@ -16408,33 +16410,54 @@ ${orientationExtra}
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
-      // Prefer merchant's imported product type — client usually hits /costs/:id instead,
-      // but keep this path complete for catalogue-only picks.
+      // Prefer merchant import, then platform catalogue reference PI row.
       const ownTypes = await storage.getProductTypesByMerchant(merchant.id);
-      const own = ownTypes.find((pt) => Number(pt.printifyBlueprintId) === blueprintId);
-      if (own) {
-        const fromPi = await costsResponseFromProductIntelligence(own);
+      const own = ownTypes.find(
+        (pt) => Number(pt.printifyBlueprintId) === blueprintId && !(pt as any).isPlatformCatalogRef,
+      );
+      const { findPlatformCatalogRef, ensurePlatformCatalogueProductType } = await import(
+        "./platform-catalogue-pi"
+      );
+      let platformRef = await findPlatformCatalogRef(blueprintId);
+      if (!own && (!platformRef || req.query.refresh === "1")) {
+        platformRef =
+          (await ensurePlatformCatalogueProductType(blueprintId)) || platformRef;
+      }
+      const preferred = own || platformRef;
+      if (preferred && req.query.refresh === "1" && own) {
+        try {
+          const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+          await syncProductTypeIntelligence(preferred, printifyToken, {
+            source: "insights_refresh",
+            skipShipping: false,
+          });
+        } catch (e) {
+          console.warn(`[blueprint-costs] refresh sync failed for pt ${preferred.id}:`, e);
+        }
+      }
+      if (preferred) {
+        const fromPi = await costsResponseFromProductIntelligence(preferred);
         if (fromPi) {
           return res.json({
             ...fromPi,
             blueprintId,
-            productTypeId: own.id,
-            providerId: own.printifyProviderId ?? null,
-            source: "merchant_product_type",
+            productTypeId: preferred.id,
+            providerId: preferred.printifyProviderId ?? null,
+            source: own ? "merchant_product_type" : "platform_catalog_ref",
           });
         }
-        const cached = parsePrintifyCostsCache(own.printifyCosts);
+        const cached = parsePrintifyCostsCache(preferred.printifyCosts);
         if (Object.keys(cached.front).length > 0) {
-          const labels = buildActivePrintifyVariantLabels(own);
+          const labels = buildActivePrintifyVariantLabels(preferred);
           return res.json({
             costs: cached.front,
             costsBoth: cached.both,
             printifyVariantLabels: labels,
             supportsBothSides: Object.keys(cached.both).length > 0,
             blueprintId,
-            productTypeId: own.id,
-            providerId: own.printifyProviderId ?? null,
-            source: "merchant_product_type_cache",
+            productTypeId: preferred.id,
+            providerId: preferred.printifyProviderId ?? null,
+            source: own ? "merchant_product_type_cache" : "platform_catalog_ref_cache",
           });
         }
       }
@@ -16546,7 +16569,7 @@ ${orientationExtra}
         printifyVariantLabels,
         supportsBothSides: Object.keys(costsBoth).length > 0,
         blueprintId,
-        productTypeId: own?.id ?? null,
+        productTypeId: preferred?.id ?? null,
         providerId: chosenProviderId,
         source: Object.keys(costs).length > 0 ? "platform_or_catalog" : "empty",
       });
@@ -16570,9 +16593,13 @@ ${orientationExtra}
 
       const productType = await storage.getProductType(productTypeId);
       if (!productType) return res.status(404).json({ error: "Product type not found" });
-      const accessErr = adminProductTypeAccessError(req, productType, merchant);
-      if (accessErr) {
-        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      // Platform catalogue refs are readable by any merchant (Profit Insights); mutations stay owner-only.
+      const isPlatformRef = !!(productType as any).isPlatformCatalogRef;
+      if (!isPlatformRef) {
+        const accessErr = adminProductTypeAccessError(req, productType, merchant);
+        if (accessErr) {
+          return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+        }
       }
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
@@ -16582,7 +16609,10 @@ ${orientationExtra}
       // Escape hatch: ?legacy=1 keeps the Printify waterfall for operator debugging.
       const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
       const useLegacyWaterfall = req.query.legacy === "1";
-      const apiToken = merchant.printifyApiToken;
+      const catalogToken = (process.env.PRINTIFY_API_TOKEN || "").trim();
+      const apiToken = isPlatformRef
+        ? catalogToken || merchant.printifyApiToken
+        : merchant.printifyApiToken;
 
       if (!apiToken) {
         return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
@@ -19616,9 +19646,12 @@ ${orientationExtra}
       return res.status(400).json({ error: "Invalid product type id" });
     }
     const productType = await storage.getProductType(productTypeId);
-    const accessErr = adminProductTypeAccessError(req, productType, merchant);
-    if (accessErr) {
-      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+    if (!(productType as any).isPlatformCatalogRef) {
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
     }
     await ensureBackfillForProductType(productTypeId);
     const data = await getProductIntelligence(productTypeId);
@@ -19632,9 +19665,12 @@ ${orientationExtra}
     if (!merchant) return res.status(404).json({ error: "Merchant not found" });
     const productTypeId = parseInt(req.params.productTypeId, 10);
     const productType = await storage.getProductType(productTypeId);
-    const accessErr = adminProductTypeAccessError(req, productType, merchant);
-    if (accessErr) {
-      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+    if (!(productType as any).isPlatformCatalogRef) {
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
     }
     const history = await getVariantCostHistory(
       productTypeId,
@@ -20702,6 +20738,8 @@ ${orientationExtra}
       for (const pt of types) {
         const bp = pt.printifyBlueprintId;
         if (bp == null) continue;
+        // Skip platform catalogue reference rows — merchants get their own imports only.
+        if ((pt as any).isPlatformCatalogRef) continue;
         if (!existingByBlueprint.has(bp)) {
           existingByBlueprint.set(bp, {
             id: pt.id,
@@ -20712,6 +20750,9 @@ ${orientationExtra}
       }
     }
 
+    const { platformCatalogRefIdByBlueprint } = await import("./platform-catalogue-pi");
+    const platformRefByBp = await platformCatalogRefIdByBlueprint();
+
     return res.json({
       entries: entries.map((e) => ({
         blueprintId: e.printifyBlueprintId,
@@ -20720,6 +20761,8 @@ ${orientationExtra}
         category: e.category ?? null,
         kind: e.kind,
         existingProductType: existingByBlueprint.get(e.printifyBlueprintId) ?? null,
+        /** Platform PI reference product_type (COGS/shipping/OOS) for Insights. */
+        platformProductTypeId: platformRefByBp.get(e.printifyBlueprintId) ?? null,
       })),
     });
   }));

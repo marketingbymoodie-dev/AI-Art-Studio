@@ -86,6 +86,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "product_health",              type: "TEXT NOT NULL DEFAULT 'healthy'" },
   { table: "product_types",         column: "variant_availability",        type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "shipping_snapshot",           type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "is_platform_catalog_ref",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -410,6 +411,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "product_health" text NOT NULL DEFAULT 'healthy',
         "variant_availability" text DEFAULT '{}',
         "shipping_snapshot" text DEFAULT '{}',
+        "is_platform_catalog_ref" boolean NOT NULL DEFAULT false,
         "created_at" timestamp DEFAULT now() NOT NULL,
         "updated_at" timestamp DEFAULT now() NOT NULL
       )

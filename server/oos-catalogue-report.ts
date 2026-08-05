@@ -334,22 +334,34 @@ export async function runOosCatalogueScan(
 
   providerNameCache.clear();
 
+  const catalogToken = (process.env.PRINTIFY_API_TOKEN || "").trim();
   const productTypes = (await storage.getActiveProductTypes()).filter(
-    (pt) => pt.printifyBlueprintId != null && pt.printifyProviderId != null && pt.merchantId != null,
+    (pt) =>
+      pt.printifyBlueprintId != null &&
+      pt.printifyProviderId != null &&
+      (pt.merchantId != null || !!(pt as any).isPlatformCatalogRef),
   );
 
   const merchantCache = new Map<string, Merchant | null>();
   const results: OosScanRowResult[] = [];
 
   for (const pt of productTypes) {
-    const merchantId = pt.merchantId as string;
-    let merchant = merchantCache.get(merchantId);
-    if (merchant === undefined) {
-      merchant = (await storage.getMerchant(merchantId)) ?? null;
-      merchantCache.set(merchantId, merchant);
+    const isPlatformRef = !!(pt as any).isPlatformCatalogRef;
+    const merchantId = (pt.merchantId as string) || "platform";
+    let apiToken: string | undefined;
+    if (isPlatformRef && catalogToken) {
+      apiToken = catalogToken;
+    } else if (pt.merchantId) {
+      let merchant = merchantCache.get(merchantId);
+      if (merchant === undefined) {
+        merchant = (await storage.getMerchant(merchantId)) ?? null;
+        merchantCache.set(merchantId, merchant);
+      }
+      apiToken = merchant?.printifyApiToken?.trim() || catalogToken || undefined;
+    } else {
+      apiToken = catalogToken || undefined;
     }
-    const apiToken = merchant?.printifyApiToken?.trim();
-    if (!apiToken) continue; // Printify not connected for this merchant — nothing to scan
+    if (!apiToken) continue; // Printify not connected — nothing to scan
 
     try {
       results.push(await scanProductTypeStock(pt, apiToken));

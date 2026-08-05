@@ -2,6 +2,8 @@
 
 Single source of truth for catalogue COGS, shipping snapshots, variant availability, and product health — hosted on **`product_types`**, not `platform_catalog_blueprints`.
 
+Published platform-catalogue blueprints also get a **platform reference** `product_type` (`isPlatformCatalogRef=true`, owned by the owner-shop merchant) so daily Product Sync / OOS cover the full catalogue for Profit Insights — even before a merchant imports the product.
+
 ## Roles
 
 | Layer | Role |
@@ -37,8 +39,9 @@ Single source of truth for catalogue COGS, shipping snapshots, variant availabil
 - Catalogue (platform admin): `POST /api/admin/product-intelligence/sync-all`
 - Daily: `POST /api/internal/product-intelligence-sync` (`PRODUCT_SYNC_SECRET` or `OOS_SCAN_SECRET`)
 - Operator UI: sync-all + runs/events/health under Product Intelligence
+- Ensure coverage: `ensurePlatformCatalogueProductTypes()` in [`server/platform-catalogue-pi.ts`](../server/platform-catalogue-pi.ts) runs at the start of catalogue-wide sync (and on-demand from Insights blueprint-costs)
 
-Sync updates availability maps, OOS summary fields, health, and PI cost rows.
+Sync updates availability maps, OOS summary fields, health, PI cost rows, shipping (`shippingFirstItemUsCents` + `shippingSnapshot`), and appends `catalog_variant_cost_history` on changes.
 
 ## Cost reads (DB-first)
 

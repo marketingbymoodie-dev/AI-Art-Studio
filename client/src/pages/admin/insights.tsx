@@ -45,6 +45,8 @@ type CatalogEntry = {
     name: string;
     printifyProviderId: number | null;
   } | null;
+  /** Platform PI reference — COGS/shipping for Insights when not imported. */
+  platformProductTypeId?: number | null;
 };
 
 type PiVariant = {
@@ -79,6 +81,7 @@ type MixRow = {
 type PickerProduct = {
   blueprintId: number;
   label: string;
+  /** Merchant import if present, else platform catalogue PI reference. */
   productTypeId: number | null;
 };
 
@@ -100,14 +103,14 @@ function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct
     const blueprintId = Number(e.blueprintId);
     if (!Number.isFinite(blueprintId) || blueprintId <= 0) continue;
     const label = stripProviderSuffix(e.label) || e.label;
-    const productTypeId = e.existingProductType?.id ?? null;
+    const productTypeId = e.existingProductType?.id ?? e.platformProductTypeId ?? null;
     const existing = byBlueprint.get(blueprintId);
     if (!existing || (productTypeId != null && existing.productTypeId == null)) {
       byBlueprint.set(blueprintId, { blueprintId, label, productTypeId });
     }
   }
 
-  // Same display name from different blueprints → keep one (prefer imported).
+  // Same display name from different blueprints → keep one (prefer one with PI id).
   const byLabel = new Map<string, PickerProduct>();
   for (const p of byBlueprint.values()) {
     const key = p.label.trim().toLowerCase();
@@ -135,36 +138,24 @@ export default function AdminInsightsPage() {
   const fetchCostsMutation = useMutation({
     mutationFn: async (args: { blueprintId: string; productTypeId: string }) => {
       setSyncingKey(args.blueprintId);
-      if (args.productTypeId) {
-        try {
-          await apiRequest("POST", `/api/admin/product-types/${args.productTypeId}/product-sync`);
-        } catch {
-          /* still try costs */
-        }
-        const res = await apiRequest(
-          "GET",
-          `/api/admin/printify/costs/${args.productTypeId}?legacy=1`,
-        );
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || "Could not load COGS");
-        }
-        return { key: args.blueprintId, productTypeId: args.productTypeId, data: await res.json() };
-      }
+      // Blueprint-costs is DB-first (merchant import or platform ref) and
+      // ?refresh=1 runs Product Sync for that row — works for catalogue-only picks.
       const res = await apiRequest(
         "GET",
-        `/api/admin/printify/blueprint-costs/${args.blueprintId}`,
+        `/api/admin/printify/blueprint-costs/${args.blueprintId}?refresh=1`,
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "Could not load COGS");
       }
-      return { key: args.blueprintId, productTypeId: "", data: await res.json() };
+      return { key: args.blueprintId, productTypeId: args.productTypeId, data: await res.json() };
     },
     onSuccess: ({ key, productTypeId, data }) => {
-      queryClient.setQueryData(["/api/admin/printify/blueprint-costs", key, "insights"], data);
+      queryClient.setQueryData(
+        ["/api/admin/printify/blueprint-costs", key, "insights", productTypeId],
+        data,
+      );
       if (productTypeId) {
-        queryClient.setQueryData(["/api/admin/printify/costs", productTypeId, "insights"], data);
         queryClient.invalidateQueries({
           queryKey: ["/api/admin/product-intelligence", productTypeId],
         });
@@ -461,7 +452,7 @@ export default function AdminInsightsPage() {
                         <Label>
                           Size / print areas{" "}
                           <span className="font-normal text-muted-foreground">
-                            — Cost of goods (not including shipping)
+                            — COGS (ex. shipping)
                           </span>
                         </Label>
                         {busy ? (

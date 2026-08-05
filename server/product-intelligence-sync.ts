@@ -595,6 +595,16 @@ export async function runCatalogueProductSync(opts: {
     }
   }
 
+  // Catalogue-wide runs: seed platform reference product_types for every published blueprint.
+  if (!opts.productTypeId) {
+    try {
+      const { ensurePlatformCatalogueProductTypes } = await import("./platform-catalogue-pi");
+      await ensurePlatformCatalogueProductTypes();
+    } catch (e) {
+      console.error(`${TAG} ensurePlatformCatalogueProductTypes failed:`, e);
+    }
+  }
+
   const [run] = await db
     .insert(catalogSyncRuns)
     .values({
@@ -605,12 +615,20 @@ export async function runCatalogueProductSync(opts: {
     })
     .returning();
 
+  const catalogToken = (process.env.PRINTIFY_API_TOKEN || "").trim();
+
   const allPts = opts.productTypeId
     ? ([await storage.getProductType(opts.productTypeId)].filter(Boolean) as ProductType[])
     : (await storage.getActiveProductTypes()).filter(
-        (pt) => pt.printifyBlueprintId != null && pt.printifyProviderId != null && pt.merchantId != null,
+        (pt) =>
+          pt.printifyBlueprintId != null &&
+          pt.printifyProviderId != null &&
+          (pt.merchantId != null || !!(pt as any).isPlatformCatalogRef),
       );
 
+  // Deduplicate: when both a merchant import and a platform ref share the same
+  // blueprint+provider, sync both (merchant retail strategy may differ) — but
+  // prefer catalog token for platform refs.
   const merchantCache = new Map<string, Merchant | null>();
   const results: ProductSyncResult[] = [];
   let productsChecked = 0;
@@ -622,13 +640,22 @@ export async function runCatalogueProductSync(opts: {
   let syncFailures = 0;
 
   for (const pt of allPts) {
-    const merchantId = pt.merchantId as string;
-    let merchant = merchantCache.get(merchantId);
-    if (merchant === undefined) {
-      merchant = (await storage.getMerchant(merchantId)) ?? null;
-      merchantCache.set(merchantId, merchant);
+    const isPlatformRef = !!(pt as any).isPlatformCatalogRef;
+    let apiToken: string | undefined;
+    if (isPlatformRef && catalogToken) {
+      apiToken = catalogToken;
+    } else if (pt.merchantId) {
+      const merchantId = pt.merchantId as string;
+      let merchant = merchantCache.get(merchantId);
+      if (merchant === undefined) {
+        merchant = (await storage.getMerchant(merchantId)) ?? null;
+        merchantCache.set(merchantId, merchant);
+      }
+      apiToken = merchant?.printifyApiToken?.trim() || catalogToken || undefined;
+    } else {
+      apiToken = catalogToken || undefined;
     }
-    const apiToken = merchant?.printifyApiToken?.trim();
+
     if (!apiToken) {
       syncFailures++;
       results.push({
@@ -649,7 +676,8 @@ export async function runCatalogueProductSync(opts: {
     const result = await syncProductTypeIntelligence(pt, apiToken, {
       syncRunId: run.id,
       source: opts.source,
-      skipShipping: opts.skipShipping,
+      // Platform refs always pull shipping for Insights; merchant sync respects flag.
+      skipShipping: isPlatformRef ? false : opts.skipShipping,
     });
     results.push(result);
     productsChecked++;

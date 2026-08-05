@@ -1,10 +1,11 @@
 # Daily catalogue OOS report
 
 Scans every active `product_types` row that has a Printify blueprint/provider
-and a connected merchant, checks stock for the size/color variants that
+(merchant imports **and** platform catalogue reference rows with
+`isPlatformCatalogRef`), checks stock for the size/color variants that
 product actually sells (not the full catalog — unused colors don't false
 alarm), and emails a short daily digest. Report-only: nothing is
-auto-disabled on the storefront.
+auto-disabled on the storefront. Platform refs use `PRINTIFY_API_TOKEN`.
 
 Code: [`server/oos-catalogue-report.ts`](../server/oos-catalogue-report.ts),
 [`shared/printifyAvailability.ts`](../shared/printifyAvailability.ts),

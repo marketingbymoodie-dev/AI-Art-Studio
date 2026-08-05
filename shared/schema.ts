@@ -548,6 +548,11 @@ export const productTypes = pgTable("product_types", {
   productHealth: text("product_health").notNull().default("healthy"),
   variantAvailability: text("variant_availability").default("{}"),
   shippingSnapshot: text("shipping_snapshot").default("{}"),
+  /**
+   * Platform catalogue reference row (not a merchant import). Used so daily
+   * Product Sync / OOS cover every published blueprint for Profit Insights.
+   */
+  isPlatformCatalogRef: boolean("is_platform_catalog_ref").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
