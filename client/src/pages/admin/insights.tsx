@@ -149,9 +149,13 @@ export default function AdminInsightsPage() {
       let data = (await res.json()) as CostsPayload & { productTypeId?: number | null };
       const ptId = data.productTypeId != null ? String(data.productTypeId) : args.productTypeId;
 
-      // If blueprint path still has no COGS, force the Printify waterfall on the product type.
+      // If blueprint path still has no COGS, or front exists but Front/Back is missing
+      // on a dual-sided product, force the Printify waterfall on the product type.
       const costCount = Object.keys(data.costs || {}).length;
-      if (costCount === 0 && ptId) {
+      const bothCount = Object.keys(data.costsBoth || {}).length;
+      const needsBothFallback =
+        costCount > 0 && bothCount === 0 && data.supportsBothSides === true;
+      if ((costCount === 0 || needsBothFallback) && ptId) {
         const legacy = await apiRequest(
           "GET",
           `/api/admin/printify/costs/${ptId}?refresh=1&legacy=1`,

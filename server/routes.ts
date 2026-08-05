@@ -15948,32 +15948,131 @@ ${orientationExtra}
     return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
   }
 
-  // Helper: fetch the first placeholder position for a blueprint/provider/variant
-  async function fetchPlaceholderPosition(
+  /**
+   * All print placeholder positions for a blueprint/provider/variant.
+   * Zip hoodie AOP (bp 451) has front_left/front_right — not "front". Sending only
+   * "front" yields Printify 422 "Placeholder: front is invalid".
+   */
+  async function fetchPlaceholderPositions(
     blueprintId: number,
     providerId: number,
     variantId: number,
-    apiToken: string
-  ): Promise<string> {
+    apiToken: string,
+  ): Promise<string[]> {
     try {
       const resp = await fetch(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variantId}/placeholders.json`,
-        { headers: { Authorization: `Bearer ${apiToken}` } }
+        { headers: { Authorization: `Bearer ${apiToken}` } },
       );
       if (resp.ok) {
         const data = await resp.json();
         const list = data.placeholders || data || [];
-        if (Array.isArray(list) && list.length > 0 && list[0]?.position) {
-          console.log(`[Printify Costs] Placeholder position: "${list[0].position}"`);
-          return list[0].position;
+        if (Array.isArray(list) && list.length > 0) {
+          const positions = [
+            ...new Set(
+              list
+                .map((p: any) => String(p?.position || "").trim())
+                .filter(Boolean),
+            ),
+          ];
+          if (positions.length > 0) {
+            console.log(`[Printify Costs] Placeholder positions: ${positions.join(", ")}`);
+            return positions;
+          }
         }
       } else {
         console.warn(`[Printify Costs] Placeholder API returned ${resp.status}`);
       }
     } catch (e) {
-      console.warn("[Printify Costs] Could not fetch placeholder position:", e);
+      console.warn("[Printify Costs] Could not fetch placeholder positions:", e);
     }
-    return "front";
+    return ["front"];
+  }
+
+  async function fetchPlaceholderPosition(
+    blueprintId: number,
+    providerId: number,
+    variantId: number,
+    apiToken: string,
+  ): Promise<string> {
+    const positions = await fetchPlaceholderPositions(blueprintId, providerId, variantId, apiToken);
+    return positions[0] || "front";
+  }
+
+  /** True when catalog/product placeholders include a separate back print area (not AOP). */
+  async function catalogHasBackPlaceholder(
+    blueprintId: number,
+    providerId: number,
+    apiToken: string,
+    opts?: { isAllOverPrint?: boolean; placeholderPositionsJson?: string | null; doubleSidedPrint?: boolean | null },
+  ): Promise<boolean> {
+    if (opts?.isAllOverPrint) return false;
+    try {
+      const positions: { position?: string }[] =
+        typeof opts?.placeholderPositionsJson === "string"
+          ? JSON.parse(opts.placeholderPositionsJson || "[]")
+          : [];
+      if (positions.some((p) => String(p?.position || "").toLowerCase() === "back")) return true;
+    } catch {
+      /* continue */
+    }
+    if (opts?.doubleSidedPrint) return true;
+    try {
+      const vResp = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        { headers: { Authorization: `Bearer ${apiToken}` } },
+      );
+      if (!vResp.ok) return false;
+      const vData = await vResp.json();
+      const variants = Array.isArray(vData.variants) ? vData.variants : [];
+      for (const sample of variants.slice(0, 8)) {
+        const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+        if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+
+  /** Probe front+back COGS via a short-lived Printify product (DTG dual-sided). */
+  async function probeFrontAndBackCosts(args: {
+    shopId: string;
+    apiToken: string;
+    blueprintId: number;
+    providerId: number;
+    variantIds: number[];
+    baseMockupImages?: Record<string, unknown>;
+  }): Promise<Record<string, number>> {
+    if (!args.shopId?.trim() || args.variantIds.length === 0) return {};
+    const images = (args.baseMockupImages || {}) as Record<string, any>;
+    const mockupUrl: string | undefined =
+      images.primary ||
+      images.front ||
+      (Object.values(images).find((v) => typeof v === "string") as string | undefined);
+    const probeImageId = await ensureCostProbeImageId(args.apiToken, mockupUrl);
+    if (!probeImageId) {
+      console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
+      return {};
+    }
+    const chunk = args.variantIds.slice(0, 10);
+    const bothProbe = await tryCreateTempProductForCosts(
+      args.shopId,
+      args.apiToken,
+      args.blueprintId,
+      args.providerId,
+      chunk,
+      ["front", "back"],
+      { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 },
+    );
+    if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+      console.log(`[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs`);
+      return bothProbe.costs;
+    }
+    console.warn(
+      `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
+    );
+    return {};
   }
 
   // Helper: attempt to create a Printify temp product and immediately delete it, returning variant costs.
@@ -16226,7 +16325,8 @@ ${orientationExtra}
   }> {
     const diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
     const firstVid = variantIds[0];
-    const position = await fetchPlaceholderPosition(blueprintId, providerId, firstVid, apiToken);
+    // Use every placeholder (AOP zip hoodies need front_left/front_right/… — not bare "front").
+    const positions = await fetchPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
     // Printify API rejects temp product creation if variant count exceeds 100.
@@ -16371,7 +16471,7 @@ ${orientationExtra}
             : ""),
       );
       const sBulk = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, availableBulk, position, imageSpec(probeImageId),
+        shopId, apiToken, blueprintId, providerId, availableBulk, positions, imageSpec(probeImageId),
       );
       diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
       if (sBulk.success && hasCosts(sBulk.costs)) {
@@ -16385,15 +16485,15 @@ ${orientationExtra}
     // Strategy 1: smaller chunk with probe image
     if (probeImageId) {
       console.log("[Printify Costs] Strategy 1 — chunk with probe image");
-      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, imageSpec(probeImageId));
+      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, positions, imageSpec(probeImageId));
       diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
       if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
       console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
     }
 
     // Strategy 2: print_areas with empty images array
-    console.log(`[Printify Costs] Strategy 2 — empty images[] for position "${position}"`);
-    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, null);
+    console.log(`[Printify Costs] Strategy 2 — empty images[] for positions [${positions.join(", ")}]`);
+    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, positions, null);
     diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
     if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
 
@@ -16402,7 +16502,7 @@ ${orientationExtra}
     // Strategy 3: upload the stored mockup image URL (Printify CDN) — if different from probe source
     if (mockupUrl && probeImageId) {
       console.log(`[Printify Costs] Strategy 3a — mockup URL chunk: ${mockupUrl.slice(0, 80)}`);
-      const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, positions, imageSpec(probeImageId));
       diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
       if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
     }
@@ -16417,7 +16517,7 @@ ${orientationExtra}
         const batch = singleProbeIds.slice(i, i + BATCH);
         await Promise.all(batch.map(async (vid) => {
           const probe = await tryCreateTempProductForCosts(
-            shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
+            shopId, apiToken, blueprintId, providerId, [vid], positions, imageSpec(probeImageId),
           );
           if (probe.success && hasCosts(probe.costs)) {
             Object.assign(probedCosts, probe.costs);
@@ -16529,10 +16629,107 @@ ${orientationExtra}
         }
       }
       if (preferred) {
+        const shopIdForProbe =
+          merchant.printifyShopId?.trim() ||
+          process.env.PRINTIFY_SHOP_ID?.trim() ||
+          "";
+        const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
+
+        /** Fill costsBoth when the blueprint has a back print area (baseball tee, etc.). */
+        const ensureBothSideCosts = async (
+          front: Record<string, number>,
+          both: Record<string, number>,
+          variantIds: number[],
+          allowProbe: boolean,
+        ): Promise<Record<string, number>> => {
+          if (Object.keys(both).length > 0) return both;
+          if (!allowProbe) return both;
+          if (Object.keys(front).length === 0) return both;
+          if (!preferred?.printifyProviderId) return both;
+          const wantsBoth = await catalogHasBackPlaceholder(
+            blueprintId,
+            Number(preferred.printifyProviderId),
+            printifyToken,
+            {
+              isAllOverPrint: !!(preferred as any).isAllOverPrint,
+              placeholderPositionsJson: (preferred as any).placeholderPositions,
+              doubleSidedPrint: !!(preferred as any).doubleSidedPrint,
+            },
+          );
+          if (!wantsBoth) return both;
+          if (!shopIdForProbe) {
+            console.warn("[blueprint-costs] Front+back probe skipped — no Printify shop ID");
+            return both;
+          }
+          const probed = await probeFrontAndBackCosts({
+            shopId: shopIdForProbe,
+            apiToken: printifyToken,
+            blueprintId,
+            providerId: Number(preferred.printifyProviderId),
+            variantIds:
+              variantIds.length > 0
+                ? variantIds
+                : Object.keys(front)
+                    .map((id) => Number(id))
+                    .filter((id) => Number.isFinite(id) && id > 0),
+          });
+          if (Object.keys(probed).length === 0) return both;
+          await storage.updateProductType(preferred.id, {
+            printifyCosts: serializePrintifyCostsCache({ front, both: probed }),
+          });
+          preferred = (await storage.getProductType(preferred.id)) || preferred;
+          try {
+            const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+            await syncProductTypeIntelligence(preferred, printifyToken, {
+              source: "blueprint_costs_both_probe",
+              skipShipping: true,
+            });
+            preferred = (await storage.getProductType(preferred.id)) || preferred;
+          } catch (e) {
+            console.warn("[blueprint-costs] both-probe PI sync failed:", e);
+          }
+          return probed;
+        };
+
         let fromPi = await costsResponseFromProductIntelligence(preferred);
         if (fromPi) {
+          const vmIds = Object.keys(fromPi.costs)
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0);
+          // Probe front+back on Fetch/refresh — not on every passive Insights load.
+          const costsBoth = await ensureBothSideCosts(
+            fromPi.costs,
+            fromPi.costsBoth || {},
+            vmIds,
+            forceRefresh,
+          );
+          if (Object.keys(costsBoth).length > 0 && Object.keys(fromPi.costsBoth || {}).length === 0) {
+            fromPi = (await costsResponseFromProductIntelligence(preferred)) || {
+              ...fromPi,
+              costsBoth,
+              supportsBothSides: true,
+            };
+          }
+          const bothOut =
+            Object.keys(fromPi.costsBoth || {}).length > 0 ? fromPi.costsBoth : costsBoth;
+          const hasBoth = Object.keys(bothOut || {}).length > 0;
+          const catalogBoth =
+            hasBoth ||
+            (preferred.printifyProviderId != null &&
+              (await catalogHasBackPlaceholder(
+                blueprintId,
+                Number(preferred.printifyProviderId),
+                printifyToken,
+                {
+                  isAllOverPrint: !!(preferred as any).isAllOverPrint,
+                  placeholderPositionsJson: (preferred as any).placeholderPositions,
+                  doubleSidedPrint: !!(preferred as any).doubleSidedPrint,
+                },
+              )));
           return res.json({
             ...fromPi,
+            costsBoth: bothOut,
+            supportsBothSides: catalogBoth,
             blueprintId,
             productTypeId: preferred.id,
             providerId: preferred.printifyProviderId ?? null,
@@ -16569,15 +16766,11 @@ ${orientationExtra}
                 : dual.variants
                     .map((v: any) => Number(v?.id))
                     .filter((id: number) => Number.isFinite(id) && id > 0);
-            const shopId =
-              merchant.printifyShopId?.trim() ||
-              process.env.PRINTIFY_SHOP_ID?.trim() ||
-              "";
             const resolved = await resolvePrintifyProductionCosts({
               merchant: {
                 id: merchant.id,
                 printifyApiToken: printifyToken,
-                printifyShopId: shopId,
+                printifyShopId: shopIdForProbe,
               },
               blueprintId,
               providerId: Number(preferred.printifyProviderId),
@@ -16586,8 +16779,14 @@ ${orientationExtra}
               baseMockupImages: {},
             });
             if (Object.keys(resolved.costs).length > 0) {
+              // Always allow both-probe after a fresh front waterfall (first-time fill).
+              const costsBoth = await ensureBothSideCosts(resolved.costs, {}, ids, true);
               await storage.updateProductType(preferred.id, {
-                printifyCosts: serializePrintifyCostsCache(resolved.costs),
+                printifyCosts: serializePrintifyCostsCache(
+                  Object.keys(costsBoth).length > 0
+                    ? { front: resolved.costs, both: costsBoth }
+                    : resolved.costs,
+                ),
               });
               const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
               await syncProductTypeIntelligence(
@@ -16618,11 +16817,42 @@ ${orientationExtra}
         }
         if (Object.keys(cached.front).length > 0) {
           const labels = buildActivePrintifyVariantLabels(preferred);
+          const vm = JSON.parse(preferred.variantMap || "{}") as Record<
+            string,
+            { printifyVariantId?: number }
+          >;
+          const ids = [
+            ...new Set(
+              Object.values(vm)
+                .map((e) => Number(e?.printifyVariantId))
+                .filter((id) => Number.isFinite(id) && id > 0),
+            ),
+          ];
+          const costsBoth = await ensureBothSideCosts(
+            cached.front,
+            cached.both,
+            ids,
+            forceRefresh,
+          );
+          const hasBoth = Object.keys(costsBoth).length > 0;
+          const catalogBoth =
+            hasBoth ||
+            (preferred.printifyProviderId != null &&
+              (await catalogHasBackPlaceholder(
+                blueprintId,
+                Number(preferred.printifyProviderId),
+                printifyToken,
+                {
+                  isAllOverPrint: !!(preferred as any).isAllOverPrint,
+                  placeholderPositionsJson: (preferred as any).placeholderPositions,
+                  doubleSidedPrint: !!(preferred as any).doubleSidedPrint,
+                },
+              )));
           return res.json({
             costs: cached.front,
-            costsBoth: cached.both,
+            costsBoth,
             printifyVariantLabels: labels,
-            supportsBothSides: Object.keys(cached.both).length > 0,
+            supportsBothSides: catalogBoth,
             blueprintId,
             productTypeId: preferred.id,
             providerId: preferred.printifyProviderId ?? null,
@@ -17028,33 +17258,14 @@ ${orientationExtra}
       const hasBackPlaceholder = needsBothProbe || (await detectHasBackPlaceholder());
 
       if (hasBackPlaceholder && shopId?.trim() && costApiToken && !productType.isAllOverPrint) {
-        const mockupUrl: string | undefined =
-          baseMockupImages.primary ||
-          baseMockupImages.front ||
-          (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
-        const probeImageId = await ensureCostProbeImageId(costApiToken, mockupUrl);
-        if (probeImageId) {
-          const chunk = printifyVariantIds.slice(0, 10);
-          const bothProbe = await tryCreateTempProductForCosts(
-            shopId,
-            costApiToken,
-            productType.printifyBlueprintId,
-            productType.printifyProviderId,
-            chunk,
-            ["front", "back"],
-            { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 },
-          );
-          if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
-            costsBoth = bothProbe.costs;
-            console.log(`[Printify Costs] Front+back probe extracted ${Object.keys(costsBoth).length} costs`);
-          } else {
-            console.warn(
-              `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
-            );
-          }
-        } else {
-          console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
-        }
+        costsBoth = await probeFrontAndBackCosts({
+          shopId,
+          apiToken: costApiToken,
+          blueprintId: productType.printifyBlueprintId,
+          providerId: productType.printifyProviderId,
+          variantIds: printifyVariantIds,
+          baseMockupImages,
+        });
       } else if (hasBackPlaceholder && !shopId?.trim()) {
         console.warn(
           "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
