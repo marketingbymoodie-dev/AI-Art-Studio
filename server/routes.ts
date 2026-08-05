@@ -16423,20 +16423,21 @@ ${orientationExtra}
         platformRef =
           (await ensurePlatformCatalogueProductType(blueprintId)) || platformRef;
       }
-      const preferred = own || platformRef;
-      if (preferred && req.query.refresh === "1" && own) {
+      let preferred = own || platformRef;
+      if (preferred && req.query.refresh === "1") {
         try {
           const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
           await syncProductTypeIntelligence(preferred, printifyToken, {
             source: "insights_refresh",
             skipShipping: false,
           });
+          preferred = (await storage.getProductType(preferred.id)) || preferred;
         } catch (e) {
           console.warn(`[blueprint-costs] refresh sync failed for pt ${preferred.id}:`, e);
         }
       }
       if (preferred) {
-        const fromPi = await costsResponseFromProductIntelligence(preferred);
+        let fromPi = await costsResponseFromProductIntelligence(preferred);
         if (fromPi) {
           return res.json({
             ...fromPi,
@@ -16446,7 +16447,83 @@ ${orientationExtra}
             source: own ? "merchant_product_type" : "platform_catalog_ref",
           });
         }
-        const cached = parsePrintifyCostsCache(preferred.printifyCosts);
+        let cached = parsePrintifyCostsCache(preferred.printifyCosts);
+        // Catalog variants often omit cost fields (esp. AOP). Probe via production-cost
+        // waterfall and persist onto the product_type so the next read is instant.
+        if (Object.keys(cached.front).length === 0 && preferred.printifyProviderId != null) {
+          try {
+            const { fetchPrintifyProviderVariantsDual } = await import(
+              "./printifyCatalogVariantsFetch"
+            );
+            const dual = await fetchPrintifyProviderVariantsDual(
+              blueprintId,
+              Number(preferred.printifyProviderId),
+              printifyToken,
+            );
+            const vm = JSON.parse(preferred.variantMap || "{}") as Record<
+              string,
+              { printifyVariantId?: number }
+            >;
+            const printifyVariantIds = [
+              ...new Set(
+                Object.values(vm)
+                  .map((e) => Number(e?.printifyVariantId))
+                  .filter((id) => Number.isFinite(id) && id > 0),
+              ),
+            ];
+            const ids =
+              printifyVariantIds.length > 0
+                ? printifyVariantIds
+                : dual.variants
+                    .map((v: any) => Number(v?.id))
+                    .filter((id: number) => Number.isFinite(id) && id > 0);
+            const shopId =
+              merchant.printifyShopId?.trim() ||
+              process.env.PRINTIFY_SHOP_ID?.trim() ||
+              "";
+            const resolved = await resolvePrintifyProductionCosts({
+              merchant: {
+                id: merchant.id,
+                printifyApiToken: printifyToken,
+                printifyShopId: shopId,
+              },
+              blueprintId,
+              providerId: Number(preferred.printifyProviderId),
+              catalogVariants: dual.variants,
+              printifyVariantIds: ids,
+              baseMockupImages: {},
+            });
+            if (Object.keys(resolved.costs).length > 0) {
+              await storage.updateProductType(preferred.id, {
+                printifyCosts: serializePrintifyCostsCache(resolved.costs),
+              });
+              const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+              await syncProductTypeIntelligence(
+                (await storage.getProductType(preferred.id)) || preferred,
+                printifyToken,
+                { source: "blueprint_costs_waterfall", skipShipping: false },
+              );
+              preferred = (await storage.getProductType(preferred.id)) || preferred;
+              fromPi = await costsResponseFromProductIntelligence(preferred);
+              if (fromPi) {
+                return res.json({
+                  ...fromPi,
+                  blueprintId,
+                  productTypeId: preferred.id,
+                  providerId: preferred.printifyProviderId ?? null,
+                  source: `waterfall:${resolved.source}`,
+                });
+              }
+              cached = parsePrintifyCostsCache(preferred.printifyCosts);
+            } else {
+              console.warn(
+                `[blueprint-costs] waterfall returned no costs for bp ${blueprintId} (${resolved.source})`,
+              );
+            }
+          } catch (e) {
+            console.warn(`[blueprint-costs] waterfall probe failed for bp ${blueprintId}:`, e);
+          }
+        }
         if (Object.keys(cached.front).length > 0) {
           const labels = buildActivePrintifyVariantLabels(preferred);
           return res.json({
@@ -16458,6 +16535,20 @@ ${orientationExtra}
             productTypeId: preferred.id,
             providerId: preferred.printifyProviderId ?? null,
             source: own ? "merchant_product_type_cache" : "platform_catalog_ref_cache",
+          });
+        }
+        // Still no COGS — return size labels so Insights can show the dropdown (with "no COGS").
+        const labelsOnly = buildActivePrintifyVariantLabels(preferred);
+        if (Object.keys(labelsOnly).length > 0) {
+          return res.json({
+            costs: {},
+            costsBoth: {},
+            printifyVariantLabels: labelsOnly,
+            supportsBothSides: false,
+            blueprintId,
+            productTypeId: preferred.id,
+            providerId: preferred.printifyProviderId ?? null,
+            source: "labels_only",
           });
         }
       }

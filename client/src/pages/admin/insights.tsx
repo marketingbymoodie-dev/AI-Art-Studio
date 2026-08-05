@@ -136,10 +136,8 @@ export default function AdminInsightsPage() {
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
 
   const fetchCostsMutation = useMutation({
-    mutationFn: async (args: { blueprintId: string; productTypeId: string }) => {
+    mutationFn: async (args: { blueprintId: string; productTypeId: string; rowId: string }) => {
       setSyncingKey(args.blueprintId);
-      // Blueprint-costs is DB-first (merchant import or platform ref) and
-      // ?refresh=1 runs Product Sync for that row — works for catalogue-only picks.
       const res = await apiRequest(
         "GET",
         `/api/admin/printify/blueprint-costs/${args.blueprintId}?refresh=1`,
@@ -148,19 +146,69 @@ export default function AdminInsightsPage() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "Could not load COGS");
       }
-      return { key: args.blueprintId, productTypeId: args.productTypeId, data: await res.json() };
+      let data = (await res.json()) as CostsPayload & { productTypeId?: number | null };
+      const ptId = data.productTypeId != null ? String(data.productTypeId) : args.productTypeId;
+
+      // If blueprint path still has no COGS, force the Printify waterfall on the product type.
+      const costCount = Object.keys(data.costs || {}).length;
+      if (costCount === 0 && ptId) {
+        const legacy = await apiRequest(
+          "GET",
+          `/api/admin/printify/costs/${ptId}?refresh=1&legacy=1`,
+        );
+        if (legacy.ok) {
+          data = await legacy.json();
+        }
+      }
+
+      const drivers = priceDriversFromCostsPayload({
+        costs: data.costs,
+        costsBoth: data.costsBoth,
+        printifyVariantLabels: data.printifyVariantLabels,
+      });
+      if (drivers.length === 0) {
+        throw new Error(
+          "Printify returned no size/COGS for this product. Try again in a minute, or check the supplier is in stock.",
+        );
+      }
+      return {
+        key: args.blueprintId,
+        productTypeId: ptId,
+        rowId: args.rowId,
+        data,
+        driverCount: drivers.length,
+        hasCogs: drivers.some((d) => d.cogsCents != null),
+      };
     },
-    onSuccess: ({ key, productTypeId, data }) => {
+    onSuccess: ({ key, productTypeId, rowId, data, hasCogs }) => {
+      // Keep query key aligned with useQueries (productTypeId may have been empty before ensure).
       queryClient.setQueryData(
-        ["/api/admin/printify/blueprint-costs", key, "insights", productTypeId],
+        ["/api/admin/printify/blueprint-costs", key, "insights", productTypeId || ""],
+        data,
+      );
+      queryClient.setQueryData(
+        ["/api/admin/printify/blueprint-costs", key, "insights", ""],
         data,
       );
       if (productTypeId) {
+        setRows((prev) =>
+          prev.map((r) => (r.id === rowId ? { ...r, productTypeId } : r)),
+        );
+        // Also write under the new productTypeId key once the row updates.
+        queryClient.setQueryData(
+          ["/api/admin/printify/blueprint-costs", key, "insights", productTypeId],
+          data,
+        );
         queryClient.invalidateQueries({
           queryKey: ["/api/admin/product-intelligence", productTypeId],
         });
       }
-      toast({ title: "Costs refreshed", description: "Size / print options updated." });
+      toast({
+        title: hasCogs ? "Costs refreshed" : "Sizes loaded",
+        description: hasCogs
+          ? "Size / print options updated."
+          : "Sizes loaded but COGS are still missing from Printify — try Fetch again shortly.",
+      });
     },
     onError: (err: Error) => {
       toast({ title: "COGS unavailable", description: err.message, variant: "destructive" });
@@ -196,19 +244,24 @@ export default function AdminInsightsPage() {
       const row = rows.find((r) => r.blueprintId === blueprintId);
       const productTypeId = row?.productTypeId || "";
       return {
+        // Always blueprint-costs (ensures platform ref + waterfall when needed).
         queryKey: ["/api/admin/printify/blueprint-costs", blueprintId, "insights", productTypeId],
         queryFn: async (): Promise<CostsPayload | null> => {
-          if (productTypeId) {
-            const res = await apiRequest("GET", `/api/admin/printify/costs/${productTypeId}`);
-            if (!res.ok) return null;
-            return res.json();
-          }
           const res = await apiRequest(
             "GET",
             `/api/admin/printify/blueprint-costs/${blueprintId}`,
           );
           if (!res.ok) return null;
-          return res.json();
+          const data = (await res.json()) as CostsPayload & { productTypeId?: number | null };
+          // Persist discovered platform/merchant productTypeId onto the mix row.
+          if (data.productTypeId != null && row && !row.productTypeId) {
+            const pt = String(data.productTypeId);
+            const rowId = row.id;
+            setRows((prev) =>
+              prev.map((r) => (r.id === rowId && !r.productTypeId ? { ...r, productTypeId: pt } : r)),
+            );
+          }
+          return data;
         },
         enabled: !!blueprintId,
         staleTime: 60_000,
@@ -477,6 +530,7 @@ export default function AdminInsightsPage() {
                                 fetchCostsMutation.mutate({
                                   blueprintId: row.blueprintId,
                                   productTypeId: row.productTypeId,
+                                  rowId: row.id,
                                 })
                               }
                             >
@@ -525,6 +579,7 @@ export default function AdminInsightsPage() {
                                     fetchCostsMutation.mutate({
                                       blueprintId: row.blueprintId,
                                       productTypeId: row.productTypeId,
+                                      rowId: row.id,
                                     })
                                   }
                                 >

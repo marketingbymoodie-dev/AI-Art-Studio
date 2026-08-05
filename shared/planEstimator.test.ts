@@ -162,4 +162,16 @@ describe("priceDriversFromCostsPayload / One size filter", () => {
       "Unisex Cotton Crew Tee",
     );
   });
+
+  it("builds size rows from labels when COGS are missing", () => {
+    const drivers = priceDriversFromCostsPayload({
+      costs: {},
+      printifyVariantLabels: {
+        "1": "S / Black",
+        "2": "M / Black",
+      },
+    });
+    expect(drivers.map((d) => d.label)).toEqual(["Small — Front", "Med — Front"]);
+    expect(drivers.every((d) => d.cogsCents == null)).toBe(true);
+  });
 });

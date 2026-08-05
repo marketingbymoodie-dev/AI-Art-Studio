@@ -344,9 +344,22 @@ export function stripProviderSuffix(name: string): string {
     .trim();
 }
 
+function labelForVariantId(
+  labels: Record<string, string>,
+  vid: string,
+): string {
+  return (
+    labels[vid] ||
+    labels[String(Number(vid))] ||
+    ""
+  );
+}
+
 /**
  * Build size × print-area drivers from a Printify costs API payload
  * (includes front + optional front+back).
+ * When costs are missing but labels exist, still emits size rows (cogsCents null)
+ * so the Insights dropdown is not empty after a failed cost probe.
  */
 export function priceDriversFromCostsPayload(args: {
   costs?: Record<string, number> | null;
@@ -358,7 +371,7 @@ export function priceDriversFromCostsPayload(args: {
 
   for (const [vid, cents] of Object.entries(args.costs || {})) {
     if (!Number.isFinite(cents) || cents <= 0) continue;
-    const label = labels[vid] || vid;
+    const label = labelForVariantId(labels, vid) || vid;
     const parsed = parseSizeColorFromLabel(label);
     if (!parsed.size) continue;
     rows.push({
@@ -371,7 +384,7 @@ export function priceDriversFromCostsPayload(args: {
   }
   for (const [vid, cents] of Object.entries(args.costsBoth || {})) {
     if (!Number.isFinite(cents) || cents <= 0) continue;
-    const label = labels[vid] || vid;
+    const label = labelForVariantId(labels, vid) || vid;
     const parsed = parseSizeColorFromLabel(label);
     if (!parsed.size) continue;
     rows.push({
@@ -381,6 +394,21 @@ export function priceDriversFromCostsPayload(args: {
       printAreaKey: "both",
       baseCogsCents: cents,
     });
+  }
+
+  // Labels-only fallback (no COGS yet) — one row per size from labels.
+  if (rows.length === 0 && Object.keys(labels).length > 0) {
+    for (const [vid, label] of Object.entries(labels)) {
+      const parsed = parseSizeColorFromLabel(label);
+      if (!parsed.size) continue;
+      rows.push({
+        supplierVariantId: vid,
+        size: parsed.size,
+        color: parsed.color,
+        printAreaKey: "front",
+        baseCogsCents: null,
+      });
+    }
   }
 
   return filterSpuriousOneSize(collapseToPriceDriverVariants(rows));
