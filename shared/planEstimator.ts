@@ -262,3 +262,78 @@ export function collapseBlankTitlesToSizes(
     })
     .sort((a, b) => a.size.localeCompare(b.size, undefined, { numeric: true }));
 }
+
+/** Strip " — Printify Choice" / similar provider suffixes from product titles. */
+export function stripProviderSuffix(name: string): string {
+  return String(name || "")
+    .replace(/\s*[—–-]\s*(Printify Choice|Monster Digital|Fulfill Engine|Printify|MWW On Demand)\s*$/i, "")
+    .trim();
+}
+
+function sizeFromVariantLabel(label: string): string {
+  const t = String(label || "").trim();
+  if (!t) return "";
+  const sizePart = t.includes(" / ") ? t.split(" / ")[0]!.trim() : t;
+  // Normalize common apparel codes to uppercase (l → L) but keep dimension labels.
+  if (/^(xxs|xs|s|m|l|xl|2xl|3xl|4xl|5xl)$/i.test(sizePart)) {
+    return sizePart.toUpperCase();
+  }
+  return sizePart;
+}
+
+/**
+ * Build size × print-area drivers from a Printify costs API payload
+ * (includes front + optional front+back).
+ */
+export function priceDriversFromCostsPayload(args: {
+  costs?: Record<string, number> | null;
+  costsBoth?: Record<string, number> | null;
+  printifyVariantLabels?: Record<string, string> | null;
+}): PriceDriverVariant[] {
+  const labels = args.printifyVariantLabels || {};
+  const rows: PiLikeRow[] = [];
+
+  for (const [vid, cents] of Object.entries(args.costs || {})) {
+    if (!Number.isFinite(cents) || cents <= 0) continue;
+    const label = labels[vid] || vid;
+    rows.push({
+      supplierVariantId: vid,
+      size: sizeFromVariantLabel(label) || null,
+      color: label.includes(" / ") ? label.split(" / ").slice(1).join(" / ").trim() : null,
+      printAreaKey: "front",
+      baseCogsCents: cents,
+    });
+  }
+  for (const [vid, cents] of Object.entries(args.costsBoth || {})) {
+    if (!Number.isFinite(cents) || cents <= 0) continue;
+    const label = labels[vid] || vid;
+    rows.push({
+      supplierVariantId: vid,
+      size: sizeFromVariantLabel(label) || null,
+      color: label.includes(" / ") ? label.split(" / ").slice(1).join(" / ").trim() : null,
+      printAreaKey: "both",
+      baseCogsCents: cents,
+    });
+  }
+
+  return filterSpuriousOneSize(collapseToPriceDriverVariants(rows));
+}
+
+/** Drop synthetic "One size" buckets when real sizes exist for the product. */
+export function filterSpuriousOneSize(variants: PriceDriverVariant[]): PriceDriverVariant[] {
+  const real = variants.filter((v) => !/^one\s*size$/i.test(v.size));
+  return real.length > 0 ? real : variants;
+}
+
+/** Prefer costs-derived drivers (front+both), else PI, else blanks; always filter One size noise. */
+export function mergePriceDriverSources(args: {
+  fromCosts?: PriceDriverVariant[];
+  fromPi?: PriceDriverVariant[];
+  fromBlanks?: PriceDriverVariant[];
+}): PriceDriverVariant[] {
+  const costs = args.fromCosts ?? [];
+  if (costs.length > 0) return filterSpuriousOneSize(costs);
+  const pi = filterSpuriousOneSize(args.fromPi ?? []);
+  if (pi.length > 0) return pi;
+  return filterSpuriousOneSize(args.fromBlanks ?? []);
+}

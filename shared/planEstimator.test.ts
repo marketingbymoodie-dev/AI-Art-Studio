@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   collapseToPriceDriverVariants,
   estimateMonthlyGenerations,
+  filterSpuriousOneSize,
   pagesNeededFromMix,
   platformAiCostUsd,
+  priceDriversFromCostsPayload,
   recommendPlan,
+  stripProviderSuffix,
   totalMonthlyUnits,
 } from "./planEstimator";
 
@@ -81,5 +84,52 @@ describe("collapseToPriceDriverVariants", () => {
       "XL — front",
       "M — front+back",
     ]);
+  });
+});
+
+describe("priceDriversFromCostsPayload / One size filter", () => {
+  it("builds front and front+back from costs payload", () => {
+    const drivers = priceDriversFromCostsPayload({
+      costs: { "1": 1174, "2": 1174 },
+      costsBoth: { "1": 1500 },
+      printifyVariantLabels: {
+        "1": "M / Black",
+        "2": "L / White",
+      },
+    });
+    expect(drivers.map((d) => d.label).sort()).toEqual([
+      "L — front",
+      "M — front",
+      "M — front+back",
+    ]);
+  });
+
+  it("drops One size when real sizes exist", () => {
+    expect(
+      filterSpuriousOneSize([
+        {
+          key: "a",
+          label: "One size — front",
+          size: "One size",
+          printAreaKey: "front",
+          cogsCents: 100,
+          shippingCents: null,
+        },
+        {
+          key: "b",
+          label: "M — front",
+          size: "M",
+          printAreaKey: "front",
+          cogsCents: 100,
+          shippingCents: null,
+        },
+      ]).map((v) => v.size),
+    ).toEqual(["M"]);
+  });
+
+  it("strips provider suffixes", () => {
+    expect(stripProviderSuffix("Unisex Cotton Crew Tee — Printify Choice")).toBe(
+      "Unisex Cotton Crew Tee",
+    );
   });
 });
