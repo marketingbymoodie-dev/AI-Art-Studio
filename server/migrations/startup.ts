@@ -87,8 +87,10 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "variant_availability",        type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "shipping_snapshot",           type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "is_platform_catalog_ref",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
-  { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 5" },
+  { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 1" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
+  { table: "shopify_installations", column: "credit_reimbursement_mode", type: "TEXT NOT NULL DEFAULT 'appai_discount'" },
+  { table: "shopify_installations", column: "enabled_credit_pack_ids", type: "TEXT NOT NULL DEFAULT '[\"5\"]'" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -313,8 +315,10 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "pending_plan_name" text,
         "pending_plan_effective_at" timestamp,
         "embed_confirmed_at" timestamp,
-        "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 5,
-        "leftover_gens_reminder_bucket_key" text
+        "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 1,
+        "leftover_gens_reminder_bucket_key" text,
+        "credit_reimbursement_mode" text NOT NULL DEFAULT 'appai_discount',
+        "enabled_credit_pack_ids" text NOT NULL DEFAULT '["5"]'
       )
     `,
   },

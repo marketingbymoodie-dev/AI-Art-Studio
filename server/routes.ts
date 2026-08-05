@@ -62,11 +62,15 @@ import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceS
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
+  CREDIT_ENTITLEMENT_MAX_CENTS,
+  CREDIT_PACK_CATALOG,
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_LIMIT,
   STOREFRONT_FREE_GENERATION_MAX,
   STOREFRONT_FREE_GENERATION_MIN,
+  clampEntitlementCents,
   clampStorefrontFreeGens,
+  parseEnabledCreditPackIds,
   resolveCreditPack,
   storefrontArtworksRemaining,
 } from "@shared/storefront-credits";
@@ -9809,13 +9813,24 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      const enabledPackIds = parseEnabledCreditPackIds((installation as any).enabledCreditPackIds);
+      const packs = CREDIT_PACK_CATALOG.filter((p) => enabledPackIds.includes(p.packId));
+      const primary = packs[0] || CREDIT_PACK_CATALOG[0]!;
       return res.json({
         googleClientId: getGoogleOAuthClientId(),
         freeGenerationLimit: clampStorefrontFreeGens(
           (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
         ),
-        creditPackCredits: 5,
-        creditPackPriceUsd: 1,
+        creditPackCredits: primary.credits,
+        creditPackPriceUsd: primary.priceInCents / 100,
+        creditPacks: packs.map((p) => ({
+          id: p.packId,
+          credits: p.credits,
+          priceUsd: p.priceInCents / 100,
+          entitlementUsd: p.entitlementCents / 100,
+          label: p.label,
+        })),
+        creditReimbursementMode: String((installation as any).creditReimbursementMode || "appai_discount"),
         appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
       });
     } catch (error: any) {
@@ -10197,7 +10212,7 @@ ${orientationExtra}
               const ledgerResult = await storage.applyCreditLedgerEntry({
                 customerId: customer.id,
                 deltaCredits: credits,
-                deltaEntitlementCents: Math.min(100, Math.max(0, entitlementCents || 0)),
+                deltaEntitlementCents: clampEntitlementCents(entitlementCents || 0),
                 reason: "purchase",
                 idempotencyKey: session.metadata?.idempotency_key || `stripe:session:${session.id}`,
                 externalRef: session.id,
@@ -10288,12 +10303,19 @@ ${orientationExtra}
         return res.status(404).json({ error: "Customer not found" });
       }
 
-      const pack = resolveCreditPack(typeof creditPackage === "string" ? creditPackage : "5");
+      const enabledPackIds = parseEnabledCreditPackIds((installation as any).enabledCreditPackIds);
+      const pack = resolveCreditPack(
+        typeof creditPackage === "string" ? creditPackage : enabledPackIds[0],
+        enabledPackIds,
+      );
       if (!pack) {
-        return res.status(400).json({ error: "Invalid credit package. Use package '5' (5 gens for $1)." });
+        return res.status(400).json({ error: "Invalid credit package for this shop." });
       }
       const creditsToAdd = pack.credits;
       const priceInCents = pack.priceInCents;
+      const reimbursementMode = String((installation as any).creditReimbursementMode || "appai_discount");
+      const entitlementCents =
+        reimbursementMode === "merchant_handles" ? 0 : clampEntitlementCents(pack.entitlementCents);
 
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
       const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
@@ -10303,6 +10325,7 @@ ${orientationExtra}
 
       console.log("[Credits Purchase] session for customerId", customer.id, "returnUrl", safeReturnUrl);
 
+      const entDollars = (entitlementCents / 100).toFixed(0);
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
         line_items: [
@@ -10310,8 +10333,11 @@ ${orientationExtra}
             price_data: {
               currency: "usd",
               product_data: {
-                name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork — up to $1 back on a product order",
+                name: `${creditsToAdd} AI Art Studio generation credits`,
+                description:
+                  entitlementCents > 0
+                    ? `Credits for custom AI artwork — up to $${entDollars} off a product order`
+                    : "Credits for generating custom AI artwork",
               },
               unit_amount: priceInCents,
             },
@@ -10328,7 +10354,7 @@ ${orientationExtra}
           idempotency_key: idempotencyKey,
           shop,
           credits: creditsToAdd.toString(),
-          entitlement_cents: String(pack.entitlementCents),
+          entitlement_cents: String(entitlementCents),
           type: "credit_purchase",
           returnUrl: safeReturnUrl,
           legacy_customer_id: storefrontCustomerId,
@@ -10375,12 +10401,19 @@ ${orientationExtra}
         return res.status(404).send("Customer not found");
       }
 
-      const pack = resolveCreditPack(typeof creditPackage === "string" ? creditPackage : "5");
+      const enabledPackIds = parseEnabledCreditPackIds((installation as any).enabledCreditPackIds);
+      const pack = resolveCreditPack(
+        typeof creditPackage === "string" ? creditPackage : enabledPackIds[0],
+        enabledPackIds,
+      );
       if (!pack) {
         return res.status(400).send("Invalid credit package");
       }
       const creditsToAdd = pack.credits;
       const priceInCents = pack.priceInCents;
+      const reimbursementMode = String((installation as any).creditReimbursementMode || "appai_discount");
+      const entitlementCents =
+        reimbursementMode === "merchant_handles" ? 0 : clampEntitlementCents(pack.entitlementCents);
 
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
       const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
@@ -10389,6 +10422,7 @@ ${orientationExtra}
 
       console.log("[Credits Purchase] GET redirect session for customerId", customer.id, "returnUrl", safeReturnUrl);
 
+      const entDollars = (entitlementCents / 100).toFixed(0);
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
         line_items: [
@@ -10396,8 +10430,11 @@ ${orientationExtra}
             price_data: {
               currency: "usd",
               product_data: {
-                name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork — up to $1 back on a product order",
+                name: `${creditsToAdd} AI Art Studio generation credits`,
+                description:
+                  entitlementCents > 0
+                    ? `Credits for custom AI artwork — up to $${entDollars} off a product order`
+                    : "Credits for generating custom AI artwork",
               },
               unit_amount: priceInCents,
             },
@@ -10414,7 +10451,7 @@ ${orientationExtra}
           idempotency_key: idempotencyKey,
           shop,
           credits: creditsToAdd.toString(),
-          entitlement_cents: String(pack.entitlementCents),
+          entitlement_cents: String(entitlementCents),
           type: "credit_purchase",
           returnUrl: safeReturnUrl,
           legacy_customer_id: storefrontCustomerId,
@@ -10444,16 +10481,17 @@ ${orientationExtra}
       console.log("[Shopify Orders Paid] received", { shop, orderId, hmacValid });
       const shopifyCustomerId = order.customer?.admin_graphql_api_id || order.customer?.id;
       const discountApplications = Array.isArray(order.discount_applications) ? order.discount_applications : [];
-      const appaiDiscountApplied = discountApplications.some((discount: any) =>
-        String(discount.title || discount.code || discount.description || "").toLowerCase().includes("appai")
-      );
+      const studioDiscountApplied = discountApplications.some((discount: any) => {
+        const t = String(discount.title || discount.code || discount.description || "").toLowerCase();
+        return t.includes("ai art studio") || t.includes("appai");
+      });
       const totalDiscountCents = Math.round(Number.parseFloat(String(order.total_discounts || "0")) * 100);
-      if (shop && shopifyCustomerId && appaiDiscountApplied && totalDiscountCents > 0) {
+      if (shop && shopifyCustomerId && studioDiscountApplied && totalDiscountCents > 0) {
         const customer = await resolveStorefrontCustomerIdentity({
           shop,
           shopifyCustomerId: String(shopifyCustomerId).replace("gid://shopify/Customer/", ""),
         });
-        const debitCents = Math.min(100, totalDiscountCents);
+        const debitCents = Math.min(CREDIT_ENTITLEMENT_MAX_CENTS, totalDiscountCents);
         const result = await storage.applyCreditLedgerEntry({
           customerId: customer.id,
           deltaCredits: 0,
@@ -11754,7 +11792,7 @@ ${orientationExtra}
 
       const pack = resolveCreditPack(creditPackage || "5");
       if (!pack) {
-        return res.status(400).json({ error: "Invalid credit package. Use package '5' (5 gens for $1)." });
+        return res.status(400).json({ error: "Invalid credit package. Use '5', '10', or '20'." });
       }
       const creditsToAdd = pack.credits;
       const priceInCents = pack.priceInCents;
@@ -15949,11 +15987,25 @@ ${orientationExtra}
   }
 
   /**
-   * All print placeholder positions for a blueprint/provider/variant.
-   * Zip hoodie AOP (bp 451) has front_left/front_right — not "front". Sending only
-   * "front" yields Printify 422 "Placeholder: front is invalid".
+   * Minimal body placeholders for cost probes (avoid filling every AOP panel).
+   * Zip 451 has no bare "front"; leggings use left_side/right_side.
    */
-  async function fetchPlaceholderPositions(
+  function minimalCostProbePositions(blueprintId: number): string[] | null {
+    switch (Number(blueprintId)) {
+      case 451:
+        return ["front_left", "front_right"];
+      case 256:
+      case 1050:
+        return ["left_side", "right_side"];
+      case 450:
+        return ["front"];
+      default:
+        return null;
+    }
+  }
+
+  /** Raw placeholder list from Printify (no minimal filtering). */
+  async function fetchRawPlaceholderPositions(
     blueprintId: number,
     providerId: number,
     variantId: number,
@@ -15968,17 +16020,13 @@ ${orientationExtra}
         const data = await resp.json();
         const list = data.placeholders || data || [];
         if (Array.isArray(list) && list.length > 0) {
-          const positions = [
+          return [
             ...new Set(
               list
                 .map((p: any) => String(p?.position || "").trim())
                 .filter(Boolean),
             ),
           ];
-          if (positions.length > 0) {
-            console.log(`[Printify Costs] Placeholder positions: ${positions.join(", ")}`);
-            return positions;
-          }
         }
       } else {
         console.warn(`[Printify Costs] Placeholder API returned ${resp.status}`);
@@ -15986,7 +16034,32 @@ ${orientationExtra}
     } catch (e) {
       console.warn("[Printify Costs] Could not fetch placeholder positions:", e);
     }
-    return ["front"];
+    return [];
+  }
+
+  /**
+   * Positions for cost temp-products. Prefers a minimal body set for known AOP
+   * blueprints so zip/leggings don't 422 on "front" or oversized multi-panel creates.
+   */
+  async function fetchPlaceholderPositions(
+    blueprintId: number,
+    providerId: number,
+    variantId: number,
+    apiToken: string,
+  ): Promise<string[]> {
+    const raw = await fetchRawPlaceholderPositions(blueprintId, providerId, variantId, apiToken);
+    const minimal = minimalCostProbePositions(blueprintId);
+    if (minimal) {
+      if (raw.length === 0 || minimal.every((p) => raw.includes(p))) {
+        console.log(`[Printify Costs] Minimal probe positions: ${minimal.join(", ")}`);
+        return minimal;
+      }
+    }
+    if (raw.length > 0) {
+      console.log(`[Printify Costs] Placeholder positions: ${raw.join(", ")}`);
+      return raw;
+    }
+    return minimal || ["front"];
   }
 
   async function fetchPlaceholderPosition(
@@ -16004,7 +16077,12 @@ ${orientationExtra}
     blueprintId: number,
     providerId: number,
     apiToken: string,
-    opts?: { isAllOverPrint?: boolean; placeholderPositionsJson?: string | null; doubleSidedPrint?: boolean | null },
+    opts?: {
+      isAllOverPrint?: boolean;
+      placeholderPositionsJson?: string | null;
+      doubleSidedPrint?: boolean | null;
+      sampleVariantId?: number | null;
+    },
   ): Promise<boolean> {
     if (opts?.isAllOverPrint) return false;
     try {
@@ -16017,22 +16095,32 @@ ${orientationExtra}
       /* continue */
     }
     if (opts?.doubleSidedPrint) return true;
-    try {
-      const vResp = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
-        { headers: { Authorization: `Bearer ${apiToken}` } },
-      );
-      if (!vResp.ok) return false;
-      const vData = await vResp.json();
-      const variants = Array.isArray(vData.variants) ? vData.variants : [];
-      for (const sample of variants.slice(0, 8)) {
-        const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
-        if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) return true;
+
+    // Nested variants.json placeholders are usually empty — use placeholders.json.
+    let sampleVid = opts?.sampleVariantId != null ? Number(opts.sampleVariantId) : NaN;
+    if (!Number.isFinite(sampleVid) || sampleVid <= 0) {
+      try {
+        const vResp = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        );
+        if (vResp.ok) {
+          const vData = await vResp.json();
+          const variants = Array.isArray(vData.variants) ? vData.variants : [];
+          sampleVid = Number(variants[0]?.id);
+        }
+      } catch {
+        return false;
       }
-    } catch {
-      return false;
     }
-    return false;
+    if (!Number.isFinite(sampleVid) || sampleVid <= 0) return false;
+    const positions = await fetchRawPlaceholderPositions(
+      blueprintId,
+      providerId,
+      sampleVid,
+      apiToken,
+    );
+    return positions.some((p) => p.toLowerCase() === "back");
   }
 
   /** Probe front+back COGS via a short-lived Printify product (DTG dual-sided). */
@@ -16325,8 +16413,19 @@ ${orientationExtra}
   }> {
     const diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
     const firstVid = variantIds[0];
-    // Use every placeholder (AOP zip hoodies need front_left/front_right/… — not bare "front").
-    const positions = await fetchPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
+    // Prefer minimal AOP body set; fall back to full catalog list if creates fail.
+    const rawPositions = await fetchRawPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
+    const minimal = minimalCostProbePositions(blueprintId);
+    const positionAttempts: string[][] = [];
+    if (minimal && (rawPositions.length === 0 || minimal.every((p) => rawPositions.includes(p)))) {
+      positionAttempts.push(minimal);
+    }
+    if (rawPositions.length > 0) {
+      const key = rawPositions.join("|");
+      if (!positionAttempts.some((a) => a.join("|") === key)) positionAttempts.push(rawPositions);
+    }
+    if (positionAttempts.length === 0) positionAttempts.push(minimal || ["front"]);
+    let positions = positionAttempts[0]!;
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
     // Printify API rejects temp product creation if variant count exceeds 100.
@@ -16461,84 +16560,110 @@ ${orientationExtra}
       console.warn("[Printify Costs] Strategy 0 error:", s0Err);
     }
 
-    if (probeImageId) {
-      // Strategy A: available (or all) variants in one temp product (up to Printify's 100 limit).
-      // Using only in-stock IDs avoids create failures when the blueprint is largely OOS.
-      console.log(
-        `[Printify Costs] Strategy A — bulk ${availableBulk.length} variants with probe image` +
-          (availableBulk.length < bulkVariantIds.length
-            ? ` (filtered from ${bulkVariantIds.length}; skipped OOS)`
-            : ""),
+    for (let posIdx = 0; posIdx < positionAttempts.length; posIdx++) {
+      positions = positionAttempts[posIdx]!;
+      const posTag = positions.join(",");
+      console.log(`[Printify Costs] Position attempt ${posIdx + 1}/${positionAttempts.length}: [${posTag}]`);
+
+      if (probeImageId) {
+        console.log(
+          `[Printify Costs] Strategy A — bulk ${availableBulk.length} variants with probe image` +
+            (availableBulk.length < bulkVariantIds.length
+              ? ` (filtered from ${bulkVariantIds.length}; skipped OOS)`
+              : ""),
+        );
+        const sBulk = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, availableBulk, positions, imageSpec(probeImageId),
+        );
+        diagnostics.push({
+          strategy: `bulk_with_image:${posTag}`,
+          status: sBulk.status,
+          success: sBulk.success && hasCosts(sBulk.costs),
+          error: sBulk.error,
+        });
+        if (sBulk.success && hasCosts(sBulk.costs)) {
+          return { costs: sBulk.costs, strategyUsed: "bulk_with_image", diagnostics };
+        }
+        console.warn(`[Printify Costs] Strategy A failed (${sBulk.status}): ${sBulk.error?.slice(0, 200)}`);
+      } else if (posIdx === 0) {
+        diagnostics.push({ strategy: "bulk_with_image", success: false, error: "Could not upload probe artwork to Printify" });
+      }
+
+      if (probeImageId) {
+        const s1 = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, availableChunk, positions, imageSpec(probeImageId),
+        );
+        diagnostics.push({
+          strategy: `chunk_with_image:${posTag}`,
+          status: s1.status,
+          success: s1.success && hasCosts(s1.costs),
+          error: s1.error,
+        });
+        if (s1.success && hasCosts(s1.costs)) {
+          return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
+        }
+      }
+
+      const s2 = await tryCreateTempProductForCosts(
+        shopId, apiToken, blueprintId, providerId, availableChunk, positions, null,
       );
-      const sBulk = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, availableBulk, positions, imageSpec(probeImageId),
-      );
-      diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
-      if (sBulk.success && hasCosts(sBulk.costs)) {
-        return { costs: sBulk.costs, strategyUsed: "bulk_with_image", diagnostics };
-      }
-      console.warn(`[Printify Costs] Strategy A failed (${sBulk.status}): ${sBulk.error?.slice(0, 200)}`);
-    } else {
-      diagnostics.push({ strategy: "bulk_with_image", success: false, error: "Could not upload probe artwork to Printify" });
-    }
-
-    // Strategy 1: smaller chunk with probe image
-    if (probeImageId) {
-      console.log("[Printify Costs] Strategy 1 — chunk with probe image");
-      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, positions, imageSpec(probeImageId));
-      diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
-      if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
-      console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
-    }
-
-    // Strategy 2: print_areas with empty images array
-    console.log(`[Printify Costs] Strategy 2 — empty images[] for positions [${positions.join(", ")}]`);
-    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, positions, null);
-    diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
-    if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
-
-    console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
-
-    // Strategy 3: upload the stored mockup image URL (Printify CDN) — if different from probe source
-    if (mockupUrl && probeImageId) {
-      console.log(`[Printify Costs] Strategy 3a — mockup URL chunk: ${mockupUrl.slice(0, 80)}`);
-      const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, positions, imageSpec(probeImageId));
-      diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
-      if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
-    }
-
-    // Strategy 4: parallel single-variant probe (prefer in-stock IDs when catalog flagged OOS)
-    if (probeImageId) {
-      const singleProbeIds = effectiveProbeIds.length > 0 ? effectiveProbeIds : variantIds;
-      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${singleProbeIds.length} variants)`);
-      const probedCosts: Record<string, number> = {};
-      const BATCH = 8;
-      for (let i = 0; i < singleProbeIds.length; i += BATCH) {
-        const batch = singleProbeIds.slice(i, i + BATCH);
-        await Promise.all(batch.map(async (vid) => {
-          const probe = await tryCreateTempProductForCosts(
-            shopId, apiToken, blueprintId, providerId, [vid], positions, imageSpec(probeImageId),
-          );
-          if (probe.success && hasCosts(probe.costs)) {
-            Object.assign(probedCosts, probe.costs);
-          }
-        }));
-      }
-      if (hasCosts(probedCosts)) {
-        diagnostics.push({ strategy: "single_variant_probe", success: true });
-        return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
-      }
       diagnostics.push({
-        strategy: "single_variant_probe",
-        success: false,
-        error:
-          catalogAvailableVariantIds.length === 0 && variantIds.length > 0
+        strategy: `empty_images:${posTag}`,
+        status: s2.status,
+        success: s2.success && hasCosts(s2.costs),
+        error: s2.error,
+      });
+      if (s2.success && hasCosts(s2.costs)) {
+        return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
+      }
+
+      if (mockupUrl && probeImageId) {
+        const s3a = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, variantChunk, positions, imageSpec(probeImageId),
+        );
+        diagnostics.push({
+          strategy: `upload_mockup_url:${posTag}`,
+          status: s3a.status,
+          success: s3a.success && hasCosts(s3a.costs),
+          error: s3a.error,
+        });
+        if (s3a.success && hasCosts(s3a.costs)) {
+          return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
+        }
+      }
+
+      if (probeImageId) {
+        const singleProbeIds = effectiveProbeIds.length > 0 ? effectiveProbeIds : variantIds;
+        const probedCosts: Record<string, number> = {};
+        const BATCH = 8;
+        for (let i = 0; i < singleProbeIds.length; i += BATCH) {
+          const batch = singleProbeIds.slice(i, i + BATCH);
+          await Promise.all(batch.map(async (vid) => {
+            const probe = await tryCreateTempProductForCosts(
+              shopId, apiToken, blueprintId, providerId, [vid], positions, imageSpec(probeImageId),
+            );
+            if (probe.success && hasCosts(probe.costs)) {
+              Object.assign(probedCosts, probe.costs);
+            }
+          }));
+        }
+        if (hasCosts(probedCosts)) {
+          diagnostics.push({ strategy: `single_variant_probe:${posTag}`, success: true });
+          return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
+        }
+      }
+    }
+
+    diagnostics.push({
+      strategy: "single_variant_probe",
+      success: false,
+      error:
+        !probeImageId
+          ? "No probe artwork available"
+          : catalogAvailableVariantIds.length === 0 && variantIds.length > 0
             ? "No costs extracted — catalog shows no in-stock variants (provider may be fully OOS)"
             : "No costs extracted from single-variant probes",
-      });
-    } else {
-      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No probe artwork available" });
-    }
+    });
 
     return { costs: {}, strategyUsed: null, diagnostics };
   }
@@ -16692,7 +16817,9 @@ ${orientationExtra}
         };
 
         let fromPi = await costsResponseFromProductIntelligence(preferred);
-        if (fromPi) {
+        // Require real front COGS — empty PI payloads must fall through to waterfall /
+        // multi-provider (zip 451 / leggings 256 previously stuck on labels_only).
+        if (fromPi && Object.keys(fromPi.costs).length > 0) {
           const vmIds = Object.keys(fromPi.costs)
             .map((id) => Number(id))
             .filter((id) => Number.isFinite(id) && id > 0);
@@ -16859,6 +16986,136 @@ ${orientationExtra}
             source: own ? "merchant_product_type_cache" : "platform_catalog_ref_cache",
           });
         }
+        // Still no COGS on preferred provider — try other catalog providers before labels_only.
+        try {
+          const pRes = await fetch(
+            `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+            { headers: { Authorization: `Bearer ${printifyToken}` } },
+          );
+          if (pRes.ok) {
+            const raw = await pRes.json();
+            const providers = (Array.isArray(raw) ? raw : [])
+              .map((p: any) => ({ id: Number(p.id), title: String(p.title || "") }))
+              .filter((p: { id: number }) => Number.isFinite(p.id) && p.id > 0)
+              .filter((p: { id: number }) => p.id !== Number(preferred.printifyProviderId));
+            // Prefer Printify Choice, then try the rest.
+            providers.sort(
+              (a: { title: string }, b: { title: string }) =>
+                Number(/printify choice/i.test(b.title)) - Number(/printify choice/i.test(a.title)),
+            );
+            const vm = JSON.parse(preferred.variantMap || "{}") as Record<
+              string,
+              { printifyVariantId?: number }
+            >;
+            const fallbackIds = [
+              ...new Set(
+                Object.values(vm)
+                  .map((e) => Number(e?.printifyVariantId))
+                  .filter((id) => Number.isFinite(id) && id > 0),
+              ),
+            ];
+            for (const prov of providers.slice(0, 6)) {
+              try {
+                const { fetchPrintifyProviderVariantsDual } = await import(
+                  "./printifyCatalogVariantsFetch"
+                );
+                const dual = await fetchPrintifyProviderVariantsDual(
+                  blueprintId,
+                  prov.id,
+                  printifyToken,
+                );
+                const ids =
+                  dual.variants
+                    .map((v: any) => Number(v?.id))
+                    .filter((id: number) => Number.isFinite(id) && id > 0)
+                    .slice(0, 80) || fallbackIds;
+                if (ids.length === 0) continue;
+                const resolved = await resolvePrintifyProductionCosts({
+                  merchant: {
+                    id: merchant.id,
+                    printifyApiToken: printifyToken,
+                    printifyShopId: shopIdForProbe,
+                  },
+                  blueprintId,
+                  providerId: prov.id,
+                  catalogVariants: dual.variants,
+                  printifyVariantIds: ids,
+                  baseMockupImages: {},
+                });
+                if (Object.keys(resolved.costs).length === 0) continue;
+                console.log(
+                  `[blueprint-costs] Multi-provider hit bp ${blueprintId} via ${prov.title || prov.id} (${resolved.source})`,
+                );
+                const costsBoth = await ensureBothSideCosts(
+                  resolved.costs,
+                  {},
+                  ids,
+                  true,
+                );
+                const axes = dual.variants.length
+                  ? (
+                      await import("./platform-catalogue-pi")
+                    ).buildCatalogVariantAxes(dual.variants)
+                  : null;
+                await storage.updateProductType(preferred.id, {
+                  printifyProviderId: prov.id,
+                  printifyCosts: serializePrintifyCostsCache(
+                    Object.keys(costsBoth).length > 0
+                      ? { front: resolved.costs, both: costsBoth }
+                      : resolved.costs,
+                  ),
+                  ...(axes
+                    ? {
+                        sizes: JSON.stringify(axes.sizes),
+                        frameColors: JSON.stringify(axes.colors),
+                        variantMap: JSON.stringify(axes.variantMap),
+                        selectedSizeIds: JSON.stringify(axes.selectedSizeIds),
+                        selectedColorIds: JSON.stringify(axes.selectedColorIds),
+                      }
+                    : {}),
+                } as any);
+                preferred = (await storage.getProductType(preferred.id)) || preferred;
+                const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+                await syncProductTypeIntelligence(preferred, printifyToken, {
+                  source: "blueprint_costs_alt_provider",
+                  skipShipping: false,
+                });
+                preferred = (await storage.getProductType(preferred.id)) || preferred;
+                fromPi = await costsResponseFromProductIntelligence(preferred);
+                if (fromPi) {
+                  return res.json({
+                    ...fromPi,
+                    blueprintId,
+                    productTypeId: preferred.id,
+                    providerId: preferred.printifyProviderId ?? prov.id,
+                    source: `alt_provider:${resolved.source}`,
+                  });
+                }
+                const cachedAlt = parsePrintifyCostsCache(preferred.printifyCosts);
+                if (Object.keys(cachedAlt.front).length > 0) {
+                  return res.json({
+                    costs: cachedAlt.front,
+                    costsBoth: cachedAlt.both,
+                    printifyVariantLabels: buildActivePrintifyVariantLabels(preferred),
+                    supportsBothSides: Object.keys(cachedAlt.both).length > 0,
+                    blueprintId,
+                    productTypeId: preferred.id,
+                    providerId: preferred.printifyProviderId ?? prov.id,
+                    source: `alt_provider:${resolved.source}`,
+                  });
+                }
+              } catch (provErr) {
+                console.warn(
+                  `[blueprint-costs] alt provider ${prov.id} failed for bp ${blueprintId}:`,
+                  provErr,
+                );
+              }
+            }
+          }
+        } catch (multiErr) {
+          console.warn(`[blueprint-costs] multi-provider scan failed for bp ${blueprintId}:`, multiErr);
+        }
+
         // Still no COGS — return size labels so Insights can show the dropdown (with "no COGS").
         const labelsOnly = buildActivePrintifyVariantLabels(preferred);
         if (Object.keys(labelsOnly).length > 0) {
@@ -17046,33 +17303,21 @@ ${orientationExtra}
       const bothCacheHits = Object.keys(cachedBothOnly).length > 0;
 
       async function detectHasBackPlaceholder(): Promise<boolean> {
-        if (productType.isAllOverPrint) return false;
-        try {
-          const positions: { position?: string }[] =
-            typeof productType.placeholderPositions === "string"
-              ? JSON.parse(productType.placeholderPositions || "[]")
-              : (productType.placeholderPositions || []);
-          if (positions.some((p) => String(p?.position || "").toLowerCase() === "back")) return true;
-        } catch {
-          /* continue */
-        }
-        if (productType.doubleSidedPrint) return true;
-        try {
-          const vResp = await fetch(
-            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
-            { headers: { Authorization: `Bearer ${apiToken}` } },
-          );
-          if (!vResp.ok) return false;
-          const vData = await vResp.json();
-          const variants = Array.isArray(vData.variants) ? vData.variants : [];
-          for (const sample of variants.slice(0, 8)) {
-            const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
-            if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) return true;
-          }
-        } catch {
-          return false;
-        }
-        return false;
+        const sampleVid = [...currentPrintifyVariantIds][0] ?? null;
+        return catalogHasBackPlaceholder(
+          productType.printifyBlueprintId!,
+          productType.printifyProviderId!,
+          apiToken,
+          {
+            isAllOverPrint: !!productType.isAllOverPrint,
+            placeholderPositionsJson:
+              typeof productType.placeholderPositions === "string"
+                ? productType.placeholderPositions
+                : JSON.stringify(productType.placeholderPositions || []),
+            doubleSidedPrint: !!productType.doubleSidedPrint,
+            sampleVariantId: sampleVid,
+          },
+        );
       }
 
       if (forceRefresh && !useLegacyWaterfall) {
@@ -21863,29 +22108,35 @@ ${orientationExtra}
 
   // ==================== BRANDING & STYLING ====================
 
-  // Storefront free gens / visitor (merchant-configurable, 1–10, default 5)
+  // Storefront free gens + credit packs (merchant-configurable)
   app.get("/api/admin/storefront-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const userId = req.user.claims.sub;
     const merchant = await storage.getMerchantByUserId(userId);
     if (!merchant) return res.status(404).json({ error: "Merchant not found" });
     const installation = await resolveInstallationForMerchant(merchant.id);
-    if (!installation) {
-      return res.json({
-        storefrontFreeGensPerVisitor: STOREFRONT_FREE_GENERATION_DEFAULT,
-        min: STOREFRONT_FREE_GENERATION_MIN,
-        max: STOREFRONT_FREE_GENERATION_MAX,
-        default: STOREFRONT_FREE_GENERATION_DEFAULT,
-        shopDomain: null,
-      });
-    }
+    const enabledPackIds = parseEnabledCreditPackIds(
+      installation ? (installation as any).enabledCreditPackIds : '["5"]',
+    );
+    const reimbursementMode = installation
+      ? String((installation as any).creditReimbursementMode || "appai_discount")
+      : "appai_discount";
     return res.json({
       storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
-        (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+        (installation as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
       ),
       min: STOREFRONT_FREE_GENERATION_MIN,
       max: STOREFRONT_FREE_GENERATION_MAX,
       default: STOREFRONT_FREE_GENERATION_DEFAULT,
-      shopDomain: installation.shopDomain,
+      shopDomain: installation?.shopDomain ?? null,
+      creditReimbursementMode: reimbursementMode,
+      enabledCreditPackIds: enabledPackIds,
+      availableCreditPacks: CREDIT_PACK_CATALOG.map((p) => ({
+        id: p.packId,
+        credits: p.credits,
+        priceUsd: p.priceInCents / 100,
+        entitlementUsd: p.entitlementCents / 100,
+        label: p.label,
+      })),
     });
   }));
 
@@ -21897,16 +22148,44 @@ ${orientationExtra}
     if (!installation) {
       return res.status(404).json({ error: "No Shopify store connected" });
     }
-    const next = clampStorefrontFreeGens(req.body?.storefrontFreeGensPerVisitor);
-    await storage.updateShopifyInstallation(installation.id, {
-      storefrontFreeGensPerVisitor: next,
-    } as any);
+    const updates: Record<string, unknown> = {};
+    if (req.body?.storefrontFreeGensPerVisitor != null) {
+      updates.storefrontFreeGensPerVisitor = clampStorefrontFreeGens(
+        req.body.storefrontFreeGensPerVisitor,
+      );
+    }
+    if (req.body?.creditReimbursementMode != null) {
+      const mode = String(req.body.creditReimbursementMode);
+      updates.creditReimbursementMode =
+        mode === "merchant_handles" ? "merchant_handles" : "appai_discount";
+    }
+    if (req.body?.enabledCreditPackIds != null) {
+      updates.enabledCreditPackIds = JSON.stringify(
+        parseEnabledCreditPackIds(req.body.enabledCreditPackIds),
+      );
+    }
+    if (Object.keys(updates).length > 0) {
+      await storage.updateShopifyInstallation(installation.id, updates as any);
+    }
+    const fresh = (await storage.getShopifyInstallation(installation.id)) || installation;
+    const enabledPackIds = parseEnabledCreditPackIds((fresh as any).enabledCreditPackIds);
     return res.json({
-      storefrontFreeGensPerVisitor: next,
+      storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
+        (fresh as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      ),
       min: STOREFRONT_FREE_GENERATION_MIN,
       max: STOREFRONT_FREE_GENERATION_MAX,
       default: STOREFRONT_FREE_GENERATION_DEFAULT,
-      shopDomain: installation.shopDomain,
+      shopDomain: fresh.shopDomain,
+      creditReimbursementMode: String((fresh as any).creditReimbursementMode || "appai_discount"),
+      enabledCreditPackIds: enabledPackIds,
+      availableCreditPacks: CREDIT_PACK_CATALOG.map((p) => ({
+        id: p.packId,
+        credits: p.credits,
+        priceUsd: p.priceInCents / 100,
+        entitlementUsd: p.entitlementCents / 100,
+        label: p.label,
+      })),
     });
   }));
 

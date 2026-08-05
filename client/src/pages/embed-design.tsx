@@ -88,6 +88,7 @@ import {
 } from "@shared/stylePromptCompatibility";
 import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
 import {
+  CREDIT_PACK_CATALOG,
   CREDIT_PACK_ID,
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_LIMIT,
@@ -2038,6 +2039,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpError, setOtpError] = useState<string | null>(null);
   const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
   const [freeGenerationLimit, setFreeGenerationLimit] = useState(STOREFRONT_FREE_GENERATION_DEFAULT);
+  const [creditPacks, setCreditPacks] = useState<
+    Array<{ id: string; credits: number; priceUsd: number; entitlementUsd: number; label: string }>
+  >(() =>
+    CREDIT_PACK_CATALOG.map((p) => ({
+      id: p.packId,
+      credits: p.credits,
+      priceUsd: p.priceInCents / 100,
+      entitlementUsd: p.entitlementCents / 100,
+      label: p.label,
+    })),
+  );
+  const [selectedCreditPackId, setSelectedCreditPackId] = useState(CREDIT_PACK_ID);
+  const [creditReimbursementMode, setCreditReimbursementMode] = useState<
+    "appai_discount" | "merchant_handles"
+  >("appai_discount");
   const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const googleAuthNonceRef = useRef<string | null>(null);
@@ -2193,6 +2209,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setCentralAppUrl(typeof data.appUrl === "string" ? data.appUrl.replace(/\/$/, "") : buildCentralAppUrl(""));
         if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
           setFreeGenerationLimit(data.freeGenerationLimit);
+        }
+        if (Array.isArray(data.creditPacks) && data.creditPacks.length > 0) {
+          const packs = data.creditPacks
+            .map((p: any) => ({
+              id: String(p.id || p.packId || "").trim(),
+              credits: Number(p.credits),
+              priceUsd: Number(p.priceUsd),
+              entitlementUsd: Number(p.entitlementUsd ?? 0),
+              label: String(p.label || ""),
+            }))
+            .filter(
+              (p: { id: string; credits: number; priceUsd: number }) =>
+                p.id && Number.isFinite(p.credits) && Number.isFinite(p.priceUsd),
+            );
+          if (packs.length > 0) {
+            setCreditPacks(packs);
+            setSelectedCreditPackId((prev) =>
+              packs.some((p: { id: string }) => p.id === prev) ? prev : packs[0].id,
+            );
+          }
+        }
+        if (data.creditReimbursementMode === "merchant_handles" || data.creditReimbursementMode === "appai_discount") {
+          setCreditReimbursementMode(data.creditReimbursementMode);
         }
       })
       .catch(() => {
@@ -6734,14 +6773,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     returnUrl.searchParams.set('shop', shopDomain);
     returnUrl.searchParams.set('customerId', storefrontCustomerId);
 
+    const packId =
+      creditPacks.some((p) => p.id === selectedCreditPackId)
+        ? selectedCreditPackId
+        : creditPacks[0]?.id || CREDIT_PACK_ID;
     const params = new URLSearchParams({
       customerId: storefrontCustomerId,
       shop: shopDomain,
-      package: CREDIT_PACK_ID,
+      package: packId,
       returnUrl: returnUrl.toString(),
     });
     const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
-    console.log('[More Credits] redirecting to checkout for customerId', storefrontCustomerId);
+    console.log('[More Credits] redirecting to checkout for customerId', storefrontCustomerId, 'pack', packId);
     try {
       window.top!.location.href = checkoutUrl;
     } catch {
@@ -11484,25 +11527,63 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <DialogHeader>
             <DialogTitle>Artwork Credits</DialogTitle>
           </DialogHeader>
-          <p className="text-muted-foreground">You get {freeGenerationLimit} free AI-generated artworks to try.</p>
-                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 5 more credits.</p>
-                  <p className="text-muted-foreground">Up to $1 back when you complete a physical product purchase!</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="w-full"
-                    onClick={handleBuyMoreCredits}
-                    disabled={creditsPurchaseLoading}
-                  >
-                    {creditsPurchaseLoading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Opening Checkout...
-                      </>
-                    ) : (
-                      "More Credits"
-                    )}
-                  </Button>
+          <p className="text-muted-foreground">
+            You get {freeGenerationLimit} free AI-generated artwork
+            {freeGenerationLimit === 1 ? "" : "s"} to try.
+          </p>
+          {creditPacks.length > 1 ? (
+            <div className="space-y-2">
+              <p className="text-muted-foreground">Choose a pack to continue creating:</p>
+              {creditPacks.map((pack) => (
+                <label
+                  key={pack.id}
+                  className="flex items-center gap-2 rounded-md border px-3 py-2 cursor-pointer"
+                >
+                  <input
+                    type="radio"
+                    name="credit-pack"
+                    checked={selectedCreditPackId === pack.id}
+                    onChange={() => setSelectedCreditPackId(pack.id)}
+                  />
+                  <span className="font-medium">{pack.label}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground">
+              After that, it&apos;s {creditPacks[0]?.label || "5 gens for $1"}.
+            </p>
+          )}
+          {creditReimbursementMode === "appai_discount" && (
+            <p className="text-muted-foreground">
+              {(() => {
+                const pack =
+                  creditPacks.find((p) => p.id === selectedCreditPackId) || creditPacks[0];
+                const usd = pack?.entitlementUsd ?? 1;
+                return `Up to $${usd % 1 === 0 ? usd.toFixed(0) : usd.toFixed(2)} back when you complete a physical product purchase!`;
+              })()}
+            </p>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            className="w-full"
+            onClick={handleBuyMoreCredits}
+            disabled={creditsPurchaseLoading}
+          >
+            {creditsPurchaseLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Opening Checkout...
+              </>
+            ) : (
+              (() => {
+                const pack =
+                  creditPacks.find((p) => p.id === selectedCreditPackId) || creditPacks[0];
+                return pack ? `Buy ${pack.label}` : "More Credits";
+              })()
+            )}
+          </Button>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}

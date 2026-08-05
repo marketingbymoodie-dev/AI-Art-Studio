@@ -13,6 +13,7 @@ import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
 import type { Merchant } from "@shared/schema";
 import {
+  CREDIT_PACK_CATALOG,
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_MAX,
   STOREFRONT_FREE_GENERATION_MIN,
@@ -25,12 +26,23 @@ interface ShopifyInstallation {
   scope: string | null;
 }
 
+type CreditPackOption = {
+  id: string;
+  credits: number;
+  priceUsd: number;
+  entitlementUsd: number;
+  label: string;
+};
+
 type StorefrontSettings = {
   storefrontFreeGensPerVisitor: number;
   min: number;
   max: number;
   default: number;
   shopDomain: string | null;
+  creditReimbursementMode?: "appai_discount" | "merchant_handles";
+  enabledCreditPackIds?: string[];
+  availableCreditPacks?: CreditPackOption[];
 };
 
 export default function AdminSettings() {
@@ -43,6 +55,10 @@ export default function AdminSettings() {
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
   const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(STOREFRONT_FREE_GENERATION_DEFAULT));
+  const [reimbursementMode, setReimbursementMode] = useState<"appai_discount" | "merchant_handles">(
+    "appai_discount",
+  );
+  const [enabledPackIds, setEnabledPackIds] = useState<string[]>(["5"]);
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -142,21 +158,31 @@ export default function AdminSettings() {
     if (storefrontSettings?.storefrontFreeGensPerVisitor != null) {
       setFreeGensPerVisitor(String(storefrontSettings.storefrontFreeGensPerVisitor));
     }
+    if (storefrontSettings?.creditReimbursementMode) {
+      setReimbursementMode(storefrontSettings.creditReimbursementMode);
+    }
+    if (storefrontSettings?.enabledCreditPackIds?.length) {
+      setEnabledPackIds(storefrontSettings.enabledCreditPackIds);
+    }
   }, [storefrontSettings]);
 
   const updateStorefrontSettingsMutation = useMutation({
-    mutationFn: async (storefrontFreeGensPerVisitor: number) => {
-      const res = await apiRequest("PATCH", "/api/admin/storefront-settings", {
-        storefrontFreeGensPerVisitor,
-      });
+    mutationFn: async (body: {
+      storefrontFreeGensPerVisitor: number;
+      creditReimbursementMode: "appai_discount" | "merchant_handles";
+      enabledCreditPackIds: string[];
+    }) => {
+      const res = await apiRequest("PATCH", "/api/admin/storefront-settings", body);
       return res.json() as Promise<StorefrontSettings>;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/storefront-settings"] });
       setFreeGensPerVisitor(String(data.storefrontFreeGensPerVisitor));
+      if (data.creditReimbursementMode) setReimbursementMode(data.creditReimbursementMode);
+      if (data.enabledCreditPackIds) setEnabledPackIds(data.enabledCreditPackIds);
       toast({
         title: "Storefront settings saved",
-        description: `Visitors get ${data.storefrontFreeGensPerVisitor} free generations.`,
+        description: `Visitors get ${data.storefrontFreeGensPerVisitor} free generation${data.storefrontFreeGensPerVisitor === 1 ? "" : "s"}.`,
       });
     },
     onError: (error: Error) => {
@@ -177,7 +203,7 @@ export default function AdminSettings() {
     });
   };
 
-  const handleSaveFreeGens = () => {
+  const handleSaveStorefrontSettings = () => {
     const n = parseInt(freeGensPerVisitor, 10);
     if (!Number.isFinite(n)) {
       toast({
@@ -187,7 +213,19 @@ export default function AdminSettings() {
       });
       return;
     }
-    updateStorefrontSettingsMutation.mutate(n);
+    if (enabledPackIds.length === 0) {
+      toast({
+        title: "Select a pack",
+        description: "Enable at least one generation pack for customers.",
+        variant: "destructive",
+      });
+      return;
+    }
+    updateStorefrontSettingsMutation.mutate({
+      storefrontFreeGensPerVisitor: n,
+      creditReimbursementMode: reimbursementMode,
+      enabledCreditPackIds: enabledPackIds,
+    });
   };
 
   const handleDetectShop = async () => {
@@ -372,15 +410,16 @@ export default function AdminSettings() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Sparkles className="h-5 w-5" />
-              Storefront free generations
+              Storefront credits
             </CardTitle>
             <CardDescription>
-              How many free AI artworks each unique visitor gets before paid credits.
-              These come off your monthly plan allotment. Default {STOREFRONT_FREE_GENERATION_DEFAULT},
-              max {STOREFRONT_FREE_GENERATION_MAX}. Use coupons for promo overflow.
+              Free generations come off your monthly plan allotment (default{" "}
+              {STOREFRONT_FREE_GENERATION_DEFAULT}, max {STOREFRONT_FREE_GENERATION_MAX}).
+              Paid packs are sold via Stripe; you choose which packs to offer and who
+              reimburses pack buyers on a physical order.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-5">
             <div className="space-y-2 max-w-xs">
               <Label htmlFor="free-gens-visitor">Free gens per visitor</Label>
               <Input
@@ -393,9 +432,88 @@ export default function AdminSettings() {
                 onChange={(e) => setFreeGensPerVisitor(e.target.value)}
               />
             </div>
+
+            <div className="space-y-2">
+              <Label>Generation packs offered to customers</Label>
+              <div className="space-y-2">
+                {(storefrontSettings?.availableCreditPacks?.length
+                  ? storefrontSettings.availableCreditPacks
+                  : CREDIT_PACK_CATALOG.map((p) => ({
+                      id: p.packId,
+                      credits: p.credits,
+                      priceUsd: p.priceInCents / 100,
+                      entitlementUsd: p.entitlementCents / 100,
+                      label: p.label,
+                    }))
+                ).map((pack) => {
+                  const checked = enabledPackIds.includes(pack.id);
+                  return (
+                    <label
+                      key={pack.id}
+                      className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setEnabledPackIds((prev) =>
+                            checked
+                              ? prev.filter((id) => id !== pack.id)
+                              : [...prev, pack.id],
+                          );
+                        }}
+                      />
+                      <span className="font-medium">{pack.label}</span>
+                      <span className="text-muted-foreground">
+                        {reimbursementMode === "appai_discount"
+                          ? `· up to $${pack.entitlementUsd} off product order`
+                          : "· no automatic checkout discount"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Pack reimbursement</Label>
+              <div className="space-y-2 text-sm">
+                <label className="flex items-start gap-3 rounded-md border px-3 py-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="reimbursement"
+                    className="mt-1"
+                    checked={reimbursementMode === "appai_discount"}
+                    onChange={() => setReimbursementMode("appai_discount")}
+                  />
+                  <span>
+                    <span className="font-medium">AI Art Studio checkout discount</span>
+                    <span className="block text-muted-foreground text-xs mt-0.5">
+                      Pack buyers get up to $1–$3 off a physical product order automatically.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-md border px-3 py-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="reimbursement"
+                    className="mt-1"
+                    checked={reimbursementMode === "merchant_handles"}
+                    onChange={() => setReimbursementMode("merchant_handles")}
+                  />
+                  <span>
+                    <span className="font-medium">I&apos;ll handle reimbursement myself</span>
+                    <span className="block text-muted-foreground text-xs mt-0.5">
+                      No automatic entitlement — run your own store discount or promo if you want.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
             <Button
               type="button"
-              onClick={handleSaveFreeGens}
+              onClick={handleSaveStorefrontSettings}
               disabled={updateStorefrontSettingsMutation.isPending}
               className="gap-2"
             >
@@ -404,7 +522,7 @@ export default function AdminSettings() {
               ) : (
                 <Save className="h-4 w-4" />
               )}
-              Save free gens
+              Save storefront credits
             </Button>
           </CardContent>
         </Card>

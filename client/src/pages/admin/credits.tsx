@@ -164,7 +164,7 @@ export default function AdminCredits() {
           <CardHeader>
             <CardTitle>Customer credits</CardTitle>
             <CardDescription>
-              End-customer packs (5 free generations per visitor by default, then $1 for 5 paid credits) are separate from your shop plan quota above. Free gens and coupon redemptions come off your monthly allotment.
+              End-customer packs (1 free generation per visitor by default, then paid packs of 5/$1, 10/$2, or 20/$3) are separate from your shop plan quota above. Free gens and coupon redemptions come off your monthly allotment.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">

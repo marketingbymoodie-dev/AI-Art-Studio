@@ -229,6 +229,33 @@ async function upsertPlatformRefForEntry(args: {
           )
         : "{}";
 
+    // Persist placeholder positions (needed for baseball Front/Back COGS detection).
+    let placeholderPositions = "[]";
+    const sampleVid = Number(dual.variants[0]?.id);
+    if (Number.isFinite(sampleVid) && sampleVid > 0) {
+      try {
+        const phRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${provider.providerId}/variants/${sampleVid}/placeholders.json`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (phRes.ok) {
+          const phData = await phRes.json();
+          const list = phData.placeholders || phData || [];
+          if (Array.isArray(list) && list.length > 0) {
+            placeholderPositions = JSON.stringify(
+              list.map((p: any) => ({
+                position: String(p?.position || "").trim(),
+                width: p?.width ?? null,
+                height: p?.height ?? null,
+              })).filter((p: { position: string }) => p.position),
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(`${TAG} placeholders fetch failed for bp ${blueprintId}:`, e);
+      }
+    }
+
     const payload = {
       merchantId,
       name: label,
@@ -241,6 +268,7 @@ async function upsertPlatformRefForEntry(args: {
       selectedSizeIds: JSON.stringify(axes.selectedSizeIds),
       selectedColorIds: JSON.stringify(axes.selectedColorIds),
       printifyCosts,
+      placeholderPositions,
       pricingStrategy: "notify_only" as const,
       isActive: true,
       isPlatformCatalogRef: true,
@@ -259,6 +287,7 @@ async function upsertPlatformRefForEntry(args: {
         selectedSizeIds: payload.selectedSizeIds,
         selectedColorIds: payload.selectedColorIds,
         printifyCosts: payload.printifyCosts,
+        placeholderPositions: payload.placeholderPositions,
         isPlatformCatalogRef: true,
         isAllOverPrint: payload.isAllOverPrint,
         panelMappingTemplate: payload.panelMappingTemplate,

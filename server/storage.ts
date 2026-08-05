@@ -417,7 +417,7 @@ export class DatabaseStorage implements IStorage {
         .update(creditBalances)
         .set({
           credits: sql`GREATEST(0, ${creditBalances.credits} + ${entry.deltaCredits})`,
-          discountEntitlementCents: sql`LEAST(100, GREATEST(0, ${creditBalances.discountEntitlementCents} + ${entry.deltaEntitlementCents}))`,
+          discountEntitlementCents: sql`LEAST(300, GREATEST(0, ${creditBalances.discountEntitlementCents} + ${entry.deltaEntitlementCents}))`,
           version: sql`${creditBalances.version} + 1`,
           updatedAt: new Date(),
         })

@@ -192,11 +192,19 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   embedConfirmedAt: timestamp("embed_confirmed_at"),
   /**
    * Free AI generations each unique storefront visitor gets before paid credits.
-   * Clamped 1–10 in app code; default 5.
+   * Clamped 1–10 in app code; default 1.
    */
-  storefrontFreeGensPerVisitor: integer("storefront_free_gens_per_visitor").notNull().default(5),
+  storefrontFreeGensPerVisitor: integer("storefront_free_gens_per_visitor").notNull().default(1),
   /** Bucket key of last "leftover gens / coupon promo" reminder email (YYYY-MM). */
   leftoverGensReminderBucketKey: text("leftover_gens_reminder_bucket_key"),
+  /**
+   * Who reimburses credit-pack buyers on a physical order:
+   * `appai_discount` = AI Art Studio checkout discount entitlement;
+   * `merchant_handles` = no entitlement (merchant runs their own promo).
+   */
+  creditReimbursementMode: text("credit_reimbursement_mode").notNull().default("appai_discount"),
+  /** JSON array of enabled premade pack ids, e.g. ["5","10","20"]. */
+  enabledCreditPackIds: text("enabled_credit_pack_ids").notNull().default('["5"]'),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({

@@ -1,5 +1,5 @@
 /** Default free AI generations per storefront visitor/customer (merchant can raise up to MAX). */
-export const STOREFRONT_FREE_GENERATION_DEFAULT = 5;
+export const STOREFRONT_FREE_GENERATION_DEFAULT = 1;
 /** Hard ceiling for merchant-configured free gens per visitor. */
 export const STOREFRONT_FREE_GENERATION_MAX = 10;
 /** Floor for merchant-configured free gens per visitor. */
@@ -10,11 +10,49 @@ export const STOREFRONT_FREE_GENERATION_MIN = 1;
  */
 export const STOREFRONT_FREE_GENERATION_LIMIT = STOREFRONT_FREE_GENERATION_DEFAULT;
 
-/** Customer top-up pack: 5 gens for $1, with up to $1 checkout entitlement on physical order. */
+/** Max checkout entitlement across all packs ($3). */
+export const CREDIT_ENTITLEMENT_MAX_CENTS = 300;
+
+export type CreditPackDefinition = {
+  packId: string;
+  credits: number;
+  priceInCents: number;
+  entitlementCents: number;
+  label: string;
+};
+
+/** Premade customer top-up packs (Stripe Checkout). */
+export const CREDIT_PACK_CATALOG: CreditPackDefinition[] = [
+  {
+    packId: "5",
+    credits: 5,
+    priceInCents: 100,
+    entitlementCents: 100,
+    label: "5 gens for $1",
+  },
+  {
+    packId: "10",
+    credits: 10,
+    priceInCents: 200,
+    entitlementCents: 200,
+    label: "10 gens for $2",
+  },
+  {
+    packId: "20",
+    credits: 20,
+    priceInCents: 300,
+    entitlementCents: 300,
+    label: "20 gens for $3",
+  },
+];
+
+/** Default pack when merchant has not customized. */
 export const CREDIT_PACK_ID = "5";
 export const CREDIT_PACK_CREDITS = 5;
 export const CREDIT_PACK_PRICE_CENTS = 100;
 export const CREDIT_PACK_ENTITLEMENT_CENTS = 100;
+
+export type CreditReimbursementMode = "appai_discount" | "merchant_handles";
 
 export function clampStorefrontFreeGens(n: unknown): number {
   const v = typeof n === "number" ? n : Number(n);
@@ -39,22 +77,53 @@ export function storefrontArtworksRemaining(args: {
   return freeRemaining + paid;
 }
 
-/** Resolve Stripe credit package id → credits + price (accepts legacy "10" as 5-pack). */
-export function resolveCreditPack(packageId: string | null | undefined): {
+export function getCreditPackDefinition(packId: string | null | undefined): CreditPackDefinition | null {
+  const id = String(packId || CREDIT_PACK_ID).trim();
+  return CREDIT_PACK_CATALOG.find((p) => p.packId === id) || null;
+}
+
+export function parseEnabledCreditPackIds(raw: unknown): string[] {
+  let list: string[] = [];
+  if (Array.isArray(raw)) {
+    list = raw.map((x) => String(x).trim()).filter(Boolean);
+  } else if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed.map((x) => String(x).trim()).filter(Boolean);
+    } catch {
+      list = raw.split(",").map((x) => x.trim()).filter(Boolean);
+    }
+  }
+  const allowed = new Set(CREDIT_PACK_CATALOG.map((p) => p.packId));
+  const filtered = [...new Set(list.filter((id) => allowed.has(id)))];
+  return filtered.length > 0 ? filtered : [CREDIT_PACK_ID];
+}
+
+/** Resolve Stripe credit package id → credits + price (respects shop enabled packs). */
+export function resolveCreditPack(
+  packageId: string | null | undefined,
+  enabledPackIds?: string[] | null,
+): {
   packId: string;
   credits: number;
   priceInCents: number;
   entitlementCents: number;
+  label: string;
 } | null {
-  const id = String(packageId || CREDIT_PACK_ID).trim();
-  if (id === "5" || id === "10") {
-    // Legacy "10" maps to the current 5-for-$1 pack (Stripe fee math).
-    return {
-      packId: CREDIT_PACK_ID,
-      credits: CREDIT_PACK_CREDITS,
-      priceInCents: CREDIT_PACK_PRICE_CENTS,
-      entitlementCents: CREDIT_PACK_ENTITLEMENT_CENTS,
-    };
+  const enabled = parseEnabledCreditPackIds(enabledPackIds ?? [CREDIT_PACK_ID]);
+  let id = String(packageId || enabled[0] || CREDIT_PACK_ID).trim();
+  // Legacy: bare "10" with only pack "5" enabled → 5-pack.
+  if (id === "10" && !enabled.includes("10") && enabled.includes("5")) {
+    id = "5";
   }
-  return null;
+  if (!enabled.includes(id)) return null;
+  const def = getCreditPackDefinition(id);
+  if (!def) return null;
+  return { ...def };
+}
+
+export function clampEntitlementCents(n: unknown): number {
+  const v = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  return Math.min(CREDIT_ENTITLEMENT_MAX_CENTS, Math.max(0, Math.round(v)));
 }

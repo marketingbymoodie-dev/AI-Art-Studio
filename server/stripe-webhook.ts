@@ -46,7 +46,7 @@ export function registerStripeWebhook(app: Express) {
           const result = await storage.applyCreditLedgerEntry({
             customerId: customer.id,
             deltaCredits: amount,
-            deltaEntitlementCents: Math.min(100, Math.max(0, parseInt(entitlementCents, 10) || 0)),
+            deltaEntitlementCents: Math.min(300, Math.max(0, parseInt(entitlementCents, 10) || 0)),
             reason: "purchase",
             idempotencyKey,
             externalRef: session.id,

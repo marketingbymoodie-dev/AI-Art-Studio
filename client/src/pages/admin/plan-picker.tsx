@@ -26,9 +26,9 @@ import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
  * Explains the per-customer free-generation cap and the $1 top-up packs.
  */
 const CUSTOMER_ABUSE_NOTE =
-  "Free generations per customer default to 5 (merchant can raise up to 10) to avoid abuse. " +
-  "Customers are offered packs of 5 generations for $1 directly from AI Art Studio " +
-  "if they wish to continue creating. Up to $1 is reimbursed as a checkout discount if they buy a physical product.";
+  "Free generations per customer default to 1 (merchant can raise up to 10) to avoid abuse. " +
+  "Customers can buy packs (5 for $1, 10 for $2, or 20 for $3) from AI Art Studio " +
+  "if they wish to continue creating. Pack buyers can get up to $1–$3 off at checkout on a physical product (unless you handle reimbursement yourself).";
 
 interface PlanCardProps {
   name: string;
