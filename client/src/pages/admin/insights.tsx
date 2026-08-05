@@ -22,7 +22,6 @@ import {
   suggestedRetailCents,
 } from "@shared/productIntelligence";
 import {
-  collapseBlankTitlesToSizes,
   collapseToPriceDriverVariants,
   ESTIMATOR_PAID_PLANS,
   mergePriceDriverSources,
@@ -35,13 +34,17 @@ import { usePlanGenerationQuota } from "@/components/admin/GenerationQuotaUsage"
 import PlanGenerationEstimator from "@/components/admin/PlanGenerationEstimator";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 
-type ProductTypeRow = {
-  id: number;
-  name: string;
-  printifyBlueprintId?: number | null;
-  printifyProviderId?: number | null;
-  defaultMarkupPercent?: number | null;
-  pricingStrategy?: string | null;
+type CatalogEntry = {
+  blueprintId: number;
+  label: string;
+  brand: string | null;
+  category: string | null;
+  kind: string;
+  existingProductType?: {
+    id: number;
+    name: string;
+    printifyProviderId: number | null;
+  } | null;
 };
 
 type PiVariant = {
@@ -55,24 +58,18 @@ type PiVariant = {
   available: boolean;
 };
 
-type Blank = {
-  productTypeId: number;
-  title: string;
-  printifyBlueprintId?: number | null;
-  printifyProviderId?: number | null;
-  printifyProviderName?: string | null;
-  variants: Array<{ id: string; title: string }>;
-};
-
 type CostsPayload = {
   costs?: Record<string, number>;
   costsBoth?: Record<string, number>;
   printifyVariantLabels?: Record<string, string>;
   supportsBothSides?: boolean;
+  productTypeId?: number | null;
 };
 
 type MixRow = {
   id: string;
+  /** Platform catalogue blueprint id (string for Select). */
+  blueprintId: string;
   productTypeId: string;
   variantKey: string;
   retailDollars: string;
@@ -80,15 +77,15 @@ type MixRow = {
 };
 
 type PickerProduct = {
-  productTypeId: number;
+  blueprintId: number;
   label: string;
-  printifyBlueprintId: number | null;
-  printifyProviderId: number | null;
+  productTypeId: number | null;
 };
 
 function newMixRow(): MixRow {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    blueprintId: "",
     productTypeId: "",
     variantKey: "",
     retailDollars: "",
@@ -96,59 +93,35 @@ function newMixRow(): MixRow {
   };
 }
 
-/** One row per blueprint+provider; clean titles; prefer blanks (merchant-scoped). */
-function buildPickerProducts(
-  blanks: Blank[] | undefined,
-  productTypes: ProductTypeRow[] | undefined,
-): PickerProduct[] {
-  const byKey = new Map<string, PickerProduct>();
-
-  const consider = (args: {
-    productTypeId: number;
-    name: string;
-    blueprintId: number | null;
-    providerId: number | null;
-    providerName?: string | null;
-  }) => {
-    const blueprintId = args.blueprintId != null ? Number(args.blueprintId) : null;
-    const providerId = args.providerId != null ? Number(args.providerId) : null;
-    if (blueprintId == null) return;
-    const key = `${blueprintId}:${providerId ?? "x"}`;
-    const clean = stripProviderSuffix(args.name) || args.name;
-    const label =
-      args.providerName && !/printify choice/i.test(args.providerName)
-        ? `${clean} (${args.providerName})`
-        : clean;
-    const existing = byKey.get(key);
-    if (!existing || args.productTypeId > existing.productTypeId) {
-      byKey.set(key, {
-        productTypeId: args.productTypeId,
-        label,
-        printifyBlueprintId: blueprintId,
-        printifyProviderId: providerId,
-      });
+/** One row per catalogue product — dedupe by blueprint, then by cleaned title. */
+function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct[] {
+  const byBlueprint = new Map<number, PickerProduct>();
+  for (const e of entries ?? []) {
+    const blueprintId = Number(e.blueprintId);
+    if (!Number.isFinite(blueprintId) || blueprintId <= 0) continue;
+    const label = stripProviderSuffix(e.label) || e.label;
+    const productTypeId = e.existingProductType?.id ?? null;
+    const existing = byBlueprint.get(blueprintId);
+    if (!existing || (productTypeId != null && existing.productTypeId == null)) {
+      byBlueprint.set(blueprintId, { blueprintId, label, productTypeId });
     }
-  };
-
-  for (const b of blanks ?? []) {
-    consider({
-      productTypeId: b.productTypeId,
-      name: b.title,
-      blueprintId: b.printifyBlueprintId ?? null,
-      providerId: b.printifyProviderId ?? null,
-      providerName: b.printifyProviderName,
-    });
-  }
-  for (const pt of productTypes ?? []) {
-    consider({
-      productTypeId: pt.id,
-      name: pt.name,
-      blueprintId: pt.printifyBlueprintId ?? null,
-      providerId: pt.printifyProviderId ?? null,
-    });
   }
 
-  return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
+  // Same display name from different blueprints → keep one (prefer imported).
+  const byLabel = new Map<string, PickerProduct>();
+  for (const p of byBlueprint.values()) {
+    const key = p.label.trim().toLowerCase();
+    const existing = byLabel.get(key);
+    if (!existing) {
+      byLabel.set(key, p);
+      continue;
+    }
+    if (existing.productTypeId == null && p.productTypeId != null) {
+      byLabel.set(key, p);
+    }
+  }
+
+  return [...byLabel.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 export default function AdminInsightsPage() {
@@ -157,156 +130,172 @@ export default function AdminInsightsPage() {
   const [rows, setRows] = useState<MixRow[]>(() => [newMixRow()]);
   const currentPlanName = planData?.planName || "starter";
   const [roiPlanName, setRoiPlanName] = useState(currentPlanName);
-  const [syncingPtId, setSyncingPtId] = useState<string | null>(null);
+  const [syncingKey, setSyncingKey] = useState<string | null>(null);
 
   const fetchCostsMutation = useMutation({
-    mutationFn: async (productTypeId: string) => {
-      setSyncingPtId(productTypeId);
-      try {
-        await apiRequest("POST", `/api/admin/product-types/${productTypeId}/product-sync`);
-      } catch {
-        /* still try costs */
+    mutationFn: async (args: { blueprintId: string; productTypeId: string }) => {
+      setSyncingKey(args.blueprintId);
+      if (args.productTypeId) {
+        try {
+          await apiRequest("POST", `/api/admin/product-types/${args.productTypeId}/product-sync`);
+        } catch {
+          /* still try costs */
+        }
+        const res = await apiRequest(
+          "GET",
+          `/api/admin/printify/costs/${args.productTypeId}?legacy=1`,
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || "Could not load COGS");
+        }
+        return { key: args.blueprintId, productTypeId: args.productTypeId, data: await res.json() };
       }
-      const res = await apiRequest("GET", `/api/admin/printify/costs/${productTypeId}?legacy=1`);
+      const res = await apiRequest(
+        "GET",
+        `/api/admin/printify/blueprint-costs/${args.blueprintId}`,
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "Could not load COGS");
       }
-      return { productTypeId, data: await res.json() };
+      return { key: args.blueprintId, productTypeId: "", data: await res.json() };
     },
-    onSuccess: ({ productTypeId, data }) => {
-      queryClient.setQueryData(["/api/admin/printify/costs", productTypeId, "insights"], data);
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-intelligence", productTypeId] });
+    onSuccess: ({ key, productTypeId, data }) => {
+      queryClient.setQueryData(["/api/admin/printify/blueprint-costs", key, "insights"], data);
+      if (productTypeId) {
+        queryClient.setQueryData(["/api/admin/printify/costs", productTypeId, "insights"], data);
+        queryClient.invalidateQueries({
+          queryKey: ["/api/admin/product-intelligence", productTypeId],
+        });
+      }
       toast({ title: "Costs refreshed", description: "Size / print options updated." });
     },
     onError: (err: Error) => {
       toast({ title: "COGS unavailable", description: err.message, variant: "destructive" });
     },
-    onSettled: () => setSyncingPtId(null),
+    onSettled: () => setSyncingKey(null),
   });
 
   useEffect(() => {
     setRoiPlanName(currentPlanName);
   }, [currentPlanName]);
 
-  const { data: productTypes, isLoading: ptsLoading } = useQuery<ProductTypeRow[]>({
-    queryKey: ["/api/admin/product-types"],
+  const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({
+    queryKey: ["/api/appai/setup/catalog"],
     queryFn: async () => {
-      const res = await apiRequest("GET", "/api/admin/product-types");
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : data.productTypes ?? [];
-      return list.filter((pt: ProductTypeRow) => pt.printifyBlueprintId != null);
-    },
-  });
-
-  const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
-    queryKey: ["/api/appai/blanks"],
-    queryFn: async () => {
-      const res = await apiRequest("GET", "/api/appai/blanks");
-      if (!res.ok) return { blanks: [] };
+      const res = await apiRequest("GET", "/api/appai/setup/catalog");
+      if (!res.ok) return { entries: [] };
       return res.json();
     },
   });
 
   const pickerProducts = useMemo(
-    () => buildPickerProducts(blanksData?.blanks, productTypes),
-    [blanksData?.blanks, productTypes],
+    () => buildPickerProducts(catalogData?.entries),
+    [catalogData?.entries],
   );
 
-  const productIds = useMemo(
-    () => [...new Set(rows.map((r) => r.productTypeId).filter(Boolean))],
+  const selectedBlueprintIds = useMemo(
+    () => [...new Set(rows.map((r) => r.blueprintId).filter(Boolean))],
     [rows],
   );
 
-  const piQueries = useQueries({
-    queries: productIds.map((id) => ({
-      queryKey: ["/api/admin/product-intelligence", id],
-      queryFn: async () => {
-        const res = await apiRequest("GET", `/api/admin/product-intelligence/${id}`);
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || "Failed to load Product Intelligence");
-        }
-        return res.json() as Promise<{ variants: PiVariant[]; productType?: ProductTypeRow }>;
-      },
-      enabled: !!id,
-      staleTime: 60_000,
-    })),
-  });
-
   const costsQueries = useQueries({
-    queries: productIds.map((id) => ({
-      queryKey: ["/api/admin/printify/costs", id, "insights"],
-      queryFn: async () => {
-        const res = await apiRequest("GET", `/api/admin/printify/costs/${id}`);
-        if (!res.ok) {
-          // Soft-fail: UI can still use PI / blanks
-          return null as CostsPayload | null;
-        }
-        return res.json() as Promise<CostsPayload>;
-      },
-      enabled: !!id,
-      staleTime: 60_000,
-      retry: 1,
-    })),
+    queries: selectedBlueprintIds.map((blueprintId) => {
+      const row = rows.find((r) => r.blueprintId === blueprintId);
+      const productTypeId = row?.productTypeId || "";
+      return {
+        queryKey: ["/api/admin/printify/blueprint-costs", blueprintId, "insights", productTypeId],
+        queryFn: async (): Promise<CostsPayload | null> => {
+          if (productTypeId) {
+            const res = await apiRequest("GET", `/api/admin/printify/costs/${productTypeId}`);
+            if (!res.ok) return null;
+            return res.json();
+          }
+          const res = await apiRequest(
+            "GET",
+            `/api/admin/printify/blueprint-costs/${blueprintId}`,
+          );
+          if (!res.ok) return null;
+          return res.json();
+        },
+        enabled: !!blueprintId,
+        staleTime: 60_000,
+        retry: 1,
+      };
+    }),
   });
 
-  const piByProductId = useMemo(() => {
-    const map = new Map<string, { variants: PiVariant[]; productType?: ProductTypeRow }>();
-    productIds.forEach((id, i) => {
-      const data = piQueries[i]?.data;
-      if (data) map.set(id, data);
-    });
-    return map;
-  }, [productIds, piQueries]);
+  const piQueries = useQueries({
+    queries: selectedBlueprintIds.map((blueprintId) => {
+      const row = rows.find((r) => r.blueprintId === blueprintId);
+      const productTypeId = row?.productTypeId || "";
+      return {
+        queryKey: ["/api/admin/product-intelligence", productTypeId],
+        queryFn: async () => {
+          const res = await apiRequest("GET", `/api/admin/product-intelligence/${productTypeId}`);
+          if (!res.ok) {
+            return { variants: [] as PiVariant[] };
+          }
+          return res.json() as Promise<{ variants: PiVariant[] }>;
+        },
+        enabled: !!productTypeId,
+        staleTime: 60_000,
+      };
+    }),
+  });
 
-  const costsByProductId = useMemo(() => {
+  const costsByBlueprint = useMemo(() => {
     const map = new Map<string, CostsPayload>();
-    productIds.forEach((id, i) => {
+    selectedBlueprintIds.forEach((id, i) => {
       const data = costsQueries[i]?.data;
       if (data) map.set(id, data);
     });
     return map;
-  }, [productIds, costsQueries]);
+  }, [selectedBlueprintIds, costsQueries]);
 
-  const loadingByProductId = useMemo(() => {
-    const map = new Map<string, boolean>();
-    productIds.forEach((id, i) => {
-      const piBusy = !!(piQueries[i]?.isLoading || piQueries[i]?.isFetching);
-      const costsBusy = !!(costsQueries[i]?.isLoading || costsQueries[i]?.isFetching);
-      map.set(id, piBusy || costsBusy);
+  const piByBlueprint = useMemo(() => {
+    const map = new Map<string, PiVariant[]>();
+    selectedBlueprintIds.forEach((id, i) => {
+      const data = piQueries[i]?.data;
+      if (data?.variants) map.set(id, data.variants);
     });
     return map;
-  }, [productIds, piQueries, costsQueries]);
+  }, [selectedBlueprintIds, piQueries]);
 
-  const variantsForProduct = (productTypeId: string): PriceDriverVariant[] => {
-    if (!productTypeId) return [];
-    const costs = costsByProductId.get(productTypeId);
+  const loadingByBlueprint = useMemo(() => {
+    const map = new Map<string, boolean>();
+    selectedBlueprintIds.forEach((id, i) => {
+      const costsBusy = !!(costsQueries[i]?.isLoading || costsQueries[i]?.isFetching);
+      const piBusy = !!(piQueries[i]?.isLoading || piQueries[i]?.isFetching);
+      map.set(id, costsBusy || piBusy);
+    });
+    return map;
+  }, [selectedBlueprintIds, costsQueries, piQueries]);
+
+  const variantsForBlueprint = (blueprintId: string): PriceDriverVariant[] => {
+    if (!blueprintId) return [];
+    const costs = costsByBlueprint.get(blueprintId);
     const fromCosts = priceDriversFromCostsPayload({
       costs: costs?.costs,
       costsBoth: costs?.costsBoth,
       printifyVariantLabels: costs?.printifyVariantLabels,
     });
-    const pi = piByProductId.get(productTypeId);
-    const fromPi = collapseToPriceDriverVariants(pi?.variants ?? []);
-    const blank = blanksData?.blanks?.find((b) => String(b.productTypeId) === productTypeId);
-    const fromBlanks = blank?.variants?.length
-      ? collapseBlankTitlesToSizes(blank.variants)
-      : [];
-    return mergePriceDriverSources({ fromCosts, fromPi, fromBlanks });
+    const fromPi = collapseToPriceDriverVariants(piByBlueprint.get(blueprintId) ?? []);
+    return mergePriceDriverSources({ fromCosts, fromPi, fromBlanks: [] });
   };
 
   useEffect(() => {
     setRows((prev) =>
       prev.map((row) => {
-        if (!row.productTypeId || !row.variantKey) return row;
-        const opts = variantsForProduct(row.productTypeId);
+        if (!row.blueprintId || !row.variantKey) return row;
+        const opts = variantsForBlueprint(row.blueprintId);
         if (opts.some((v) => v.key === row.variantKey)) return row;
         return { ...row, variantKey: "" };
       }),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [piByProductId, costsByProductId, blanksData]);
+  }, [costsByBlueprint, piByBlueprint]);
 
   const roiPlanMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === roiPlanName);
   const planPrice = roiPlanMeta?.priceUsd ?? 29;
@@ -317,10 +306,9 @@ export default function AdminInsightsPage() {
 
   const lineCalcs = useMemo(() => {
     return rows.map((row) => {
-      const picker = pickerProducts.find((p) => String(p.productTypeId) === row.productTypeId);
-      const pt = productTypes?.find((p) => String(p.id) === row.productTypeId);
-      const markup = pt?.defaultMarkupPercent ?? DEFAULT_MARKUP_PERCENT;
-      const variant = variantsForProduct(row.productTypeId).find((v) => v.key === row.variantKey);
+      const picker = pickerProducts.find((p) => String(p.blueprintId) === row.blueprintId);
+      const markup = DEFAULT_MARKUP_PERCENT;
+      const variant = variantsForBlueprint(row.blueprintId).find((v) => v.key === row.variantKey);
       const cogsCents = variant?.cogsCents ?? null;
       const shippingCents = variant?.shippingCents ?? null;
       const landed =
@@ -331,14 +319,14 @@ export default function AdminInsightsPage() {
       const retailCents =
         Number.isFinite(parsedRetail) && parsedRetail > 0
           ? Math.round(parsedRetail * 100)
-          : suggestedRetailCents(cogsCents, markup ?? DEFAULT_MARKUP_PERCENT);
+          : suggestedRetailCents(cogsCents, markup);
       const profitPerSale = merchantProfitCents(retailCents, landed ?? cogsCents);
       const units = Number.isFinite(row.monthlyUnits) ? Math.max(0, row.monthlyUnits) : 0;
       const monthlyProfit =
         profitPerSale != null ? Math.round(profitPerSale * units) : null;
       return {
         row,
-        label: picker?.label || pt?.name || "Product",
+        label: picker?.label || "Product",
         variantLabel: variant?.label || "—",
         cogsCents,
         shippingCents,
@@ -347,7 +335,7 @@ export default function AdminInsightsPage() {
         units,
       };
     });
-  }, [rows, productTypes, pickerProducts, piByProductId, costsByProductId, blanksData]);
+  }, [rows, pickerProducts, costsByBlueprint, piByBlueprint]);
 
   const totalMonthlyProfitCents = lineCalcs.reduce(
     (sum, l) => sum + (l.monthlyProfit ?? 0),
@@ -369,10 +357,10 @@ export default function AdminInsightsPage() {
   const estimatorLines: MixLine[] = useMemo(
     () =>
       rows.map((r) => {
-        const picker = pickerProducts.find((p) => String(p.productTypeId) === r.productTypeId);
+        const picker = pickerProducts.find((p) => String(p.blueprintId) === r.blueprintId);
         return {
           id: r.id,
-          label: picker?.label || r.productTypeId || "Product",
+          label: picker?.label || r.blueprintId || "Product",
           monthlyUnits: r.monthlyUnits,
         };
       }),
@@ -383,16 +371,14 @@ export default function AdminInsightsPage() {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   };
 
-  const listLoading = ptsLoading || blanksLoading;
-
   return (
     <AdminLayout>
       <div className="space-y-6 max-w-4xl">
         <div>
           <h1 className="text-2xl font-bold">Profit Insights</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Multi-product profit mix (size + print area). COGS load from Product Intelligence / Printify
-            costs — front+back appears when the supplier supports it.
+            Estimate profit across the platform catalogue. Pick size and print area (COGS exclude
+            shipping), set retail and monthly units, then compare subscription plans.
           </p>
         </div>
 
@@ -401,7 +387,9 @@ export default function AdminInsightsPage() {
             <div>
               <CardTitle className="text-base">Merchant profit calculator</CardTitle>
               <CardDescription>
-                {pickerProducts.length} products available (duplicates by supplier removed).
+                {catalogLoading
+                  ? "Loading catalogue…"
+                  : `${pickerProducts.length} products in the platform catalogue`}
               </CardDescription>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, newMixRow()])}>
@@ -410,19 +398,17 @@ export default function AdminInsightsPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-5">
-            {listLoading ? (
+            {catalogLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Loading your product catalogue…
+                Loading platform catalogue…
               </div>
             ) : (
               rows.map((row, idx) => {
-                const variants = variantsForProduct(row.productTypeId);
-                const busy = row.productTypeId ? !!loadingByProductId.get(row.productTypeId) : false;
+                const variants = variantsForBlueprint(row.blueprintId);
+                const busy = row.blueprintId ? !!loadingByBlueprint.get(row.blueprintId) : false;
                 const calc = lineCalcs[idx];
-                const markup =
-                  productTypes?.find((p) => String(p.id) === row.productTypeId)?.defaultMarkupPercent ??
-                  DEFAULT_MARKUP_PERCENT;
+                const markup = DEFAULT_MARKUP_PERCENT;
                 const hasBoth = variants.some((v) => v.printAreaKey === "both");
 
                 return (
@@ -445,21 +431,25 @@ export default function AdminInsightsPage() {
                       <div className="space-y-2">
                         <Label>Product</Label>
                         <Select
-                          value={row.productTypeId || undefined}
-                          onValueChange={(v) =>
+                          value={row.blueprintId || undefined}
+                          onValueChange={(v) => {
+                            const picker = pickerProducts.find((p) => String(p.blueprintId) === v);
                             updateRow(row.id, {
-                              productTypeId: v,
+                              blueprintId: v,
+                              productTypeId: picker?.productTypeId
+                                ? String(picker.productTypeId)
+                                : "",
                               variantKey: "",
                               retailDollars: "",
-                            })
-                          }
+                            });
+                          }}
                         >
                           <SelectTrigger>
                             <SelectValue placeholder="Select a product" />
                           </SelectTrigger>
                           <SelectContent position="popper" className="z-[100] max-h-80">
                             {pickerProducts.map((pt) => (
-                              <SelectItem key={pt.productTypeId} value={String(pt.productTypeId)}>
+                              <SelectItem key={pt.blueprintId} value={String(pt.blueprintId)}>
                                 {pt.label}
                               </SelectItem>
                             ))}
@@ -468,19 +458,43 @@ export default function AdminInsightsPage() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label>Size / print area</Label>
+                        <Label>
+                          Size / print areas{" "}
+                          <span className="font-normal text-muted-foreground">
+                            — Cost of goods (not including shipping)
+                          </span>
+                        </Label>
                         {busy ? (
                           <div className="flex h-10 items-center gap-2 rounded-md border px-3 text-sm text-muted-foreground">
                             <Loader2 className="h-4 w-4 animate-spin shrink-0" />
                             Loading sizes &amp; COGS…
                           </div>
-                        ) : !row.productTypeId ? (
+                        ) : !row.blueprintId ? (
                           <p className="text-xs text-muted-foreground pt-2">Pick a product first</p>
                         ) : variants.length === 0 ? (
-                          <p className="text-xs text-muted-foreground rounded-md border p-2">
-                            No size options yet. Open Products Catalogue and run{" "}
-                            <span className="font-medium">Product Sync</span> on this product.
-                          </p>
+                          <div className="space-y-2">
+                            <p className="text-xs text-muted-foreground rounded-md border p-2">
+                              No size / COGS options yet for this product.
+                            </p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              disabled={syncingKey === row.blueprintId}
+                              onClick={() =>
+                                fetchCostsMutation.mutate({
+                                  blueprintId: row.blueprintId,
+                                  productTypeId: row.productTypeId,
+                                })
+                              }
+                            >
+                              {syncingKey === row.blueprintId ? (
+                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                              ) : null}
+                              Fetch COGS
+                            </Button>
+                          </div>
                         ) : (
                           <>
                             <Select
@@ -503,7 +517,8 @@ export default function AdminInsightsPage() {
                             </Select>
                             {!hasBoth && !busy && (
                               <p className="text-[11px] text-muted-foreground">
-                                Front+back not listed — this supplier/cost cache only has front (or is AOP).
+                                Front/Back not listed when this supplier only prices a front print
+                                (or the product is all-over print).
                               </p>
                             )}
                             {!busy &&
@@ -514,10 +529,15 @@ export default function AdminInsightsPage() {
                                   variant="outline"
                                   size="sm"
                                   className="h-8"
-                                  disabled={syncingPtId === row.productTypeId}
-                                  onClick={() => fetchCostsMutation.mutate(row.productTypeId)}
+                                  disabled={syncingKey === row.blueprintId}
+                                  onClick={() =>
+                                    fetchCostsMutation.mutate({
+                                      blueprintId: row.blueprintId,
+                                      productTypeId: row.productTypeId,
+                                    })
+                                  }
                                 >
-                                  {syncingPtId === row.productTypeId ? (
+                                  {syncingKey === row.blueprintId ? (
                                     <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                                   ) : null}
                                   Fetch COGS

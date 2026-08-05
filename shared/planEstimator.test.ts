@@ -80,27 +80,57 @@ describe("collapseToPriceDriverVariants", () => {
     ];
     const collapsed = collapseToPriceDriverVariants(rows);
     expect(collapsed.map((c) => c.label)).toEqual([
-      "M — front",
-      "XL — front",
-      "M — front+back",
+      "Med — Front",
+      "XL — Front",
+      "Med — Front/Back",
     ]);
+  });
+
+  it("drops colour names mistaken for sizes", () => {
+    const collapsed = collapseToPriceDriverVariants([
+      {
+        supplierVariantId: "1",
+        size: "Storm Grey",
+        color: null,
+        printAreaKey: "front",
+        baseCogsCents: 1556,
+      },
+      {
+        supplierVariantId: "2",
+        size: "L",
+        color: "Black",
+        printAreaKey: "front",
+        baseCogsCents: 1162,
+      },
+      {
+        supplierVariantId: "3",
+        size: "S",
+        color: "White",
+        printAreaKey: "front",
+        baseCogsCents: 1162,
+      },
+    ]);
+    expect(collapsed.map((c) => c.label)).toEqual(["Small — Front", "Lge — Front"]);
   });
 });
 
 describe("priceDriversFromCostsPayload / One size filter", () => {
-  it("builds front and front+back from costs payload", () => {
+  it("builds front and front+back sorted Small→XL then Front/Back", () => {
     const drivers = priceDriversFromCostsPayload({
-      costs: { "1": 1174, "2": 1174 },
-      costsBoth: { "1": 1500 },
+      costs: { "1": 1174, "2": 1174, "3": 1300 },
+      costsBoth: { "1": 1500, "3": 1800 },
       printifyVariantLabels: {
         "1": "M / Black",
         "2": "L / White",
+        "3": "Storm Grey / XL",
       },
     });
-    expect(drivers.map((d) => d.label).sort()).toEqual([
-      "L — front",
-      "M — front",
-      "M — front+back",
+    expect(drivers.map((d) => d.label)).toEqual([
+      "Med — Front",
+      "Lge — Front",
+      "XL — Front",
+      "Med — Front/Back",
+      "XL — Front/Back",
     ]);
   });
 
@@ -109,7 +139,7 @@ describe("priceDriversFromCostsPayload / One size filter", () => {
       filterSpuriousOneSize([
         {
           key: "a",
-          label: "One size — front",
+          label: "One size — Front",
           size: "One size",
           printAreaKey: "front",
           cogsCents: 100,
@@ -117,7 +147,7 @@ describe("priceDriversFromCostsPayload / One size filter", () => {
         },
         {
           key: "b",
-          label: "M — front",
+          label: "Med — Front",
           size: "M",
           printAreaKey: "front",
           cogsCents: 100,

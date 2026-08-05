@@ -132,6 +132,7 @@ import {
   resolveEffectivePricingStrategy,
   suggestedRetailDollarsString,
 } from "@shared/productIntelligence";
+import { buildActivePrintifyVariantLabels } from "@shared/printifyVariantLabels";
 import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
@@ -16381,6 +16382,177 @@ ${orientationExtra}
     } catch (err: any) {
       console.error("[/api/admin/printify/costs/clear-cache]", err);
       return res.status(500).json({ error: "Failed to clear costs cache", detail: String(err) });
+    }
+  });
+
+  /**
+   * GET /api/admin/printify/blueprint-costs/:blueprintId
+   * Profit Insights / catalogue browsing: COGS for a platform-catalogue blueprint
+   * without requiring the merchant to import it first.
+   * Prefers the merchant's own product_type when present; else platform cost cache
+   * + catalog variant labels for a chosen/default provider.
+   */
+  app.get("/api/admin/printify/blueprint-costs/:blueprintId", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      if (!Number.isFinite(blueprintId) || blueprintId <= 0) {
+        return res.status(400).json({ error: "Invalid blueprint ID" });
+      }
+
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+      if (!printifyToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      // Prefer merchant's imported product type — client usually hits /costs/:id instead,
+      // but keep this path complete for catalogue-only picks.
+      const ownTypes = await storage.getProductTypesByMerchant(merchant.id);
+      const own = ownTypes.find((pt) => Number(pt.printifyBlueprintId) === blueprintId);
+      if (own) {
+        const fromPi = await costsResponseFromProductIntelligence(own);
+        if (fromPi) {
+          return res.json({
+            ...fromPi,
+            blueprintId,
+            productTypeId: own.id,
+            providerId: own.printifyProviderId ?? null,
+            source: "merchant_product_type",
+          });
+        }
+        const cached = parsePrintifyCostsCache(own.printifyCosts);
+        if (Object.keys(cached.front).length > 0) {
+          const labels = buildActivePrintifyVariantLabels(own);
+          return res.json({
+            costs: cached.front,
+            costsBoth: cached.both,
+            printifyVariantLabels: labels,
+            supportsBothSides: Object.keys(cached.both).length > 0,
+            blueprintId,
+            productTypeId: own.id,
+            providerId: own.printifyProviderId ?? null,
+            source: "merchant_product_type_cache",
+          });
+        }
+      }
+
+      // Discover providers; prefer one with cached platform costs, else first provider.
+      let providerList: Array<{ id: number; title?: string }> = [];
+      try {
+        const pRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+          { headers: { Authorization: `Bearer ${printifyToken}` } },
+        );
+        if (pRes.ok) {
+          const raw = await pRes.json();
+          providerList = (Array.isArray(raw) ? raw : []).map((p: any) => ({
+            id: Number(p.id),
+            title: p.title,
+          })).filter((p: { id: number }) => Number.isFinite(p.id) && p.id > 0);
+        }
+      } catch (err) {
+        console.warn(`[blueprint-costs] providers fetch failed for ${blueprintId}:`, err);
+      }
+
+      const preferChoice = (title?: string) => /printify choice/i.test(String(title || ""));
+      providerList.sort((a, b) => Number(preferChoice(b.title)) - Number(preferChoice(a.title)));
+
+      let chosenProviderId: number | null = null;
+      let costs: Record<string, number> = {};
+      let costsBoth: Record<string, number> = {};
+
+      const allTypes = await storage.getActiveProductTypes();
+      const typesForBlueprint = allTypes.filter(
+        (pt) => Number(pt.printifyBlueprintId) === blueprintId,
+      );
+      for (const p of providerList) {
+        for (const pt of typesForBlueprint) {
+          if (Number(pt.printifyProviderId) !== p.id) continue;
+          const parsed = parsePrintifyCostsCache(pt.printifyCosts);
+          if (Object.keys(parsed.front).length === 0) continue;
+          chosenProviderId = p.id;
+          costs = parsed.front;
+          costsBoth = parsed.both;
+          break;
+        }
+        if (chosenProviderId != null) break;
+      }
+      // Fallback: any product type on this blueprint with a cost cache (provider not in live list).
+      if (chosenProviderId == null) {
+        for (const pt of typesForBlueprint) {
+          const parsed = parsePrintifyCostsCache(pt.printifyCosts);
+          if (Object.keys(parsed.front).length === 0) continue;
+          chosenProviderId = pt.printifyProviderId != null ? Number(pt.printifyProviderId) : null;
+          costs = parsed.front;
+          costsBoth = parsed.both;
+          break;
+        }
+      }
+
+      if (chosenProviderId == null && providerList[0]) {
+        chosenProviderId = providerList[0].id;
+      }
+
+      if (chosenProviderId == null) {
+        return res.status(404).json({ error: "No Printify providers found for this blueprint" });
+      }
+
+      // Labels (+ catalog costs fallback) from Printify catalog variants.
+      const printifyVariantLabels: Record<string, string> = {};
+      try {
+        const vRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${chosenProviderId}/variants.json?show-out-of-stock=1`,
+          { headers: { Authorization: `Bearer ${printifyToken}` } },
+        );
+        if (vRes.ok) {
+          const vData = await vRes.json();
+          const variants = Array.isArray(vData?.variants)
+            ? vData.variants
+            : Array.isArray(vData)
+              ? vData
+              : [];
+          for (const v of variants) {
+            const vid = String(v?.id ?? "");
+            if (!vid) continue;
+            const size = String(v?.options?.size || "").trim();
+            const color = String(v?.options?.color || "").trim();
+            const title = String(v?.title || "").trim();
+            printifyVariantLabels[vid] =
+              size && color ? `${size} / ${color}` : size || color || title || vid;
+          }
+          if (Object.keys(costs).length === 0) {
+            costs = extractCostsFromCatalogVariants(variants);
+          }
+          if (Object.keys(costsBoth).length === 0) {
+            for (const sample of variants.slice(0, 12)) {
+              const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+              if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) {
+                // Front+back COGS need a dual-sided probe; catalogue alone rarely has both.
+                break;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[blueprint-costs] variants fetch failed for ${blueprintId}/${chosenProviderId}:`, err);
+      }
+
+      return res.json({
+        costs,
+        costsBoth,
+        printifyVariantLabels,
+        supportsBothSides: Object.keys(costsBoth).length > 0,
+        blueprintId,
+        productTypeId: own?.id ?? null,
+        providerId: chosenProviderId,
+        source: Object.keys(costs).length > 0 ? "platform_or_catalog" : "empty",
+      });
+    } catch (err: any) {
+      console.error("[/api/admin/printify/blueprint-costs]", err);
+      return res.status(500).json({ error: "Failed to load blueprint costs", detail: String(err) });
     }
   });
 

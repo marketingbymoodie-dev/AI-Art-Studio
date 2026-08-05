@@ -178,10 +178,91 @@ function normalizePrintAreaKey(raw: string | null | undefined): string {
   return k;
 }
 
-function printAreaLabel(key: string): string {
-  if (key === "both") return "front+back";
-  if (key === "front") return "front";
-  return key;
+const APPAREL_SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"] as const;
+
+/** True when a token is a wearable size or a dimension label (not a colour name). */
+export function looksLikeSizeToken(raw: string | null | undefined): boolean {
+  const t = String(raw || "").trim();
+  if (!t) return false;
+  if (/^(xxs|xs|s|m|l|xl|2xl|3xl|4xl|5xl|xxl|xxx?l)$/i.test(t)) return true;
+  if (/^(one\s*size|onesize|os)$/i.test(t)) return true;
+  // 16" x 16", 18 x 18 in, etc.
+  if (/\d+(\.\d+)?\s*("|″|in|inch|inches)?\s*[x×]\s*\d+/i.test(t)) return true;
+  // Bare numeric sizes (e.g. phone case models are handled via labels elsewhere)
+  if (/^\d+(\.\d+)?\s*("|″|in)?$/i.test(t)) return true;
+  return false;
+}
+
+export function normalizeApparelSize(raw: string): string {
+  const t = String(raw || "").trim();
+  if (/^(xxl)$/i.test(t)) return "2XL";
+  if (/^(xxxl)$/i.test(t)) return "3XL";
+  if (/^(xxs|xs|s|m|l|xl|2xl|3xl|4xl|5xl)$/i.test(t)) return t.toUpperCase();
+  if (/^(one\s*size|onesize|os)$/i.test(t)) return "One size";
+  return t;
+}
+
+/** Merchant-facing size names (S→Small, M→Med, L→Lge). */
+export function formatSizeForDisplay(size: string): string {
+  const n = normalizeApparelSize(size);
+  const map: Record<string, string> = {
+    S: "Small",
+    M: "Med",
+    L: "Lge",
+  };
+  return map[n] || n;
+}
+
+export function formatPrintAreaForDisplay(key: string): string {
+  const k = normalizePrintAreaKey(key);
+  if (k === "both") return "Front/Back";
+  if (k === "front") return "Front";
+  return k;
+}
+
+export function sizeSortRank(size: string): number {
+  const n = normalizeApparelSize(size);
+  const idx = (APPAREL_SIZE_ORDER as readonly string[]).indexOf(n);
+  if (idx >= 0) return idx;
+  if (/^one\s*size$/i.test(n)) return 200;
+  const dim = n.match(/(\d+(?:\.\d+)?)/);
+  if (dim) return 1000 + parseFloat(dim[1]!);
+  return 5000;
+}
+
+export function comparePriceDriverVariants(a: PriceDriverVariant, b: PriceDriverVariant): number {
+  const areaOrder = (key: string) => (key === "front" ? 0 : key === "both" ? 1 : 2);
+  const areaCmp = areaOrder(a.printAreaKey) - areaOrder(b.printAreaKey);
+  if (areaCmp !== 0) return areaCmp;
+  const rankCmp = sizeSortRank(a.size) - sizeSortRank(b.size);
+  if (rankCmp !== 0) return rankCmp;
+  return a.size.localeCompare(b.size, undefined, { numeric: true });
+}
+
+/** Parse "M / Black" or colour-first "Storm Grey / L" into size + colour. */
+export function parseSizeColorFromLabel(label: string): { size: string; color: string | null } {
+  const t = String(label || "").trim();
+  if (!t) return { size: "", color: null };
+  if (t.includes(" / ")) {
+    const parts = t.split(" / ").map((p) => p.trim()).filter(Boolean);
+    const a = parts[0] || "";
+    const b = parts.slice(1).join(" / ");
+    if (looksLikeSizeToken(a)) return { size: normalizeApparelSize(a), color: b || null };
+    if (looksLikeSizeToken(b)) return { size: normalizeApparelSize(b), color: a || null };
+    return { size: "", color: t };
+  }
+  if (looksLikeSizeToken(t)) return { size: normalizeApparelSize(t), color: null };
+  return { size: "", color: t };
+}
+
+function resolveRowSize(row: PiLikeRow): string {
+  const fromSize = String(row.size || "").trim();
+  if (looksLikeSizeToken(fromSize)) return normalizeApparelSize(fromSize);
+  const fromColor = String(row.color || "").trim();
+  if (looksLikeSizeToken(fromColor)) return normalizeApparelSize(fromColor);
+  const fromName = parseSizeColorFromLabel(String(row.variantName || ""));
+  if (fromName.size) return fromName.size;
+  return "";
 }
 
 /**
@@ -197,7 +278,9 @@ export function collapseToPriceDriverVariants(list: PiLikeRow[]): PriceDriverVar
   const buckets = new Map<string, Bucket>();
 
   for (const row of list) {
-    const size = String(row.size || "").trim() || "One size";
+    const size = resolveRowSize(row);
+    // Skip colour-only / garbage "sizes" (e.g. Storm Grey as its own row).
+    if (!size || !looksLikeSizeToken(size)) continue;
     const printAreaKey = normalizePrintAreaKey(row.printAreaKey);
     const bucketKey = `${size.toLowerCase()}::${printAreaKey}`;
     const b = buckets.get(bucketKey) ?? { size, printAreaKey, rows: [] };
@@ -213,11 +296,10 @@ export function collapseToPriceDriverVariants(list: PiLikeRow[]): PriceDriverVar
       withCogs.sort((a, c) => (c.baseCogsCents ?? 0) - (a.baseCogsCents ?? 0))[0] || b.rows[0];
     if (!pick) continue;
 
-    // If colours disagree on COGS, still one row (max) — label stays size+area only.
-    const area = printAreaLabel(b.printAreaKey);
+    const area = formatPrintAreaForDisplay(b.printAreaKey);
     out.push({
       key: `${b.size}::${b.printAreaKey}`,
-      label: `${b.size} — ${area}`,
+      label: `${formatSizeForDisplay(b.size)} — ${area}`,
       size: b.size,
       printAreaKey: b.printAreaKey,
       cogsCents: pick.baseCogsCents ?? null,
@@ -226,41 +308,33 @@ export function collapseToPriceDriverVariants(list: PiLikeRow[]): PriceDriverVar
     });
   }
 
-  const areaOrder = (key: string) => (key === "front" ? 0 : key === "both" ? 1 : 2);
-  return out.sort((a, b) => {
-    const areaCmp = areaOrder(a.printAreaKey) - areaOrder(b.printAreaKey);
-    if (areaCmp !== 0) return areaCmp;
-    return a.size.localeCompare(b.size, undefined, { numeric: true });
-  });
+  return out.sort(comparePriceDriverVariants);
 }
 
 /** Collapse blank titles like "M / Black" → size-only when colours share the same title prefix. */
 export function collapseBlankTitlesToSizes(
   variants: Array<{ id: string; title: string }>,
 ): PriceDriverVariant[] {
-  const bySize = new Map<string, { id: string; title: string }>();
+  const bySize = new Map<string, { id: string; size: string }>();
   for (const v of variants) {
-    const title = String(v.title || "").trim();
-    const sizePart = title.includes(" / ") ? title.split(" / ")[0]!.trim() : title;
-    const size = sizePart || title || v.id;
-    if (!bySize.has(size.toLowerCase())) {
-      bySize.set(size.toLowerCase(), v);
+    const parsed = parseSizeColorFromLabel(String(v.title || "").trim());
+    if (!parsed.size) continue;
+    const key = parsed.size.toLowerCase();
+    if (!bySize.has(key)) {
+      bySize.set(key, { id: v.id, size: parsed.size });
     }
   }
-  return [...bySize.entries()]
-    .map(([, v]) => {
-      const title = String(v.title || "").trim();
-      const size = title.includes(" / ") ? title.split(" / ")[0]!.trim() : title;
-      return {
-        key: v.id,
-        label: `${size || title} — front`,
-        size: size || title,
-        printAreaKey: "front",
-        cogsCents: null as number | null,
-        shippingCents: null as number | null,
-      };
-    })
-    .sort((a, b) => a.size.localeCompare(b.size, undefined, { numeric: true }));
+  return [...bySize.values()]
+    .map((v) => ({
+      key: `${v.size}::front`,
+      label: `${formatSizeForDisplay(v.size)} — ${formatPrintAreaForDisplay("front")}`,
+      size: v.size,
+      printAreaKey: "front",
+      cogsCents: null as number | null,
+      shippingCents: null as number | null,
+      supplierVariantId: v.id,
+    }))
+    .sort(comparePriceDriverVariants);
 }
 
 /** Strip " — Printify Choice" / similar provider suffixes from product titles. */
@@ -268,17 +342,6 @@ export function stripProviderSuffix(name: string): string {
   return String(name || "")
     .replace(/\s*[—–-]\s*(Printify Choice|Monster Digital|Fulfill Engine|Printify|MWW On Demand)\s*$/i, "")
     .trim();
-}
-
-function sizeFromVariantLabel(label: string): string {
-  const t = String(label || "").trim();
-  if (!t) return "";
-  const sizePart = t.includes(" / ") ? t.split(" / ")[0]!.trim() : t;
-  // Normalize common apparel codes to uppercase (l → L) but keep dimension labels.
-  if (/^(xxs|xs|s|m|l|xl|2xl|3xl|4xl|5xl)$/i.test(sizePart)) {
-    return sizePart.toUpperCase();
-  }
-  return sizePart;
 }
 
 /**
@@ -296,10 +359,12 @@ export function priceDriversFromCostsPayload(args: {
   for (const [vid, cents] of Object.entries(args.costs || {})) {
     if (!Number.isFinite(cents) || cents <= 0) continue;
     const label = labels[vid] || vid;
+    const parsed = parseSizeColorFromLabel(label);
+    if (!parsed.size) continue;
     rows.push({
       supplierVariantId: vid,
-      size: sizeFromVariantLabel(label) || null,
-      color: label.includes(" / ") ? label.split(" / ").slice(1).join(" / ").trim() : null,
+      size: parsed.size,
+      color: parsed.color,
       printAreaKey: "front",
       baseCogsCents: cents,
     });
@@ -307,10 +372,12 @@ export function priceDriversFromCostsPayload(args: {
   for (const [vid, cents] of Object.entries(args.costsBoth || {})) {
     if (!Number.isFinite(cents) || cents <= 0) continue;
     const label = labels[vid] || vid;
+    const parsed = parseSizeColorFromLabel(label);
+    if (!parsed.size) continue;
     rows.push({
       supplierVariantId: vid,
-      size: sizeFromVariantLabel(label) || null,
-      color: label.includes(" / ") ? label.split(" / ").slice(1).join(" / ").trim() : null,
+      size: parsed.size,
+      color: parsed.color,
       printAreaKey: "both",
       baseCogsCents: cents,
     });
