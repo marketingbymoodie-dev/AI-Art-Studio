@@ -16072,6 +16072,19 @@ ${orientationExtra}
     return positions[0] || "front";
   }
 
+  /**
+   * Known DTG front+back blueprints (placeholders.json can be empty on stale
+   * platform refs / OOS providers). Not AOP — AOP stays single-tier.
+   */
+  const KNOWN_DUAL_SIDED_BLUEPRINTS = new Set<number>([
+    26, // Men's Lightweight Fashion Tee
+    79, // Unisex 3/4 Sleeve Baseball Tee
+    6, // Unisex Cotton Crew Tee (common)
+    12, // Unisex Heavy Cotton Tee
+    77, // Unisex Heavy Blend Hooded Sweatshirt
+    49, // Unisex Heavy Blend Crewneck
+  ]);
+
   /** True when catalog/product placeholders include a separate back print area (not AOP). */
   async function catalogHasBackPlaceholder(
     blueprintId: number,
@@ -16085,6 +16098,7 @@ ${orientationExtra}
     },
   ): Promise<boolean> {
     if (opts?.isAllOverPrint) return false;
+    if (KNOWN_DUAL_SIDED_BLUEPRINTS.has(Number(blueprintId))) return true;
     try {
       const positions: { position?: string }[] =
         typeof opts?.placeholderPositionsJson === "string"
@@ -16097,11 +16111,12 @@ ${orientationExtra}
     if (opts?.doubleSidedPrint) return true;
 
     // Nested variants.json placeholders are usually empty — use placeholders.json.
+    // Prefer show-out-of-stock so fully OOS providers (baseball tee) still resolve.
     let sampleVid = opts?.sampleVariantId != null ? Number(opts.sampleVariantId) : NaN;
     if (!Number.isFinite(sampleVid) || sampleVid <= 0) {
       try {
         const vResp = await fetch(
-          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
           { headers: { Authorization: `Bearer ${apiToken}` } },
         );
         if (vResp.ok) {
@@ -16139,27 +16154,45 @@ ${orientationExtra}
       images.front ||
       (Object.values(images).find((v) => typeof v === "string") as string | undefined);
     const probeImageId = await ensureCostProbeImageId(args.apiToken, mockupUrl);
-    if (!probeImageId) {
-      console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
-      return {};
+    const imageSpec = probeImageId
+      ? { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }
+      : null;
+    // OOS-heavy providers (baseball) often fail large chunks — try progressively.
+    const seen = new Set<string>();
+    const attempts: number[][] = [];
+    for (const n of [10, 3, 1]) {
+      const chunk = args.variantIds.slice(0, n);
+      const key = chunk.join(",");
+      if (chunk.length === 0 || seen.has(key)) continue;
+      seen.add(key);
+      attempts.push(chunk);
     }
-    const chunk = args.variantIds.slice(0, 10);
-    const bothProbe = await tryCreateTempProductForCosts(
-      args.shopId,
-      args.apiToken,
-      args.blueprintId,
-      args.providerId,
-      chunk,
-      ["front", "back"],
-      { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 },
-    );
-    if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
-      console.log(`[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs`);
-      return bothProbe.costs;
+
+    for (const chunk of attempts) {
+      const specs = imageSpec ? [imageSpec, null] : [null];
+      for (const spec of specs) {
+        const bothProbe = await tryCreateTempProductForCosts(
+          args.shopId,
+          args.apiToken,
+          args.blueprintId,
+          args.providerId,
+          chunk,
+          ["front", "back"],
+          spec,
+        );
+        if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+          console.log(
+            `[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs` +
+              ` (n=${chunk.length}${spec ? ", with image" : ", empty images"})`,
+          );
+          return bothProbe.costs;
+        }
+        console.warn(
+          `[Printify Costs] Front+back probe failed n=${chunk.length}` +
+            ` (${bothProbe.status}): ${bothProbe.error?.slice(0, 160)}`,
+        );
+      }
     }
-    console.warn(
-      `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
-    );
     return {};
   }
 
@@ -16823,12 +16856,13 @@ ${orientationExtra}
           const vmIds = Object.keys(fromPi.costs)
             .map((id) => Number(id))
             .filter((id) => Number.isFinite(id) && id > 0);
-          // Probe front+back on Fetch/refresh — not on every passive Insights load.
+          // Probe front+back when missing (Insights used to hide Fetch once front
+          // COGS existed, so baseball never got a both-tier fill).
           const costsBoth = await ensureBothSideCosts(
             fromPi.costs,
             fromPi.costsBoth || {},
             vmIds,
-            forceRefresh,
+            forceRefresh || Object.keys(fromPi.costsBoth || {}).length === 0,
           );
           if (Object.keys(costsBoth).length > 0 && Object.keys(fromPi.costsBoth || {}).length === 0) {
             fromPi = (await costsResponseFromProductIntelligence(preferred)) || {
@@ -16959,7 +16993,7 @@ ${orientationExtra}
             cached.front,
             cached.both,
             ids,
-            forceRefresh,
+            forceRefresh || Object.keys(cached.both).length === 0,
           );
           const hasBoth = Object.keys(costsBoth).length > 0;
           const catalogBoth =
@@ -17574,7 +17608,9 @@ ${orientationExtra}
         printifyVariantLabels,
         costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
         costsBothByNormalizedLabel: buildCostsByNormalizedLabel(costsBoth, printifyVariantLabels),
-        supportsBothSides: Object.keys(costsBoth).length > 0,
+        // Keep supportsBothSides true even when the dual probe failed so Insights
+        // can show Front/Back placeholders + Fetch COGS (baseball OOS case).
+        supportsBothSides: Object.keys(costsBoth).length > 0 || hasBackPlaceholder,
         cached: false,
         strategyUsed,
       });

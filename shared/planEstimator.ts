@@ -412,11 +412,14 @@ function labelForVariantId(
  * (includes front + optional front+back).
  * When costs are missing but labels exist, still emits size rows (cogsCents null)
  * so the Insights dropdown is not empty after a failed cost probe.
+ * When `supportsBothSides` is true but costsBoth is empty, still emits Front/Back
+ * rows (null COGS) so Insights shows the tier and prompts a refresh.
  */
 export function priceDriversFromCostsPayload(args: {
   costs?: Record<string, number> | null;
   costsBoth?: Record<string, number> | null;
   printifyVariantLabels?: Record<string, string> | null;
+  supportsBothSides?: boolean | null;
 }): PriceDriverVariant[] {
   const labels = args.printifyVariantLabels || {};
   const rows: PiLikeRow[] = [];
@@ -469,6 +472,30 @@ export function priceDriversFromCostsPayload(args: {
         size: parsed.size,
         color: parsed.color,
         printAreaKey: "front",
+        baseCogsCents: null,
+      });
+    }
+  }
+
+  // Dual-sided catalogue products: mirror every front size as Front/Back when
+  // costsBoth is still empty so the dropdown doesn't look front-only forever.
+  if (args.supportsBothSides) {
+    const haveBothSize = new Set(
+      rows
+        .filter((r) => normalizePrintAreaKey(r.printAreaKey) === "both")
+        .map((r) => normalizeApparelSize(String(r.size || "")).toLowerCase())
+        .filter(Boolean),
+    );
+    for (const r of [...rows]) {
+      if (normalizePrintAreaKey(r.printAreaKey) !== "front") continue;
+      const key = normalizeApparelSize(String(r.size || "")).toLowerCase();
+      if (!key || haveBothSize.has(key)) continue;
+      haveBothSize.add(key);
+      rows.push({
+        supplierVariantId: r.supplierVariantId,
+        size: r.size,
+        color: r.color,
+        printAreaKey: "both",
         baseCogsCents: null,
       });
     }

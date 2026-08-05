@@ -230,7 +230,12 @@ async function upsertPlatformRefForEntry(args: {
         : "{}";
 
     // Persist placeholder positions (needed for baseball Front/Back COGS detection).
-    let placeholderPositions = "[]";
+    // Keep prior positions if the live fetch fails — never wipe a good cache to "[]".
+    let placeholderPositions =
+      typeof (existing as any)?.placeholderPositions === "string" &&
+      String((existing as any).placeholderPositions).trim().length > 2
+        ? String((existing as any).placeholderPositions)
+        : "[]";
     const sampleVid = Number(dual.variants[0]?.id);
     if (Number.isFinite(sampleVid) && sampleVid > 0) {
       try {

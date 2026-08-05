@@ -169,6 +169,7 @@ export default function AdminInsightsPage() {
         costs: data.costs,
         costsBoth: data.costsBoth,
         printifyVariantLabels: data.printifyVariantLabels,
+        supportsBothSides: data.supportsBothSides,
       });
       if (drivers.length === 0) {
         throw new Error(
@@ -328,6 +329,7 @@ export default function AdminInsightsPage() {
       costs: costs?.costs,
       costsBoth: costs?.costsBoth,
       printifyVariantLabels: costs?.printifyVariantLabels,
+      supportsBothSides: costs?.supportsBothSides,
     });
     const fromPi = collapseToPriceDriverVariants(piByBlueprint.get(blueprintId) ?? []);
     return mergePriceDriverSources({ fromCosts, fromPi, fromBlanks: [] });
@@ -458,6 +460,16 @@ export default function AdminInsightsPage() {
                 const calc = lineCalcs[idx];
                 const markup = DEFAULT_MARKUP_PERCENT;
                 const hasBoth = variants.some((v) => v.printAreaKey === "both");
+                const bothMissingCogs = variants.some(
+                  (v) => v.printAreaKey === "both" && v.cogsCents == null,
+                );
+                const showFetchCogs =
+                  !!row.blueprintId &&
+                  !busy &&
+                  (variants.length === 0 ||
+                    variants.every((v) => v.cogsCents == null) ||
+                    bothMissingCogs ||
+                    (!!costsByBlueprint.get(row.blueprintId)?.supportsBothSides && !hasBoth));
 
                 return (
                   <div key={row.id} className="rounded-md border p-3 space-y-3">
@@ -564,35 +576,38 @@ export default function AdminInsightsPage() {
                                 ))}
                               </SelectContent>
                             </Select>
-                            {!hasBoth && !busy && (
+                            {!hasBoth && !busy && !showFetchCogs && (
                               <p className="text-[11px] text-muted-foreground">
                                 Front/Back not listed when this supplier only prices a front print
                                 (or the product is all-over print).
                               </p>
                             )}
-                            {!busy &&
-                              variants.length > 0 &&
-                              variants.every((v) => v.cogsCents == null) && (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-8"
-                                  disabled={syncingKey === row.blueprintId}
-                                  onClick={() =>
-                                    fetchCostsMutation.mutate({
-                                      blueprintId: row.blueprintId,
-                                      productTypeId: row.productTypeId,
-                                      rowId: row.id,
-                                    })
-                                  }
-                                >
-                                  {syncingKey === row.blueprintId ? (
-                                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                                  ) : null}
-                                  Fetch COGS
-                                </Button>
-                              )}
+                            {bothMissingCogs && !busy && (
+                              <p className="text-[11px] text-muted-foreground">
+                                Front/Back sizes are listed — click Fetch COGS to load dual-print cost.
+                              </p>
+                            )}
+                            {showFetchCogs && variants.length > 0 && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-8"
+                                disabled={syncingKey === row.blueprintId}
+                                onClick={() =>
+                                  fetchCostsMutation.mutate({
+                                    blueprintId: row.blueprintId,
+                                    productTypeId: row.productTypeId,
+                                    rowId: row.id,
+                                  })
+                                }
+                              >
+                                {syncingKey === row.blueprintId ? (
+                                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                                ) : null}
+                                Fetch COGS
+                              </Button>
+                            )}
                           </>
                         )}
                       </div>

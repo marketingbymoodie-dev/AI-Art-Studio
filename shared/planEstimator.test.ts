@@ -141,6 +141,27 @@ describe("priceDriversFromCostsPayload / One size filter", () => {
     ]);
   });
 
+  it("synthesizes Front/Back rows when supportsBothSides but costsBoth empty", () => {
+    const drivers = priceDriversFromCostsPayload({
+      costs: { "1": 2024, "2": 2024 },
+      costsBoth: {},
+      supportsBothSides: true,
+      printifyVariantLabels: {
+        "1": "S / White/ Navy",
+        "2": "M / White/ Navy",
+      },
+    });
+    expect(drivers.map((d) => d.label)).toEqual([
+      "Small — Front",
+      "Med — Front",
+      "Small — Front/Back",
+      "Med — Front/Back",
+    ]);
+    expect(drivers.filter((d) => d.printAreaKey === "both").every((d) => d.cogsCents == null)).toBe(
+      true,
+    );
+  });
+
   it("drops One size when real sizes exist", () => {
     expect(
       filterSpuriousOneSize([
