@@ -29,13 +29,19 @@ export async function applyCustomerBillingOnSuccess(params: {
   mode: "customer_paid" | "customer_free";
   idempotencyKey: string;
   externalRef: string;
+  freeGenerationLimit?: number;
 }): Promise<boolean> {
-  const { customerId, mode, idempotencyKey, externalRef } = params;
+  const { customerId, mode, idempotencyKey, externalRef, freeGenerationLimit } = params;
   if (mode === "customer_paid") {
     const r = await storage.consumePaidCredit(customerId, idempotencyKey, externalRef);
     return r.consumed;
   }
-  const r = await storage.consumeFreeGeneration(customerId, idempotencyKey, externalRef);
+  const r = await storage.consumeFreeGeneration(
+    customerId,
+    idempotencyKey,
+    externalRef,
+    freeGenerationLimit ?? 5,
+  );
   return r.consumed;
 }
 
@@ -63,8 +69,9 @@ export async function finalizeGenerationBilling(params: {
   billingMode: GenerationBillingMode;
   customerId?: string | null;
   idempotencyKey: string;
+  freeGenerationLimit?: number;
 }): Promise<MerchantQuotaDecision | null> {
-  const { installation, billingMode, customerId, idempotencyKey } = params;
+  const { installation, billingMode, customerId, idempotencyKey, freeGenerationLimit } = params;
 
   if (billingMode === "merchant") {
     return applyMerchantBillingOnSuccess(installation);
@@ -86,11 +93,17 @@ export async function finalizeGenerationBilling(params: {
       mode: "customer_free",
       idempotencyKey: `storefront-free-generation:${idempotencyKey}`,
       externalRef: idempotencyKey,
+      freeGenerationLimit,
     });
-    return null;
+    // Free visitor gens also count against the merchant monthly allotment.
+    return applyMerchantBillingOnSuccess(installation);
   }
 
-  // session + anonymous: job completion is the meter (countSessionGenerations)
+  // Anonymous session gens still come off the merchant monthly allotment.
+  if (billingMode === "session") {
+    return applyMerchantBillingOnSuccess(installation);
+  }
+
   return null;
 }
 

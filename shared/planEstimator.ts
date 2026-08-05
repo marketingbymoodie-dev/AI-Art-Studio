@@ -5,7 +5,7 @@
  * Gens-per-sale is a provisional guess until live analytics exist.
  */
 
-import { STOREFRONT_FREE_GENERATION_LIMIT } from "./storefront-credits";
+import { STOREFRONT_FREE_GENERATION_DEFAULT } from "./storefront-credits";
 
 /** Working average platform cost per AI generation (USD). */
 export const DEFAULT_PLATFORM_COST_PER_GEN_USD = 0.05;
@@ -13,7 +13,13 @@ export const DEFAULT_PLATFORM_COST_PER_GEN_USD = 0.05;
 /** Provisional guess: average gens burned toward a sale (of the visitor free allotment). */
 export const DEFAULT_GENS_PER_SALE = 4;
 
-export const FREE_GENS_PER_VISITOR = STOREFRONT_FREE_GENERATION_LIMIT;
+export const FREE_GENS_PER_VISITOR = STOREFRONT_FREE_GENERATION_DEFAULT;
+
+/** Default unique customizer visitors / month for the visitor-funnel estimator. */
+export const DEFAULT_MONTHLY_VISITORS = 100;
+
+/** Default visitor → sale conversion (5%). */
+export const DEFAULT_CONVERSION_RATE = 0.05;
 
 export type EstimatorPlan = {
   planName: string;
@@ -59,6 +65,38 @@ export function estimateMonthlyGenerations(args: {
   const units = Number.isFinite(args.totalUnits) ? Math.max(0, args.totalUnits) : 0;
   const g = Number.isFinite(gens) && gens > 0 ? gens : DEFAULT_GENS_PER_SALE;
   return Math.ceil(units * g);
+}
+
+/**
+ * Primary plan-fit estimate: unique visitors × free gens / visitor
+ * (assumes each visitor uses their full free allotment).
+ */
+export function estimateVisitorFunnelGens(args: {
+  monthlyVisitors: number;
+  freeGensPerVisitor?: number;
+}): number {
+  const visitors = Number.isFinite(args.monthlyVisitors)
+    ? Math.max(0, args.monthlyVisitors)
+    : 0;
+  const free =
+    Number.isFinite(args.freeGensPerVisitor) && (args.freeGensPerVisitor as number) >= 0
+      ? (args.freeGensPerVisitor as number)
+      : FREE_GENS_PER_VISITOR;
+  return Math.ceil(visitors * free);
+}
+
+/** Expected sales from traffic: visitors × conversion rate. */
+export function estimateSalesFromVisitors(args: {
+  monthlyVisitors: number;
+  conversionRate?: number;
+}): number {
+  const visitors = Number.isFinite(args.monthlyVisitors)
+    ? Math.max(0, args.monthlyVisitors)
+    : 0;
+  const rate = Number.isFinite(args.conversionRate)
+    ? Math.min(1, Math.max(0, args.conversionRate as number))
+    : DEFAULT_CONVERSION_RATE;
+  return Math.floor(visitors * rate);
 }
 
 export function platformAiCostUsd(

@@ -8,10 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2 } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2, Sparkles } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
 import type { Merchant } from "@shared/schema";
+import {
+  STOREFRONT_FREE_GENERATION_DEFAULT,
+  STOREFRONT_FREE_GENERATION_MAX,
+  STOREFRONT_FREE_GENERATION_MIN,
+} from "@shared/storefront-credits";
 
 interface ShopifyInstallation {
   id: number;
@@ -19,6 +24,14 @@ interface ShopifyInstallation {
   status: string;
   scope: string | null;
 }
+
+type StorefrontSettings = {
+  storefrontFreeGensPerVisitor: number;
+  min: number;
+  max: number;
+  default: number;
+  shopDomain: string | null;
+};
 
 export default function AdminSettings() {
   const { toast } = useToast();
@@ -29,6 +42,7 @@ export default function AdminSettings() {
   const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string; recommended?: boolean }[]; instructions?: string[] } | null>(null);
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
+  const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(STOREFRONT_FREE_GENERATION_DEFAULT));
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -41,6 +55,10 @@ export default function AdminSettings() {
   >({
     queryKey: ["/api/shopify/installations"],
     select: (data) => data.installations,
+  });
+
+  const { data: storefrontSettings } = useQuery<StorefrontSettings>({
+    queryKey: ["/api/admin/storefront-settings"],
   });
 
   const handleReconnectStore = async (shopDomain: string) => {
@@ -120,6 +138,36 @@ export default function AdminSettings() {
     }
   }, [merchant]);
 
+  useEffect(() => {
+    if (storefrontSettings?.storefrontFreeGensPerVisitor != null) {
+      setFreeGensPerVisitor(String(storefrontSettings.storefrontFreeGensPerVisitor));
+    }
+  }, [storefrontSettings]);
+
+  const updateStorefrontSettingsMutation = useMutation({
+    mutationFn: async (storefrontFreeGensPerVisitor: number) => {
+      const res = await apiRequest("PATCH", "/api/admin/storefront-settings", {
+        storefrontFreeGensPerVisitor,
+      });
+      return res.json() as Promise<StorefrontSettings>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/storefront-settings"] });
+      setFreeGensPerVisitor(String(data.storefrontFreeGensPerVisitor));
+      toast({
+        title: "Storefront settings saved",
+        description: `Visitors get ${data.storefrontFreeGensPerVisitor} free generations.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleSave = () => {
     updateMerchantMutation.mutate({
       printifyApiToken: printifyToken,
@@ -127,6 +175,19 @@ export default function AdminSettings() {
       useBuiltInNanoBanana: useBuiltIn,
       customNanoBananaToken: customToken,
     });
+  };
+
+  const handleSaveFreeGens = () => {
+    const n = parseInt(freeGensPerVisitor, 10);
+    if (!Number.isFinite(n)) {
+      toast({
+        title: "Invalid value",
+        description: `Enter a number between ${STOREFRONT_FREE_GENERATION_MIN} and ${STOREFRONT_FREE_GENERATION_MAX}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    updateStorefrontSettingsMutation.mutate(n);
   };
 
   const handleDetectShop = async () => {
@@ -304,6 +365,47 @@ export default function AdminSettings() {
                 </div>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              Storefront free generations
+            </CardTitle>
+            <CardDescription>
+              How many free AI artworks each unique visitor gets before paid credits.
+              These come off your monthly plan allotment. Default {STOREFRONT_FREE_GENERATION_DEFAULT},
+              max {STOREFRONT_FREE_GENERATION_MAX}. Use coupons for promo overflow.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2 max-w-xs">
+              <Label htmlFor="free-gens-visitor">Free gens per visitor</Label>
+              <Input
+                id="free-gens-visitor"
+                type="number"
+                min={STOREFRONT_FREE_GENERATION_MIN}
+                max={STOREFRONT_FREE_GENERATION_MAX}
+                step={1}
+                value={freeGensPerVisitor}
+                onChange={(e) => setFreeGensPerVisitor(e.target.value)}
+              />
+            </div>
+            <Button
+              type="button"
+              onClick={handleSaveFreeGens}
+              disabled={updateStorefrontSettingsMutation.isPending}
+              className="gap-2"
+            >
+              {updateStorefrontSettingsMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              Save free gens
+            </Button>
           </CardContent>
         </Card>
 

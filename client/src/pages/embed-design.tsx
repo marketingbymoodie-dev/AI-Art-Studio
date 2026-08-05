@@ -87,7 +87,12 @@ import {
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
 import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
-import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  CREDIT_PACK_ID,
+  STOREFRONT_FREE_GENERATION_DEFAULT,
+  STOREFRONT_FREE_GENERATION_LIMIT,
+  storefrontArtworksRemaining,
+} from "@shared/storefront-credits";
 import {
   canvasOrientationFromAspect,
   filterSizesByCanvasOrientation,
@@ -2032,6 +2037,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
+  const [freeGenerationLimit, setFreeGenerationLimit] = useState(STOREFRONT_FREE_GENERATION_DEFAULT);
   const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const googleAuthNonceRef = useRef<string | null>(null);
@@ -2185,6 +2191,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       .then(data => {
         setGoogleAuthEnabled(!!data.googleClientId);
         setCentralAppUrl(typeof data.appUrl === "string" ? data.appUrl.replace(/\/$/, "") : buildCentralAppUrl(""));
+        if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
+          setFreeGenerationLimit(data.freeGenerationLimit);
+        }
       })
       .catch(() => {
         setGoogleAuthEnabled(false);
@@ -2331,6 +2340,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const artworksRemaining = storefrontArtworksRemaining({
     freeGenerationsUsed: freeGenerationsUsedCount,
     paidCredits,
+    freeGenerationLimit,
   });
   const hasGenerationCapacity = artworksRemaining > 0;
   const storefrontLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
@@ -6376,6 +6386,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             : storefrontArtworksRemaining({
                 freeGenerationsUsed: nextFreeUsed,
                 paidCredits: nextPaidCredits,
+                freeGenerationLimit,
               });
 
         console.log('[EmbedDesign] Updating balance — paid:', nextPaidCredits, 'freeUsed:', nextFreeUsed, 'remaining:', remaining);
@@ -6726,7 +6737,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const params = new URLSearchParams({
       customerId: storefrontCustomerId,
       shop: shopDomain,
-      package: "10",
+      package: CREDIT_PACK_ID,
       returnUrl: returnUrl.toString(),
     });
     const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
@@ -10862,7 +10873,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const credits = paidCredits;
   const artworksRemainingLabel = (() => {
     if (sessionLoading && !customer) {
-      return `${STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
+      return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
     }
     if (artworksRemaining > 0) {
       const noun = isLoggedIn ? 'artwork' : 'free artwork';
@@ -11473,9 +11484,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <DialogHeader>
             <DialogTitle>Artwork Credits</DialogTitle>
           </DialogHeader>
-          <p className="text-muted-foreground">You get {STOREFRONT_FREE_GENERATION_LIMIT} free AI-generated artworks to try.</p>
-                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+          <p className="text-muted-foreground">You get {freeGenerationLimit} free AI-generated artworks to try.</p>
+                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 5 more credits.</p>
+                  <p className="text-muted-foreground">Up to $1 back when you complete a physical product purchase!</p>
                   <Button
                     type="button"
                     size="sm"
@@ -11535,7 +11546,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
             <CardContent className="py-3">
               <p className="text-orange-700 dark:text-orange-300 text-sm font-medium">
-                You've used all 10 free generations. Create an account to continue designing!
+                You've used all {freeGenerationLimit} free generations. Create an account to continue designing!
               </p>
             </CardContent>
           </Card>

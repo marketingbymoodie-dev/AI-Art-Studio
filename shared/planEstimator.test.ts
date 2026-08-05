@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   collapseToPriceDriverVariants,
   estimateMonthlyGenerations,
+  estimateSalesFromVisitors,
+  estimateVisitorFunnelGens,
   filterSpuriousOneSize,
   pagesNeededFromMix,
   platformAiCostUsd,
@@ -28,6 +30,11 @@ describe("generation / cost estimates", () => {
   it("estimates gens and platform AI cost at $0.05", () => {
     expect(estimateMonthlyGenerations({ totalUnits: 10, gensPerSale: 4 })).toBe(40);
     expect(platformAiCostUsd(40, 0.05)).toBe(2);
+  });
+
+  it("estimates visitor-funnel gens and sales", () => {
+    expect(estimateVisitorFunnelGens({ monthlyVisitors: 100, freeGensPerVisitor: 5 })).toBe(500);
+    expect(estimateSalesFromVisitors({ monthlyVisitors: 100, conversionRate: 0.05 })).toBe(5);
   });
 });
 

@@ -709,7 +709,7 @@ export default function AdminInsightsPage() {
 
         <PlanGenerationEstimator
           title="Plan fit for this mix"
-          description="Uses your product mix units above. Gens-per-sale is a guess; visitor free gens come off the merchant allotment."
+          description="Plan fit uses unique visitors × free gens. Conversion estimates sales; gens-per-sale stays optional. Free gens come off your merchant allotment."
           lines={estimatorLines}
           lockMix
           footerNote={

@@ -190,6 +190,13 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   pendingPlanEffectiveAt: timestamp("pending_plan_effective_at"),
   /** Merchant clicked "I've enabled it" on the setup rail's App Embed step. */
   embedConfirmedAt: timestamp("embed_confirmed_at"),
+  /**
+   * Free AI generations each unique storefront visitor gets before paid credits.
+   * Clamped 1–10 in app code; default 5.
+   */
+  storefrontFreeGensPerVisitor: integer("storefront_free_gens_per_visitor").notNull().default(5),
+  /** Bucket key of last "leftover gens / coupon promo" reminder email (YYYY-MM). */
+  leftoverGensReminderBucketKey: text("leftover_gens_reminder_bucket_key"),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({

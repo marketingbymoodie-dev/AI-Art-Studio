@@ -5,10 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, Trash2 } from "lucide-react";
 import {
+  DEFAULT_CONVERSION_RATE,
   DEFAULT_GENS_PER_SALE,
+  DEFAULT_MONTHLY_VISITORS,
   DEFAULT_PLATFORM_COST_PER_GEN_USD,
   FREE_GENS_PER_VISITOR,
   estimateMonthlyGenerations,
+  estimateSalesFromVisitors,
+  estimateVisitorFunnelGens,
   pagesNeededFromMix,
   platformAiCostUsd,
   recommendPlan,
@@ -40,7 +44,7 @@ type PlanGenerationEstimatorProps = {
 
 export default function PlanGenerationEstimator({
   title = "Plan & generation estimator",
-  description = "Sandbox for plan page limits and merchant generation allotments. Visitor free gens come off the merchant quota. Gens-per-sale is a guess until live data.",
+  description = "Primary story: unique visitors × free gens (plan allotment). Conversion turns traffic into sales. Gens-per-sale stays optional / provisional.",
   initialLines,
   lines: controlledLines,
   onLinesChange,
@@ -50,9 +54,12 @@ export default function PlanGenerationEstimator({
   const [internalLines, setInternalLines] = useState<MixLine[]>(
     () => initialLines?.length ? initialLines : [newLine("Unisex tee"), newLine("Zip hoodie")],
   );
+  const [monthlyVisitors, setMonthlyVisitors] = useState(String(DEFAULT_MONTHLY_VISITORS));
+  const [conversionPct, setConversionPct] = useState(String(DEFAULT_CONVERSION_RATE * 100));
   const [gensPerSale, setGensPerSale] = useState(String(DEFAULT_GENS_PER_SALE));
   const [costPerGen, setCostPerGen] = useState(String(DEFAULT_PLATFORM_COST_PER_GEN_USD));
   const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(FREE_GENS_PER_VISITOR));
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const lines = controlledLines ?? internalLines;
   const setLines = (next: MixLine[]) => {
@@ -60,33 +67,39 @@ export default function PlanGenerationEstimator({
     else setInternalLines(next);
   };
 
+  const visitorsN = parseFloat(monthlyVisitors);
+  const conversionRate = (() => {
+    const pct = parseFloat(conversionPct);
+    if (!Number.isFinite(pct)) return DEFAULT_CONVERSION_RATE;
+    return Math.min(1, Math.max(0, pct / 100));
+  })();
   const gensN = parseFloat(gensPerSale);
   const costN = parseFloat(costPerGen);
   const freeN = parseFloat(freeGensPerVisitor);
   const units = totalMonthlyUnits(lines);
   const pagesNeeded = pagesNeededFromMix(lines);
-  const estimatedGens = estimateMonthlyGenerations({
-    totalUnits: units,
+
+  const visitors = Number.isFinite(visitorsN) ? Math.max(0, visitorsN) : DEFAULT_MONTHLY_VISITORS;
+  const freeGens = Number.isFinite(freeN) && freeN >= 0 ? freeN : FREE_GENS_PER_VISITOR;
+  const estimatedGens = estimateVisitorFunnelGens({
+    monthlyVisitors: visitors,
+    freeGensPerVisitor: freeGens,
+  });
+  const expectedSales = estimateSalesFromVisitors({
+    monthlyVisitors: visitors,
+    conversionRate,
+  });
+  const gensPerSaleEstimate = estimateMonthlyGenerations({
+    totalUnits: units > 0 ? units : expectedSales,
     gensPerSale: Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE,
   });
-  const maxFreeGensIfFullyUsed = Math.ceil(
-    units * (Number.isFinite(freeN) && freeN >= 0 ? freeN : FREE_GENS_PER_VISITOR),
-  );
   const aiCost = platformAiCostUsd(
     estimatedGens,
-    Number.isFinite(costN) ? costN : DEFAULT_PLATFORM_COST_PER_GEN_USD,
-  );
-  const aiCostIfFullFree = platformAiCostUsd(
-    maxFreeGensIfFullyUsed,
     Number.isFinite(costN) ? costN : DEFAULT_PLATFORM_COST_PER_GEN_USD,
   );
   const recommendation = useMemo(
     () => recommendPlan({ pagesNeeded, estimatedGens }),
     [pagesNeeded, estimatedGens],
-  );
-  const recommendationFullFree = useMemo(
-    () => recommendPlan({ pagesNeeded, estimatedGens: maxFreeGensIfFullyUsed }),
-    [pagesNeeded, maxFreeGensIfFullyUsed],
   );
   const suggestedPlanProfit =
     recommendation.fits && recommendation.priceUsd != null
@@ -175,16 +188,43 @@ export default function PlanGenerationEstimator({
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-1">
-            <Label htmlFor="gens-per-sale">Gens per sale (guess)</Label>
+            <Label htmlFor="monthly-visitors">Unique visitors / mo</Label>
             <Input
-              id="gens-per-sale"
+              id="monthly-visitors"
               type="number"
               min={0}
-              step={0.5}
-              value={gensPerSale}
-              onChange={(e) => setGensPerSale(e.target.value)}
+              step={1}
+              value={monthlyVisitors}
+              onChange={(e) => setMonthlyVisitors(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="free-gens-visitor">Free gens / visitor</Label>
+            <Input
+              id="free-gens-visitor"
+              type="number"
+              min={1}
+              max={10}
+              step={1}
+              value={freeGensPerVisitor}
+              onChange={(e) => setFreeGensPerVisitor(e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Comes off the merchant plan (live default {FREE_GENS_PER_VISITOR}, max 10)
+            </p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="conversion-pct">Conversion % (visitor → sale)</Label>
+            <Input
+              id="conversion-pct"
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={conversionPct}
+              onChange={(e) => setConversionPct(e.target.value)}
             />
           </div>
           <div className="space-y-1">
@@ -198,20 +238,6 @@ export default function PlanGenerationEstimator({
               onChange={(e) => setCostPerGen(e.target.value)}
             />
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="free-gens-visitor">Free gens / visitor</Label>
-            <Input
-              id="free-gens-visitor"
-              type="number"
-              min={0}
-              step={1}
-              value={freeGensPerVisitor}
-              onChange={(e) => setFreeGensPerVisitor(e.target.value)}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Comes off the merchant plan allowance (live store default is {FREE_GENS_PER_VISITOR})
-            </p>
-          </div>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
@@ -223,17 +249,16 @@ export default function PlanGenerationEstimator({
             <div className="text-muted-foreground">Est. gens / month</div>
             <div className="text-xl font-semibold">{estimatedGens}</div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {units} units × {Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE} gens (guess)
+              {visitors} visitors × {freeGens} free gens
             </p>
           </div>
           <div className="rounded-md border p-3">
-            <div className="text-muted-foreground">Platform AI cost (guess)</div>
-            <div className="text-xl font-semibold">${aiCost.toFixed(2)}</div>
-            {suggestedPlanProfit != null && (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Plan − AI ≈ ${suggestedPlanProfit.toFixed(2)}/mo
-              </p>
-            )}
+            <div className="text-muted-foreground">Expected sales</div>
+            <div className="text-xl font-semibold">{expectedSales}</div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {visitors} × {(conversionRate * 100).toFixed(1)}%
+              {units > 0 ? ` · mix units ${units}` : ""}
+            </p>
           </div>
           <div className="rounded-md border p-3">
             <div className="text-muted-foreground">Suggested plan</div>
@@ -242,23 +267,51 @@ export default function PlanGenerationEstimator({
             </div>
             {recommendation.fits && recommendation.priceUsd != null && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                ${recommendation.priceUsd}/mo
+                ${recommendation.priceUsd}/mo · AI ~${aiCost.toFixed(2)}
+                {suggestedPlanProfit != null ? ` · plan−AI ≈ $${suggestedPlanProfit.toFixed(2)}` : ""}
               </p>
             )}
           </div>
         </div>
 
-        <div className="rounded-md border border-amber-200 bg-amber-50/60 p-3 text-sm space-y-1">
-          <p className="font-medium text-amber-950">If every sale burned the full free allotment</p>
-          <p className="text-amber-900/90">
-            {units} units × {Number.isFinite(freeN) ? freeN : FREE_GENS_PER_VISITOR} free gens ={" "}
-            <span className="font-semibold">{maxFreeGensIfFullyUsed}</span> gens/mo · platform cost{" "}
-            <span className="font-semibold">${aiCostIfFullFree.toFixed(2)}</span>
-            {recommendationFullFree.fits
-              ? ` · needs ${recommendationFullFree.displayName}`
-              : " · no current plan covers this ceiling"}
+        <div className="rounded-md border border-sky-200 bg-sky-50/60 p-3 text-sm space-y-1">
+          <p className="font-medium text-sky-950">Visitor funnel (primary)</p>
+          <p className="text-sky-900/90">
+            Plan fit uses <span className="font-semibold">{estimatedGens}</span> gens if every
+            visitor uses their free allotment. Expected sales from conversion:{" "}
+            <span className="font-semibold">{expectedSales}</span>/mo.
           </p>
         </div>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="px-0 h-auto text-xs text-muted-foreground"
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          {showAdvanced ? "Hide" : "Show"} advanced gens-per-sale guess
+        </Button>
+        {showAdvanced && (
+          <div className="rounded-md border p-3 space-y-2 text-sm">
+            <div className="space-y-1 max-w-xs">
+              <Label htmlFor="gens-per-sale">Gens per sale (provisional)</Label>
+              <Input
+                id="gens-per-sale"
+                type="number"
+                min={0}
+                step={0.5}
+                value={gensPerSale}
+                onChange={(e) => setGensPerSale(e.target.value)}
+              />
+            </div>
+            <p className="text-muted-foreground">
+              Units/sales × gens/sale ≈{" "}
+              <span className="font-medium text-foreground">{gensPerSaleEstimate}</span> gens
+              (analytics-style cross-check only — not used for plan fit).
+            </p>
+          </div>
+        )}
 
         <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
 

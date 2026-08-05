@@ -295,7 +295,7 @@ export default function GenerationQuotaUsage({
       )}
 
       <p className="text-xs text-muted-foreground mt-3">
-        {data?.usdDisclaimer ?? "All prices in USD."} Customer-purchased credit packs ($1 / 10) do not
+        {data?.usdDisclaimer ?? "All prices in USD."} Customer-purchased credit packs ($1 / 5) do not
         count toward this shop quota.
       </p>
     </>

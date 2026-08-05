@@ -45,7 +45,12 @@ export interface IStorage {
   addCustomerAlias(customerId: string, alias: Omit<InsertCustomerAlias, "customerId">): Promise<CustomerAlias | undefined>;
   applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }>;
   consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
-  consumeFreeGeneration(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
+  consumeFreeGeneration(
+    customerId: string,
+    idempotencyKey: string,
+    externalRef?: string,
+    freeGenerationLimit?: number,
+  ): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
   recordStripeEvent(stripeEventId: string, type: string): Promise<boolean>;
   markStripeEventOutcome(stripeEventId: string, outcome: string): Promise<void>;
   // Order discount claim audit row written when an orders/paid webhook reports
@@ -477,8 +482,13 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async consumeFreeGeneration(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
-    const FREE_GENERATION_LIMIT = 10;
+  async consumeFreeGeneration(
+    customerId: string,
+    idempotencyKey: string,
+    externalRef?: string,
+    freeGenerationLimit: number = 5,
+  ): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
+    const limit = Math.min(10, Math.max(1, Math.round(freeGenerationLimit) || 5));
     return db.transaction(async (tx) => {
       await tx
         .insert(creditBalances)
@@ -498,7 +508,7 @@ export class DatabaseStorage implements IStorage {
           version: sql`${creditBalances.version} + 1`,
           updatedAt: new Date(),
         })
-        .where(and(eq(creditBalances.customerId, customerId), sql`${creditBalances.freeGenerationsUsed} < ${FREE_GENERATION_LIMIT}`))
+        .where(and(eq(creditBalances.customerId, customerId), sql`${creditBalances.freeGenerationsUsed} < ${limit}`))
         .returning();
 
       if (!balance) return { consumed: false, balance: undefined };

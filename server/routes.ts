@@ -61,7 +61,15 @@ import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
 import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
-import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  STOREFRONT_FREE_GENERATION_DEFAULT,
+  STOREFRONT_FREE_GENERATION_LIMIT,
+  STOREFRONT_FREE_GENERATION_MAX,
+  STOREFRONT_FREE_GENERATION_MIN,
+  clampStorefrontFreeGens,
+  resolveCreditPack,
+  storefrontArtworksRemaining,
+} from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
@@ -112,6 +120,11 @@ import {
   applyCustomerBillingOnSuccess,
   type GenerationBillingMode,
 } from "./generation-billing";
+import {
+  consumeMerchantCouponUnits,
+  merchantCanCoverCouponUnits,
+  resolveInstallationForMerchant,
+} from "./merchant-coupon-quota";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
 import {
@@ -7304,16 +7317,18 @@ ${orientationExtra}
       const { shop, sessionId, customerId } = req.query;
       if (!shop) return res.status(400).json({ error: "Shop domain required" });
 
-      const FREE_GENERATION_LIMIT = 10;
+      const installation = await getAuthorizedInstallation(String(shop));
+      const FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
+        (installation as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      );
 
       // Read-only status endpoint. Generation is responsible for consumption.
       if (!customerId && sessionId) {
-        // Anonymous session limit
         const count = await storage.countSessionGenerations(shop as string, sessionId as string);
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
             error: "FREE_LIMIT_REACHED",
-            message: "You have used all 10 of your free generations. Please log in to purchase more credits.",
+            message: `You have used all ${FREE_GENERATION_LIMIT} of your free generations. Please log in to purchase more credits.`,
           });
         }
       }
@@ -7339,7 +7354,7 @@ ${orientationExtra}
         generationsUsed,
         freeLimit: FREE_GENERATION_LIMIT,
         creditsRemaining,
-        isLimitReached: generationsUsed >= FREE_GENERATION_LIMIT && creditsRemaining <= 0
+        isLimitReached: generationsUsed >= FREE_GENERATION_LIMIT && creditsRemaining <= 0,
       });
     } catch (error) {
       console.error("Error checking storefront status:", error);
@@ -7510,8 +7525,10 @@ ${orientationExtra}
       let usedCustomerPaidCredit = false;
       let storefrontBillingMode: GenerationBillingMode = "merchant";
 
-      // Generation limit logic (10 free generations total per customer/session)
-      const FREE_GENERATION_LIMIT = 10;
+      // Free generations per visitor (merchant-configurable, default 5, max 10)
+      const FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
+        (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      );
 
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
@@ -7540,7 +7557,7 @@ ${orientationExtra}
             if (freeUsed >= FREE_GENERATION_LIMIT) {
               return res.status(403).json({
                 error: "FREE_LIMIT_REACHED",
-                message: "You've used all 10 free generations. Purchase credits to continue.",
+                message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Purchase credits to continue.`,
                 generationsUsed: freeUsed,
                 limit: FREE_GENERATION_LIMIT,
               });
@@ -7554,7 +7571,7 @@ ${orientationExtra}
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
             error: "FREE_LIMIT_REACHED",
-            message: "You've used all 10 free generations. Create an account to continue.",
+            message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
             generationsUsed: count,
             limit: FREE_GENERATION_LIMIT,
           });
@@ -7562,7 +7579,8 @@ ${orientationExtra}
         storefrontBillingMode = "session";
       }
 
-      if (!usedCustomerPaidCredit && storefrontBillingMode === "merchant") {
+      // Free / session gens come off the merchant allotment — peek before creating the job.
+      if (!usedCustomerPaidCredit) {
         const sfQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
         if (!sfQuotaPeek.allowed) {
           return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
@@ -8084,6 +8102,7 @@ ${orientationExtra}
             billingMode: storefrontBillingMode,
             customerId: resolvedJobCustomerId,
             idempotencyKey: reqId.toString(),
+            freeGenerationLimit: FREE_GENERATION_LIMIT,
           });
 
           void recordGenerationOutcomeForFounder(installation, true);
@@ -8176,6 +8195,11 @@ ${orientationExtra}
         let creditsRemaining = 0;
         let freeGenerationsUsed = 0;
         let artworksRemaining = 0;
+        // One-shot on complete (not every pending poll) — need merchant free-gens setting.
+        const completeInstall = await getAuthorizedInstallation(shop);
+        const freeLimit = clampStorefrontFreeGens(
+          (completeInstall as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+        );
         if (job.customerId) {
           const balance = await storage.ensureCustomerBalance(job.customerId);
           creditsRemaining = balance.credits;
@@ -8183,11 +8207,12 @@ ${orientationExtra}
           artworksRemaining = storefrontArtworksRemaining({
             freeGenerationsUsed,
             paidCredits: balance.credits,
+            freeGenerationLimit: freeLimit,
           });
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
           freeGenerationsUsed = count;
-          creditsRemaining = Math.max(0, STOREFRONT_FREE_GENERATION_LIMIT - count);
+          creditsRemaining = Math.max(0, freeLimit - count);
           artworksRemaining = creditsRemaining;
         }
 
@@ -9786,7 +9811,11 @@ ${orientationExtra}
       }
       return res.json({
         googleClientId: getGoogleOAuthClientId(),
-        freeGenerationLimit: STOREFRONT_FREE_GENERATION_LIMIT,
+        freeGenerationLimit: clampStorefrontFreeGens(
+          (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+        ),
+        creditPackCredits: 5,
+        creditPackPriceUsd: 1,
         appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
       });
     } catch (error: any) {
@@ -10044,6 +10073,9 @@ ${orientationExtra}
       if (!coupon) {
         return res.status(404).json({ error: "Invalid coupon code" });
       }
+      if (installation.merchantId && coupon.merchantId !== installation.merchantId) {
+        return res.status(404).json({ error: "Invalid coupon code" });
+      }
       if (!coupon.isActive) {
         return res.status(400).json({ error: "Coupon is no longer active" });
       }
@@ -10061,6 +10093,24 @@ ${orientationExtra}
           return res.status(400).json({ error: "You have already redeemed this coupon" });
         }
       }
+
+      // Coupon credits debit the merchant monthly allotment at redeem time
+      // (spent later as customer_paid — no second merchant debit).
+      const cover = await merchantCanCoverCouponUnits(installation, coupon.creditAmount);
+      if (!cover.ok) {
+        return res.status(402).json({
+          error: "MERCHANT_QUOTA_EXHAUSTED",
+          message: cover.message || "This shop cannot issue more coupon credits right now.",
+        });
+      }
+      const consumed = await consumeMerchantCouponUnits(installation, coupon.creditAmount);
+      if (!consumed.ok) {
+        return res.status(402).json({
+          error: "MERCHANT_QUOTA_EXHAUSTED",
+          message: consumed.message || "This shop cannot issue more coupon credits right now.",
+        });
+      }
+
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
@@ -10238,14 +10288,12 @@ ${orientationExtra}
         return res.status(404).json({ error: "Customer not found" });
       }
 
-      let creditsToAdd = 0;
-      let priceInCents = 0;
-      if ((creditPackage || "10") === "10") {
-        creditsToAdd = 10;
-        priceInCents = 100;
-      } else {
-        return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
+      const pack = resolveCreditPack(typeof creditPackage === "string" ? creditPackage : "5");
+      if (!pack) {
+        return res.status(400).json({ error: "Invalid credit package. Use package '5' (5 gens for $1)." });
       }
+      const creditsToAdd = pack.credits;
+      const priceInCents = pack.priceInCents;
 
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
       const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
@@ -10263,7 +10311,7 @@ ${orientationExtra}
               currency: "usd",
               product_data: {
                 name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork",
+                description: "Credits for generating custom AI artwork — up to $1 back on a product order",
               },
               unit_amount: priceInCents,
             },
@@ -10280,7 +10328,7 @@ ${orientationExtra}
           idempotency_key: idempotencyKey,
           shop,
           credits: creditsToAdd.toString(),
-          entitlement_cents: "100",
+          entitlement_cents: String(pack.entitlementCents),
           type: "credit_purchase",
           returnUrl: safeReturnUrl,
           legacy_customer_id: storefrontCustomerId,
@@ -10327,14 +10375,12 @@ ${orientationExtra}
         return res.status(404).send("Customer not found");
       }
 
-      let creditsToAdd = 0;
-      let priceInCents = 0;
-      if ((typeof creditPackage === "string" ? creditPackage : "10") === "10") {
-        creditsToAdd = 10;
-        priceInCents = 100;
-      } else {
+      const pack = resolveCreditPack(typeof creditPackage === "string" ? creditPackage : "5");
+      if (!pack) {
         return res.status(400).send("Invalid credit package");
       }
+      const creditsToAdd = pack.credits;
+      const priceInCents = pack.priceInCents;
 
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
       const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
@@ -10351,7 +10397,7 @@ ${orientationExtra}
               currency: "usd",
               product_data: {
                 name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork",
+                description: "Credits for generating custom AI artwork — up to $1 back on a product order",
               },
               unit_amount: priceInCents,
             },
@@ -10368,7 +10414,7 @@ ${orientationExtra}
           idempotency_key: idempotencyKey,
           shop,
           credits: creditsToAdd.toString(),
-          entitlement_cents: "100",
+          entitlement_cents: String(pack.entitlementCents),
           type: "credit_purchase",
           returnUrl: safeReturnUrl,
           legacy_customer_id: storefrontCustomerId,
@@ -10828,6 +10874,18 @@ ${orientationExtra}
     runCatalogueProductSync({ source: "daily" }).catch((e: Error) =>
       console.error("[Product Intelligence Sync] Interval error:", e),
     );
+  }, 24 * 60 * 60 * 1000);
+
+  // Last week of month: remind merchants about leftover included gens → coupon promos.
+  setTimeout(() => {
+    import("./leftover-gens-reminder")
+      .then(({ runLeftoverGensReminders }) => runLeftoverGensReminders())
+      .catch((e: Error) => console.error("[Leftover Gens Reminder] Startup error:", e));
+  }, 25 * 60 * 1000);
+  setInterval(() => {
+    import("./leftover-gens-reminder")
+      .then(({ runLeftoverGensReminders }) => runLeftoverGensReminders())
+      .catch((e: Error) => console.error("[Leftover Gens Reminder] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern
@@ -11694,16 +11752,12 @@ ${orientationExtra}
         });
       }
 
-      // Credit packages: $1 for 10 credits
-      let creditsToAdd = 0;
-      let priceInCents = 0;
-      
-      if (creditPackage === "10") {
-        creditsToAdd = 10;
-        priceInCents = 100; // $1.00
-      } else {
-        return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
+      const pack = resolveCreditPack(creditPackage || "5");
+      if (!pack) {
+        return res.status(400).json({ error: "Invalid credit package. Use package '5' (5 gens for $1)." });
       }
+      const creditsToAdd = pack.credits;
+      const priceInCents = pack.priceInCents;
 
       const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
       
@@ -12183,17 +12237,37 @@ ${orientationExtra}
         return res.status(400).json({ error: "Code and credit amount are required" });
       }
 
+      const credits = parseInt(creditAmount, 10);
+      const maxUsesN = maxUses != null && maxUses !== "" ? parseInt(maxUses, 10) : null;
+      if (!Number.isFinite(credits) || credits <= 0) {
+        return res.status(400).json({ error: "Credit amount must be a positive number" });
+      }
+
       // Check if code already exists
       const existingCoupon = await storage.getCouponByCode(code);
       if (existingCoupon) {
         return res.status(400).json({ error: "Coupon code already exists" });
       }
 
+      // Soft check: enough allotment for one full burn of creditAmount × maxUses
+      // (unlimited maxUses → check a single redemption only).
+      const installation = await resolveInstallationForMerchant(merchant.id);
+      if (installation) {
+        const reserveUnits = credits * (maxUsesN != null && maxUsesN > 0 ? maxUsesN : 1);
+        const cover = await merchantCanCoverCouponUnits(installation, reserveUnits);
+        if (!cover.ok) {
+          return res.status(402).json({
+            error: "MERCHANT_QUOTA_EXHAUSTED",
+            message: cover.message,
+          });
+        }
+      }
+
       const coupon = await storage.createCoupon({
         merchantId: merchant.id,
         code,
-        creditAmount: parseInt(creditAmount),
-        maxUses: maxUses ? parseInt(maxUses) : null,
+        creditAmount: credits,
+        maxUses: maxUsesN != null && Number.isFinite(maxUsesN) ? maxUsesN : null,
         isActive: true,
         expiresAt: expiresAt ? new Date(expiresAt) : null,
       });
@@ -12297,6 +12371,24 @@ ${orientationExtra}
         const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
         if (redemption) {
           return res.status(400).json({ error: "You have already redeemed this coupon" });
+        }
+      }
+
+      const installation = await resolveInstallationForMerchant(coupon.merchantId);
+      if (installation) {
+        const cover = await merchantCanCoverCouponUnits(installation, coupon.creditAmount);
+        if (!cover.ok) {
+          return res.status(402).json({
+            error: "MERCHANT_QUOTA_EXHAUSTED",
+            message: cover.message || "This shop cannot issue more coupon credits right now.",
+          });
+        }
+        const consumed = await consumeMerchantCouponUnits(installation, coupon.creditAmount);
+        if (!consumed.ok) {
+          return res.status(402).json({
+            error: "MERCHANT_QUOTA_EXHAUSTED",
+            message: consumed.message || "This shop cannot issue more coupon credits right now.",
+          });
         }
       }
 
@@ -21559,6 +21651,53 @@ ${orientationExtra}
   }));
 
   // ==================== BRANDING & STYLING ====================
+
+  // Storefront free gens / visitor (merchant-configurable, 1–10, default 5)
+  app.get("/api/admin/storefront-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) {
+      return res.json({
+        storefrontFreeGensPerVisitor: STOREFRONT_FREE_GENERATION_DEFAULT,
+        min: STOREFRONT_FREE_GENERATION_MIN,
+        max: STOREFRONT_FREE_GENERATION_MAX,
+        default: STOREFRONT_FREE_GENERATION_DEFAULT,
+        shopDomain: null,
+      });
+    }
+    return res.json({
+      storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
+        (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      ),
+      min: STOREFRONT_FREE_GENERATION_MIN,
+      max: STOREFRONT_FREE_GENERATION_MAX,
+      default: STOREFRONT_FREE_GENERATION_DEFAULT,
+      shopDomain: installation.shopDomain,
+    });
+  }));
+
+  app.patch("/api/admin/storefront-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) {
+      return res.status(404).json({ error: "No Shopify store connected" });
+    }
+    const next = clampStorefrontFreeGens(req.body?.storefrontFreeGensPerVisitor);
+    await storage.updateShopifyInstallation(installation.id, {
+      storefrontFreeGensPerVisitor: next,
+    } as any);
+    return res.json({
+      storefrontFreeGensPerVisitor: next,
+      min: STOREFRONT_FREE_GENERATION_MIN,
+      max: STOREFRONT_FREE_GENERATION_MAX,
+      default: STOREFRONT_FREE_GENERATION_DEFAULT,
+      shopDomain: installation.shopDomain,
+    });
+  }));
 
   // GET branding settings for current merchant
   app.get("/api/admin/branding", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
