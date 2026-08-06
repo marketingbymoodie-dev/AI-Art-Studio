@@ -23,12 +23,12 @@ import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 
 /**
  * Shared note appended to every paid plan's info popover (and the Trial card).
- * Explains the per-customer free-generation cap and the $1 top-up packs.
+ * Explains the per-customer free-generation cap and Studio Credits Reward Ladder.
  */
 const CUSTOMER_ABUSE_NOTE =
-  "Free generations per customer default to 1 (merchant can raise up to 10) to avoid abuse. " +
-  "Customers can buy packs (5 for $1, 10 for $2, or 20 for $3) from AI Art Studio " +
-  "if they wish to continue creating. Pack buyers can get up to $1–$3 off at checkout on a physical product (unless you handle reimbursement yourself).";
+  "Free generations per customer default to 2 (merchant can raise up to 10) to avoid abuse. " +
+  "Customers can earn more Studio Credits via the Reward Ladder (email signup, sharing a design, and optionally a purchase threshold). " +
+  "Merchant-sold credit packs are coming soon.";
 
 interface PlanCardProps {
   name: string;

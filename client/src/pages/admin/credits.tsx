@@ -63,7 +63,7 @@ export default function AdminCredits() {
         <div>
           <h1 className="text-2xl font-bold" data-testid="text-credits-title">Credits</h1>
           <p className="text-muted-foreground">
-            Shop plan quota and end-customer credit usage
+            Shop plan quota and customer Studio Credits
           </p>
         </div>
 
@@ -162,18 +162,18 @@ export default function AdminCredits() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Customer credits</CardTitle>
+            <CardTitle>Studio Credits</CardTitle>
             <CardDescription>
-              End-customer packs (1 free generation per visitor by default, then paid packs of 5/$1, 10/$2, or 20/$3) are separate from your shop plan quota above. Free gens and coupon redemptions come off your monthly allotment.
+              Customers earn Studio Credits via the Reward Ladder (free generations, email signup, sharing a design, and optionally a purchase threshold). Earned credits and coupon redemptions come off your monthly allotment when spent. Merchant-sold credit packs (coming soon) are billed at wholesale and do not burn plan quota.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">
             <div>
-              <p className="text-sm text-muted-foreground">Total credits issued</p>
+              <p className="text-sm text-muted-foreground">Total Studio Credits issued</p>
               <p className="text-xl font-semibold">{stats?.totalCreditsIssued ?? 0}</p>
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Total credits used</p>
+              <p className="text-sm text-muted-foreground">Total Studio Credits used</p>
               <p className="text-xl font-semibold">{stats?.totalCreditsUsed ?? 0}</p>
             </div>
           </CardContent>

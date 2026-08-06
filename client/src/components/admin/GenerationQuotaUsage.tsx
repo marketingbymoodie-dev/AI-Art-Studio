@@ -283,7 +283,7 @@ export default function GenerationQuotaUsage({
           <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
           {quota.plan === "trial"
             ? "Trial limit reached. Upgrade to Starter to keep generating."
-            : "Included allowance used up. Merchant-billed generations are blocked until next period, you enable extra usage, or upgrade. Customer credit packs still work."}
+            : "Included allowance used up. Merchant-billed generations are blocked until next period, you enable extra usage, or upgrade. Customers can still spend pack Studio Credits once packs are enabled."}
         </p>
       )}
 
@@ -295,8 +295,8 @@ export default function GenerationQuotaUsage({
       )}
 
       <p className="text-xs text-muted-foreground mt-3">
-        {data?.usdDisclaimer ?? "All prices in USD."} Customer-purchased credit packs (5/$1, 10/$2, 20/$3) do not
-        count toward this shop quota.
+        {data?.usdDisclaimer ?? "All prices in USD."} Reward Ladder free gens and earned Studio Credits
+        count toward this shop quota when spent; merchant-sold pack credits (coming soon) do not.
       </p>
     </>
   );
