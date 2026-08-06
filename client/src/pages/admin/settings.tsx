@@ -456,8 +456,8 @@ export default function AdminSettings() {
               Reward Ladder
             </CardTitle>
             <CardDescription>
-              Give customers Studio Credits for signing up or sharing designs.
-              Grants are one-time per customer and burn merchant plan quota when spent.
+              Credits for email signup and share-design are a one-time reward per customer.
+              When spent, they count against your shop plan quota.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -474,11 +474,13 @@ export default function AdminSettings() {
                         ? `Purchase over $${((rung.thresholdCents ?? 0) / 100).toFixed(0)}`
                         : rung.rungKey;
                   const description = rung.rungKey === "email_signup"
-                    ? `Grant ${rung.creditAmount} credit when a visitor signs in with Google or email OTP.`
+                    ? `${rung.creditAmount} Studio Credit when a visitor signs in with Google or email OTP (once per customer).`
                     : rung.rungKey === "share_design"
-                      ? `Grant ${rung.creditAmount} credit when someone else opens the shared design.`
+                      ? `${rung.creditAmount} Studio Credit when someone else opens their shared design (once per customer).`
                       : rung.rungKey === "purchase_threshold"
-                        ? "Requires the order-rewards flag; contact support to enable."
+                        ? rewardLadder.purchaseRewardsEnabled
+                          ? `${rung.creditAmount} Studio Credit when a customer’s order clears this amount (once per customer).`
+                          : "Coming soon — unlocks after order webhooks are enabled for the app."
                         : "";
                   const disabled =
                     rung.rungKey === "purchase_threshold" && !rewardLadder.purchaseRewardsEnabled;
