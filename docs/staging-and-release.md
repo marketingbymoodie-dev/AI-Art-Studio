@@ -27,7 +27,6 @@ You + Cursor edit code
 | Database | **new** Postgres (auto with Railway) | existing DB — never point staging at this |
 | Shopify Partner app | **new** app e.g. `AI Art Studio (Staging)` | current `AI Art Studio` |
 | Store | your **demo / development** store only | merchant stores |
-| Stripe | **test** keys | live keys |
 | Supabase | same project OK at first (see below) | same project |
 
 ---
@@ -111,8 +110,6 @@ old build or migrations failed — redeploy Staging and check startup logs.
 | `SHOPIFY_API_KEY` | Staging app **Client ID** |
 | `SHOPIFY_API_SECRET` | Staging app **Client secret** |
 | `DATABASE_URL` | **New** staging Postgres only |
-| `STRIPE_SECRET_KEY` | Stripe **test** secret (`sk_test_…`) |
-| `STRIPE_WEBHOOK_SECRET` | Webhook secret for staging endpoint (see Stripe below) |
 | `OWNER_SHOP_DOMAIN` | Your **demo** store `something.myshopify.com` |
 | `NODE_ENV` | `production` (normal for Railway hosts) |
 
@@ -146,14 +143,7 @@ Optional later (only if staging files clutter production buckets):
 
 **Never** point staging `DATABASE_URL` at production Postgres. That is the dangerous mix-up — not Supabase buckets.
 
-### E. Stripe (if you test billing on staging)
-
-1. Stripe Dashboard → **Test mode**.
-2. Webhooks → add endpoint: `https://<staging-railway-url>/…` (same path as production webhook).
-3. Put the test signing secret into staging `STRIPE_WEBHOOK_SECRET`.
-4. Production keeps live keys + live webhook.
-
-### F. Lock the habit
+### E. Lock the habit
 
 - Day-to-day default Shopify config: **staging** (`npm run shopify:config:use:staging`).
 - Only use production Shopify deploy when going live (`npm run shopify:deploy:production`).
@@ -178,7 +168,6 @@ Cursor will drive this. Your job is mostly answering prompts.
 - Add to cart → cart thumbnail is the custom mockup (shadow SKU)
 - Checkout image still correct
 - Hard refresh still lands near the preview (not buried at footer)
-- If you touched billing: Stripe **test** mode only
 
 ---
 

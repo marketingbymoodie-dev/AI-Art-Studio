@@ -87,14 +87,23 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "variant_availability",        type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "shipping_snapshot",           type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "is_platform_catalog_ref",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
-  { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 1" },
+  { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
-  { table: "shopify_installations", column: "credit_reimbursement_mode", type: "TEXT NOT NULL DEFAULT 'appai_discount'" },
-  { table: "shopify_installations", column: "enabled_credit_pack_ids", type: "TEXT NOT NULL DEFAULT '[\"5\"]'" },
+  { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "credit_ledger",          column: "source",                     type: "TEXT" },
+  { table: "credit_ledger",          column: "shop",                       type: "TEXT" },
+  { table: "credit_ledger",          column: "related_entity_id",          type: "TEXT" },
+  { table: "credit_ledger",          column: "quota_bucket_key",           type: "TEXT" },
+  { table: "shared_designs",         column: "owner_customer_id",          type: "VARCHAR" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
 const DATA_MIGRATIONS: string[] = [
+  `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
+  `ALTER TABLE shopify_installations ALTER COLUMN storefront_free_gens_per_visitor SET DEFAULT 2`,
+  `UPDATE shopify_installations SET storefront_free_gens_per_visitor = 2`,
   // Adjustable tote: folded fulfillment + flat storefront mockups (override AOP name defaults).
   `UPDATE platform_catalog_blueprints
    SET fulfillment_layout = 'tote_folded_v1',
@@ -137,16 +146,18 @@ const DATA_MIGRATIONS: string[] = [
   `INSERT INTO credit_balances (
       customer_id,
       credits,
+      earned_credits,
+      pack_credits,
       free_generations_used,
-      discount_entitlement_cents,
       version,
       updated_at
     )
     SELECT
       id,
       COALESCE(credits, 0),
-      COALESCE(free_generations_used, 0),
       0,
+      0,
+      COALESCE(free_generations_used, 0),
       0,
       NOW()
     FROM customers
@@ -176,7 +187,7 @@ const DATA_MIGRATIONS: string[] = [
   `INSERT INTO credit_ledger (
       customer_id,
       delta_credits,
-      delta_entitlement_cents,
+      source,
       reason,
       idempotency_key,
       external_ref,
@@ -186,7 +197,7 @@ const DATA_MIGRATIONS: string[] = [
     SELECT
       customer_id,
       amount,
-      CASE WHEN type = 'purchase' AND amount > 0 THEN LEAST(100, COALESCE(price_in_cents, 0)) ELSE 0 END,
+      CASE WHEN type = 'purchase' THEN 'pack' ELSE NULL END,
       type,
       'legacy:credit_transaction:' || id,
       CASE WHEN order_id IS NULL THEN NULL ELSE 'legacy_order:' || order_id END,
@@ -315,10 +326,9 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "pending_plan_name" text,
         "pending_plan_effective_at" timestamp,
         "embed_confirmed_at" timestamp,
-        "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 1,
+        "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 2,
         "leftover_gens_reminder_bucket_key" text,
-        "credit_reimbursement_mode" text NOT NULL DEFAULT 'appai_discount',
-        "enabled_credit_pack_ids" text NOT NULL DEFAULT '["5"]'
+        "wholesale_credit_cents" integer NOT NULL DEFAULT 0
       )
     `,
   },
@@ -328,7 +338,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       CREATE TABLE IF NOT EXISTS "customers" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
         "user_id" varchar NOT NULL UNIQUE,
-        "credits" integer NOT NULL DEFAULT 5,
+        "credits" integer NOT NULL DEFAULT 0,
         "free_generations_used" integer NOT NULL DEFAULT 0,
         "total_generations" integer NOT NULL DEFAULT 0,
         "total_spent" numeric(10, 2) NOT NULL DEFAULT '0.00',
@@ -563,8 +573,9 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       CREATE TABLE IF NOT EXISTS "credit_balances" (
         "customer_id"                 VARCHAR PRIMARY KEY,
         "credits"                     INTEGER NOT NULL DEFAULT 0 CHECK ("credits" >= 0),
+        "earned_credits"              INTEGER NOT NULL DEFAULT 0 CHECK ("earned_credits" >= 0),
+        "pack_credits"                INTEGER NOT NULL DEFAULT 0 CHECK ("pack_credits" >= 0),
         "free_generations_used"       INTEGER NOT NULL DEFAULT 0 CHECK ("free_generations_used" >= 0),
-        "discount_entitlement_cents"  INTEGER NOT NULL DEFAULT 0 CHECK ("discount_entitlement_cents" >= 0),
         "version"                     INTEGER NOT NULL DEFAULT 0,
         "updated_at"                  TIMESTAMP DEFAULT NOW() NOT NULL
       )
@@ -577,7 +588,10 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "id"                       SERIAL PRIMARY KEY,
         "customer_id"              VARCHAR NOT NULL,
         "delta_credits"            INTEGER NOT NULL,
-        "delta_entitlement_cents"  INTEGER NOT NULL DEFAULT 0,
+        "source"                   TEXT,
+        "shop"                     TEXT,
+        "related_entity_id"        TEXT,
+        "quota_bucket_key"         TEXT,
         "reason"                   TEXT NOT NULL,
         "idempotency_key"          TEXT NOT NULL UNIQUE,
         "external_ref"             TEXT,
@@ -587,28 +601,35 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
-    name: "stripe_events",
+    name: "reward_ladder_rungs",
     sql: `
-      CREATE TABLE IF NOT EXISTS "stripe_events" (
-        "stripe_event_id" TEXT PRIMARY KEY,
-        "type"            TEXT NOT NULL,
-        "outcome"         TEXT,
-        "received_at"     TIMESTAMP DEFAULT NOW() NOT NULL
+      CREATE TABLE IF NOT EXISTS "reward_ladder_rungs" (
+        "id"              SERIAL PRIMARY KEY,
+        "shop"            TEXT NOT NULL,
+        "rung_key"        TEXT NOT NULL,
+        "enabled"         BOOLEAN NOT NULL DEFAULT TRUE,
+        "credit_amount"   INTEGER NOT NULL DEFAULT 1,
+        "threshold_cents" INTEGER,
+        "sort_order"      INTEGER NOT NULL DEFAULT 0,
+        "created_at"      TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"      TIMESTAMP DEFAULT NOW() NOT NULL,
+        UNIQUE ("shop", "rung_key")
       )
     `,
   },
   {
-    name: "order_discount_claims",
+    name: "reward_grants",
     sql: `
-      CREATE TABLE IF NOT EXISTS "order_discount_claims" (
-        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        "customer_id"         VARCHAR NOT NULL,
-        "shopify_order_id"    TEXT UNIQUE,
-        "shop"                TEXT NOT NULL,
-        "entitlement_cents"   INTEGER NOT NULL,
-        "status"              TEXT NOT NULL DEFAULT 'pending',
-        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
-        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      CREATE TABLE IF NOT EXISTS "reward_grants" (
+        "id"                SERIAL PRIMARY KEY,
+        "shop"              TEXT NOT NULL,
+        "customer_id"       VARCHAR NOT NULL,
+        "rung_key"          TEXT NOT NULL,
+        "credits_granted"   INTEGER NOT NULL DEFAULT 0,
+        "related_entity_id" TEXT,
+        "idempotency_key"   TEXT NOT NULL UNIQUE,
+        "created_at"        TIMESTAMP DEFAULT NOW() NOT NULL,
+        UNIQUE ("shop", "customer_id", "rung_key")
       )
     `,
   },
@@ -920,9 +941,19 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
       ON "credit_ledger" ("customer_id", "created_at")`,
   },
   {
-    name: "order_discount_claims_customer_idx",
-    sql: `CREATE INDEX IF NOT EXISTS "order_discount_claims_customer_idx"
-      ON "order_discount_claims" ("customer_id")`,
+    name: "credit_ledger_related_entity_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "credit_ledger_related_entity_idx"
+      ON "credit_ledger" ("related_entity_id")`,
+  },
+  {
+    name: "reward_ladder_rungs_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "reward_ladder_rungs_shop_idx"
+      ON "reward_ladder_rungs" ("shop")`,
+  },
+  {
+    name: "reward_grants_customer_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "reward_grants_customer_idx"
+      ON "reward_grants" ("customer_id")`,
   },
   {
     name: "aop_calibration_runs_product_type_idx",

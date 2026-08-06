@@ -146,7 +146,7 @@ function LandingPage() {
             Get Started Free
           </Button>
           <p className="text-sm text-muted-foreground mt-4">
-            5 free generations when you sign up
+            Start designing free
           </p>
         </div>
 

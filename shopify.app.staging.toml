@@ -26,6 +26,20 @@ uri = "/shopify/webhooks/customers-redact"
 compliance_topics = [ "shop/redact" ]
 uri = "/shopify/webhooks/shop-redact"
 
+# Studio Credits Phase 1 — Reward Ladder purchase_threshold grant + clawback.
+# Staging-only for now; production waits on Protected Customer Data approval.
+[[webhooks.subscriptions]]
+topics = [ "orders/paid" ]
+uri = "/shopify/webhooks/orders-paid"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/cancelled" ]
+uri = "/shopify/webhooks/orders-cancelled"
+
+[[webhooks.subscriptions]]
+topics = [ "refunds/create" ]
+uri = "/shopify/webhooks/refunds-create"
+
 [access_scopes]
 scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks"
 

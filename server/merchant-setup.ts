@@ -20,12 +20,14 @@ export { isPrintifyConnected };
 const PREVIEW_TOKEN_TTL_SECONDS = 60 * 20; // 20 minutes — long enough to load + generate a preview
 
 function getSetupSecret(): string {
-  return (
-    process.env.APPAI_IDENTITY_SECRET ||
-    process.env.SESSION_SECRET ||
-    process.env.STRIPE_SECRET_KEY ||
-    "appai-dev-identity-secret"
-  );
+  const secret = process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("APPAI_IDENTITY_SECRET or SESSION_SECRET must be set");
+    }
+    return "appai-dev-identity-secret";
+  }
+  return secret;
 }
 
 /** Loose shop-domain compare: bare handle and *.myshopify.com both match. */

@@ -107,12 +107,12 @@ async function exportCustomerData(shop: string, customer: ShopifyGdprCustomer | 
       jobs,
       customizerDesignRows,
       publishedProductRows,
-      discountClaims,
+      rewardGrantRows,
     ] = await Promise.all([
       client.query("SELECT id, user_id, credits, free_generations_used, total_generations, total_spent, created_at, updated_at FROM customers WHERE id = ANY($1::text[])", params),
       client.query("SELECT customer_id, alias_type, alias_value, shop, created_at FROM customer_aliases WHERE customer_id = ANY($1::text[])", params),
       client.query("SELECT * FROM credit_balances WHERE customer_id = ANY($1::text[])", params),
-      client.query("SELECT customer_id, delta_credits, delta_entitlement_cents, reason, external_ref, metadata, created_at FROM credit_ledger WHERE customer_id = ANY($1::text[]) ORDER BY created_at DESC LIMIT 500", params),
+      client.query("SELECT customer_id, delta_credits, source, shop, related_entity_id, reason, external_ref, metadata, created_at FROM credit_ledger WHERE customer_id = ANY($1::text[]) ORDER BY created_at DESC LIMIT 500", params),
       client.query("SELECT customer_id, type, amount, price_in_cents, order_id, description, created_at FROM credit_transactions WHERE customer_id = ANY($1::text[])", params),
       client.query("SELECT id, customer_id, merchant_id, product_type_id, prompt, style_preset, size, frame_color, status, created_at, updated_at FROM designs WHERE customer_id = ANY($1::text[])", params),
       client.query("SELECT id, customer_id, merchant_id, status, size, frame_color, quantity, price_in_cents, shipping_in_cents, credit_refund_in_cents, created_at, updated_at FROM orders WHERE customer_id = ANY($1::text[])", params),
@@ -120,7 +120,7 @@ async function exportCustomerData(shop: string, customer: ShopifyGdprCustomer | 
       client.query("SELECT id, shop, session_id, customer_id, status, design_id, created_at, updated_at FROM generation_jobs WHERE customer_id = ANY($1::text[])", params),
       client.query("SELECT id, shop, shopify_customer_id, customer_key, base_variant_id, status, created_at, updated_at FROM customizer_designs WHERE shop = $2 AND (shopify_customer_id = ANY($3::text[]) OR customer_key = ANY($4::text[]))", [customerIds, shop, customerIdVariants(customer), customerIds]),
       client.query("SELECT id, shop, design_id, customer_key, shopify_product_id, shopify_variant_id, status, created_at, updated_at FROM published_products WHERE shop = $2 AND customer_key = ANY($1::text[])", [customerIds, shop]),
-      client.query("SELECT customer_id, shopify_order_id, shop, entitlement_cents, status, created_at, updated_at FROM order_discount_claims WHERE customer_id = ANY($1::text[])", params),
+      client.query("SELECT shop, customer_id, rung_key, credits_granted, related_entity_id, created_at FROM reward_grants WHERE customer_id = ANY($1::text[])", params),
     ]);
 
     return {
@@ -139,7 +139,7 @@ async function exportCustomerData(shop: string, customer: ShopifyGdprCustomer | 
         generationJobs: jobs.rows,
         customizerDesigns: customizerDesignRows.rows,
         publishedProducts: publishedProductRows.rows,
-        orderDiscountClaims: discountClaims.rows,
+        rewardGrants: rewardGrantRows.rows,
       },
     };
   } finally {
@@ -159,7 +159,7 @@ async function redactCustomerData(shop: string, customer: ShopifyGdprCustomer | 
     const customerKeys = [...customerIds, ...shopifyIds.map((id) => `shopify:${shop}:${id}`)];
 
     const deletions: Array<[string, string, any[]]> = [
-      ["order_discount_claims", "DELETE FROM order_discount_claims WHERE customer_id = ANY($1::text[])", [customerIds]],
+      ["reward_grants", "DELETE FROM reward_grants WHERE customer_id = ANY($1::text[])", [customerIds]],
       ["credit_ledger", "DELETE FROM credit_ledger WHERE customer_id = ANY($1::text[])", [customerIds]],
       ["credit_transactions", "DELETE FROM credit_transactions WHERE customer_id = ANY($1::text[])", [customerIds]],
       ["credit_balances", "DELETE FROM credit_balances WHERE customer_id = ANY($1::text[])", [customerIds]],
@@ -195,7 +195,8 @@ async function redactShopData(shop: string): Promise<Record<string, number>> {
   try {
     await client.query("BEGIN");
     const deletions: Array<[string, string, any[]]> = [
-      ["order_discount_claims", "DELETE FROM order_discount_claims WHERE shop = $1", [shop]],
+      ["reward_grants", "DELETE FROM reward_grants WHERE shop = $1", [shop]],
+      ["reward_ladder_rungs", "DELETE FROM reward_ladder_rungs WHERE shop = $1", [shop]],
       ["customer_aliases", "DELETE FROM customer_aliases WHERE shop = $1", [shop]],
       ["generation_jobs", "DELETE FROM generation_jobs WHERE shop = $1", [shop]],
       ["published_products", "DELETE FROM published_products WHERE shop = $1", [shop]],

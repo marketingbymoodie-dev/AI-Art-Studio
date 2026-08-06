@@ -1,5 +1,5 @@
 /** Default free AI generations per storefront visitor/customer (merchant can raise up to MAX). */
-export const STOREFRONT_FREE_GENERATION_DEFAULT = 1;
+export const STOREFRONT_FREE_GENERATION_DEFAULT = 2;
 /** Hard ceiling for merchant-configured free gens per visitor. */
 export const STOREFRONT_FREE_GENERATION_MAX = 10;
 /** Floor for merchant-configured free gens per visitor. */
@@ -10,39 +10,36 @@ export const STOREFRONT_FREE_GENERATION_MIN = 1;
  */
 export const STOREFRONT_FREE_GENERATION_LIMIT = STOREFRONT_FREE_GENERATION_DEFAULT;
 
-/** Max checkout entitlement across all packs ($3). */
-export const CREDIT_ENTITLEMENT_MAX_CENTS = 300;
-
+/**
+ * Premade Studio Credits packs (merchant-mediated Shopify products in Phase 2).
+ * Wholesale to merchant is $0.08/credit via usage billing at grant time.
+ */
 export type CreditPackDefinition = {
   packId: string;
   credits: number;
+  /** Customer-facing price on the merchant's store (cents). */
   priceInCents: number;
-  entitlementCents: number;
   label: string;
 };
 
-/** Premade customer top-up packs (Stripe Checkout). */
 export const CREDIT_PACK_CATALOG: CreditPackDefinition[] = [
   {
     packId: "5",
     credits: 5,
     priceInCents: 100,
-    entitlementCents: 100,
-    label: "5 gens for $1",
+    label: "5 Studio Credits for $1",
   },
   {
     packId: "10",
     credits: 10,
     priceInCents: 200,
-    entitlementCents: 200,
-    label: "10 gens for $2",
+    label: "10 Studio Credits for $2",
   },
   {
     packId: "20",
     credits: 20,
     priceInCents: 300,
-    entitlementCents: 300,
-    label: "20 gens for $3",
+    label: "20 Studio Credits for $3",
   },
 ];
 
@@ -50,9 +47,9 @@ export const CREDIT_PACK_CATALOG: CreditPackDefinition[] = [
 export const CREDIT_PACK_ID = "5";
 export const CREDIT_PACK_CREDITS = 5;
 export const CREDIT_PACK_PRICE_CENTS = 100;
-export const CREDIT_PACK_ENTITLEMENT_CENTS = 100;
 
-export type CreditReimbursementMode = "appai_discount" | "merchant_handles";
+/** Wholesale cost per Studio Credit billed to the merchant at pack grant (USD cents). */
+export const STUDIO_CREDIT_WHOLESALE_CENTS = 8;
 
 export function clampStorefrontFreeGens(n: unknown): number {
   const v = typeof n === "number" ? n : Number(n);
@@ -99,31 +96,15 @@ export function parseEnabledCreditPackIds(raw: unknown): string[] {
   return filtered.length > 0 ? filtered : [CREDIT_PACK_ID];
 }
 
-/** Resolve Stripe credit package id → credits + price (respects shop enabled packs). */
 export function resolveCreditPack(
   packageId: string | null | undefined,
   enabledPackIds?: string[] | null,
-): {
-  packId: string;
-  credits: number;
-  priceInCents: number;
-  entitlementCents: number;
-  label: string;
-} | null {
+): CreditPackDefinition | null {
   const enabled = parseEnabledCreditPackIds(enabledPackIds ?? [CREDIT_PACK_ID]);
   let id = String(packageId || enabled[0] || CREDIT_PACK_ID).trim();
-  // Legacy: bare "10" with only pack "5" enabled → 5-pack.
   if (id === "10" && !enabled.includes("10") && enabled.includes("5")) {
     id = "5";
   }
   if (!enabled.includes(id)) return null;
-  const def = getCreditPackDefinition(id);
-  if (!def) return null;
-  return { ...def };
-}
-
-export function clampEntitlementCents(n: unknown): number {
-  const v = typeof n === "number" ? n : Number(n);
-  if (!Number.isFinite(v) || v <= 0) return 0;
-  return Math.min(CREDIT_ENTITLEMENT_MAX_CENTS, Math.max(0, Math.round(v)));
+  return getCreditPackDefinition(id);
 }

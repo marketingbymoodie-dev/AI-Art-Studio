@@ -108,7 +108,7 @@ async function main() {
           ok: true,
           customerId: "test-customer-123",
           identityToken: "test-token",
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 1,
         }),
       });

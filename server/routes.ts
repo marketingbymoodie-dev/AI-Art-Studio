@@ -62,16 +62,11 @@ import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceS
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
-  CREDIT_ENTITLEMENT_MAX_CENTS,
-  CREDIT_PACK_CATALOG,
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_LIMIT,
   STOREFRONT_FREE_GENERATION_MAX,
   STOREFRONT_FREE_GENERATION_MIN,
-  clampEntitlementCents,
   clampStorefrontFreeGens,
-  parseEnabledCreditPackIds,
-  resolveCreditPack,
   storefrontArtworksRemaining,
 } from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
@@ -103,9 +98,7 @@ import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
-import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
-import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
@@ -124,6 +117,16 @@ import {
   applyCustomerBillingOnSuccess,
   type GenerationBillingMode,
 } from "./generation-billing";
+import {
+  ensureRewardLadder,
+  getRewardLadder,
+  patchRewardLadder,
+  tryGrantEmailSignup,
+  tryGrantShareDesign,
+  tryGrantPurchaseThreshold,
+  clawbackPurchaseThresholdForOrder,
+  type RewardRungKey,
+} from "./reward-ladder";
 import {
   consumeMerchantCouponUnits,
   merchantCanCoverCouponUnits,
@@ -361,7 +364,6 @@ function toCleanBuffer(buf: Buffer) {
 }
 
 const objectStorage = new ObjectStorageService();
-const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" }) : null;
 
 async function captureAopCustomerFlowSnapshot(params: {
   jobId: string;
@@ -438,53 +440,17 @@ async function captureAopCustomerFlowSnapshot(params: {
   }
 }
 
-/**
- * Build a storefront app-proxy designer URL for Stripe's success_url / cancel_url.
- *
- * Hard guarantees:
- *   - Host is always `{shop}/apps/appai/s/designer` (never admin.shopify.com).
- *   - `shop` and `customerId` are always present as query params.
- *   - Query params from the caller-supplied returnUrl are preserved (product,
- *     variantId, etc.), except admin-session or credits/session markers.
- *
- * Even if the caller passes an admin.shopify.com URL, a junk URL, or nothing,
- * we fall back to `https://{shop}/apps/appai/s/designer?shop=...&customerId=...`.
- */
-function buildStorefrontCreditReturnUrl(
-  shop: string,
-  storefrontCustomerId: string,
-  rawReturnUrl: string | undefined,
-): string {
-  const base = new URL(`https://${shop}/apps/appai/s/designer`);
-  try {
-    if (rawReturnUrl && /^https?:\/\//i.test(rawReturnUrl)) {
-      const parsed = new URL(rawReturnUrl);
-      parsed.searchParams.forEach((value, key) => {
-        const lower = key.toLowerCase();
-        if (
-          lower === "credits" ||
-          lower === "session_id" ||
-          lower === "customerid" ||
-          lower === "shop" ||
-          lower === "session" ||
-          lower === "hmac" ||
-          lower === "host" ||
-          lower === "embedded" ||
-          lower === "id_token"
-        ) return;
-        base.searchParams.set(key, value);
-      });
-    }
-  } catch {}
-  base.searchParams.set("shop", shop);
-  base.searchParams.set("customerId", storefrontCustomerId);
-  return base.toString();
-}
-
 const STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 function getIdentitySecret(): string {
-  return process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET || process.env.STRIPE_SECRET_KEY || "appai-dev-identity-secret";
+  const secret = process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("APPAI_IDENTITY_SECRET or SESSION_SECRET must be set");
+    }
+    return "appai-dev-identity-secret";
+  }
+  return secret;
 }
 
 function signStorefrontIdentityToken(customerId: string, shop: string): string {
@@ -2295,7 +2261,7 @@ export async function registerRoutes(
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -2400,7 +2366,7 @@ export async function registerRoutes(
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -7525,7 +7491,8 @@ ${orientationExtra}
       }
 
       // Per-merchant monthly plan quota — fail fast before job creation.
-      // Customer-paid credits ($1 packs) are billed to the customer, not the shop plan.
+      // Customer-paid Studio Credits are spent on the wallet directly; only
+      // reward-earned credits also burn merchant quota (see generation-billing).
       let usedCustomerPaidCredit = false;
       let storefrontBillingMode: GenerationBillingMode = "merchant";
 
@@ -7571,16 +7538,48 @@ ${orientationExtra}
           }
         }
       } else if (sessionId) {
-        const count = await storage.countSessionGenerations(shop, sessionId);
-        if (count >= FREE_GENERATION_LIMIT) {
-          return res.status(403).json({
-            error: "FREE_LIMIT_REACHED",
-            message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
-            generationsUsed: count,
-            limit: FREE_GENERATION_LIMIT,
-          });
+        // Unified anon path: back the session with an internal customer via
+        // customer_aliases so free-gen accounting lives on credit_balances,
+        // survives across generations, and merges into the signed-in wallet
+        // on login (see /api/storefront/merge-session).
+        const anonCustomer = await storage.resolveOrCreateCustomerAlias({
+          aliasType: "anon_session",
+          aliasValue: String(sessionId),
+          shop,
+          legacyUserId: `anon:${shop}:${sessionId}`,
+        } as any).catch((err: any) => {
+          console.warn(P, reqId, `anon customer resolve failed for session ${sessionId}:`, err?.message);
+          return null;
+        });
+
+        if (anonCustomer) {
+          resolvedJobCustomerId = anonCustomer.id;
+          const balance = await storage.ensureCustomerBalance(anonCustomer.id);
+          const freeUsed = balance.freeGenerationsUsed || 0;
+          if (freeUsed >= FREE_GENERATION_LIMIT) {
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
+              generationsUsed: freeUsed,
+              limit: FREE_GENERATION_LIMIT,
+            });
+          }
+          // Anon free gens use the wallet-tracked customer_free path so they
+          // merge into the signed-in customer's wallet after login.
+          storefrontBillingMode = "customer_free";
+        } else {
+          // Fallback to the legacy job-count path if the alias lookup fails.
+          const count = await storage.countSessionGenerations(shop, sessionId);
+          if (count >= FREE_GENERATION_LIMIT) {
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
+              generationsUsed: count,
+              limit: FREE_GENERATION_LIMIT,
+            });
+          }
+          storefrontBillingMode = "session";
         }
-        storefrontBillingMode = "session";
       }
 
       // Free / session gens come off the merchant allotment — peek before creating the job.
@@ -8270,10 +8269,41 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const merged = await storage.mergeSessionToCustomer(shop, sessionId, customerId);
-      console.log(`[Storefront Merge] shop=${shop} session=${sessionId} customer=${customerId} merged=${merged}`);
+      // Resolve the signed-in customer to our internal UUID. The client can send
+      // either the internal id (bearer token / bootstrap) or a Shopify customer id.
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(customerId));
+      const signedInCustomer = await resolveStorefrontCustomerIdentity({
+        shop,
+        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? String(customerId) : null),
+        shopifyCustomerId: isInternalCustomer ? null : String(customerId),
+      }).catch((err) => {
+        console.warn(`[Storefront Merge] could not resolve signed-in customer ${customerId}:`, err?.message);
+        return null;
+      });
 
-      return res.json({ merged });
+      const signedInCustomerId = signedInCustomer?.id ?? String(customerId);
+
+      const merged = await storage.mergeSessionToCustomer(shop, sessionId, signedInCustomerId);
+
+      // If an anon customer wallet was already created for this session, fold it
+      // into the signed-in wallet so free gens / rewards survive login.
+      let walletsLinked = false;
+      const anonCustomer = await storage
+        .findCustomerByAlias("anon_session", String(sessionId), shop)
+        .catch(() => undefined);
+      if (anonCustomer && anonCustomer.id !== signedInCustomerId) {
+        try {
+          await storage.linkAnonCustomerToSignedIn(anonCustomer.id, signedInCustomerId);
+          walletsLinked = true;
+        } catch (err: any) {
+          console.warn(`[Storefront Merge] wallet link failed anon=${anonCustomer.id} → signed=${signedInCustomerId}:`, err?.message);
+        }
+      }
+
+      console.log(`[Storefront Merge] shop=${shop} session=${sessionId} customer=${signedInCustomerId} merged=${merged} walletsLinked=${walletsLinked}`);
+
+      return res.json({ merged, walletsLinked });
     } catch (error) {
       console.error("[Storefront Merge Session] Error:", error);
       res.status(500).json({ error: "Failed to merge session" });
@@ -9813,24 +9843,11 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const enabledPackIds = parseEnabledCreditPackIds((installation as any).enabledCreditPackIds);
-      const packs = CREDIT_PACK_CATALOG.filter((p) => enabledPackIds.includes(p.packId));
-      const primary = packs[0] || CREDIT_PACK_CATALOG[0]!;
       return res.json({
         googleClientId: getGoogleOAuthClientId(),
         freeGenerationLimit: clampStorefrontFreeGens(
           (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
         ),
-        creditPackCredits: primary.credits,
-        creditPackPriceUsd: primary.priceInCents / 100,
-        creditPacks: packs.map((p) => ({
-          id: p.packId,
-          credits: p.credits,
-          priceUsd: p.priceInCents / 100,
-          entitlementUsd: p.entitlementCents / 100,
-          label: p.label,
-        })),
-        creditReimbursementMode: String((installation as any).creditReimbursementMode || "appai_discount"),
         appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
       });
     } catch (error: any) {
@@ -9893,6 +9910,19 @@ ${orientationExtra}
       }
 
       await storage.ensureCustomerBalance(customer.id);
+
+      // Reward Ladder — email_signup rung (idempotent per customer).
+      if (emailNorm) {
+        try {
+          const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
+          if (r.granted) {
+            console.log(`[Google Auth] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
+          }
+        } catch (rewardErr: any) {
+          console.warn(`[Google Auth] email_signup grant failed:`, rewardErr?.message);
+        }
+      }
+
       const balance = await storage.getCreditBalance(customer.id);
       console.log(`[Google Auth] Signed in ${emailNorm || googleSub} for shop ${shop}, customer ${customer.id}`);
 
@@ -9902,7 +9932,6 @@ ${orientationExtra}
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance?.credits ?? customer.credits,
         freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
-        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
         email: emailNorm || undefined,
         name: payload.name,
       });
@@ -10022,6 +10051,17 @@ ${orientationExtra}
       console.log(`[OTP] Verified ${emailNorm} for shop ${shop}, customer ${customer.id}`);
       await storage.ensureCustomerBalance(customer.id);
       await storage.addCustomerAlias(customer.id, { aliasType: "otp_email", aliasValue: emailNorm, shop });
+
+      // Reward Ladder — email_signup rung (idempotent per customer).
+      try {
+        const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
+        if (r.granted) {
+          console.log(`[OTP] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
+        }
+      } catch (rewardErr: any) {
+        console.warn(`[OTP] email_signup grant failed:`, rewardErr?.message);
+      }
+
       const balance = await storage.getCreditBalance(customer.id);
       res.json({
         ok: true,
@@ -10029,7 +10069,6 @@ ${orientationExtra}
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance?.credits ?? customer.credits,
         freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
-        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
       });
     } catch (error: any) {
       console.error("[OTP] verify-otp error:", error);
@@ -10061,7 +10100,6 @@ ${orientationExtra}
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance.credits,
         freeGenerationsUsed: balance.freeGenerationsUsed,
-        discountEntitlementCents: balance.discountEntitlementCents,
       });
     } catch (error: any) {
       console.error("[Storefront Identity] bootstrap error:", error);
@@ -10129,7 +10167,6 @@ ${orientationExtra}
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
-        deltaEntitlementCents: 0,
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -10191,280 +10228,17 @@ ${orientationExtra}
         return res.status(404).json({ error: "Customer not found" });
       }
       const balance = await storage.ensureCustomerBalance(customer.id);
-      let finalBalance = balance;
-
-      const checkoutSessionId = typeof stripeSessionId === "string"
-        ? stripeSessionId
-        : (typeof sessionId === "string" ? sessionId : null);
-      if (checkoutSessionId && stripe) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(checkoutSessionId);
-          const sessionCustomerId = session.metadata?.internal_customer_id || session.metadata?.customerId;
-          const sessionShop = session.metadata?.shop;
-          if (
-            session.payment_status === "paid" &&
-            sessionCustomerId === customer.id &&
-            sessionShop === shop
-          ) {
-            const credits = Number.parseInt(session.metadata?.credits || "0", 10);
-            const entitlementCents = Number.parseInt(session.metadata?.entitlement_cents || "100", 10);
-            if (Number.isFinite(credits) && credits > 0) {
-              const ledgerResult = await storage.applyCreditLedgerEntry({
-                customerId: customer.id,
-                deltaCredits: credits,
-                deltaEntitlementCents: clampEntitlementCents(entitlementCents || 0),
-                reason: "purchase",
-                idempotencyKey: session.metadata?.idempotency_key || `stripe:session:${session.id}`,
-                externalRef: session.id,
-                metadata: {
-                  source: "credits-status-fallback",
-                  paymentIntent: typeof session.payment_intent === "string" ? session.payment_intent : null,
-                  priceInCents: session.amount_total || 0,
-                },
-              });
-              if (ledgerResult.inserted) {
-                await storage.createCreditTransaction({
-                  customerId: customer.id,
-                  type: "purchase",
-                  amount: credits,
-                  priceInCents: session.amount_total || 0,
-                  description: `Purchased ${credits} credits via Stripe`,
-                });
-                await syncCreditEntitlementMetafield(customer.id).catch((err) =>
-                  console.warn("[Credits Status] entitlement metafield sync failed", err),
-                );
-              }
-              finalBalance = ledgerResult.balance || finalBalance;
-              console.log("[Credits Status] Stripe fallback", {
-                sessionId: session.id,
-                customerId: customer.id,
-                inserted: ledgerResult.inserted,
-                credits: finalBalance.credits,
-              });
-            }
-          } else {
-            console.warn("[Credits Status] Stripe fallback ignored session mismatch", {
-              checkoutSessionId,
-              requestedCustomerId: customer.id,
-              sessionCustomerId,
-              requestedShop: shop,
-              sessionShop,
-              paymentStatus: session.payment_status,
-            });
-          }
-        } catch (err: any) {
-          console.warn("[Credits Status] Stripe fallback failed", { checkoutSessionId, error: err?.message });
-        }
-      }
-
-      console.log("[Credits Status] returning balance", finalBalance.credits, "for customerId", customer.id);
+      console.log("[Credits Status] returning balance", balance.credits, "for customerId", customer.id);
       return res.json({
         ok: true,
-        requestedCustomerId: customerId,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: finalBalance.credits,
-        freeGenerationsUsed: finalBalance.freeGenerationsUsed,
-        discountEntitlementCents: finalBalance.discountEntitlementCents,
+        credits: balance.credits,
+        freeGenerationsUsed: balance.freeGenerationsUsed,
       });
     } catch (error: any) {
       console.error("[Credits Status] error:", error);
       res.status(500).json({ error: "Failed to fetch credit status" });
-    }
-  });
-
-  app.post("/api/storefront/credits/purchase", async (req: Request, res: Response) => {
-    try {
-      const { customerId, shop, package: creditPackage, returnUrl } = req.body;
-      if (!customerId || !shop) {
-        return res.status(400).json({ error: "customerId and shop are required" });
-      }
-      const storefrontCustomerId = String(customerId);
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
-        return res.status(400).json({ error: "Invalid shop domain" });
-      }
-      if (!stripe) {
-        return res.status(503).json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY to Railway." });
-      }
-
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(403).json({ error: "Shop not authorized" });
-      }
-
-      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
-        shop,
-        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? storefrontCustomerId : null),
-        shopifyCustomerId: isInternalCustomer ? null : storefrontCustomerId,
-      });
-      if (!customer) {
-        return res.status(404).json({ error: "Customer not found" });
-      }
-
-      const enabledPackIds = parseEnabledCreditPackIds((installation as any).enabledCreditPackIds);
-      const pack = resolveCreditPack(
-        typeof creditPackage === "string" ? creditPackage : enabledPackIds[0],
-        enabledPackIds,
-      );
-      if (!pack) {
-        return res.status(400).json({ error: "Invalid credit package for this shop." });
-      }
-      const creditsToAdd = pack.credits;
-      const priceInCents = pack.priceInCents;
-      const reimbursementMode = String((installation as any).creditReimbursementMode || "appai_discount");
-      const entitlementCents =
-        reimbursementMode === "merchant_handles" ? 0 : clampEntitlementCents(pack.entitlementCents);
-
-      const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
-      // safeReturnUrl always includes "?shop=...&customerId=...", so use & here.
-      const separator = safeReturnUrl.includes("?") ? "&" : "?";
-      const idempotencyKey = crypto.randomUUID();
-
-      console.log("[Credits Purchase] session for customerId", customer.id, "returnUrl", safeReturnUrl);
-
-      const entDollars = (entitlementCents / 100).toFixed(0);
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: `${creditsToAdd} AI Art Studio generation credits`,
-                description:
-                  entitlementCents > 0
-                    ? `Credits for custom AI artwork — up to $${entDollars} off a product order`
-                    : "Credits for generating custom AI artwork",
-              },
-              unit_amount: priceInCents,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: `${safeReturnUrl}${separator}credits=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
-        customer_email: (customer as any).email || undefined,
-        metadata: {
-          customerId: customer.id,
-          internal_customer_id: customer.id,
-          idempotency_key: idempotencyKey,
-          shop,
-          credits: creditsToAdd.toString(),
-          entitlement_cents: String(entitlementCents),
-          type: "credit_purchase",
-          returnUrl: safeReturnUrl,
-          legacy_customer_id: storefrontCustomerId,
-        },
-      });
-
-      if (session.url) {
-        return res.json({ url: session.url });
-      }
-      return res.status(500).json({ error: "Failed to create checkout session" });
-    } catch (error: any) {
-      console.error("[Credits Purchase] error:", error);
-      res.status(500).json({ error: error.message || "Failed to initiate credit purchase" });
-    }
-  });
-
-  app.get("/api/storefront/credits/purchase", async (req: Request, res: Response) => {
-    try {
-      const { customerId, shop, package: creditPackage, returnUrl } = req.query;
-      if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
-        return res.status(400).send("customerId and shop are required");
-      }
-      const storefrontCustomerId = customerId;
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
-        return res.status(400).send("Invalid shop domain");
-      }
-      if (!stripe) {
-        return res.status(503).send("Payments are not configured.");
-      }
-
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(403).send("Shop not authorized");
-      }
-
-      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
-        shop,
-        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? storefrontCustomerId : null),
-        shopifyCustomerId: isInternalCustomer ? null : storefrontCustomerId,
-      });
-      if (!customer) {
-        return res.status(404).send("Customer not found");
-      }
-
-      const enabledPackIds = parseEnabledCreditPackIds((installation as any).enabledCreditPackIds);
-      const pack = resolveCreditPack(
-        typeof creditPackage === "string" ? creditPackage : enabledPackIds[0],
-        enabledPackIds,
-      );
-      if (!pack) {
-        return res.status(400).send("Invalid credit package");
-      }
-      const creditsToAdd = pack.credits;
-      const priceInCents = pack.priceInCents;
-      const reimbursementMode = String((installation as any).creditReimbursementMode || "appai_discount");
-      const entitlementCents =
-        reimbursementMode === "merchant_handles" ? 0 : clampEntitlementCents(pack.entitlementCents);
-
-      const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
-      const separator = safeReturnUrl.includes("?") ? "&" : "?";
-      const idempotencyKey = crypto.randomUUID();
-
-      console.log("[Credits Purchase] GET redirect session for customerId", customer.id, "returnUrl", safeReturnUrl);
-
-      const entDollars = (entitlementCents / 100).toFixed(0);
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: `${creditsToAdd} AI Art Studio generation credits`,
-                description:
-                  entitlementCents > 0
-                    ? `Credits for custom AI artwork — up to $${entDollars} off a product order`
-                    : "Credits for generating custom AI artwork",
-              },
-              unit_amount: priceInCents,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: `${safeReturnUrl}${separator}credits=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
-        customer_email: (customer as any).email || undefined,
-        metadata: {
-          customerId: customer.id,
-          internal_customer_id: customer.id,
-          idempotency_key: idempotencyKey,
-          shop,
-          credits: creditsToAdd.toString(),
-          entitlement_cents: String(entitlementCents),
-          type: "credit_purchase",
-          returnUrl: safeReturnUrl,
-          legacy_customer_id: storefrontCustomerId,
-        },
-      });
-
-      if (!session.url) {
-        return res.status(500).send("Failed to create checkout session");
-      }
-      return res.redirect(303, session.url);
-    } catch (error: any) {
-      console.error("[Credits Purchase] GET redirect error:", error);
-      return res.status(500).send(error.message || "Failed to initiate credit purchase");
     }
   });
 
@@ -10473,56 +10247,48 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      // Compute webhook HMAC validity. The legacy credit-ledger path below is
-      // preserved as-is (additive change); the NEW Printify fulfillment path is
-      // strictly gated behind a valid HMAC + the FLAT_ORDER_FULFILLMENT_ENABLED
-      // flag, so forged/unverified requests can never trigger a Printify order.
-      const hmacValid = verifyShopifyWebhookHmac(req);
-      console.log("[Shopify Orders Paid] received", { shop, orderId, hmacValid });
-      const shopifyCustomerId = order.customer?.admin_graphql_api_id || order.customer?.id;
-      const discountApplications = Array.isArray(order.discount_applications) ? order.discount_applications : [];
-      const studioDiscountApplied = discountApplications.some((discount: any) => {
-        const t = String(discount.title || discount.code || discount.description || "").toLowerCase();
-        return t.includes("ai art studio") || t.includes("appai");
-      });
-      const totalDiscountCents = Math.round(Number.parseFloat(String(order.total_discounts || "0")) * 100);
-      if (shop && shopifyCustomerId && studioDiscountApplied && totalDiscountCents > 0) {
-        const customer = await resolveStorefrontCustomerIdentity({
-          shop,
-          shopifyCustomerId: String(shopifyCustomerId).replace("gid://shopify/Customer/", ""),
-        });
-        const debitCents = Math.min(CREDIT_ENTITLEMENT_MAX_CENTS, totalDiscountCents);
-        const result = await storage.applyCreditLedgerEntry({
-          customerId: customer.id,
-          deltaCredits: 0,
-          deltaEntitlementCents: -debitCents,
-          reason: "order_redemption",
-          idempotencyKey: `shopify-order-paid:${orderId}`,
-          externalRef: String(orderId),
-          metadata: { shop, totalDiscountCents, discountApplications },
-        });
-        // Always attempt the claim row (idempotent on shopify_order_id) so we
-        // have an audit trail even if a duplicate webhook is replayed.
-        const claimResult = await storage.recordOrderDiscountClaim({
-          customerId: customer.id,
-          shopifyOrderId: String(orderId),
-          shop,
-          entitlementCents: debitCents,
-          status: "applied",
-        });
-        if (result.inserted) {
-          console.log("[Shopify Orders Paid] debited entitlement", {
-            customerId: customer.id,
-            orderId,
-            debitCents,
-            claimInserted: claimResult.inserted,
-          });
-          await syncCreditEntitlementMetafield(customer.id);
-        } else {
-          console.log("[Shopify Orders Paid] duplicate ledger entry, skipping debit", {
-            customerId: customer.id,
-            orderId,
-          });
+      if (!verifyShopifyWebhookHmac(req)) {
+        console.warn("[Shopify Orders Paid] invalid HMAC", { shop, orderId });
+        return res.status(401).send("Unauthorized");
+      }
+      console.log("[Shopify Orders Paid] received", { shop, orderId });
+
+      // Reward Ladder — purchase_threshold rung (gated by PURCHASE_REWARDS_ENABLED).
+      // Resolve the buyer to our internal customer via customer_aliases.
+      if (
+        process.env.PURCHASE_REWARDS_ENABLED === "true" &&
+        shop &&
+        orderId &&
+        order?.customer
+      ) {
+        const shopifyCustomerRaw = order.customer.admin_graphql_api_id
+          ?? (order.customer.id != null ? `gid://shopify/Customer/${order.customer.id}` : null);
+        const shopifyCustomerId = shopifyCustomerRaw ? String(shopifyCustomerRaw).replace("gid://shopify/Customer/", "") : null;
+        const subtotalCents = Math.max(
+          0,
+          Math.round(Number(order.subtotal_price || order.current_subtotal_price || order.total_price || 0) * 100),
+        );
+        if (shopifyCustomerId && subtotalCents > 0) {
+          void (async () => {
+            try {
+              const resolved = await resolveStorefrontCustomerIdentity({
+                shop,
+                shopifyCustomerId,
+              }).catch(() => null);
+              if (!resolved) return;
+              const r = await tryGrantPurchaseThreshold({
+                shop,
+                customerId: resolved.id,
+                orderId: String(orderId),
+                subtotalCents,
+              });
+              if (r.granted) {
+                console.log(`[Shopify Orders Paid] granted purchase_threshold rung to ${resolved.id} for order ${orderId}`);
+              }
+            } catch (err: any) {
+              console.warn("[Shopify Orders Paid] purchase_threshold grant failed:", err?.message);
+            }
+          })();
         }
       }
 
@@ -10531,7 +10297,7 @@ ${orientationExtra}
       // production until prerequisites (e.g. Protected Customer Data approval
       // for shipping address access) are met. Requires a valid webhook HMAC.
       // Runs async AFTER we return 200 so the webhook stays fast.
-      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && hmacValid && Array.isArray(order.line_items)) {
+      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && Array.isArray(order.line_items)) {
         const rawLines = order.line_items as any[];
         const shippingAddress = order.shipping_address || order.customer?.default_address || {};
         // Map the Shopify shipping address → Printify address_to. NOTE: this
@@ -10580,7 +10346,7 @@ ${orientationExtra}
       // FLAT_ORDER_FULFILLMENT_ENABLED — just a valid webhook HMAC. Dormant in
       // practice until orders/paid is resubscribed in shopify.app.toml (see the
       // comment there re: Protected Customer Data approval).
-      if (shop && hmacValid && Array.isArray(order.line_items)) {
+      if (shop && Array.isArray(order.line_items)) {
         void recordDesignProductSalesForOrder(shop, order).catch((e: any) =>
           console.warn("[Shopify Orders Paid] design product sale recording failed:", e?.message || e),
         );
@@ -10625,6 +10391,65 @@ ${orientationExtra}
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Carts Update] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  // ── Refund / cancel → Reward Ladder clawback ─────────────────────────────
+  // Phase 1: only reverses purchase_threshold Reward Ladder grants tied to the
+  // order id. Studio Credits pack refunds are Phase 2 (wholesale credit netting).
+  app.post("/shopify/webhooks/refunds-create", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const body = req.body || {};
+      const orderId = body.order_id || body.admin_graphql_api_order_id || body.order?.id;
+      if (!verifyShopifyWebhookHmac(req)) {
+        console.warn("[Shopify Refunds Create] invalid HMAC", { shop, orderId });
+        return res.status(401).send("Unauthorized");
+      }
+      if (shop && orderId) {
+        void clawbackPurchaseThresholdForOrder({
+          shop,
+          orderId: String(orderId),
+          reason: "reward_clawback:refund",
+          idempotencyKey: `clawback:order-refund:${orderId}`,
+        }).then((r) => {
+          if (r.clawedGrants > 0) {
+            console.log(`[Shopify Refunds Create] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
+          }
+        }).catch((err: any) => console.warn("[Shopify Refunds Create] clawback failed:", err?.message));
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Refunds Create] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  app.post("/shopify/webhooks/orders-cancelled", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const order = req.body || {};
+      const orderId = order.admin_graphql_api_id || order.id;
+      if (!verifyShopifyWebhookHmac(req)) {
+        console.warn("[Shopify Orders Cancelled] invalid HMAC", { shop, orderId });
+        return res.status(401).send("Unauthorized");
+      }
+      if (shop && orderId) {
+        void clawbackPurchaseThresholdForOrder({
+          shop,
+          orderId: String(orderId),
+          reason: "reward_clawback:cancel",
+          idempotencyKey: `clawback:order-cancel:${orderId}`,
+        }).then((r) => {
+          if (r.clawedGrants > 0) {
+            console.log(`[Shopify Orders Cancelled] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
+          }
+        }).catch((err: any) => console.warn("[Shopify Orders Cancelled] clawback failed:", err?.message));
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Orders Cancelled] error:", error);
       return res.status(200).send("OK");
     }
   });
@@ -11453,6 +11278,7 @@ ${orientationExtra}
         shopDomain,
         productId,
         productHandle,
+        customerId: rawOwnerCustomerId,
       } = req.body;
 
       if (!imageUrl || !prompt || !size || !frameColor) {
@@ -11493,6 +11319,20 @@ ${orientationExtra}
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
 
+      // Resolve the sharer's internal customer id (for the share_design Reward Ladder rung).
+      // Accept either the internal UUID or a Shopify customer id; verify via bearer token when present.
+      let ownerCustomerId: string | null = null;
+      if (rawOwnerCustomerId && shopDomain && /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shopDomain))) {
+        const tokenIdentity = verifyStorefrontIdentityToken(req);
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rawOwnerCustomerId));
+        const resolved = await resolveStorefrontCustomerIdentity({
+          shop: String(shopDomain),
+          customerId: tokenIdentity && tokenIdentity.shop === shopDomain ? tokenIdentity.customerId : (isInternalCustomer ? String(rawOwnerCustomerId) : null),
+          shopifyCustomerId: isInternalCustomer ? null : String(rawOwnerCustomerId),
+        }).catch(() => null);
+        if (resolved) ownerCustomerId = resolved.id;
+      }
+
       const sharedDesign = await storage.createSharedDesign({
         designId: null, // Nullable for unsaved designs
         shareToken,
@@ -11509,6 +11349,7 @@ ${orientationExtra}
         shopDomain: shopDomain || null,
         productId: productId || null,
         productHandle: productHandle || null,
+        ownerCustomerId,
         expiresAt,
         viewCount: 0,
       });
@@ -11551,6 +11392,22 @@ ${orientationExtra}
 
       // Increment view count
       await storage.incrementSharedDesignViewCount(sharedDesign.id);
+
+      // Reward Ladder — share_design rung. Grant to the sharer when a different
+      // visitor opens the link. visitorKey/visitorCustomerId come from the client
+      // (appai_uid localStorage + logged-in identity when available).
+      const ownerId = (sharedDesign as any).ownerCustomerId as string | null | undefined;
+      if (ownerId && sharedDesign.shopDomain) {
+        const visitorKey = typeof req.query.visitorKey === "string" ? req.query.visitorKey : null;
+        const visitorCustomerId = typeof req.query.customerId === "string" ? req.query.customerId : null;
+        void tryGrantShareDesign({
+          shop: String(sharedDesign.shopDomain),
+          ownerCustomerId: ownerId,
+          visitorCustomerId,
+          visitorKey,
+          shareId: sharedDesign.id,
+        }).catch((err: any) => console.warn(`[Share View] share_design grant failed:`, err?.message));
+      }
 
       res.json({
         id: sharedDesign.id,
@@ -11696,7 +11553,7 @@ ${orientationExtra}
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -11768,76 +11625,6 @@ ${orientationExtra}
       res.status(500).json({ error: "Failed to save reused design" });
     }
   });
-
-  // Purchase credits via Stripe Checkout
-  app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
-    try {
-      const userId = req.user.claims.sub;
-      const { package: creditPackage, shop } = req.body;
-      
-      if (!stripe) {
-        return res.status(503).json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY to Railway." });
-      }
-
-      let customer = await storage.getCustomerByUserId(userId);
-      if (!customer) {
-        customer = await storage.createCustomer({
-          userId,
-          credits: 0,
-          freeGenerationsUsed: 0,
-          totalGenerations: 0,
-          totalSpent: "0.00",
-        });
-      }
-
-      const pack = resolveCreditPack(creditPackage || "5");
-      if (!pack) {
-        return res.status(400).json({ error: "Invalid credit package. Use '5', '10', or '20'." });
-      }
-      const creditsToAdd = pack.credits;
-      const priceInCents = pack.priceInCents;
-
-      const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
-      
-      // Create Stripe Checkout Session
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork",
-              },
-              unit_amount: priceInCents,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: `${appUrl}/designs?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/designs?payment=cancelled`,
-        customer_email: customer.email || undefined,
-        metadata: {
-          customerId: customer.id,
-          creditsToAdd: creditsToAdd.toString(),
-          shop: shop || "",
-        },
-      });
-
-      if (session.url) {
-        res.json({ url: session.url });
-      } else {
-        res.status(500).json({ error: "Failed to create checkout session" });
-      }
-    } catch (error: any) {
-      console.error("Error creating checkout session:", error);
-      res.status(500).json({ error: error.message || "Failed to initiate purchase" });
-    }
-  });
-
-
 
   // Get credit transactions
   app.get("/api/credits/transactions", isAuthenticated, async (req: any, res: Response) => {
@@ -12433,7 +12220,6 @@ ${orientationExtra}
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
-        deltaEntitlementCents: 0,
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -22144,18 +21930,12 @@ ${orientationExtra}
 
   // ==================== BRANDING & STYLING ====================
 
-  // Storefront free gens + credit packs (merchant-configurable)
+  // Storefront free generations (merchant-configurable)
   app.get("/api/admin/storefront-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const userId = req.user.claims.sub;
     const merchant = await storage.getMerchantByUserId(userId);
     if (!merchant) return res.status(404).json({ error: "Merchant not found" });
     const installation = await resolveInstallationForMerchant(merchant.id);
-    const enabledPackIds = parseEnabledCreditPackIds(
-      installation ? (installation as any).enabledCreditPackIds : '["5"]',
-    );
-    const reimbursementMode = installation
-      ? String((installation as any).creditReimbursementMode || "appai_discount")
-      : "appai_discount";
     return res.json({
       storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
         (installation as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
@@ -22164,15 +21944,6 @@ ${orientationExtra}
       max: STOREFRONT_FREE_GENERATION_MAX,
       default: STOREFRONT_FREE_GENERATION_DEFAULT,
       shopDomain: installation?.shopDomain ?? null,
-      creditReimbursementMode: reimbursementMode,
-      enabledCreditPackIds: enabledPackIds,
-      availableCreditPacks: CREDIT_PACK_CATALOG.map((p) => ({
-        id: p.packId,
-        credits: p.credits,
-        priceUsd: p.priceInCents / 100,
-        entitlementUsd: p.entitlementCents / 100,
-        label: p.label,
-      })),
     });
   }));
 
@@ -22190,21 +21961,10 @@ ${orientationExtra}
         req.body.storefrontFreeGensPerVisitor,
       );
     }
-    if (req.body?.creditReimbursementMode != null) {
-      const mode = String(req.body.creditReimbursementMode);
-      updates.creditReimbursementMode =
-        mode === "merchant_handles" ? "merchant_handles" : "appai_discount";
-    }
-    if (req.body?.enabledCreditPackIds != null) {
-      updates.enabledCreditPackIds = JSON.stringify(
-        parseEnabledCreditPackIds(req.body.enabledCreditPackIds),
-      );
-    }
     if (Object.keys(updates).length > 0) {
       await storage.updateShopifyInstallation(installation.id, updates as any);
     }
     const fresh = (await storage.getShopifyInstallation(installation.id)) || installation;
-    const enabledPackIds = parseEnabledCreditPackIds((fresh as any).enabledCreditPackIds);
     return res.json({
       storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
         (fresh as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
@@ -22213,15 +21973,52 @@ ${orientationExtra}
       max: STOREFRONT_FREE_GENERATION_MAX,
       default: STOREFRONT_FREE_GENERATION_DEFAULT,
       shopDomain: fresh.shopDomain,
-      creditReimbursementMode: String((fresh as any).creditReimbursementMode || "appai_discount"),
-      enabledCreditPackIds: enabledPackIds,
-      availableCreditPacks: CREDIT_PACK_CATALOG.map((p) => ({
-        id: p.packId,
-        credits: p.credits,
-        priceUsd: p.priceInCents / 100,
-        entitlementUsd: p.entitlementCents / 100,
-        label: p.label,
-      })),
+    });
+  }));
+
+  // Reward Ladder — per-shop rung configuration for the admin Settings page.
+  app.get("/api/admin/reward-ladder", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) return res.status(404).json({ error: "No Shopify store connected" });
+    const rungs = await ensureRewardLadder(installation.shopDomain);
+    return res.json({
+      shopDomain: installation.shopDomain,
+      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED === "true",
+      rungs,
+    });
+  }));
+
+  app.patch("/api/admin/reward-ladder", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) return res.status(404).json({ error: "No Shopify store connected" });
+    const patches = Array.isArray(req.body?.rungs) ? req.body.rungs : [];
+    const validKeys: RewardRungKey[] = ["free_anonymous", "email_signup", "share_design", "purchase_threshold"];
+    const updates = patches
+      .filter((p: any) => p && typeof p.rungKey === "string" && validKeys.includes(p.rungKey))
+      .map((p: any) => ({
+        rungKey: p.rungKey as RewardRungKey,
+        patch: {
+          enabled: typeof p.enabled === "boolean" ? p.enabled : undefined,
+          creditAmount: typeof p.creditAmount === "number" ? p.creditAmount : undefined,
+          thresholdCents:
+            p.thresholdCents === null
+              ? null
+              : typeof p.thresholdCents === "number"
+                ? p.thresholdCents
+                : undefined,
+        },
+      }));
+    const rungs = await patchRewardLadder(installation.shopDomain, updates);
+    return res.json({
+      shopDomain: installation.shopDomain,
+      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED === "true",
+      rungs,
     });
   }));
 

@@ -88,8 +88,6 @@ import {
 } from "@shared/stylePromptCompatibility";
 import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
 import {
-  CREDIT_PACK_CATALOG,
-  CREDIT_PACK_ID,
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_LIMIT,
   storefrontArtworksRemaining,
@@ -2039,21 +2037,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpError, setOtpError] = useState<string | null>(null);
   const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
   const [freeGenerationLimit, setFreeGenerationLimit] = useState(STOREFRONT_FREE_GENERATION_DEFAULT);
-  const [creditPacks, setCreditPacks] = useState<
-    Array<{ id: string; credits: number; priceUsd: number; entitlementUsd: number; label: string }>
-  >(() =>
-    CREDIT_PACK_CATALOG.map((p) => ({
-      id: p.packId,
-      credits: p.credits,
-      priceUsd: p.priceInCents / 100,
-      entitlementUsd: p.entitlementCents / 100,
-      label: p.label,
-    })),
-  );
-  const [selectedCreditPackId, setSelectedCreditPackId] = useState(CREDIT_PACK_ID);
-  const [creditReimbursementMode, setCreditReimbursementMode] = useState<
-    "appai_discount" | "merchant_handles"
-  >("appai_discount");
   const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const googleAuthNonceRef = useRef<string | null>(null);
@@ -2210,29 +2193,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
           setFreeGenerationLimit(data.freeGenerationLimit);
         }
-        if (Array.isArray(data.creditPacks) && data.creditPacks.length > 0) {
-          const packs = data.creditPacks
-            .map((p: any) => ({
-              id: String(p.id || p.packId || "").trim(),
-              credits: Number(p.credits),
-              priceUsd: Number(p.priceUsd),
-              entitlementUsd: Number(p.entitlementUsd ?? 0),
-              label: String(p.label || ""),
-            }))
-            .filter(
-              (p: { id: string; credits: number; priceUsd: number }) =>
-                p.id && Number.isFinite(p.credits) && Number.isFinite(p.priceUsd),
-            );
-          if (packs.length > 0) {
-            setCreditPacks(packs);
-            setSelectedCreditPackId((prev) =>
-              packs.some((p: { id: string }) => p.id === prev) ? prev : packs[0].id,
-            );
-          }
-        }
-        if (data.creditReimbursementMode === "merchant_handles" || data.creditReimbursementMode === "appai_discount") {
-          setCreditReimbursementMode(data.creditReimbursementMode);
-        }
       })
       .catch(() => {
         setGoogleAuthEnabled(false);
@@ -2373,7 +2333,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
   const [creditsPopoverOpen, setCreditsPopoverOpen] = useState(false);
-  const [creditsPurchaseLoading, setCreditsPurchaseLoading] = useState(false);
   const paidCredits = customer?.credits ?? 0;
   const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
   const artworksRemaining = storefrontArtworksRemaining({
@@ -2533,7 +2492,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [isAdminTester],
   );
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
-  const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   // Ensures quick successive AOP edits do not let an older mockup response overwrite the latest one.
@@ -2548,7 +2506,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     toast({
       title: "No artwork credits remaining",
       description:
-        "Purchase more credits to generate new artwork. Credits are refunded when you complete a purchase.",
+        "Sign in to earn more Studio Credits as new rewards become available.",
       duration: 8000,
     });
   }, [toast]);
@@ -6727,72 +6685,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return headers;
   };
 
-  const handleBuyMoreCredits = async () => {
-    if (!storefrontCustomerId) {
-      setCreditsPopoverOpen(false);
-      setLoginError("Please sign in before purchasing more artwork credits.");
-      toast({
-        title: "Sign in required",
-        description: "Sign in first, then you can purchase more artwork credits.",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (!shopDomain) {
-      toast({
-        title: "Shop missing",
-        description: "Reload the customizer and try again.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setCreditsPurchaseLoading(true);
-
-    // Persist the exact storefront customerId BEFORE navigating away so we can
-    // recover it after Stripe redirects us back to the designer page. We never
-    // rely on logged_in_customer_id from Shopify — the app proxy omits it.
-    try {
-      localStorage.setItem('appai_customer_id', storefrontCustomerId);
-      localStorage.setItem('appai_credits_pending_customer_id', storefrontCustomerId);
-      sessionStorage.setItem('appai_credits_pending_customer_id', storefrontCustomerId);
-    } catch {}
-
-    // Build a clean storefront-proxy return URL (never admin.shopify.com).
-    // Preserve useful query params (product/variant/etc) from the current URL
-    // so the designer re-opens in the same context after checkout.
-    const returnUrl = new URL(`https://${shopDomain}/apps/appai/s/designer`);
-    try {
-      const currentQuery = new URLSearchParams(window.location.search);
-      currentQuery.forEach((value, key) => {
-        if (!value) return;
-        if (key === 'credits' || key === 'session_id' || key === 'customerId' || key === 'shop') return;
-        returnUrl.searchParams.set(key, value);
-      });
-    } catch {}
-    returnUrl.searchParams.set('shop', shopDomain);
-    returnUrl.searchParams.set('customerId', storefrontCustomerId);
-
-    const packId =
-      creditPacks.some((p) => p.id === selectedCreditPackId)
-        ? selectedCreditPackId
-        : creditPacks[0]?.id || CREDIT_PACK_ID;
-    const params = new URLSearchParams({
-      customerId: storefrontCustomerId,
-      shop: shopDomain,
-      package: packId,
-      returnUrl: returnUrl.toString(),
-    });
-    const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
-    console.log('[More Credits] redirecting to checkout for customerId', storefrontCustomerId, 'pack', packId);
-    try {
-      window.top!.location.href = checkoutUrl;
-    } catch {
-      window.location.href = checkoutUrl;
-    }
-    window.setTimeout(() => setCreditsPurchaseLoading(false), 8000);
-  };
-
   const handleGenerate = async (options?: {
     skipStyleMismatchCheck?: boolean;
     overridePresetId?: string;
@@ -10925,119 +10817,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return '0 artworks remaining';
   })();
   useEffect(() => {
-    if (!isStorefront || creditsReturnHandledRef.current || !shopDomain) return;
-    const params = new URLSearchParams(window.location.search);
-    const creditsStatus = params.get("credits");
-    if (creditsStatus !== "success" && creditsStatus !== "cancelled") return;
-
-    creditsReturnHandledRef.current = true;
-    if (creditsStatus === "cancelled") {
-      toast({ title: "Checkout cancelled", description: "No credits were added." });
-      // Clean URL so a manual reload does not re-trigger this flow
-      try {
-        const cleaned = new URL(window.location.href);
-        cleaned.searchParams.delete('credits');
-        cleaned.searchParams.delete('session_id');
-        window.history.replaceState({}, document.title, cleaned.toString());
-      } catch {}
-      return;
-    }
-
-    // Resolve the customerId deterministically — Shopify app proxy omits
-    // logged_in_customer_id, so we cannot rely on it. Order of preference:
-    //   1. ?customerId= query string we attached to the success_url
-    //   2. sessionStorage / localStorage marker saved before redirect
-    //   3. current storefrontCustomerId state (hydrated from localStorage)
-    let resolvedCustomerId: string | null = params.get("customerId");
-    if (!resolvedCustomerId) {
-      try { resolvedCustomerId = sessionStorage.getItem('appai_credits_pending_customer_id'); } catch {}
-    }
-    if (!resolvedCustomerId) {
-      try { resolvedCustomerId = localStorage.getItem('appai_credits_pending_customer_id'); } catch {}
-    }
-    if (!resolvedCustomerId) {
-      try { resolvedCustomerId = localStorage.getItem('appai_customer_id'); } catch {}
-    }
-    if (!resolvedCustomerId) resolvedCustomerId = storefrontCustomerId;
-
-    if (!resolvedCustomerId) {
-      console.warn('[Credits Return] no customerId available after Stripe redirect');
-      return;
-    }
-
-    // Keep app state + localStorage aligned with whichever ID we recovered.
-    try {
-      localStorage.setItem('appai_customer_id', resolvedCustomerId);
-      localStorage.removeItem('appai_credits_pending_customer_id');
-      sessionStorage.removeItem('appai_credits_pending_customer_id');
-    } catch {}
-    if (resolvedCustomerId !== storefrontCustomerId) {
-      setStorefrontCustomerId(resolvedCustomerId);
-    }
-
-    console.log('[Credits Return] refreshing status for customerId', resolvedCustomerId);
-    toast({ title: "Payment complete", description: "Refreshing your artwork credits..." });
-
-    const checkoutSessionId = params.get("session_id");
-    const refreshCredits = () => {
-      const statusParams = new URLSearchParams({
-        shop: shopDomain,
-        customerId: resolvedCustomerId!,
-      });
-      if (checkoutSessionId) statusParams.set("session_id", checkoutSessionId);
-      const statusUrl = `${API_BASE}/api/storefront/credits/status?${statusParams.toString()}`;
-      const headers: Record<string, string> = {};
-      if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
-      safeFetch(statusUrl, { headers })
-        .then((res) => res.json())
-        .then((data) => {
-          if (!data || data.ok === false) {
-            console.warn('[Credits Return] status response not ok', data);
-            return;
-          }
-          if (data.identityToken) {
-            setStorefrontIdentityToken(data.identityToken);
-            try { localStorage.setItem('appai_identity_token', data.identityToken); } catch {}
-          }
-          console.log('[Credits Return] new balance', data.credits);
-          setCustomer((prev) => {
-            const next = {
-              ...(prev || { id: resolvedCustomerId!, isLoggedIn: true }),
-              id: resolvedCustomerId!,
-              credits: typeof data.credits === 'number' ? data.credits : (prev?.credits ?? 0),
-              freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed,
-              isLoggedIn: true,
-            };
-            try { localStorage.setItem('appai_customer', JSON.stringify(next)); } catch {}
-            return next;
-          });
-          toast({
-            title: 'Credits added',
-            description: `You now have ${data.credits ?? 0} artwork credit${(data.credits ?? 0) === 1 ? '' : 's'}.`,
-          });
-        })
-        .catch((err) => {
-          console.error('[Credits Return] status fetch failed', err);
-        });
-    };
-
-    // Refresh once immediately, then again shortly after — the Stripe webhook
-    // may land a moment after the browser redirect, so a short retry avoids
-    // a stale zero-balance.
-    refreshCredits();
-    window.setTimeout(refreshCredits, 2500);
-    window.setTimeout(refreshCredits, 6000);
-
-    // Strip the credits/session_id params so refreshes do not re-trigger.
-    try {
-      const cleaned = new URL(window.location.href);
-      cleaned.searchParams.delete('credits');
-      cleaned.searchParams.delete('session_id');
-      window.history.replaceState({}, document.title, cleaned.toString());
-    } catch {}
-  }, [isStorefront, storefrontCustomerId, storefrontIdentityToken, shopDomain, toast]);
-
-  useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
@@ -11525,65 +11304,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
         <DialogContent className="text-sm space-y-3 sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Artwork Credits</DialogTitle>
+            <DialogTitle>Studio Credits</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">
-            You get {freeGenerationLimit} free AI-generated artwork
-            {freeGenerationLimit === 1 ? "" : "s"} to try.
+            Balance: {paidCredits} Studio Credit{paidCredits === 1 ? "" : "s"}.
           </p>
-          {creditPacks.length > 1 ? (
-            <div className="space-y-2">
-              <p className="text-muted-foreground">Choose a pack to continue creating:</p>
-              {creditPacks.map((pack) => (
-                <label
-                  key={pack.id}
-                  className="flex items-center gap-2 rounded-md border px-3 py-2 cursor-pointer"
-                >
-                  <input
-                    type="radio"
-                    name="credit-pack"
-                    checked={selectedCreditPackId === pack.id}
-                    onChange={() => setSelectedCreditPackId(pack.id)}
-                  />
-                  <span className="font-medium">{pack.label}</span>
-                </label>
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground">
-              After that, it&apos;s {creditPacks[0]?.label || "5 gens for $1"}.
-            </p>
+          <p className="text-muted-foreground">
+            {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
+            {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
+          </p>
+          <p className="rounded-md bg-muted p-3 text-muted-foreground">
+            More ways to earn Studio Credits are coming soon, including email signup and sharing.
+          </p>
+          {!storefrontLoggedIn && (
+            <p className="text-muted-foreground">Sign in to earn and keep your Studio Credits.</p>
           )}
-          {creditReimbursementMode === "appai_discount" && (
-            <p className="text-muted-foreground">
-              {(() => {
-                const pack =
-                  creditPacks.find((p) => p.id === selectedCreditPackId) || creditPacks[0];
-                const usd = pack?.entitlementUsd ?? 1;
-                return `Up to $${usd % 1 === 0 ? usd.toFixed(0) : usd.toFixed(2)} back when you complete a physical product purchase!`;
-              })()}
-            </p>
-          )}
-          <Button
-            type="button"
-            size="sm"
-            className="w-full"
-            onClick={handleBuyMoreCredits}
-            disabled={creditsPurchaseLoading}
-          >
-            {creditsPurchaseLoading ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Opening Checkout...
-              </>
-            ) : (
-              (() => {
-                const pack =
-                  creditPacks.find((p) => p.id === selectedCreditPackId) || creditPacks[0];
-                return pack ? `Buy ${pack.label}` : "More Credits";
-              })()
-            )}
-          </Button>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}

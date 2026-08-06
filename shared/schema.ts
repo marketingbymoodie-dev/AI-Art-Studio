@@ -17,7 +17,7 @@ import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./appar
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique(),
-  credits: integer("credits").notNull().default(5),
+  credits: integer("credits").notNull().default(0),
   freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
   totalGenerations: integer("total_generations").notNull().default(0),
   totalSpent: decimal("total_spent", { precision: 10, scale: 2 }).notNull().default("0.00"),
@@ -54,13 +54,17 @@ export const insertCustomerAliasSchema = createInsertSchema(customerAliases).omi
 export type CustomerAlias = typeof customerAliases.$inferSelect;
 export type InsertCustomerAlias = z.infer<typeof insertCustomerAliasSchema>;
 
-// Materialized credit balance. The ledger remains authoritative for audit, this
-// table makes reads and atomic debits simple.
+// Materialized credit balance. Atomic enforcement point for Studio Credits;
+// credit_ledger is the audit + idempotency trail.
 export const creditBalances = pgTable("credit_balances", {
   customerId: varchar("customer_id").primaryKey(),
+  /** Total Studio Credits (earned + pack). Authoritative for spend checks. */
   credits: integer("credits").notNull().default(0),
+  /** Credits earned via Reward Ladder (burn merchant quota at spend). */
+  earnedCredits: integer("earned_credits").notNull().default(0),
+  /** Credits from merchant-mediated packs (billed wholesale at grant; no quota burn). */
+  packCredits: integer("pack_credits").notNull().default(0),
   freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
-  discountEntitlementCents: integer("discount_entitlement_cents").notNull().default(0),
   version: integer("version").notNull().default(0),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -74,7 +78,11 @@ export const creditLedger = pgTable("credit_ledger", {
   id: serial("id").primaryKey(),
   customerId: varchar("customer_id").notNull(),
   deltaCredits: integer("delta_credits").notNull(),
-  deltaEntitlementCents: integer("delta_entitlement_cents").notNull().default(0),
+  /** Bucket this delta applies to: earned | pack (null for free_generation bookkeeping). */
+  source: text("source"),
+  shop: text("shop"),
+  relatedEntityId: text("related_entity_id"),
+  quotaBucketKey: text("quota_bucket_key"),
   reason: text("reason").notNull(),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   externalRef: text("external_ref"),
@@ -82,6 +90,7 @@ export const creditLedger = pgTable("credit_ledger", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("credit_ledger_customer_created_idx").on(table.customerId, table.createdAt),
+  index("credit_ledger_related_entity_idx").on(table.relatedEntityId),
 ]);
 
 export const insertCreditLedgerSchema = createInsertSchema(creditLedger).omit({
@@ -91,39 +100,54 @@ export const insertCreditLedgerSchema = createInsertSchema(creditLedger).omit({
 export type CreditLedger = typeof creditLedger.$inferSelect;
 export type InsertCreditLedger = z.infer<typeof insertCreditLedgerSchema>;
 
-export const stripeEvents = pgTable("stripe_events", {
-  stripeEventId: text("stripe_event_id").primaryKey(),
-  type: text("type").notNull(),
-  outcome: text("outcome"),
-  receivedAt: timestamp("received_at").defaultNow().notNull(),
-});
-
-export const insertStripeEventSchema = createInsertSchema(stripeEvents).omit({
-  receivedAt: true,
-});
-export type StripeEvent = typeof stripeEvents.$inferSelect;
-export type InsertStripeEvent = z.infer<typeof insertStripeEventSchema>;
-
-export const orderDiscountClaims = pgTable("order_discount_claims", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  customerId: varchar("customer_id").notNull(),
-  shopifyOrderId: text("shopify_order_id").unique(),
+/** Per-shop Reward Ladder rung configuration. */
+export const rewardLadderRungs = pgTable("reward_ladder_rungs", {
+  id: serial("id").primaryKey(),
   shop: text("shop").notNull(),
-  entitlementCents: integer("entitlement_cents").notNull(),
-  status: text("status").notNull().default("pending"), // pending | applied | reversed
+  /** free_anonymous | email_signup | share_design | purchase_threshold */
+  rungKey: text("rung_key").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  /** Credits granted when the rung is completed (free_anonymous uses free-gen limit instead). */
+  creditAmount: integer("credit_amount").notNull().default(1),
+  /** For purchase_threshold: minimum order subtotal in cents. */
+  thresholdCents: integer("threshold_cents"),
+  sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
-  index("order_discount_claims_customer_idx").on(table.customerId),
+  uniqueIndex("reward_ladder_rungs_shop_key").on(table.shop, table.rungKey),
+  index("reward_ladder_rungs_shop_idx").on(table.shop),
 ]);
 
-export const insertOrderDiscountClaimSchema = createInsertSchema(orderDiscountClaims).omit({
+export const insertRewardLadderRungSchema = createInsertSchema(rewardLadderRungs).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
 });
-export type OrderDiscountClaim = typeof orderDiscountClaims.$inferSelect;
-export type InsertOrderDiscountClaim = z.infer<typeof insertOrderDiscountClaimSchema>;
+export type RewardLadderRung = typeof rewardLadderRungs.$inferSelect;
+export type InsertRewardLadderRung = z.infer<typeof insertRewardLadderRungSchema>;
+
+/** Idempotent grant of a Reward Ladder rung to a customer (or anon identity). */
+export const rewardGrants = pgTable("reward_grants", {
+  id: serial("id").primaryKey(),
+  shop: text("shop").notNull(),
+  customerId: varchar("customer_id").notNull(),
+  rungKey: text("rung_key").notNull(),
+  creditsGranted: integer("credits_granted").notNull().default(0),
+  relatedEntityId: text("related_entity_id"),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("reward_grants_shop_customer_rung").on(table.shop, table.customerId, table.rungKey),
+  index("reward_grants_customer_idx").on(table.customerId),
+]);
+
+export const insertRewardGrantSchema = createInsertSchema(rewardGrants).omit({
+  id: true,
+  createdAt: true,
+});
+export type RewardGrant = typeof rewardGrants.$inferSelect;
+export type InsertRewardGrant = z.infer<typeof insertRewardGrantSchema>;
 
 // Merchant settings
 export const merchants = pgTable("merchants", {
@@ -192,19 +216,16 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   embedConfirmedAt: timestamp("embed_confirmed_at"),
   /**
    * Free AI generations each unique storefront visitor gets before paid credits.
-   * Clamped 1–10 in app code; default 1.
+   * Clamped 1–10 in app code; default 2.
    */
-  storefrontFreeGensPerVisitor: integer("storefront_free_gens_per_visitor").notNull().default(1),
+  storefrontFreeGensPerVisitor: integer("storefront_free_gens_per_visitor").notNull().default(2),
   /** Bucket key of last "leftover gens / coupon promo" reminder email (YYYY-MM). */
   leftoverGensReminderBucketKey: text("leftover_gens_reminder_bucket_key"),
   /**
-   * Who reimburses credit-pack buyers on a physical order:
-   * `appai_discount` = AI Art Studio checkout discount entitlement;
-   * `merchant_handles` = no entitlement (merchant runs their own promo).
+   * Wholesale credit cents owed back to the merchant after pack refunds
+   * (netted off against future usage charges). Phase 2.
    */
-  creditReimbursementMode: text("credit_reimbursement_mode").notNull().default("appai_discount"),
-  /** JSON array of enabled premade pack ids, e.g. ["5","10","20"]. */
-  enabledCreditPackIds: text("enabled_credit_pack_ids").notNull().default('["5"]'),
+  wholesaleCreditCents: integer("wholesale_credit_cents").notNull().default(0),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
@@ -718,6 +739,8 @@ export const sharedDesigns = pgTable("shared_designs", {
   productTypeId: integer("product_type_id"),
   expiresAt: timestamp("expires_at"),
   viewCount: integer("view_count").notNull().default(0),
+  /** Internal customer id of the sharer, if known — used by the Reward Ladder share_design rung. */
+  ownerCustomerId: varchar("owner_customer_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
