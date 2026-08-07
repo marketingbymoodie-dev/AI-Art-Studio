@@ -173,6 +173,10 @@ export default function AdminInsightsPage() {
     toName: string;
     direction: "up" | "down";
     estimatedGens: number;
+    /** Cheaper plan that would fit if Include overage were on (overage currently off). */
+    overageAltName?: string | null;
+    overageAltCostUsd?: number;
+    overageAltGens?: number;
   } | null>(null);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
 
@@ -499,14 +503,43 @@ export default function AdminInsightsPage() {
     const toIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === planFit.planName);
     const fromMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === roiPlanName);
     const toMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === planFit.planName);
+    const direction: "up" | "down" = toIdx > fromIdx ? "up" : "down";
+
+    let overageAltName: string | null = null;
+    let overageAltCostUsd = 0;
+    let overageAltGens = 0;
+    if (direction === "up" && !includeOverage) {
+      const withOverage = recommendPlan({
+        pagesNeeded,
+        estimatedGens,
+        includeOverage: true,
+      });
+      const altIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === withOverage.planName);
+      if (withOverage.fits && withOverage.planName && altIdx >= 0 && altIdx < toIdx) {
+        const alt = ESTIMATOR_PAID_PLANS[altIdx]!;
+        const ov = planOverageEstimate({
+          estimatedGens,
+          generationQuota: alt.generationQuota,
+          overageCap: alt.overageCap,
+          includeOverage: true,
+        });
+        overageAltName = alt.displayName;
+        overageAltCostUsd = ov.overageCostUsd;
+        overageAltGens = ov.overageGens;
+      }
+    }
+
     setPlanAutoNotice({
       fromName: fromMeta?.displayName || roiPlanName,
       toName: toMeta?.displayName || planFit.planName,
-      direction: toIdx > fromIdx ? "up" : "down",
+      direction,
       estimatedGens,
+      overageAltName,
+      overageAltCostUsd,
+      overageAltGens,
     });
     setRoiPlanName(planFit.planName);
-  }, [planFit.fits, planFit.planName, roiPlanName, estimatedGens]);
+  }, [planFit.fits, planFit.planName, roiPlanName, estimatedGens, includeOverage, pagesNeeded]);
 
   const rewardGrants: FunnelRewardGrants = useMemo(() => {
     const free =
@@ -666,20 +699,51 @@ export default function AdminInsightsPage() {
                       ? `Moved up to ${planAutoNotice.toName}`
                       : `Moved down to ${planAutoNotice.toName}`}
                   </AlertTitle>
-                  <AlertDescription className="text-xs">
+                  <AlertDescription className="text-xs space-y-2">
                     {planAutoNotice.direction === "up" ? (
                       <>
-                        {planAutoNotice.fromName} can’t cover ~{planAutoNotice.estimatedGens} gens/mo
-                        for this visitor/sales mix
-                        {includeOverage ? " even with overage" : ""}. Plan selection updated to{" "}
-                        {planAutoNotice.toName}, which has enough quota.
+                        <p>
+                          {planAutoNotice.fromName} can’t cover ~{planAutoNotice.estimatedGens}{" "}
+                          gens/mo for this visitor/sales mix
+                          {includeOverage ? " even with overage" : " on included quota alone"}.
+                          Plan selection updated to {planAutoNotice.toName}, which has enough quota.
+                        </p>
+                        {planAutoNotice.overageAltName ? (
+                          <div className="space-y-2">
+                            <p>
+                              Prefer not to increase the full plan level? Turn on{" "}
+                              <span className="font-medium">Include overage</span> —{" "}
+                              {planAutoNotice.overageAltName} would cover this mix with about $
+                              {(planAutoNotice.overageAltCostUsd ?? 0).toFixed(2)} overage (
+                              {planAutoNotice.overageAltGens} gens at $0.08).
+                            </p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 border-amber-400 bg-white/80"
+                              onClick={() => {
+                                setIncludeOverage(true);
+                                setPlanAutoNotice(null);
+                              }}
+                            >
+                              Turn on Include overage
+                            </Button>
+                          </div>
+                        ) : !includeOverage ? (
+                          <p>
+                            Include overage is off — you can test it on the right, but it still
+                            wouldn’t keep a cheaper plan under ~{planAutoNotice.estimatedGens}{" "}
+                            gens/mo for this mix.
+                          </p>
+                        ) : null}
                       </>
                     ) : (
-                      <>
+                      <p>
                         Volume is back in {planAutoNotice.toName}’s safe zone (~
                         {planAutoNotice.estimatedGens} gens/mo). Plan selection updated from{" "}
                         {planAutoNotice.fromName}.
-                      </>
+                      </p>
                     )}
                   </AlertDescription>
                 </Alert>
