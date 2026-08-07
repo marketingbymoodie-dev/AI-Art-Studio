@@ -21986,7 +21986,7 @@ ${orientationExtra}
     const rungs = await ensureRewardLadder(installation.shopDomain);
     return res.json({
       shopDomain: installation.shopDomain,
-      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED === "true",
+      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
       rungs,
     });
   }));
@@ -22017,7 +22017,7 @@ ${orientationExtra}
     const rungs = await patchRewardLadder(installation.shopDomain, updates);
     return res.json({
       shopDomain: installation.shopDomain,
-      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED === "true",
+      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
       rungs,
     });
   }));

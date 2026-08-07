@@ -357,7 +357,7 @@ export async function tryGrantShareDesign(params: {
 
 /**
  * Grant purchase_threshold when an order clears the merchant threshold.
- * Gated behind PURCHASE_REWARDS_ENABLED — dormant by default.
+ * Kill-switch with PURCHASE_REWARDS_ENABLED=false.
  */
 export async function tryGrantPurchaseThreshold(params: {
   shop: string;
