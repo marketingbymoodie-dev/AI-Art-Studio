@@ -31,6 +31,7 @@ import {
   expectedSalesFromFunnel,
   FREE_GENS_PER_VISITOR,
   mergePriceDriverSources,
+  planOverageEstimate,
   priceDriversFromCostsPayload,
   scaleUnitsToTotal,
   stripProviderSuffix,
@@ -160,6 +161,8 @@ export default function AdminInsightsPage() {
   const [engagementPct, setEngagementPct] = useState(INITIAL_ENGAGEMENT_PCT);
   const [conversionPct, setConversionPct] = useState(INITIAL_CONVERSION_PCT);
   const [expectedSales, setExpectedSales] = useState(INITIAL_MIX_UNITS);
+  const [includeOverage, setIncludeOverage] = useState(false);
+  const [estimatedGens, setEstimatedGens] = useState(0);
   const currentPlanName = planData?.planName || "starter";
   const [roiPlanName, setRoiPlanName] = useState(currentPlanName);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
@@ -400,6 +403,13 @@ export default function AdminInsightsPage() {
   const livePlanLabel =
     ESTIMATOR_PAID_PLANS.find((p) => p.planName === currentPlanName)?.displayName ||
     currentPlanName.replace("_", " ");
+  const roiOverage = planOverageEstimate({
+    estimatedGens,
+    generationQuota: roiPlanMeta?.generationQuota ?? 0,
+    overageCap: roiPlanMeta?.overageCap ?? 0,
+    includeOverage,
+  });
+  const planFeeUsd = planPrice + (includeOverage ? roiOverage.overageCostUsd : 0);
 
   const lineCalcs = useMemo(() => {
     return rows.map((row) => {
@@ -447,9 +457,9 @@ export default function AdminInsightsPage() {
   const monthlyNet = monthlyNetProfitCents({
     profitPerSaleCents: blendedProfitPerSale,
     monthlySales: totalUnits,
-    subscriptionUsd: planPrice,
+    subscriptionUsd: planFeeUsd,
   });
-  const breakEven = subscriptionBreakEvenUnits(planPrice, blendedProfitPerSale);
+  const breakEven = subscriptionBreakEvenUnits(planFeeUsd, blendedProfitPerSale);
 
   const estimatorLines: MixLine[] = useMemo(
     () =>
@@ -594,6 +604,17 @@ export default function AdminInsightsPage() {
                 <div className="text-2xl font-semibold mt-1">
                   {monthlyNet != null ? `$${(monthlyNet / 100).toFixed(2)}` : "—"}
                 </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  ${planPrice}/mo
+                  {includeOverage && roiOverage.overageCostUsd > 0
+                    ? ` + $${roiOverage.overageCostUsd.toFixed(2)} ov (${roiOverage.overageGens} gens)`
+                    : includeOverage
+                      ? " · $0 overage"
+                      : ""}
+                  {includeOverage && roiOverage.uncoveredGens > 0
+                    ? ` · ${roiOverage.uncoveredGens} gens uncovered`
+                    : ""}
+                </p>
               </div>
             </div>
           </CardContent>
@@ -853,10 +874,21 @@ export default function AdminInsightsPage() {
                 </div>
               </div>
               <div className="rounded-md border p-3 space-y-1">
-                <div className="text-muted-foreground">Net after {planLabel}</div>
+                <div className="text-muted-foreground">
+                  Net after {planLabel}
+                  {includeOverage && roiOverage.overageCostUsd > 0 ? " + ov" : ""}
+                </div>
                 <div className="text-lg font-semibold">
                   {monthlyNet != null ? `$${(monthlyNet / 100).toFixed(2)}` : "—"}
                 </div>
+                {includeOverage && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Fee ${planFeeUsd.toFixed(2)}
+                    {roiOverage.overageCostUsd > 0
+                      ? ` ($${planPrice} + $${roiOverage.overageCostUsd.toFixed(2)} ov)`
+                      : ""}
+                  </p>
+                )}
               </div>
             </div>
           </CardContent>
@@ -879,11 +911,14 @@ export default function AdminInsightsPage() {
           onConversionPctChange={(v) => applyFunnelDriver({ conversionPct: v })}
           expectedSales={expectedSales}
           onExpectedSalesChange={applySalesDriver}
+          includeOverage={includeOverage}
+          onIncludeOverageChange={setIncludeOverage}
+          onEstimatedGensChange={setEstimatedGens}
           footerNote={
             <p className="text-xs text-muted-foreground">
               Live plan: <span className="font-medium capitalize">{livePlanLabel}</span>. Free gens and
-              Reward Ladder amounts come from Settings. ROI card can model a different plan without
-              changing your subscription.
+              Reward Ladder amounts come from Settings. When Include overage is on, ROI net subtracts
+              plan fee plus overage for the plan selected on the left.
             </p>
           }
         />

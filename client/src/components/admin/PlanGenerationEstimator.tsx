@@ -70,6 +70,11 @@ type PlanGenerationEstimatorProps = {
   /** Controlled expected sales (editable when onExpectedSalesChange provided). */
   expectedSales?: number;
   onExpectedSalesChange?: (sales: number) => void;
+  /** Controlled overage toggle (Profit Insights syncs into ROI net). */
+  includeOverage?: boolean;
+  onIncludeOverageChange?: (include: boolean) => void;
+  /** Fires when estimated gens spent changes (for parent ROI / net calc). */
+  onEstimatedGensChange?: (estimatedGens: number) => void;
 };
 
 export default function PlanGenerationEstimator({
@@ -90,6 +95,9 @@ export default function PlanGenerationEstimator({
   onConversionPctChange,
   expectedSales: controlledExpectedSales,
   onExpectedSalesChange,
+  includeOverage: controlledIncludeOverage,
+  onIncludeOverageChange,
+  onEstimatedGensChange,
 }: PlanGenerationEstimatorProps) {
   const grants = rewardGrants ?? DEFAULT_FUNNEL_REWARD_GRANTS;
 
@@ -128,7 +136,9 @@ export default function PlanGenerationEstimator({
   const [vectorizeSharePct, setVectorizeSharePct] = useState(pctString(DEFAULT_VECTORIZE_SHARE));
   const [gensPerSale, setGensPerSale] = useState(String(DEFAULT_GENS_PER_SALE));
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [includeOverage, setIncludeOverage] = useState(false);
+  const [internalIncludeOverage, setInternalIncludeOverage] = useState(false);
+  const includeOverage = controlledIncludeOverage ?? internalIncludeOverage;
+  const setIncludeOverage = onIncludeOverageChange ?? setInternalIncludeOverage;
 
   // When live grants change (merchant Settings), clamp avg-used defaults to new caps.
   useEffect(() => {
@@ -221,6 +231,10 @@ export default function PlanGenerationEstimator({
       : funnel.orders;
   const salesEditable = typeof onExpectedSalesChange === "function";
   const gensN = parseFloat(gensPerSale);
+
+  useEffect(() => {
+    onEstimatedGensChange?.(estimatedGens);
+  }, [estimatedGens, onEstimatedGensChange]);
   const gensPerSaleEstimate = estimateMonthlyGenerations({
     totalUnits: units > 0 ? units : expectedSales,
     gensPerSale: Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE,
