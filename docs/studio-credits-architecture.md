@@ -49,7 +49,7 @@ Rungs are idempotent per customer:
 
 - `email_signup` — granted after successful Google or OTP auth. Uses `normalizeEmail` (lowercase, strip `+tag`, collapse gmail dots) as the `relatedEntityId`; disposable domains are rejected.
 - `share_design` — granted to the sharer (`shared_designs.owner_customer_id`) the first time a *different* visitor opens the share link.
-- `purchase_threshold` — granted after `orders/paid` for orders that clear `thresholdCents`. Gated behind `PURCHASE_REWARDS_ENABLED`; refunds/cancels reverse the grant via `clawbackPurchaseThresholdForOrder`.
+- `purchase_threshold` — granted after `orders/paid` for orders that clear `thresholdCents`. Available by default; set `PURCHASE_REWARDS_ENABLED=false` to kill-switch. Refunds/cancels reverse the grant via `clawbackPurchaseThresholdForOrder`.
 - `free_anonymous` — the storefront free-gen allowance (mirrors `installation.storefrontFreeGensPerVisitor`). Not granted through the ladder module; free gens are tracked on `credit_balances.freeGenerationsUsed`.
 
 Grants are recorded via `server/reward-ladder.ts::grantRungIfEligible`, which

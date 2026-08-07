@@ -480,7 +480,7 @@ export default function AdminSettings() {
                       : rung.rungKey === "purchase_threshold"
                         ? rewardLadder.purchaseRewardsEnabled
                           ? `${rung.creditAmount} Studio Credit when a customer’s order clears this amount (once per customer).`
-                          : "Coming soon — unlocks after order webhooks are enabled for the app."
+                          : "Temporarily disabled by the app operator."
                         : "";
                   const disabled =
                     rung.rungKey === "purchase_threshold" && !rewardLadder.purchaseRewardsEnabled;

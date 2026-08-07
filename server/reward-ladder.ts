@@ -7,9 +7,9 @@
  *                          the rung row exists so the admin UI can display / disable it.
  *   - email_signup       : granted once per customer after successful storefront auth (Google or OTP).
  *   - share_design       : granted to the sharer once a *different* visitor opens the share link.
- *   - purchase_threshold : granted after a paid Shopify order clears `thresholdCents`. Gated behind
- *                          PURCHASE_REWARDS_ENABLED so it is dormant until the merchant billing
- *                          model can absorb it.
+ *   - purchase_threshold : granted after a paid Shopify order clears `thresholdCents`.
+ *                          On by default once order webhooks are available; set
+ *                          PURCHASE_REWARDS_ENABLED=false as a kill switch.
  *
  * Grants are always idempotent:
  *   - reward_grants has UNIQUE (shop, customer_id, rung_key) so a rung is granted at most once per customer.
@@ -37,7 +37,8 @@ export type RewardRungConfig = {
   sortOrder: number;
 };
 
-const PURCHASE_REWARDS_ENABLED = () => process.env.PURCHASE_REWARDS_ENABLED === "true";
+/** Kill switch: unset or any value other than "false" means purchase rewards are available. */
+const PURCHASE_REWARDS_ENABLED = () => process.env.PURCHASE_REWARDS_ENABLED !== "false";
 
 export const DEFAULT_RUNGS: RewardRungConfig[] = [
   {
