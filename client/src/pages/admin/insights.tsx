@@ -514,28 +514,29 @@ export default function AdminInsightsPage() {
     const eng = parsePctString(eStr, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
     const conv = parsePctString(cStr, DEFAULT_PURCHASE_CONVERSION_RATE);
 
-    // Visitors drive sales forward. Engagement / conversion hold sales (units)
-    // and back-solve the visitor count needed to hit that target.
-    if (patch.visitors != null) {
-      setMonthlyVisitors(patch.visitors);
-      const visitorsN = Math.max(0, parseFloat(patch.visitors) || 0);
-      const sales = expectedSalesFromFunnel({
-        monthlyVisitors: visitorsN,
+    // Engagement holds sales/units and back-solves visitors (traffic needed for the mix).
+    if (patch.engagementPct != null && patch.visitors == null && patch.conversionPct == null) {
+      const targetSales = Math.max(0, Math.floor(expectedSales));
+      const visitors = backsolveVisitorsFromSales({
+        sales: targetSales,
         engagementRate: eng,
         conversionRate: conv,
       });
-      setExpectedSales(sales);
-      setRows((prev) => scaleUnitsToTotal(prev, sales));
+      if (visitors != null) setMonthlyVisitors(String(visitors));
       return;
     }
 
-    const targetSales = Math.max(0, Math.floor(expectedSales));
-    const visitors = backsolveVisitorsFromSales({
-      sales: targetSales,
+    // Visitors or conversion drive sales forward from current traffic × rates.
+    const vStr = patch.visitors ?? monthlyVisitors;
+    if (patch.visitors != null) setMonthlyVisitors(patch.visitors);
+    const visitorsN = Math.max(0, parseFloat(vStr) || 0);
+    const sales = expectedSalesFromFunnel({
+      monthlyVisitors: visitorsN,
       engagementRate: eng,
       conversionRate: conv,
     });
-    if (visitors != null) setMonthlyVisitors(String(visitors));
+    setExpectedSales(sales);
+    setRows((prev) => scaleUnitsToTotal(prev, sales));
   };
 
   const applySalesDriver = (sales: number) => {
