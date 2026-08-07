@@ -31,8 +31,10 @@ import {
   expectedSalesFromFunnel,
   FREE_GENS_PER_VISITOR,
   mergePriceDriverSources,
+  pagesNeededFromMix,
   planOverageEstimate,
   priceDriversFromCostsPayload,
+  recommendPlan,
   scaleUnitsToTotal,
   stripProviderSuffix,
   type FunnelRewardGrants,
@@ -41,6 +43,7 @@ import {
 } from "@shared/planEstimator";
 import { usePlanGenerationQuota } from "@/components/admin/GenerationQuotaUsage";
 import PlanGenerationEstimator from "@/components/admin/PlanGenerationEstimator";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 
 const INITIAL_MIX_UNITS = 10;
@@ -165,6 +168,12 @@ export default function AdminInsightsPage() {
   const [estimatedGens, setEstimatedGens] = useState(0);
   const currentPlanName = planData?.planName || "starter";
   const [roiPlanName, setRoiPlanName] = useState(currentPlanName);
+  const [planAutoNotice, setPlanAutoNotice] = useState<{
+    fromName: string;
+    toName: string;
+    direction: "up" | "down";
+    estimatedGens: number;
+  } | null>(null);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
 
   const fetchCostsMutation = useMutation({
@@ -474,6 +483,31 @@ export default function AdminInsightsPage() {
     [rows, pickerProducts],
   );
 
+  const pagesNeeded = pagesNeededFromMix(estimatorLines);
+  const planFit = useMemo(
+    () => recommendPlan({ pagesNeeded, estimatedGens, includeOverage }),
+    [pagesNeeded, estimatedGens, includeOverage],
+  );
+
+  // Keep ROI "Plan to model" on the cheapest plan that can cover this mix
+  // (including overage when enabled). Jump up when quota is short; drop back
+  // down when volume returns to a lower plan's safe zone.
+  useEffect(() => {
+    if (!planFit.fits || !planFit.planName) return;
+    if (planFit.planName === roiPlanName) return;
+    const fromIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === roiPlanName);
+    const toIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === planFit.planName);
+    const fromMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === roiPlanName);
+    const toMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === planFit.planName);
+    setPlanAutoNotice({
+      fromName: fromMeta?.displayName || roiPlanName,
+      toName: toMeta?.displayName || planFit.planName,
+      direction: toIdx > fromIdx ? "up" : "down",
+      estimatedGens,
+    });
+    setRoiPlanName(planFit.planName);
+  }, [planFit.fits, planFit.planName, roiPlanName, estimatedGens]);
+
   const rewardGrants: FunnelRewardGrants = useMemo(() => {
     const free =
       typeof storefrontSettings?.storefrontFreeGensPerVisitor === "number"
@@ -587,25 +621,79 @@ export default function AdminInsightsPage() {
           <CardHeader>
             <CardTitle className="text-base">Subscription ROI</CardTitle>
             <CardDescription>
-              Your live plan is {livePlanLabel}. Choose any plan below to model net profit / break-even.
+              Your live plan is {livePlanLabel}. Selection follows the cheapest plan that can cover
+              this mix’s gens{includeOverage ? " (with overage)" : ""} — it jumps up when quota runs
+              short and drops back when volume is safe again.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
-            <div className="space-y-2 max-w-xs">
+            <div className="space-y-2">
               <Label>Plan to model</Label>
-              <Select value={roiPlanName} onValueChange={setRoiPlanName}>
-                <SelectTrigger>
+              <Select
+                value={roiPlanName}
+                onValueChange={(value) => {
+                  setPlanAutoNotice(null);
+                  setRoiPlanName(value);
+                }}
+              >
+                <SelectTrigger className="max-w-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ESTIMATOR_PAID_PLANS.map((p) => (
-                    <SelectItem key={p.planName} value={p.planName}>
-                      {p.displayName} — ${p.priceUsd}/mo
-                      {p.planName === currentPlanName ? " (current)" : ""}
-                    </SelectItem>
-                  ))}
+                  {ESTIMATOR_PAID_PLANS.map((p) => {
+                    const row = planFit.comparisons.find((c) => c.planName === p.planName);
+                    const fits = row?.fits ?? false;
+                    return (
+                      <SelectItem key={p.planName} value={p.planName}>
+                        {p.displayName} — ${p.priceUsd}/mo
+                        {p.planName === currentPlanName ? " (current)" : ""}
+                        {!fits ? " · quota short" : ""}
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
+              {planAutoNotice && (
+                <Alert
+                  className={
+                    planAutoNotice.direction === "up"
+                      ? "border-amber-300 bg-amber-50 text-amber-950"
+                      : "border-sky-300 bg-sky-50 text-sky-950"
+                  }
+                >
+                  <AlertTitle className="text-sm">
+                    {planAutoNotice.direction === "up"
+                      ? `Moved up to ${planAutoNotice.toName}`
+                      : `Moved down to ${planAutoNotice.toName}`}
+                  </AlertTitle>
+                  <AlertDescription className="text-xs">
+                    {planAutoNotice.direction === "up" ? (
+                      <>
+                        {planAutoNotice.fromName} can’t cover ~{planAutoNotice.estimatedGens} gens/mo
+                        for this visitor/sales mix
+                        {includeOverage ? " even with overage" : ""}. Plan selection updated to{" "}
+                        {planAutoNotice.toName}, which has enough quota.
+                      </>
+                    ) : (
+                      <>
+                        Volume is back in {planAutoNotice.toName}’s safe zone (~
+                        {planAutoNotice.estimatedGens} gens/mo). Plan selection updated from{" "}
+                        {planAutoNotice.fromName}.
+                      </>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+              {!planFit.fits && (
+                <Alert variant="destructive">
+                  <AlertTitle className="text-sm">No plan covers this mix</AlertTitle>
+                  <AlertDescription className="text-xs">
+                    ~{estimatedGens} gens/mo exceeds even Pro Plus
+                    {includeOverage ? " + overage" : ""}. Lower visitors, engagement, or sales — or
+                    turn on overage if it’s off.
+                  </AlertDescription>
+                </Alert>
+              )}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-md border p-3">
