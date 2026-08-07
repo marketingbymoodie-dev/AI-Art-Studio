@@ -55,6 +55,7 @@ describe("generation / cost estimates", () => {
     // total = 41.75 → ceil 42
     const f = estimateCustomizerFunnel({
       monthlyVisitors: 100,
+      engagementRate: 0.25,
       grants: {
         freeGensPerVisitor: 2,
         emailCredits: 1,
@@ -77,6 +78,7 @@ describe("generation / cost estimates", () => {
   it("skips disabled reward rungs and clamps avg used to grant", () => {
     const f = estimateCustomizerFunnel({
       monthlyVisitors: 100,
+      engagementRate: 0.25,
       avgEmailGensUsed: 10,
       grants: {
         freeGensPerVisitor: 2,

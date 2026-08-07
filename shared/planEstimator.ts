@@ -28,8 +28,8 @@ export const FREE_GENS_PER_VISITOR = STOREFRONT_FREE_GENERATION_DEFAULT;
 /** Default unique customizer-page visitors / month. */
 export const DEFAULT_MONTHLY_VISITORS = 100;
 
-/** % of visitors who open the customizer at all (default 25%). */
-export const DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE = 0.25;
+/** % of visitors who open the customizer at all (default 30%). */
+export const DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE = 0.3;
 
 /** Of the free allotment, average gens actually used (default 1.5 of 2). */
 export const DEFAULT_AVG_FREE_GENS_USED = 1.5;
