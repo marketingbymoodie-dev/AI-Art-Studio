@@ -139,9 +139,27 @@ describe("funnel sync helpers", () => {
 
 describe("recommendPlan", () => {
   it("picks cheapest plan that fits pages and gens", () => {
-    // 2 pages, 40 gens → Starter fails pages; Dabbler fits
+    // 2 pages, 40 gens → Starter now includes 2 pages
     const r = recommendPlan({ pagesNeeded: 2, estimatedGens: 40 });
     expect(r.fits).toBe(true);
+    expect(r.planName).toBe("starter");
+  });
+
+  it("with overage on, Starter covers gens up to quota + cap", () => {
+    const r = recommendPlan({ pagesNeeded: 1, estimatedGens: 400, includeOverage: true });
+    expect(r.planName).toBe("starter");
+    const starter = r.comparisons.find((c) => c.planName === "starter")!;
+    expect(starter.overageGens).toBe(150);
+    expect(starter.overageCostUsd).toBe(12);
+    expect(starter.uncoveredGens).toBe(0);
+  });
+
+  it("with overage on, gens beyond cap remain uncovered", () => {
+    const r = recommendPlan({ pagesNeeded: 1, estimatedGens: 500, includeOverage: true });
+    const starter = r.comparisons.find((c) => c.planName === "starter")!;
+    expect(starter.gensOk).toBe(false);
+    expect(starter.overageGens).toBe(200);
+    expect(starter.uncoveredGens).toBe(50);
     expect(r.planName).toBe("dabbler");
   });
 

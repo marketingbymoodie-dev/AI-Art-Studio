@@ -7,7 +7,7 @@
 
 export const PLAN_PAGE_LIMITS: Record<string, number> = {
   trial:    1,
-  starter:  1,
+  starter:  2,
   dabbler:  5,
   pro:      15,
   pro_plus: 30,

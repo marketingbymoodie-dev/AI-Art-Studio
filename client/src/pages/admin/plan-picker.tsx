@@ -252,9 +252,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           name="starter"
           displayName="Starter"
           price={29}
-          pageLimit={1}
+          pageLimit={2}
           freeGenerations={250}
-          description="Perfect for shops selling 1 custom product."
+          description="Perfect for shops selling up to 2 custom products."
           overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 200 generations per calendar month."
           icon={<LayoutTemplate className="h-5 w-5 text-blue-500" />}
           ctaLabel="Choose Starter"

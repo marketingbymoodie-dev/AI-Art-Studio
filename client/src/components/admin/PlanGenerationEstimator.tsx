@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Plus, Trash2 } from "lucide-react";
 import {
   DEFAULT_AVG_EMAIL_GENS_USED,
@@ -18,6 +19,7 @@ import {
   DEFAULT_PURCHASE_REWARD_REDEEM_RATE,
   DEFAULT_SHARE_RUNG_TAKE_RATE,
   DEFAULT_VECTORIZE_SHARE,
+  ESTIMATOR_OVERAGE_PRICE_USD,
   estimateCustomizerFunnel,
   estimateMonthlyGenerations,
   pagesNeededFromMix,
@@ -126,6 +128,7 @@ export default function PlanGenerationEstimator({
   const [vectorizeSharePct, setVectorizeSharePct] = useState(pctString(DEFAULT_VECTORIZE_SHARE));
   const [gensPerSale, setGensPerSale] = useState(String(DEFAULT_GENS_PER_SALE));
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [includeOverage, setIncludeOverage] = useState(false);
 
   // When live grants change (merchant Settings), clamp avg-used defaults to new caps.
   useEffect(() => {
@@ -224,12 +227,14 @@ export default function PlanGenerationEstimator({
   });
 
   const recommendation = useMemo(
-    () => recommendPlan({ pagesNeeded, estimatedGens }),
-    [pagesNeeded, estimatedGens],
+    () => recommendPlan({ pagesNeeded, estimatedGens, includeOverage }),
+    [pagesNeeded, estimatedGens, includeOverage],
   );
   const suggestedPlanProfit =
     showPlatformCost && recommendation.fits && recommendation.priceUsd != null
-      ? Math.round((recommendation.priceUsd - funnel.aiCostUsd) * 100) / 100
+      ? Math.round(
+          (recommendation.priceUsd + recommendation.overageCostUsd - funnel.aiCostUsd) * 100,
+        ) / 100
       : null;
 
   const engagementRate = parsePct(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
@@ -412,6 +417,25 @@ export default function PlanGenerationEstimator({
           </div>
         )}
 
+        <div className="flex items-start justify-between gap-3 rounded-md border p-3">
+          <div className="space-y-0.5">
+            <Label htmlFor="include-overage" className="text-sm font-medium">
+              Include overage
+            </Label>
+            <p className="text-[11px] text-muted-foreground">
+              When on, gens above the plan allotment are billed at $
+              {ESTIMATOR_OVERAGE_PRICE_USD.toFixed(2)}/gen up to each plan’s monthly overage cap
+              (Starter +200, Dabbler +300, Pro +500, Pro Plus +1000). Requires merchant opt-in in
+              production.
+            </p>
+          </div>
+          <Switch
+            id="include-overage"
+            checked={includeOverage}
+            onCheckedChange={setIncludeOverage}
+          />
+        </div>
+
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
           <div className="rounded-md border p-3">
             <div className="text-muted-foreground">Pages needed</div>
@@ -458,10 +482,15 @@ export default function PlanGenerationEstimator({
             {recommendation.fits && recommendation.priceUsd != null && (
               <p className="text-[11px] text-muted-foreground mt-1">
                 ${recommendation.priceUsd}/mo
+                {includeOverage && recommendation.overageGens > 0
+                  ? ` + $${recommendation.overageCostUsd.toFixed(2)} ov (${recommendation.overageGens} gens)`
+                  : includeOverage
+                    ? " · $0 overage"
+                    : ""}
                 {showPlatformCost
                   ? ` · AI ~$${funnel.aiCostUsd.toFixed(2)}${
                       suggestedPlanProfit != null
-                        ? ` · plan−AI ≈ $${suggestedPlanProfit.toFixed(2)}`
+                        ? ` · plan+ov−AI ≈ $${suggestedPlanProfit.toFixed(2)}`
                         : ""
                     }`
                   : ` · ~${estimatedGens} gens spent`}
@@ -649,6 +678,7 @@ export default function PlanGenerationEstimator({
                 <th className="py-2 pr-2">Price</th>
                 <th className="py-2 pr-2">Pages</th>
                 <th className="py-2 pr-2">Gens</th>
+                {includeOverage && <th className="py-2 pr-2">Overage</th>}
                 <th className="py-2">Fit</th>
               </tr>
             </thead>
@@ -656,7 +686,12 @@ export default function PlanGenerationEstimator({
               {recommendation.comparisons.map((c) => (
                 <tr key={c.planName} className="border-b last:border-0">
                   <td className="py-2 pr-2 font-medium">{c.displayName}</td>
-                  <td className="py-2 pr-2">${c.priceUsd}</td>
+                  <td className="py-2 pr-2">
+                    ${c.priceUsd}
+                    {includeOverage && c.overageCostUsd > 0
+                      ? ` +$${c.overageCostUsd.toFixed(2)}`
+                      : ""}
+                  </td>
                   <td className="py-2 pr-2">
                     {pagesNeeded}/{c.pageLimit}{" "}
                     <span className={c.pagesOk ? "text-emerald-700" : "text-destructive"}>
@@ -664,11 +699,28 @@ export default function PlanGenerationEstimator({
                     </span>
                   </td>
                   <td className="py-2 pr-2">
-                    {estimatedGens}/{c.generationQuota}{" "}
+                    {estimatedGens}/{c.generationQuota}
+                    {includeOverage ? ` (+${c.overageCap} ov)` : ""}{" "}
                     <span className={c.gensOk ? "text-emerald-700" : "text-destructive"}>
-                      {c.gensOk ? "ok" : `−${c.genShortfall}`}
+                      {c.gensOk
+                        ? "ok"
+                        : includeOverage && c.uncoveredGens > 0
+                          ? `−${c.uncoveredGens} unc`
+                          : `−${c.genShortfall}`}
                     </span>
                   </td>
+                  {includeOverage && (
+                    <td className="py-2 pr-2">
+                      {c.overageGens > 0
+                        ? `${c.overageGens} × $${ESTIMATOR_OVERAGE_PRICE_USD.toFixed(2)} = $${c.overageCostUsd.toFixed(2)}`
+                        : "—"}
+                      {c.uncoveredGens > 0 ? (
+                        <span className="block text-[11px] text-destructive">
+                          {c.uncoveredGens} uncovered
+                        </span>
+                      ) : null}
+                    </td>
+                  )}
                   <td className="py-2">{c.fits ? "Yes" : "No"}</td>
                 </tr>
               ))}

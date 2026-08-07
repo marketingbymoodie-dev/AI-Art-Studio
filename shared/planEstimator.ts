@@ -198,21 +198,79 @@ export function estimateCustomizerFunnel(args: FunnelEstimateInput): FunnelEstim
   };
 }
 
+/** Merchant overage rate — mirrored from server/customizer-plans.ts OVERAGE_PRICE_USD. */
+export const ESTIMATOR_OVERAGE_PRICE_USD = 0.08;
+
+/** Max extra gens / month per plan — mirrored from PLAN_OVERAGE_CAPS. */
+export const ESTIMATOR_OVERAGE_CAPS: Record<string, number> = {
+  starter: 200,
+  dabbler: 300,
+  pro: 500,
+  pro_plus: 1000,
+};
+
 export type EstimatorPlan = {
   planName: string;
   displayName: string;
   priceUsd: number;
   pageLimit: number;
   generationQuota: number;
+  overageCap: number;
 };
 
 /** Paid plans mirrored from server/customizer-plans.ts for client-side estimators. */
 export const ESTIMATOR_PAID_PLANS: EstimatorPlan[] = [
-  { planName: "starter", displayName: "Starter", priceUsd: 29, pageLimit: 1, generationQuota: 250 },
-  { planName: "dabbler", displayName: "Dabbler", priceUsd: 49, pageLimit: 5, generationQuota: 600 },
-  { planName: "pro", displayName: "Pro", priceUsd: 99, pageLimit: 15, generationQuota: 1500 },
-  { planName: "pro_plus", displayName: "Pro Plus", priceUsd: 199, pageLimit: 30, generationQuota: 3000 },
+  { planName: "starter", displayName: "Starter", priceUsd: 29, pageLimit: 2, generationQuota: 250, overageCap: 200 },
+  { planName: "dabbler", displayName: "Dabbler", priceUsd: 49, pageLimit: 5, generationQuota: 600, overageCap: 300 },
+  { planName: "pro", displayName: "Pro", priceUsd: 99, pageLimit: 15, generationQuota: 1500, overageCap: 500 },
+  { planName: "pro_plus", displayName: "Pro Plus", priceUsd: 199, pageLimit: 30, generationQuota: 3000, overageCap: 1000 },
 ];
+
+export type PlanOverageEstimate = {
+  gensOk: boolean;
+  overageGens: number;
+  overageCostUsd: number;
+  uncoveredGens: number;
+  /** Gens still short after included (+ overage when enabled). */
+  genShortfall: number;
+};
+
+/** Billable overage + uncovered gens for a plan vs estimated spend. */
+export function planOverageEstimate(args: {
+  estimatedGens: number;
+  generationQuota: number;
+  overageCap: number;
+  includeOverage: boolean;
+  overagePriceUsd?: number;
+}): PlanOverageEstimate {
+  const spent = Math.max(0, Math.ceil(args.estimatedGens));
+  const included = Math.max(0, Math.floor(args.generationQuota));
+  const cap = Math.max(0, Math.floor(args.overageCap));
+  const beyondIncluded = Math.max(0, spent - included);
+  const price = Number.isFinite(args.overagePriceUsd as number)
+    ? Math.max(0, args.overagePriceUsd as number)
+    : ESTIMATOR_OVERAGE_PRICE_USD;
+
+  if (!args.includeOverage) {
+    return {
+      gensOk: beyondIncluded === 0,
+      overageGens: 0,
+      overageCostUsd: 0,
+      uncoveredGens: beyondIncluded,
+      genShortfall: beyondIncluded,
+    };
+  }
+
+  const overageGens = Math.min(beyondIncluded, cap);
+  const uncoveredGens = Math.max(0, beyondIncluded - cap);
+  return {
+    gensOk: uncoveredGens === 0,
+    overageGens,
+    overageCostUsd: Math.round(overageGens * price * 100) / 100,
+    uncoveredGens,
+    genShortfall: uncoveredGens,
+  };
+}
 
 export type MixLine = {
   id: string;
@@ -359,67 +417,100 @@ export function platformAiCostUsd(
   return Math.round(gens * cost * 100) / 100;
 }
 
+export type PlanComparisonRow = {
+  planName: string;
+  displayName: string;
+  priceUsd: number;
+  pageLimit: number;
+  generationQuota: number;
+  overageCap: number;
+  pagesOk: boolean;
+  gensOk: boolean;
+  fits: boolean;
+  genShortfall: number;
+  overageGens: number;
+  overageCostUsd: number;
+  uncoveredGens: number;
+};
+
 export type PlanRecommendation = {
   planName: string | null;
   displayName: string | null;
   priceUsd: number | null;
   pageLimit: number | null;
   generationQuota: number | null;
+  overageCap: number | null;
+  overageGens: number;
+  overageCostUsd: number;
+  uncoveredGens: number;
+  includeOverage: boolean;
   fits: boolean;
   pagesNeeded: number;
   estimatedGens: number;
   reason: string;
-  /** First plan that fails pages / gens for comparison tables */
-  comparisons: Array<{
-    planName: string;
-    displayName: string;
-    priceUsd: number;
-    pageLimit: number;
-    generationQuota: number;
-    pagesOk: boolean;
-    gensOk: boolean;
-    fits: boolean;
-    genShortfall: number;
-  }>;
+  comparisons: PlanComparisonRow[];
 };
 
 export function recommendPlan(args: {
   pagesNeeded: number;
   estimatedGens: number;
   plans?: EstimatorPlan[];
+  /** When true, gens fit if spent ≤ quota + overage cap; overage $ is computed. */
+  includeOverage?: boolean;
 }): PlanRecommendation {
   const plans = args.plans ?? ESTIMATOR_PAID_PLANS;
   const pagesNeeded = Math.max(0, Math.floor(args.pagesNeeded));
   const estimatedGens = Math.max(0, Math.ceil(args.estimatedGens));
+  const includeOverage = !!args.includeOverage;
 
-  const comparisons = plans.map((p) => {
+  const comparisons: PlanComparisonRow[] = plans.map((p) => {
     const pagesOk = p.pageLimit >= pagesNeeded;
-    const gensOk = p.generationQuota >= estimatedGens;
+    const overage = planOverageEstimate({
+      estimatedGens,
+      generationQuota: p.generationQuota,
+      overageCap: p.overageCap ?? ESTIMATOR_OVERAGE_CAPS[p.planName] ?? 0,
+      includeOverage,
+    });
     return {
       planName: p.planName,
       displayName: p.displayName,
       priceUsd: p.priceUsd,
       pageLimit: p.pageLimit,
       generationQuota: p.generationQuota,
+      overageCap: p.overageCap ?? ESTIMATOR_OVERAGE_CAPS[p.planName] ?? 0,
       pagesOk,
-      gensOk,
-      fits: pagesOk && gensOk,
-      genShortfall: Math.max(0, estimatedGens - p.generationQuota),
+      gensOk: overage.gensOk,
+      fits: pagesOk && overage.gensOk,
+      genShortfall: overage.genShortfall,
+      overageGens: overage.overageGens,
+      overageCostUsd: overage.overageCostUsd,
+      uncoveredGens: overage.uncoveredGens,
     };
   });
 
   const fit = comparisons.find((c) => c.fits);
   if (fit) {
+    const overageBit =
+      includeOverage && fit.overageGens > 0
+        ? ` (+${fit.overageGens} overage ≈ $${fit.overageCostUsd.toFixed(2)})`
+        : includeOverage
+          ? " (no overage needed)"
+          : "";
     return {
       planName: fit.planName,
       displayName: fit.displayName,
       priceUsd: fit.priceUsd,
       pageLimit: fit.pageLimit,
       generationQuota: fit.generationQuota,
+      overageCap: fit.overageCap,
+      overageGens: fit.overageGens,
+      overageCostUsd: fit.overageCostUsd,
+      uncoveredGens: fit.uncoveredGens,
+      includeOverage,
       fits: true,
       pagesNeeded,
       estimatedGens,
-      reason: `${fit.displayName} covers ${pagesNeeded} page(s) and ~${estimatedGens} gens/mo.`,
+      reason: `${fit.displayName} covers ${pagesNeeded} page(s) and ~${estimatedGens} gens/mo${overageBit}.`,
       comparisons,
     };
   }
@@ -431,11 +522,16 @@ export function recommendPlan(args: {
     priceUsd: null,
     pageLimit: null,
     generationQuota: null,
+    overageCap: null,
+    overageGens: 0,
+    overageCostUsd: 0,
+    uncoveredGens: 0,
+    includeOverage,
     fits: false,
     pagesNeeded,
     estimatedGens,
     reason: top
-      ? `Even ${top.displayName} is short (pages ${pagesNeeded}/${top.pageLimit}, gens ~${estimatedGens}/${top.generationQuota}). Raise plan limits or lower the mix / gens-per-sale guess.`
+      ? `Even ${top.displayName} is short (pages ${pagesNeeded}/${top.pageLimit}, gens ~${estimatedGens}/${top.generationQuota}${includeOverage ? ` +${top.overageCap} ov` : ""}). Raise plan limits or lower the funnel mix.`
       : "No plans configured.",
     comparisons,
   };
