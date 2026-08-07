@@ -9843,12 +9843,30 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      const ladder = await ensureRewardLadder(installation.shopDomain);
+      const publicRungs = ladder
+        .filter((r) =>
+          r.rungKey === "email_signup" ||
+          r.rungKey === "share_design" ||
+          r.rungKey === "purchase_threshold",
+        )
+        .map((r) => ({
+          rungKey: r.rungKey,
+          enabled: !!r.enabled,
+          creditAmount: Math.max(0, Math.floor(r.creditAmount || 0)),
+          thresholdCents: r.thresholdCents ?? null,
+          sortOrder: r.sortOrder,
+        }));
       return res.json({
         googleClientId: getGoogleOAuthClientId(),
         freeGenerationLimit: clampStorefrontFreeGens(
           (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
         ),
         appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
+        rewardLadder: {
+          purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
+          rungs: publicRungs,
+        },
       });
     } catch (error: any) {
       console.error("[Auth Config] error:", error);
@@ -10256,7 +10274,7 @@ ${orientationExtra}
       // Reward Ladder — purchase_threshold rung (gated by PURCHASE_REWARDS_ENABLED).
       // Resolve the buyer to our internal customer via customer_aliases.
       if (
-        process.env.PURCHASE_REWARDS_ENABLED === "true" &&
+        process.env.PURCHASE_REWARDS_ENABLED !== "false" &&
         shop &&
         orderId &&
         order?.customer
@@ -21999,19 +22017,25 @@ ${orientationExtra}
     if (!installation) return res.status(404).json({ error: "No Shopify store connected" });
     const patches = Array.isArray(req.body?.rungs) ? req.body.rungs : [];
     const validKeys: RewardRungKey[] = ["free_anonymous", "email_signup", "share_design", "purchase_threshold"];
+    const asFiniteNumber = (v: unknown): number | undefined => {
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string" && v.trim() !== "") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : undefined;
+      }
+      return undefined;
+    };
     const updates = patches
       .filter((p: any) => p && typeof p.rungKey === "string" && validKeys.includes(p.rungKey))
       .map((p: any) => ({
         rungKey: p.rungKey as RewardRungKey,
         patch: {
           enabled: typeof p.enabled === "boolean" ? p.enabled : undefined,
-          creditAmount: typeof p.creditAmount === "number" ? p.creditAmount : undefined,
+          creditAmount: asFiniteNumber(p.creditAmount),
           thresholdCents:
             p.thresholdCents === null
               ? null
-              : typeof p.thresholdCents === "number"
-                ? p.thresholdCents
-                : undefined,
+              : asFiniteNumber(p.thresholdCents),
         },
       }));
     const rungs = await patchRewardLadder(installation.shopDomain, updates);

@@ -80,15 +80,43 @@ export default function AdminSettings() {
     queryKey: ["/api/admin/reward-ladder"],
   });
 
+  type RewardRungDraft = { creditAmount: string; thresholdDollars: string };
+  const [rewardDrafts, setRewardDrafts] = useState<Record<string, RewardRungDraft>>({});
+
+  useEffect(() => {
+    if (!rewardLadder?.rungs?.length) return;
+    const next: Record<string, RewardRungDraft> = {};
+    for (const rung of rewardLadder.rungs) {
+      next[rung.rungKey] = {
+        creditAmount: String(rung.creditAmount ?? 0),
+        thresholdDollars:
+          rung.thresholdCents != null && rung.thresholdCents > 0
+            ? String(Math.round(rung.thresholdCents) / 100)
+            : "50",
+      };
+    }
+    setRewardDrafts(next);
+  }, [rewardLadder]);
+
+  type RewardRungPatch = {
+    rungKey: RewardRung["rungKey"];
+    enabled?: boolean;
+    creditAmount?: number;
+    thresholdCents?: number | null;
+  };
+
   const updateRewardLadderMutation = useMutation({
-    mutationFn: async (rung: { rungKey: RewardRung["rungKey"]; enabled: boolean }) => {
+    mutationFn: async (rung: RewardRungPatch) => {
       const res = await apiRequest("PATCH", "/api/admin/reward-ladder", {
         rungs: [rung],
       });
       return res.json() as Promise<RewardLadderResponse>;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/reward-ladder"] });
+      if (variables.creditAmount !== undefined || variables.thresholdCents !== undefined) {
+        toast({ title: "Saved", description: "Reward Ladder updated." });
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -98,6 +126,26 @@ export default function AdminSettings() {
       });
     },
   });
+
+  const saveRewardRungAmounts = (rung: RewardRung) => {
+    const draft = rewardDrafts[rung.rungKey];
+    if (!draft) return;
+    const creditAmount = Math.max(0, Math.min(50, Math.floor(Number(draft.creditAmount) || 0)));
+    const patch: RewardRungPatch = { rungKey: rung.rungKey, creditAmount };
+    if (rung.rungKey === "purchase_threshold") {
+      const dollars = Number(draft.thresholdDollars);
+      if (!Number.isFinite(dollars) || dollars < 1) {
+        toast({
+          title: "Invalid threshold",
+          description: "Purchase threshold must be at least $1.",
+          variant: "destructive",
+        });
+        return;
+      }
+      patch.thresholdCents = Math.round(dollars * 100);
+    }
+    updateRewardLadderMutation.mutate(patch);
+  };
 
   const handleReconnectStore = async (shopDomain: string) => {
     try {
@@ -466,43 +514,122 @@ export default function AdminSettings() {
                 .filter((rung) => rung.rungKey !== "free_anonymous")
                 .sort((a, b) => a.sortOrder - b.sortOrder)
                 .map((rung) => {
+                  const draft = rewardDrafts[rung.rungKey] ?? {
+                    creditAmount: String(rung.creditAmount ?? 0),
+                    thresholdDollars: "50",
+                  };
                   const label = rung.rungKey === "email_signup"
                     ? "Email sign-up"
                     : rung.rungKey === "share_design"
                       ? "Share a design"
                       : rung.rungKey === "purchase_threshold"
-                        ? `Purchase over $${((rung.thresholdCents ?? 0) / 100).toFixed(0)}`
+                        ? "Purchase threshold"
                         : rung.rungKey;
                   const description = rung.rungKey === "email_signup"
-                    ? `${rung.creditAmount} Studio Credit when a visitor signs in with Google or email OTP (once per customer).`
+                    ? "Studio Credits when a visitor signs in with Google or email OTP (once per customer)."
                     : rung.rungKey === "share_design"
-                      ? `${rung.creditAmount} Studio Credit when someone else opens their shared design (once per customer).`
+                      ? "Studio Credits when someone else opens their shared design (once per customer)."
                       : rung.rungKey === "purchase_threshold"
                         ? rewardLadder.purchaseRewardsEnabled
-                          ? `${rung.creditAmount} Studio Credit when a customer’s order clears this amount (once per customer).`
+                          ? "Studio Credits when a customer’s paid order clears this amount (once per customer)."
                           : "Temporarily disabled by the app operator."
                         : "";
                   const disabled =
                     rung.rungKey === "purchase_threshold" && !rewardLadder.purchaseRewardsEnabled;
+                  const creditsDirty = Number(draft.creditAmount) !== rung.creditAmount;
+                  const thresholdDirty =
+                    rung.rungKey === "purchase_threshold" &&
+                    Math.round(Number(draft.thresholdDollars) * 100) !== (rung.thresholdCents ?? 0);
+                  const amountsDirty = creditsDirty || thresholdDirty;
                   return (
                     <div
                       key={rung.rungKey}
-                      className="flex items-center justify-between rounded-lg border p-3"
+                      className="space-y-3 rounded-lg border p-3"
                     >
-                      <div className="space-y-0.5">
-                        <Label className="text-sm font-medium">{label}</Label>
-                        <p className="text-xs text-muted-foreground">{description}</p>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <Label className="text-sm font-medium">{label}</Label>
+                          <p className="text-xs text-muted-foreground">{description}</p>
+                        </div>
+                        <Switch
+                          checked={rung.enabled && !disabled}
+                          disabled={disabled || updateRewardLadderMutation.isPending}
+                          onCheckedChange={(checked) =>
+                            updateRewardLadderMutation.mutate({
+                              rungKey: rung.rungKey,
+                              enabled: checked,
+                            })
+                          }
+                        />
                       </div>
-                      <Switch
-                        checked={rung.enabled && !disabled}
-                        disabled={disabled || updateRewardLadderMutation.isPending}
-                        onCheckedChange={(checked) =>
-                          updateRewardLadderMutation.mutate({
-                            rungKey: rung.rungKey,
-                            enabled: checked,
-                          })
-                        }
-                      />
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="space-y-1">
+                          <Label htmlFor={`reward-credits-${rung.rungKey}`} className="text-xs text-muted-foreground">
+                            Credits
+                          </Label>
+                          <Input
+                            id={`reward-credits-${rung.rungKey}`}
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={1}
+                            className="w-24"
+                            value={draft.creditAmount}
+                            disabled={disabled || updateRewardLadderMutation.isPending}
+                            onChange={(e) =>
+                              setRewardDrafts((prev) => ({
+                                ...prev,
+                                [rung.rungKey]: {
+                                  ...draft,
+                                  creditAmount: e.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        {rung.rungKey === "purchase_threshold" && (
+                          <div className="space-y-1">
+                            <Label htmlFor={`reward-threshold-${rung.rungKey}`} className="text-xs text-muted-foreground">
+                              Order total ($)
+                            </Label>
+                            <Input
+                              id={`reward-threshold-${rung.rungKey}`}
+                              type="number"
+                              min={1}
+                              max={1000}
+                              step={1}
+                              className="w-28"
+                              value={draft.thresholdDollars}
+                              disabled={disabled || updateRewardLadderMutation.isPending}
+                              onChange={(e) =>
+                                setRewardDrafts((prev) => ({
+                                  ...prev,
+                                  [rung.rungKey]: {
+                                    ...draft,
+                                    thresholdDollars: e.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                          </div>
+                        )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={disabled || !amountsDirty || updateRewardLadderMutation.isPending}
+                          onClick={() => saveRewardRungAmounts(rung)}
+                        >
+                          {updateRewardLadderMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Save className="h-3.5 w-3.5 mr-1" />
+                              Save
+                            </>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   );
                 })

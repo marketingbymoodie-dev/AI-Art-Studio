@@ -199,7 +199,8 @@ export async function patchRewardLadder(
     if (patch.thresholdCents === null) {
       sanitized.thresholdCents = null;
     } else if (typeof patch.thresholdCents === "number" && Number.isFinite(patch.thresholdCents)) {
-      sanitized.thresholdCents = Math.max(0, Math.floor(patch.thresholdCents));
+      // $1–$1,000 (cents). Purchase threshold only; other rungs ignore this column.
+      sanitized.thresholdCents = Math.max(100, Math.min(100_000, Math.floor(patch.thresholdCents)));
     }
     if (Object.keys(sanitized).length === 0) continue;
 

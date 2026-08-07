@@ -2037,6 +2037,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpError, setOtpError] = useState<string | null>(null);
   const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
   const [freeGenerationLimit, setFreeGenerationLimit] = useState(STOREFRONT_FREE_GENERATION_DEFAULT);
+  type PublicRewardRung = {
+    rungKey: "email_signup" | "share_design" | "purchase_threshold";
+    enabled: boolean;
+    creditAmount: number;
+    thresholdCents: number | null;
+    sortOrder?: number;
+  };
+  type PublicRewardLadder = {
+    purchaseRewardsEnabled: boolean;
+    rungs: PublicRewardRung[];
+  };
+  const [rewardLadderPublic, setRewardLadderPublic] = useState<PublicRewardLadder | null>(null);
   const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const googleAuthNonceRef = useRef<string | null>(null);
@@ -2192,6 +2204,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setCentralAppUrl(typeof data.appUrl === "string" ? data.appUrl.replace(/\/$/, "") : buildCentralAppUrl(""));
         if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
           setFreeGenerationLimit(data.freeGenerationLimit);
+        }
+        const ladder = data.rewardLadder;
+        if (ladder && Array.isArray(ladder.rungs)) {
+          setRewardLadderPublic({
+            purchaseRewardsEnabled: ladder.purchaseRewardsEnabled !== false,
+            rungs: ladder.rungs.filter(
+              (r: any) =>
+                r &&
+                (r.rungKey === "email_signup" ||
+                  r.rungKey === "share_design" ||
+                  r.rungKey === "purchase_threshold"),
+            ),
+          });
         }
       })
       .catch(() => {
@@ -2501,15 +2526,46 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
 
+  const activeEarnRungs = useMemo(() => {
+    if (!rewardLadderPublic?.rungs?.length) return [] as PublicRewardRung[];
+    return [...rewardLadderPublic.rungs]
+      .filter((r) => {
+        if (!r.enabled || !(r.creditAmount > 0)) return false;
+        if (r.rungKey === "purchase_threshold" && !rewardLadderPublic.purchaseRewardsEnabled) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  }, [rewardLadderPublic]);
+
+  const describeEarnRung = useCallback((rung: PublicRewardRung) => {
+    const n = rung.creditAmount;
+    const credits = `${n} Studio Credit${n === 1 ? "" : "s"}`;
+    if (rung.rungKey === "email_signup") return `Sign in to earn ${credits}`;
+    if (rung.rungKey === "share_design") {
+      return `Share a design — earn ${credits} when someone opens your link`;
+    }
+    if (rung.rungKey === "purchase_threshold") {
+      const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
+      return `Order over $${dollars} — earn ${credits}`;
+    }
+    return credits;
+  }, []);
+
   const notifyInsufficientCredits = useCallback(() => {
     setCreditsPopoverOpen(true);
+    const hints = activeEarnRungs.map(describeEarnRung);
     toast({
       title: "No artwork credits remaining",
-      description:
-        "Sign in to earn more Studio Credits as new rewards become available.",
+      description: hints.length
+        ? hints.slice(0, 2).join(". ") + (hints.length > 2 ? "." : "")
+        : storefrontLoggedIn
+          ? "Check Studio Credits for ways to earn more."
+          : "Sign in to earn Studio Credits.",
       duration: 8000,
     });
-  }, [toast]);
+  }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn]);
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
@@ -8674,16 +8730,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           text: `Check out this custom design I created: "${prompt}"`,
           url: shareUrl,
         });
+        const shareRung = activeEarnRungs.find((r) => r.rungKey === "share_design");
         toast({
           title: "Shared!",
-          description: "Your design was shared successfully.",
+          description: shareRung
+            ? `Shared successfully. You'll earn ${shareRung.creditAmount} Studio Credit${shareRung.creditAmount === 1 ? "" : "s"} when someone else opens your link.`
+            : "Your design was shared successfully.",
         });
       } else {
         // Fallback: copy to clipboard
         await navigator.clipboard.writeText(shareUrl);
+        const shareRung = activeEarnRungs.find((r) => r.rungKey === "share_design");
         toast({
           title: "Link Copied!",
-          description: "Share link copied to clipboard.",
+          description: shareRung
+            ? `Link copied. You'll earn ${shareRung.creditAmount} Studio Credit${shareRung.creditAmount === 1 ? "" : "s"} when someone else opens it.`
+            : "Share link copied to clipboard.",
         });
       }
     } catch (err: any) {
@@ -11313,12 +11375,55 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
           </p>
-          <p className="rounded-md bg-muted p-3 text-muted-foreground">
-            More ways to earn Studio Credits are coming soon, including email signup and sharing.
-          </p>
-          {!storefrontLoggedIn && (
-            <p className="text-muted-foreground">Sign in to earn and keep your Studio Credits.</p>
+          {activeEarnRungs.length > 0 ? (
+            <div className="rounded-md bg-muted p-3 space-y-2">
+              <p className="font-medium text-foreground">Ways to earn</p>
+              <ul className="space-y-1.5 text-muted-foreground list-disc pl-4">
+                {activeEarnRungs.map((rung) => (
+                  <li key={rung.rungKey}>{describeEarnRung(rung)}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="rounded-md bg-muted p-3 text-muted-foreground">
+              No earn rewards are enabled for this shop right now.
+            </p>
           )}
+          <div className="flex flex-col gap-2">
+            {!storefrontLoggedIn && (
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => {
+                  setCreditsPopoverOpen(false);
+                  setShowOtpLogin(true);
+                }}
+              >
+                Sign in to earn credits
+              </Button>
+            )}
+            {activeEarnRungs.some((r) => r.rungKey === "share_design") && !!generatedDesign?.imageUrl && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={isSharing}
+                onClick={() => {
+                  setCreditsPopoverOpen(false);
+                  void handleShare();
+                }}
+              >
+                {isSharing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Sharing…
+                  </>
+                ) : (
+                  "Share a design"
+                )}
+              </Button>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
