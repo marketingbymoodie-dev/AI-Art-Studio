@@ -20,6 +20,7 @@ import {
   subscriptionBreakEvenUnits,
   DEFAULT_MARKUP_PERCENT,
   suggestedRetailCents,
+  suggestedRetailDollarsString,
 } from "@shared/productIntelligence";
 import {
   backsolveVisitorsFromSales,
@@ -46,16 +47,8 @@ import PlanGenerationEstimator from "@/components/admin/PlanGenerationEstimator"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 
-const INITIAL_MIX_UNITS = 10;
 const INITIAL_ENGAGEMENT_PCT = "30";
 const INITIAL_CONVERSION_PCT = "5";
-const INITIAL_VISITORS = String(
-  backsolveVisitorsFromSales({
-    sales: INITIAL_MIX_UNITS,
-    engagementRate: DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE,
-    conversionRate: DEFAULT_PURCHASE_CONVERSION_RATE,
-  }) ?? 667,
-);
 
 function parsePctString(raw: string, fallback: number): number {
   const pct = parseFloat(raw);
@@ -159,11 +152,11 @@ function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct
 export default function AdminInsightsPage() {
   const { toast } = useToast();
   const { data: planData } = usePlanGenerationQuota();
-  const [rows, setRows] = useState<MixRow[]>(() => [newMixRow(INITIAL_MIX_UNITS)]);
-  const [monthlyVisitors, setMonthlyVisitors] = useState(INITIAL_VISITORS);
+  const [rows, setRows] = useState<MixRow[]>(() => [newMixRow(0)]);
+  const [monthlyVisitors, setMonthlyVisitors] = useState("0");
   const [engagementPct, setEngagementPct] = useState(INITIAL_ENGAGEMENT_PCT);
   const [conversionPct, setConversionPct] = useState(INITIAL_CONVERSION_PCT);
-  const [expectedSales, setExpectedSales] = useState(INITIAL_MIX_UNITS);
+  const [expectedSales, setExpectedSales] = useState(0);
   const [includeOverage, setIncludeOverage] = useState(false);
   const [estimatedGens, setEstimatedGens] = useState(0);
   const currentPlanName = planData?.planName || "starter";
@@ -401,10 +394,20 @@ export default function AdminInsightsPage() {
   useEffect(() => {
     setRows((prev) =>
       prev.map((row) => {
-        if (!row.blueprintId || !row.variantKey) return row;
+        if (!row.blueprintId) return row;
+        if (!row.variantKey) return row;
         const opts = variantsForBlueprint(row.blueprintId);
-        if (opts.some((v) => v.key === row.variantKey)) return row;
-        return { ...row, variantKey: "" };
+        if (!opts.some((v) => v.key === row.variantKey)) {
+          return { ...row, variantKey: "", retailDollars: "" };
+        }
+        // When COGS arrives after size selection, seed retail once if still blank.
+        if (row.retailDollars.trim()) return row;
+        const variant = opts.find((v) => v.key === row.variantKey);
+        const suggested = suggestedRetailDollarsString(
+          variant?.cogsCents,
+          DEFAULT_MARKUP_PERCENT,
+        );
+        return suggested ? { ...row, retailDollars: suggested } : row;
       }),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -436,11 +439,15 @@ export default function AdminInsightsPage() {
           ? cogsCents + (shippingCents != null && shippingCents > 0 ? shippingCents : 0)
           : null;
       const parsedRetail = parseFloat(row.retailDollars);
+      // Only use an entered retail — never invent profit from the placeholder.
       const retailCents =
         Number.isFinite(parsedRetail) && parsedRetail > 0
           ? Math.round(parsedRetail * 100)
-          : suggestedRetailCents(cogsCents, markup);
-      const profitPerSale = merchantProfitCents(retailCents, landed ?? cogsCents);
+          : null;
+      const profitPerSale =
+        row.variantKey && retailCents != null
+          ? merchantProfitCents(retailCents, landed ?? cogsCents)
+          : null;
       const units = Number.isFinite(row.monthlyUnits) ? Math.max(0, row.monthlyUnits) : 0;
       const monthlyProfit =
         profitPerSale != null ? Math.round(profitPerSale * units) : null;
@@ -476,14 +483,16 @@ export default function AdminInsightsPage() {
 
   const estimatorLines: MixLine[] = useMemo(
     () =>
-      rows.map((r) => {
-        const picker = pickerProducts.find((p) => String(p.blueprintId) === r.blueprintId);
-        return {
-          id: r.id,
-          label: picker?.label || r.blueprintId || "Product",
-          monthlyUnits: r.monthlyUnits,
-        };
-      }),
+      rows
+        .filter((r) => !!r.blueprintId && !!r.variantKey && Number(r.monthlyUnits) > 0)
+        .map((r) => {
+          const picker = pickerProducts.find((p) => String(p.blueprintId) === r.blueprintId);
+          return {
+            id: r.id,
+            label: picker?.label || r.blueprintId || "Product",
+            monthlyUnits: r.monthlyUnits,
+          };
+        }),
     [rows, pickerProducts],
   );
 
@@ -497,6 +506,11 @@ export default function AdminInsightsPage() {
   // (including overage when enabled). Jump up when quota is short; drop back
   // down when volume returns to a lower plan's safe zone.
   useEffect(() => {
+    // Wait until the merchant has a real mix (variant + units) before reshuffling plans.
+    const hasConfiguredMix = rows.some(
+      (r) => !!r.blueprintId && !!r.variantKey && Number(r.monthlyUnits) > 0,
+    );
+    if (!hasConfiguredMix) return;
     if (!planFit.fits || !planFit.planName) return;
     if (planFit.planName === roiPlanName) return;
     const fromIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === roiPlanName);
@@ -539,7 +553,7 @@ export default function AdminInsightsPage() {
       overageAltGens,
     });
     setRoiPlanName(planFit.planName);
-  }, [planFit.fits, planFit.planName, roiPlanName, estimatedGens, includeOverage, pagesNeeded]);
+  }, [planFit.fits, planFit.planName, roiPlanName, estimatedGens, includeOverage, pagesNeeded, rows]);
 
   const rewardGrants: FunnelRewardGrants = useMemo(() => {
     const free =
@@ -856,14 +870,22 @@ export default function AdminInsightsPage() {
                           value={row.blueprintId || undefined}
                           onValueChange={(v) => {
                             const picker = pickerProducts.find((p) => String(p.blueprintId) === v);
-                            updateRow(row.id, {
-                              blueprintId: v,
-                              productTypeId: picker?.productTypeId
-                                ? String(picker.productTypeId)
-                                : "",
-                              variantKey: "",
-                              retailDollars: "",
-                            });
+                            applyUnitsDriver(
+                              rows.map((r) =>
+                                r.id === row.id
+                                  ? {
+                                      ...r,
+                                      blueprintId: v,
+                                      productTypeId: picker?.productTypeId
+                                        ? String(picker.productTypeId)
+                                        : "",
+                                      variantKey: "",
+                                      retailDollars: "",
+                                      monthlyUnits: 0,
+                                    }
+                                  : r,
+                              ),
+                            );
                           }}
                         >
                           <SelectTrigger>
@@ -922,7 +944,20 @@ export default function AdminInsightsPage() {
                           <>
                             <Select
                               value={row.variantKey || undefined}
-                              onValueChange={(v) => updateRow(row.id, { variantKey: v })}
+                              onValueChange={(v) => {
+                                const variant = variants.find((opt) => opt.key === v);
+                                const suggested = suggestedRetailDollarsString(
+                                  variant?.cogsCents,
+                                  markup,
+                                );
+                                updateRow(row.id, {
+                                  variantKey: v,
+                                  // Seed retail from COGS only once a real size/print is chosen.
+                                  ...(row.retailDollars.trim() === "" && suggested
+                                    ? { retailDollars: suggested }
+                                    : {}),
+                                });
+                              }}
                             >
                               <SelectTrigger>
                                 <SelectValue placeholder="Select size / print" />
@@ -982,10 +1017,13 @@ export default function AdminInsightsPage() {
                           type="number"
                           step="0.01"
                           min="0"
+                          disabled={!row.variantKey}
                           placeholder={
-                            suggestedRetailCents(calc?.cogsCents, markup) != null
-                              ? (suggestedRetailCents(calc!.cogsCents, markup)! / 100).toFixed(2)
-                              : "29.95"
+                            !row.variantKey
+                              ? "Select size first"
+                              : suggestedRetailCents(calc?.cogsCents, markup) != null
+                                ? `Suggested ${(suggestedRetailCents(calc!.cogsCents, markup)! / 100).toFixed(2)}`
+                                : "Enter retail"
                           }
                           value={row.retailDollars}
                           onChange={(e) => updateRow(row.id, { retailDollars: e.target.value })}
@@ -996,7 +1034,9 @@ export default function AdminInsightsPage() {
                         <Input
                           type="number"
                           min={0}
-                          value={row.monthlyUnits}
+                          disabled={!row.variantKey}
+                          placeholder={!row.variantKey ? "Select size first" : "0"}
+                          value={row.variantKey ? row.monthlyUnits : ""}
                           onChange={(e) => {
                             const units = parseInt(e.target.value, 10) || 0;
                             applyUnitsDriver(
