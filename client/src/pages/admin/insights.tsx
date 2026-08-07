@@ -22,12 +22,17 @@ import {
   suggestedRetailCents,
 } from "@shared/productIntelligence";
 import {
+  backsolveVisitorsFromSales,
   collapseToPriceDriverVariants,
+  DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE,
   DEFAULT_FUNNEL_REWARD_GRANTS,
+  DEFAULT_PURCHASE_CONVERSION_RATE,
   ESTIMATOR_PAID_PLANS,
+  expectedSalesFromFunnel,
   FREE_GENS_PER_VISITOR,
   mergePriceDriverSources,
   priceDriversFromCostsPayload,
+  scaleUnitsToTotal,
   stripProviderSuffix,
   type FunnelRewardGrants,
   type MixLine,
@@ -36,6 +41,23 @@ import {
 import { usePlanGenerationQuota } from "@/components/admin/GenerationQuotaUsage";
 import PlanGenerationEstimator from "@/components/admin/PlanGenerationEstimator";
 import { Loader2, Plus, Trash2 } from "lucide-react";
+
+const INITIAL_MIX_UNITS = 10;
+const INITIAL_ENGAGEMENT_PCT = "25";
+const INITIAL_CONVERSION_PCT = "5";
+const INITIAL_VISITORS = String(
+  backsolveVisitorsFromSales({
+    sales: INITIAL_MIX_UNITS,
+    engagementRate: DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE,
+    conversionRate: DEFAULT_PURCHASE_CONVERSION_RATE,
+  }) ?? 800,
+);
+
+function parsePctString(raw: string, fallback: number): number {
+  const pct = parseFloat(raw);
+  if (!Number.isFinite(pct)) return fallback;
+  return Math.min(1, Math.max(0, pct / 100));
+}
 
 type CatalogEntry = {
   blueprintId: number;
@@ -88,14 +110,14 @@ type PickerProduct = {
   productTypeId: number | null;
 };
 
-function newMixRow(): MixRow {
+function newMixRow(monthlyUnits = 0): MixRow {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     blueprintId: "",
     productTypeId: "",
     variantKey: "",
     retailDollars: "",
-    monthlyUnits: 10,
+    monthlyUnits,
   };
 }
 
@@ -133,7 +155,11 @@ function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct
 export default function AdminInsightsPage() {
   const { toast } = useToast();
   const { data: planData } = usePlanGenerationQuota();
-  const [rows, setRows] = useState<MixRow[]>(() => [newMixRow()]);
+  const [rows, setRows] = useState<MixRow[]>(() => [newMixRow(INITIAL_MIX_UNITS)]);
+  const [monthlyVisitors, setMonthlyVisitors] = useState(INITIAL_VISITORS);
+  const [engagementPct, setEngagementPct] = useState(INITIAL_ENGAGEMENT_PCT);
+  const [conversionPct, setConversionPct] = useState(INITIAL_CONVERSION_PCT);
+  const [expectedSales, setExpectedSales] = useState(INITIAL_MIX_UNITS);
   const currentPlanName = planData?.planName || "starter";
   const [roiPlanName, setRoiPlanName] = useState(currentPlanName);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
@@ -465,16 +491,113 @@ export default function AdminInsightsPage() {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   };
 
+  const applyFunnelDriver = (patch: {
+    visitors?: string;
+    engagementPct?: string;
+    conversionPct?: string;
+  }) => {
+    const vStr = patch.visitors ?? monthlyVisitors;
+    const eStr = patch.engagementPct ?? engagementPct;
+    const cStr = patch.conversionPct ?? conversionPct;
+    if (patch.visitors != null) setMonthlyVisitors(patch.visitors);
+    if (patch.engagementPct != null) setEngagementPct(patch.engagementPct);
+    if (patch.conversionPct != null) setConversionPct(patch.conversionPct);
+    const visitorsN = Math.max(0, parseFloat(vStr) || 0);
+    const eng = parsePctString(eStr, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
+    const conv = parsePctString(cStr, DEFAULT_PURCHASE_CONVERSION_RATE);
+    const sales = expectedSalesFromFunnel({
+      monthlyVisitors: visitorsN,
+      engagementRate: eng,
+      conversionRate: conv,
+    });
+    setExpectedSales(sales);
+    setRows((prev) => scaleUnitsToTotal(prev, sales));
+  };
+
+  const applySalesDriver = (sales: number) => {
+    const target = Math.max(0, Math.floor(sales));
+    setExpectedSales(target);
+    const eng = parsePctString(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
+    const conv = parsePctString(conversionPct, DEFAULT_PURCHASE_CONVERSION_RATE);
+    const visitors = backsolveVisitorsFromSales({
+      sales: target,
+      engagementRate: eng,
+      conversionRate: conv,
+    });
+    if (visitors != null) setMonthlyVisitors(String(visitors));
+    setRows((prev) => scaleUnitsToTotal(prev, target));
+  };
+
+  const applyUnitsDriver = (nextRows: MixRow[]) => {
+    setRows(nextRows);
+    const total = nextRows.reduce((sum, r) => {
+      const n = Number(r.monthlyUnits);
+      return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+    }, 0);
+    setExpectedSales(total);
+    const eng = parsePctString(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
+    const conv = parsePctString(conversionPct, DEFAULT_PURCHASE_CONVERSION_RATE);
+    const visitors = backsolveVisitorsFromSales({
+      sales: total,
+      engagementRate: eng,
+      conversionRate: conv,
+    });
+    if (visitors != null) setMonthlyVisitors(String(visitors));
+  };
+
   return (
     <AdminLayout>
-      <div className="space-y-6 max-w-4xl">
+      <div className="space-y-6 max-w-7xl">
         <div>
           <h1 className="text-2xl font-bold">Profit Insights</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Estimate profit across the platform catalogue. Pick size and print area (COGS exclude
-            shipping), set retail and monthly units, then compare subscription plans.
+            Estimate profit across the platform catalogue. Monthly units and the plan-fit funnel stay
+            in sync — edit either side and the other updates.
           </p>
         </div>
+
+        <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+        <div className="space-y-6 min-w-0">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Subscription ROI</CardTitle>
+            <CardDescription>
+              Your live plan is {livePlanLabel}. Choose any plan below to model net profit / break-even.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="space-y-2 max-w-xs">
+              <Label>Plan to model</Label>
+              <Select value={roiPlanName} onValueChange={setRoiPlanName}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ESTIMATOR_PAID_PLANS.map((p) => (
+                    <SelectItem key={p.planName} value={p.planName}>
+                      {p.displayName} — ${p.priceUsd}/mo
+                      {p.planName === currentPlanName ? " (current)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border p-3">
+                <div className="text-muted-foreground">Units to cover {planLabel}</div>
+                <div className="text-2xl font-semibold mt-1">
+                  {breakEven == null ? "—" : breakEven === 0 ? "0" : breakEven}
+                </div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-muted-foreground">Net monthly after plan fee</div>
+                <div className="text-2xl font-semibold mt-1">
+                  {monthlyNet != null ? `$${(monthlyNet / 100).toFixed(2)}` : "—"}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-start justify-between gap-2">
@@ -486,7 +609,12 @@ export default function AdminInsightsPage() {
                   : `${pickerProducts.length} products in the platform catalogue`}
               </CardDescription>
             </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, newMixRow()])}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setRows([...rows, newMixRow(0)])}
+            >
               <Plus className="h-3.5 w-3.5 mr-1" />
               Add product
             </Button>
@@ -524,7 +652,9 @@ export default function AdminInsightsPage() {
                         variant="ghost"
                         size="icon"
                         disabled={rows.length <= 1}
-                        onClick={() => setRows(rows.filter((r) => r.id !== row.id))}
+                        onClick={() =>
+                          applyUnitsDriver(rows.filter((r) => r.id !== row.id))
+                        }
                         aria-label="Remove product"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -679,11 +809,14 @@ export default function AdminInsightsPage() {
                           type="number"
                           min={0}
                           value={row.monthlyUnits}
-                          onChange={(e) =>
-                            updateRow(row.id, {
-                              monthlyUnits: parseInt(e.target.value, 10) || 0,
-                            })
-                          }
+                          onChange={(e) => {
+                            const units = parseInt(e.target.value, 10) || 0;
+                            applyUnitsDriver(
+                              rows.map((r) =>
+                                r.id === row.id ? { ...r, monthlyUnits: units } : r,
+                              ),
+                            );
+                          }}
                         />
                       </div>
                       <div className="space-y-1 text-sm pt-6">
@@ -728,63 +861,34 @@ export default function AdminInsightsPage() {
             </div>
           </CardContent>
         </Card>
+        </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Subscription ROI</CardTitle>
-            <CardDescription>
-              Your live plan is {livePlanLabel}. Choose any plan below to model net profit / break-even.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="space-y-2 max-w-xs">
-              <Label>Plan to model</Label>
-              <Select value={roiPlanName} onValueChange={setRoiPlanName}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ESTIMATOR_PAID_PLANS.map((p) => (
-                    <SelectItem key={p.planName} value={p.planName}>
-                      {p.displayName} — ${p.priceUsd}/mo
-                      {p.planName === currentPlanName ? " (current)" : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-md border p-3">
-                <div className="text-muted-foreground">Units to cover {planLabel}</div>
-                <div className="text-2xl font-semibold mt-1">
-                  {breakEven == null ? "—" : breakEven === 0 ? "0" : breakEven}
-                </div>
-              </div>
-              <div className="rounded-md border p-3">
-                <div className="text-muted-foreground">Net monthly after plan fee</div>
-                <div className="text-2xl font-semibold mt-1">
-                  {monthlyNet != null ? `$${(monthlyNet / 100).toFixed(2)}` : "—"}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
+        <div className="space-y-6 min-w-0 lg:sticky lg:top-4">
         <PlanGenerationEstimator
           title="Plan fit for this mix"
-          description="Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Plan fit uses credits spent (earned credits burn quota). Platform generation cost is not shown."
+          description="Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Edit visitors or expected sales and monthly units stay in sync."
           lines={estimatorLines}
           lockMix
           showPlatformCost={false}
           rewardGrants={rewardGrants}
+          monthlyVisitors={monthlyVisitors}
+          onMonthlyVisitorsChange={(v) => applyFunnelDriver({ visitors: v })}
+          engagementPct={engagementPct}
+          onEngagementPctChange={(v) => applyFunnelDriver({ engagementPct: v })}
+          conversionPct={conversionPct}
+          onConversionPctChange={(v) => applyFunnelDriver({ conversionPct: v })}
+          expectedSales={expectedSales}
+          onExpectedSalesChange={applySalesDriver}
           footerNote={
             <p className="text-xs text-muted-foreground">
               Live plan: <span className="font-medium capitalize">{livePlanLabel}</span>. Free gens and
-              Reward Ladder amounts come from Settings. ROI card above can model a different plan
-              without changing your subscription.
+              Reward Ladder amounts come from Settings. ROI card can model a different plan without
+              changing your subscription.
             </p>
           }
         />
+        </div>
+        </div>
       </div>
     </AdminLayout>
   );

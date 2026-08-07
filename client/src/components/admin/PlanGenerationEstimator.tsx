@@ -58,6 +58,16 @@ type PlanGenerationEstimatorProps = {
   showPlatformCost?: boolean;
   /** Live free-gens + Reward Ladder grants from Settings. */
   rewardGrants?: FunnelRewardGrants;
+  /** Controlled unique visitors / mo (Profit Insights sync). */
+  monthlyVisitors?: string;
+  onMonthlyVisitorsChange?: (value: string) => void;
+  engagementPct?: string;
+  onEngagementPctChange?: (value: string) => void;
+  conversionPct?: string;
+  onConversionPctChange?: (value: string) => void;
+  /** Controlled expected sales (editable when onExpectedSalesChange provided). */
+  expectedSales?: number;
+  onExpectedSalesChange?: (sales: number) => void;
 };
 
 export default function PlanGenerationEstimator({
@@ -70,15 +80,34 @@ export default function PlanGenerationEstimator({
   lockMix = false,
   showPlatformCost = true,
   rewardGrants,
+  monthlyVisitors: controlledVisitors,
+  onMonthlyVisitorsChange,
+  engagementPct: controlledEngagementPct,
+  onEngagementPctChange,
+  conversionPct: controlledConversionPct,
+  onConversionPctChange,
+  expectedSales: controlledExpectedSales,
+  onExpectedSalesChange,
 }: PlanGenerationEstimatorProps) {
   const grants = rewardGrants ?? DEFAULT_FUNNEL_REWARD_GRANTS;
 
   const [internalLines, setInternalLines] = useState<MixLine[]>(
     () => (initialLines?.length ? initialLines : [newLine("Unisex tee"), newLine("Zip hoodie")]),
   );
-  const [monthlyVisitors, setMonthlyVisitors] = useState(String(DEFAULT_MONTHLY_VISITORS));
-  const [engagementPct, setEngagementPct] = useState(pctString(DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE));
-  const [conversionPct, setConversionPct] = useState(pctString(DEFAULT_PURCHASE_CONVERSION_RATE));
+  const [internalVisitors, setInternalVisitors] = useState(String(DEFAULT_MONTHLY_VISITORS));
+  const [internalEngagementPct, setInternalEngagementPct] = useState(
+    pctString(DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE),
+  );
+  const [internalConversionPct, setInternalConversionPct] = useState(
+    pctString(DEFAULT_PURCHASE_CONVERSION_RATE),
+  );
+
+  const monthlyVisitors = controlledVisitors ?? internalVisitors;
+  const setMonthlyVisitors = onMonthlyVisitorsChange ?? setInternalVisitors;
+  const engagementPct = controlledEngagementPct ?? internalEngagementPct;
+  const setEngagementPct = onEngagementPctChange ?? setInternalEngagementPct;
+  const conversionPct = controlledConversionPct ?? internalConversionPct;
+  const setConversionPct = onConversionPctChange ?? setInternalConversionPct;
 
   const [avgFreeGensUsed, setAvgFreeGensUsed] = useState(String(DEFAULT_AVG_FREE_GENS_USED));
   const [emailTakePct, setEmailTakePct] = useState(pctString(DEFAULT_EMAIL_RUNG_TAKE_RATE));
@@ -183,7 +212,11 @@ export default function PlanGenerationEstimator({
   );
 
   const estimatedGens = funnel.totalGensSpent;
-  const expectedSales = funnel.orders;
+  const expectedSales =
+    typeof controlledExpectedSales === "number" && Number.isFinite(controlledExpectedSales)
+      ? Math.max(0, Math.floor(controlledExpectedSales))
+      : funnel.orders;
+  const salesEditable = typeof onExpectedSalesChange === "function";
   const gensN = parseFloat(gensPerSale);
   const gensPerSaleEstimate = estimateMonthlyGenerations({
     totalUnits: units > 0 ? units : expectedSales,
@@ -391,12 +424,30 @@ export default function PlanGenerationEstimator({
               {funnel.engaged} engaged × funnel rates
             </p>
           </div>
-          <div className="rounded-md border p-3">
-            <div className="text-muted-foreground">Expected sales</div>
-            <div className="text-xl font-semibold">{expectedSales}</div>
-            <p className="text-[11px] text-muted-foreground mt-1">
+          <div className="rounded-md border p-3 space-y-1">
+            <Label htmlFor="expected-sales" className="text-muted-foreground font-normal">
+              Expected sales
+            </Label>
+            {salesEditable ? (
+              <Input
+                id="expected-sales"
+                type="number"
+                min={0}
+                step={1}
+                className="h-9 text-xl font-semibold"
+                value={expectedSales}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  onExpectedSalesChange?.(Number.isFinite(n) && n >= 0 ? n : 0);
+                }}
+              />
+            ) : (
+              <div className="text-xl font-semibold">{expectedSales}</div>
+            )}
+            <p className="text-[11px] text-muted-foreground">
               {funnel.engaged} engaged × {(conversionRate * 100).toFixed(1)}%
               {units > 0 ? ` · mix units ${units}` : ""}
+              {salesEditable ? " · edits sync visitors + monthly units" : ""}
             </p>
           </div>
           <div className="rounded-md border p-3">

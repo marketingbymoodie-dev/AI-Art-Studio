@@ -227,6 +227,77 @@ export function totalMonthlyUnits(lines: MixLine[]): number {
   }, 0);
 }
 
+/**
+ * Reverse funnel: sales = floor(visitors × engagement × conversion)
+ * → visitors = ceil(sales / (engagement × conversion)).
+ * Returns null when rates are zero (cannot back-solve).
+ */
+export function backsolveVisitorsFromSales(args: {
+  sales: number;
+  engagementRate: number;
+  conversionRate: number;
+}): number | null {
+  const sales = Math.max(0, Math.floor(Number(args.sales) || 0));
+  const eng = clampRate(args.engagementRate, 0);
+  const conv = clampRate(args.conversionRate, 0);
+  if (sales === 0) return 0;
+  if (eng <= 0 || conv <= 0) return null;
+  return Math.ceil(sales / (eng * conv));
+}
+
+/**
+ * Scale monthlyUnits across items so their sum equals targetTotal (integer).
+ * Uses largest-remainder so the total is exact. If current total is 0, puts
+ * all units on the first item.
+ */
+export function scaleUnitsToTotal<T extends { monthlyUnits: number }>(
+  items: T[],
+  targetTotal: number,
+): T[] {
+  if (items.length === 0) return items;
+  const target = Math.max(0, Math.floor(Number(targetTotal) || 0));
+  if (target === 0) {
+    return items.map((item) => ({ ...item, monthlyUnits: 0 }));
+  }
+
+  const weights = items.map((item) => {
+    const n = Number(item.monthlyUnits);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  });
+  const current = weights.reduce((sum, n) => sum + n, 0);
+
+  if (current <= 0) {
+    return items.map((item, idx) => ({
+      ...item,
+      monthlyUnits: idx === 0 ? target : 0,
+    }));
+  }
+
+  const raw = weights.map((w) => (w / current) * target);
+  const floors = raw.map((r) => Math.floor(r));
+  let remainder = target - floors.reduce((sum, n) => sum + n, 0);
+  const order = raw
+    .map((r, i) => ({ i, frac: r - Math.floor(r) }))
+    .sort((a, b) => b.frac - a.frac);
+  const result = floors.slice();
+  for (let k = 0; k < remainder; k++) {
+    result[order[k % order.length]!.i] += 1;
+  }
+  return items.map((item, i) => ({ ...item, monthlyUnits: result[i]! }));
+}
+
+/** Forward sales from traffic: floor(visitors × engagement × conversion). */
+export function expectedSalesFromFunnel(args: {
+  monthlyVisitors: number;
+  engagementRate: number;
+  conversionRate: number;
+}): number {
+  const visitors = clampNonNeg(args.monthlyVisitors, 0);
+  const eng = clampRate(args.engagementRate, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
+  const conv = clampRate(args.conversionRate, DEFAULT_PURCHASE_CONVERSION_RATE);
+  return Math.floor(visitors * eng * conv);
+}
+
 export function pagesNeededFromMix(lines: MixLine[]): number {
   return lines.filter((line) => {
     const n = Number(line.monthlyUnits);

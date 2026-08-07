@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  backsolveVisitorsFromSales,
   blendedCostPerGenUsd,
   collapseToPriceDriverVariants,
   estimateCustomizerFunnel,
   estimateMonthlyGenerations,
   estimateSalesFromVisitors,
   estimateVisitorFunnelGens,
+  expectedSalesFromFunnel,
   filterSpuriousOneSize,
   pagesNeededFromMix,
   platformAiCostUsd,
   priceDriversFromCostsPayload,
   recommendPlan,
+  scaleUnitsToTotal,
   stripProviderSuffix,
   totalMonthlyUnits,
 } from "./planEstimator";
@@ -89,6 +92,48 @@ describe("generation / cost estimates", () => {
     expect(f.purchaseGensSpent).toBe(0);
     // email avg clamped to 1 credit grant
     expect(f.emailGensSpent).toBe(3); // 25 × 0.12 × 1
+  });
+});
+
+describe("funnel sync helpers", () => {
+  it("back-solves visitors from sales holding engagement and conversion", () => {
+    // 5 sales / (35% × 4%) = 5 / 0.014 ≈ 357.14 → 358
+    const visitors = backsolveVisitorsFromSales({
+      sales: 5,
+      engagementRate: 0.35,
+      conversionRate: 0.04,
+    });
+    expect(visitors).toBe(358);
+    expect(
+      expectedSalesFromFunnel({
+        monthlyVisitors: visitors!,
+        engagementRate: 0.35,
+        conversionRate: 0.04,
+      }),
+    ).toBe(5);
+  });
+
+  it("scales units proportionally to an exact total", () => {
+    const scaled = scaleUnitsToTotal(
+      [
+        { id: "a", monthlyUnits: 3 },
+        { id: "b", monthlyUnits: 1 },
+      ],
+      10,
+    );
+    expect(scaled.map((r) => r.monthlyUnits)).toEqual([8, 2]);
+    expect(scaled.reduce((s, r) => s + r.monthlyUnits, 0)).toBe(10);
+  });
+
+  it("puts all units on the first row when current total is zero", () => {
+    const scaled = scaleUnitsToTotal(
+      [
+        { id: "a", monthlyUnits: 0 },
+        { id: "b", monthlyUnits: 0 },
+      ],
+      7,
+    );
+    expect(scaled.map((r) => r.monthlyUnits)).toEqual([7, 0]);
   });
 });
 
