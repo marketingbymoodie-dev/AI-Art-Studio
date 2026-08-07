@@ -1,22 +1,29 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, Trash2 } from "lucide-react";
 import {
-  DEFAULT_CONVERSION_RATE,
+  DEFAULT_AVG_EMAIL_GENS_USED,
+  DEFAULT_AVG_FREE_GENS_USED,
+  DEFAULT_AVG_SHARE_GENS_USED,
+  DEFAULT_BASE_COST_PER_GEN_USD,
+  DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE,
+  DEFAULT_EMAIL_RUNG_TAKE_RATE,
+  DEFAULT_FUNNEL_REWARD_GRANTS,
   DEFAULT_GENS_PER_SALE,
   DEFAULT_MONTHLY_VISITORS,
-  DEFAULT_PLATFORM_COST_PER_GEN_USD,
-  FREE_GENS_PER_VISITOR,
+  DEFAULT_PURCHASE_CONVERSION_RATE,
+  DEFAULT_PURCHASE_REWARD_REDEEM_RATE,
+  DEFAULT_SHARE_RUNG_TAKE_RATE,
+  DEFAULT_VECTORIZE_SHARE,
+  estimateCustomizerFunnel,
   estimateMonthlyGenerations,
-  estimateSalesFromVisitors,
-  estimateVisitorFunnelGens,
   pagesNeededFromMix,
-  platformAiCostUsd,
   recommendPlan,
   totalMonthlyUnits,
+  type FunnelRewardGrants,
   type MixLine,
 } from "@shared/planEstimator";
 
@@ -26,6 +33,10 @@ function newLine(label = ""): MixLine {
     label,
     monthlyUnits: 10,
   };
+}
+
+function pctString(rate: number): string {
+  return String(Math.round(rate * 1000) / 10);
 }
 
 type PlanGenerationEstimatorProps = {
@@ -40,26 +51,75 @@ type PlanGenerationEstimatorProps = {
   footerNote?: ReactNode;
   /** When true, mix is display-only (parent owns product rows). */
   lockMix?: boolean;
+  /**
+   * When false (merchant Profit Insights), hide platform cost / vectorize inputs
+   * and dollar AI cost / plan−AI / cost-per-lead. Math still runs under the hood.
+   */
+  showPlatformCost?: boolean;
+  /** Live free-gens + Reward Ladder grants from Settings. */
+  rewardGrants?: FunnelRewardGrants;
 };
 
 export default function PlanGenerationEstimator({
   title = "Plan & generation estimator",
-  description = "Primary story: unique visitors × free gens (plan allotment). Conversion turns traffic into sales. Gens-per-sale stays optional / provisional.",
+  description = "Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Plan fit uses credits spent, not granted.",
   initialLines,
   lines: controlledLines,
   onLinesChange,
   footerNote,
   lockMix = false,
+  showPlatformCost = true,
+  rewardGrants,
 }: PlanGenerationEstimatorProps) {
+  const grants = rewardGrants ?? DEFAULT_FUNNEL_REWARD_GRANTS;
+
   const [internalLines, setInternalLines] = useState<MixLine[]>(
-    () => initialLines?.length ? initialLines : [newLine("Unisex tee"), newLine("Zip hoodie")],
+    () => (initialLines?.length ? initialLines : [newLine("Unisex tee"), newLine("Zip hoodie")]),
   );
   const [monthlyVisitors, setMonthlyVisitors] = useState(String(DEFAULT_MONTHLY_VISITORS));
-  const [conversionPct, setConversionPct] = useState(String(DEFAULT_CONVERSION_RATE * 100));
+  const [engagementPct, setEngagementPct] = useState(pctString(DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE));
+  const [conversionPct, setConversionPct] = useState(pctString(DEFAULT_PURCHASE_CONVERSION_RATE));
+
+  const [avgFreeGensUsed, setAvgFreeGensUsed] = useState(String(DEFAULT_AVG_FREE_GENS_USED));
+  const [emailTakePct, setEmailTakePct] = useState(pctString(DEFAULT_EMAIL_RUNG_TAKE_RATE));
+  const [avgEmailGensUsed, setAvgEmailGensUsed] = useState(
+    String(Math.min(DEFAULT_AVG_EMAIL_GENS_USED, grants.emailCredits || DEFAULT_AVG_EMAIL_GENS_USED)),
+  );
+  const [shareTakePct, setShareTakePct] = useState(pctString(DEFAULT_SHARE_RUNG_TAKE_RATE));
+  const [avgShareGensUsed, setAvgShareGensUsed] = useState(
+    String(Math.min(DEFAULT_AVG_SHARE_GENS_USED, grants.shareCredits || DEFAULT_AVG_SHARE_GENS_USED)),
+  );
+  const [purchaseRedeemPct, setPurchaseRedeemPct] = useState(
+    pctString(DEFAULT_PURCHASE_REWARD_REDEEM_RATE),
+  );
+
+  const [baseCostPerGen, setBaseCostPerGen] = useState(String(DEFAULT_BASE_COST_PER_GEN_USD));
+  const [vectorizeSharePct, setVectorizeSharePct] = useState(pctString(DEFAULT_VECTORIZE_SHARE));
   const [gensPerSale, setGensPerSale] = useState(String(DEFAULT_GENS_PER_SALE));
-  const [costPerGen, setCostPerGen] = useState(String(DEFAULT_PLATFORM_COST_PER_GEN_USD));
-  const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(FREE_GENS_PER_VISITOR));
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // When live grants change (merchant Settings), clamp avg-used defaults to new caps.
+  useEffect(() => {
+    setAvgFreeGensUsed((prev) => {
+      const n = parseFloat(prev);
+      if (!Number.isFinite(n)) return String(Math.min(DEFAULT_AVG_FREE_GENS_USED, grants.freeGensPerVisitor));
+      return String(Math.min(n, grants.freeGensPerVisitor));
+    });
+    setAvgEmailGensUsed((prev) => {
+      const cap = grants.emailCredits || 0;
+      const n = parseFloat(prev);
+      if (!cap) return "0";
+      if (!Number.isFinite(n)) return String(Math.min(DEFAULT_AVG_EMAIL_GENS_USED, cap));
+      return String(Math.min(n, cap));
+    });
+    setAvgShareGensUsed((prev) => {
+      const cap = grants.shareCredits || 0;
+      const n = parseFloat(prev);
+      if (!cap) return "0";
+      if (!Number.isFinite(n)) return String(Math.min(DEFAULT_AVG_SHARE_GENS_USED, cap));
+      return String(Math.min(n, cap));
+    });
+  }, [grants.freeGensPerVisitor, grants.emailCredits, grants.shareCredits]);
 
   const lines = controlledLines ?? internalLines;
   const setLines = (next: MixLine[]) => {
@@ -67,44 +127,80 @@ export default function PlanGenerationEstimator({
     else setInternalLines(next);
   };
 
-  const visitorsN = parseFloat(monthlyVisitors);
-  const conversionRate = (() => {
-    const pct = parseFloat(conversionPct);
-    if (!Number.isFinite(pct)) return DEFAULT_CONVERSION_RATE;
+  const parsePct = (raw: string, fallback: number) => {
+    const pct = parseFloat(raw);
+    if (!Number.isFinite(pct)) return fallback;
     return Math.min(1, Math.max(0, pct / 100));
-  })();
-  const gensN = parseFloat(gensPerSale);
-  const costN = parseFloat(costPerGen);
-  const freeN = parseFloat(freeGensPerVisitor);
+  };
+
+  const visitorsN = parseFloat(monthlyVisitors);
+  const visitors = Number.isFinite(visitorsN) ? Math.max(0, visitorsN) : DEFAULT_MONTHLY_VISITORS;
   const units = totalMonthlyUnits(lines);
   const pagesNeeded = pagesNeededFromMix(lines);
 
-  const visitors = Number.isFinite(visitorsN) ? Math.max(0, visitorsN) : DEFAULT_MONTHLY_VISITORS;
-  const freeGens = Number.isFinite(freeN) && freeN >= 0 ? freeN : FREE_GENS_PER_VISITOR;
-  const estimatedGens = estimateVisitorFunnelGens({
-    monthlyVisitors: visitors,
-    freeGensPerVisitor: freeGens,
-  });
-  const expectedSales = estimateSalesFromVisitors({
-    monthlyVisitors: visitors,
-    conversionRate,
-  });
+  const funnel = useMemo(
+    () =>
+      estimateCustomizerFunnel({
+        monthlyVisitors: visitors,
+        engagementRate: parsePct(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE),
+        avgFreeGensUsed: (() => {
+          const n = parseFloat(avgFreeGensUsed);
+          return Number.isFinite(n) ? n : DEFAULT_AVG_FREE_GENS_USED;
+        })(),
+        emailTakeRate: parsePct(emailTakePct, DEFAULT_EMAIL_RUNG_TAKE_RATE),
+        avgEmailGensUsed: (() => {
+          const n = parseFloat(avgEmailGensUsed);
+          return Number.isFinite(n) ? n : DEFAULT_AVG_EMAIL_GENS_USED;
+        })(),
+        shareTakeRate: parsePct(shareTakePct, DEFAULT_SHARE_RUNG_TAKE_RATE),
+        avgShareGensUsed: (() => {
+          const n = parseFloat(avgShareGensUsed);
+          return Number.isFinite(n) ? n : DEFAULT_AVG_SHARE_GENS_USED;
+        })(),
+        purchaseConversionRate: parsePct(conversionPct, DEFAULT_PURCHASE_CONVERSION_RATE),
+        purchaseRedeemRate: parsePct(purchaseRedeemPct, DEFAULT_PURCHASE_REWARD_REDEEM_RATE),
+        baseCostPerGenUsd: (() => {
+          const n = parseFloat(baseCostPerGen);
+          return Number.isFinite(n) ? n : DEFAULT_BASE_COST_PER_GEN_USD;
+        })(),
+        vectorizeShare: parsePct(vectorizeSharePct, DEFAULT_VECTORIZE_SHARE),
+        grants,
+      }),
+    [
+      visitors,
+      engagementPct,
+      avgFreeGensUsed,
+      emailTakePct,
+      avgEmailGensUsed,
+      shareTakePct,
+      avgShareGensUsed,
+      conversionPct,
+      purchaseRedeemPct,
+      baseCostPerGen,
+      vectorizeSharePct,
+      grants,
+    ],
+  );
+
+  const estimatedGens = funnel.totalGensSpent;
+  const expectedSales = funnel.orders;
+  const gensN = parseFloat(gensPerSale);
   const gensPerSaleEstimate = estimateMonthlyGenerations({
     totalUnits: units > 0 ? units : expectedSales,
     gensPerSale: Number.isFinite(gensN) ? gensN : DEFAULT_GENS_PER_SALE,
   });
-  const aiCost = platformAiCostUsd(
-    estimatedGens,
-    Number.isFinite(costN) ? costN : DEFAULT_PLATFORM_COST_PER_GEN_USD,
-  );
+
   const recommendation = useMemo(
     () => recommendPlan({ pagesNeeded, estimatedGens }),
     [pagesNeeded, estimatedGens],
   );
   const suggestedPlanProfit =
-    recommendation.fits && recommendation.priceUsd != null
-      ? Math.round((recommendation.priceUsd - aiCost) * 100) / 100
+    showPlatformCost && recommendation.fits && recommendation.priceUsd != null
+      ? Math.round((recommendation.priceUsd - funnel.aiCostUsd) * 100) / 100
       : null;
+
+  const engagementRate = parsePct(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
+  const conversionRate = parsePct(conversionPct, DEFAULT_PURCHASE_CONVERSION_RATE);
 
   return (
     <Card>
@@ -188,7 +284,7 @@ export default function PlanGenerationEstimator({
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div className="space-y-1">
             <Label htmlFor="monthly-visitors">Unique visitors / mo</Label>
             <Input
@@ -201,22 +297,22 @@ export default function PlanGenerationEstimator({
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="free-gens-visitor">Free gens / visitor</Label>
+            <Label htmlFor="engagement-pct">Customizer engagement %</Label>
             <Input
-              id="free-gens-visitor"
+              id="engagement-pct"
               type="number"
-              min={1}
-              max={10}
+              min={0}
+              max={100}
               step={1}
-              value={freeGensPerVisitor}
-              onChange={(e) => setFreeGensPerVisitor(e.target.value)}
+              value={engagementPct}
+              onChange={(e) => setEngagementPct(e.target.value)}
             />
             <p className="text-[11px] text-muted-foreground">
-              Comes off the merchant plan (live default {FREE_GENS_PER_VISITOR}, max 10)
+              % of visitors who open the customizer (typical 10–40%)
             </p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="conversion-pct">Conversion % (visitor → sale)</Label>
+            <Label htmlFor="conversion-pct">Purchase conversion % (of engaged)</Label>
             <Input
               id="conversion-pct"
               type="number"
@@ -226,19 +322,62 @@ export default function PlanGenerationEstimator({
               value={conversionPct}
               onChange={(e) => setConversionPct(e.target.value)}
             />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="cost-per-gen">Platform cost / gen (USD)</Label>
-            <Input
-              id="cost-per-gen"
-              type="number"
-              min={0}
-              step={0.01}
-              value={costPerGen}
-              onChange={(e) => setCostPerGen(e.target.value)}
-            />
+            <p className="text-[11px] text-muted-foreground">
+              Of engaged visitors — not raw page traffic
+            </p>
           </div>
         </div>
+
+        <p className="text-xs text-muted-foreground">
+          Free allotment from Settings:{" "}
+          <span className="font-medium text-foreground">{grants.freeGensPerVisitor}</span>
+          {" · "}
+          Email rung:{" "}
+          <span className="font-medium text-foreground">
+            {grants.emailEnabled ? `+${grants.emailCredits}` : "off"}
+          </span>
+          {" · "}
+          Share:{" "}
+          <span className="font-medium text-foreground">
+            {grants.shareEnabled ? `+${grants.shareCredits}` : "off"}
+          </span>
+          {" · "}
+          Purchase:{" "}
+          <span className="font-medium text-foreground">
+            {grants.purchaseEnabled ? `+${grants.purchaseCredits}` : "off"}
+          </span>
+        </p>
+
+        {showPlatformCost && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor="base-cost-per-gen">Base cost / gen (USD)</Label>
+              <Input
+                id="base-cost-per-gen"
+                type="number"
+                min={0}
+                step={0.01}
+                value={baseCostPerGen}
+                onChange={(e) => setBaseCostPerGen(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="vectorize-share">Vectorize share %</Label>
+              <Input
+                id="vectorize-share"
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={vectorizeSharePct}
+                onChange={(e) => setVectorizeSharePct(e.target.value)}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Blended ≈ ${funnel.blendedCostPerGen.toFixed(3)}/gen (+$0.01 × share)
+              </p>
+            </div>
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
           <div className="rounded-md border p-3">
@@ -246,17 +385,17 @@ export default function PlanGenerationEstimator({
             <div className="text-xl font-semibold">{pagesNeeded}</div>
           </div>
           <div className="rounded-md border p-3">
-            <div className="text-muted-foreground">Est. gens / month</div>
+            <div className="text-muted-foreground">Est. gens spent / mo</div>
             <div className="text-xl font-semibold">{estimatedGens}</div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {visitors} visitors × {freeGens} free gens
+              {funnel.engaged} engaged × funnel rates
             </p>
           </div>
           <div className="rounded-md border p-3">
             <div className="text-muted-foreground">Expected sales</div>
             <div className="text-xl font-semibold">{expectedSales}</div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {visitors} × {(conversionRate * 100).toFixed(1)}%
+              {funnel.engaged} engaged × {(conversionRate * 100).toFixed(1)}%
               {units > 0 ? ` · mix units ${units}` : ""}
             </p>
           </div>
@@ -267,19 +406,59 @@ export default function PlanGenerationEstimator({
             </div>
             {recommendation.fits && recommendation.priceUsd != null && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                ${recommendation.priceUsd}/mo · AI ~${aiCost.toFixed(2)}
-                {suggestedPlanProfit != null ? ` · plan−AI ≈ $${suggestedPlanProfit.toFixed(2)}` : ""}
+                ${recommendation.priceUsd}/mo
+                {showPlatformCost
+                  ? ` · AI ~$${funnel.aiCostUsd.toFixed(2)}${
+                      suggestedPlanProfit != null
+                        ? ` · plan−AI ≈ $${suggestedPlanProfit.toFixed(2)}`
+                        : ""
+                    }`
+                  : ` · ~${estimatedGens} gens spent`}
               </p>
             )}
           </div>
         </div>
 
+        <div className="grid gap-3 sm:grid-cols-2 text-sm">
+          <div className="rounded-md border p-3">
+            <div className="text-muted-foreground">Leads captured (email rung)</div>
+            <div className="text-xl font-semibold">{funnel.leadsCaptured}</div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Engaged × email take rate — merchant acquisition value
+            </p>
+          </div>
+          {showPlatformCost ? (
+            <div className="rounded-md border p-3">
+              <div className="text-muted-foreground">Cost per lead</div>
+              <div className="text-xl font-semibold">
+                {funnel.costPerLeadUsd != null ? `$${funnel.costPerLeadUsd.toFixed(2)}` : "—"}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                AI ~${funnel.aiCostUsd.toFixed(2)} ÷ leads (gens as acquisition spend)
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-md border p-3">
+              <div className="text-muted-foreground">Funnel breakdown (gens spent)</div>
+              <p className="text-[11px] text-muted-foreground mt-1 space-y-0.5">
+                <span className="block">Free: {funnel.freeGensSpent}</span>
+                <span className="block">Email: {funnel.emailGensSpent}</span>
+                <span className="block">Share: {funnel.shareGensSpent}</span>
+                <span className="block">Purchase redeem: {funnel.purchaseGensSpent}</span>
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="rounded-md border border-sky-200 bg-sky-50/60 p-3 text-sm space-y-1">
-          <p className="font-medium text-sky-950">Visitor funnel (primary)</p>
+          <p className="font-medium text-sky-950">Customizer funnel</p>
           <p className="text-sky-900/90">
-            Plan fit uses <span className="font-semibold">{estimatedGens}</span> gens if every
-            visitor uses their free allotment. Expected sales from conversion:{" "}
-            <span className="font-semibold">{expectedSales}</span>/mo.
+            {visitors} visitors × {(engagementRate * 100).toFixed(0)}% engagement →{" "}
+            <span className="font-semibold">{funnel.engaged}</span> engaged. Plan fit uses{" "}
+            <span className="font-semibold">{estimatedGens}</span> gens spent (not credits
+            granted). Expected sales:{" "}
+            <span className="font-semibold">{expectedSales}</span>/mo · leads:{" "}
+            <span className="font-semibold">{funnel.leadsCaptured}</span>.
           </p>
         </div>
 
@@ -290,20 +469,116 @@ export default function PlanGenerationEstimator({
           className="px-0 h-auto text-xs text-muted-foreground"
           onClick={() => setShowAdvanced((v) => !v)}
         >
-          {showAdvanced ? "Hide" : "Show"} advanced gens-per-sale guess
+          {showAdvanced ? "Hide" : "Show"} advanced funnel rates
         </Button>
         {showAdvanced && (
-          <div className="rounded-md border p-3 space-y-2 text-sm">
-            <div className="space-y-1 max-w-xs">
-              <Label htmlFor="gens-per-sale">Gens per sale (provisional)</Label>
-              <Input
-                id="gens-per-sale"
-                type="number"
-                min={0}
-                step={0.5}
-                value={gensPerSale}
-                onChange={(e) => setGensPerSale(e.target.value)}
-              />
+          <div className="rounded-md border p-3 space-y-3 text-sm">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="space-y-1">
+                <Label htmlFor="avg-free-gens">Avg free gens used</Label>
+                <Input
+                  id="avg-free-gens"
+                  type="number"
+                  min={0}
+                  max={grants.freeGensPerVisitor}
+                  step={0.1}
+                  value={avgFreeGensUsed}
+                  onChange={(e) => setAvgFreeGensUsed(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Of {grants.freeGensPerVisitor} free (not everyone uses both)
+                </p>
+              </div>
+              {grants.emailEnabled && grants.emailCredits > 0 && (
+                <>
+                  <div className="space-y-1">
+                    <Label htmlFor="email-take">Email rung take %</Label>
+                    <Input
+                      id="email-take"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={emailTakePct}
+                      onChange={(e) => setEmailTakePct(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="avg-email-gens">Avg email gens used</Label>
+                    <Input
+                      id="avg-email-gens"
+                      type="number"
+                      min={0}
+                      max={grants.emailCredits}
+                      step={0.1}
+                      value={avgEmailGensUsed}
+                      onChange={(e) => setAvgEmailGensUsed(e.target.value)}
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Of {grants.emailCredits} granted
+                    </p>
+                  </div>
+                </>
+              )}
+              {grants.shareEnabled && grants.shareCredits > 0 && (
+                <>
+                  <div className="space-y-1">
+                    <Label htmlFor="share-take">Share rung take %</Label>
+                    <Input
+                      id="share-take"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={shareTakePct}
+                      onChange={(e) => setShareTakePct(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="avg-share-gens">Avg share gens used</Label>
+                    <Input
+                      id="avg-share-gens"
+                      type="number"
+                      min={0}
+                      max={grants.shareCredits}
+                      step={0.1}
+                      value={avgShareGensUsed}
+                      onChange={(e) => setAvgShareGensUsed(e.target.value)}
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Of {grants.shareCredits} granted
+                    </p>
+                  </div>
+                </>
+              )}
+              {grants.purchaseEnabled && grants.purchaseCredits > 0 && (
+                <div className="space-y-1">
+                  <Label htmlFor="purchase-redeem">Purchase reward redeem %</Label>
+                  <Input
+                    id="purchase-redeem"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={purchaseRedeemPct}
+                    onChange={(e) => setPurchaseRedeemPct(e.target.value)}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Of {grants.purchaseCredits} granted per order (breakage)
+                  </p>
+                </div>
+              )}
+              <div className="space-y-1">
+                <Label htmlFor="gens-per-sale">Gens per sale (cross-check)</Label>
+                <Input
+                  id="gens-per-sale"
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={gensPerSale}
+                  onChange={(e) => setGensPerSale(e.target.value)}
+                />
+              </div>
             </div>
             <p className="text-muted-foreground">
               Units/sales × gens/sale ≈{" "}

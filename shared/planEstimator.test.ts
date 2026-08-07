@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  blendedCostPerGenUsd,
   collapseToPriceDriverVariants,
+  estimateCustomizerFunnel,
   estimateMonthlyGenerations,
   estimateSalesFromVisitors,
   estimateVisitorFunnelGens,
@@ -32,9 +34,61 @@ describe("generation / cost estimates", () => {
     expect(platformAiCostUsd(40, 0.05)).toBe(2);
   });
 
-  it("estimates visitor-funnel gens and sales", () => {
+  it("estimates legacy visitor-funnel gens and sales", () => {
     expect(estimateVisitorFunnelGens({ monthlyVisitors: 100, freeGensPerVisitor: 5 })).toBe(500);
     expect(estimateSalesFromVisitors({ monthlyVisitors: 100, conversionRate: 0.05 })).toBe(5);
+  });
+
+  it("blends base + vectorize cost", () => {
+    expect(blendedCostPerGenUsd(0.04, 0.5)).toBe(0.045);
+  });
+
+  it("estimates customizer funnel on credits spent (live ladder grants)", () => {
+    // 100 visitors × 25% engaged = 25
+    // free: 25 × 1.5 = 37.5
+    // email: 25 × 12% × 1 = 3
+    // share: 25 × 3% × 1 = 0.75
+    // purchase: 25 × 5% × 1 × 40% = 0.5
+    // total = 41.75 → ceil 42
+    const f = estimateCustomizerFunnel({
+      monthlyVisitors: 100,
+      grants: {
+        freeGensPerVisitor: 2,
+        emailCredits: 1,
+        shareCredits: 1,
+        purchaseCredits: 1,
+        emailEnabled: true,
+        shareEnabled: true,
+        purchaseEnabled: true,
+      },
+    });
+    expect(f.engaged).toBe(25);
+    expect(f.totalGensSpent).toBe(42);
+    expect(f.orders).toBe(1); // floor(25 × 0.05)
+    expect(f.leadsCaptured).toBe(3); // floor(25 × 0.12)
+    expect(f.blendedCostPerGen).toBe(0.045);
+    expect(f.aiCostUsd).toBe(Math.round(42 * 0.045 * 100) / 100);
+    expect(f.costPerLeadUsd).toBe(Math.round((f.aiCostUsd / 3) * 100) / 100);
+  });
+
+  it("skips disabled reward rungs and clamps avg used to grant", () => {
+    const f = estimateCustomizerFunnel({
+      monthlyVisitors: 100,
+      avgEmailGensUsed: 10,
+      grants: {
+        freeGensPerVisitor: 2,
+        emailCredits: 1,
+        shareCredits: 5,
+        purchaseCredits: 10,
+        emailEnabled: true,
+        shareEnabled: false,
+        purchaseEnabled: false,
+      },
+    });
+    expect(f.shareGensSpent).toBe(0);
+    expect(f.purchaseGensSpent).toBe(0);
+    // email avg clamped to 1 credit grant
+    expect(f.emailGensSpent).toBe(3); // 25 × 0.12 × 1
   });
 });
 

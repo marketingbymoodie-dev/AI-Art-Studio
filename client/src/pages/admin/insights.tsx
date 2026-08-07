@@ -23,10 +23,13 @@ import {
 } from "@shared/productIntelligence";
 import {
   collapseToPriceDriverVariants,
+  DEFAULT_FUNNEL_REWARD_GRANTS,
   ESTIMATOR_PAID_PLANS,
+  FREE_GENS_PER_VISITOR,
   mergePriceDriverSources,
   priceDriversFromCostsPayload,
   stripProviderSuffix,
+  type FunnelRewardGrants,
   type MixLine,
   type PriceDriverVariant,
 } from "@shared/planEstimator";
@@ -234,6 +237,24 @@ export default function AdminInsightsPage() {
     },
   });
 
+  const { data: storefrontSettings } = useQuery<{
+    storefrontFreeGensPerVisitor: number;
+  }>({
+    queryKey: ["/api/admin/storefront-settings"],
+  });
+
+  type RewardLadderRung = {
+    rungKey: "free_anonymous" | "email_signup" | "share_design" | "purchase_threshold";
+    enabled: boolean;
+    creditAmount: number;
+  };
+  const { data: rewardLadder } = useQuery<{
+    purchaseRewardsEnabled: boolean;
+    rungs: RewardLadderRung[];
+  }>({
+    queryKey: ["/api/admin/reward-ladder"],
+  });
+
   const pickerProducts = useMemo(
     () => buildPickerProducts(catalogData?.entries),
     [catalogData?.entries],
@@ -416,6 +437,29 @@ export default function AdminInsightsPage() {
       }),
     [rows, pickerProducts],
   );
+
+  const rewardGrants: FunnelRewardGrants = useMemo(() => {
+    const free =
+      typeof storefrontSettings?.storefrontFreeGensPerVisitor === "number"
+        ? storefrontSettings.storefrontFreeGensPerVisitor
+        : FREE_GENS_PER_VISITOR;
+    const rungs = rewardLadder?.rungs ?? [];
+    const email = rungs.find((r) => r.rungKey === "email_signup");
+    const share = rungs.find((r) => r.rungKey === "share_design");
+    const purchase = rungs.find((r) => r.rungKey === "purchase_threshold");
+    const purchasePlatformOn = rewardLadder?.purchaseRewardsEnabled !== false;
+    return {
+      freeGensPerVisitor: free,
+      emailCredits: email?.creditAmount ?? DEFAULT_FUNNEL_REWARD_GRANTS.emailCredits,
+      shareCredits: share?.creditAmount ?? DEFAULT_FUNNEL_REWARD_GRANTS.shareCredits,
+      purchaseCredits: purchase?.creditAmount ?? DEFAULT_FUNNEL_REWARD_GRANTS.purchaseCredits,
+      emailEnabled: email ? !!email.enabled : DEFAULT_FUNNEL_REWARD_GRANTS.emailEnabled,
+      shareEnabled: share ? !!share.enabled : DEFAULT_FUNNEL_REWARD_GRANTS.shareEnabled,
+      purchaseEnabled: purchase
+        ? !!purchase.enabled && purchasePlatformOn
+        : DEFAULT_FUNNEL_REWARD_GRANTS.purchaseEnabled && purchasePlatformOn,
+    };
+  }, [storefrontSettings, rewardLadder]);
 
   const updateRow = (id: string, patch: Partial<MixRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -728,13 +772,16 @@ export default function AdminInsightsPage() {
 
         <PlanGenerationEstimator
           title="Plan fit for this mix"
-          description="Plan fit uses unique visitors × free gens. Conversion estimates sales; gens-per-sale stays optional. Free gens come off your merchant allotment."
+          description="Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Plan fit uses credits spent (earned credits burn quota). Platform generation cost is not shown."
           lines={estimatorLines}
           lockMix
+          showPlatformCost={false}
+          rewardGrants={rewardGrants}
           footerNote={
             <p className="text-xs text-muted-foreground">
-              Live plan: <span className="font-medium capitalize">{livePlanLabel}</span>. ROI card above
-              can model a different plan without changing your subscription.
+              Live plan: <span className="font-medium capitalize">{livePlanLabel}</span>. Free gens and
+              Reward Ladder amounts come from Settings. ROI card above can model a different plan
+              without changing your subscription.
             </p>
           }
         />

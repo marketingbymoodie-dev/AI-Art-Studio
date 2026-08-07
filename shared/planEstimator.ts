@@ -2,25 +2,201 @@
  * Plan & generation estimator — sandbox math for operator plan design
  * and merchant Profit Insights suggestions.
  *
- * Gens-per-sale is a provisional guess until live analytics exist.
+ * Primary plan-fit uses a multi-step customizer funnel (engagement → free gens →
+ * Reward Ladder spend → purchase). Cost is computed on credits SPENT, never granted.
  */
 
 import { STOREFRONT_FREE_GENERATION_DEFAULT } from "./storefront-credits";
 import { extractDimensionalKey } from "./productVariantOptions";
 
-/** Working average platform cost per AI generation (USD). */
+/** Base platform cost per AI generation before vectorize pass (USD). Operator-only. */
+export const DEFAULT_BASE_COST_PER_GEN_USD = 0.04;
+
+/** Share of gens that get the +$0.01 vectorize pass. Operator-only. */
+export const DEFAULT_VECTORIZE_SHARE = 0.5;
+
+export const VECTORIZE_COST_PER_GEN_USD = 0.01;
+
+/** @deprecated Prefer blendedCostPerGenUsd(); kept for older call sites. */
 export const DEFAULT_PLATFORM_COST_PER_GEN_USD = 0.05;
 
-/** Provisional guess: average gens burned toward a sale (of the visitor free allotment). */
+/** Provisional guess: average gens burned toward a sale (advanced cross-check only). */
 export const DEFAULT_GENS_PER_SALE = 4;
 
 export const FREE_GENS_PER_VISITOR = STOREFRONT_FREE_GENERATION_DEFAULT;
 
-/** Default unique customizer visitors / month for the visitor-funnel estimator. */
+/** Default unique customizer-page visitors / month. */
 export const DEFAULT_MONTHLY_VISITORS = 100;
 
-/** Default visitor → sale conversion (5%). */
-export const DEFAULT_CONVERSION_RATE = 0.05;
+/** % of visitors who open the customizer at all (default 25%). */
+export const DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE = 0.25;
+
+/** Of the free allotment, average gens actually used (default 1.5 of 2). */
+export const DEFAULT_AVG_FREE_GENS_USED = 1.5;
+
+/** % of engaged visitors who hit the limit and sign up (email rung). */
+export const DEFAULT_EMAIL_RUNG_TAKE_RATE = 0.12;
+
+/** Avg email-rung credits spent when take rate fires (clamped to grant). */
+export const DEFAULT_AVG_EMAIL_GENS_USED = 2.2;
+
+/** % of engaged visitors who complete a verified share. */
+export const DEFAULT_SHARE_RUNG_TAKE_RATE = 0.03;
+
+/** Avg share-rung credits spent when take rate fires (clamped to grant). */
+export const DEFAULT_AVG_SHARE_GENS_USED = 3.0;
+
+/**
+ * % of engaged visitors who purchase (engaged convert better than raw traffic).
+ * Replaces the old raw-visitor conversion default.
+ */
+export const DEFAULT_PURCHASE_CONVERSION_RATE = 0.05;
+
+/** % of purchase-reward credits that are ever spent (breakage). */
+export const DEFAULT_PURCHASE_REWARD_REDEEM_RATE = 0.4;
+
+/** @deprecated Use DEFAULT_PURCHASE_CONVERSION_RATE (engaged-based). */
+export const DEFAULT_CONVERSION_RATE = DEFAULT_PURCHASE_CONVERSION_RATE;
+
+export type FunnelRewardGrants = {
+  freeGensPerVisitor: number;
+  emailCredits: number;
+  shareCredits: number;
+  purchaseCredits: number;
+  emailEnabled: boolean;
+  shareEnabled: boolean;
+  purchaseEnabled: boolean;
+};
+
+/** Sandbox grants when Settings / Reward Ladder are not wired (operator PI). */
+export const DEFAULT_FUNNEL_REWARD_GRANTS: FunnelRewardGrants = {
+  freeGensPerVisitor: FREE_GENS_PER_VISITOR,
+  emailCredits: 1,
+  shareCredits: 1,
+  purchaseCredits: 1,
+  emailEnabled: true,
+  shareEnabled: true,
+  purchaseEnabled: true,
+};
+
+export function blendedCostPerGenUsd(
+  baseCostPerGenUsd: number = DEFAULT_BASE_COST_PER_GEN_USD,
+  vectorizeShare: number = DEFAULT_VECTORIZE_SHARE,
+): number {
+  const base = Number.isFinite(baseCostPerGenUsd) ? Math.max(0, baseCostPerGenUsd) : DEFAULT_BASE_COST_PER_GEN_USD;
+  const share = Number.isFinite(vectorizeShare)
+    ? Math.min(1, Math.max(0, vectorizeShare))
+    : DEFAULT_VECTORIZE_SHARE;
+  return Math.round((base + share * VECTORIZE_COST_PER_GEN_USD) * 1000) / 1000;
+}
+
+export type FunnelEstimateInput = {
+  monthlyVisitors: number;
+  engagementRate?: number;
+  avgFreeGensUsed?: number;
+  emailTakeRate?: number;
+  avgEmailGensUsed?: number;
+  shareTakeRate?: number;
+  avgShareGensUsed?: number;
+  purchaseConversionRate?: number;
+  purchaseRedeemRate?: number;
+  vectorizeShare?: number;
+  baseCostPerGenUsd?: number;
+  grants?: FunnelRewardGrants;
+};
+
+export type FunnelEstimate = {
+  engaged: number;
+  totalGensSpent: number;
+  freeGensSpent: number;
+  emailGensSpent: number;
+  shareGensSpent: number;
+  purchaseGensSpent: number;
+  orders: number;
+  leadsCaptured: number;
+  blendedCostPerGen: number;
+  aiCostUsd: number;
+  costPerLeadUsd: number | null;
+  grants: FunnelRewardGrants;
+};
+
+function clampRate(n: number | undefined, fallback: number): number {
+  if (!Number.isFinite(n as number)) return fallback;
+  return Math.min(1, Math.max(0, n as number));
+}
+
+function clampNonNeg(n: number | undefined, fallback: number): number {
+  if (!Number.isFinite(n as number)) return fallback;
+  return Math.max(0, n as number);
+}
+
+/**
+ * Funnel plan-fit estimate. Counts credits SPENT only (granted-but-unused cost nothing).
+ * Earned/ladder spend burns merchant quota — pack credits are out of scope here.
+ */
+export function estimateCustomizerFunnel(args: FunnelEstimateInput): FunnelEstimate {
+  const grants = args.grants ?? DEFAULT_FUNNEL_REWARD_GRANTS;
+  const visitors = clampNonNeg(args.monthlyVisitors, 0);
+  const engagement = clampRate(args.engagementRate, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
+  const engaged = visitors * engagement;
+
+  const freeCap = Math.max(0, grants.freeGensPerVisitor);
+  const avgFree = Math.min(
+    clampNonNeg(args.avgFreeGensUsed, DEFAULT_AVG_FREE_GENS_USED),
+    freeCap,
+  );
+
+  const emailCredits = grants.emailEnabled ? Math.max(0, grants.emailCredits) : 0;
+  const shareCredits = grants.shareEnabled ? Math.max(0, grants.shareCredits) : 0;
+  const purchaseCredits = grants.purchaseEnabled ? Math.max(0, grants.purchaseCredits) : 0;
+
+  const emailTake = emailCredits > 0 ? clampRate(args.emailTakeRate, DEFAULT_EMAIL_RUNG_TAKE_RATE) : 0;
+  const shareTake = shareCredits > 0 ? clampRate(args.shareTakeRate, DEFAULT_SHARE_RUNG_TAKE_RATE) : 0;
+  const purchaseConv = clampRate(args.purchaseConversionRate, DEFAULT_PURCHASE_CONVERSION_RATE);
+  const purchaseRedeem =
+    purchaseCredits > 0
+      ? clampRate(args.purchaseRedeemRate, DEFAULT_PURCHASE_REWARD_REDEEM_RATE)
+      : 0;
+
+  const avgEmail = Math.min(
+    clampNonNeg(args.avgEmailGensUsed, Math.min(DEFAULT_AVG_EMAIL_GENS_USED, emailCredits || DEFAULT_AVG_EMAIL_GENS_USED)),
+    emailCredits,
+  );
+  const avgShare = Math.min(
+    clampNonNeg(args.avgShareGensUsed, Math.min(DEFAULT_AVG_SHARE_GENS_USED, shareCredits || DEFAULT_AVG_SHARE_GENS_USED)),
+    shareCredits,
+  );
+
+  const freeGensSpent = engaged * avgFree;
+  const emailGensSpent = engaged * emailTake * avgEmail;
+  const shareGensSpent = engaged * shareTake * avgShare;
+  const purchaseGensSpent = engaged * purchaseConv * purchaseCredits * purchaseRedeem;
+  const totalGensSpentRaw = freeGensSpent + emailGensSpent + shareGensSpent + purchaseGensSpent;
+  // Ceil for plan-quota sizing; AI cost uses the same integer so UI numbers match.
+  const totalGensSpent = Math.ceil(totalGensSpentRaw);
+
+  const blended = blendedCostPerGenUsd(args.baseCostPerGenUsd, args.vectorizeShare);
+  const aiCostUsd = Math.round(totalGensSpent * blended * 100) / 100;
+  const orders = Math.floor(engaged * purchaseConv);
+  const leadsCaptured = Math.floor(engaged * emailTake);
+  const costPerLeadUsd =
+    leadsCaptured > 0 ? Math.round((aiCostUsd / leadsCaptured) * 100) / 100 : null;
+
+  return {
+    engaged: Math.round(engaged * 100) / 100,
+    totalGensSpent,
+    freeGensSpent: Math.round(freeGensSpent * 100) / 100,
+    emailGensSpent: Math.round(emailGensSpent * 100) / 100,
+    shareGensSpent: Math.round(shareGensSpent * 100) / 100,
+    purchaseGensSpent: Math.round(purchaseGensSpent * 100) / 100,
+    orders,
+    leadsCaptured,
+    blendedCostPerGen: blended,
+    aiCostUsd,
+    costPerLeadUsd,
+    grants,
+  };
+}
 
 export type EstimatorPlan = {
   planName: string;
@@ -69,8 +245,8 @@ export function estimateMonthlyGenerations(args: {
 }
 
 /**
- * Primary plan-fit estimate: unique visitors × free gens / visitor
- * (assumes each visitor uses their full free allotment).
+ * @deprecated Full-allotment model. Prefer estimateCustomizerFunnel().
+ * Kept for tests / older call sites: visitors × free gens.
  */
 export function estimateVisitorFunnelGens(args: {
   monthlyVisitors: number;
@@ -86,7 +262,10 @@ export function estimateVisitorFunnelGens(args: {
   return Math.ceil(visitors * free);
 }
 
-/** Expected sales from traffic: visitors × conversion rate. */
+/**
+ * @deprecated Raw-visitor conversion. Prefer estimateCustomizerFunnel().orders
+ * (engaged × purchase conversion).
+ */
 export function estimateSalesFromVisitors(args: {
   monthlyVisitors: number;
   conversionRate?: number;
