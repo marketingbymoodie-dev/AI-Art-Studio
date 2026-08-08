@@ -1105,10 +1105,11 @@ export default function AdminInsightsPage() {
         <div className="space-y-6 min-w-0 lg:sticky lg:top-4">
         <PlanGenerationEstimator
           title="Plan fit for this mix"
-          description="Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Edit visitors or expected sales and monthly units stay in sync."
+          description="Funnel model: visitors → customizer engagement → free gens + Reward Ladder rewards. Edit visitors or expected sales and monthly units stay in sync."
           lines={estimatorLines}
           lockMix
           showPlatformCost={false}
+          audience="merchant"
           rewardGrants={rewardGrants}
           monthlyVisitors={monthlyVisitors}
           onMonthlyVisitorsChange={(v) => applyFunnelDriver({ visitors: v })}

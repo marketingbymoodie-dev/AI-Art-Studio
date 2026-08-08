@@ -58,6 +58,11 @@ type PlanGenerationEstimatorProps = {
    * and dollar AI cost / plan−AI / cost-per-lead. Math still runs under the hood.
    */
   showPlatformCost?: boolean;
+  /**
+   * Merchant surfaces must never show redeem / breakage / granted-vs-spent framing
+   * (two-audience rule). Operator Product Intelligence keeps the full view.
+   */
+  audience?: "merchant" | "operator";
   /** Live free-gens + Reward Ladder grants from Settings. */
   rewardGrants?: FunnelRewardGrants;
   /** Controlled unique visitors / mo (Profit Insights sync). */
@@ -77,15 +82,21 @@ type PlanGenerationEstimatorProps = {
   onEstimatedGensChange?: (estimatedGens: number) => void;
 };
 
+const MERCHANT_DEFAULT_DESCRIPTION =
+  "Funnel model: visitors → customizer engagement → free gens + Reward Ladder rewards. Plan fit uses estimated monthly generations for this mix.";
+const OPERATOR_DEFAULT_DESCRIPTION =
+  "Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Plan fit uses credits spent, not granted.";
+
 export default function PlanGenerationEstimator({
   title = "Plan & generation estimator",
-  description = "Funnel model: visitors → customizer engagement → free gens + Reward Ladder spend. Plan fit uses credits spent, not granted.",
+  description,
   initialLines,
   lines: controlledLines,
   onLinesChange,
   footerNote,
   lockMix = false,
   showPlatformCost = true,
+  audience = "operator",
   rewardGrants,
   monthlyVisitors: controlledVisitors,
   onMonthlyVisitorsChange,
@@ -99,6 +110,10 @@ export default function PlanGenerationEstimator({
   onIncludeOverageChange,
   onEstimatedGensChange,
 }: PlanGenerationEstimatorProps) {
+  const isMerchant = audience === "merchant";
+  const resolvedDescription =
+    description ??
+    (isMerchant ? MERCHANT_DEFAULT_DESCRIPTION : OPERATOR_DEFAULT_DESCRIPTION);
   const grants = rewardGrants ?? DEFAULT_FUNNEL_REWARD_GRANTS;
 
   const [internalLines, setInternalLines] = useState<MixLine[]>(
@@ -258,7 +273,7 @@ export default function PlanGenerationEstimator({
     <Card>
       <CardHeader>
         <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
+        <CardDescription>{resolvedDescription}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
@@ -533,12 +548,14 @@ export default function PlanGenerationEstimator({
             </div>
           ) : (
             <div className="rounded-md border p-3">
-              <div className="text-muted-foreground">Funnel breakdown (gens spent)</div>
+              <div className="text-muted-foreground">Funnel breakdown (gens used)</div>
               <p className="text-[11px] text-muted-foreground mt-1 space-y-0.5">
                 <span className="block">Free: {funnel.freeGensSpent}</span>
-                <span className="block">Email: {funnel.emailGensSpent}</span>
-                <span className="block">Share: {funnel.shareGensSpent}</span>
-                <span className="block">Purchase redeem: {funnel.purchaseGensSpent}</span>
+                <span className="block">Email rewards: {funnel.emailGensSpent}</span>
+                <span className="block">Share rewards: {funnel.shareGensSpent}</span>
+                <span className="block">
+                  {isMerchant ? "Purchase rewards" : "Purchase redeem"}: {funnel.purchaseGensSpent}
+                </span>
               </p>
             </div>
           )}
@@ -549,137 +566,144 @@ export default function PlanGenerationEstimator({
           <p className="text-sky-900/90">
             {visitors} visitors × {(engagementRate * 100).toFixed(0)}% engagement →{" "}
             <span className="font-semibold">{funnel.engaged}</span> engaged. Plan fit uses{" "}
-            <span className="font-semibold">{estimatedGens}</span> gens spent (not credits
-            granted). Expected sales:{" "}
+            <span className="font-semibold">{estimatedGens}</span>{" "}
+            {isMerchant
+              ? "estimated gens/mo."
+              : "gens spent (not credits granted)."}{" "}
+            Expected sales:{" "}
             <span className="font-semibold">{expectedSales}</span>/mo · leads:{" "}
             <span className="font-semibold">{funnel.leadsCaptured}</span>.
           </p>
         </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="px-0 h-auto text-xs text-muted-foreground"
-          onClick={() => setShowAdvanced((v) => !v)}
-        >
-          {showAdvanced ? "Hide" : "Show"} advanced funnel rates
-        </Button>
-        {showAdvanced && (
-          <div className="rounded-md border p-3 space-y-3 text-sm">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="space-y-1">
-                <Label htmlFor="avg-free-gens">Avg free gens used</Label>
-                <Input
-                  id="avg-free-gens"
-                  type="number"
-                  min={0}
-                  max={grants.freeGensPerVisitor}
-                  step={0.1}
-                  value={avgFreeGensUsed}
-                  onChange={(e) => setAvgFreeGensUsed(e.target.value)}
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  Of {grants.freeGensPerVisitor} free (not everyone uses both)
+        {!isMerchant && (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="px-0 h-auto text-xs text-muted-foreground"
+              onClick={() => setShowAdvanced((v) => !v)}
+            >
+              {showAdvanced ? "Hide" : "Show"} advanced funnel rates
+            </Button>
+            {showAdvanced && (
+              <div className="rounded-md border p-3 space-y-3 text-sm">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="avg-free-gens">Avg free gens used</Label>
+                    <Input
+                      id="avg-free-gens"
+                      type="number"
+                      min={0}
+                      max={grants.freeGensPerVisitor}
+                      step={0.1}
+                      value={avgFreeGensUsed}
+                      onChange={(e) => setAvgFreeGensUsed(e.target.value)}
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Of {grants.freeGensPerVisitor} free (not everyone uses both)
+                    </p>
+                  </div>
+                  {grants.emailEnabled && grants.emailCredits > 0 && (
+                    <>
+                      <div className="space-y-1">
+                        <Label htmlFor="email-take">Email rung take %</Label>
+                        <Input
+                          id="email-take"
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          value={emailTakePct}
+                          onChange={(e) => setEmailTakePct(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="avg-email-gens">Avg email gens used</Label>
+                        <Input
+                          id="avg-email-gens"
+                          type="number"
+                          min={0}
+                          max={grants.emailCredits}
+                          step={0.1}
+                          value={avgEmailGensUsed}
+                          onChange={(e) => setAvgEmailGensUsed(e.target.value)}
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          Of {grants.emailCredits} granted
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  {grants.shareEnabled && grants.shareCredits > 0 && (
+                    <>
+                      <div className="space-y-1">
+                        <Label htmlFor="share-take">Share rung take %</Label>
+                        <Input
+                          id="share-take"
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          value={shareTakePct}
+                          onChange={(e) => setShareTakePct(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="avg-share-gens">Avg share gens used</Label>
+                        <Input
+                          id="avg-share-gens"
+                          type="number"
+                          min={0}
+                          max={grants.shareCredits}
+                          step={0.1}
+                          value={avgShareGensUsed}
+                          onChange={(e) => setAvgShareGensUsed(e.target.value)}
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          Of {grants.shareCredits} granted
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  {grants.purchaseEnabled && grants.purchaseCredits > 0 && (
+                    <div className="space-y-1">
+                      <Label htmlFor="purchase-redeem">Purchase reward redeem %</Label>
+                      <Input
+                        id="purchase-redeem"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={purchaseRedeemPct}
+                        onChange={(e) => setPurchaseRedeemPct(e.target.value)}
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        Of {grants.purchaseCredits} granted per order (breakage)
+                      </p>
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    <Label htmlFor="gens-per-sale">Gens per sale (cross-check)</Label>
+                    <Input
+                      id="gens-per-sale"
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={gensPerSale}
+                      onChange={(e) => setGensPerSale(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <p className="text-muted-foreground">
+                  Units/sales × gens/sale ≈{" "}
+                  <span className="font-medium text-foreground">{gensPerSaleEstimate}</span> gens
+                  (analytics-style cross-check only — not used for plan fit).
                 </p>
               </div>
-              {grants.emailEnabled && grants.emailCredits > 0 && (
-                <>
-                  <div className="space-y-1">
-                    <Label htmlFor="email-take">Email rung take %</Label>
-                    <Input
-                      id="email-take"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={0.5}
-                      value={emailTakePct}
-                      onChange={(e) => setEmailTakePct(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="avg-email-gens">Avg email gens used</Label>
-                    <Input
-                      id="avg-email-gens"
-                      type="number"
-                      min={0}
-                      max={grants.emailCredits}
-                      step={0.1}
-                      value={avgEmailGensUsed}
-                      onChange={(e) => setAvgEmailGensUsed(e.target.value)}
-                    />
-                    <p className="text-[11px] text-muted-foreground">
-                      Of {grants.emailCredits} granted
-                    </p>
-                  </div>
-                </>
-              )}
-              {grants.shareEnabled && grants.shareCredits > 0 && (
-                <>
-                  <div className="space-y-1">
-                    <Label htmlFor="share-take">Share rung take %</Label>
-                    <Input
-                      id="share-take"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={0.5}
-                      value={shareTakePct}
-                      onChange={(e) => setShareTakePct(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="avg-share-gens">Avg share gens used</Label>
-                    <Input
-                      id="avg-share-gens"
-                      type="number"
-                      min={0}
-                      max={grants.shareCredits}
-                      step={0.1}
-                      value={avgShareGensUsed}
-                      onChange={(e) => setAvgShareGensUsed(e.target.value)}
-                    />
-                    <p className="text-[11px] text-muted-foreground">
-                      Of {grants.shareCredits} granted
-                    </p>
-                  </div>
-                </>
-              )}
-              {grants.purchaseEnabled && grants.purchaseCredits > 0 && (
-                <div className="space-y-1">
-                  <Label htmlFor="purchase-redeem">Purchase reward redeem %</Label>
-                  <Input
-                    id="purchase-redeem"
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={purchaseRedeemPct}
-                    onChange={(e) => setPurchaseRedeemPct(e.target.value)}
-                  />
-                  <p className="text-[11px] text-muted-foreground">
-                    Of {grants.purchaseCredits} granted per order (breakage)
-                  </p>
-                </div>
-              )}
-              <div className="space-y-1">
-                <Label htmlFor="gens-per-sale">Gens per sale (cross-check)</Label>
-                <Input
-                  id="gens-per-sale"
-                  type="number"
-                  min={0}
-                  step={0.5}
-                  value={gensPerSale}
-                  onChange={(e) => setGensPerSale(e.target.value)}
-                />
-              </div>
-            </div>
-            <p className="text-muted-foreground">
-              Units/sales × gens/sale ≈{" "}
-              <span className="font-medium text-foreground">{gensPerSaleEstimate}</span> gens
-              (analytics-style cross-check only — not used for plan fit).
-            </p>
-          </div>
+            )}
+          </>
         )}
 
         <p className="text-sm text-muted-foreground">{recommendation.reason}</p>
