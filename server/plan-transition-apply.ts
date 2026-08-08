@@ -2,7 +2,7 @@
  * Apply deferred plan changes and enforce page limits after downgrades.
  */
 import { storage } from "./storage";
-import { getPageLimit } from "./customizer-plans";
+import { CURRENT_PRICING_VERSION, getPageLimit } from "./customizer-plans";
 import { downgradeMeteringReset, isPaidPlan } from "./plan-transitions";
 import type { ShopifyInstallation } from "@shared/schema";
 
@@ -23,6 +23,7 @@ export async function applyPendingPlanIfDue(
     planName: pending,
     pendingPlanName: null,
     pendingPlanEffectiveAt: null,
+    pricingVersion: CURRENT_PRICING_VERSION,
   };
 
   if (pending === "trial") {

@@ -5,6 +5,7 @@ import { storage } from "./storage";
 import {
   getEffectivePlan,
   resolveGenerationQuota,
+  resolveOveragePriceUsd,
   PLAN_DISPLAY_NAMES,
   type GenerationQuotaConfig,
 } from "./customizer-plans";
@@ -313,11 +314,14 @@ export async function consumeMerchantGenerationQuota(
   }
 
   if (r.isOverage && quota.overagePriceUsd > 0) {
+    // Resolve per-unit price with volume = overageSeq so a multi-tier schedule
+    // can drop in without changing this call site (flat $0.08 today).
+    const priceUsd = resolveOveragePriceUsd(r.overageUsed);
     void emitOverageUsageCharge({
       installation: refreshed,
       bucketKey: quota.bucketKey,
       overageSeq: r.overageUsed,
-      priceUsd: quota.overagePriceUsd,
+      priceUsd,
     }).catch((err) => {
       console.error(
         `[generation-quota] overage charge emit failed for ${refreshed.shopDomain}:`,

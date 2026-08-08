@@ -3,86 +3,44 @@
  *
  * Maps plan name → max customizer pages allowed.
  * The plan state lives on shopifyInstallations.planName / planStatus.
- */
-
-export const PLAN_PAGE_LIMITS: Record<string, number> = {
-  trial:    1,
-  starter:  2,
-  dabbler:  5,
-  pro:      15,
-  pro_plus: 30,
-};
-
-/**
- * Max ACTIVE permanent "design products" (merchant-published standalone product
- * listings from My Designs) allowed per plan. Trial gets none. Saved designs in
- * the library are capped separately at a flat 30 regardless of plan (see
- * MERCHANT_STUDIO_GALLERY_LIMIT in server/routes.ts) — this limit only governs
- * how many of those saved designs can be live Shopify products at once.
- */
-export const PLAN_DESIGN_PRODUCT_LIMITS: Record<string, number> = {
-  trial:    0,
-  starter:  1,
-  dabbler:  5,
-  pro:      15,
-  pro_plus: 30,
-};
-
-export function getDesignProductLimit(planName: string | null | undefined): number {
-  if (!planName) return 0;
-  return PLAN_DESIGN_PRODUCT_LIMITS[planName] ?? 0;
-}
-
-/**
- * Monthly free AI-generation allotment per plan.
  *
- * NOTE: These numbers currently drive the billing/pricing DISPLAY (plan picker
- * cards). Per-merchant monthly quota *enforcement* (counting generations,
- * blocking at the cap, charging overages) is NOT yet wired up — see
- * `merchants.monthlyGenerationLimit` / `generationsThisMonth` in the schema,
- * which still default to 100 and are not tied to these values. Wire these in
- * when implementing metered billing.
- *
- * The separate per-CUSTOMER 10-free-generation limit IS enforced today
- * (FREE_GENERATION_LIMIT in server/routes.ts + server/storage.ts).
+ * Numeric plan table (fees, gens, pages, overage) lives in
+ * `@shared/customizerPlans` — import from there (or re-exports below).
  */
-export const PLAN_GENERATION_QUOTAS: Record<string, number> = {
-  trial:    20,
-  starter:  250,
-  dabbler:  600,
-  pro:      1500,
-  pro_plus: 3000,
-};
 
-/** Per-generation overage price in USD (applies once the monthly quota is exhausted). */
-export const OVERAGE_PRICE_USD = 0.08;
+export {
+  PLAN_PAGE_LIMITS,
+  PLAN_DESIGN_PRODUCT_LIMITS,
+  PLAN_GENERATION_QUOTAS,
+  OVERAGE_PRICE_SCHEDULE,
+  OVERAGE_PRICE_USD,
+  PLAN_OVERAGE_CAPS,
+  PLAN_PRICES_USD,
+  PLAN_DISPLAY_NAMES,
+  PAID_PLANS,
+  PAID_PLAN_DEFINITIONS,
+  CURRENT_PRICING_VERSION,
+  OVERAGE_USAGE_TERMS,
+  getPageLimit,
+  getDesignProductLimit,
+  getPlanOverageCappedAmountUsd,
+  resolveOveragePriceUsd,
+  overageCostForUnitsUsd,
+  type PaidPlan,
+  type PlanDefinition,
+  type OveragePriceTier,
+} from "@shared/customizerPlans";
 
-/** Max extra (overage) generations allowed per calendar month, per paid plan. */
-export const PLAN_OVERAGE_CAPS: Record<string, number> = {
-  starter:  200,
-  dabbler:  300,
-  pro:      500,
-  pro_plus: 1000,
-};
-
-/** Monthly price in USD (shown in plan picker UI). */
-export const PLAN_PRICES_USD: Record<string, number> = {
-  starter:  29,
-  dabbler:  49,
-  pro:      99,
-  pro_plus: 199,
-};
-
-export const PLAN_DISPLAY_NAMES: Record<string, string> = {
-  trial:    "Trial",
-  starter:  "Starter",
-  dabbler:  "Dabbler",
-  pro:      "Pro",
-  pro_plus: "Pro Plus",
-};
-
-export const PAID_PLANS = ["starter", "dabbler", "pro", "pro_plus"] as const;
-export type PaidPlan = typeof PAID_PLANS[number];
+import {
+  PAID_PLANS,
+  PLAN_PAGE_LIMITS,
+  PLAN_GENERATION_QUOTAS,
+  PLAN_OVERAGE_CAPS,
+  PLAN_DISPLAY_NAMES,
+  getPageLimit,
+  getDesignProductLimit,
+  resolveOveragePriceUsd,
+} from "@shared/customizerPlans";
 
 /** Merchant My Designs save/library — Starter and above only (not trial / inactive). */
 export function canSaveMerchantDesigns(
@@ -91,33 +49,6 @@ export function canSaveMerchantDesigns(
 ): boolean {
   const isActive = planStatus === "trialing" || planStatus === "active";
   return isActive && !!planName && (PAID_PLANS as readonly string[]).includes(planName);
-}
-
-/**
- * Maximum monthly overage cost (USD) a plan can incur = overage cap × per-unit
- * price. This is the `cappedAmount` Shopify requires on a usage-pricing line:
- * Shopify will reject usage records once the merchant's accrued usage for the
- * billing period reaches this amount, which lines up with our own hard cap
- * (overageCap units × OVERAGE_PRICE_USD). Returns 0 for plans without overage.
- *
- *   Starter : 200 × $0.08 = $16.00
- *   Dabbler : 300 × $0.08 = $24.00
- *   Pro     : 500 × $0.08 = $40.00
- *   Pro Plus: 1000 × $0.08 = $80.00
- */
-export function getPlanOverageCappedAmountUsd(planName: string | null | undefined): number {
-  if (!planName) return 0;
-  const cap = PLAN_OVERAGE_CAPS[planName] ?? 0;
-  // Round to cents to avoid float drift (e.g. 16.000000000000004).
-  return Math.round(cap * OVERAGE_PRICE_USD * 100) / 100;
-}
-
-/** Human-readable terms shown on the metered (usage) pricing line at approval. */
-export const OVERAGE_USAGE_TERMS = `$${OVERAGE_PRICE_USD.toFixed(2)} USD per additional AI generation beyond your monthly included allotment (pay-as-you-go; requires in-app opt-in; not a prepaid pack)`;
-
-export function getPageLimit(planName: string | null | undefined): number {
-  if (!planName) return 0;
-  return PLAN_PAGE_LIMITS[planName] ?? 0;
 }
 
 /**
@@ -193,7 +124,10 @@ export interface GenerationQuotaConfig {
   overageCap: number;
   /** Hard cap for the bucket = freeQuota + overageCap. */
   hardCap: number;
-  /** Per-overage-generation price in USD (0 for plans with no overage). */
+  /**
+   * Headline overage price (first tier). Emit path must call
+   * `resolveOveragePriceUsd(overageSeq)` so volume can select a tier.
+   */
   overagePriceUsd: number;
   /** Counter bucket key the monthly counters belong to. */
   bucketKey: string;
@@ -229,7 +163,7 @@ export function resolveGenerationQuota(
       freeQuota,
       overageCap,
       hardCap: freeQuota + overageCap,
-      overagePriceUsd: overageCap > 0 ? OVERAGE_PRICE_USD : 0,
+      overagePriceUsd: overageCap > 0 ? resolveOveragePriceUsd() : 0,
       bucketKey: generationMonthKey(now),
       monthly: true,
     };

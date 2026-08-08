@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -12,49 +14,43 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  merchantProfitCents,
-  monthlyNetProfitCents,
-  subscriptionBreakEvenUnits,
-  DEFAULT_MARKUP_PERCENT,
-  suggestedRetailCents,
-  suggestedRetailDollarsString,
-} from "@shared/productIntelligence";
-import {
-  backsolveVisitorsFromSales,
   collapseToPriceDriverVariants,
-  DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE,
-  DEFAULT_FUNNEL_REWARD_GRANTS,
-  DEFAULT_PURCHASE_CONVERSION_RATE,
-  ESTIMATOR_PAID_PLANS,
-  expectedSalesFromFunnel,
-  FREE_GENS_PER_VISITOR,
   mergePriceDriverSources,
-  pagesNeededFromMix,
-  planOverageEstimate,
   priceDriversFromCostsPayload,
-  recommendPlan,
-  scaleUnitsToTotal,
   stripProviderSuffix,
-  type FunnelRewardGrants,
-  type MixLine,
   type PriceDriverVariant,
 } from "@shared/planEstimator";
+import {
+  OVERAGE_PRICE_USD,
+  PAID_PLAN_DEFINITIONS,
+  PLAN_DISPLAY_NAMES,
+} from "@shared/customizerPlans";
+import {
+  cheapestFittingPlan,
+  computePageMetrics,
+  computeStoreProfit,
+  evaluatePlans,
+  headlineNetProfitUsd,
+  rescalePageOrders,
+  retailAtMarginUsd,
+  totalOrdersFromFunnel,
+  visitorsFromOrders,
+  type ModelledPage,
+  type ProfitInsightsGrants,
+} from "@shared/profitInsightsModel";
 import { usePlanGenerationQuota } from "@/components/admin/GenerationQuotaUsage";
-import PlanGenerationEstimator from "@/components/admin/PlanGenerationEstimator";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { Link } from "wouter";
+import { ChevronDown, ChevronUp, Loader2, Plus, Trash2 } from "lucide-react";
 
-const INITIAL_ENGAGEMENT_PCT = "30";
-const INITIAL_CONVERSION_PCT = "5";
-
-function parsePctString(raw: string, fallback: number): number {
-  const pct = parseFloat(raw);
-  if (!Number.isFinite(pct)) return fallback;
-  return Math.min(1, Math.max(0, pct / 100));
-}
+/** Illustrative funnel seeds — not trailing store telemetry (see docs/profit-insights-model.md). */
+const SEED_VISITORS = 1000;
+const SEED_ENGAGEMENT_PCT = 30;
+const SEED_CONVERSION_PCT = 5;
 
 type CatalogEntry = {
   blueprintId: number;
@@ -67,7 +63,6 @@ type CatalogEntry = {
     name: string;
     printifyProviderId: number | null;
   } | null;
-  /** Platform PI reference — COGS/shipping for Insights when not imported. */
   platformProductTypeId?: number | null;
 };
 
@@ -90,35 +85,34 @@ type CostsPayload = {
   productTypeId?: number | null;
 };
 
-type MixRow = {
+type PageRow = {
   id: string;
-  /** Platform catalogue blueprint id (string for Select). */
   blueprintId: string;
   productTypeId: string;
   variantKey: string;
-  retailDollars: string;
-  monthlyUnits: number;
+  unitsPerOrder: number;
+  orders: number;
+  crossSellPct: number;
 };
 
 type PickerProduct = {
   blueprintId: number;
   label: string;
-  /** Merchant import if present, else platform catalogue PI reference. */
   productTypeId: number | null;
 };
 
-function newMixRow(monthlyUnits = 0): MixRow {
+function newPageRow(orders: number): PageRow {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     blueprintId: "",
     productTypeId: "",
     variantKey: "",
-    retailDollars: "",
-    monthlyUnits,
+    unitsPerOrder: 1,
+    orders,
+    crossSellPct: 0,
   };
 }
 
-/** One row per catalogue product — dedupe by blueprint, then by cleaned title. */
 function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct[] {
   const byBlueprint = new Map<number, PickerProduct>();
   for (const e of entries ?? []) {
@@ -131,10 +125,8 @@ function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct
       byBlueprint.set(blueprintId, { blueprintId, label, productTypeId });
     }
   }
-
-  // Same display name from different blueprints → keep one (prefer one with PI id).
   const byLabel = new Map<string, PickerProduct>();
-  for (const p of byBlueprint.values()) {
+  for (const p of Array.from(byBlueprint.values())) {
     const key = p.label.trim().toLowerCase();
     const existing = byLabel.get(key);
     if (!existing) {
@@ -145,33 +137,58 @@ function buildPickerProducts(entries: CatalogEntry[] | undefined): PickerProduct
       byLabel.set(key, p);
     }
   }
+  return Array.from(byLabel.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
 
-  return [...byLabel.values()].sort((a, b) => a.label.localeCompare(b.label));
+function money0(n: number): string {
+  return `$${Math.round(n).toLocaleString("en-US")}`;
+}
+
+function money2(n: number): string {
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fitBadge(status: string) {
+  if (status === "ok") return <Badge className="bg-emerald-600 hover:bg-emerald-600">Fits</Badge>;
+  if (status === "short") return <Badge variant="secondary">Short on gens</Badge>;
+  if (status === "cap") return <Badge variant="destructive">Over cap</Badge>;
+  if (status === "pages") return <Badge variant="destructive">Pages</Badge>;
+  return <Badge variant="outline">{status}</Badge>;
 }
 
 export default function AdminInsightsPage() {
   const { toast } = useToast();
   const { data: planData } = usePlanGenerationQuota();
-  const [rows, setRows] = useState<MixRow[]>(() => [newMixRow(0)]);
-  const [monthlyVisitors, setMonthlyVisitors] = useState("0");
-  const [engagementPct, setEngagementPct] = useState(INITIAL_ENGAGEMENT_PCT);
-  const [conversionPct, setConversionPct] = useState(INITIAL_CONVERSION_PCT);
-  const [expectedSales, setExpectedSales] = useState(0);
-  const [includeOverage, setIncludeOverage] = useState(false);
-  const [estimatedGens, setEstimatedGens] = useState(0);
-  const currentPlanName = planData?.planName || "starter";
-  const [roiPlanName, setRoiPlanName] = useState(currentPlanName);
-  const [planAutoNotice, setPlanAutoNotice] = useState<{
-    fromName: string;
-    toName: string;
-    direction: "up" | "down";
-    estimatedGens: number;
-    /** Cheaper plan that would fit if Include overage were on (overage currently off). */
-    overageAltName?: string | null;
-    overageAltCostUsd?: number;
-    overageAltGens?: number;
-  } | null>(null);
+  const seedOrders = totalOrdersFromFunnel({
+    visitors: SEED_VISITORS,
+    engagementPct: SEED_ENGAGEMENT_PCT,
+    conversionPct: SEED_CONVERSION_PCT,
+  });
+
+  const [tab, setTab] = useState("profit");
+  const [visitors, setVisitors] = useState(SEED_VISITORS);
+  const [engagementPct, setEngagementPct] = useState(SEED_ENGAGEMENT_PCT);
+  const [conversionPct, setConversionPct] = useState(SEED_CONVERSION_PCT);
+  const [marginTarget, setMarginTarget] = useState(65);
+  const [pages, setPages] = useState<PageRow[]>(() => [newPageRow(seedOrders)]);
+  const [openPageId, setOpenPageId] = useState<string | null>(null);
+  const [previewOverage, setPreviewOverage] = useState(false);
+  const [overageSeeded, setOverageSeeded] = useState(false);
+  const [planName, setPlanName] = useState("starter");
+  const [autoFollow, setAutoFollow] = useState(true);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
+  const prevOverage = useRef(previewOverage);
+
+  const currentPlanName = planData?.planName || "starter";
+
+  useEffect(() => {
+    if (!overageSeeded && planData) {
+      setPreviewOverage(
+        !!(planData.overage?.optInEnabled || planData.generationQuota?.overageOptInEnabled),
+      );
+      setOverageSeeded(true);
+    }
+  }, [planData, overageSeeded]);
 
   const fetchCostsMutation = useMutation({
     mutationFn: async (args: { blueprintId: string; productTypeId: string; rowId: string }) => {
@@ -186,9 +203,6 @@ export default function AdminInsightsPage() {
       }
       let data = (await res.json()) as CostsPayload & { productTypeId?: number | null };
       const ptId = data.productTypeId != null ? String(data.productTypeId) : args.productTypeId;
-
-      // If blueprint path still has no COGS, or front exists but Front/Back is missing
-      // on a dual-sided product, force the Printify waterfall on the product type.
       const costCount = Object.keys(data.costs || {}).length;
       const bothCount = Object.keys(data.costsBoth || {}).length;
       const needsBothFallback =
@@ -198,11 +212,8 @@ export default function AdminInsightsPage() {
           "GET",
           `/api/admin/printify/costs/${ptId}?refresh=1&legacy=1`,
         );
-        if (legacy.ok) {
-          data = await legacy.json();
-        }
+        if (legacy.ok) data = await legacy.json();
       }
-
       const drivers = priceDriversFromCostsPayload({
         costs: data.costs,
         costsBoth: data.costsBoth,
@@ -219,12 +230,10 @@ export default function AdminInsightsPage() {
         productTypeId: ptId,
         rowId: args.rowId,
         data,
-        driverCount: drivers.length,
         hasCogs: drivers.some((d) => d.cogsCents != null),
       };
     },
     onSuccess: ({ key, productTypeId, rowId, data, hasCogs }) => {
-      // Keep query key aligned with useQueries (productTypeId may have been empty before ensure).
       queryClient.setQueryData(
         ["/api/admin/printify/blueprint-costs", key, "insights", productTypeId || ""],
         data,
@@ -234,10 +243,9 @@ export default function AdminInsightsPage() {
         data,
       );
       if (productTypeId) {
-        setRows((prev) =>
+        setPages((prev) =>
           prev.map((r) => (r.id === rowId ? { ...r, productTypeId } : r)),
         );
-        // Also write under the new productTypeId key once the row updates.
         queryClient.setQueryData(
           ["/api/admin/printify/blueprint-costs", key, "insights", productTypeId],
           data,
@@ -258,10 +266,6 @@ export default function AdminInsightsPage() {
     },
     onSettled: () => setSyncingKey(null),
   });
-
-  useEffect(() => {
-    setRoiPlanName(currentPlanName);
-  }, [currentPlanName]);
 
   const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({
     queryKey: ["/api/appai/setup/catalog"],
@@ -296,16 +300,15 @@ export default function AdminInsightsPage() {
   );
 
   const selectedBlueprintIds = useMemo(
-    () => [...new Set(rows.map((r) => r.blueprintId).filter(Boolean))],
-    [rows],
+    () => Array.from(new Set(pages.map((r) => r.blueprintId).filter(Boolean))),
+    [pages],
   );
 
   const costsQueries = useQueries({
     queries: selectedBlueprintIds.map((blueprintId) => {
-      const row = rows.find((r) => r.blueprintId === blueprintId);
+      const row = pages.find((r) => r.blueprintId === blueprintId);
       const productTypeId = row?.productTypeId || "";
       return {
-        // Always blueprint-costs (ensures platform ref + waterfall when needed).
         queryKey: ["/api/admin/printify/blueprint-costs", blueprintId, "insights", productTypeId],
         queryFn: async (): Promise<CostsPayload | null> => {
           const res = await apiRequest(
@@ -314,11 +317,10 @@ export default function AdminInsightsPage() {
           );
           if (!res.ok) return null;
           const data = (await res.json()) as CostsPayload & { productTypeId?: number | null };
-          // Persist discovered platform/merchant productTypeId onto the mix row.
           if (data.productTypeId != null && row && !row.productTypeId) {
             const pt = String(data.productTypeId);
             const rowId = row.id;
-            setRows((prev) =>
+            setPages((prev) =>
               prev.map((r) => (r.id === rowId && !r.productTypeId ? { ...r, productTypeId: pt } : r)),
             );
           }
@@ -333,15 +335,13 @@ export default function AdminInsightsPage() {
 
   const piQueries = useQueries({
     queries: selectedBlueprintIds.map((blueprintId) => {
-      const row = rows.find((r) => r.blueprintId === blueprintId);
+      const row = pages.find((r) => r.blueprintId === blueprintId);
       const productTypeId = row?.productTypeId || "";
       return {
         queryKey: ["/api/admin/product-intelligence", productTypeId],
         queryFn: async () => {
           const res = await apiRequest("GET", `/api/admin/product-intelligence/${productTypeId}`);
-          if (!res.ok) {
-            return { variants: [] as PiVariant[] };
-          }
+          if (!res.ok) return { variants: [] as PiVariant[] };
           return res.json() as Promise<{ variants: PiVariant[] }>;
         },
         enabled: !!productTypeId,
@@ -368,16 +368,6 @@ export default function AdminInsightsPage() {
     return map;
   }, [selectedBlueprintIds, piQueries]);
 
-  const loadingByBlueprint = useMemo(() => {
-    const map = new Map<string, boolean>();
-    selectedBlueprintIds.forEach((id, i) => {
-      const costsBusy = !!(costsQueries[i]?.isLoading || costsQueries[i]?.isFetching);
-      const piBusy = !!(piQueries[i]?.isLoading || piQueries[i]?.isFetching);
-      map.set(id, costsBusy || piBusy);
-    });
-    return map;
-  }, [selectedBlueprintIds, costsQueries, piQueries]);
-
   const variantsForBlueprint = (blueprintId: string): PriceDriverVariant[] => {
     if (!blueprintId) return [];
     const costs = costsByBlueprint.get(blueprintId);
@@ -391,747 +381,748 @@ export default function AdminInsightsPage() {
     return mergePriceDriverSources({ fromCosts, fromPi, fromBlanks: [] });
   };
 
-  useEffect(() => {
-    setRows((prev) =>
-      prev.map((row) => {
-        if (!row.blueprintId) return row;
-        if (!row.variantKey) return row;
-        const opts = variantsForBlueprint(row.blueprintId);
-        if (!opts.some((v) => v.key === row.variantKey)) {
-          return { ...row, variantKey: "", retailDollars: "" };
-        }
-        // When COGS arrives after size selection, seed retail once if still blank.
-        if (row.retailDollars.trim()) return row;
-        const variant = opts.find((v) => v.key === row.variantKey);
-        const suggested = suggestedRetailDollarsString(
-          variant?.cogsCents,
-          DEFAULT_MARKUP_PERCENT,
-        );
-        return suggested ? { ...row, retailDollars: suggested } : row;
-      }),
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [costsByBlueprint, piByBlueprint]);
-
-  const roiPlanMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === roiPlanName);
-  const planPrice = roiPlanMeta?.priceUsd ?? 29;
-  const planLabel = roiPlanMeta?.displayName || roiPlanName.replace("_", " ");
-  const livePlanLabel =
-    ESTIMATOR_PAID_PLANS.find((p) => p.planName === currentPlanName)?.displayName ||
-    currentPlanName.replace("_", " ");
-  const roiOverage = planOverageEstimate({
-    estimatedGens,
-    generationQuota: roiPlanMeta?.generationQuota ?? 0,
-    overageCap: roiPlanMeta?.overageCap ?? 0,
-    includeOverage,
-  });
-  const planFeeUsd = planPrice + (includeOverage ? roiOverage.overageCostUsd : 0);
-
-  const lineCalcs = useMemo(() => {
-    return rows.map((row) => {
-      const picker = pickerProducts.find((p) => String(p.blueprintId) === row.blueprintId);
-      const markup = DEFAULT_MARKUP_PERCENT;
-      const variant = variantsForBlueprint(row.blueprintId).find((v) => v.key === row.variantKey);
-      const cogsCents = variant?.cogsCents ?? null;
-      const shippingCents = variant?.shippingCents ?? null;
-      const landed =
-        cogsCents != null
-          ? cogsCents + (shippingCents != null && shippingCents > 0 ? shippingCents : 0)
-          : null;
-      const parsedRetail = parseFloat(row.retailDollars);
-      // Only use an entered retail — never invent profit from the placeholder.
-      const retailCents =
-        Number.isFinite(parsedRetail) && parsedRetail > 0
-          ? Math.round(parsedRetail * 100)
-          : null;
-      const profitPerSale =
-        row.variantKey && retailCents != null
-          ? merchantProfitCents(retailCents, landed ?? cogsCents)
-          : null;
-      const units = Number.isFinite(row.monthlyUnits) ? Math.max(0, row.monthlyUnits) : 0;
-      const monthlyProfit =
-        profitPerSale != null ? Math.round(profitPerSale * units) : null;
-      return {
-        row,
-        label: picker?.label || "Product",
-        variantLabel: variant?.label || "—",
-        cogsCents,
-        shippingCents,
-        profitPerSale,
-        monthlyProfit,
-        units,
-      };
-    });
-  }, [rows, pickerProducts, costsByBlueprint, piByBlueprint]);
-
-  const totalMonthlyProfitCents = lineCalcs.reduce(
-    (sum, l) => sum + (l.monthlyProfit ?? 0),
-    0,
-  );
-  const hasAnyProfit = lineCalcs.some((l) => l.monthlyProfit != null);
-  const totalUnits = lineCalcs.reduce((sum, l) => sum + l.units, 0);
-  const blendedProfitPerSale =
-    totalUnits > 0 && hasAnyProfit
-      ? Math.round(totalMonthlyProfitCents / totalUnits)
-      : null;
-  const monthlyNet = monthlyNetProfitCents({
-    profitPerSaleCents: blendedProfitPerSale,
-    monthlySales: totalUnits,
-    subscriptionUsd: planFeeUsd,
-  });
-  const breakEven = subscriptionBreakEvenUnits(planFeeUsd, blendedProfitPerSale);
-
-  const estimatorLines: MixLine[] = useMemo(
-    () =>
-      rows
-        .filter((r) => !!r.blueprintId && !!r.variantKey && Number(r.monthlyUnits) > 0)
-        .map((r) => {
-          const picker = pickerProducts.find((p) => String(p.blueprintId) === r.blueprintId);
-          return {
-            id: r.id,
-            label: picker?.label || r.blueprintId || "Product",
-            monthlyUnits: r.monthlyUnits,
-          };
-        }),
-    [rows, pickerProducts],
-  );
-
-  const pagesNeeded = pagesNeededFromMix(estimatorLines);
-  const planFit = useMemo(
-    () => recommendPlan({ pagesNeeded, estimatedGens, includeOverage }),
-    [pagesNeeded, estimatedGens, includeOverage],
-  );
-
-  // Keep ROI "Plan to model" on the cheapest plan that can cover this mix
-  // (including overage when enabled). Jump up when quota is short; drop back
-  // down when volume returns to a lower plan's safe zone.
-  useEffect(() => {
-    // Wait until the merchant has a real mix (variant + units) before reshuffling plans.
-    const hasConfiguredMix = rows.some(
-      (r) => !!r.blueprintId && !!r.variantKey && Number(r.monthlyUnits) > 0,
-    );
-    if (!hasConfiguredMix) return;
-    if (!planFit.fits || !planFit.planName) return;
-    if (planFit.planName === roiPlanName) return;
-    const fromIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === roiPlanName);
-    const toIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === planFit.planName);
-    const fromMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === roiPlanName);
-    const toMeta = ESTIMATOR_PAID_PLANS.find((p) => p.planName === planFit.planName);
-    const direction: "up" | "down" = toIdx > fromIdx ? "up" : "down";
-
-    let overageAltName: string | null = null;
-    let overageAltCostUsd = 0;
-    let overageAltGens = 0;
-    if (direction === "up" && !includeOverage) {
-      const withOverage = recommendPlan({
-        pagesNeeded,
-        estimatedGens,
-        includeOverage: true,
-      });
-      const altIdx = ESTIMATOR_PAID_PLANS.findIndex((p) => p.planName === withOverage.planName);
-      if (withOverage.fits && withOverage.planName && altIdx >= 0 && altIdx < toIdx) {
-        const alt = ESTIMATOR_PAID_PLANS[altIdx]!;
-        const ov = planOverageEstimate({
-          estimatedGens,
-          generationQuota: alt.generationQuota,
-          overageCap: alt.overageCap,
-          includeOverage: true,
-        });
-        overageAltName = alt.displayName;
-        overageAltCostUsd = ov.overageCostUsd;
-        overageAltGens = ov.overageGens;
-      }
-    }
-
-    setPlanAutoNotice({
-      fromName: fromMeta?.displayName || roiPlanName,
-      toName: toMeta?.displayName || planFit.planName,
-      direction,
-      estimatedGens,
-      overageAltName,
-      overageAltCostUsd,
-      overageAltGens,
-    });
-    setRoiPlanName(planFit.planName);
-  }, [planFit.fits, planFit.planName, roiPlanName, estimatedGens, includeOverage, pagesNeeded, rows]);
-
-  const rewardGrants: FunnelRewardGrants = useMemo(() => {
-    const free =
-      typeof storefrontSettings?.storefrontFreeGensPerVisitor === "number"
-        ? storefrontSettings.storefrontFreeGensPerVisitor
-        : FREE_GENS_PER_VISITOR;
+  const grants: ProfitInsightsGrants = useMemo(() => {
     const rungs = rewardLadder?.rungs ?? [];
     const email = rungs.find((r) => r.rungKey === "email_signup");
     const share = rungs.find((r) => r.rungKey === "share_design");
     const purchase = rungs.find((r) => r.rungKey === "purchase_threshold");
-    const purchasePlatformOn = rewardLadder?.purchaseRewardsEnabled !== false;
     return {
-      freeGensPerVisitor: free,
-      emailCredits: email?.creditAmount ?? DEFAULT_FUNNEL_REWARD_GRANTS.emailCredits,
-      shareCredits: share?.creditAmount ?? DEFAULT_FUNNEL_REWARD_GRANTS.shareCredits,
-      purchaseCredits: purchase?.creditAmount ?? DEFAULT_FUNNEL_REWARD_GRANTS.purchaseCredits,
-      emailEnabled: email ? !!email.enabled : DEFAULT_FUNNEL_REWARD_GRANTS.emailEnabled,
-      shareEnabled: share ? !!share.enabled : DEFAULT_FUNNEL_REWARD_GRANTS.shareEnabled,
-      purchaseEnabled: purchase
-        ? !!purchase.enabled && purchasePlatformOn
-        : DEFAULT_FUNNEL_REWARD_GRANTS.purchaseEnabled && purchasePlatformOn,
+      freeGensPerVisitor: storefrontSettings?.storefrontFreeGensPerVisitor ?? 2,
+      emailCredits: email?.creditAmount ?? 1,
+      shareCredits: share?.creditAmount ?? 1,
+      purchaseCredits: purchase?.creditAmount ?? 3,
+      emailEnabled: email?.enabled ?? true,
+      shareEnabled: share?.enabled ?? true,
+      purchaseEnabled: !!(rewardLadder?.purchaseRewardsEnabled && purchase?.enabled),
     };
-  }, [storefrontSettings, rewardLadder]);
+  }, [rewardLadder, storefrontSettings]);
 
-  const updateRow = (id: string, patch: Partial<MixRow>) => {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  };
+  const modelledPages: ModelledPage[] = useMemo(() => {
+    return pages.map((p) => {
+      const picker = pickerProducts.find((x) => String(x.blueprintId) === p.blueprintId);
+      const variant = variantsForBlueprint(p.blueprintId).find((v) => v.key === p.variantKey);
+      const cogsUsd =
+        variant?.cogsCents != null
+          ? (variant.cogsCents +
+              (variant.shippingCents != null && variant.shippingCents > 0
+                ? variant.shippingCents
+                : 0)) /
+            100
+          : 0;
+      return {
+        id: p.id,
+        label: picker?.label || "Select a product",
+        cogsUsd,
+        orders: p.orders,
+        unitsPerOrder: p.unitsPerOrder,
+        crossSellPct: p.crossSellPct,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages, pickerProducts, costsByBlueprint, piByBlueprint]);
 
-  const applyFunnelDriver = (patch: {
-    visitors?: string;
-    engagementPct?: string;
-    conversionPct?: string;
-  }) => {
-    const eStr = patch.engagementPct ?? engagementPct;
-    const cStr = patch.conversionPct ?? conversionPct;
-    if (patch.engagementPct != null) setEngagementPct(patch.engagementPct);
-    if (patch.conversionPct != null) setConversionPct(patch.conversionPct);
+  const funnel = { visitors, engagementPct, conversionPct };
+  const pageMetrics = useMemo(
+    () =>
+      computePageMetrics({
+        pages: modelledPages,
+        funnel,
+        marginTargetPct: marginTarget,
+        grants,
+      }),
+    [modelledPages, visitors, engagementPct, conversionPct, marginTarget, grants],
+  );
+  const profit = useMemo(
+    () => computeStoreProfit(pageMetrics, marginTarget),
+    [pageMetrics, marginTarget],
+  );
 
-    const eng = parsePctString(eStr, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
-    const conv = parsePctString(cStr, DEFAULT_PURCHASE_CONVERSION_RATE);
+  const suggested = useMemo(
+    () =>
+      cheapestFittingPlan({
+        gensDemand: profit.gensDemand,
+        pagesNeeded: profit.pagesNeeded,
+        previewOverage,
+      }) ?? PAID_PLAN_DEFINITIONS[PAID_PLAN_DEFINITIONS.length - 1]!,
+    [profit.gensDemand, profit.pagesNeeded, previewOverage],
+  );
 
-    // Engagement holds sales/units and back-solves visitors (traffic needed for the mix).
-    if (patch.engagementPct != null && patch.visitors == null && patch.conversionPct == null) {
-      const targetSales = Math.max(0, Math.floor(expectedSales));
-      const visitors = backsolveVisitorsFromSales({
-        sales: targetSales,
-        engagementRate: eng,
-        conversionRate: conv,
-      });
-      if (visitors != null) setMonthlyVisitors(String(visitors));
+  useEffect(() => {
+    if (prevOverage.current !== previewOverage) {
+      prevOverage.current = previewOverage;
+      setAutoFollow(true);
+      setPlanName(suggested.planName);
       return;
     }
+    if (autoFollow && planName !== suggested.planName) {
+      setPlanName(suggested.planName);
+    }
+  }, [previewOverage, suggested.planName, autoFollow, planName]);
 
-    // Visitors or conversion drive sales forward from current traffic × rates.
-    const vStr = patch.visitors ?? monthlyVisitors;
-    if (patch.visitors != null) setMonthlyVisitors(patch.visitors);
-    const visitorsN = Math.max(0, parseFloat(vStr) || 0);
-    const sales = expectedSalesFromFunnel({
-      monthlyVisitors: visitorsN,
-      engagementRate: eng,
-      conversionRate: conv,
+  const planRows = useMemo(
+    () =>
+      evaluatePlans({
+        gensDemand: profit.gensDemand,
+        pagesNeeded: profit.pagesNeeded,
+        previewOverage,
+      }),
+    [profit.gensDemand, profit.pagesNeeded, previewOverage],
+  );
+  const selectedRow = planRows.find((r) => r.plan.planName === planName) ?? planRows[0]!;
+  const plan = selectedRow.plan;
+  const overageCostUsd = previewOverage ? selectedRow.overageCostUsd : 0;
+  const planCostUsd = selectedRow.monthlyCostUsd;
+  const netProfit = headlineNetProfitUsd({
+    profit,
+    planFeeUsd: plan.priceUsd,
+    overageCostUsd,
+  });
+  const gensSpent = profit.gensDemand;
+  const pagesShort = profit.pagesNeeded > plan.pageLimit;
+
+  const planCoveringDemand = cheapestFittingPlan({
+    gensDemand: profit.gensDemand,
+    pagesNeeded: profit.pagesNeeded,
+    previewOverage: false,
+  });
+  const cheapestWithOverage = cheapestFittingPlan({
+    gensDemand: profit.gensDemand,
+    pagesNeeded: profit.pagesNeeded,
+    previewOverage: true,
+  });
+  const overageUnlocksCheaper =
+    !previewOverage &&
+    !!cheapestWithOverage &&
+    !!planCoveringDemand &&
+    cheapestWithOverage.priceUsd < planCoveringDemand.priceUsd;
+
+  const applyFunnel = (nextVisitors: number, nextEng: number, nextConv: number) => {
+    setVisitors(nextVisitors);
+    setEngagementPct(nextEng);
+    setConversionPct(nextConv);
+    const target = totalOrdersFromFunnel({
+      visitors: nextVisitors,
+      engagementPct: nextEng,
+      conversionPct: nextConv,
     });
-    setExpectedSales(sales);
-    setRows((prev) => scaleUnitsToTotal(prev, sales));
+    setPages((ps) => rescalePageOrders(ps, target));
   };
 
-  const applySalesDriver = (sales: number) => {
-    const target = Math.max(0, Math.floor(sales));
-    setExpectedSales(target);
-    const eng = parsePctString(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
-    const conv = parsePctString(conversionPct, DEFAULT_PURCHASE_CONVERSION_RATE);
-    const visitors = backsolveVisitorsFromSales({
-      sales: target,
-      engagementRate: eng,
-      conversionRate: conv,
+  const setPageOrders = (id: string, orders: number) => {
+    setPages((ps) => {
+      const next = ps.map((p) => (p.id === id ? { ...p, orders: Math.max(0, orders) } : p));
+      const newTotal = next.reduce((s, p) => s + p.orders, 0);
+      setVisitors(visitorsFromOrders(newTotal, engagementPct, conversionPct));
+      return next;
     });
-    if (visitors != null) setMonthlyVisitors(String(visitors));
-    setRows((prev) => scaleUnitsToTotal(prev, target));
   };
 
-  const applyUnitsDriver = (nextRows: MixRow[]) => {
-    setRows(nextRows);
-    const total = nextRows.reduce((sum, r) => {
-      const n = Number(r.monthlyUnits);
-      return sum + (Number.isFinite(n) && n > 0 ? n : 0);
-    }, 0);
-    setExpectedSales(total);
-    const eng = parsePctString(engagementPct, DEFAULT_CUSTOMIZER_ENGAGEMENT_RATE);
-    const conv = parsePctString(conversionPct, DEFAULT_PURCHASE_CONVERSION_RATE);
-    const visitors = backsolveVisitorsFromSales({
-      sales: total,
-      engagementRate: eng,
-      conversionRate: conv,
-    });
-    if (visitors != null) setMonthlyVisitors(String(visitors));
+  const updatePage = (id: string, patch: Partial<PageRow>) => {
+    setPages((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   };
+
+  const addPage = () => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setPages((ps) => {
+      const next = [...ps, { ...newPageRow(3), id }];
+      const total = next.reduce((s, p) => s + p.orders, 0);
+      setVisitors(visitorsFromOrders(total, engagementPct, conversionPct));
+      return next;
+    });
+    setOpenPageId(id);
+  };
+
+  const removePage = (id: string) => {
+    setPages((ps) => {
+      if (ps.length <= 1) return ps;
+      const next = ps.filter((p) => p.id !== id);
+      const total = next.reduce((s, p) => s + p.orders, 0);
+      setVisitors(visitorsFromOrders(total, engagementPct, conversionPct));
+      return next;
+    });
+  };
+
+  const ordersToCover =
+    profit.totalOrders > 0 && netProfit < 0
+      ? Math.ceil(
+          (planCostUsd /
+            Math.max(
+              0.01,
+              (profit.aovChanged ? profit.simMonthlyProfitUsd : profit.baseMonthlyProfitUsd) /
+                Math.max(1, profit.totalOrders),
+            )) ,
+        )
+      : profit.totalOrders > 0
+        ? Math.ceil(
+            planCostUsd /
+              Math.max(
+                0.01,
+                (profit.aovChanged ? profit.simMonthlyProfitUsd : profit.baseMonthlyProfitUsd) /
+                  profit.totalOrders,
+              ),
+          )
+        : null;
+
+  const livePlanLabel =
+    PLAN_DISPLAY_NAMES[currentPlanName] || currentPlanName.replace("_", " ");
 
   return (
     <AdminLayout>
-      <div className="space-y-6 max-w-7xl">
+      <div className="max-w-5xl mx-auto space-y-4 pb-10">
         <div>
-          <h1 className="text-2xl font-bold">Profit Insights</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Estimate profit across the platform catalogue. Monthly units and the plan-fit funnel stay
-            in sync — edit either side and the other updates.
+          <h1 className="text-2xl font-bold tracking-tight">Profit Insights</h1>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+            Model monthly profit across customizer pages and see how raising average order value
+            moves it. Example traffic — edit to match your store.{" "}
+            <span className="text-muted-foreground/80">
+              Page count is modelled here (not live Customizer Pages yet).
+            </span>
           </p>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
-        <div className="space-y-6 min-w-0">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Subscription ROI</CardTitle>
-            <CardDescription>
-              Your live plan is {livePlanLabel}. Selection follows the cheapest plan that can cover
-              this mix’s gens{includeOverage ? " (with overage)" : ""} — it jumps up when quota runs
-              short and drops back when volume is safe again.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="space-y-2">
-              <Label>Plan to model</Label>
-              <Select
-                value={roiPlanName}
-                onValueChange={(value) => {
-                  setPlanAutoNotice(null);
-                  setRoiPlanName(value);
-                }}
-              >
-                <SelectTrigger className="max-w-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ESTIMATOR_PAID_PLANS.map((p) => {
-                    const row = planFit.comparisons.find((c) => c.planName === p.planName);
-                    const fits = row?.fits ?? false;
-                    return (
-                      <SelectItem key={p.planName} value={p.planName}>
-                        {p.displayName} — ${p.priceUsd}/mo
-                        {p.planName === currentPlanName ? " (current)" : ""}
-                        {!fits ? " · quota short" : ""}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-              {planAutoNotice && (
-                <Alert
-                  className={
-                    planAutoNotice.direction === "up"
-                      ? "border-amber-300 bg-amber-50 text-amber-950"
-                      : "border-sky-300 bg-sky-50 text-sky-950"
-                  }
-                >
-                  <AlertTitle className="text-sm">
-                    {planAutoNotice.direction === "up"
-                      ? `Moved up to ${planAutoNotice.toName}`
-                      : `Moved down to ${planAutoNotice.toName}`}
-                  </AlertTitle>
-                  <AlertDescription className="text-xs space-y-2">
-                    {planAutoNotice.direction === "up" ? (
-                      <>
-                        <p>
-                          {planAutoNotice.fromName} can’t cover ~{planAutoNotice.estimatedGens}{" "}
-                          gens/mo for this visitor/sales mix
-                          {includeOverage ? " even with overage" : " on included quota alone"}.
-                          Plan selection updated to {planAutoNotice.toName}, which has enough quota.
-                        </p>
-                        {planAutoNotice.overageAltName ? (
-                          <div className="space-y-2">
-                            <p>
-                              Prefer not to increase the full plan level? Turn on{" "}
-                              <span className="font-medium">Include overage</span> —{" "}
-                              {planAutoNotice.overageAltName} would cover this mix with about $
-                              {(planAutoNotice.overageAltCostUsd ?? 0).toFixed(2)} overage (
-                              {planAutoNotice.overageAltGens} gens at $0.08).
-                            </p>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-8 border-amber-400 bg-white/80"
-                              onClick={() => {
-                                setIncludeOverage(true);
-                                setPlanAutoNotice(null);
-                              }}
-                            >
-                              Turn on Include overage
-                            </Button>
-                          </div>
-                        ) : !includeOverage ? (
-                          <p>
-                            Include overage is off — you can test it on the right, but it still
-                            wouldn’t keep a cheaper plan under ~{planAutoNotice.estimatedGens}{" "}
-                            gens/mo for this mix.
-                          </p>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p>
-                        Volume is back in {planAutoNotice.toName}’s safe zone (~
-                        {planAutoNotice.estimatedGens} gens/mo). Plan selection updated from{" "}
-                        {planAutoNotice.fromName}.
-                      </p>
-                    )}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {!planFit.fits && (
-                <Alert variant="destructive">
-                  <AlertTitle className="text-sm">No plan covers this mix</AlertTitle>
-                  <AlertDescription className="text-xs">
-                    ~{estimatedGens} gens/mo exceeds even Pro Plus
-                    {includeOverage ? " + overage" : ""}. Lower visitors, engagement, or sales — or
-                    turn on overage if it’s off.
-                  </AlertDescription>
-                </Alert>
-              )}
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-md border p-3">
-                <div className="text-muted-foreground">Units to cover {planLabel}</div>
-                <div className="text-2xl font-semibold mt-1">
-                  {breakEven == null ? "—" : breakEven === 0 ? "0" : breakEven}
-                </div>
-              </div>
-              <div className="rounded-md border p-3">
-                <div className="text-muted-foreground">Net monthly after plan fee</div>
-                <div className="text-2xl font-semibold mt-1">
-                  {monthlyNet != null ? `$${(monthlyNet / 100).toFixed(2)}` : "—"}
-                </div>
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  ${planPrice}/mo
-                  {includeOverage && roiOverage.overageCostUsd > 0
-                    ? ` + $${roiOverage.overageCostUsd.toFixed(2)} ov (${roiOverage.overageGens} gens)`
-                    : includeOverage
-                      ? " · $0 overage"
-                      : ""}
-                  {includeOverage && roiOverage.uncoveredGens > 0
-                    ? ` · ${roiOverage.uncoveredGens} gens uncovered`
-                    : ""}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-2">
+        {/* Sticky results bar */}
+        <div className="sticky top-0 z-30 -mx-1 border-y bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          <div className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-5 lg:items-center">
             <div>
-              <CardTitle className="text-base">Merchant profit calculator</CardTitle>
-              <CardDescription>
-                {catalogLoading
-                  ? "Loading catalogue…"
-                  : `${pickerProducts.length} products in the platform catalogue`}
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setRows([...rows, newMixRow(0)])}
-            >
-              <Plus className="h-3.5 w-3.5 mr-1" />
-              Add product
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            {catalogLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading platform catalogue…
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Net profit / month
               </div>
-            ) : (
-              rows.map((row, idx) => {
-                const variants = variantsForBlueprint(row.blueprintId);
-                const busy = row.blueprintId ? !!loadingByBlueprint.get(row.blueprintId) : false;
-                const calc = lineCalcs[idx];
-                const markup = DEFAULT_MARKUP_PERCENT;
-                const hasBoth = variants.some((v) => v.printAreaKey === "both");
-                const bothMissingCogs = variants.some(
-                  (v) => v.printAreaKey === "both" && v.cogsCents == null,
-                );
-                const showFetchCogs =
-                  !!row.blueprintId &&
-                  !busy &&
-                  (variants.length === 0 ||
-                    variants.every((v) => v.cogsCents == null) ||
-                    bothMissingCogs ||
-                    (!!costsByBlueprint.get(row.blueprintId)?.supportsBothSides && !hasBoth));
+              <div className="text-2xl font-bold tabular-nums">{money0(netProfit)}</div>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Plan
+              </div>
+              <div className="text-lg font-semibold">
+                {plan.displayName}{" "}
+                <span className="text-sm font-normal text-muted-foreground">
+                  {money0(planCostUsd)}/mo
+                </span>
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Gens · pages
+              </div>
+              <div className="text-lg font-semibold tabular-nums">
+                {gensSpent.toLocaleString()}/{plan.generationQuota.toLocaleString()} ·{" "}
+                {profit.pagesNeeded}/{plan.pageLimit}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">{fitBadge(selectedRow.status)}</div>
+            <div className="flex flex-col gap-1 sm:items-end">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="preview-overage"
+                  checked={previewOverage}
+                  onCheckedChange={setPreviewOverage}
+                />
+                <Label htmlFor="preview-overage" className="text-sm cursor-pointer">
+                  Preview: overage
+                </Label>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Preview only — enable in{" "}
+                <Link href="/admin/settings" className="underline underline-offset-2">
+                  Settings
+                </Link>
+              </p>
+            </div>
+          </div>
+          {!previewOverage && selectedRow.status === "short" && (
+            <Alert className="rounded-none border-x-0 border-b-0 border-amber-200 bg-amber-50 text-amber-950">
+              <AlertTitle className="text-sm">Generation demand exceeds included allotment</AlertTitle>
+              <AlertDescription className="text-xs">
+                {overageUnlocksCheaper && cheapestWithOverage ? (
+                  <>
+                    Preview overage on to see {cheapestWithOverage.displayName} cover it for ~
+                    {money0(
+                      evaluatePlans({
+                        gensDemand: profit.gensDemand,
+                        pagesNeeded: profit.pagesNeeded,
+                        previewOverage: true,
+                      }).find((r) => r.plan.planName === cheapestWithOverage.planName)
+                        ?.monthlyCostUsd ?? cheapestWithOverage.priceUsd,
+                    )}
+                    /mo — enable it in Settings when ready.
+                  </>
+                ) : (
+                  <>
+                    Try a higher plan for more pages and headroom, or preview overage (
+                    {money2(OVERAGE_PRICE_USD)}/gen) to model pay-as-you-go.
+                  </>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+          {pagesShort && (
+            <Alert className="rounded-none border-x-0 border-b-0 border-red-200 bg-red-50">
+              <AlertDescription className="text-xs">
+                Modelled pages ({profit.pagesNeeded}) exceed {plan.displayName}&apos;s allowance (
+                {plan.pageLimit}).
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
 
-                return (
-                  <div key={row.id} className="rounded-md border p-3 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium">Product {idx + 1}</p>
-                      <Button
+        <p className="text-xs text-muted-foreground">
+          Live plan: <span className="font-medium capitalize">{livePlanLabel}</span>. Grant amounts
+          come from Settings; traffic figures are illustrative until store telemetry is wired.
+        </p>
+
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="profit">Merchant profit</TabsTrigger>
+            <TabsTrigger value="planfit">Plan fit</TabsTrigger>
+            <TabsTrigger value="roi">Subscription ROI</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="profit" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Target margin</CardTitle>
+                <CardDescription>
+                  Retail is implied from COGS ÷ (1 − margin). Applies to every page in the model.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap items-center gap-2">
+                {[60, 65, 70].map((m) => (
+                  <Button
+                    key={m}
+                    type="button"
+                    size="sm"
+                    variant={marginTarget === m ? "default" : "outline"}
+                    onClick={() => setMarginTarget(m)}
+                  >
+                    {m}%
+                  </Button>
+                ))}
+                <div className="flex items-center gap-2 ml-2">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={99}
+                    className="w-20"
+                    value={marginTarget}
+                    onChange={(e) => setMarginTarget(Number(e.target.value) || 65)}
+                  />
+                  <span className="text-sm text-muted-foreground">%</span>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+              <div className="space-y-3">
+                {pages.map((page) => {
+                  const open = openPageId === page.id || (openPageId == null && page.id === pages[0]?.id);
+                  const metrics = pageMetrics.find((m) => m.id === page.id);
+                  const variants = variantsForBlueprint(page.blueprintId);
+                  const busy = syncingKey === page.blueprintId;
+                  return (
+                    <Card key={page.id} className={open ? "border-primary/30" : undefined}>
+                      <button
                         type="button"
-                        variant="ghost"
-                        size="icon"
-                        disabled={rows.length <= 1}
-                        onClick={() =>
-                          applyUnitsDriver(rows.filter((r) => r.id !== row.id))
-                        }
-                        aria-label="Remove product"
+                        className="w-full flex items-center justify-between px-4 py-3 text-left"
+                        onClick={() => setOpenPageId(open ? null : page.id)}
                       >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Product</Label>
-                        <Select
-                          value={row.blueprintId || undefined}
-                          onValueChange={(v) => {
-                            const picker = pickerProducts.find((p) => String(p.blueprintId) === v);
-                            applyUnitsDriver(
-                              rows.map((r) =>
-                                r.id === row.id
-                                  ? {
-                                      ...r,
-                                      blueprintId: v,
-                                      productTypeId: picker?.productTypeId
-                                        ? String(picker.productTypeId)
-                                        : "",
-                                      variantKey: "",
-                                      retailDollars: "",
-                                      monthlyUnits: 0,
-                                    }
-                                  : r,
-                              ),
-                            );
-                          }}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select a product" />
-                          </SelectTrigger>
-                          <SelectContent position="popper" className="z-[100] max-h-80">
-                            {pickerProducts.map((pt) => (
-                              <SelectItem key={pt.blueprintId} value={String(pt.blueprintId)}>
-                                {pt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>
-                          Size / print areas{" "}
-                          <span className="font-normal text-muted-foreground">
-                            — COGS (ex. shipping)
-                          </span>
-                        </Label>
-                        {busy ? (
-                          <div className="flex h-10 items-center gap-2 rounded-md border px-3 text-sm text-muted-foreground">
-                            <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                            Loading sizes &amp; COGS…
+                        <div>
+                          <div className="font-medium text-sm">
+                            {metrics?.label || "Product page"}
                           </div>
-                        ) : !row.blueprintId ? (
-                          <p className="text-xs text-muted-foreground pt-2">Pick a product first</p>
-                        ) : variants.length === 0 ? (
-                          <div className="space-y-2">
-                            <p className="text-xs text-muted-foreground rounded-md border p-2">
-                              No size / COGS options yet for this product.
-                            </p>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-8"
-                              disabled={syncingKey === row.blueprintId}
-                              onClick={() =>
-                                fetchCostsMutation.mutate({
-                                  blueprintId: row.blueprintId,
-                                  productTypeId: row.productTypeId,
-                                  rowId: row.id,
-                                })
-                              }
-                            >
-                              {syncingKey === row.blueprintId ? (
-                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                              ) : null}
-                              Fetch COGS
-                            </Button>
+                          <div className="text-xs text-muted-foreground">
+                            {page.orders} orders/mo · {page.unitsPerOrder} units/order
                           </div>
-                        ) : (
-                          <>
-                            <Select
-                              value={row.variantKey || undefined}
-                              onValueChange={(v) => {
-                                const variant = variants.find((opt) => opt.key === v);
-                                const suggested = suggestedRetailDollarsString(
-                                  variant?.cogsCents,
-                                  markup,
-                                );
-                                updateRow(row.id, {
-                                  variantKey: v,
-                                  // Seed retail from COGS only once a real size/print is chosen.
-                                  ...(row.retailDollars.trim() === "" && suggested
-                                    ? { retailDollars: suggested }
-                                    : {}),
-                                });
-                              }}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select size / print" />
-                              </SelectTrigger>
-                              <SelectContent position="popper" className="z-[100] max-h-72">
-                                {variants.map((v) => (
-                                  <SelectItem key={v.key} value={v.key}>
-                                    {v.label}
-                                    {v.cogsCents != null
-                                      ? ` — $${(v.cogsCents / 100).toFixed(2)}`
-                                      : " — no COGS"}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            {!hasBoth && !busy && !showFetchCogs && (
-                              <p className="text-[11px] text-muted-foreground">
-                                Front/Back not listed when this supplier only prices a front print
-                                (or the product is all-over print).
-                              </p>
-                            )}
-                            {bothMissingCogs && !busy && (
-                              <p className="text-[11px] text-muted-foreground">
-                                Front/Back sizes are listed — click Fetch COGS to load dual-print cost.
-                              </p>
-                            )}
-                            {showFetchCogs && variants.length > 0 && (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="h-8"
-                                disabled={syncingKey === row.blueprintId}
-                                onClick={() =>
+                        </div>
+                        {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      </button>
+                      {open && (
+                        <CardContent className="space-y-3 border-t pt-4">
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div className="sm:col-span-2 space-y-1">
+                              <Label>Product</Label>
+                              <Select
+                                value={page.blueprintId || undefined}
+                                onValueChange={(v) => {
+                                  const picker = pickerProducts.find(
+                                    (p) => String(p.blueprintId) === v,
+                                  );
+                                  updatePage(page.id, {
+                                    blueprintId: v,
+                                    productTypeId: picker?.productTypeId
+                                      ? String(picker.productTypeId)
+                                      : "",
+                                    variantKey: "",
+                                  });
                                   fetchCostsMutation.mutate({
-                                    blueprintId: row.blueprintId,
-                                    productTypeId: row.productTypeId,
-                                    rowId: row.id,
+                                    blueprintId: v,
+                                    productTypeId: picker?.productTypeId
+                                      ? String(picker.productTypeId)
+                                      : "",
+                                    rowId: page.id,
+                                  });
+                                }}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue
+                                    placeholder={
+                                      catalogLoading ? "Loading catalogue…" : "Choose product"
+                                    }
+                                  />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {pickerProducts.map((p) => (
+                                    <SelectItem key={p.blueprintId} value={String(p.blueprintId)}>
+                                      {p.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Size / print</Label>
+                              <Select
+                                value={page.variantKey || undefined}
+                                onValueChange={(v) => updatePage(page.id, { variantKey: v })}
+                                disabled={!page.blueprintId || variants.length === 0}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue
+                                    placeholder={busy ? "Loading…" : "Select variant"}
+                                  />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {variants.map((v) => (
+                                    <SelectItem key={v.key} value={v.key}>
+                                      {v.label}
+                                      {v.cogsCents != null
+                                        ? ` — $${(v.cogsCents / 100).toFixed(2)}`
+                                        : ""}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div className="space-y-1">
+                              <Label>Orders / month</Label>
+                              <Input
+                                type="number"
+                                min={0}
+                                value={page.orders}
+                                onChange={(e) =>
+                                  setPageOrders(page.id, Math.max(0, parseInt(e.target.value, 10) || 0))
+                                }
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Units / order</Label>
+                              <Input
+                                type="number"
+                                min={1}
+                                value={page.unitsPerOrder}
+                                onChange={(e) =>
+                                  updatePage(page.id, {
+                                    unitsPerOrder: Math.max(1, parseInt(e.target.value, 10) || 1),
                                   })
                                 }
-                              >
-                                {syncingKey === row.blueprintId ? (
-                                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                                ) : null}
-                                Fetch COGS
-                              </Button>
-                            )}
-                          </>
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Cross / up-sell %</Label>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={page.crossSellPct}
+                                onChange={(e) =>
+                                  updatePage(page.id, {
+                                    crossSellPct: Math.max(
+                                      0,
+                                      Math.min(100, parseInt(e.target.value, 10) || 0),
+                                    ),
+                                  })
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div className="grid gap-3 sm:grid-cols-2 text-sm">
+                            <div className="rounded-md border p-2">
+                              <div className="text-muted-foreground text-xs">Retail (from margin)</div>
+                              <div className="font-medium">
+                                {metrics && metrics.cogsUsd > 0
+                                  ? money2(retailAtMarginUsd(metrics.cogsUsd, marginTarget))
+                                  : "—"}
+                              </div>
+                            </div>
+                            <div className="rounded-md border p-2">
+                              <div className="text-muted-foreground text-xs">COGS (landed)</div>
+                              <div className="font-medium">
+                                {metrics && metrics.cogsUsd > 0 ? money2(metrics.cogsUsd) : "—"}
+                              </div>
+                            </div>
+                          </div>
+                          {pages.length === 1 && page.crossSellPct > 0 && (
+                            <p className="text-xs text-amber-700">
+                              Cross/up-sell works best with 2+ modelled pages (somewhere to sell onto).
+                            </p>
+                          )}
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive"
+                              disabled={pages.length <= 1}
+                              onClick={() => removePage(page.id)}
+                            >
+                              <Trash2 className="h-4 w-4 mr-1" /> Remove page
+                            </Button>
+                          </div>
+                        </CardContent>
+                      )}
+                    </Card>
+                  );
+                })}
+                <Button type="button" variant="outline" onClick={addPage}>
+                  <Plus className="h-4 w-4 mr-1" /> Add product page
+                </Button>
+              </div>
+
+              <div className="space-y-3 lg:sticky lg:top-28 self-start">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">AOV lever</CardTitle>
+                    <CardDescription>
+                      Extra units and cross-sell raise profit without extra generations.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Base AOV</span>
+                      <span className="font-medium">{money2(profit.baseAovUsd)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Simulated AOV</span>
+                      <span className="font-medium">{money2(profit.simAovUsd)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Monthly profit</span>
+                      <span className="font-medium">
+                        {money0(
+                          profit.aovChanged
+                            ? profit.simMonthlyProfitUsd
+                            : profit.baseMonthlyProfitUsd,
                         )}
-                      </div>
+                      </span>
                     </div>
-
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <div className="space-y-2">
-                        <Label>Retail (USD)</Label>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          disabled={!row.variantKey}
-                          placeholder={
-                            !row.variantKey
-                              ? "Select size first"
-                              : suggestedRetailCents(calc?.cogsCents, markup) != null
-                                ? `Suggested ${(suggestedRetailCents(calc!.cogsCents, markup)! / 100).toFixed(2)}`
-                                : "Enter retail"
-                          }
-                          value={row.retailDollars}
-                          onChange={(e) => updateRow(row.id, { retailDollars: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Monthly units</Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          disabled={!row.variantKey}
-                          placeholder={!row.variantKey ? "Select size first" : "0"}
-                          value={row.variantKey ? row.monthlyUnits : ""}
-                          onChange={(e) => {
-                            const units = parseInt(e.target.value, 10) || 0;
-                            applyUnitsDriver(
-                              rows.map((r) =>
-                                r.id === row.id ? { ...r, monthlyUnits: units } : r,
-                              ),
-                            );
-                          }}
-                        />
-                      </div>
-                      <div className="space-y-1 text-sm pt-6">
-                        <div className="text-muted-foreground">Line monthly profit</div>
-                        <div className="text-lg font-semibold">
-                          {calc?.monthlyProfit != null
-                            ? `$${(calc.monthlyProfit / 100).toFixed(2)}`
-                            : "—"}
-                        </div>
-                      </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Extra from AOV</span>
+                      <span className="font-medium text-emerald-700">
+                        {money0(profit.upliftUsd)}
+                      </span>
                     </div>
-                  </div>
-                );
-              })
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
-              <div className="rounded-md border p-3 space-y-1">
-                <div className="text-muted-foreground">Total units / mo</div>
-                <div className="text-lg font-semibold">{totalUnits}</div>
-              </div>
-              <div className="rounded-md border p-3 space-y-1">
-                <div className="text-muted-foreground">Blended profit / sale</div>
-                <div className="text-lg font-semibold">
-                  {blendedProfitPerSale != null
-                    ? `$${(blendedProfitPerSale / 100).toFixed(2)}`
-                    : "—"}
-                </div>
-              </div>
-              <div className="rounded-md border p-3 space-y-1">
-                <div className="text-muted-foreground">Product profit / mo</div>
-                <div className="text-lg font-semibold">
-                  {hasAnyProfit ? `$${(totalMonthlyProfitCents / 100).toFixed(2)}` : "—"}
-                </div>
-              </div>
-              <div className="rounded-md border p-3 space-y-1">
-                <div className="text-muted-foreground">
-                  Net after {planLabel}
-                  {includeOverage && roiOverage.overageCostUsd > 0 ? " + ov" : ""}
-                </div>
-                <div className="text-lg font-semibold">
-                  {monthlyNet != null ? `$${(monthlyNet / 100).toFixed(2)}` : "—"}
-                </div>
-                {includeOverage && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Fee ${planFeeUsd.toFixed(2)}
-                    {roiOverage.overageCostUsd > 0
-                      ? ` ($${planPrice} + $${roiOverage.overageCostUsd.toFixed(2)} ov)`
-                      : ""}
-                  </p>
-                )}
+                    <p className="text-xs text-muted-foreground pt-1">
+                      Biggest lever for profit: raise units/order or cross-sell — gens stay flat.
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">Per-page contribution</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    {pageMetrics.map((m) => (
+                      <div key={m.id} className="flex justify-between gap-2">
+                        <span className="truncate text-muted-foreground">{m.label}</span>
+                        <span className="font-medium tabular-nums shrink-0">
+                          {money0(m.simUnitProfitUsd)}
+                        </span>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
               </div>
             </div>
-          </CardContent>
-        </Card>
-        </div>
+          </TabsContent>
 
-        <div className="space-y-6 min-w-0 lg:sticky lg:top-4">
-        <PlanGenerationEstimator
-          title="Plan fit for this mix"
-          description="Funnel model: visitors → customizer engagement → free gens + Reward Ladder rewards. Edit visitors or expected sales and monthly units stay in sync."
-          lines={estimatorLines}
-          lockMix
-          showPlatformCost={false}
-          audience="merchant"
-          rewardGrants={rewardGrants}
-          monthlyVisitors={monthlyVisitors}
-          onMonthlyVisitorsChange={(v) => applyFunnelDriver({ visitors: v })}
-          engagementPct={engagementPct}
-          onEngagementPctChange={(v) => applyFunnelDriver({ engagementPct: v })}
-          conversionPct={conversionPct}
-          onConversionPctChange={(v) => applyFunnelDriver({ conversionPct: v })}
-          expectedSales={expectedSales}
-          onExpectedSalesChange={applySalesDriver}
-          includeOverage={includeOverage}
-          onIncludeOverageChange={setIncludeOverage}
-          onEstimatedGensChange={setEstimatedGens}
-          footerNote={
-            <p className="text-xs text-muted-foreground">
-              Live plan: <span className="font-medium capitalize">{livePlanLabel}</span>. Free gens and
-              Reward Ladder amounts come from Settings. When Include overage is on, ROI net subtracts
-              plan fee plus overage for the plan selected on the left.
-            </p>
-          }
-        />
-        </div>
-        </div>
+          <TabsContent value="planfit" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Traffic funnel</CardTitle>
+                <CardDescription>
+                  Edit visitors or rates to rescale page orders; edit a page&apos;s orders to
+                  re-derive visitors. Example values — not live store telemetry yet.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-1">
+                  <Label>Visitors / month</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={visitors}
+                    onChange={(e) =>
+                      applyFunnel(
+                        Math.max(0, parseInt(e.target.value, 10) || 0),
+                        engagementPct,
+                        conversionPct,
+                      )
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Engagement %</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={engagementPct}
+                    onChange={(e) =>
+                      applyFunnel(
+                        visitors,
+                        Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)),
+                        conversionPct,
+                      )
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Conversion %</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={conversionPct}
+                    onChange={(e) =>
+                      applyFunnel(
+                        visitors,
+                        engagementPct,
+                        Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)),
+                      )
+                    }
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="text-xs text-muted-foreground">Total orders</div>
+                  <div className="text-xl font-semibold">{profit.totalOrders}</div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="text-xs text-muted-foreground">Leads captured</div>
+                  <div className="text-xl font-semibold">{profit.leadsTotal}</div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="text-xs text-muted-foreground">Estimated gens / mo</div>
+                  <div className="text-xl font-semibold">{profit.gensDemand}</div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader className="pb-2 flex flex-row items-center justify-between gap-2">
+                <div>
+                  <CardTitle className="text-base">Plan comparison</CardTitle>
+                  <CardDescription>
+                    Auto-follows cheapest fit. Manual pick detaches; flipping overage re-arms.
+                  </CardDescription>
+                </div>
+                {!autoFollow && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setAutoFollow(true);
+                      setPlanName(suggested.planName);
+                    }}
+                  >
+                    Reset to best fit
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {planRows.map((row) => (
+                  <button
+                    key={row.plan.planName}
+                    type="button"
+                    onClick={() => {
+                      setAutoFollow(false);
+                      setPlanName(row.plan.planName);
+                    }}
+                    className={`w-full flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                      row.plan.planName === planName
+                        ? "border-primary bg-primary/5"
+                        : "hover:bg-muted/50"
+                    }`}
+                  >
+                    <div>
+                      <span className="font-medium">{row.plan.displayName}</span>
+                      <span className="text-muted-foreground ml-2">
+                        {money0(row.plan.priceUsd)}/mo · {row.plan.generationQuota} gens ·{" "}
+                        {row.plan.pageLimit} pages
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {previewOverage && row.overageCostUsd > 0 && (
+                        <span className="text-xs text-muted-foreground">
+                          +{money2(row.overageCostUsd)} overage
+                        </span>
+                      )}
+                      {fitBadge(row.status)}
+                    </div>
+                  </button>
+                ))}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="roi" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Subscription ROI</CardTitle>
+                <CardDescription>
+                  Net after plan fee{previewOverage ? " and previewed overage" : ""}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-md border p-4">
+                    <div className="text-xs text-muted-foreground">Net after plan</div>
+                    <div className="text-2xl font-bold tabular-nums">{money0(netProfit)}</div>
+                  </div>
+                  <div className="rounded-md border p-4">
+                    <div className="text-xs text-muted-foreground">Orders to cover the plan</div>
+                    <div className="text-2xl font-bold tabular-nums">
+                      {ordersToCover != null ? ordersToCover : "—"}
+                    </div>
+                  </div>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Plan cost modelled: {money2(planCostUsd)}/mo
+                  {previewOverage && overageCostUsd > 0
+                    ? ` (includes ${money2(overageCostUsd)} overage at ${money2(OVERAGE_PRICE_USD)}/gen).`
+                    : "."}{" "}
+                  Raising AOV does not increase generation demand.
+                </p>
+                {fetchCostsMutation.isPending && (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Refreshing catalogue costs…
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </div>
     </AdminLayout>
   );

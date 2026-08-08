@@ -90,6 +90,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
   { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "shopify_installations", column: "pricing_version", type: "INTEGER" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },
@@ -328,7 +329,8 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "embed_confirmed_at" timestamp,
         "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 2,
         "leftover_gens_reminder_bucket_key" text,
-        "wholesale_credit_cents" integer NOT NULL DEFAULT 0
+        "wholesale_credit_cents" integer NOT NULL DEFAULT 0,
+        "pricing_version" integer
       )
     `,
   },

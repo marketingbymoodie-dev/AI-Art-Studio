@@ -8,6 +8,11 @@
 
 import { STOREFRONT_FREE_GENERATION_DEFAULT } from "./storefront-credits";
 import { extractDimensionalKey } from "./productVariantOptions";
+import {
+  OVERAGE_PRICE_USD,
+  PLAN_OVERAGE_CAPS,
+  PAID_PLAN_DEFINITIONS,
+} from "./customizerPlans";
 
 /** Base platform cost per AI generation before vectorize pass (USD). Operator-only. */
 export const DEFAULT_BASE_COST_PER_GEN_USD = 0.04;
@@ -198,16 +203,11 @@ export function estimateCustomizerFunnel(args: FunnelEstimateInput): FunnelEstim
   };
 }
 
-/** Merchant overage rate — mirrored from server/customizer-plans.ts OVERAGE_PRICE_USD. */
-export const ESTIMATOR_OVERAGE_PRICE_USD = 0.08;
+/** Merchant overage rate — from shared/customizerPlans SSOT. */
+export const ESTIMATOR_OVERAGE_PRICE_USD = OVERAGE_PRICE_USD;
 
-/** Max extra gens / month per plan — mirrored from PLAN_OVERAGE_CAPS. */
-export const ESTIMATOR_OVERAGE_CAPS: Record<string, number> = {
-  starter: 200,
-  dabbler: 300,
-  pro: 500,
-  pro_plus: 1000,
-};
+/** Max extra gens / month per plan — from shared/customizerPlans SSOT. */
+export const ESTIMATOR_OVERAGE_CAPS: Record<string, number> = { ...PLAN_OVERAGE_CAPS };
 
 export type EstimatorPlan = {
   planName: string;
@@ -218,13 +218,15 @@ export type EstimatorPlan = {
   overageCap: number;
 };
 
-/** Paid plans mirrored from server/customizer-plans.ts for client-side estimators. */
-export const ESTIMATOR_PAID_PLANS: EstimatorPlan[] = [
-  { planName: "starter", displayName: "Starter", priceUsd: 29, pageLimit: 2, generationQuota: 250, overageCap: 200 },
-  { planName: "dabbler", displayName: "Dabbler", priceUsd: 49, pageLimit: 5, generationQuota: 600, overageCap: 300 },
-  { planName: "pro", displayName: "Pro", priceUsd: 99, pageLimit: 15, generationQuota: 1500, overageCap: 500 },
-  { planName: "pro_plus", displayName: "Pro Plus", priceUsd: 199, pageLimit: 30, generationQuota: 3000, overageCap: 1000 },
-];
+/** Paid plans from shared/customizerPlans SSOT (client-safe). */
+export const ESTIMATOR_PAID_PLANS: EstimatorPlan[] = PAID_PLAN_DEFINITIONS.map((p) => ({
+  planName: p.planName,
+  displayName: p.displayName,
+  priceUsd: p.priceUsd,
+  pageLimit: p.pageLimit,
+  generationQuota: p.generationQuota,
+  overageCap: p.overageCap,
+}));
 
 export type PlanOverageEstimate = {
   gensOk: boolean;

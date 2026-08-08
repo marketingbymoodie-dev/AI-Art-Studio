@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -20,6 +20,40 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Info } from "lucide-react";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
+import {
+  OVERAGE_PRICE_USD,
+  PAID_PLAN_DEFINITIONS,
+  PLAN_DISPLAY_NAMES,
+  PLAN_GENERATION_QUOTAS,
+  PLAN_PAGE_LIMITS,
+} from "@shared/customizerPlans";
+
+const PLAN_CARD_META: Record<
+  string,
+  { description: string; highlight?: boolean; icon: ReactNode }
+> = {
+  starter: {
+    description: "Perfect for shops selling up to 2 custom products.",
+    icon: <LayoutTemplate className="h-5 w-5 text-blue-500" />,
+  },
+  dabbler: {
+    description: "Try several products with up to 5 customizer pages.",
+    highlight: true,
+    icon: <Star className="h-5 w-5 text-purple-500" />,
+  },
+  pro: {
+    description: "Scale across your full catalog with 15 pages.",
+    icon: <Rocket className="h-5 w-5 text-green-500" />,
+  },
+  pro_plus: {
+    description: "Maximum scale: 30 customizer pages for large catalogs.",
+    icon: <Rocket className="h-5 w-5 text-orange-500" />,
+  },
+};
+
+function overageNoteForCap(overageCap: number): string {
+  return `Additional generations can be added at $${OVERAGE_PRICE_USD.toFixed(2)} per generation, capped at an extra ${overageCap} generations per calendar month.`;
+}
 
 /**
  * Shared note appended to every paid plan's info popover (and the Trial card).
@@ -238,77 +272,40 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           name="trial"
           displayName="Trial"
           price={null}
-          pageLimit={1}
-          freeGenerations={20}
+          pageLimit={PLAN_PAGE_LIMITS.trial}
+          freeGenerations={PLAN_GENERATION_QUOTAS.trial}
           description="Evaluate the app with 1 customizer page. No credit card needed."
-          trialNote="Your trial includes 20 free generations. Once they're used, upgrade to the Starter plan to keep using the customizer page you set up."
+          trialNote={`Your trial includes ${PLAN_GENERATION_QUOTAS.trial} free generations. Once they're used, upgrade to the ${PLAN_DISPLAY_NAMES.starter} plan to keep using the customizer page you set up.`}
           icon={<Zap className="h-5 w-5 text-yellow-500" />}
           ctaLabel="Start Free Trial"
           onSelect={handleTrial}
           loading={loadingPlan === "trial"}
         />
-        {/* Starter */}
-        <PlanCard
-          name="starter"
-          displayName="Starter"
-          price={29}
-          pageLimit={2}
-          freeGenerations={250}
-          description="Perfect for shops selling up to 2 custom products."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 200 generations per calendar month."
-          icon={<LayoutTemplate className="h-5 w-5 text-blue-500" />}
-          ctaLabel="Choose Starter"
-          onSelect={() => handlePaid("starter")}
-          loading={loadingPlan === "starter"}
-        />
-        {/* Dabbler */}
-        <PlanCard
-          name="dabbler"
-          displayName="Dabbler"
-          price={49}
-          pageLimit={5}
-          freeGenerations={600}
-          description="Try several products with up to 5 customizer pages."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 300 generations per calendar month."
-          highlight
-          icon={<Star className="h-5 w-5 text-purple-500" />}
-          ctaLabel="Choose Dabbler"
-          onSelect={() => handlePaid("dabbler")}
-          loading={loadingPlan === "dabbler"}
-        />
-        {/* Pro */}
-        <PlanCard
-          name="pro"
-          displayName="Pro"
-          price={99}
-          pageLimit={15}
-          freeGenerations={1500}
-          description="Scale across your full catalog with 15 pages."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 500 generations per calendar month."
-          icon={<Rocket className="h-5 w-5 text-green-500" />}
-          ctaLabel="Choose Pro"
-          onSelect={() => handlePaid("pro")}
-          loading={loadingPlan === "pro"}
-        />
-        {/* Pro Plus */}
-        <PlanCard
-          name="pro_plus"
-          displayName="Pro Plus"
-          price={199}
-          pageLimit={30}
-          freeGenerations={3000}
-          description="Maximum scale: 30 customizer pages for large catalogs."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 1000 generations per calendar month."
-          icon={<Rocket className="h-5 w-5 text-orange-500" />}
-          ctaLabel="Choose Pro Plus"
-          onSelect={() => handlePaid("pro_plus")}
-          loading={loadingPlan === "pro_plus"}
-        />
+        {PAID_PLAN_DEFINITIONS.map((plan) => {
+          const meta = PLAN_CARD_META[plan.planName];
+          return (
+            <PlanCard
+              key={plan.planName}
+              name={plan.planName}
+              displayName={plan.displayName}
+              price={plan.priceUsd}
+              pageLimit={plan.pageLimit}
+              freeGenerations={plan.generationQuota}
+              description={meta?.description ?? `${plan.pageLimit} customizer pages.`}
+              overageNote={overageNoteForCap(plan.overageCap)}
+              highlight={meta?.highlight}
+              icon={meta?.icon ?? <Rocket className="h-5 w-5 text-orange-500" />}
+              ctaLabel={`Choose ${plan.displayName}`}
+              onSelect={() => handlePaid(plan.planName)}
+              loading={loadingPlan === plan.planName}
+            />
+          );
+        })}
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
         Paid plans are billed monthly through Shopify in USD. Cancel anytime.
-        Extra generations require in-app opt-in ($0.08 USD each, pay-as-you-go). Tap ⓘ on a plan for details.
+        Extra generations require in-app opt-in (${OVERAGE_PRICE_USD.toFixed(2)} USD each, pay-as-you-go). Tap ⓘ on a plan for details.
       </p>
 
       <Dialog open={!!upgradePlan} onOpenChange={(open) => !open && setUpgradePlan(null)}>

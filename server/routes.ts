@@ -99,7 +99,7 @@ import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns, CURRENT_PRICING_VERSION } from "./customizer-plans";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -21847,6 +21847,8 @@ ${orientationExtra}
           billingSubscriptionId: charge_id,
           billingUsageLineItemId: usageLineItemId,
           billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
+          // Stamp catalogue version at subscribe time so a later B flip can grandfather.
+          pricingVersion: CURRENT_PRICING_VERSION,
         };
 
         if (changeKind === "paid_downgrade") {
@@ -21901,6 +21903,7 @@ ${orientationExtra}
           billingSubscriptionId: charge_id,
           pendingPlanName: null,
           pendingPlanEffectiveAt: null,
+          pricingVersion: CURRENT_PRICING_VERSION,
         };
         if (changeKind === "trial_to_paid") {
           Object.assign(planUpdates, trialToPaidMeteringReset());

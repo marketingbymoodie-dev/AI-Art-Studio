@@ -8,9 +8,8 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { OVERAGE_PRICE_USD } from "@shared/customizerPlans";
 import type { PlanApiResponse } from "./GenerationQuotaUsage";
-
-const OVERAGE_PRICE_USD = 0.08;
 
 interface OverageOptInFormProps {
   planMaxBudgetCents: number;

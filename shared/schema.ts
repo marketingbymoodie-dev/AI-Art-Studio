@@ -226,6 +226,12 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    * (netted off against future usage charges). Phase 2.
    */
   wholesaleCreditCents: integer("wholesale_credit_cents").notNull().default(0),
+  /**
+   * Which pricing catalogue this installation subscribed under.
+   * null = pre-versioned / current SSOT (no B number-flip applied yet).
+   * Set on new/changed subscriptions when CURRENT_PRICING_VERSION bumps.
+   */
+  pricingVersion: integer("pricing_version"),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
