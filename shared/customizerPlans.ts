@@ -213,6 +213,22 @@ export function priceFromMarginOverAiCost(
   return Math.round((aiCost / (1 - m)) * 100) / 100;
 }
 
+/**
+ * Inverse of `priceFromMarginOverAiCost` — back-solve the margin-over-AI-cost
+ * percentage implied by a chosen (clean) list price, so a typed price and the
+ * margin slider/echo stay consistent with each other.
+ */
+export function marginFromPriceOverAiCost(
+  includedGens: number,
+  priceUsd: number,
+  aiCostPerGenUsd: number = PLATFORM_AI_COST_PER_GEN_USD,
+): number {
+  const aiCost = Math.max(0, includedGens) * aiCostPerGenUsd;
+  if (aiCost <= 0 || priceUsd <= 0) return 0;
+  const marginPct = (1 - aiCost / priceUsd) * 100;
+  return Math.round(Math.min(80, Math.max(20, marginPct)) * 10) / 10;
+}
+
 export function aiCostAtFullAllowanceUsd(
   includedGens: number,
   aiCostPerGenUsd: number = PLATFORM_AI_COST_PER_GEN_USD,

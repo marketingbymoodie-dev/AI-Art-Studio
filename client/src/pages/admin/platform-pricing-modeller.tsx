@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   PLATFORM_AI_COST_PER_GEN_USD,
   aiCostAtFullAllowanceUsd,
+  marginFromPriceOverAiCost,
   priceFromMarginOverAiCost,
   type CataloguePlanRow,
   type OveragePriceTier,
@@ -118,6 +119,18 @@ export function PricingModellerPanel() {
       prev.map((p) => {
         if (p.planKey !== planKey) return p;
         const next = { ...p, ...patch };
+        if (patch.priceUsd != null && p.planKey !== "trial") {
+          // Target-price edit: keep the typed (clean) price, back-solve margin
+          // so the slider/echo stay consistent — price is the source of truth.
+          return {
+            ...next,
+            marginOverAiCostPct: marginFromPriceOverAiCost(
+              next.generationQuota,
+              next.priceUsd,
+              aiCost,
+            ),
+          };
+        }
         if (
           patch.generationQuota != null ||
           patch.marginOverAiCostPct != null ||
@@ -366,9 +379,38 @@ export function PricingModellerPanel() {
                       <div className="text-xs text-muted-foreground">AI cost @ 100% util</div>
                       <div className="font-semibold">{money(aiFull)}</div>
                     </div>
-                    <div className="rounded-md border p-2">
-                      <div className="text-xs text-muted-foreground">Computed price</div>
-                      <div className="font-semibold">{money(price)}/mo</div>
+                    <div className="rounded-md border p-2 space-y-1">
+                      <div className="text-xs text-muted-foreground">
+                        {p.planKey === "trial" ? "Price" : "Target price ($/mo)"}
+                      </div>
+                      {p.planKey === "trial" ? (
+                        <div className="font-semibold">{money(price)}/mo</div>
+                      ) : (
+                        <Input
+                          type="number"
+                          min={0}
+                          step={1}
+                          className="h-8"
+                          data-testid={`pricing-modeller-price-${p.planKey}`}
+                          value={p.priceUsd}
+                          onChange={(e) => {
+                            const raw = parseFloat(e.target.value);
+                            updatePlan(p.planKey, {
+                              priceUsd: Number.isFinite(raw) ? Math.max(0, raw) : 0,
+                            });
+                          }}
+                          onBlur={(e) => {
+                            const raw = parseFloat(e.target.value);
+                            const rounded = Math.max(
+                              0,
+                              Math.round(Number.isFinite(raw) ? raw : p.priceUsd),
+                            );
+                            if (rounded !== p.priceUsd) {
+                              updatePlan(p.planKey, { priceUsd: rounded });
+                            }
+                          }}
+                        />
+                      )}
                     </div>
                     <div className="rounded-md border p-2">
                       <div className="text-xs text-muted-foreground">Margin over AI cost</div>

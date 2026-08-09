@@ -4,7 +4,9 @@ import {
   OVERAGE_PRICE_USD,
   PAID_PLAN_DEFINITIONS,
   getPlanOverageCappedAmountUsd,
+  marginFromPriceOverAiCost,
   overageCostForUnitsUsd,
+  priceFromMarginOverAiCost,
   resolveOveragePriceUsd,
   type OveragePriceTier,
 } from "./customizerPlans";
@@ -44,6 +46,27 @@ describe("overageCostForUnitsUsd / cappedAmount", () => {
   it("sums a two-tier schedule correctly", () => {
     // 2 × $0.10 + 3 × $0.06 = $0.38
     expect(overageCostForUnitsUsd(5, TWO_TIER)).toBe(0.38);
+  });
+});
+
+describe("marginFromPriceOverAiCost", () => {
+  it("back-solves the margin implied by a clean list price", () => {
+    // 250 gens × $0.045 = $11.25 AI cost; price $29 → margin (1 - 11.25/29) ≈ 61.2%
+    const margin = marginFromPriceOverAiCost(250, 29, 0.045);
+    expect(margin).toBeCloseTo(61.2, 1);
+  });
+
+  it("round-trips with priceFromMarginOverAiCost", () => {
+    const price = priceFromMarginOverAiCost(600, 59, 0.045);
+    const margin = marginFromPriceOverAiCost(600, price, 0.045);
+    expect(margin).toBeCloseTo(59, 0);
+  });
+
+  it("clamps to the 20-80 slider range and handles zero inputs", () => {
+    expect(marginFromPriceOverAiCost(1000, 1, 0.045)).toBe(20);
+    expect(marginFromPriceOverAiCost(10, 999, 0.045)).toBe(80);
+    expect(marginFromPriceOverAiCost(0, 29, 0.045)).toBe(0);
+    expect(marginFromPriceOverAiCost(250, 0, 0.045)).toBe(0);
   });
 });
 
