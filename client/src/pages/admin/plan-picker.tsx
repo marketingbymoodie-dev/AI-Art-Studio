@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Info } from "lucide-react";
+import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Crown, Info } from "lucide-react";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 import {
   OVERAGE_PRICE_USD,
@@ -52,7 +52,7 @@ const PLAN_CARD_META: Record<
   },
   mogul: {
     descriptionFor: (n) => `Enterprise scale: ${n} customizer pages — talk to us to get started.`,
-    icon: <Rocket className="h-5 w-5 text-slate-600" />,
+    icon: <Crown className="h-5 w-5 text-amber-600" />,
   },
 };
 
@@ -96,20 +96,20 @@ function PlanCard({
 }: PlanCardProps) {
   return (
     <Card
-      className={`relative flex flex-col ${highlight ? "border-primary ring-2 ring-primary/20" : ""}`}
+      className={`relative flex h-full min-w-0 flex-col overflow-hidden ${highlight ? "border-primary ring-2 ring-primary/20" : ""}`}
       data-testid={`plan-picker-card-${name}`}
     >
       {highlight && (
-        <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+        <div className="absolute -top-3 left-1/2 z-10 -translate-x-1/2">
           <Badge className="bg-primary text-primary-foreground px-3">Most Popular</Badge>
         </div>
       )}
-      <CardHeader className="pb-2">
-        <div className="flex items-center gap-2 mb-1">
-          {icon}
-          <CardTitle className="text-lg">{displayName}</CardTitle>
+      <CardHeader className="pb-2 space-y-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0">{icon}</span>
+          <CardTitle className="truncate text-lg">{displayName}</CardTitle>
         </div>
-        <div className="flex items-baseline gap-1" data-testid={`plan-picker-price-${name}`}>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-1" data-testid={`plan-picker-price-${name}`}>
           {price === null ? (
             <span className="text-3xl font-bold">Free</span>
           ) : (
@@ -121,15 +121,16 @@ function PlanCard({
             </>
           )}
         </div>
-        <CardDescription>{description}</CardDescription>
+        <CardDescription className="text-pretty">{description}</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col flex-1">
-        <ul className="space-y-2 mb-6 flex-1 text-sm">
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span className="flex items-center gap-1">
-              <span>
-                {freeGenerations.toLocaleString()} included generation{freeGenerations !== 1 ? "s" : ""}
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-4 pt-0">
+        <ul className="min-w-0 flex-1 space-y-2 text-sm">
+          <li className="flex min-w-0 items-start gap-2">
+            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-0.5">
+              <span className="min-w-0 break-words">
+                {freeGenerations.toLocaleString()} included gen
+                {freeGenerations !== 1 ? "s" : ""}
                 {price === null ? "" : "/mo"}
               </span>
               <Popover>
@@ -137,7 +138,7 @@ function PlanCard({
                   <button
                     type="button"
                     aria-label={`${displayName} generation details`}
-                    className="inline-flex text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring rounded-full"
+                    className="inline-flex shrink-0 rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                   >
                     <Info className="h-3.5 w-3.5" />
                   </button>
@@ -150,22 +151,24 @@ function PlanCard({
               </Popover>
             </span>
           </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span>{pageLimit} customizer page{pageLimit !== 1 ? "s" : ""}</span>
+          <li className="flex min-w-0 items-start gap-2">
+            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+            <span className="min-w-0 break-words">
+              {pageLimit} customizer page{pageLimit !== 1 ? "s" : ""}
+            </span>
           </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span>Native cart & checkout mockups</span>
+          <li className="flex min-w-0 items-start gap-2">
+            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+            <span className="min-w-0 break-words">Native cart & checkout mockups</span>
           </li>
         </ul>
         <Button
           variant={highlight && !contactUs ? "default" : "outline"}
-          className="w-full"
+          className="mt-auto h-auto min-h-9 w-full shrink-0 whitespace-normal px-2 py-2 text-center leading-snug"
           onClick={onSelect}
           disabled={loading}
         >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+          {loading ? <Loader2 className="mr-2 h-4 w-4 shrink-0 animate-spin" /> : null}
           {contactUs ? "Contact us" : ctaLabel}
         </Button>
       </CardContent>
@@ -308,7 +311,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 mb-8">
+      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 xl:gap-3">
         {/* Trial */}
         <PlanCard
           name="trial"

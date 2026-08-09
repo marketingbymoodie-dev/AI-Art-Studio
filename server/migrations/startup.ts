@@ -111,6 +111,10 @@ const DATA_MIGRATIONS: string[] = [
   // Required: every installation must have a pricing catalogue stamp for enforcement.
   `UPDATE shopify_installations SET pricing_version = 0 WHERE pricing_version IS NULL`,
   `ALTER TABLE shopify_installations ALTER COLUMN pricing_version SET DEFAULT 0`,
+  // Trial allotment: 20 → 10 included generations (operator decision 2026-08).
+  `UPDATE pricing_catalogue_plans
+   SET generation_quota = 10
+   WHERE plan_key = 'trial' AND generation_quota = 20`,
   // Adjustable tote: folded fulfillment + flat storefront mockups (override AOP name defaults).
   `UPDATE platform_catalog_blueprints
    SET fulfillment_layout = 'tote_folded_v1',
