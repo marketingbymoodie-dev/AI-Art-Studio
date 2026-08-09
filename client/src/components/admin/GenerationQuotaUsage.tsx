@@ -91,8 +91,14 @@ interface GenerationQuotaUsageProps {
   upgradeHref?: string;
   onUpgradeClick?: () => void;
   showManageLink?: boolean;
-  /** Show overage opt-in form when at ≥90% included (default true). */
+  /** Master switch for overage UI (default true). */
   showOptInForm?: boolean;
+  /**
+   * When true, always show enable/manage PAYG controls on paid plans
+   * (Plan & Billing). Default false keeps the ≥90%-included opt-in nudge
+   * on dashboard/credits so we don't nag early.
+   */
+  alwaysShowOverageControls?: boolean;
   className?: string;
 }
 
@@ -158,6 +164,7 @@ export default function GenerationQuotaUsage({
   onUpgradeClick,
   showManageLink = true,
   showOptInForm = true,
+  alwaysShowOverageControls = false,
   className,
 }: GenerationQuotaUsageProps) {
   const { data, isLoading } = usePlanGenerationQuota();
@@ -202,12 +209,13 @@ export default function GenerationQuotaUsage({
   const extraAtLimit = extraLimit > 0 && overageUsedLive >= extraLimit;
   const displayPlan = planName ? (PLAN_DISPLAY[planName] ?? planName) : "—";
   const period = quotaLabel(quota);
+  const apiWantsOptInNudge = !!(overage?.showOptInForm || quota.showOptInForm);
   const showEnableForm =
     showOptInForm &&
     !optedIn &&
-    (overage?.showOptInForm || quota.showOptInForm) &&
     !quota.unlimited &&
-    planName !== "trial";
+    planName !== "trial" &&
+    (alwaysShowOverageControls || apiWantsOptInNudge);
   const showManageForm =
     showOptInForm && optedIn && !quota.unlimited && planName !== "trial";
   /** Paid plans always show both lines; trial is allowance-only. */
@@ -276,7 +284,7 @@ export default function GenerationQuotaUsage({
           {showOverageLine && (
             <UsageBar
               testId="quota-overage-used"
-              label="Overage used"
+              label={optedIn ? "Overage used" : "Overage used (pay-as-you-go off)"}
               used={overageUsedLive}
               limit={optedIn && extraLimit > 0 ? extraLimit : null}
               spentCents={optedIn ? extraSpentCents : undefined}

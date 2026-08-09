@@ -283,7 +283,11 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
 
   const content = (
     <div className="max-w-5xl mx-auto py-8 px-4">
-      <GenerationQuotaUsage showManageLink={false} className="mb-6" />
+      <GenerationQuotaUsage
+        showManageLink={false}
+        alwaysShowOverageControls
+        className="mb-6"
+      />
 
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold mb-2">Pick a plan to get started</h2>
