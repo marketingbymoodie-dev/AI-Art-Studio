@@ -4,6 +4,7 @@
 import { storage } from "./storage";
 import {
   getEffectivePlan,
+  isOwnerQuotaBypassShop,
   resolveGenerationQuota,
   resolveOveragePriceUsd,
   PLAN_DISPLAY_NAMES,
@@ -61,12 +62,6 @@ export interface MerchantQuotaDecision {
   /** True when included quota exhausted and not opted in. */
   includedExhausted: boolean;
   currency: "USD";
-}
-
-function isOwnerShop(shopDomain: string | null | undefined): boolean {
-  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-  if (!ownerShop || !shopDomain) return false;
-  return shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop;
 }
 
 function enrichDecision(
@@ -262,7 +257,7 @@ function classifyBlock(
 export async function peekMerchantGenerationQuota(
   installation: ShopifyInstallation,
 ): Promise<MerchantQuotaDecision> {
-  if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
+  if (isOwnerQuotaBypassShop(installation.shopDomain)) return unlimitedDecision(null);
 
   const { quota, effectiveOverageCap, hardCap } = await resolveQuotaContext(installation);
   const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
@@ -302,7 +297,7 @@ export async function peekMerchantGenerationQuota(
 export async function consumeMerchantGenerationQuota(
   installation: ShopifyInstallation,
 ): Promise<MerchantQuotaDecision> {
-  if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
+  if (isOwnerQuotaBypassShop(installation.shopDomain)) return unlimitedDecision(null);
 
   const { quota, effectiveOverageCap } = await resolveQuotaContext(installation);
   const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;

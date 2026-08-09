@@ -99,7 +99,7 @@ import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
   getActiveCatalogue,
@@ -107,6 +107,7 @@ import {
   getPlanOverageCappedAmountForCatalogue,
   overageUsageTermsForCatalogue,
 } from "./pricing-catalogue";
+import { applyApprovedSubscription } from "./billing-plan-apply";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -114,7 +115,6 @@ import {
   buildDowngradePreview,
   classifyPlanChange,
   resolveCarryoverIncludedUsed,
-  trialToPaidMeteringReset,
 } from "./plan-transitions";
 import { maybeApplyPendingPlan } from "./plan-transition-apply";
 import {
@@ -21727,9 +21727,9 @@ ${orientationExtra}
       });
     }
 
-    // Owner bypass: skip Shopify Billing API entirely and write plan directly to DB
-    const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-    if (ownerShop && shop.toLowerCase() === ownerShop) {
+    // Owner bypass: skip Shopify Billing API entirely and write plan directly to DB.
+    // Honours OWNER_BYPASS_QUOTA=false so staging can exercise real approve + carryover.
+    if (isOwnerQuotaBypassShop(shop)) {
       console.log(`[billing] Owner bypass: setting plan=${plan} for ${shop} without Shopify billing`);
       await storage.updateShopifyInstallation(installation.id, {
         planName: plan,
@@ -21907,41 +21907,27 @@ ${orientationExtra}
       }
 
       if (subscriptionStatus === "ACTIVE" || subscriptionStatus === "PENDING") {
-        const currentPlanName = installation.planName ?? "trial";
-        const changeKind = classifyPlanChange(currentPlanName, plan);
-        const activeCatalogue = await getActiveCatalogue();
-        const billingFields = {
-          billingSubscriptionId: charge_id,
-          billingUsageLineItemId: usageLineItemId,
-          billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
-          // Stamp *active* catalogue at approve time; enforcement follows this stamp.
-          pricingVersion: activeCatalogue.id,
-        };
-
-        if (changeKind === "paid_downgrade") {
-          const effectiveAt =
-            currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          await storage.updateShopifyInstallation(installation.id, {
-            ...billingFields,
-            pendingPlanName: plan,
-            pendingPlanEffectiveAt: effectiveAt,
-          } as any);
+        const applied = await applyApprovedSubscription(
+          installation,
+          {
+            plan,
+            chargeId: charge_id,
+            subscriptionStatus,
+            currentPeriodEnd,
+            usageLineItemId,
+          },
+          {
+            updateInstallation: (id, updates) =>
+              storage.updateShopifyInstallation(id, updates as any),
+            getActiveCatalogue,
+          },
+        );
+        if (applied) {
           console.log(
-            `[Billing] Scheduled downgrade ${currentPlanName} → ${plan} for ${shop} effective ${effectiveAt.toISOString()}`,
+            applied.deferred
+              ? `[Billing] Scheduled downgrade → ${plan} for ${shop}`
+              : `[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"}; kind=${applied.changeKind})`,
           );
-        } else {
-          const planUpdates: Record<string, unknown> = {
-            ...billingFields,
-            planName: plan,
-            planStatus: "active",
-            pendingPlanName: null,
-            pendingPlanEffectiveAt: null,
-          };
-          if (changeKind === "trial_to_paid") {
-            Object.assign(planUpdates, trialToPaidMeteringReset());
-          }
-          await storage.updateShopifyInstallation(installation.id, planUpdates as any);
-          console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
         }
 
         // A re-subscribe may have just attached a usage line — flush any overage
@@ -21955,29 +21941,22 @@ ${orientationExtra}
       }
     } catch (err: any) {
       console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);
-      const currentPlanName = installation.planName ?? "trial";
-      const changeKind = classifyPlanChange(currentPlanName, plan);
-      if (changeKind === "paid_downgrade") {
-        await storage.updateShopifyInstallation(installation.id, {
-          billingSubscriptionId: charge_id,
-          pendingPlanName: plan,
-          pendingPlanEffectiveAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        } as any);
-      } else {
-        const activeCatalogue = await getActiveCatalogue();
-        const planUpdates: Record<string, unknown> = {
-          planName: plan,
-          planStatus: "active",
-          billingSubscriptionId: charge_id,
-          pendingPlanName: null,
-          pendingPlanEffectiveAt: null,
-          pricingVersion: activeCatalogue.id,
-        };
-        if (changeKind === "trial_to_paid") {
-          Object.assign(planUpdates, trialToPaidMeteringReset());
-        }
-        await storage.updateShopifyInstallation(installation.id, planUpdates as any);
-      }
+      // Fallback: still apply from simulated ACTIVE payload (no GraphQL).
+      await applyApprovedSubscription(
+        installation,
+        {
+          plan,
+          chargeId: charge_id,
+          subscriptionStatus: "ACTIVE",
+          currentPeriodEnd: null,
+          usageLineItemId: null,
+        },
+        {
+          updateInstallation: (id, updates) =>
+            storage.updateShopifyInstallation(id, updates as any),
+          getActiveCatalogue,
+        },
+      );
     }
 
     // Redirect back to the Shopify Admin app

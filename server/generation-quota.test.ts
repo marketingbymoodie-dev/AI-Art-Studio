@@ -328,11 +328,35 @@ describe("merchant quota orchestration", () => {
 
   it("bypasses metering for the owner shop (unlimited, no storage call)", async () => {
     process.env.OWNER_SHOP_DOMAIN = "test-shop.myshopify.com";
+    delete process.env.OWNER_BYPASS_QUOTA;
     const inst = { ...baseInstall, planName: null, planStatus: null };
     const decision = await consumeMerchantGenerationQuota(inst);
     expect(decision.allowed).toBe(true);
     expect(decision.unlimited).toBe(true);
     expect(storage.consumeMerchantGeneration).not.toHaveBeenCalled();
+  });
+
+  it("OWNER_BYPASS_QUOTA=false meters the owner shop against its real plan", async () => {
+    process.env.OWNER_SHOP_DOMAIN = "test-shop.myshopify.com";
+    process.env.OWNER_BYPASS_QUOTA = "false";
+    (storage.consumeMerchantGeneration as any).mockResolvedValue({
+      allowed: true,
+      used: 801,
+      overageUsed: 0,
+      isOverage: false,
+    });
+    const inst = {
+      ...baseInstall,
+      planName: "dabbler",
+      planStatus: "active",
+      monthlyGenerationsUsed: 800,
+    };
+    currentInstall = inst;
+    const decision = await consumeMerchantGenerationQuota(inst);
+    expect(decision.unlimited).toBe(false);
+    expect(decision.planName).toBe("dabbler");
+    expect(storage.consumeMerchantGeneration).toHaveBeenCalled();
+    delete process.env.OWNER_BYPASS_QUOTA;
   });
 
   it("peek allows when under cap and computes remaining", async () => {

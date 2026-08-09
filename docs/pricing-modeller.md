@@ -39,11 +39,24 @@ Installations are **required** to have `pricing_version` (backfilled to `0`). Nu
 
 ## Staging QA (before any production activate)
 
+Manual checklist (demo shop) still applies before any production **catalogue activate**:
+
 1. Commit a draft version — confirm picker/offer still shows previous active numbers.
 2. Activate on staging — confirm new subscribe / upgrade uses new fee + cappedAmount.
 3. **Re-subscribe / cap-change** on the operator demo shop.
 4. **Mid-cycle quota-counter integrity:** with partial `monthly_generations_used` / `monthly_overage_used` already on the shop, after activate (without re-sub) counters must be unchanged and enforcement still uses the old stamp; after re-subscribe approval, stamp updates to the new catalogue id and counters must not spuriously reset unless the plan-change path intentionally resets metering (trial→paid / downgrade rules).
 5. Emit path: overage charge price matches the shop’s catalogue schedule (two-tier fixture covered in unit tests).
+
+### Automated QA (split by what it verifies)
+
+| Layer | Covers | Command |
+|-------|--------|---------|
+| **Playwright UI** | Modeller loads **v0-live**; **commit** leaves plan picker + Insights offer on old fees + **$0.08**; activate confirm modal open/cancel/confirm | `npm run test:pricing-qa:ui` |
+| **Service / row assertions** | (4) activate-alone leaves seeded **800/900** counters + stamp untouched; (5) upgrade approve **carries** counters (not reset/doubled); (6) re-subscribe moves stamp + metering matches model. Shopify approve via `applyApprovedSubscription` simulated payloads — no hosted Shopify UI. Counters seeded in-code, never by generating. | `npm run test:pricing-qa:service` |
+
+Optional real-DB soak (activate must not mutate any `shopify_installations` metering columns): `RUN_PRICING_QA_DB=1 npm run test:pricing-qa:service` against a non-production DB.
+
+Both: `npm run test:pricing-qa`.
 
 ## Phase 2 (not built)
 
@@ -53,5 +66,6 @@ Allocate a share of fixed monthly infra (~$65/mo) across projected subscribers f
 
 - SSOT seed + helpers: `shared/customizerPlans.ts`
 - DB catalogues: `pricing_catalogues`, `pricing_catalogue_plans`
-- Server: `server/pricing-catalogue.ts`, `server/routes/pricing-modeller.ts`
+- Server: `server/pricing-catalogue.ts`, `server/routes/pricing-modeller.ts`, `server/billing-plan-apply.ts`
 - UI: `/admin/platform/pricing-modeller`
+- Automated QA: `server/pricing-qa.integration.test.ts`, `e2e/pricing-modeller.spec.ts`

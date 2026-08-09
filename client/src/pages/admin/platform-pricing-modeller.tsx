@@ -9,6 +9,14 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -48,7 +56,8 @@ function withComputedPrice(p: DraftPlan, aiCost: number): DraftPlan {
   return { ...p, priceUsd: price };
 }
 
-export default function PlatformPricingModellerPage() {
+/** Panel body — exported for Playwright / component harnesses (no AdminLayout). */
+export function PricingModellerPanel() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [draftPlans, setDraftPlans] = useState<DraftPlan[]>([]);
@@ -56,6 +65,9 @@ export default function PlatformPricingModellerPage() {
   const [aiCost, setAiCost] = useState(PLATFORM_AI_COST_PER_GEN_USD);
   const [commitLabel, setCommitLabel] = useState("");
   const [realisticUtilPct, setRealisticUtilPct] = useState(40);
+  const [activateTarget, setActivateTarget] = useState<{ id: number; label: string } | null>(
+    null,
+  );
 
   const { data: platformStatus, isLoading: statusLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -126,10 +138,6 @@ export default function PlatformPricingModellerPage() {
         aiCostPerGenUsd: aiCost,
         plans: draftPlans,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Commit failed");
-      }
       return res.json();
     },
     onSuccess: (data) => {
@@ -147,10 +155,6 @@ export default function PlatformPricingModellerPage() {
       const res = await apiRequest("POST", `/api/platform/pricing/catalogues/${id}/activate`, {
         confirm: "ACTIVATE",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Activate failed");
-      }
       return res.json();
     },
     onSuccess: (data) => {
@@ -161,36 +165,32 @@ export default function PlatformPricingModellerPage() {
       qc.invalidateQueries({ queryKey: ["/api/platform/pricing/active"] });
       qc.invalidateQueries({ queryKey: ["/api/platform/pricing/catalogues"] });
       qc.invalidateQueries({ queryKey: ["/api/appai/billing/plan-catalog"] });
+      setActivateTarget(null);
     },
     onError: (e: Error) => toast({ title: "Activate failed", description: e.message, variant: "destructive" }),
   });
 
   if (statusLoading || activeLoading) {
     return (
-      <AdminLayout>
-        <div className="flex justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin" />
-        </div>
-      </AdminLayout>
+      <div className="flex justify-center py-16" data-testid="pricing-modeller-loading">
+        <Loader2 className="h-6 w-6 animate-spin" />
+      </div>
     );
   }
 
   if (!platformStatus?.isPlatformAdmin) {
     return (
-      <AdminLayout>
-        <Alert variant="destructive">
-          <AlertTitle>Platform operator only</AlertTitle>
-          <AlertDescription>This modeller is not available for merchant admins.</AlertDescription>
-        </Alert>
-      </AdminLayout>
+      <Alert variant="destructive" data-testid="pricing-modeller-forbidden">
+        <AlertTitle>Platform operator only</AlertTitle>
+        <AlertDescription>This modeller is not available for merchant admins.</AlertDescription>
+      </Alert>
     );
   }
 
   const active = activeData?.catalogue;
 
   return (
-    <AdminLayout>
-      <div className="max-w-5xl mx-auto space-y-6 pb-12">
+      <div className="max-w-5xl mx-auto space-y-6 pb-12" data-testid="pricing-modeller-root">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Pricing modeller</h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
@@ -199,8 +199,12 @@ export default function PlatformPricingModellerPage() {
           </p>
         </div>
 
-        <Alert>
-          <AlertTitle>Active offer: {active?.label ?? "—"} (id {active?.id ?? "—"})</AlertTitle>
+        <Alert data-testid="pricing-modeller-active-banner">
+          <AlertTitle>
+            Active offer:{" "}
+            <span data-testid="pricing-modeller-active-label">{active?.label ?? "—"}</span>{" "}
+            (id <span data-testid="pricing-modeller-active-id">{active?.id ?? "—"}</span>)
+          </AlertTitle>
           <AlertDescription className="text-xs">
             Sliders edit an in-memory draft. Commit does not change live billing. Existing shops keep
             their stamped pricingVersion until they re-subscribe.
@@ -431,6 +435,7 @@ export default function PlatformPricingModellerPage() {
             </div>
             <Button
               type="button"
+              data-testid="pricing-modeller-commit"
               onClick={() => commitMutation.mutate()}
               disabled={commitMutation.isPending || !commitLabel.trim()}
             >
@@ -449,11 +454,13 @@ export default function PlatformPricingModellerPage() {
               not reset or jump incorrectly when the offer activates or the shop re-approves).
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-2" data-testid="pricing-modeller-catalogue-list">
             {(listData?.catalogues ?? []).map((c) => (
               <div
                 key={c.id}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
+                data-testid={`pricing-catalogue-row-${c.id}`}
+                data-status={c.status}
               >
                 <div>
                   <span className="font-medium">
@@ -469,17 +476,9 @@ export default function PlatformPricingModellerPage() {
                     type="button"
                     size="sm"
                     variant="outline"
+                    data-testid={`pricing-modeller-activate-${c.id}`}
                     disabled={activateMutation.isPending}
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          `Activate ${c.label}? New subscriptions will use these numbers. Existing shops keep their stamp until re-subscribe.`,
-                        )
-                      ) {
-                        return;
-                      }
-                      activateMutation.mutate(c.id);
-                    }}
+                    onClick={() => setActivateTarget({ id: c.id, label: c.label })}
                   >
                     Activate
                   </Button>
@@ -488,7 +487,53 @@ export default function PlatformPricingModellerPage() {
             ))}
           </CardContent>
         </Card>
+
+        <Dialog
+          open={!!activateTarget}
+          onOpenChange={(open) => {
+            if (!open) setActivateTarget(null);
+          }}
+        >
+          <DialogContent data-testid="pricing-modeller-activate-dialog">
+            <DialogHeader>
+              <DialogTitle>Activate {activateTarget?.label}?</DialogTitle>
+              <DialogDescription>
+                New subscriptions will use these numbers. Existing shops keep their stamped
+                pricingVersion until they re-subscribe. This does not reset generation counters.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                data-testid="pricing-modeller-activate-cancel"
+                onClick={() => setActivateTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                data-testid="pricing-modeller-activate-confirm"
+                disabled={activateMutation.isPending}
+                onClick={() => {
+                  if (!activateTarget) return;
+                  activateMutation.mutate(activateTarget.id);
+                }}
+              >
+                {activateMutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                Activate
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
+  );
+}
+
+export default function PlatformPricingModellerPage() {
+  return (
+    <AdminLayout>
+      <PricingModellerPanel />
     </AdminLayout>
   );
 }

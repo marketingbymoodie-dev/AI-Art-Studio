@@ -85,11 +85,14 @@ interface PlanCardProps {
 }
 
 function PlanCard({
-  displayName, price, pageLimit, freeGenerations, description, overageNote, trialNote,
+  name, displayName, price, pageLimit, freeGenerations, description, overageNote, trialNote,
   highlight, icon, ctaLabel, onSelect, loading,
 }: PlanCardProps) {
   return (
-    <Card className={`relative flex flex-col ${highlight ? "border-primary ring-2 ring-primary/20" : ""}`}>
+    <Card
+      className={`relative flex flex-col ${highlight ? "border-primary ring-2 ring-primary/20" : ""}`}
+      data-testid={`plan-picker-card-${name}`}
+    >
       {highlight && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2">
           <Badge className="bg-primary text-primary-foreground px-3">Most Popular</Badge>
@@ -100,7 +103,7 @@ function PlanCard({
           {icon}
           <CardTitle className="text-lg">{displayName}</CardTitle>
         </div>
-        <div className="flex items-baseline gap-1">
+        <div className="flex items-baseline gap-1" data-testid={`plan-picker-price-${name}`}>
           {price === null ? (
             <span className="text-3xl font-bold">Free</span>
           ) : (
@@ -326,7 +329,10 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
         })}
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">
+      <p
+        className="text-center text-xs text-muted-foreground"
+        data-testid="plan-picker-overage-rate"
+      >
         Paid plans are billed monthly through Shopify in USD. Cancel anytime.
         Extra generations require in-app opt-in (${overagePriceUsd.toFixed(2)} USD each, pay-as-you-go). Tap ⓘ on a plan for details.
       </p>

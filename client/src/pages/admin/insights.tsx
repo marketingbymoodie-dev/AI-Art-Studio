@@ -668,7 +668,7 @@ export default function AdminInsightsPage() {
                 ) : (
                   <>
                     Try a higher plan for more pages and headroom, or preview overage (
-                    {money2(overagePriceUsd)}/gen) to model pay-as-you-go.
+                    <span data-testid="insights-overage-rate">{money2(overagePriceUsd)}</span>/gen) to model pay-as-you-go.
                   </>
                 )}
               </AlertDescription>

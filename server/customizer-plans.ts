@@ -63,11 +63,36 @@ export function canSaveMerchantDesigns(
 }
 
 /**
+ * When false/0/off/no, OWNER_SHOP_DOMAIN still grants platform-admin access but
+ * does **not** force Pro Plus / unlimited metering / skip-Shopify billing.
+ * Default (unset): bypass on. Staging QA: set OWNER_BYPASS_QUOTA=false.
+ */
+export function isOwnerQuotaBypassEnabled(): boolean {
+  const v = (process.env.OWNER_BYPASS_QUOTA ?? "true").toLowerCase().trim();
+  return v !== "false" && v !== "0" && v !== "off" && v !== "no";
+}
+
+/** True when shopDomain matches OWNER_SHOP_DOMAIN (ignores OWNER_BYPASS_QUOTA). */
+export function shopMatchesOwnerDomain(shopDomain?: string | null): boolean {
+  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
+  if (!ownerShop || !shopDomain) return false;
+  return shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop;
+}
+
+/**
+ * Owner shop with quota bypass enabled — unlimited metering / forced Pro Plus.
+ * Platform admin still uses OWNER_SHOP_DOMAIN alone (see platformAdmin.ts).
+ */
+export function isOwnerQuotaBypassShop(shopDomain?: string | null): boolean {
+  return isOwnerQuotaBypassEnabled() && shopMatchesOwnerDomain(shopDomain);
+}
+
+/**
  * Derive the effective plan status for an installation.
  * Returns a normalized object the UI and server can act on.
  *
- * If OWNER_SHOP_DOMAIN env var is set and shopDomain matches, unconditionally
- * returns Pro Plus active — bypasses all billing/DB state for the developer's store.
+ * If OWNER_SHOP_DOMAIN matches and OWNER_BYPASS_QUOTA is enabled (default),
+ * returns Pro Plus active — bypasses billing/DB plan state for the developer store.
  */
 export function getEffectivePlan(
   installation: {
@@ -85,9 +110,7 @@ export function getEffectivePlan(
   pageLimit: number;
   displayName: string;
 } {
-  // Owner bypass: env-var-configured shop always gets Pro Plus without payment
-  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-  if (ownerShop && shopDomain && shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop) {
+  if (isOwnerQuotaBypassShop(shopDomain)) {
     return {
       planName: "pro_plus",
       planStatus: "active",
