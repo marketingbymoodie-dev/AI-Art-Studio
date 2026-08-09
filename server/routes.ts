@@ -100,7 +100,7 @@ import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShop
 import { ensureValidOfflineAccessToken, getBearerTokenFromRequest } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
-import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
   getActiveCatalogue,
@@ -21517,8 +21517,9 @@ ${orientationExtra}
   }));
 
   /**
-   * GET /api/appai/billing/plan-catalog — active offer (self-serve paid plans + overage).
-   * Merchant surfaces (picker / Insights) should use this, not frozen module copies.
+   * GET /api/appai/billing/plan-catalog — active offer (paid plans + overage).
+   * Includes non-self-serve tiers (e.g. Mogul) with selfServe:false so the picker
+   * can show a Contact us card. Merchant surfaces should use this, not frozen copies.
    */
   app.get("/api/appai/billing/plan-catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
@@ -21530,7 +21531,7 @@ ${orientationExtra}
     }
     const active = await getActiveCatalogue();
     const paid = active.plans
-      .filter((p) => p.selfServe && p.planKey !== "trial")
+      .filter((p) => p.planKey !== "trial")
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map((p) => ({
         planName: p.planKey,
@@ -21540,6 +21541,7 @@ ${orientationExtra}
         generationQuota: p.generationQuota,
         overageCap: p.overageCapUnits,
         designProductLimit: p.designProductLimit,
+        selfServe: !!p.selfServe,
       }));
     const trial = findCataloguePlan(active, "trial");
     const headlineOverage = active.overageSchedule[0]?.priceUsd ?? 0.08;
@@ -21553,7 +21555,7 @@ ${orientationExtra}
             pageLimit: trial.pageLimit,
             generationQuota: trial.generationQuota,
           }
-        : { pageLimit: 1, generationQuota: 20 },
+        : { pageLimit: 1, generationQuota: PLAN_GENERATION_QUOTAS.trial ?? 10 },
       plans: paid,
       installationPricingVersion: resolved.installation.pricingVersion ?? 0,
     });

@@ -27,12 +27,12 @@ describe("resolveGenerationQuota", () => {
     }
   });
 
-  it("gives the trial allotment (20 free, no overage, cumulative) for trial plan", () => {
+  it("gives the trial allotment (10 included, no overage, cumulative) for trial plan", () => {
     const q = resolveGenerationQuota("trial", true, fixedNow);
     expect(q.effectivePlan).toBe("trial");
-    expect(q.freeQuota).toBe(20);
+    expect(q.freeQuota).toBe(10);
     expect(q.overageCap).toBe(0);
-    expect(q.hardCap).toBe(20);
+    expect(q.hardCap).toBe(10);
     expect(q.overagePriceUsd).toBe(0);
     expect(q.monthly).toBe(false);
     expect(q.bucketKey).toBe("trial");
@@ -44,7 +44,7 @@ describe("resolveGenerationQuota", () => {
     // An inactive (cancelled/expired) paid plan should not grant the paid quota.
     const inactivePaid = resolveGenerationQuota("pro", false, fixedNow);
     expect(inactivePaid.effectivePlan).toBe("trial");
-    expect(inactivePaid.hardCap).toBe(20);
+    expect(inactivePaid.hardCap).toBe(10);
   });
 });
 
@@ -225,10 +225,10 @@ describe("merchant quota orchestration", () => {
     else process.env.OWNER_SHOP_DOMAIN = savedOwner;
   });
 
-  it("blocks a trial shop at 20 with an upgrade-to-Starter message", async () => {
+  it("blocks a trial shop at the included allotment with an upgrade-to-Starter message", async () => {
     (storage.consumeMerchantGeneration as any).mockResolvedValue({
       allowed: false,
-      used: 20,
+      used: 10,
       overageUsed: 0,
       isOverage: false,
     });
@@ -251,7 +251,7 @@ describe("merchant quota orchestration", () => {
 
     const body = quotaBlockBody(decision);
     expect(body.upgrade).toBe(true);
-    expect(body.limit).toBe(20);
+    expect(body.limit).toBe(10);
   });
 
   it("blocks a paid shop over cap with OVERAGE_BUDGET_EXHAUSTED", async () => {
@@ -376,8 +376,8 @@ describe("merchant quota orchestration", () => {
     const inst = { ...baseInstall, planName: "starter", planStatus: "active" };
     const decision = await peekMerchantGenerationQuota(inst);
     expect(decision.planName).toBe("trial");
-    expect(decision.freeQuota).toBe(20);
-    expect(decision.hardCap).toBe(20);
+    expect(decision.freeQuota).toBe(10);
+    expect(decision.hardCap).toBe(10);
   });
 
   it("merchant setup rail: restores the paid quota once Printify is connected", async () => {

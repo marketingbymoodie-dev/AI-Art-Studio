@@ -28,7 +28,7 @@ export const PLAN_DESIGN_PRODUCT_LIMITS: Record<string, number> = {
 
 /** Monthly free AI-generation allotment per plan. */
 export const PLAN_GENERATION_QUOTAS: Record<string, number> = {
-  trial: 20,
+  trial: 10,
   starter: 250,
   dabbler: 600,
   pro: 1500,
@@ -242,7 +242,7 @@ export function buildSeedCatalogueSnapshot(): PricingCatalogueSnapshot {
     planKey: "trial",
     displayName: PLAN_DISPLAY_NAMES.trial ?? "Trial",
     priceUsd: 0,
-    generationQuota: PLAN_GENERATION_QUOTAS.trial ?? 20,
+    generationQuota: PLAN_GENERATION_QUOTAS.trial ?? 10,
     pageLimit: PLAN_PAGE_LIMITS.trial ?? 1,
     designProductLimit: PLAN_DESIGN_PRODUCT_LIMITS.trial ?? 0,
     overageCapUnits: 0,

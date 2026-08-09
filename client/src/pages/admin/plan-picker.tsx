@@ -50,6 +50,10 @@ const PLAN_CARD_META: Record<
     descriptionFor: (n) => `Maximum scale: ${n} customizer pages for large catalogs.`,
     icon: <Rocket className="h-5 w-5 text-orange-500" />,
   },
+  mogul: {
+    descriptionFor: (n) => `Enterprise scale: ${n} customizer pages — talk to us to get started.`,
+    icon: <Rocket className="h-5 w-5 text-slate-600" />,
+  },
 };
 
 function overageNoteForCap(overageCap: number, overagePriceUsd: number): string {
@@ -70,7 +74,7 @@ interface PlanCardProps {
   displayName: string;
   price: number | null;
   pageLimit: number;
-  /** Monthly free AI-generation allotment for this plan. */
+  /** Monthly included AI-generation allotment for this plan. */
   freeGenerations: number;
   description: string;
   /** First line of the info popover, describing this plan's overage terms (paid plans only). */
@@ -82,11 +86,13 @@ interface PlanCardProps {
   ctaLabel: string;
   onSelect: () => void;
   loading: boolean;
+  /** Non-self-serve tiers (e.g. Mogul) — show Contact us, no Shopify checkout. */
+  contactUs?: boolean;
 }
 
 function PlanCard({
   name, displayName, price, pageLimit, freeGenerations, description, overageNote, trialNote,
-  highlight, icon, ctaLabel, onSelect, loading,
+  highlight, icon, ctaLabel, onSelect, loading, contactUs,
 }: PlanCardProps) {
   return (
     <Card
@@ -108,7 +114,9 @@ function PlanCard({
             <span className="text-3xl font-bold">Free</span>
           ) : (
             <>
-              <span className="text-3xl font-bold">${price}</span>
+              <span className="text-3xl font-bold">
+                ${Math.round(price).toLocaleString("en-US")}
+              </span>
               <span className="text-muted-foreground text-sm">/month</span>
             </>
           )}
@@ -121,7 +129,7 @@ function PlanCard({
             <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
             <span className="flex items-center gap-1">
               <span>
-                {freeGenerations.toLocaleString()} free generation{freeGenerations !== 1 ? "s" : ""}
+                {freeGenerations.toLocaleString()} included generation{freeGenerations !== 1 ? "s" : ""}
                 {price === null ? "" : "/mo"}
               </span>
               <Popover>
@@ -152,13 +160,13 @@ function PlanCard({
           </li>
         </ul>
         <Button
-          variant={highlight ? "default" : "outline"}
+          variant={highlight && !contactUs ? "default" : "outline"}
           className="w-full"
           onClick={onSelect}
           disabled={loading}
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-          {ctaLabel}
+          {contactUs ? "Contact us" : ctaLabel}
         </Button>
       </CardContent>
     </Card>
@@ -186,11 +194,14 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       pageLimit: number;
       generationQuota: number;
       overageCap: number;
+      selfServe?: boolean;
     }>;
   }>({
     queryKey: ["/api/appai/billing/plan-catalog"],
   });
-  const offerPlans = planCatalog?.plans?.length ? planCatalog.plans : PAID_PLAN_DEFINITIONS;
+  const offerPlans = planCatalog?.plans?.length
+    ? planCatalog.plans
+    : PAID_PLAN_DEFINITIONS.map((p) => ({ ...p, selfServe: true as boolean }));
   const overagePriceUsd = planCatalog?.overagePriceUsd ?? OVERAGE_PRICE_USD;
   const trialPages = planCatalog?.trial?.pageLimit ?? PLAN_PAGE_LIMITS.trial;
   const trialGens = planCatalog?.trial?.generationQuota ?? PLAN_GENERATION_QUOTAS.trial;
@@ -293,11 +304,11 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
         <h2 className="text-2xl font-bold mb-2">Pick a plan to get started</h2>
         <p className="text-muted-foreground">
           Start with a free trial, or pick a paid plan for more customizer pages and a larger
-          monthly allotment of free AI generations.
+          monthly allotment of included AI generations.
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 mb-8">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 mb-8">
         {/* Trial */}
         <PlanCard
           name="trial"
@@ -306,7 +317,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           pageLimit={trialPages}
           freeGenerations={trialGens}
           description={`Evaluate the app with ${trialPages} customizer page${trialPages === 1 ? "" : "s"}. No credit card needed.`}
-          trialNote={`Your trial includes ${trialGens} free generations. Once they're used, upgrade to the ${PLAN_DISPLAY_NAMES.starter} plan to keep using the customizer page you set up.`}
+          trialNote={`Your trial includes ${trialGens} generations. Once they're used, upgrade to the ${PLAN_DISPLAY_NAMES.starter} plan to keep using the customizer page you set up.`}
           icon={<Zap className="h-5 w-5 text-yellow-500" />}
           ctaLabel="Start Free Trial"
           onSelect={handleTrial}
@@ -314,6 +325,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
         />
         {offerPlans.map((plan) => {
           const meta = PLAN_CARD_META[plan.planName];
+          const contactUs = plan.selfServe === false;
           return (
             <PlanCard
               key={plan.planName}
@@ -326,11 +338,29 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
                 meta?.descriptionFor(plan.pageLimit) ??
                 `${plan.pageLimit} customizer pages.`
               }
-              overageNote={overageNoteForCap(plan.overageCap, overagePriceUsd)}
+              overageNote={
+                contactUs
+                  ? "Enterprise plan — contact us to subscribe. Overage and billing terms are arranged with our team."
+                  : overageNoteForCap(plan.overageCap, overagePriceUsd)
+              }
               highlight={meta?.highlight}
               icon={meta?.icon ?? <Rocket className="h-5 w-5 text-orange-500" />}
               ctaLabel={`Choose ${plan.displayName}`}
-              onSelect={() => handlePaid(plan.planName)}
+              contactUs={contactUs}
+              onSelect={() => {
+                if (contactUs) {
+                  const subject = encodeURIComponent(
+                    `AI Art Studio — ${plan.displayName} plan enquiry`,
+                  );
+                  window.open(
+                    `mailto:hello@aiartstudio.app?subject=${subject}`,
+                    "_blank",
+                    "noopener,noreferrer",
+                  );
+                  return;
+                }
+                handlePaid(plan.planName);
+              }}
               loading={loadingPlan === plan.planName}
             />
           );

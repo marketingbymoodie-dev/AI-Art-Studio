@@ -100,7 +100,24 @@ export function PricingModellerPanel() {
     if (!plans.some((p) => p.planKey === "mogul")) {
       plans.push(defaultMogul());
     }
-    setDraftPlans(plans.map((p) => withComputedPrice(p, cat.aiCostPerGenUsd)));
+    // Preserve committed list prices — do NOT recompute price from margin on
+    // load (that turns typed $29 into $28.99). Sync the margin slider from the
+    // stored price so the two stay consistent.
+    setDraftPlans(
+      plans.map((p) => {
+        if (p.planKey === "trial") return { ...p, priceUsd: 0 };
+        const price = Number(p.priceUsd) || 0;
+        return {
+          ...p,
+          priceUsd: price,
+          marginOverAiCostPct: marginFromPriceOverAiCost(
+            p.generationQuota,
+            price,
+            cat.aiCostPerGenUsd || PLATFORM_AI_COST_PER_GEN_USD,
+          ),
+        };
+      }),
+    );
     setOverageRate(cat.overageSchedule[0]?.priceUsd ?? 0.1);
     setAiCost(cat.aiCostPerGenUsd || PLATFORM_AI_COST_PER_GEN_USD);
     const d = new Date();
@@ -119,9 +136,15 @@ export function PricingModellerPanel() {
       prev.map((p) => {
         if (p.planKey !== planKey) return p;
         const next = { ...p, ...patch };
-        if (patch.priceUsd != null && p.planKey !== "trial") {
-          // Target-price edit: keep the typed (clean) price, back-solve margin
-          // so the slider/echo stay consistent — price is the source of truth.
+        // Margin slider drives price from the formula.
+        if (patch.marginOverAiCostPct != null) {
+          return withComputedPrice(next, aiCost);
+        }
+        // Target price or included-gens edit: keep list price clean, back-solve margin.
+        if (
+          p.planKey !== "trial" &&
+          (patch.priceUsd != null || patch.generationQuota != null)
+        ) {
           return {
             ...next,
             marginOverAiCostPct: marginFromPriceOverAiCost(
@@ -130,13 +153,6 @@ export function PricingModellerPanel() {
               aiCost,
             ),
           };
-        }
-        if (
-          patch.generationQuota != null ||
-          patch.marginOverAiCostPct != null ||
-          patch.planKey != null
-        ) {
-          return withComputedPrice(next, aiCost);
         }
         return next;
       }),
@@ -252,7 +268,20 @@ export function PricingModellerPanel() {
                 onChange={(e) => {
                   const v = Math.max(0.001, parseFloat(e.target.value) || PLATFORM_AI_COST_PER_GEN_USD);
                   setAiCost(v);
-                  setDraftPlans((prev) => prev.map((p) => withComputedPrice(p, v)));
+                  // Keep typed list prices; refresh margin so economics stay coherent.
+                  setDraftPlans((prev) =>
+                    prev.map((p) => {
+                      if (p.planKey === "trial") return p;
+                      return {
+                        ...p,
+                        marginOverAiCostPct: marginFromPriceOverAiCost(
+                          p.generationQuota,
+                          p.priceUsd,
+                          v,
+                        ),
+                      };
+                    }),
+                  );
                 }}
               />
             </div>
@@ -321,7 +350,6 @@ export function PricingModellerPanel() {
                         type="number"
                         min={0}
                         value={p.generationQuota}
-                        disabled={p.planKey === "trial"}
                         onChange={(e) =>
                           updatePlan(p.planKey, {
                             generationQuota: Math.max(0, parseInt(e.target.value, 10) || 0),
