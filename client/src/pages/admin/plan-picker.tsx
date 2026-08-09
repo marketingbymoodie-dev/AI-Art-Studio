@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -30,29 +30,30 @@ import {
 
 const PLAN_CARD_META: Record<
   string,
-  { description: string; highlight?: boolean; icon: ReactNode }
+  { descriptionFor: (pageLimit: number) => string; highlight?: boolean; icon: ReactNode }
 > = {
   starter: {
-    description: "Perfect for shops selling up to 2 custom products.",
+    descriptionFor: (n) =>
+      `Perfect for shops selling up to ${n} custom product${n === 1 ? "" : "s"}.`,
     icon: <LayoutTemplate className="h-5 w-5 text-blue-500" />,
   },
   dabbler: {
-    description: "Try several products with up to 5 customizer pages.",
+    descriptionFor: (n) => `Try several products with up to ${n} customizer pages.`,
     highlight: true,
     icon: <Star className="h-5 w-5 text-purple-500" />,
   },
   pro: {
-    description: "Scale across your full catalog with 15 pages.",
+    descriptionFor: (n) => `Scale across your full catalog with ${n} pages.`,
     icon: <Rocket className="h-5 w-5 text-green-500" />,
   },
   pro_plus: {
-    description: "Maximum scale: 30 customizer pages for large catalogs.",
+    descriptionFor: (n) => `Maximum scale: ${n} customizer pages for large catalogs.`,
     icon: <Rocket className="h-5 w-5 text-orange-500" />,
   },
 };
 
-function overageNoteForCap(overageCap: number): string {
-  return `Additional generations can be added at $${OVERAGE_PRICE_USD.toFixed(2)} per generation, capped at an extra ${overageCap} generations per calendar month.`;
+function overageNoteForCap(overageCap: number, overagePriceUsd: number): string {
+  return `Additional generations can be added at $${overagePriceUsd.toFixed(2)} per generation, capped at an extra ${overageCap} generations per calendar month.`;
 }
 
 /**
@@ -171,6 +172,25 @@ interface PlanPickerProps {
 export default function PlanPicker({ onActivated, inline = false }: PlanPickerProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { data: planCatalog } = useQuery<{
+    catalogueId: number;
+    overagePriceUsd: number;
+    trial: { pageLimit: number; generationQuota: number };
+    plans: Array<{
+      planName: string;
+      displayName: string;
+      priceUsd: number;
+      pageLimit: number;
+      generationQuota: number;
+      overageCap: number;
+    }>;
+  }>({
+    queryKey: ["/api/appai/billing/plan-catalog"],
+  });
+  const offerPlans = planCatalog?.plans?.length ? planCatalog.plans : PAID_PLAN_DEFINITIONS;
+  const overagePriceUsd = planCatalog?.overagePriceUsd ?? OVERAGE_PRICE_USD;
+  const trialPages = planCatalog?.trial?.pageLimit ?? PLAN_PAGE_LIMITS.trial;
+  const trialGens = planCatalog?.trial?.generationQuota ?? PLAN_GENERATION_QUOTAS.trial;
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [upgradePlan, setUpgradePlan] = useState<string | null>(null);
   const [upgradePreview, setUpgradePreview] = useState<{
@@ -272,16 +292,16 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           name="trial"
           displayName="Trial"
           price={null}
-          pageLimit={PLAN_PAGE_LIMITS.trial}
-          freeGenerations={PLAN_GENERATION_QUOTAS.trial}
-          description="Evaluate the app with 1 customizer page. No credit card needed."
-          trialNote={`Your trial includes ${PLAN_GENERATION_QUOTAS.trial} free generations. Once they're used, upgrade to the ${PLAN_DISPLAY_NAMES.starter} plan to keep using the customizer page you set up.`}
+          pageLimit={trialPages}
+          freeGenerations={trialGens}
+          description={`Evaluate the app with ${trialPages} customizer page${trialPages === 1 ? "" : "s"}. No credit card needed.`}
+          trialNote={`Your trial includes ${trialGens} free generations. Once they're used, upgrade to the ${PLAN_DISPLAY_NAMES.starter} plan to keep using the customizer page you set up.`}
           icon={<Zap className="h-5 w-5 text-yellow-500" />}
           ctaLabel="Start Free Trial"
           onSelect={handleTrial}
           loading={loadingPlan === "trial"}
         />
-        {PAID_PLAN_DEFINITIONS.map((plan) => {
+        {offerPlans.map((plan) => {
           const meta = PLAN_CARD_META[plan.planName];
           return (
             <PlanCard
@@ -291,8 +311,11 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
               price={plan.priceUsd}
               pageLimit={plan.pageLimit}
               freeGenerations={plan.generationQuota}
-              description={meta?.description ?? `${plan.pageLimit} customizer pages.`}
-              overageNote={overageNoteForCap(plan.overageCap)}
+              description={
+                meta?.descriptionFor(plan.pageLimit) ??
+                `${plan.pageLimit} customizer pages.`
+              }
+              overageNote={overageNoteForCap(plan.overageCap, overagePriceUsd)}
               highlight={meta?.highlight}
               icon={meta?.icon ?? <Rocket className="h-5 w-5 text-orange-500" />}
               ctaLabel={`Choose ${plan.displayName}`}
@@ -305,7 +328,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
 
       <p className="text-center text-xs text-muted-foreground">
         Paid plans are billed monthly through Shopify in USD. Cancel anytime.
-        Extra generations require in-app opt-in (${OVERAGE_PRICE_USD.toFixed(2)} USD each, pay-as-you-go). Tap ⓘ on a plan for details.
+        Extra generations require in-app opt-in (${overagePriceUsd.toFixed(2)} USD each, pay-as-you-go). Tap ⓘ on a plan for details.
       </p>
 
       <Dialog open={!!upgradePlan} onOpenChange={(open) => !open && setUpgradePlan(null)}>

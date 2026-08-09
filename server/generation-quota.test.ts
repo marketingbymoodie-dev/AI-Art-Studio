@@ -49,7 +49,7 @@ describe("resolveGenerationQuota", () => {
 });
 
 describe("getPlanOverageCappedAmountUsd", () => {
-  it("computes the max monthly overage cost = cap × $0.08 per paid plan", () => {
+  it("computes the max monthly overage cost = cap × headline overage rate per paid plan", () => {
     expect(getPlanOverageCappedAmountUsd("starter")).toBe(16);   // 200 × 0.08
     expect(getPlanOverageCappedAmountUsd("dabbler")).toBe(24);   // 300 × 0.08
     expect(getPlanOverageCappedAmountUsd("pro")).toBe(40);       // 500 × 0.08
@@ -167,6 +167,16 @@ vi.mock("./usage-billing", () => ({
   emitOverageUsageCharge: vi.fn().mockResolvedValue({ status: "charged" }),
 }));
 
+vi.mock("./pricing-catalogue", async () => {
+  const { buildSeedCatalogueSnapshot } = await import("@shared/customizerPlans");
+  const seed = buildSeedCatalogueSnapshot();
+  return {
+    getCatalogueForInstallation: vi.fn().mockResolvedValue(seed),
+    getActiveCatalogue: vi.fn().mockResolvedValue(seed),
+    ensureSeedPricingCatalogue: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 import { storage } from "./storage";
 import { emitOverageUsageCharge } from "./usage-billing";
 import {
@@ -273,7 +283,7 @@ describe("merchant quota orchestration", () => {
     expect(decision.remaining).toBe(450 - 251);
   });
 
-  it("emits a usage charge for an overage generation at $0.08 with the running overage count", async () => {
+  it("emits a usage charge for an overage generation at the catalogue rate with the running overage count", async () => {
     (storage.consumeMerchantGeneration as any).mockResolvedValue({
       allowed: true,
       used: 255,

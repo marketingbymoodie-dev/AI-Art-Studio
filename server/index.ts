@@ -234,6 +234,8 @@ app.use((req, res, next) => {
   try {
     const { runStartupMigrations } = await import("./migrations/startup");
     await runStartupMigrations();
+    const { ensureSeedPricingCatalogue } = await import("./pricing-catalogue");
+    await ensureSeedPricingCatalogue();
   } catch (migrationError) {
     console.error("[SERVER STARTUP] Startup migration failed — continuing boot:", migrationError);
   }

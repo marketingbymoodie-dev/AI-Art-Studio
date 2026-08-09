@@ -21,6 +21,7 @@ import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
 import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
+import PlatformPricingModellerPage from "@/pages/admin/platform-pricing-modeller";
 import NotFound from "@/pages/not-found";
 
 import AdminSetupPage from "@/pages/admin/setup";
@@ -61,6 +62,7 @@ function AppRouter() {
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
+      <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}

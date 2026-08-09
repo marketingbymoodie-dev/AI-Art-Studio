@@ -9,6 +9,7 @@ import {
   PLAN_DISPLAY_NAMES,
   type GenerationQuotaConfig,
 } from "./customizer-plans";
+import { getCatalogueForInstallation } from "./pricing-catalogue";
 import { emitOverageUsageCharge } from "./usage-billing";
 import {
   includedUsedFromCounters,
@@ -222,7 +223,14 @@ async function resolveQuotaContext(installation: ShopifyInstallation): Promise<{
   // prevents tyre-kicker abuse on a page nobody can actually fulfil yet.
   const merchant = await storage.getMerchantByShop(refreshed.shopDomain);
   const printifyConnected = isPrintifyConnected(merchant);
-  const quota = resolveGenerationQuota(eff.planName, eff.isActive && printifyConnected);
+  // Enforcement catalogue = shop stamp (not active offer).
+  const catalogue = await getCatalogueForInstallation(refreshed.pricingVersion);
+  const quota = resolveGenerationQuota(
+    eff.planName,
+    eff.isActive && printifyConnected,
+    new Date(),
+    catalogue,
+  );
   const effectiveOverageCap = resolveEffectiveOverageCap(refreshed, quota);
   const hardCap = quota.freeQuota + effectiveOverageCap;
   return { quota, effectiveOverageCap, hardCap };
@@ -314,9 +322,8 @@ export async function consumeMerchantGenerationQuota(
   }
 
   if (r.isOverage && quota.overagePriceUsd > 0) {
-    // Resolve per-unit price with volume = overageSeq so a multi-tier schedule
-    // can drop in without changing this call site (flat $0.08 today).
-    const priceUsd = resolveOveragePriceUsd(r.overageUsed);
+    // Volume-aware price from the shop's stamped catalogue schedule.
+    const priceUsd = resolveOveragePriceUsd(r.overageUsed, quota.overageSchedule);
     void emitOverageUsageCharge({
       installation: refreshed,
       bucketKey: quota.bucketKey,

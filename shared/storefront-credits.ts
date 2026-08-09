@@ -12,7 +12,8 @@ export const STOREFRONT_FREE_GENERATION_LIMIT = STOREFRONT_FREE_GENERATION_DEFAU
 
 /**
  * Premade Studio Credits packs (merchant-mediated Shopify products in Phase 2).
- * Wholesale to merchant is $0.08/credit via usage billing at grant time.
+ * Wholesale to merchant is the catalogue headline overage rate per credit
+ * (OVERAGE_PRICE_USD / resolveOveragePriceUsd) via usage billing at grant time.
  */
 export type CreditPackDefinition = {
   packId: string;

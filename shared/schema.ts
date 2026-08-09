@@ -227,12 +227,52 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    */
   wholesaleCreditCents: integer("wholesale_credit_cents").notNull().default(0),
   /**
-   * Which pricing catalogue this installation subscribed under.
-   * null = pre-versioned / current SSOT (no B number-flip applied yet).
-   * Set on new/changed subscriptions when CURRENT_PRICING_VERSION bumps.
+   * Which pricing catalogue this installation is enforced under.
+   * Always stamped (backfilled to 0). Offer/new-sub uses the active catalogue;
+   * enforcement uses this stamp until the shop re-subscribes.
    */
-  pricingVersion: integer("pricing_version"),
+  pricingVersion: integer("pricing_version").default(0),
 });
+
+/** Versioned SaaS plan catalogue (commit ≠ activate). */
+export const pricingCatalogues = pgTable("pricing_catalogues", {
+  id: serial("id").primaryKey(),
+  label: text("label").notNull(),
+  status: text("status").notNull(), // committed | active | superseded
+  overageSchedule: jsonb("overage_schedule").notNull().$type<
+    Array<{ upToInclusive: number | null; priceUsd: number }>
+  >(),
+  aiCostPerGenUsd: decimal("ai_cost_per_gen_usd", { precision: 10, scale: 4 }).notNull().default("0.0450"),
+  committedAt: timestamp("committed_at").defaultNow().notNull(),
+  activatedAt: timestamp("activated_at"),
+  createdBy: text("created_by"),
+});
+
+export const pricingCataloguePlans = pgTable(
+  "pricing_catalogue_plans",
+  {
+    id: serial("id").primaryKey(),
+    catalogueId: integer("catalogue_id")
+      .notNull()
+      .references(() => pricingCatalogues.id, { onDelete: "cascade" }),
+    planKey: text("plan_key").notNull(),
+    displayName: text("display_name").notNull(),
+    priceUsd: decimal("price_usd", { precision: 10, scale: 2 }).notNull(),
+    generationQuota: integer("generation_quota").notNull(),
+    pageLimit: integer("page_limit").notNull(),
+    designProductLimit: integer("design_product_limit").notNull().default(0),
+    overageCapUnits: integer("overage_cap_units").notNull().default(0),
+    marginOverAiCostPct: decimal("margin_over_ai_cost_pct", { precision: 6, scale: 2 }).notNull().default("50"),
+    selfServe: boolean("self_serve").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("pricing_catalogue_plans_catalogue_plan_uidx").on(t.catalogueId, t.planKey),
+  ],
+);
+
+export type PricingCatalogue = typeof pricingCatalogues.$inferSelect;
+export type PricingCataloguePlan = typeof pricingCataloguePlans.$inferSelect;
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
   id: true,

@@ -29,6 +29,7 @@ import {
   OVERAGE_PRICE_USD,
   PAID_PLAN_DEFINITIONS,
   PLAN_DISPLAY_NAMES,
+  type PlanDefinition,
 } from "@shared/customizerPlans";
 import {
   cheapestFittingPlan,
@@ -159,6 +160,14 @@ function fitBadge(status: string) {
 export default function AdminInsightsPage() {
   const { toast } = useToast();
   const { data: planData } = usePlanGenerationQuota();
+  const { data: planCatalog } = useQuery<{
+    overagePriceUsd: number;
+    plans: PlanDefinition[];
+  }>({
+    queryKey: ["/api/appai/billing/plan-catalog"],
+  });
+  const offerPlans = planCatalog?.plans?.length ? planCatalog.plans : PAID_PLAN_DEFINITIONS;
+  const overagePriceUsd = planCatalog?.overagePriceUsd ?? OVERAGE_PRICE_USD;
   const seedOrders = totalOrdersFromFunnel({
     visitors: SEED_VISITORS,
     engagementPct: SEED_ENGAGEMENT_PCT,
@@ -443,8 +452,10 @@ export default function AdminInsightsPage() {
         gensDemand: profit.gensDemand,
         pagesNeeded: profit.pagesNeeded,
         previewOverage,
-      }) ?? PAID_PLAN_DEFINITIONS[PAID_PLAN_DEFINITIONS.length - 1]!,
-    [profit.gensDemand, profit.pagesNeeded, previewOverage],
+        plans: offerPlans,
+        overagePriceUsd,
+      }) ?? offerPlans[offerPlans.length - 1]!,
+    [profit.gensDemand, profit.pagesNeeded, previewOverage, offerPlans, overagePriceUsd],
   );
 
   useEffect(() => {
@@ -465,8 +476,10 @@ export default function AdminInsightsPage() {
         gensDemand: profit.gensDemand,
         pagesNeeded: profit.pagesNeeded,
         previewOverage,
+        plans: offerPlans,
+        overagePriceUsd,
       }),
-    [profit.gensDemand, profit.pagesNeeded, previewOverage],
+    [profit.gensDemand, profit.pagesNeeded, previewOverage, offerPlans, overagePriceUsd],
   );
   const selectedRow = planRows.find((r) => r.plan.planName === planName) ?? planRows[0]!;
   const plan = selectedRow.plan;
@@ -484,11 +497,15 @@ export default function AdminInsightsPage() {
     gensDemand: profit.gensDemand,
     pagesNeeded: profit.pagesNeeded,
     previewOverage: false,
+    plans: offerPlans,
+    overagePriceUsd,
   });
   const cheapestWithOverage = cheapestFittingPlan({
     gensDemand: profit.gensDemand,
     pagesNeeded: profit.pagesNeeded,
     previewOverage: true,
+    plans: offerPlans,
+    overagePriceUsd,
   });
   const overageUnlocksCheaper =
     !previewOverage &&
@@ -641,6 +658,8 @@ export default function AdminInsightsPage() {
                         gensDemand: profit.gensDemand,
                         pagesNeeded: profit.pagesNeeded,
                         previewOverage: true,
+                        plans: offerPlans,
+                        overagePriceUsd,
                       }).find((r) => r.plan.planName === cheapestWithOverage.planName)
                         ?.monthlyCostUsd ?? cheapestWithOverage.priceUsd,
                     )}
@@ -649,7 +668,7 @@ export default function AdminInsightsPage() {
                 ) : (
                   <>
                     Try a higher plan for more pages and headroom, or preview overage (
-                    {money2(OVERAGE_PRICE_USD)}/gen) to model pay-as-you-go.
+                    {money2(overagePriceUsd)}/gen) to model pay-as-you-go.
                   </>
                 )}
               </AlertDescription>
@@ -1110,7 +1129,7 @@ export default function AdminInsightsPage() {
                 <p className="text-sm text-muted-foreground">
                   Plan cost modelled: {money2(planCostUsd)}/mo
                   {previewOverage && overageCostUsd > 0
-                    ? ` (includes ${money2(overageCostUsd)} overage at ${money2(OVERAGE_PRICE_USD)}/gen).`
+                    ? ` (includes ${money2(overageCostUsd)} overage at ${money2(overagePriceUsd)}/gen).`
                     : "."}{" "}
                   Raising AOV does not increase generation demand.
                 </p>

@@ -2,7 +2,8 @@
  * Apply deferred plan changes and enforce page limits after downgrades.
  */
 import { storage } from "./storage";
-import { CURRENT_PRICING_VERSION, getPageLimit } from "./customizer-plans";
+import { getPageLimit } from "./customizer-plans";
+import { getActiveCatalogue, findCataloguePlan } from "./pricing-catalogue";
 import { downgradeMeteringReset, isPaidPlan } from "./plan-transitions";
 import type { ShopifyInstallation } from "@shared/schema";
 
@@ -18,12 +19,15 @@ export async function applyPendingPlanIfDue(
     return { applied: false, deactivatedPageIds: [] };
   }
 
-  const pageLimit = getPageLimit(pending);
+  const active = await getActiveCatalogue();
+  const catPlan = findCataloguePlan(active, pending);
+  const pageLimit = catPlan?.pageLimit ?? getPageLimit(pending);
   const baseUpdates: Partial<ShopifyInstallation> = {
     planName: pending,
     pendingPlanName: null,
     pendingPlanEffectiveAt: null,
-    pricingVersion: CURRENT_PRICING_VERSION,
+    // Deferred apply stamps the *active* offer at apply time (new terms).
+    pricingVersion: active.id,
   };
 
   if (pending === "trial") {

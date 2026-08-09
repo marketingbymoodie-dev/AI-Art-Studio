@@ -90,7 +90,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
   { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
-  { table: "shopify_installations", column: "pricing_version", type: "INTEGER" },
+  { table: "shopify_installations", column: "pricing_version", type: "INTEGER DEFAULT 0" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },
@@ -105,6 +105,9 @@ const DATA_MIGRATIONS: string[] = [
   `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
   `ALTER TABLE shopify_installations ALTER COLUMN storefront_free_gens_per_visitor SET DEFAULT 2`,
   `UPDATE shopify_installations SET storefront_free_gens_per_visitor = 2`,
+  // Required: every installation must have a pricing catalogue stamp for enforcement.
+  `UPDATE shopify_installations SET pricing_version = 0 WHERE pricing_version IS NULL`,
+  `ALTER TABLE shopify_installations ALTER COLUMN pricing_version SET DEFAULT 0`,
   // Adjustable tote: folded fulfillment + flat storefront mockups (override AOP name defaults).
   `UPDATE platform_catalog_blueprints
    SET fulfillment_layout = 'tote_folded_v1',
@@ -330,7 +333,41 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 2,
         "leftover_gens_reminder_bucket_key" text,
         "wholesale_credit_cents" integer NOT NULL DEFAULT 0,
-        "pricing_version" integer
+        "pricing_version" integer DEFAULT 0
+      )
+    `,
+  },
+  {
+    name: "pricing_catalogues",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "pricing_catalogues" (
+        "id" serial PRIMARY KEY,
+        "label" text NOT NULL,
+        "status" text NOT NULL,
+        "overage_schedule" jsonb NOT NULL,
+        "ai_cost_per_gen_usd" numeric(10, 4) NOT NULL DEFAULT 0.0450,
+        "committed_at" timestamp DEFAULT now() NOT NULL,
+        "activated_at" timestamp,
+        "created_by" text
+      )
+    `,
+  },
+  {
+    name: "pricing_catalogue_plans",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "pricing_catalogue_plans" (
+        "id" serial PRIMARY KEY,
+        "catalogue_id" integer NOT NULL REFERENCES "pricing_catalogues"("id") ON DELETE CASCADE,
+        "plan_key" text NOT NULL,
+        "display_name" text NOT NULL,
+        "price_usd" numeric(10, 2) NOT NULL,
+        "generation_quota" integer NOT NULL,
+        "page_limit" integer NOT NULL,
+        "design_product_limit" integer NOT NULL DEFAULT 0,
+        "overage_cap_units" integer NOT NULL DEFAULT 0,
+        "margin_over_ai_cost_pct" numeric(6, 2) NOT NULL DEFAULT 50,
+        "self_serve" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0
       )
     `,
   },
@@ -1046,6 +1083,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "catalog_sync_events_run_idx",
     sql: `CREATE INDEX IF NOT EXISTS "catalog_sync_events_run_idx"
       ON "catalog_sync_events" ("sync_run_id")`,
+  },
+  {
+    name: "pricing_catalogue_plans_catalogue_plan_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "pricing_catalogue_plans_catalogue_plan_uidx"
+      ON "pricing_catalogue_plans" ("catalogue_id", "plan_key")`,
+  },
+  {
+    name: "pricing_catalogues_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "pricing_catalogues_status_idx"
+      ON "pricing_catalogues" ("status")`,
   },
 
   {

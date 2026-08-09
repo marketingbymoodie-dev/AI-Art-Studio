@@ -99,7 +99,14 @@ import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns, CURRENT_PRICING_VERSION } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import {
+  findCataloguePlan,
+  getActiveCatalogue,
+  getCatalogueForInstallation,
+  getPlanOverageCappedAmountForCatalogue,
+  overageUsageTermsForCatalogue,
+} from "./pricing-catalogue";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -18981,9 +18988,13 @@ ${orientationExtra}
       }
     }
 
-    // Plan limit check - only for ACTIVE (Live) pages
+    // Plan limit check - only for ACTIVE (Live) pages (enforcement catalogue stamp)
     const activeCount = await storage.countActiveCustomizerPages(shop);
-    const { allowed, limit } = canCreatePage(plan.planName, activeCount);
+    const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
+    const enforcePageLimit =
+      findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+    const allowed = activeCount < enforcePageLimit;
+    const limit = enforcePageLimit;
 
     // Create Page wizard goes Live — requires Printify + an available Live slot.
     // Over-limit merchants can still create a disabled page and enable later.
@@ -19472,10 +19483,13 @@ ${orientationExtra}
             code: "PROVIDER_REQUIRED",
           });
         }
-        // Plan limit check — Live (active) pages only
+        // Plan limit check — Live (active) pages only (enforcement catalogue stamp)
         const plan = getEffectivePlan(installation as any, shop);
         const activeCount = await storage.countActiveCustomizerPages(shop);
-        const { allowed, limit } = canCreatePage(plan.planName, activeCount);
+        const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
+        const limit =
+          findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+        const allowed = activeCount < limit;
         if (!allowed) {
           return res.status(402).json({
             error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} Live customizer page${limit === 1 ? "" : "s"}. Upgrade to set more Live.`,
@@ -21500,6 +21514,49 @@ ${orientationExtra}
     });
   }));
 
+  /**
+   * GET /api/appai/billing/plan-catalog — active offer (self-serve paid plans + overage).
+   * Merchant surfaces (picker / Insights) should use this, not frozen module copies.
+   */
+  app.get("/api/appai/billing/plan-catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) {
+      return res.status(resolved.status).json({
+        error: resolved.error,
+        ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}),
+      });
+    }
+    const active = await getActiveCatalogue();
+    const paid = active.plans
+      .filter((p) => p.selfServe && p.planKey !== "trial")
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((p) => ({
+        planName: p.planKey,
+        displayName: p.displayName,
+        priceUsd: p.priceUsd,
+        pageLimit: p.pageLimit,
+        generationQuota: p.generationQuota,
+        overageCap: p.overageCapUnits,
+        designProductLimit: p.designProductLimit,
+      }));
+    const trial = findCataloguePlan(active, "trial");
+    const headlineOverage = active.overageSchedule[0]?.priceUsd ?? 0.08;
+    res.json({
+      catalogueId: active.id,
+      catalogueLabel: active.label,
+      overagePriceUsd: headlineOverage,
+      overageSchedule: active.overageSchedule,
+      trial: trial
+        ? {
+            pageLimit: trial.pageLimit,
+            generationQuota: trial.generationQuota,
+          }
+        : { pageLimit: 1, generationQuota: 20 },
+      plans: paid,
+      installationPricingVersion: resolved.installation.pricingVersion ?? 0,
+    });
+  }));
+
   /** GET /api/appai/billing/upgrade-preview?plan=starter — confirm before Shopify redirect */
   app.get("/api/appai/billing/upgrade-preview", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
@@ -21513,8 +21570,9 @@ ${orientationExtra}
 
     const current = getEffectivePlan(installation as any, installation.shopDomain);
     const q = await peekMerchantGenerationQuota(installation);
-    const newPriceUsd = PLAN_PRICES_USD[newPlan] ?? 0;
-    const newQuota = resolveGenerationQuota(newPlan, true);
+    const activeCatalogue = await getActiveCatalogue();
+    const newPriceUsd = findCataloguePlan(activeCatalogue, newPlan)?.priceUsd ?? PLAN_PRICES_USD[newPlan] ?? 0;
+    const newQuota = resolveGenerationQuota(newPlan, true, new Date(), activeCatalogue);
 
     const currentPlanName = current.planName ?? "trial";
     const changeKind = classifyPlanChange(currentPlanName, newPlan);
@@ -21658,8 +21716,15 @@ ${orientationExtra}
     const shop: string = installation.shopDomain;
     const { plan } = req.body as { plan?: string };
 
-    if (!plan || !(PAID_PLANS as readonly string[]).includes(plan)) {
-      return res.status(400).json({ error: `Invalid plan. Must be one of: ${PAID_PLANS.join(", ")}` });
+    const activeCatalogue = await getActiveCatalogue();
+    const offerPlan = findCataloguePlan(activeCatalogue, plan);
+    const selfServeKeys = activeCatalogue.plans
+      .filter((p) => p.selfServe && p.planKey !== "trial")
+      .map((p) => p.planKey);
+    if (!plan || !offerPlan || !selfServeKeys.includes(plan)) {
+      return res.status(400).json({
+        error: `Invalid plan. Must be one of: ${selfServeKeys.join(", ") || PAID_PLANS.join(", ")}`,
+      });
     }
 
     // Owner bypass: skip Shopify Billing API entirely and write plan directly to DB
@@ -21669,19 +21734,20 @@ ${orientationExtra}
       await storage.updateShopifyInstallation(installation.id, {
         planName: plan,
         planStatus: "active",
+        pricingVersion: activeCatalogue.id,
       });
       return res.json({ activated: true, plan });
     }
 
-    const priceUsd = PLAN_PRICES_USD[plan];
-    const displayName = PLAN_DISPLAY_NAMES[plan] ?? plan;
+    const priceUsd = offerPlan.priceUsd;
+    const displayName = offerPlan.displayName || PLAN_DISPLAY_NAMES[plan] || plan;
     const appUrl = process.env.APP_URL?.replace(/\/$/, "") ?? `https://${req.headers.host}`;
     const returnUrl = `${appUrl}/api/appai/billing/callback?shop=${encodeURIComponent(installation.shopDomain)}&plan=${encodeURIComponent(plan)}`;
 
     // Metered (usage) pricing line for AI-generation overages. The cappedAmount
-    // is the plan's max monthly overage cost (overage cap × $0.08); Shopify
-    // rejects usage records once that amount is reached, matching our hard cap.
-    const overageCappedUsd = getPlanOverageCappedAmountUsd(plan);
+    // is the plan's max monthly overage cost from the *active* catalogue.
+    const overageCappedUsd = getPlanOverageCappedAmountForCatalogue(plan, activeCatalogue);
+    const overageTerms = overageUsageTermsForCatalogue(activeCatalogue);
     const lineItems: any[] = [{
       plan: {
         appRecurringPricingDetails: {
@@ -21694,7 +21760,7 @@ ${orientationExtra}
       lineItems.push({
         plan: {
           appUsagePricingDetails: {
-            terms: OVERAGE_USAGE_TERMS,
+            terms: overageTerms,
             cappedAmount: { amount: overageCappedUsd, currencyCode: "USD" },
           },
         },
@@ -21843,12 +21909,13 @@ ${orientationExtra}
       if (subscriptionStatus === "ACTIVE" || subscriptionStatus === "PENDING") {
         const currentPlanName = installation.planName ?? "trial";
         const changeKind = classifyPlanChange(currentPlanName, plan);
+        const activeCatalogue = await getActiveCatalogue();
         const billingFields = {
           billingSubscriptionId: charge_id,
           billingUsageLineItemId: usageLineItemId,
           billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
-          // Stamp catalogue version at subscribe time so a later B flip can grandfather.
-          pricingVersion: CURRENT_PRICING_VERSION,
+          // Stamp *active* catalogue at approve time; enforcement follows this stamp.
+          pricingVersion: activeCatalogue.id,
         };
 
         if (changeKind === "paid_downgrade") {
@@ -21897,13 +21964,14 @@ ${orientationExtra}
           pendingPlanEffectiveAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         } as any);
       } else {
+        const activeCatalogue = await getActiveCatalogue();
         const planUpdates: Record<string, unknown> = {
           planName: plan,
           planStatus: "active",
           billingSubscriptionId: charge_id,
           pendingPlanName: null,
           pendingPlanEffectiveAt: null,
-          pricingVersion: CURRENT_PRICING_VERSION,
+          pricingVersion: activeCatalogue.id,
         };
         if (changeKind === "trial_to_paid") {
           Object.assign(planUpdates, trialToPaidMeteringReset());
@@ -22076,6 +22144,9 @@ ${orientationExtra}
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
+
+  const { registerPricingModellerRoutes } = await import("./routes/pricing-modeller");
+  registerPricingModellerRoutes(app, { isAuthenticated });
   const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");

@@ -19,7 +19,11 @@ export type OverageInstallation = Pick<
   | "overageOptInAt"
 >;
 
-/** Plan max overage spend in USD cents (e.g. Starter 200 × $0.08 = 1600). */
+/**
+ * Plan max overage spend in USD cents = overage unit cap × headline overage
+ * rate (from shared SSOT / active catalogue). Uses the flat headline rate for
+ * budget↔unit conversion; billable emit still uses resolveOveragePriceUsd(seq).
+ */
 export function planMaxOverageBudgetCents(planName: string | null | undefined): number {
   if (!planName) return 0;
   const cap = PLAN_OVERAGE_CAPS[planName] ?? 0;

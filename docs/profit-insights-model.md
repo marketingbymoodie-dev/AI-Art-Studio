@@ -36,7 +36,7 @@ Shipping without a top tier means a high-volume merchant tops out at **Pro Plus 
 
 ### Pricing flip (separate go-live)
 
-B-foundation consolidates the plan SSOT and tiered-ready `resolveOveragePriceUsd(volume?)` **without** changing live fees/gens/caps/$0.08. Number-flip and Dabbler $49 vs $59 require explicit go-live after staging re-subscribe / cap-change QA.
+Plan table for Insights = **active** pricing catalogue offer (see `docs/pricing-modeller.md`). Number-flip is done via modeller commit + activate, not hand-edited constants. Staging re-subscribe / cap-change QA (including mid-cycle quota-counter integrity) before any production activate.
 
 ---
 

@@ -45,8 +45,9 @@ export type OveragePriceTier = {
 };
 
 /**
- * Flat schedule today ($0.08). Swap in multi-tier rows later (e.g. 10c → 8c → 6c)
- * without changing the emit call site — pass `overageSeq` as volume.
+ * Seed / v0 overage schedule (headline rate = first tier). Swap in multi-tier
+ * rows later (e.g. 10c → 8c → 6c) without changing the emit call site — pass
+ * `overageSeq` as volume. Live rate after activate comes from the pricing catalogue.
  */
 export const OVERAGE_PRICE_SCHEDULE: readonly OveragePriceTier[] = [
   { upToInclusive: null, priceUsd: 0.08 },
@@ -164,8 +165,143 @@ export function getDesignProductLimit(planName: string | null | undefined): numb
 }
 
 /**
- * Pricing catalogue version for grandfathering.
- * `null` on an installation = pre-versioned / current SSOT (no flip applied yet).
- * B number-flip go-live will bump CURRENT_PRICING_VERSION and stamp new subs.
+ * Seed catalogue id (v0). Installations are backfilled to 0; new subs stamp the
+ * **active** catalogue id from the DB (may still be 0 until first activate).
  */
-export const CURRENT_PRICING_VERSION = 0;
+export const SEED_PRICING_VERSION = 0;
+
+/** @deprecated Use SEED_PRICING_VERSION — kept for older imports. */
+export const CURRENT_PRICING_VERSION = SEED_PRICING_VERSION;
+
+/** Platform AI cost per generation used by the pricing modeller (not merchant-facing). */
+export const PLATFORM_AI_COST_PER_GEN_USD = 0.045;
+
+export type PricingCatalogueStatus = "committed" | "active" | "superseded";
+
+export type CataloguePlanRow = {
+  planKey: string;
+  displayName: string;
+  priceUsd: number;
+  generationQuota: number;
+  pageLimit: number;
+  designProductLimit: number;
+  overageCapUnits: number;
+  /** Modeller metadata — not used by billing. */
+  marginOverAiCostPct: number;
+  selfServe: boolean;
+  sortOrder: number;
+};
+
+export type PricingCatalogueSnapshot = {
+  id: number;
+  label: string;
+  status: PricingCatalogueStatus;
+  overageSchedule: OveragePriceTier[];
+  aiCostPerGenUsd: number;
+  plans: CataloguePlanRow[];
+};
+
+/** Price to hit target margin over AI cost at full allowance utilisation. */
+export function priceFromMarginOverAiCost(
+  includedGens: number,
+  marginOverAiCostPct: number,
+  aiCostPerGenUsd: number = PLATFORM_AI_COST_PER_GEN_USD,
+): number {
+  const m = Math.min(99, Math.max(1, marginOverAiCostPct)) / 100;
+  const aiCost = Math.max(0, includedGens) * aiCostPerGenUsd;
+  if (aiCost <= 0) return 0;
+  return Math.round((aiCost / (1 - m)) * 100) / 100;
+}
+
+export function aiCostAtFullAllowanceUsd(
+  includedGens: number,
+  aiCostPerGenUsd: number = PLATFORM_AI_COST_PER_GEN_USD,
+): number {
+  return Math.round(Math.max(0, includedGens) * aiCostPerGenUsd * 100) / 100;
+}
+
+/** Build the v0 seed snapshot from in-module constants (bootstrap / fallback). */
+export function buildSeedCatalogueSnapshot(): PricingCatalogueSnapshot {
+  const trial: CataloguePlanRow = {
+    planKey: "trial",
+    displayName: PLAN_DISPLAY_NAMES.trial ?? "Trial",
+    priceUsd: 0,
+    generationQuota: PLAN_GENERATION_QUOTAS.trial ?? 20,
+    pageLimit: PLAN_PAGE_LIMITS.trial ?? 1,
+    designProductLimit: PLAN_DESIGN_PRODUCT_LIMITS.trial ?? 0,
+    overageCapUnits: 0,
+    marginOverAiCostPct: 0,
+    selfServe: false,
+    sortOrder: 0,
+  };
+  const paid: CataloguePlanRow[] = PAID_PLANS.map((planName, i) => {
+    const gens = PLAN_GENERATION_QUOTAS[planName] ?? 0;
+    const price = PLAN_PRICES_USD[planName] ?? 0;
+    const aiCost = gens * PLATFORM_AI_COST_PER_GEN_USD;
+    const marginPct =
+      aiCost > 0 && price > 0
+        ? Math.round((1 - aiCost / price) * 1000) / 10
+        : 50;
+    return {
+      planKey: planName,
+      displayName: PLAN_DISPLAY_NAMES[planName] ?? planName,
+      priceUsd: price,
+      generationQuota: gens,
+      pageLimit: PLAN_PAGE_LIMITS[planName] ?? 0,
+      designProductLimit: PLAN_DESIGN_PRODUCT_LIMITS[planName] ?? 0,
+      overageCapUnits: PLAN_OVERAGE_CAPS[planName] ?? 0,
+      marginOverAiCostPct: marginPct,
+      selfServe: true,
+      sortOrder: i + 1,
+    };
+  });
+  return {
+    id: SEED_PRICING_VERSION,
+    label: "v0-live",
+    status: "active",
+    overageSchedule: OVERAGE_PRICE_SCHEDULE.map((t) => ({ ...t })),
+    aiCostPerGenUsd: PLATFORM_AI_COST_PER_GEN_USD,
+    plans: [trial, ...paid],
+  };
+}
+
+export function planDefinitionsFromCatalogue(
+  catalogue: PricingCatalogueSnapshot,
+  opts?: { selfServeOnly?: boolean },
+): PlanDefinition[] {
+  return catalogue.plans
+    .filter((p) => p.planKey !== "trial")
+    .filter((p) => (opts?.selfServeOnly ? p.selfServe : true))
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((p) => ({
+      planName: p.planKey,
+      displayName: p.displayName,
+      priceUsd: p.priceUsd,
+      pageLimit: p.pageLimit,
+      generationQuota: p.generationQuota,
+      overageCap: p.overageCapUnits,
+      designProductLimit: p.designProductLimit,
+    }));
+}
+
+export function findCataloguePlan(
+  catalogue: PricingCatalogueSnapshot,
+  planKey: string | null | undefined,
+): CataloguePlanRow | null {
+  if (!planKey) return null;
+  return catalogue.plans.find((p) => p.planKey === planKey) ?? null;
+}
+
+export function getPlanOverageCappedAmountForCatalogue(
+  planKey: string | null | undefined,
+  catalogue: PricingCatalogueSnapshot,
+): number {
+  const plan = findCataloguePlan(catalogue, planKey);
+  if (!plan) return 0;
+  return overageCostForUnitsUsd(plan.overageCapUnits, catalogue.overageSchedule);
+}
+
+export function overageUsageTermsForCatalogue(catalogue: PricingCatalogueSnapshot): string {
+  const rate = resolveOveragePriceUsd(undefined, catalogue.overageSchedule);
+  return `$${rate.toFixed(2)} USD per additional AI generation beyond your monthly included allotment (pay-as-you-go; requires in-app opt-in; not a prepaid pack)`;
+}

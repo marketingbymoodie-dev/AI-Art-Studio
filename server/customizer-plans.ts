@@ -20,15 +20,24 @@ export {
   PAID_PLANS,
   PAID_PLAN_DEFINITIONS,
   CURRENT_PRICING_VERSION,
+  SEED_PRICING_VERSION,
+  PLATFORM_AI_COST_PER_GEN_USD,
   OVERAGE_USAGE_TERMS,
   getPageLimit,
   getDesignProductLimit,
   getPlanOverageCappedAmountUsd,
   resolveOveragePriceUsd,
   overageCostForUnitsUsd,
+  buildSeedCatalogueSnapshot,
+  planDefinitionsFromCatalogue,
+  findCataloguePlan,
+  priceFromMarginOverAiCost,
+  aiCostAtFullAllowanceUsd,
   type PaidPlan,
   type PlanDefinition,
   type OveragePriceTier,
+  type PricingCatalogueSnapshot,
+  type CataloguePlanRow,
 } from "@shared/customizerPlans";
 
 import {
@@ -40,6 +49,8 @@ import {
   getPageLimit,
   getDesignProductLimit,
   resolveOveragePriceUsd,
+  type PricingCatalogueSnapshot,
+  findCataloguePlan,
 } from "@shared/customizerPlans";
 
 /** Merchant My Designs save/library — Starter and above only (not trial / inactive). */
@@ -126,9 +137,13 @@ export interface GenerationQuotaConfig {
   hardCap: number;
   /**
    * Headline overage price (first tier). Emit path must call
-   * `resolveOveragePriceUsd(overageSeq)` so volume can select a tier.
+   * `resolveOveragePriceUsd(overageSeq, overageSchedule)` so volume can select a tier.
    */
   overagePriceUsd: number;
+  /** Catalogue schedule for volume-aware emit (optional; defaults to seed). */
+  overageSchedule?: import("@shared/customizerPlans").OveragePriceTier[];
+  /** Catalogue id this quota was resolved from. */
+  pricingVersion?: number;
   /** Counter bucket key the monthly counters belong to. */
   bucketKey: string;
   /** Whether the bucket resets per calendar month (paid) or is cumulative (trial). */
@@ -150,33 +165,49 @@ export function generationMonthKey(now: Date = new Date()): string {
 export function resolveGenerationQuota(
   planName: string | null | undefined,
   isActive: boolean,
-  now: Date = new Date()
+  now: Date = new Date(),
+  catalogue?: PricingCatalogueSnapshot | null,
 ): GenerationQuotaConfig {
-  const isPaidActive =
-    isActive && !!planName && (PAID_PLANS as readonly string[]).includes(planName);
+  const catPlan = catalogue ? findCataloguePlan(catalogue, planName) : null;
+  const isPaidActive = catalogue
+    ? !!(
+        isActive &&
+        catPlan &&
+        catPlan.planKey !== "trial" &&
+        (catPlan.priceUsd > 0 || catPlan.generationQuota > 0)
+      )
+    : isActive && !!planName && (PAID_PLANS as readonly string[]).includes(planName);
+
+  const schedule = catalogue?.overageSchedule;
+  const pricingVersion = catalogue?.id;
 
   if (isPaidActive) {
-    const freeQuota = PLAN_GENERATION_QUOTAS[planName!] ?? 0;
-    const overageCap = PLAN_OVERAGE_CAPS[planName!] ?? 0;
+    const freeQuota = catPlan?.generationQuota ?? PLAN_GENERATION_QUOTAS[planName!] ?? 0;
+    const overageCap = catPlan?.overageCapUnits ?? PLAN_OVERAGE_CAPS[planName!] ?? 0;
     return {
       effectivePlan: planName!,
       freeQuota,
       overageCap,
       hardCap: freeQuota + overageCap,
-      overagePriceUsd: overageCap > 0 ? resolveOveragePriceUsd() : 0,
+      overagePriceUsd: overageCap > 0 ? resolveOveragePriceUsd(undefined, schedule) : 0,
+      overageSchedule: schedule ? schedule.map((t) => ({ ...t })) : undefined,
+      pricingVersion,
       bucketKey: generationMonthKey(now),
       monthly: true,
     };
   }
 
-  // Trial / no plan / inactive → cumulative 20 free, no overage.
-  const freeQuota = PLAN_GENERATION_QUOTAS["trial"] ?? 20;
+  // Trial / no plan / inactive → cumulative free, no overage.
+  const trialPlan = catalogue ? findCataloguePlan(catalogue, "trial") : null;
+  const freeQuota = trialPlan?.generationQuota ?? PLAN_GENERATION_QUOTAS["trial"] ?? 20;
   return {
     effectivePlan: "trial",
     freeQuota,
     overageCap: 0,
     hardCap: freeQuota,
     overagePriceUsd: 0,
+    overageSchedule: schedule ? schedule.map((t) => ({ ...t })) : undefined,
+    pricingVersion,
     bucketKey: "trial",
     monthly: false,
   };
