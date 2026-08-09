@@ -1077,6 +1077,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .set({
         overageOptInEnabled: false,
         overageBudgetCents: null,
+        overageRecurring: false,
         overageOptInAt: null,
         overageOptInBucketKey: null,
       })

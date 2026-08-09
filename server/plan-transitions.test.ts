@@ -5,6 +5,7 @@ import {
   buildUpgradePreview,
   buildDowngradePreview,
   comparePlanTier,
+  paidUpgradeMeteringRebase,
 } from "./plan-transitions";
 
 describe("classifyPlanChange", () => {
@@ -45,6 +46,22 @@ describe("resolveCarryoverIncludedUsed", () => {
         includedUsed: 200,
       }),
     ).toBe(200);
+  });
+});
+
+describe("paidUpgradeMeteringRebase", () => {
+  it("strips PAYG units from the freeQuota watermark", () => {
+    expect(paidUpgradeMeteringRebase(350, 100)).toEqual({
+      monthlyGenerationsUsed: 250,
+      monthlyOverageUsed: 0,
+    });
+  });
+
+  it("is a no-op when overage is zero", () => {
+    expect(paidUpgradeMeteringRebase(200, 0)).toEqual({
+      monthlyGenerationsUsed: 200,
+      monthlyOverageUsed: 0,
+    });
   });
 });
 

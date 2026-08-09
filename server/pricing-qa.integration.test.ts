@@ -70,8 +70,8 @@ describe("pricing QA (4) activate-alone leaves stamp + counters untouched", () =
   });
 });
 
-describe("pricing QA (5) upgrade approve carries counters forward", () => {
-  it("starter → dabbler keeps used counts (not reset, not doubled)", async () => {
+describe("pricing QA (5) upgrade approve carries included; rebases PAYG out of watermark", () => {
+  it("starter → dabbler keeps included used (not reset, not doubled)", async () => {
     const store = new MemoryInstallationStore();
     const bucket = generationMonthKey();
     const shop = store.seed({
@@ -123,8 +123,53 @@ describe("pricing QA (5) upgrade approve carries counters forward", () => {
     const metering = resolveGenerationQuota(row.planName, true, new Date(), activeAfterFlip);
     expect(metering.freeQuota).toBe(600);
     expect(metering.pricingVersion).toBe(2);
-    // Counter carried against the new allowance (remaining shrinks; not reset).
     expect(metering.freeQuota - row.monthlyGenerationsUsed).toBe(400);
+  });
+
+  it("non-zero PAYG on upgrade: rebases used to included only (full new allowance)", async () => {
+    const store = new MemoryInstallationStore();
+    const bucket = generationMonthKey();
+    const shop = store.seed({
+      planName: "starter",
+      planStatus: "active",
+      pricingVersion: SEED_PRICING_VERSION,
+      generationMonth: bucket,
+      monthlyGenerationsUsed: 350,
+      monthlyOverageUsed: 100,
+      billingSubscriptionId: "gid://shopify/AppSubscription/old-starter",
+    });
+
+    const activeAfterFlip = catalogueAsActive(2, {
+      label: "2026-08-qa",
+      plans: buildSeedCatalogueSnapshot().plans.map((p) =>
+        p.planKey === "pro" ? { ...p, generationQuota: 1500, priceUsd: 99 } : p,
+      ),
+    });
+
+    const result = await applyApprovedSubscription(
+      shop,
+      {
+        plan: "pro",
+        chargeId: "gid://shopify/AppSubscription/new-pro",
+        subscriptionStatus: "ACTIVE",
+        usageLineItemId: "gid://shopify/AppSubscriptionLineItem/usage-1",
+      },
+      {
+        updateInstallation: (id, u) => store.update(id, u),
+        getActiveCatalogue: async () => activeAfterFlip,
+      },
+    );
+
+    expect(result!.changeKind).toBe("paid_upgrade");
+    const row = store.get(shop.id)!;
+    // Live counters: PAYG stripped from watermark (charges already billed on Shopify).
+    expect(row.monthlyGenerationsUsed).toBe(250);
+    expect(row.monthlyOverageUsed).toBe(0);
+    expect(row.planName).toBe("pro");
+
+    const metering = resolveGenerationQuota(row.planName, true, new Date(), activeAfterFlip);
+    expect(metering.freeQuota).toBe(1500);
+    expect(metering.freeQuota - row.monthlyGenerationsUsed).toBe(1250);
   });
 });
 

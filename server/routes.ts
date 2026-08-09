@@ -163,6 +163,7 @@ import { buildActivePrintifyVariantLabels } from "@shared/printifyVariantLabels"
 import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
+  extraSpentCents,
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
 import { logMerchantGeneration } from "./merchant-generation-log";
@@ -21640,6 +21641,16 @@ ${orientationExtra}
     }
 
     const quota = resolveGenerationQuota(plan.planName, true);
+    const usage = await storage.getMerchantGenerationUsage(installation.id, quota.bucketKey);
+    const floorCents = extraSpentCents(usage.overageUsed);
+    if (budget < floorCents) {
+      return res.status(400).json({
+        error: `Budget cannot be below $${(floorCents / 100).toFixed(2)} USD already incurred this period.`,
+        minBudgetCents: floorCents,
+        overageUsed: usage.overageUsed,
+      });
+    }
+
     const units = budgetCentsToOverageUnits(budget);
     if (units <= 0) {
       return res.status(400).json({ error: "Budget too low for any extra generations." });

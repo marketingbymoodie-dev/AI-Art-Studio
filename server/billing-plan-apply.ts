@@ -6,6 +6,7 @@ import type { ShopifyInstallation } from "@shared/schema";
 import type { PricingCatalogueSnapshot } from "@shared/customizerPlans";
 import {
   classifyPlanChange,
+  paidUpgradeMeteringRebase,
   trialToPaidMeteringReset,
   type PlanChangeKind,
 } from "./plan-transitions";
@@ -89,8 +90,17 @@ export async function applyApprovedSubscription(
   };
   if (changeKind === "trial_to_paid") {
     Object.assign(updates, trialToPaidMeteringReset());
+  } else if (changeKind === "paid_upgrade") {
+    // Carry included usage only — strip PAYG units from the freeQuota watermark.
+    Object.assign(
+      updates,
+      paidUpgradeMeteringRebase(
+        installation.monthlyGenerationsUsed ?? 0,
+        installation.monthlyOverageUsed ?? 0,
+      ),
+    );
   }
-  // paid_upgrade | same_tier: counters carry forward (no metering reset).
+  // same_tier: both counters carry forward unchanged.
 
   const updated = await deps.updateInstallation(installation.id, updates);
   return {

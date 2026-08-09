@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { OverageOptInForm, planMaxBudgetFromApi } from "./OverageOptInForm";
+import { OverageManageForm } from "./OverageManageForm";
 
 export interface PlanGenerationQuota {
   plan: string | null;
@@ -114,6 +115,7 @@ function UsageBar({
   budgetCents,
   atLimit,
   nearLimit,
+  testId,
 }: {
   label: string;
   used: number;
@@ -122,10 +124,11 @@ function UsageBar({
   budgetCents?: number | null;
   atLimit: boolean;
   nearLimit: boolean;
+  testId?: string;
 }) {
   const pct = limit && limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
   return (
-    <div className="space-y-1">
+    <div className="space-y-1" data-testid={testId}>
       <div className="flex justify-between text-xs gap-2 flex-wrap">
         <span className="font-medium">{label}</span>
         <span className="text-muted-foreground">
@@ -180,25 +183,35 @@ export default function GenerationQuotaUsage({
 
   if (!quota) return null;
 
-  const includedUsed = data?.included?.used ?? quota.includedUsed ?? quota.used;
+  // Always derive included from counters (used − overage), never show a conflated total.
+  const overageUsedLive = data?.extra?.used ?? quota.extraUsed ?? quota.overageUsed ?? 0;
+  const includedUsed =
+    data?.included?.used ??
+    quota.includedUsed ??
+    Math.max(0, (quota.used ?? 0) - overageUsedLive);
   const includedLimit = data?.included?.limit ?? quota.includedLimit ?? quota.freeQuota;
-  const extraUsed = data?.extra?.used ?? quota.extraUsed ?? quota.overageUsed;
   const extraLimit = data?.extra?.unitLimit ?? quota.extraLimit ?? quota.overageCap;
   const extraBudgetCents = data?.extra?.budgetCents ?? quota.extraBudgetCents ?? null;
   const extraSpentCents = data?.extra?.spentCents ?? quota.extraSpentCents ?? 0;
+  const optedIn = !!(overage?.optInEnabled || quota.overageOptInEnabled);
 
   const includedAtLimit =
     !quota.unlimited && includedLimit != null && includedUsed >= includedLimit;
   const includedNearLimit =
     !quota.unlimited && includedLimit != null && includedUsed >= includedLimit * 0.9;
-  const extraAtLimit = extraLimit > 0 && extraUsed >= extraLimit;
+  const extraAtLimit = extraLimit > 0 && overageUsedLive >= extraLimit;
   const displayPlan = planName ? (PLAN_DISPLAY[planName] ?? planName) : "—";
   const period = quotaLabel(quota);
-  const showForm =
+  const showEnableForm =
     showOptInForm &&
+    !optedIn &&
     (overage?.showOptInForm || quota.showOptInForm) &&
     !quota.unlimited &&
     planName !== "trial";
+  const showManageForm =
+    showOptInForm && optedIn && !quota.unlimited && planName !== "trial";
+  /** Paid plans always show both lines; trial is allowance-only. */
+  const showOverageLine = !quota.unlimited && planName !== "trial";
 
   const bar = (
     <>
@@ -226,7 +239,7 @@ export default function GenerationQuotaUsage({
         <div className="flex items-center gap-3">
           {!quota.unlimited && includedLimit != null && (
             <span className="text-sm text-muted-foreground" data-testid="text-generation-quota">
-              {includedUsed} / {includedLimit} included ({period})
+              {includedUsed} / {includedLimit} plan allowance ({period})
             </span>
           )}
           {quota.unlimited && (
@@ -253,24 +266,25 @@ export default function GenerationQuotaUsage({
       {!quota.unlimited && (
         <div className="space-y-3">
           <UsageBar
-            label="Included (USD plan allowance)"
+            testId="quota-plan-allowance"
+            label="Plan allowance"
             used={includedUsed}
             limit={includedLimit}
             atLimit={includedAtLimit}
             nearLimit={includedNearLimit && !includedAtLimit}
           />
-          {(overage?.optInEnabled || quota.overageOptInEnabled || showForm || includedNearLimit) &&
-            planName !== "trial" && (
-              <UsageBar
-                label="Extra pay-as-you-go (USD)"
-                used={extraUsed}
-                limit={extraLimit > 0 ? extraLimit : null}
-                spentCents={extraSpentCents}
-                budgetCents={extraBudgetCents}
-                atLimit={extraAtLimit}
-                nearLimit={false}
-              />
-            )}
+          {showOverageLine && (
+            <UsageBar
+              testId="quota-overage-used"
+              label="Overage used"
+              used={overageUsedLive}
+              limit={optedIn && extraLimit > 0 ? extraLimit : null}
+              spentCents={optedIn ? extraSpentCents : undefined}
+              budgetCents={optedIn ? extraBudgetCents : undefined}
+              atLimit={optedIn && extraAtLimit}
+              nearLimit={false}
+            />
+          )}
         </div>
       )}
 
@@ -278,7 +292,7 @@ export default function GenerationQuotaUsage({
         <p className="text-xs text-muted-foreground mt-1">Owner store — no plan cap.</p>
       )}
 
-      {includedAtLimit && !quota.overageOptInEnabled && !overage?.optInEnabled && !quota.unlimited && (
+      {includedAtLimit && !optedIn && !quota.unlimited && (
         <p className="text-xs text-red-600 mt-3 flex items-start gap-1">
           <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
           {quota.plan === "trial"
@@ -287,16 +301,29 @@ export default function GenerationQuotaUsage({
         </p>
       )}
 
-      {showForm && (
+      {showEnableForm && (
         <OverageOptInForm
           className="mt-4"
           planMaxBudgetCents={planMaxBudgetFromApi(data)}
         />
       )}
 
+      {showManageForm && (
+        <OverageManageForm
+          className="mt-4"
+          planMaxBudgetCents={planMaxBudgetFromApi(data)}
+          spentCents={extraSpentCents}
+          overageUsed={overageUsedLive}
+          currentBudgetCents={extraBudgetCents ?? planMaxBudgetFromApi(data)}
+          recurring={!!(overage?.recurring || quota.overageRecurring)}
+        />
+      )}
+
       <p className="text-xs text-muted-foreground mt-3">
         {data?.usdDisclaimer ?? "All prices in USD."} Reward Ladder free gens and earned Studio Credits
         count toward this shop quota when spent; merchant-sold pack credits (coming soon) do not.
+        Overage used is your live counter for this period — what you were charged appears in Shopify
+        billing history.
       </p>
     </>
   );
