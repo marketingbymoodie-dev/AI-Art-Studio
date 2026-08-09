@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import { storage } from "./storage";
 import { registerShopifyGdprRoutes } from "./shopify-gdpr";
+import { exchangeAuthorizationCode } from "./shopify-offline-token";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
@@ -266,30 +267,23 @@ if (res.locals.shopify?.session?.shop) {
     }
 
     try {
-      const accessTokenUrl = `https://${shop}/admin/oauth/access_token`;
-      
-      const response = await fetch(accessTokenUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: SHOPIFY_API_KEY,
-          client_secret: SHOPIFY_API_SECRET,
-          code
-        })
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        console.error("Shopify token exchange failed:", error);
+      // Public apps require expiring offline tokens (expiring=1).
+      const tokenResult = await exchangeAuthorizationCode(shop, code);
+      if (!tokenResult.ok) {
+        console.error("Shopify token exchange failed:", tokenResult.status, tokenResult.error);
         return res.status(500).send("Failed to get access token from Shopify");
       }
 
-      const tokenData = await response.json();
-      const { access_token, scope } = tokenData;
-      
+      const { fields } = tokenResult;
+      const access_token = fields.accessToken;
+      const scope = fields.scope || "";
+
       console.log(`Shopify OAuth completed for ${shop}`);
-      console.log(`Scopes granted: ${scope || 'NONE'}`);
+      console.log(`Scopes granted: ${scope || "NONE"}`);
       console.log(`Requested scopes were: ${SHOPIFY_SCOPES}`);
+      console.log(
+        `Token mode: ${fields.refreshToken ? "expiring offline" : "non-expiring offline (unexpected)"}`,
+      );
 
       // Get merchant ID from cookie if available
       const merchantId = req.cookies?.shopify_merchant || null;
@@ -298,11 +292,14 @@ if (res.locals.shopify?.session?.shop) {
       }
 
       let installation = await storage.getShopifyInstallationByShop(shop);
-      
+
       if (installation) {
         const updates: any = {
           accessToken: access_token,
-          scope: scope || "",
+          refreshToken: fields.refreshToken,
+          accessTokenExpiresAt: fields.accessTokenExpiresAt,
+          refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
+          scope,
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
@@ -310,7 +307,7 @@ if (res.locals.shopify?.session?.shop) {
         // Always update merchant ID on reinstall if we have one (handles reinstall with different logged-in user)
         if (merchantId) {
           updates.merchantId = merchantId;
-          console.log(`Reinstall: Updating merchant ID from ${installation.merchantId || 'none'} to ${merchantId}`);
+          console.log(`Reinstall: Updating merchant ID from ${installation.merchantId || "none"} to ${merchantId}`);
         }
         await storage.updateShopifyInstallation(installation.id, updates);
         console.log(`Updated existing installation for ${shop} (reinstall detected)`);
@@ -318,12 +315,15 @@ if (res.locals.shopify?.session?.shop) {
         installation = await storage.createShopifyInstallation({
           shopDomain: shop,
           accessToken: access_token,
-          scope: scope || "",
+          refreshToken: fields.refreshToken,
+          accessTokenExpiresAt: fields.accessTokenExpiresAt,
+          refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
+          scope,
           status: "active",
           installedAt: new Date(),
           merchantId: merchantId,
         });
-        console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ''}`);
+        console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ""}`);
       }
 
       await registerCartScript(shop, access_token);

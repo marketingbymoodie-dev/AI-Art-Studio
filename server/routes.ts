@@ -97,6 +97,7 @@ import {
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
+import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
@@ -21778,6 +21779,19 @@ ${orientationExtra}
       });
     }
 
+    // Public apps require expiring offline tokens — migrate/refresh before Billing API.
+    const tokenReady = await ensureValidOfflineAccessToken(installation);
+    if (!tokenReady.ok) {
+      console.error("[Billing] Offline token not usable:", tokenReady.error);
+      return res.status(tokenReady.needsReinstall ? 401 : 502).json({
+        error: tokenReady.needsReinstall
+          ? "Shopify access token is invalid. Reinstall the app from Admin → Apps, then retry."
+          : tokenReady.error,
+        needsReinstall: tokenReady.needsReinstall || undefined,
+      });
+    }
+    const accessToken = tokenReady.accessToken;
+
     // Call Shopify Admin GraphQL to create app subscription. We request the
     // line items + their pricing-detail typenames so we can store the usage
     // line's GID (needed later to target appUsageRecordCreate).
@@ -21812,7 +21826,7 @@ ${orientationExtra}
       {
         method: "POST",
         headers: {
-          "X-Shopify-Access-Token": installation.accessToken,
+          "X-Shopify-Access-Token": accessToken,
           "Content-Type": "application/json",
         },
         body: gqlBody,
@@ -21820,8 +21834,12 @@ ${orientationExtra}
     );
 
     if (!gqlResponse.ok) {
-      console.error("[Billing] GraphQL request failed:", gqlResponse.status);
-      return res.status(502).json({ error: "Failed to contact Shopify billing API" });
+      const errBody = (await gqlResponse.text()).slice(0, 800);
+      console.error("[Billing] GraphQL request failed:", gqlResponse.status, errBody);
+      return res.status(502).json({
+        error: `Shopify billing API returned ${gqlResponse.status}`,
+        detail: errBody || undefined,
+      });
     }
 
     const gqlData = await gqlResponse.json() as any;

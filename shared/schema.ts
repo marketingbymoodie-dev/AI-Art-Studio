@@ -172,6 +172,12 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   merchantId: varchar("merchant_id"),
   shopDomain: text("shop_domain").notNull().unique(),
   accessToken: text("access_token").notNull(),
+  /** Refresh token for Shopify expiring offline access tokens (null = legacy non-expiring). */
+  refreshToken: text("refresh_token"),
+  /** When accessToken expires (null = non-expiring / unknown). */
+  accessTokenExpiresAt: timestamp("access_token_expires_at"),
+  /** When refreshToken expires (typically ~90 days). */
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
   scope: text("scope"),
   status: text("status").notNull().default("active"),
   installedAt: timestamp("installed_at").defaultNow().notNull(),
