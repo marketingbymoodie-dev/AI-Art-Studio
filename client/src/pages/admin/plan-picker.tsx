@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -237,7 +237,11 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       }
     },
     onError: (err: Error) => {
-      toast({ title: "Billing error", description: err.message, variant: "destructive" });
+      toast({
+        title: "Billing error",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      });
       setLoadingPlan(null);
     },
   });

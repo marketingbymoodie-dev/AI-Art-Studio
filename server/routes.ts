@@ -97,7 +97,7 @@ import {
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
-import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
+import { ensureValidOfflineAccessToken, getBearerTokenFromRequest } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
@@ -21779,15 +21779,20 @@ ${orientationExtra}
       });
     }
 
-    // Public apps require expiring offline tokens — migrate/refresh before Billing API.
-    const tokenReady = await ensureValidOfflineAccessToken(installation);
+    // Public apps require expiring offline tokens — migrate/refresh, or recover via
+    // the live App Bridge session token when the stored offline token is dead.
+    const tokenReady = await ensureValidOfflineAccessToken(installation, {
+      sessionToken: getBearerTokenFromRequest(req),
+    });
     if (!tokenReady.ok) {
       console.error("[Billing] Offline token not usable:", tokenReady.error);
+      const reinstallUrl = `/shopify/install?shop=${encodeURIComponent(shop)}`;
       return res.status(tokenReady.needsReinstall ? 401 : 502).json({
         error: tokenReady.needsReinstall
-          ? "Shopify access token is invalid. Reinstall the app from Admin → Apps, then retry."
+          ? "Shopify connection expired. Reinstall the app, then retry Choose Plan."
           : tokenReady.error,
         needsReinstall: tokenReady.needsReinstall || undefined,
+        reinstallUrl: tokenReady.needsReinstall ? reinstallUrl : undefined,
       });
     }
     const accessToken = tokenReady.accessToken;
