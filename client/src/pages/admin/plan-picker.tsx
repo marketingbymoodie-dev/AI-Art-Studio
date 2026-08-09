@@ -189,17 +189,28 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
     if (!planStatus || didScrollToOverage.current) return;
     const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
     const hashWantsOverage =
-      hash === "overage" || hash === "overage-agreement" || hash === "payg";
+      hash === "overage" ||
+      hash === "overage-agreement" ||
+      hash === "overage-details" ||
+      hash === "payg";
     if (!needsOverageAgreement && !hashWantsOverage) return;
     if (!showOverageEnableForm && !showOverageManageForm && !hashWantsOverage) return;
 
     didScrollToOverage.current = true;
     // After layout/tables paint so the section isn't still at the top of an empty page.
     const t = window.setTimeout(() => {
-      overageAgreementRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const target =
+        document.getElementById("overage-details") ?? overageAgreementRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 80);
     return () => window.clearTimeout(t);
   }, [planStatus, needsOverageAgreement, showOverageEnableForm, showOverageManageForm]);
+
+  const scrollToOverageDetails = () => {
+    document
+      .getElementById("overage-details")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const trialMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/appai/billing/start-trial"),
@@ -345,6 +356,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       <GenerationQuotaUsage
         showManageLink={false}
         showOptInForm={false}
+        onSeeOverageDetails={scrollToOverageDetails}
         className="mb-6"
       />
 
@@ -428,99 +440,101 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
         </Table>
       </div>
 
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold">Pay-as-you-go overage</h3>
-        <p className="mt-1 text-sm text-muted-foreground">
-          After your included allowance, extra generations are{" "}
-          <span data-testid="plan-picker-overage-rate">
-            ${overagePriceUsd.toFixed(2)} USD each
-          </span>
-          , billed through Shopify up to the plan cap below (requires in-app opt-in).
-        </p>
-      </div>
-
-      <div
-        className="mb-8 overflow-hidden rounded-lg border"
-        data-testid="plan-picker-overage-table"
-      >
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[220px]">Plan</TableHead>
-              <TableHead>Max overage gens / mo</TableHead>
-              <TableHead>Max overage spend / mo</TableHead>
-              <TableHead>Notes</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {paidOverageRows.map((row) => {
-              const maxSpend =
-                row.overageCap > 0
-                  ? Math.round(row.overageCap * overagePriceUsd * 100) / 100
-                  : 0;
-              return (
-                <TableRow key={`overage-${row.planName}`}>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <span className="shrink-0">{row.icon}</span>
-                      <span className="font-medium">{row.displayName}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {row.overageCap > 0 ? row.overageCap.toLocaleString() : "—"}
-                  </TableCell>
-                  <TableCell>
-                    {row.overageCap > 0
-                      ? `$${maxSpend.toLocaleString("en-US", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}`
-                      : "—"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {!row.selfServe
-                      ? "Arranged with our team"
-                      : row.overageCap > 0
-                        ? "Enable agreement below"
-                        : "No overage"}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
-
-      {(showOverageEnableForm || showOverageManageForm) && (
-        <div
-          ref={overageAgreementRef}
-          id="overage-agreement"
-          className="mb-8 scroll-mt-6"
-          data-testid="plan-picker-overage-agreement"
-        >
-          <h3 className="text-lg font-semibold">
-            {showOverageManageForm
-              ? "Your pay-as-you-go agreement"
-              : "Enable pay-as-you-go overage"}
-          </h3>
-          <p className="mt-1 mb-4 text-sm text-muted-foreground">
-            {showOverageManageForm
-              ? "Adjust your period budget or turn extra generations off. Charges already incurred stay in Shopify billing."
-              : "Agree to the terms below to allow extra generations after your included allowance, billed through Shopify up to your chosen cap."}
+      <div id="overage-details" className="mb-8 scroll-mt-6">
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold">Pay-as-you-go overage</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            After your included allowance, extra generations are{" "}
+            <span data-testid="plan-picker-overage-rate">
+              ${overagePriceUsd.toFixed(2)} USD each
+            </span>
+            , billed through Shopify up to the plan cap below (requires in-app opt-in).
           </p>
-          {showOverageEnableForm ? (
-            <OverageOptInForm planMaxBudgetCents={planMaxBudgetFromApi(planStatus)} />
-          ) : (
-            <OverageManageForm
-              planMaxBudgetCents={planMaxBudgetFromApi(planStatus)}
-              spentCents={extraSpentCents}
-              overageUsed={overageUsedLive}
-              currentBudgetCents={extraBudgetCents ?? planMaxBudgetFromApi(planStatus)}
-              recurring={!!(overage?.recurring || quota?.overageRecurring)}
-            />
-          )}
         </div>
-      )}
+
+        <div
+          className="mb-8 overflow-hidden rounded-lg border"
+          data-testid="plan-picker-overage-table"
+        >
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[220px]">Plan</TableHead>
+                <TableHead>Max overage gens / mo</TableHead>
+                <TableHead>Max overage spend / mo</TableHead>
+                <TableHead>Notes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paidOverageRows.map((row) => {
+                const maxSpend =
+                  row.overageCap > 0
+                    ? Math.round(row.overageCap * overagePriceUsd * 100) / 100
+                    : 0;
+                return (
+                  <TableRow key={`overage-${row.planName}`}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0">{row.icon}</span>
+                        <span className="font-medium">{row.displayName}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {row.overageCap > 0 ? row.overageCap.toLocaleString() : "—"}
+                    </TableCell>
+                    <TableCell>
+                      {row.overageCap > 0
+                        ? `$${maxSpend.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {!row.selfServe
+                        ? "Arranged with our team"
+                        : row.overageCap > 0
+                          ? "Enable agreement below"
+                          : "No overage"}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+
+        {(showOverageEnableForm || showOverageManageForm) && (
+          <div
+            ref={overageAgreementRef}
+            id="overage-agreement"
+            className="scroll-mt-6"
+            data-testid="plan-picker-overage-agreement"
+          >
+            <h3 className="text-lg font-semibold">
+              {showOverageManageForm
+                ? "Your pay-as-you-go agreement"
+                : "Enable pay-as-you-go overage"}
+            </h3>
+            <p className="mt-1 mb-4 text-sm text-muted-foreground">
+              {showOverageManageForm
+                ? "Adjust your period budget or turn extra generations off. Charges already incurred stay in Shopify billing."
+                : "Agree to the terms below to allow extra generations after your included allowance, billed through Shopify up to your chosen cap."}
+            </p>
+            {showOverageEnableForm ? (
+              <OverageOptInForm planMaxBudgetCents={planMaxBudgetFromApi(planStatus)} />
+            ) : (
+              <OverageManageForm
+                planMaxBudgetCents={planMaxBudgetFromApi(planStatus)}
+                spentCents={extraSpentCents}
+                overageUsed={overageUsedLive}
+                currentBudgetCents={extraBudgetCents ?? planMaxBudgetFromApi(planStatus)}
+                recurring={!!(overage?.recurring || quota?.overageRecurring)}
+              />
+            )}
+          </div>
+        )}
+      </div>
 
       <p className="text-center text-xs text-muted-foreground">
         Paid plans are billed monthly through Shopify in USD. Cancel anytime. Tap ⓘ on a plan for

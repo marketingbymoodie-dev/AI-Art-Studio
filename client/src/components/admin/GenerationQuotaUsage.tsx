@@ -99,6 +99,14 @@ interface GenerationQuotaUsageProps {
    * on dashboard/credits so we don't nag early.
    */
   alwaysShowOverageControls?: boolean;
+  /**
+   * Scroll/navigate to overage caps + agreement. On Plan & Billing pass a
+   * scroll handler; elsewhere defaults to `/admin/plan#overage-details`.
+   */
+  onSeeOverageDetails?: () => void;
+  overageDetailsHref?: string;
+  /** Show "See details" next to PAYG status (default true on paid plans). */
+  showOverageDetailsLink?: boolean;
   className?: string;
 }
 
@@ -165,6 +173,9 @@ export default function GenerationQuotaUsage({
   showManageLink = true,
   showOptInForm = true,
   alwaysShowOverageControls = false,
+  onSeeOverageDetails,
+  overageDetailsHref = "/admin/plan#overage-details",
+  showOverageDetailsLink = true,
   className,
 }: GenerationQuotaUsageProps) {
   const { data, isLoading } = usePlanGenerationQuota();
@@ -220,13 +231,13 @@ export default function GenerationQuotaUsage({
     showOptInForm && optedIn && !quota.unlimited && planName !== "trial";
   /** Paid plans always show both lines; trial is allowance-only. */
   const showOverageLine = !quota.unlimited && planName !== "trial";
-  /** Land on Plan & Billing overage agreement when they need to opt in. */
+  /** Land on Plan & Billing overage section when they need to opt in. */
   const planManageHref =
     !optedIn &&
     planName !== "trial" &&
     (apiWantsOptInNudge || includedAtLimit || includedNearLimit) &&
     !upgradeHref.includes("#")
-      ? `${upgradeHref}#overage-agreement`
+      ? `${upgradeHref}#overage-details`
       : upgradeHref;
 
   const bar = (
@@ -290,16 +301,73 @@ export default function GenerationQuotaUsage({
             nearLimit={includedNearLimit && !includedAtLimit}
           />
           {showOverageLine && (
-            <UsageBar
-              testId="quota-overage-used"
-              label={optedIn ? "Overage used" : "Overage used (pay-as-you-go off)"}
-              used={overageUsedLive}
-              limit={optedIn && extraLimit > 0 ? extraLimit : null}
-              spentCents={optedIn ? extraSpentCents : undefined}
-              budgetCents={optedIn ? extraBudgetCents : undefined}
-              atLimit={optedIn && extraAtLimit}
-              nearLimit={false}
-            />
+            <div className="space-y-2" data-testid="quota-overage-used">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium">Overage used</span>
+                  <Badge
+                    variant="outline"
+                    data-testid="quota-overage-payg-status"
+                    className={
+                      optedIn
+                        ? "border-emerald-600 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                        : "border-amber-600 bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-200"
+                    }
+                  >
+                    {optedIn ? "Pay-as-you-go ON" : "Pay-as-you-go OFF"}
+                  </Badge>
+                  {showOverageDetailsLink &&
+                    (onSeeOverageDetails ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        data-testid="quota-overage-see-details"
+                        onClick={onSeeOverageDetails}
+                      >
+                        See details
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        data-testid="quota-overage-see-details"
+                        asChild
+                      >
+                        <Link href={overageDetailsHref}>See details</Link>
+                      </Button>
+                    ))}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {optedIn && extraLimit > 0
+                    ? `${overageUsedLive} / ${extraLimit}`
+                    : `${overageUsedLive} used`}
+                  {optedIn &&
+                    extraSpentCents != null &&
+                    extraBudgetCents != null &&
+                    extraBudgetCents > 0 && (
+                      <>
+                        {" "}
+                        · ${(extraSpentCents / 100).toFixed(2)} / $
+                        {(extraBudgetCents / 100).toFixed(2)} USD
+                      </>
+                    )}
+                </span>
+              </div>
+              {optedIn && extraLimit > 0 && (
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      extraAtLimit ? "bg-red-500" : "bg-primary"
+                    }`}
+                    style={{
+                      width: `${Math.min((overageUsedLive / extraLimit) * 100, 100)}%`,
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
