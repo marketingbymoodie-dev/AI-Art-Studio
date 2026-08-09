@@ -220,6 +220,14 @@ export default function GenerationQuotaUsage({
     showOptInForm && optedIn && !quota.unlimited && planName !== "trial";
   /** Paid plans always show both lines; trial is allowance-only. */
   const showOverageLine = !quota.unlimited && planName !== "trial";
+  /** Land on Plan & Billing overage agreement when they need to opt in. */
+  const planManageHref =
+    !optedIn &&
+    planName !== "trial" &&
+    (apiWantsOptInNudge || includedAtLimit || includedNearLimit) &&
+    !upgradeHref.includes("#")
+      ? `${upgradeHref}#overage-agreement`
+      : upgradeHref;
 
   const bar = (
     <>
@@ -261,7 +269,7 @@ export default function GenerationQuotaUsage({
               </Button>
             ) : (
               <Button size="sm" variant="ghost" className="h-7 text-xs" asChild>
-                <Link href={upgradeHref!}>
+                <Link href={planManageHref}>
                   <ArrowUpRight className="h-3 w-3 mr-1" />
                   {includedAtLimit ? "Upgrade" : "Manage Plan"}
                 </Link>

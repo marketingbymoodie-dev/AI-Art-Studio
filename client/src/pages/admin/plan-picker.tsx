@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -24,7 +24,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Loader2, Zap, LayoutTemplate, Star, Rocket, Crown, Info } from "lucide-react";
-import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
+import GenerationQuotaUsage, {
+  usePlanGenerationQuota,
+} from "@/components/admin/GenerationQuotaUsage";
+import { OverageOptInForm, planMaxBudgetFromApi } from "@/components/admin/OverageOptInForm";
+import { OverageManageForm } from "@/components/admin/OverageManageForm";
 import {
   OVERAGE_PRICE_USD,
   PAID_PLAN_DEFINITIONS,
@@ -125,6 +129,9 @@ interface PlanPickerProps {
 export default function PlanPicker({ onActivated, inline = false }: PlanPickerProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const overageAgreementRef = useRef<HTMLDivElement>(null);
+  const didScrollToOverage = useRef(false);
+  const { data: planStatus } = usePlanGenerationQuota();
   const { data: planCatalog } = useQuery<{
     catalogueId: number;
     overagePriceUsd: number;
@@ -157,6 +164,42 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
   } | null>(null);
   const [upgradeAcknowledged, setUpgradeAcknowledged] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  const quota = planStatus?.generationQuota;
+  const planName = planStatus?.planName;
+  const overage = planStatus?.overage;
+  const optedIn = !!(overage?.optInEnabled || quota?.overageOptInEnabled);
+  const overageUsedLive =
+    planStatus?.extra?.used ?? quota?.extraUsed ?? quota?.overageUsed ?? 0;
+  const extraBudgetCents =
+    planStatus?.extra?.budgetCents ?? quota?.extraBudgetCents ?? null;
+  const extraSpentCents = planStatus?.extra?.spentCents ?? quota?.extraSpentCents ?? 0;
+  const needsOverageAgreement =
+    !optedIn &&
+    !quota?.unlimited &&
+    !!planName &&
+    planName !== "trial" &&
+    !!(overage?.showOptInForm || quota?.showOptInForm);
+  const showOverageEnableForm =
+    !optedIn && !quota?.unlimited && !!planName && planName !== "trial";
+  const showOverageManageForm =
+    optedIn && !quota?.unlimited && !!planName && planName !== "trial";
+
+  useEffect(() => {
+    if (!planStatus || didScrollToOverage.current) return;
+    const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
+    const hashWantsOverage =
+      hash === "overage" || hash === "overage-agreement" || hash === "payg";
+    if (!needsOverageAgreement && !hashWantsOverage) return;
+    if (!showOverageEnableForm && !showOverageManageForm && !hashWantsOverage) return;
+
+    didScrollToOverage.current = true;
+    // After layout/tables paint so the section isn't still at the top of an empty page.
+    const t = window.setTimeout(() => {
+      overageAgreementRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [planStatus, needsOverageAgreement, showOverageEnableForm, showOverageManageForm]);
 
   const trialMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/appai/billing/start-trial"),
@@ -301,7 +344,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
     <div className="mx-auto max-w-5xl px-4 py-8">
       <GenerationQuotaUsage
         showManageLink={false}
-        alwaysShowOverageControls
+        showOptInForm={false}
         className="mb-6"
       />
 
@@ -438,7 +481,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
                     {!row.selfServe
                       ? "Arranged with our team"
                       : row.overageCap > 0
-                        ? "Opt in on Plan & Billing"
+                        ? "Enable agreement below"
                         : "No overage"}
                   </TableCell>
                 </TableRow>
@@ -447,6 +490,37 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           </TableBody>
         </Table>
       </div>
+
+      {(showOverageEnableForm || showOverageManageForm) && (
+        <div
+          ref={overageAgreementRef}
+          id="overage-agreement"
+          className="mb-8 scroll-mt-6"
+          data-testid="plan-picker-overage-agreement"
+        >
+          <h3 className="text-lg font-semibold">
+            {showOverageManageForm
+              ? "Your pay-as-you-go agreement"
+              : "Enable pay-as-you-go overage"}
+          </h3>
+          <p className="mt-1 mb-4 text-sm text-muted-foreground">
+            {showOverageManageForm
+              ? "Adjust your period budget or turn extra generations off. Charges already incurred stay in Shopify billing."
+              : "Agree to the terms below to allow extra generations after your included allowance, billed through Shopify up to your chosen cap."}
+          </p>
+          {showOverageEnableForm ? (
+            <OverageOptInForm planMaxBudgetCents={planMaxBudgetFromApi(planStatus)} />
+          ) : (
+            <OverageManageForm
+              planMaxBudgetCents={planMaxBudgetFromApi(planStatus)}
+              spentCents={extraSpentCents}
+              overageUsed={overageUsedLive}
+              currentBudgetCents={extraBudgetCents ?? planMaxBudgetFromApi(planStatus)}
+              recurring={!!(overage?.recurring || quota?.overageRecurring)}
+            />
+          )}
+        </div>
+      )}
 
       <p className="text-center text-xs text-muted-foreground">
         Paid plans are billed monthly through Shopify in USD. Cancel anytime. Tap ⓘ on a plan for
