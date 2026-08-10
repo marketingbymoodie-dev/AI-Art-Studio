@@ -1078,20 +1078,41 @@ export default function AdminInsightsPage() {
                       setAutoFollow(false);
                       setPlanName(row.plan.planName);
                     }}
-                    className={`w-full flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                    className={`w-full grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
                       row.plan.planName === planName
                         ? "border-primary bg-primary/5"
                         : "hover:bg-muted/50"
                     }`}
                   >
-                    <div>
+                    <div className="min-w-0">
                       <span className="font-medium">{row.plan.displayName}</span>
                       <span className="text-muted-foreground ml-2">
                         {money0(row.plan.priceUsd)}/mo · {row.plan.generationQuota} gens ·{" "}
                         {row.plan.pageLimit} pages
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div
+                      className="text-xs tabular-nums text-muted-foreground sm:text-center sm:min-w-[7.5rem]"
+                      data-testid={`insights-plan-overage-${row.plan.planName}`}
+                    >
+                      {previewOverage && row.plan.overageCap > 0 ? (
+                        <span>
+                          <span
+                            className={
+                              row.overageGens > 0
+                                ? "font-medium text-foreground"
+                                : undefined
+                            }
+                          >
+                            {row.overageGens.toLocaleString()}
+                          </span>
+                          <span> / {row.plan.overageCap.toLocaleString()} overage</span>
+                        </span>
+                      ) : previewOverage ? (
+                        <span>No overage</span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2 sm:justify-end">
                       {previewOverage && row.overageCostUsd > 0 && (
                         <span className="text-xs text-muted-foreground">
                           +{money2(row.overageCostUsd)} overage
