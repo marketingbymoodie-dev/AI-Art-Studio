@@ -22164,6 +22164,8 @@ ${orientationExtra}
   registerPricingModellerRoutes(app, { isAuthenticated });
   const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
+  const { registerCreatorMarketplaceRoutes } = await import("./routes/creators");
+  registerCreatorMarketplaceRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");

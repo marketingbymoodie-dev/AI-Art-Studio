@@ -863,6 +863,9 @@ export const generationJobs = pgTable("generation_jobs", {
   shop: text("shop").notNull(),
   sessionId: text("session_id"),
   customerId: text("customer_id"),
+  /** Creator Marketplace attribution (nullable — merchant storefronts leave null). */
+  creatorId: varchar("creator_id"),
+  creatorSessionId: varchar("creator_session_id"),
   status: text("status").notNull().default("pending"), // pending | running | complete | failed
   prompt: text("prompt").notNull(),
   userPrompt: text("user_prompt"),               // User's original short prompt (without style prefix/suffix)
@@ -1392,3 +1395,351 @@ export const insertPlatformCatalogBlueprintSchema = createInsertSchema(platformC
 });
 export type PlatformCatalogBlueprint = typeof platformCatalogBlueprints.$inferSelect;
 export type InsertPlatformCatalogBlueprint = z.infer<typeof insertPlatformCatalogBlueprintSchema>;
+
+// ── Creator Marketplace ───────────────────────────────────────────────────────
+
+/** Global platform key/value config (e.g. AI_GENERATION_COST_USD). */
+export const platformConfig = pgTable("platform_config", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type PlatformConfigRow = typeof platformConfig.$inferSelect;
+
+/**
+ * First-class creator / beta merchant identity.
+ * Subdomain storefronts resolve to this row; attribution never depends on URL alone.
+ */
+export const creators = pgTable(
+  "creators",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    username: text("username").notNull(),
+    subdomain: text("subdomain").notNull(),
+    displayName: text("display_name").notNull(),
+    email: text("email").notNull(),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    socialPlatform: text("social_platform"),
+    socialUsername: text("social_username"),
+    socialUrl: text("social_url"),
+    followerCount: integer("follower_count"),
+    niche: text("niche"),
+    audienceDescription: text("audience_description"),
+    profileImageUrl: text("profile_image_url"),
+    bio: text("bio"),
+    status: text("status").notNull().default("application"),
+    creatorType: text("creator_type").notNull().default("creator"),
+    shopDomain: text("shop_domain"),
+    onboardingStatus: text("onboarding_status").notNull().default("pending"),
+    onboardingChecklist: jsonb("onboarding_checklist").$type<Record<string, boolean>>(),
+    branding: jsonb("branding").$type<Record<string, unknown>>(),
+    betaStartAt: timestamp("beta_start_at"),
+    betaEndAt: timestamp("beta_end_at"),
+    freeGensPerCustomer: integer("free_gens_per_customer").notNull().default(2),
+    monthlyGenerationAllowance: integer("monthly_generation_allowance").notNull().default(250),
+    generationMonth: text("generation_month"),
+    monthlyGenerationsUsed: integer("monthly_generations_used").notNull().default(0),
+    overageCap: integer("overage_cap").notNull().default(0),
+    shareBasis: text("share_basis").notNull().default("net_contribution"),
+    revenueShareCreatorPct: integer("revenue_share_creator_pct").notNull().default(100),
+    revenueShareAasPct: integer("revenue_share_aas_pct").notNull().default(0),
+    agreementStatus: text("agreement_status"),
+    agreementStartAt: timestamp("agreement_start_at"),
+    agreementEndAt: timestamp("agreement_end_at"),
+    emailAutomationToggles: jsonb("email_automation_toggles").$type<Record<string, boolean>>(),
+    applicationId: varchar("application_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creators_username_uidx").on(table.username),
+    uniqueIndex("creators_subdomain_uidx").on(table.subdomain),
+    index("creators_status_idx").on(table.status),
+    index("creators_email_idx").on(table.email),
+  ],
+);
+
+export type Creator = typeof creators.$inferSelect;
+
+export const creatorApplications = pgTable(
+  "creator_applications",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    firstName: text("first_name").notNull(),
+    lastName: text("last_name").notNull(),
+    email: text("email").notNull(),
+    socialPlatform: text("social_platform").notNull(),
+    socialUsername: text("social_username").notNull(),
+    socialUrl: text("social_url"),
+    followerCount: integer("follower_count"),
+    niche: text("niche").notNull(),
+    audienceDescription: text("audience_description"),
+    hasShopifyStore: boolean("has_shopify_store").notNull().default(false),
+    shopifyStoreUrl: text("shopify_store_url"),
+    interestedProducts: text("interested_products"),
+    preferredCategory: text("preferred_category"),
+    whyParticipate: text("why_participate"),
+    expectedReach: text("expected_reach"),
+    additionalInfo: text("additional_info"),
+    status: text("status").notNull().default("submitted"),
+    assignedUsername: text("assigned_username"),
+    creatorId: varchar("creator_id"),
+    adminNotes: text("admin_notes"),
+    reviewedAt: timestamp("reviewed_at"),
+    reviewedBy: text("reviewed_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("creator_applications_status_idx").on(table.status),
+    index("creator_applications_email_idx").on(table.email),
+    index("creator_applications_created_idx").on(table.createdAt),
+  ],
+);
+
+export type CreatorApplication = typeof creatorApplications.$inferSelect;
+
+export const creatorCustomizerPages = pgTable(
+  "creator_customizer_pages",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    customizerPageId: varchar("customizer_page_id").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    titleOverride: text("title_override"),
+    descriptionOverride: text("description_override"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_customizer_pages_uidx").on(table.creatorId, table.customizerPageId),
+    index("creator_customizer_pages_creator_idx").on(table.creatorId),
+  ],
+);
+
+export const creatorSessions = pgTable(
+  "creator_sessions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    firstSeenAt: timestamp("first_seen_at").defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+    landingPath: text("landing_path"),
+    referrer: text("referrer"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmContent: text("utm_content"),
+    device: text("device"),
+    country: text("country"),
+  },
+  (table) => [
+    index("creator_sessions_creator_idx").on(table.creatorId, table.lastSeenAt),
+  ],
+);
+
+export const creatorEvents = pgTable(
+  "creator_events",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    sessionId: varchar("session_id"),
+    eventType: text("event_type").notNull(),
+    customizerPageId: varchar("customizer_page_id"),
+    productTypeId: integer("product_type_id"),
+    generationJobId: varchar("generation_job_id"),
+    stylePreset: text("style_preset"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("creator_events_creator_idx").on(table.creatorId, table.createdAt),
+    index("creator_events_type_idx").on(table.creatorId, table.eventType, table.createdAt),
+  ],
+);
+
+export const creatorCustomerFreeGens = pgTable(
+  "creator_customer_free_gens",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    customerId: text("customer_id").notNull(),
+    used: integer("used").notNull().default(0),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_customer_free_gens_uidx").on(table.creatorId, table.customerId),
+  ],
+);
+
+export const creatorGenerationCosts = pgTable(
+  "creator_generation_costs",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    generationJobId: varchar("generation_job_id").notNull(),
+    sessionId: varchar("session_id"),
+    customerId: text("customer_id"),
+    customizerPageId: varchar("customizer_page_id"),
+    costCents: integer("cost_cents").notNull(),
+    billingMode: text("billing_mode"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_generation_costs_job_uidx").on(table.generationJobId),
+    index("creator_generation_costs_creator_idx").on(table.creatorId, table.createdAt),
+  ],
+);
+
+export const creatorDailyStats = pgTable(
+  "creator_daily_stats",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    day: text("day").notNull(),
+    visitors: integer("visitors").notNull().default(0),
+    sessions: integer("sessions").notNull().default(0),
+    pageViews: integer("page_views").notNull().default(0),
+    generations: integer("generations").notNull().default(0),
+    genCostCents: integer("gen_cost_cents").notNull().default(0),
+    atcCount: integer("atc_count").notNull().default(0),
+    orders: integer("orders").notNull().default(0),
+    grossCents: integer("gross_cents").notNull().default(0),
+    productProfitCents: integer("product_profit_cents").notNull().default(0),
+    netContributionCents: integer("net_contribution_cents").notNull().default(0),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_daily_stats_uidx").on(table.creatorId, table.day),
+  ],
+);
+
+export const creatorOrders = pgTable(
+  "creator_orders",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    shopifyOrderId: text("shopify_order_id").notNull(),
+    shopifyOrderName: text("shopify_order_name"),
+    sessionId: varchar("session_id"),
+    attributionSnapshot: jsonb("attribution_snapshot"),
+    grossCents: integer("gross_cents").notNull().default(0),
+    discountCents: integer("discount_cents").notNull().default(0),
+    shippingCollectedCents: integer("shipping_collected_cents").notNull().default(0),
+    fulfilmentCostCents: integer("fulfilment_cost_cents").notNull().default(0),
+    transactionFeeCents: integer("transaction_fee_cents").notNull().default(0),
+    productProfitCents: integer("product_profit_cents").notNull().default(0),
+    aiGenCostCents: integer("ai_gen_cost_cents").notNull().default(0),
+    netContributionCents: integer("net_contribution_cents").notNull().default(0),
+    creatorShareCents: integer("creator_share_cents").notNull().default(0),
+    aasShareCents: integer("aas_share_cents").notNull().default(0),
+    refundCents: integer("refund_cents").notNull().default(0),
+    status: text("status").notNull().default("paid"),
+    payoutId: varchar("payout_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_orders_shopify_uidx").on(table.creatorId, table.shopifyOrderId),
+    index("creator_orders_creator_idx").on(table.creatorId, table.createdAt),
+  ],
+);
+
+export const creatorOrderLines = pgTable(
+  "creator_order_lines",
+  {
+    id: serial("id").primaryKey(),
+    creatorOrderId: varchar("creator_order_id").notNull(),
+    shopifyLineId: text("shopify_line_id"),
+    productTypeId: integer("product_type_id"),
+    generationJobId: varchar("generation_job_id"),
+    quantity: integer("quantity").notNull().default(1),
+    unitRevenueCents: integer("unit_revenue_cents").notNull().default(0),
+    unitCogsCents: integer("unit_cogs_cents").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("creator_order_lines_order_idx").on(table.creatorOrderId)],
+);
+
+export const creatorRankSnapshots = pgTable(
+  "creator_rank_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    periodType: text("period_type").notNull(),
+    periodKey: text("period_key").notNull(),
+    metricKey: text("metric_key").notNull(),
+    creatorId: varchar("creator_id").notNull(),
+    valueCents: integer("value_cents"),
+    value: decimal("value", { precision: 18, scale: 6 }),
+    rank: integer("rank").notNull(),
+    ofCount: integer("of_count").notNull(),
+    percentile: decimal("percentile", { precision: 8, scale: 4 }),
+    sharePct: decimal("share_pct", { precision: 8, scale: 4 }),
+    computedAt: timestamp("computed_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_rank_snapshots_uidx").on(
+      table.periodType,
+      table.periodKey,
+      table.metricKey,
+      table.creatorId,
+    ),
+    index("creator_rank_snapshots_lookup_idx").on(
+      table.periodType,
+      table.periodKey,
+      table.metricKey,
+      table.rank,
+    ),
+  ],
+);
+
+export const creatorPayouts = pgTable(
+  "creator_payouts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    periodStart: timestamp("period_start"),
+    periodEnd: timestamp("period_end"),
+    amountCents: integer("amount_cents").notNull(),
+    method: text("method"),
+    status: text("status").notNull().default("pending"),
+    adminNote: text("admin_note"),
+    paidAt: timestamp("paid_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("creator_payouts_creator_idx").on(table.creatorId)],
+);
+
+export const creatorNotes = pgTable(
+  "creator_notes",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id"),
+    applicationId: varchar("application_id"),
+    author: text("author"),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("creator_notes_creator_idx").on(table.creatorId),
+    index("creator_notes_application_idx").on(table.applicationId),
+  ],
+);
+
+export const creatorEmailLog = pgTable(
+  "creator_email_log",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id"),
+    applicationId: varchar("application_id"),
+    templateKey: text("template_key").notNull(),
+    recipient: text("recipient").notNull(),
+    status: text("status").notNull().default("skipped"),
+    error: text("error"),
+    sentAt: timestamp("sent_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("creator_email_log_creator_idx").on(table.creatorId)],
+);

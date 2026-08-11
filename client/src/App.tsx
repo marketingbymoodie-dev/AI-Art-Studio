@@ -36,6 +36,11 @@ import AdminCustomizerPages from "@/pages/admin/customizer-pages";
 import AdminDesignStudio from "@/pages/admin/design-studio";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 import AdminInsights from "@/pages/admin/insights";
+import PlatformCreatorsPage from "@/pages/admin/platform-creators";
+import BetaLandingPage from "@/pages/creators/beta-landing";
+import CreatorsLandingPage from "@/pages/creators/creators-landing";
+import ShopifyBetaLandingPage from "@/pages/creators/shopify-beta-landing";
+import CreatorApplyPage from "@/pages/creators/apply";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -63,7 +68,14 @@ function AppRouter() {
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
+      <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
+
+      {/* Creator Marketplace marketing (public) */}
+      <Route path="/beta" component={BetaLandingPage} />
+      <Route path="/creators/apply" component={CreatorApplyPage} />
+      <Route path="/creators" component={CreatorsLandingPage} />
+      <Route path="/shopify-beta" component={ShopifyBetaLandingPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />

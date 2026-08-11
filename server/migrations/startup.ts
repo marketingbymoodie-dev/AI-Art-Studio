@@ -38,6 +38,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customizer_pages",      column: "style_config",                type: "JSONB" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
+  { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
+  { table: "generation_jobs",       column: "creator_session_id",          type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "variant_prices_both",         type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "is_all_over_print",           type: "BOOLEAN NOT NULL DEFAULT FALSE" },
@@ -256,6 +258,10 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of', prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of' WHERE lower(name) = 'illustrated motif'`,
   `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of', prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of' WHERE lower(name) = 'centered graphic'`,
   `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of', prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of' WHERE lower(name) = 'pet portraits' AND category = 'apparel'`,
+  // Creator Marketplace: seed accounting cost ($0.05). Do not overwrite if already set.
+  `INSERT INTO platform_config ("key", "value", "updated_at")
+   VALUES ('AI_GENERATION_COST_USD', '0.05', NOW())
+   ON CONFLICT ("key") DO NOTHING`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
@@ -971,6 +977,302 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "platform_config",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "platform_config" (
+        "key" TEXT PRIMARY KEY,
+        "value" TEXT NOT NULL,
+        "updated_at" TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creators",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creators" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "username" text NOT NULL,
+        "subdomain" text NOT NULL,
+        "display_name" text NOT NULL,
+        "email" text NOT NULL,
+        "first_name" text,
+        "last_name" text,
+        "social_platform" text,
+        "social_username" text,
+        "social_url" text,
+        "follower_count" integer,
+        "niche" text,
+        "audience_description" text,
+        "profile_image_url" text,
+        "bio" text,
+        "status" text NOT NULL DEFAULT 'application',
+        "creator_type" text NOT NULL DEFAULT 'creator',
+        "shop_domain" text,
+        "onboarding_status" text NOT NULL DEFAULT 'pending',
+        "onboarding_checklist" jsonb,
+        "branding" jsonb,
+        "beta_start_at" timestamp,
+        "beta_end_at" timestamp,
+        "free_gens_per_customer" integer NOT NULL DEFAULT 2,
+        "monthly_generation_allowance" integer NOT NULL DEFAULT 250,
+        "generation_month" text,
+        "monthly_generations_used" integer NOT NULL DEFAULT 0,
+        "overage_cap" integer NOT NULL DEFAULT 0,
+        "share_basis" text NOT NULL DEFAULT 'net_contribution',
+        "revenue_share_creator_pct" integer NOT NULL DEFAULT 100,
+        "revenue_share_aas_pct" integer NOT NULL DEFAULT 0,
+        "agreement_status" text,
+        "agreement_start_at" timestamp,
+        "agreement_end_at" timestamp,
+        "email_automation_toggles" jsonb,
+        "application_id" varchar,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_applications",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_applications" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "first_name" text NOT NULL,
+        "last_name" text NOT NULL,
+        "email" text NOT NULL,
+        "social_platform" text NOT NULL,
+        "social_username" text NOT NULL,
+        "social_url" text,
+        "follower_count" integer,
+        "niche" text NOT NULL,
+        "audience_description" text,
+        "has_shopify_store" boolean NOT NULL DEFAULT FALSE,
+        "shopify_store_url" text,
+        "interested_products" text,
+        "preferred_category" text,
+        "why_participate" text,
+        "expected_reach" text,
+        "additional_info" text,
+        "status" text NOT NULL DEFAULT 'submitted',
+        "assigned_username" text,
+        "creator_id" varchar,
+        "admin_notes" text,
+        "reviewed_at" timestamp,
+        "reviewed_by" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_customizer_pages",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_customizer_pages" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "customizer_page_id" varchar NOT NULL,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "title_override" text,
+        "description_override" text,
+        "enabled" boolean NOT NULL DEFAULT TRUE,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_sessions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_sessions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "first_seen_at" timestamp DEFAULT NOW() NOT NULL,
+        "last_seen_at" timestamp DEFAULT NOW() NOT NULL,
+        "landing_path" text,
+        "referrer" text,
+        "utm_source" text,
+        "utm_medium" text,
+        "utm_campaign" text,
+        "utm_content" text,
+        "device" text,
+        "country" text
+      )
+    `,
+  },
+  {
+    name: "creator_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_events" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "session_id" varchar,
+        "event_type" text NOT NULL,
+        "customizer_page_id" varchar,
+        "product_type_id" integer,
+        "generation_job_id" varchar,
+        "style_preset" text,
+        "metadata" jsonb,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_customer_free_gens",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_customer_free_gens" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "customer_id" text NOT NULL,
+        "used" integer NOT NULL DEFAULT 0,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_generation_costs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "generation_job_id" varchar NOT NULL,
+        "session_id" varchar,
+        "customer_id" text,
+        "customizer_page_id" varchar,
+        "cost_cents" integer NOT NULL,
+        "billing_mode" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_daily_stats",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_daily_stats" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "day" text NOT NULL,
+        "visitors" integer NOT NULL DEFAULT 0,
+        "sessions" integer NOT NULL DEFAULT 0,
+        "page_views" integer NOT NULL DEFAULT 0,
+        "generations" integer NOT NULL DEFAULT 0,
+        "gen_cost_cents" integer NOT NULL DEFAULT 0,
+        "atc_count" integer NOT NULL DEFAULT 0,
+        "orders" integer NOT NULL DEFAULT 0,
+        "gross_cents" integer NOT NULL DEFAULT 0,
+        "product_profit_cents" integer NOT NULL DEFAULT 0,
+        "net_contribution_cents" integer NOT NULL DEFAULT 0,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_orders",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_orders" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "shopify_order_id" text NOT NULL,
+        "shopify_order_name" text,
+        "session_id" varchar,
+        "attribution_snapshot" jsonb,
+        "gross_cents" integer NOT NULL DEFAULT 0,
+        "discount_cents" integer NOT NULL DEFAULT 0,
+        "shipping_collected_cents" integer NOT NULL DEFAULT 0,
+        "fulfilment_cost_cents" integer NOT NULL DEFAULT 0,
+        "transaction_fee_cents" integer NOT NULL DEFAULT 0,
+        "product_profit_cents" integer NOT NULL DEFAULT 0,
+        "ai_gen_cost_cents" integer NOT NULL DEFAULT 0,
+        "net_contribution_cents" integer NOT NULL DEFAULT 0,
+        "creator_share_cents" integer NOT NULL DEFAULT 0,
+        "aas_share_cents" integer NOT NULL DEFAULT 0,
+        "refund_cents" integer NOT NULL DEFAULT 0,
+        "status" text NOT NULL DEFAULT 'paid',
+        "payout_id" varchar,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_order_lines",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_order_lines" (
+        "id" serial PRIMARY KEY,
+        "creator_order_id" varchar NOT NULL,
+        "shopify_line_id" text,
+        "product_type_id" integer,
+        "generation_job_id" varchar,
+        "quantity" integer NOT NULL DEFAULT 1,
+        "unit_revenue_cents" integer NOT NULL DEFAULT 0,
+        "unit_cogs_cents" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_rank_snapshots",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_rank_snapshots" (
+        "id" serial PRIMARY KEY,
+        "period_type" text NOT NULL,
+        "period_key" text NOT NULL,
+        "metric_key" text NOT NULL,
+        "creator_id" varchar NOT NULL,
+        "value_cents" integer,
+        "value" numeric(18, 6),
+        "rank" integer NOT NULL,
+        "of_count" integer NOT NULL,
+        "percentile" numeric(8, 4),
+        "share_pct" numeric(8, 4),
+        "computed_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_payouts",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_payouts" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "period_start" timestamp,
+        "period_end" timestamp,
+        "amount_cents" integer NOT NULL,
+        "method" text,
+        "status" text NOT NULL DEFAULT 'pending',
+        "admin_note" text,
+        "paid_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_notes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_notes" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar,
+        "application_id" varchar,
+        "author" text,
+        "body" text NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_email_log",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_email_log" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar,
+        "application_id" varchar,
+        "template_key" text NOT NULL,
+        "recipient" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'skipped',
+        "error" text,
+        "sent_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -1138,6 +1440,74 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "design_product_events_sale_dedupe_idx"
       ON "design_product_events" ("design_product_id", "shopify_order_id", "cart_token")
       WHERE "event_type" = 'sale' AND "shopify_order_id" IS NOT NULL AND "cart_token" IS NOT NULL`,
+  },
+  {
+    name: "creators_username_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creators_username_uidx" ON "creators" ("username")`,
+  },
+  {
+    name: "creators_subdomain_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creators_subdomain_uidx" ON "creators" ("subdomain")`,
+  },
+  {
+    name: "creators_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creators_status_idx" ON "creators" ("status")`,
+  },
+  {
+    name: "creators_email_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creators_email_idx" ON "creators" ("email")`,
+  },
+  {
+    name: "creator_applications_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_applications_status_idx" ON "creator_applications" ("status")`,
+  },
+  {
+    name: "creator_applications_email_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_applications_email_idx" ON "creator_applications" ("email")`,
+  },
+  {
+    name: "creator_applications_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_applications_created_idx" ON "creator_applications" ("created_at")`,
+  },
+  {
+    name: "creator_customizer_pages_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customizer_pages_uidx"
+      ON "creator_customizer_pages" ("creator_id", "customizer_page_id")`,
+  },
+  {
+    name: "creator_sessions_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_sessions_creator_idx"
+      ON "creator_sessions" ("creator_id", "last_seen_at")`,
+  },
+  {
+    name: "creator_events_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_events_creator_idx"
+      ON "creator_events" ("creator_id", "created_at")`,
+  },
+  {
+    name: "creator_customer_free_gens_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_free_gens_uidx"
+      ON "creator_customer_free_gens" ("creator_id", "customer_id")`,
+  },
+  {
+    name: "creator_generation_costs_job_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_generation_costs_job_uidx"
+      ON "creator_generation_costs" ("generation_job_id")`,
+  },
+  {
+    name: "creator_daily_stats_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_daily_stats_uidx"
+      ON "creator_daily_stats" ("creator_id", "day")`,
+  },
+  {
+    name: "creator_orders_shopify_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_orders_shopify_uidx"
+      ON "creator_orders" ("creator_id", "shopify_order_id")`,
+  },
+  {
+    name: "creator_rank_snapshots_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_rank_snapshots_uidx"
+      ON "creator_rank_snapshots" ("period_type", "period_key", "metric_key", "creator_id")`,
   },
 ];
 
