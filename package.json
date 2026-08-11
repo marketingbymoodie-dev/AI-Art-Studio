@@ -23,7 +23,11 @@
     "publish:hoodie": "tsx scripts/publish-hoodie-template.ts",
     "import:hoodie-drafts": "tsx scripts/import-hoodie-drafts-to-supabase.ts",
     "seed:catalog-size-blanks": "tsx scripts/seed-catalog-size-blanks.ts",
-    "pull:printify-costs": "tsx scripts/pull-printify-catalog-costs.ts"
+    "pull:printify-costs": "tsx scripts/pull-printify-catalog-costs.ts",
+    "sync:platform-catalog": "tsx scripts/sync-platform-catalog.ts",
+    "test:pricing-qa:service": "vitest run server/pricing-qa.integration.test.ts",
+    "test:pricing-qa:ui": "playwright test e2e/pricing-modeller.spec.ts",
+    "test:pricing-qa": "npm run test:pricing-qa:service && npm run test:pricing-qa:ui"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",
@@ -106,7 +110,6 @@
     "recharts": "^2.15.2",
     "resend": "^4.0.0",
     "sharp": "^0.34.5",
-    "stripe": "^20.4.1",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "tw-animate-css": "^1.2.5",
@@ -119,6 +122,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@replit/vite-plugin-cartographer": "^0.4.4",
     "@replit/vite-plugin-dev-banner": "^0.1.1",
     "@replit/vite-plugin-runtime-error-modal": "^0.0.3",

@@ -1,46 +1,28 @@
-import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { Link } from "wouter";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useSetupStatus } from "@/hooks/use-setup-status";
+import { useSetupStatus, type MerchantSetupStatus } from "@/hooks/use-setup-status";
 import { getShopifyParams } from "@/lib/shopify";
 import AdminLayout from "@/components/admin-layout";
-import ConfettiBurst from "@/components/admin/ConfettiBurst";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
+  ArrowRight,
   CheckCircle2,
-  Circle,
   ExternalLink,
   Info,
   Loader2,
-  PartyPopper,
+  Package,
   Sparkles,
   Store,
 } from "lucide-react";
-
-interface CatalogEntry {
-  blueprintId: number;
-  label: string;
-  brand: string | null;
-  category: string | null;
-  kind: "printify" | "flat" | "aop" | "blocked";
-}
 
 interface ShopifyInstallationLite {
   id: number;
   shopDomain: string;
   status: string;
-}
-
-interface ActivateResult {
-  page: { id: number; handle: string; title: string };
-  productTypeId: number;
-  previewUrl: string;
-  storefrontUrl: string;
 }
 
 function StepShell({
@@ -78,8 +60,6 @@ function StepShell({
 export default function AdminSetupPage() {
   const { toast } = useToast();
   const { data: status, isLoading: statusLoading } = useSetupStatus();
-  const [activatedBlueprintId, setActivatedBlueprintId] = useState<number | null>(null);
-  const [lastResult, setLastResult] = useState<ActivateResult | null>(null);
 
   const { data: installationsData } = useQuery<
     { installations: ShopifyInstallationLite[] },
@@ -89,8 +69,6 @@ export default function AdminSetupPage() {
     queryKey: ["/api/shopify/installations"],
     select: (data) => data.installations,
   });
-  // Prefer DB install row; fall back to embedded Admin shop/host so
-  // "Open Theme Editor" works on first visit before installations finish linking.
   const shopifyParams = getShopifyParams();
   const shopFromHost = (() => {
     if (!shopifyParams.host) return null;
@@ -108,45 +86,38 @@ export default function AdminSetupPage() {
     shopFromHost ||
     null;
 
-  const { data: catalogData, isLoading: catalogLoading } = useQuery<{ entries: CatalogEntry[] }>({
-    queryKey: ["/api/appai/setup/catalog"],
-  });
-
   const confirmEmbedMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/appai/setup/confirm-embed");
-      return res.json();
+      return res.json() as Promise<{ success?: boolean; error?: string }>;
     },
     onSuccess: () => {
+      queryClient.setQueryData(["/api/appai/setup/status"], (prev: MerchantSetupStatus | undefined) =>
+        prev
+          ? {
+              ...prev,
+              embedEnabledGuess: true,
+              nextStep: prev.printifyConnected ? "done" : "connect_printify",
+            }
+          : prev,
+      );
       queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
       toast({ title: "Got it!", description: "App Embed marked as enabled." });
     },
-  });
-
-  const activateMutation = useMutation({
-    mutationFn: async (blueprintId: number) => {
-      const res = await apiRequest("POST", "/api/appai/setup/activate-product", { blueprintId });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to activate this product.");
-      }
-      return res.json() as Promise<ActivateResult>;
-    },
-    onMutate: (blueprintId) => setActivatedBlueprintId(blueprintId),
-    onSuccess: (data) => {
-      setLastResult(data);
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
-    },
     onError: (err: Error) => {
-      setActivatedBlueprintId(null);
-      toast({ title: "Couldn't activate that product", description: err.message, variant: "destructive" });
+      toast({
+        title: "Couldn't save that yet",
+        description:
+          parseApiErrorMessage(err) ||
+          "Try reopening the app from Shopify Admin, then click again.",
+        variant: "destructive",
+      });
     },
   });
 
   const embedDone = !!status?.embedEnabledGuess;
-  const hasPage = (status?.pagesCount ?? 0) > 0;
   const printifyDone = !!status?.printifyConnected;
+  const setupComplete = embedDone && printifyDone;
 
   const normalizedShop = shopDomain
     ? shopDomain.includes(".")
@@ -166,18 +137,43 @@ export default function AdminSetupPage() {
             Get set up
           </h1>
           <p className="text-muted-foreground">
-            A few quick steps and your AI product customizer will be ready to show customers.
+            A few quick steps, then open Products Catalogue to Preview or Create a Live page.
           </p>
         </div>
 
-        {/* Step 1 — Install & permissions (always complete by the time this page loads) */}
-        <StepShell number={1} title="Install the app" done>
-          <p className="text-sm text-muted-foreground">
-            Done — you've installed AI Art Studio and approved the required permissions.
-          </p>
+        {status && status.shopAuthorized === false && status.reconnectUrl && (
+          <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium">Finish connecting this shop</p>
+                <p className="text-sm text-muted-foreground">
+                  Shopify opened the app, but we still need one approval step to save an Admin API
+                  token (needed for Preview and Create Page). This is different from uninstalling.
+                </p>
+              </div>
+              <Button asChild data-testid="button-reconnect-shopify">
+                <a href={status.reconnectUrl} target="_top" rel="noopener noreferrer">
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Connect Shopify
+                </a>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        <StepShell number={1} title="Install the app" done={status?.shopAuthorized !== false}>
+          {status?.shopAuthorized === false ? (
+            <p className="text-sm text-muted-foreground">
+              Almost done — click <strong>Connect Shopify</strong> above, approve permissions, then
+              continue.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Done — you&apos;ve installed AI Art Studio and approved the required permissions.
+            </p>
+          )}
         </StepShell>
 
-        {/* Step 2 — Enable App Embed */}
         <StepShell number={2} title="Enable the App Embed" done={embedDone}>
           <div className="flex items-start gap-2 mb-3">
             <p className="text-sm text-muted-foreground flex-1">
@@ -221,118 +217,65 @@ export default function AdminSetupPage() {
                 data-testid="button-confirm-embed"
               >
                 {confirmEmbedMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                I've enabled it
+                I&apos;ve enabled it
               </Button>
             )}
           </div>
           {!embedDone && (
             <p className="text-xs text-muted-foreground mt-2">
-              In the theme editor: App Embeds (left sidebar) → toggle on "AI Art Studio Embed" → Save.
+              In the theme editor: App Embeds (left sidebar) → toggle on &quot;AI Art Studio Embed&quot; → Save.
             </p>
           )}
         </StepShell>
 
-        {/* Step 3 — Choose a product */}
-        <StepShell number={3} title="Choose a Customizer Page product" done={hasPage} locked={!embedDone}>
+        <StepShell number={3} title="Connect Printify to go Live" done={printifyDone} locked={!embedDone}>
           {!embedDone ? (
             <p className="text-sm text-muted-foreground">Enable the App Embed above to unlock this step.</p>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Pick a product from our ready-to-go catalog — it's activated instantly, no Printify
-                account needed yet.
-              </p>
-
-              {lastResult && (
-                <div className="relative rounded-md border border-green-200 bg-green-50 dark:bg-green-950/30 dark:border-green-900 p-4 overflow-hidden">
-                  <ConfettiBurst />
-                  <div className="flex items-center gap-2 mb-2">
-                    <PartyPopper className="h-5 w-5 text-green-600" />
-                    <p className="font-medium">"{lastResult.page.title}" is ready to preview!</p>
-                  </div>
-                  <Button
-                    className="shimmer-btn"
-                    onClick={() => window.open(lastResult.previewUrl, "_blank")}
-                    data-testid="button-see-your-page"
-                  >
-                    <span className="relative z-10 flex items-center">
-                      <ExternalLink className="h-4 w-4 mr-2" />
-                      See your page
-                    </span>
-                  </Button>
-                </div>
-              )}
-
-              {catalogLoading ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Skeleton className="h-24 w-full" />
-                  <Skeleton className="h-24 w-full" />
-                </div>
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {(catalogData?.entries ?? []).map((entry) => {
-                    const isActivating = activateMutation.isPending && activatedBlueprintId === entry.blueprintId;
-                    const justActivated = lastResult && activatedBlueprintId === entry.blueprintId;
-                    return (
-                      <div
-                        key={entry.blueprintId}
-                        className="rounded-md border p-3 flex flex-col gap-2"
-                        data-testid={`card-catalog-${entry.blueprintId}`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="font-medium text-sm">{entry.label}</p>
-                          <Badge variant="outline" className="shrink-0">{entry.kind}</Badge>
-                        </div>
-                        {(entry.brand || entry.category) && (
-                          <p className="text-xs text-muted-foreground">
-                            {[entry.brand, entry.category].filter(Boolean).join(" · ")}
-                          </p>
-                        )}
-                        <Button
-                          size="sm"
-                          variant={justActivated ? "outline" : "default"}
-                          disabled={isActivating}
-                          onClick={() => activateMutation.mutate(entry.blueprintId)}
-                          data-testid={`button-activate-${entry.blueprintId}`}
-                        >
-                          {isActivating && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
-                          {justActivated ? "Activated" : "Activate"}
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </StepShell>
-
-        {/* Step 4 — Connect Printify */}
-        <StepShell number={4} title="Connect Printify to fulfil orders" done={printifyDone} locked={!hasPage}>
-          {!hasPage ? (
-            <p className="text-sm text-muted-foreground">Activate a product above to unlock this step.</p>
           ) : printifyDone ? (
             <p className="text-sm text-muted-foreground">
-              Printify is connected — your Customizer Page{(status?.pagesCount ?? 0) > 1 ? "s are" : " is"} now
-              visible to customers.
+              Printify is connected. When you Create Page, you&apos;ll choose a print supplier and apply
+              suggested retail prices before going Live.
             </p>
           ) : (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Your page{(status?.pagesCount ?? 0) > 1 ? "s are" : " is"} live in preview for you only — connect
-                your Printify account so customers can check out and orders actually get fulfilled.
-                We'll remind you daily until this is done, and won't spend AI generations on a page that
-                can't yet be fulfilled.
+                Connect your Printify API token and Shop ID in Settings. You can still Preview products
+                in-app without Printify; Live pages need it for supplier and pricing.
               </p>
               <Button asChild data-testid="button-connect-printify">
                 <a href="/admin/settings">
                   <Store className="h-4 w-4 mr-2" />
-                  Connect Printify in Settings
+                  Open Settings
                 </a>
               </Button>
             </div>
           )}
         </StepShell>
+
+        {setupComplete && (
+          <Card className="border-primary/30 bg-primary/5">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  Setup complete — next: Products Catalogue
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Preview products in Preview Studio (in-app), or Create Page to pick a Printify supplier,
+                  set suggested prices, and go Live. Provider, pricing, variants, and Art Styles are
+                  configured on the Customizer Page.
+                </p>
+              </div>
+              <Button asChild data-testid="button-setup-open-catalogue">
+                <Link href="/admin/products">
+                  <Package className="h-4 w-4 mr-2" />
+                  Open Products Catalogue
+                  <ArrowRight className="h-4 w-4 ml-2" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         {statusLoading && (
           <p className="text-xs text-muted-foreground">Loading your setup status…</p>

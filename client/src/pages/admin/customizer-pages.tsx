@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo, useEffect } from "react";
+import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
@@ -28,13 +29,38 @@ import {
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+
+/** Prefer all sizes, drop colours from the end until ≤ Shopify max (UI / prep helper). */
+function trimSelectionToShopifyMax(
+  sizeIds: string[],
+  colorIds: string[],
+): { sizeIds: string[]; colorIds: string[]; count: number; capped: boolean } {
+  let sizes = sizeIds.filter(Boolean);
+  let colors = colorIds.filter(Boolean);
+  const countOf = () => sizes.length * (colors.length > 0 ? colors.length : 1);
+  if (sizes.length === 0) {
+    return { sizeIds: sizes, colorIds: colors, count: 0, capped: false };
+  }
+  if (countOf() <= SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+    return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: false };
+  }
+  while (colors.length > 1 && countOf() > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+    colors = colors.slice(0, -1);
+  }
+  while (sizes.length > 1 && countOf() > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+    sizes = sizes.slice(0, -1);
+  }
+  return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: true };
+}
 import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
+import CatalogFilterBar from "@/components/admin/CatalogFilterBar";
 import PlanPicker from "./plan-picker";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
 import CustomizerPageStyleSelector from "@/components/admin/CustomizerPageStyleSelector";
+import { useSetupStatus } from "@/hooks/use-setup-status";
 import {
   defaultStyleConfigForDesignerType,
   parseCustomizerPageStyleConfig,
@@ -53,9 +79,15 @@ interface CustomizerPage {
   baseProductTitle: string | null;
   baseVariantTitle: string | null;
   baseProductPrice: string | null;
-  status: "active" | "disabled";
+  status: "preview" | "active" | "disabled";
   styleConfig?: CustomizerPageStyleConfig | null;
   createdAt: string;
+}
+
+function statusBadgeLabel(status: CustomizerPage["status"]): string {
+  if (status === "active") return "Live";
+  if (status === "preview") return "Preview";
+  return "Disabled";
 }
 
 interface PagesResponse {
@@ -76,6 +108,24 @@ interface BlankVariant {
   sku?: string;
 }
 
+interface VariantOption {
+  id: string;
+  name: string;
+  hex?: string;
+}
+
+interface WizardProvider {
+  id: number;
+  title: string;
+  location?: { country?: string; city?: string; region?: string };
+  fulfillment_countries?: string[];
+  decoration_methods?: string[];
+  pricingFromCents?: number | null;
+  variantCount?: number | null;
+  supportsBothSides?: boolean;
+  rating?: number | null;
+}
+
 interface Blank {
   productTypeId: number;
   productId: string | null;
@@ -89,6 +139,10 @@ interface Blank {
   /** Resolved from last OOS scan (oosDetail); null until first scan. */
   printifyProviderName?: string | null;
   printifyVariantLabels?: Record<string, string>;
+  sizes?: VariantOption[];
+  frameColors?: VariantOption[];
+  selectedSizeIds?: string[];
+  selectedColorIds?: string[];
   description?: string | null;
   /** Daily Printify stock scan (server/oos-catalogue-report.ts) — null until first scan runs. */
   oosStatus?: "ok" | "critical" | "fully_oos" | "error" | "unknown" | null;
@@ -108,6 +162,11 @@ interface Blank {
 
 function slugify(str: string): string {
   return str.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/** Drop " — Printify Choice" / supplier suffixes from product or page titles (never show in H1). */
+function stripProviderSuffix(name: string): string {
+  return name.replace(/\s+[—–-]\s+.+$/u, "").trim();
 }
 
 function plainTextFromHtml(value: string | null | undefined): string {
@@ -211,6 +270,8 @@ function formatStyleConfigSummary(
 export default function AdminCustomizerPages() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
+  const { data: setupStatus } = useSetupStatus();
+  const printifyConnected = !!setupStatus?.printifyConnected;
 
   const [createOpen, setCreateOpen] = useState(false);
   // Deep-link from Products page ("Create Customizer Page" button):
@@ -220,10 +281,22 @@ export default function AdminCustomizerPages() {
     const parsed = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(parsed) ? parsed : null;
   });
+  // Catalogue "Create Page" / "Add to store" deep-links.
+  const [pendingCreateBlueprintId, setPendingCreateBlueprintId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("createFromBlueprint");
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  });
+  const [listSearch, setListSearch] = useState("");
+  const [listCategory, setListCategory] = useState("all");
+  const [listStatus, setListStatus] = useState("all");
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
   const [editDescription, setEditDescription] = useState("");
+  const [editPricingStrategy, setEditPricingStrategy] = useState("notify_only");
+  const [editMarkupPercent, setEditMarkupPercent] = useState("60");
+  const [editMinMarginPercent, setEditMinMarginPercent] = useState("");
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
   const [editCustomPlaceholder, setEditCustomPlaceholder] = useState("");
@@ -245,14 +318,31 @@ export default function AdminCustomizerPages() {
   const [handleTouched, setHandleTouched] = useState(false);
   const [titleTouched, setTitleTouched] = useState(false);
 
-  // Wizard state
-  const [formStep, setFormStep] = useState<1 | 2 | 3 | 4>(1);
+  // Wizard state — Page info → Supplier → Variants → Pricing → Confirm → Success
+  const [formStep, setFormStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
+  /** Step 2 (print provider) selection. Defaults to the product's current Printify supplier. */
+  const [wizardProviderId, setWizardProviderId] = useState<number | null>(null);
+  const [wizardSizes, setWizardSizes] = useState<VariantOption[]>([]);
+  const [wizardColors, setWizardColors] = useState<VariantOption[]>([]);
+  const [wizardSizeIds, setWizardSizeIds] = useState<Set<string>>(new Set());
+  const [wizardColorIds, setWizardColorIds] = useState<Set<string>>(new Set());
+  const [wizardVariantsLoading, setWizardVariantsLoading] = useState(false);
+  const [wizardVariantsReady, setWizardVariantsReady] = useState(false);
+  /** Tracks blueprint:provider already prepared so costs can prefetch during Variants. */
+  const preparedProviderKeyRef = useRef<string | null>(null);
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
   /** Front+back retail prices — only used when Printify costs include a both-sides tier. */
   const [variantPricesBoth, setVariantPricesBoth] = useState<Record<string, string>>({});
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
+
+  // Edit-modal variant picker
+  const [editSizes, setEditSizes] = useState<VariantOption[]>([]);
+  const [editColors, setEditColors] = useState<VariantOption[]>([]);
+  const [editSizeIds, setEditSizeIds] = useState<Set<string>>(new Set());
+  const [editColorIds, setEditColorIds] = useState<Set<string>>(new Set());
+  const [editVariantsLoading, setEditVariantsLoading] = useState(false);
 
   // Costs popup state
   const [costsOpen, setCostsOpen] = useState(false);
@@ -303,10 +393,43 @@ export default function AdminCustomizerPages() {
     // Always on (not just create/edit) — the pages list badge below needs oosStatus per row.
   });
 
+  // Platform catalogue — so Create Page can list every ready-to-go product, not only imports.
+  const { data: setupCatalogData } = useQuery<{
+    entries: Array<{ blueprintId: number; label: string; existingProductType?: { id: number } | null }>;
+  }>({
+    queryKey: ["/api/appai/setup/catalog"],
+    enabled: createOpen || pendingCreateBlueprintId != null,
+  });
+
+  /** Import a catalogue blueprint as a product_type (Preview not required). */
+  const ensureCatalogProductMutation = useMutation({
+    mutationFn: async (blueprintId: number) => {
+      const res = await apiRequest("POST", "/api/appai/setup/activate-product", { blueprintId });
+      return res.json() as Promise<{ productTypeId: number }>;
+    },
+    onSuccess: async (data) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/catalog"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+      const blanks = queryClient.getQueryData<{ blanks: Blank[] }>(["/api/appai/blanks"])?.blanks ?? [];
+      const match = blanks.find((b) => b.productTypeId === data.productTypeId);
+      setFormProductId(match?.productId ? match.productId : `pt:${data.productTypeId}`);
+      setCreateOpen(true);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Couldn't prepare product",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      });
+    },
+  });
+
   // Open the create wizard as soon as we know a deep-linked product is pending.
   useEffect(() => {
-    if (pendingCreateProductTypeId != null) setCreateOpen(true);
-  }, [pendingCreateProductTypeId]);
+    if (pendingCreateProductTypeId != null || pendingCreateBlueprintId != null) setCreateOpen(true);
+  }, [pendingCreateProductTypeId, pendingCreateBlueprintId]);
 
   // Once blanks have loaded, pre-select the deep-linked product and clear the query param.
   useEffect(() => {
@@ -315,12 +438,34 @@ export default function AdminCustomizerPages() {
     const match = blanksData.blanks.find((b) => b.productTypeId === pendingCreateProductTypeId);
     if (match) {
       setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+    } else if (!ensureCatalogProductMutation.isPending) {
+      // Product type exists but blanks not ready yet — still select by pt id.
+      setFormProductId(`pt:${pendingCreateProductTypeId}`);
     }
     setPendingCreateProductTypeId(null);
     const url = new URL(window.location.href);
     url.searchParams.delete("createForProductType");
     window.history.replaceState({}, "", url.toString());
   }, [pendingCreateProductTypeId, blanksData]);
+
+  // Catalogue Create Page: pre-select by blueprint, or prepare product_type on demand.
+  useEffect(() => {
+    if (pendingCreateBlueprintId == null) return;
+    if (blanksData === undefined) return;
+    const bpId = pendingCreateBlueprintId;
+    const match = blanksData.blanks.find((b) => b.printifyBlueprintId === bpId);
+    setPendingCreateBlueprintId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("createFromBlueprint");
+    window.history.replaceState({}, "", url.toString());
+    if (match) {
+      setFormProductId(match.productId ? match.productId : `pt:${match.productTypeId}`);
+      setCreateOpen(true);
+      return;
+    }
+    setCreateOpen(true);
+    ensureCatalogProductMutation.mutate(bpId);
+  }, [pendingCreateBlueprintId, blanksData]);
 
   const { data: adminStyles = [] } = useQuery<Array<{ id: number; name: string; category?: string | null }>>({
     queryKey: ["/api/admin/styles"],
@@ -338,10 +483,40 @@ export default function AdminCustomizerPages() {
     if (!editTarget || !editBlank) return;
     const images = editBlank.baseMockupImages || {};
     setEditDescription(plainTextFromHtml(editBlank.description));
+    setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
+    setEditMarkupPercent(String((editBlank as any).defaultMarkupPercent ?? 60));
+    setEditMinMarginPercent(
+      (editBlank as any).minMarginPercent != null ? String((editBlank as any).minMarginPercent) : "",
+    );
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
-  }, [editTarget?.id, editBlank?.productTypeId]);
+  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description]);
+
+  // Backfill Printify catalog copy when Create Page left description empty.
+  useEffect(() => {
+    if (!editTarget || !editBlank?.productTypeId) return;
+    if (String(editBlank.description || "").trim()) return;
+    if (!editBlank.printifyBlueprintId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiRequest(
+          "POST",
+          `/api/admin/product-types/${editBlank.productTypeId}/refresh-description`,
+        );
+        const data = await res.json();
+        if (cancelled || !data?.description) return;
+        setEditDescription(plainTextFromHtml(data.description));
+        queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      } catch {
+        /* Printify may have no description — leave empty */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description, editBlank?.printifyBlueprintId]);
 
   useEffect(() => {
     if (!editTarget) {
@@ -377,7 +552,7 @@ export default function AdminCustomizerPages() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
       setCreatedPageResult(data);
-      setFormStep(4);
+      setFormStep(6);
     },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
@@ -440,6 +615,23 @@ export default function AdminCustomizerPages() {
         styleConfig: editStyleConfig,
         baseMockupImages: curated,
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update customizer page");
+      }
+      if (editBlank?.productTypeId) {
+        const markup = parseInt(editMarkupPercent, 10);
+        const minM = editMinMarginPercent.trim() ? parseInt(editMinMarginPercent, 10) : null;
+        const ptRes = await apiRequest("PATCH", `/api/admin/product-types/${editBlank.productTypeId}`, {
+          pricingStrategy: editPricingStrategy,
+          defaultMarkupPercent: Number.isFinite(markup) ? markup : null,
+          minMarginPercent: minM != null && Number.isFinite(minM) ? minM : null,
+        });
+        if (!ptRes.ok) {
+          const body = await ptRes.json().catch(() => ({}));
+          throw new Error(body.error || "Page saved but pricing strategy failed");
+        }
+      }
       return res.json();
     },
     onSuccess: () => {
@@ -551,7 +743,14 @@ export default function AdminCustomizerPages() {
     setHandleTouched(false);
     setTitleTouched(false);
     setFormStep(1);
+    setWizardProviderId(null);
+    setWizardSizes([]);
+    setWizardColors([]);
+    setWizardSizeIds(new Set());
+    setWizardColorIds(new Set());
+    setWizardVariantsReady(false);
     setVariantPrices({});
+    setVariantPricesBoth({});
     setPriceErrors({});
     setCreatedPageResult(null);
   }
@@ -565,6 +764,7 @@ export default function AdminCustomizerPages() {
   /** Simplify a Printify product name to a short page title.
    *  e.g. "Custom Spun Polyester Square Pillow" → "Square Pillow"
    *       "Premium Unisex Crewneck Sweatshirt" → "Crewneck Sweatshirt"
+   *  Always strips supplier suffixes like " — Printify Choice".
    */
   function simplifyProductName(name: string): string {
     const STRIP_WORDS = [
@@ -572,7 +772,7 @@ export default function AdminCustomizerPages() {
       "basic", "standard", "all-over", "all over", "print",
       "sublimation", "sublimated", "dye", "digital",
     ];
-    let words = name.split(/\s+/);
+    let words = stripProviderSuffix(name).split(/\s+/);
     // Remove leading words that match the strip list
     while (words.length > 1 && STRIP_WORDS.includes(words[0].toLowerCase().replace(/[^a-z]/g, ""))) {
       words = words.slice(1);
@@ -581,9 +781,10 @@ export default function AdminCustomizerPages() {
   }
 
   /** Derive variants for the currently-selected product (Step 2 pricing) */
-  const selectedBlank = (blanksData?.blanks ?? []).find(
-    (b) => (b.productId ? b.productId : `pt:${b.productTypeId}`) === formProductId
-  );
+  const selectedBlank = (blanksData?.blanks ?? []).find((b) => {
+    const canonical = b.productId ? b.productId : `pt:${b.productTypeId}`;
+    return canonical === formProductId || formProductId === `pt:${b.productTypeId}`;
+  });
 
   /**
    * Deduplicate variants by full label — keeps all distinct variants including
@@ -613,18 +814,30 @@ export default function AdminCustomizerPages() {
     refetch: refetchCosts,
   } = useQuery<{
     costs: Record<string, number>;
+    costsBoth?: Record<string, number>;
     shopifyVariantCosts: Record<string, number>;
+    shopifyVariantCostsBoth?: Record<string, number>;
     printifyVariantLabels: Record<string, string>;
     costsByNormalizedLabel?: Record<string, number>;
+    costsBothByNormalizedLabel?: Record<string, number>;
+    supportsBothSides?: boolean;
     cached: boolean;
     warning?: string;
   }>({
     queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to fetch production costs from Printify");
+      }
       return res.json();
     },
-    enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId,
+    // Prefetch during Variants (step 3) once the product type is on the chosen supplier.
+    enabled:
+      (costsOpen || formStep >= 3) &&
+      !!selectedBlank?.productTypeId &&
+      (wizardProviderId == null || selectedBlank.printifyProviderId === wizardProviderId),
     retry: false,
   });
 
@@ -654,7 +867,7 @@ export default function AdminCustomizerPages() {
     (selectedBlank?.printifyProviderId != null ? `Provider #${selectedBlank.printifyProviderId}` : null);
 
   useEffect(() => {
-    if (formStep !== 2 || !costsError || !costsFetchError) return;
+    if (formStep !== 4 || !costsError || !costsFetchError) return;
     if (costsErrorPayload?.code === "PRINTIFY_FULLY_OOS") {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       toast({
@@ -674,22 +887,40 @@ export default function AdminCustomizerPages() {
     });
   }, [formStep, costsError, costsFetchError, costsErrorPayload?.code, toast, queryClient]);
 
-  // Mutation: clear all cached costs and refetch for current product
-  const clearCostsMutation = useMutation({
+  // Product Sync: refresh Product Intelligence (COGS / availability), then reload cost UI from DB.
+  const productSyncMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/admin/printify/costs/clear-cache");
-      if (!res.ok) throw new Error("Failed to clear costs cache");
-      return res.json();
+      if (!selectedBlank?.productTypeId) throw new Error("No product selected");
+      const res = await apiRequest(
+        "POST",
+        `/api/admin/product-types/${selectedBlank.productTypeId}/product-sync`,
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Product Sync failed");
+      return data;
     },
-    onSuccess: () => {
-      // Invalidate the costs query so it re-fetches fresh data
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
-      toast({ title: "Costs refreshed", description: "Production costs cache cleared. Fetching fresh data…" });
+      queryClient.removeQueries({ queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId] });
+      const r = data?.result;
+      toast({
+        title: r?.ok === false ? "Product Sync finished with issues" : "Product Sync complete",
+        description: r?.error
+          ? r.error
+          : "COGS and availability updated. Reloading pricing…",
+        variant: r?.ok === false ? "destructive" : undefined,
+      });
     },
-    onError: () => {
-      toast({ title: "Refresh failed", description: "Could not clear costs cache. Please try again.", variant: "destructive" });
+    onError: (error: Error) => {
+      toast({
+        title: "Product Sync failed",
+        description: error.message || "Could not sync product intelligence.",
+        variant: "destructive",
+      });
     },
   });
+
+  // Refresh costs → Product Sync (sole preferred path). Legacy clear-cache removed from UI.
 
   // Shipping rates query
   const { data: shippingData, isLoading: shippingLoading } = useQuery<{
@@ -801,7 +1032,7 @@ export default function AdminCustomizerPages() {
 
   // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
   useEffect(() => {
-    if (formStep !== 2) return;
+    if (formStep !== 4) return;
     if (Object.keys(recommendedPrices).length === 0) return;
     setVariantPrices((prev) => {
       const next = { ...prev };
@@ -818,7 +1049,7 @@ export default function AdminCustomizerPages() {
   }, [recommendedPrices, formStep]);
 
   useEffect(() => {
-    if (formStep !== 2 || !supportsBothSidePricing) return;
+    if (formStep !== 4 || !supportsBothSidePricing) return;
     if (Object.keys(recommendedPricesBoth).length === 0) return;
     setVariantPricesBoth((prev) => {
       const next = { ...prev };
@@ -832,6 +1063,62 @@ export default function AdminCustomizerPages() {
       return changed ? next : prev;
     });
   }, [recommendedPricesBoth, formStep, supportsBothSidePricing]);
+
+  // Prefill edit-modal variant checkboxes when opening a page
+  useEffect(() => {
+    if (!editTarget || !editBlank?.printifyBlueprintId || !editBlank.printifyProviderId) {
+      setEditSizes([]);
+      setEditColors([]);
+      setEditSizeIds(new Set());
+      setEditColorIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setEditVariantsLoading(true);
+      try {
+        const res = await fetch(
+          `/api/admin/printify/blueprints/${editBlank.printifyBlueprintId}/variants?providerId=${editBlank.printifyProviderId}`,
+          { credentials: "include" },
+        );
+        if (!res.ok) throw new Error("Failed to load variants");
+        const data = await res.json();
+        if (cancelled) return;
+        const sizes: VariantOption[] = data.sizes || [];
+        const colors: VariantOption[] = data.colors || [];
+        setEditSizes(sizes);
+        setEditColors(colors);
+        const savedSizes = editBlank.selectedSizeIds ?? [];
+        const savedColors = editBlank.selectedColorIds ?? [];
+        let nextSizes = (savedSizes.length ? savedSizes : sizes.map((s) => s.id)).filter((id) =>
+          sizes.some((s) => s.id === id),
+        );
+        let nextColors = (savedColors.length ? savedColors : colors.map((c) => c.id)).filter((id) =>
+          colors.some((c) => c.id === id),
+        );
+        // Never open the editor with an illegal over-limit selection (legacy or "select all").
+        const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+        if (trimmed.capped) {
+          nextSizes = trimmed.sizeIds;
+          nextColors = trimmed.colorIds;
+        }
+        setEditSizeIds(new Set(nextSizes));
+        setEditColorIds(new Set(nextColors));
+      } catch {
+        if (!cancelled) {
+          setEditSizes(editBlank.sizes ?? []);
+          setEditColors(editBlank.frameColors ?? []);
+          setEditSizeIds(new Set(editBlank.selectedSizeIds ?? []));
+          setEditColorIds(new Set(editBlank.selectedColorIds ?? []));
+        }
+      } finally {
+        if (!cancelled) setEditVariantsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.printifyProviderId]);
 
   // Auto-populate page title from product name when product is selected (if title not manually edited)
   useEffect(() => {
@@ -858,16 +1145,328 @@ export default function AdminCustomizerPages() {
     setFormStyleConfig(defaultStyleConfigForDesignerType(selectedBlank.designerType));
   }, [selectedBlank?.productTypeId, formProductId]);
 
+  // Default the Step 2 (print provider) picker to whatever supplier this product currently uses.
+  useEffect(() => {
+    setWizardProviderId(selectedBlank?.printifyProviderId ?? null);
+  }, [selectedBlank?.productTypeId, formProductId]);
+
+  // Print providers available for the selected product's Printify blueprint (Step 2).
+  const { data: wizardProvidersData, isLoading: wizardProvidersLoading } = useQuery<WizardProvider[]>({
+    queryKey: ["/api/admin/printify/blueprints", selectedBlank?.printifyBlueprintId, "providers"],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/printify/blueprints/${selectedBlank!.printifyBlueprintId}/providers`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch print providers");
+      return res.json();
+    },
+    enabled: formStep === 2 && !!selectedBlank?.printifyBlueprintId,
+  });
+
+  const wizardProviderLabel =
+    wizardProvidersData?.find((p) => p.id === wizardProviderId)?.title ?? selectedBlankProviderLabel;
+
+  const wizardVariantCount = useMemo(() => {
+    const sizeCount = wizardSizeIds.size;
+    if (sizeCount === 0) return 0;
+    const colorCount = wizardColors.length === 0 ? 1 : wizardColorIds.size;
+    if (wizardColors.length > 0 && colorCount === 0) return 0;
+    return sizeCount * colorCount;
+  }, [wizardSizeIds.size, wizardColorIds.size, wizardColors.length]);
+
+  const wizardVariantCountValid =
+    wizardVariantsReady &&
+    wizardSizes.length > 0 &&
+    wizardVariantCount > 0 &&
+    wizardVariantCount <= SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
+
+  async function loadWizardVariants(blueprintId: number, providerId: number) {
+    setWizardVariantsLoading(true);
+    setWizardVariantsReady(false);
+    setWizardSizes([]);
+    setWizardColors([]);
+    setWizardSizeIds(new Set());
+    setWizardColorIds(new Set());
+    try {
+      const res = await fetch(
+        `/api/admin/printify/blueprints/${blueprintId}/variants?providerId=${providerId}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to fetch variants");
+      const data = await res.json();
+      const sizes: VariantOption[] = data.sizes || [];
+      const colors: VariantOption[] = data.colors || [];
+      if (sizes.length === 0) throw new Error("Printify returned no sizes for this supplier");
+      setWizardSizes(sizes);
+      setWizardColors(colors);
+      // Prefer current product picks when staying on the same supplier
+      const sameProvider = providerId === selectedBlank?.printifyProviderId;
+      const savedSizes = selectedBlank?.selectedSizeIds ?? [];
+      const savedColors = selectedBlank?.selectedColorIds ?? [];
+      let nextSizes =
+        sameProvider && savedSizes.length > 0
+          ? savedSizes.filter((id) => sizes.some((s) => s.id === id))
+          : sizes.map((s) => s.id);
+      let nextColors =
+        sameProvider && savedColors.length > 0 && colors.length > 0
+          ? savedColors.filter((id) => colors.some((c) => c.id === id))
+          : colors.map((c) => c.id);
+      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+      setWizardSizeIds(new Set(trimmed.sizeIds));
+      setWizardColorIds(new Set(trimmed.colorIds));
+      setWizardVariantsReady(true);
+    } catch (e: any) {
+      setWizardVariantsReady(false);
+      toast({
+        title: "Failed to load variants",
+        description: e?.message || "Retry before continuing.",
+        variant: "destructive",
+      });
+    } finally {
+      setWizardVariantsLoading(false);
+    }
+  }
+
+  /**
+   * Switch product type onto the chosen Printify supplier (clean title — no " — Provider" in H1).
+   * Used for silent prep during Variants + final apply.
+   */
+  const ensureWizardProvider = useCallback(
+    async (args: {
+      sizeIds: string[];
+      colorIds: string[];
+      quiet?: boolean;
+    }): Promise<{ productId: string; alreadyImported: boolean; existingProductName?: string }> => {
+      if (!selectedBlank?.printifyBlueprintId || wizardProviderId == null) {
+        throw new Error("Choose a print provider before continuing.");
+      }
+      const sameProvider = wizardProviderId === selectedBlank.printifyProviderId;
+      const sizeIds = args.sizeIds;
+      const colorIds = args.colorIds;
+
+      if (sameProvider && selectedBlank.productTypeId) {
+        const cleanName = stripProviderSuffix(selectedBlank.title);
+        if (cleanName && cleanName !== selectedBlank.title) {
+          try {
+            await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}`, {
+              name: cleanName,
+            });
+          } catch {
+            // non-fatal — variants still save
+          }
+        }
+        const res = await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}/variants`, {
+          selectedSizeIds: sizeIds,
+          selectedColorIds: colorIds,
+        });
+        await res.json();
+        return {
+          productId: selectedBlank.productId ? selectedBlank.productId : `pt:${selectedBlank.productTypeId}`,
+          alreadyImported: false,
+        };
+      }
+
+      // Never append supplier to the product name — that leaked into storefront H1s.
+      const name = stripProviderSuffix(selectedBlank.title) || selectedBlank.title;
+      try {
+        const res = await apiRequest("POST", "/api/admin/printify/import", {
+          blueprintId: selectedBlank.printifyBlueprintId,
+          name,
+          providerId: wizardProviderId,
+          selectedSizeIds: sizeIds,
+          selectedColorIds: colorIds,
+        });
+        const data = await res.json();
+        return {
+          productId: data?.shopifyProductId ? String(data.shopifyProductId) : `pt:${data?.id}`,
+          alreadyImported: false,
+        };
+      } catch (err: any) {
+        const text = err instanceof Error ? err.message : String(err);
+        const jsonStart = text.indexOf("{");
+        if (jsonStart !== -1) {
+          try {
+            const payload = JSON.parse(text.slice(jsonStart));
+            if (payload?.code === "BLUEPRINT_ALREADY_IMPORTED" && payload.existingProductTypeId != null) {
+              await apiRequest("PATCH", `/api/admin/product-types/${payload.existingProductTypeId}/variants`, {
+                selectedSizeIds: sizeIds,
+                selectedColorIds: colorIds,
+              });
+              // Rename away any legacy " — Provider" suffix on the product type.
+              const cleanName = stripProviderSuffix(String(payload.existingProductName || name)) || name;
+              if (payload.existingProductName && cleanName !== payload.existingProductName) {
+                try {
+                  await apiRequest("PATCH", `/api/admin/product-types/${payload.existingProductTypeId}`, {
+                    name: cleanName,
+                  });
+                } catch {
+                  // non-fatal
+                }
+              }
+              return {
+                productId: `pt:${payload.existingProductTypeId}`,
+                alreadyImported: true,
+                existingProductName: cleanName,
+              };
+            }
+          } catch {
+            // fall through
+          }
+        }
+        throw err;
+      }
+    },
+    [selectedBlank, wizardProviderId],
+  );
+
+  /** Silent supplier prep as soon as Variants loads — unlocks costs prefetch while merchant picks sizes. */
+  const prepareProviderMutation = useMutation({
+    mutationFn: async () => {
+      if (!wizardSizes.length) throw new Error("Variants not loaded yet");
+      // Explicit full pick can exceed Shopify’s 100 — trim before import (same as Setup auto-cap).
+      const trimmed = trimSelectionToShopifyMax(
+        wizardSizes.map((s) => s.id),
+        wizardColors.map((c) => c.id),
+      );
+      return ensureWizardProvider({
+        sizeIds: trimmed.sizeIds,
+        colorIds: trimmed.colorIds,
+        quiet: true,
+      });
+    },
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+      setFormProductId(result.productId);
+      // Kick costs fetch (enabled once blanks show matching provider).
+      void queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+    },
+    onError: (err: Error) => {
+      // Quiet — merchant can still finish Variants; final Next will retry.
+      console.warn("[create-page] background provider prep failed:", err.message);
+      preparedProviderKeyRef.current = null;
+    },
+  });
+
+  // When Variants step is ready, prepare the chosen supplier in the background (costs start loading).
+  useEffect(() => {
+    if (formStep !== 3) return;
+    if (!wizardVariantsReady || wizardProviderId == null || !selectedBlank?.printifyBlueprintId) return;
+    const key = `${selectedBlank.printifyBlueprintId}:${wizardProviderId}`;
+    if (selectedBlank.printifyProviderId === wizardProviderId) {
+      preparedProviderKeyRef.current = key;
+      return;
+    }
+    if (preparedProviderKeyRef.current === key || prepareProviderMutation.isPending) return;
+    preparedProviderKeyRef.current = key;
+    prepareProviderMutation.mutate();
+  }, [
+    formStep,
+    wizardVariantsReady,
+    wizardProviderId,
+    selectedBlank?.printifyBlueprintId,
+    selectedBlank?.printifyProviderId,
+    prepareProviderMutation.isPending,
+  ]);
+
+  useEffect(() => {
+    preparedProviderKeyRef.current = null;
+  }, [wizardProviderId]);
+
+  /** Apply final size/colour picks, then Pricing (costs often already warm from background prep). */
+  const applySupplierAndVariantsMutation = useMutation({
+    mutationFn: async () => {
+      if (!wizardVariantCountValid) {
+        throw new Error("Select sizes/colours within Shopify’s 100-variant limit.");
+      }
+      return ensureWizardProvider({
+        sizeIds: Array.from(wizardSizeIds),
+        colorIds: Array.from(wizardColorIds),
+      });
+    },
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+      setFormProductId(result.productId);
+      if (result.alreadyImported) {
+        toast({
+          title: "Using existing product",
+          description: `Already imported via that supplier as "${result.existingProductName ?? "another product"}".`,
+        });
+      }
+      setVariantPrices({});
+      setVariantPricesBoth({});
+      setPriceErrors({});
+      setFormStep(4);
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Could not apply supplier / variants",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      });
+    },
+  });
+
+  const editVariantCount =
+    editSizeIds.size * (editColors.length === 0 ? 1 : editColorIds.size);
+  const editVariantOverLimit = editVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
+
+  const editVariantsMutation = useMutation({
+    mutationFn: async () => {
+      if (!editBlank?.productTypeId) throw new Error("No product linked");
+      if (editSizeIds.size === 0 || (editColors.length > 0 && editColorIds.size === 0)) {
+        throw new Error("Select at least one size and colour.");
+      }
+      if (editVariantOverLimit) {
+        throw new Error(
+          `Too many variants (${editVariantCount}). Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Deselect colours/sizes or use Auto-trim.`,
+        );
+      }
+      const res = await apiRequest("PATCH", `/api/admin/product-types/${editBlank.productTypeId}/variants`, {
+        selectedSizeIds: Array.from(editSizeIds),
+        selectedColorIds: Array.from(editColorIds),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      toast({ title: "Variants updated", description: "Size/colour selection saved for this product." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Couldn't save variants", description: parseApiErrorMessage(err), variant: "destructive" });
+    },
+  });
+
   const formStyleError = validateCustomizerPageStyleConfig(formStyleConfig);
   const editStyleError = validateCustomizerPageStyleConfig(editStyleConfig);
 
-  /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
+  /** When moving from Step 1 → Step 2, validate page info before showing the print provider picker */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
     if (formStyleError) {
       toast({
         title: "Art styles required",
         description: formStyleError,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (handleAlreadyUsed) {
+      toast({
+        title: "URL already in use",
+        description: `“/pages/${handleAlreadyUsed.handle}” is used by “${handleAlreadyUsed.title}”. Change the URL handle (or title) before continuing.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (titleAlreadyUsedForProduct) {
+      toast({
+        title: "Page title already used for this product",
+        description: `“${titleAlreadyUsedForProduct.title}” already exists (${titleAlreadyUsedForProduct.status === "active" ? "Live" : titleAlreadyUsedForProduct.status}). Use a unique title (e.g. add “UK/EU Only”).`,
         variant: "destructive",
       });
       return;
@@ -880,29 +1479,71 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
-    // If the product has no variants (e.g. not yet on Shopify), skip pricing step
-    if (selectedVariants.length === 0) {
-      setConfirmedVariants([]);
-      setFormStep(3);
-      return;
-    }
-    const prefilled: Record<string, string> = {};
-    for (const v of selectedVariants) {
-      prefilled[v.id] = variantPrices[v.id] ?? (v.price && v.price !== "0.00" ? v.price : "");
-    }
-    setVariantPrices(prefilled);
-    setPriceErrors({});
+    // Always visit the print provider step — pricing depends on the chosen supplier's costs.
     setFormStep(2);
   }
 
-  /** Validate prices in Step 2; advance to Step 3 (confirm) */
-  function advanceToStep3() {
+  /** Step 2 (print provider) → Step 3 (variants). */
+  function advanceFromProvider() {
+    if (wizardProviderId == null) {
+      toast({
+        title: "Choose a print provider",
+        description: "Select a Printify supplier before continuing.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!selectedBlank?.printifyBlueprintId) {
+      toast({
+        title: "Missing Printify blueprint",
+        description: "This product is not linked to a Printify blueprint.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setFormStep(3);
+    void loadWizardVariants(selectedBlank.printifyBlueprintId, wizardProviderId);
+  }
+
+  /** Step 3 (variants) → Step 4 (pricing). Applies supplier + size/colour picks. */
+  function advanceFromVariants() {
+    if (!wizardVariantCountValid) {
+      toast({
+        title: "Select variants",
+        description:
+          wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
+            ? `Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants. Deselect some sizes or colours.`
+            : "Wait for sizes/colours to load, then select at least one of each.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (prepareProviderMutation.isPending) {
+      toast({
+        title: "Almost ready",
+        description: "Finishing supplier setup so pricing can stay warm — try Next again in a moment.",
+      });
+      return;
+    }
+    applySupplierAndVariantsMutation.mutate();
+  }
+
+  /** Validate prices in Step 4; advance to Step 5 (confirm). Suggested Printify pricing is required. */
+  function advanceToStep4() {
     if (selectedBlankFullyOos) {
       toast({
         title: "Printify stock unavailable",
         description: selectedBlankProviderLabel
-          ? `Wait until ${selectedBlankProviderLabel} has stock again (daily OOS report emails when it changes), or pick another product.`
-          : "Wait until Printify has stock again, or pick another product.",
+          ? `Wait until ${selectedBlankProviderLabel} has stock again (daily OOS report emails when it changes), or go back to Supplier and pick a different print provider.`
+          : "Wait until Printify has stock again, or go back to Supplier and pick a different print provider.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!costsAvailable || costsError) {
+      toast({
+        title: "Suggested prices required",
+        description: "Suggested retail prices from Printify are required before creating this page. Wait for costs to finish loading, click Refresh costs, or go back to Supplier and pick a different print provider.",
         variant: "destructive",
       });
       return;
@@ -931,7 +1572,7 @@ export default function AdminCustomizerPages() {
     }
     setPriceErrors({});
     setConfirmedVariants(selectedVariants);
-    setFormStep(3);
+    setFormStep(5);
   }
 
   function handleSubmitCreate() {
@@ -953,7 +1594,7 @@ export default function AdminCustomizerPages() {
       formCustomPlaceholder,
     );
     createMutation.mutate({
-      title: formTitle,
+      title: stripProviderSuffix(formTitle.trim()) || formTitle.trim(),
       handle: formHandle,
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
@@ -964,7 +1605,98 @@ export default function AdminCustomizerPages() {
     });
   }
 
+  const { data: catalogForFilters } = useQuery<{
+    entries: Array<{ blueprintId: number; category: string | null }>;
+  }>({
+    queryKey: ["/api/appai/setup/catalog"],
+  });
+
+  const categoryByBlueprint = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const e of catalogForFilters?.entries ?? []) {
+      if (e.category) map.set(e.blueprintId, e.category);
+    }
+    return map;
+  }, [catalogForFilters?.entries]);
+
   const pages = pagesData?.pages ?? [];
+
+  /** productTypeId → Live / any customizer pages (for Create dropdown labels + uniqueness). */
+  const pagesForProductType = useMemo(() => {
+    const map = new Map<number, CustomizerPage[]>();
+    for (const p of pages) {
+      if (p.productTypeId == null) continue;
+      const list = map.get(p.productTypeId) ?? [];
+      list.push(p);
+      map.set(p.productTypeId, list);
+    }
+    return map;
+  }, [pages]);
+
+  const liveProductTypeIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of pages) {
+      if (p.status === "active" && p.productTypeId != null) ids.add(p.productTypeId);
+    }
+    return ids;
+  }, [pages]);
+
+  const sortedCreateBlanks = useMemo(() => {
+    const blanks = [...(blanksData?.blanks ?? [])];
+    blanks.sort((a, b) => {
+      const aLive = liveProductTypeIds.has(a.productTypeId) ? 0 : 1;
+      const bLive = liveProductTypeIds.has(b.productTypeId) ? 0 : 1;
+      if (aLive !== bLive) return aLive - bLive;
+      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+    });
+    return blanks;
+  }, [blanksData?.blanks, liveProductTypeIds]);
+
+  const handleAlreadyUsed = useMemo(() => {
+    const h = formHandle.trim();
+    if (!h) return null;
+    return pages.find((p) => p.handle === h) ?? null;
+  }, [formHandle, pages]);
+
+  const titleAlreadyUsedForProduct = useMemo(() => {
+    if (!selectedBlank || !formTitle.trim()) return null;
+    const titleNorm = formTitle.trim().toLowerCase();
+    return (
+      pages.find(
+        (p) =>
+          p.productTypeId === selectedBlank.productTypeId &&
+          p.title.trim().toLowerCase() === titleNorm,
+      ) ?? null
+    );
+  }, [formTitle, pages, selectedBlank]);
+
+  const existingPagesForSelectedProduct = selectedBlank
+    ? pagesForProductType.get(selectedBlank.productTypeId) ?? []
+    : [];
+
+  const filteredPages = useMemo(() => {
+    const q = listSearch.trim().toLowerCase();
+    return pages.filter((page) => {
+      if (listStatus !== "all" && page.status !== listStatus) return false;
+      if (q) {
+        const hay = [page.title, page.handle, page.baseProductTitle]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (listCategory !== "all") {
+        const blank = blanksData?.blanks.find((b) => b.productTypeId === page.productTypeId);
+        const cat =
+          blank?.printifyBlueprintId != null
+            ? categoryByBlueprint.get(blank.printifyBlueprintId)
+            : undefined;
+        if (cat !== listCategory) return false;
+      }
+      return true;
+    });
+  }, [pages, listSearch, listStatus, listCategory, blanksData?.blanks, categoryByBlueprint]);
+
   const limit = pagesData?.limit ?? 0;
   const count = pagesData?.count ?? 0;
   const planName = pagesData?.planName ?? null;
@@ -1005,7 +1737,7 @@ export default function AdminCustomizerPages() {
               Customizer Pages
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Create storefront pages where customers can generate custom designs.
+              Create Page chooses Printify supplier and applies suggested retail before going Live.
             </p>
           </div>
 
@@ -1021,11 +1753,11 @@ export default function AdminCustomizerPages() {
               <DialogContent className="max-w-lg flex flex-col max-h-[min(90vh,700px)] overflow-hidden">
                 <DialogHeader className="shrink-0">
                   <DialogTitle>
-                    {formStep === 4 ? "Page Created!" : "Create Customizer Page"}
+                    {formStep === 6 ? "Page Created!" : "Create Customizer Page"}
                   </DialogTitle>
-                  {formStep < 4 && (
-                    <div className="flex items-center gap-1.5 pt-1">
-                      {([1, 2, 3] as const).map((s) => (
+                  {formStep < 6 && (
+                    <div className="flex items-center gap-1.5 pt-1 flex-wrap">
+                      {([1, 2, 3, 4, 5] as const).map((s) => (
                         <div key={s} className="flex items-center gap-1.5">
                           <div className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center ${
                             formStep === s
@@ -1035,9 +1767,17 @@ export default function AdminCustomizerPages() {
                               : "bg-muted text-muted-foreground"
                           }`}>{s}</div>
                           <span className={`text-xs ${formStep === s ? "text-foreground font-medium" : "text-muted-foreground"}`}>
-                            {s === 1 ? "Page info" : s === 2 ? "Pricing" : "Confirm"}
+                            {s === 1
+                              ? "Page info"
+                              : s === 2
+                                ? "Supplier"
+                                : s === 3
+                                  ? "Variants"
+                                  : s === 4
+                                    ? "Pricing"
+                                    : "Confirm"}
                           </span>
-                          {s < 3 && <ChevronRight className="h-3 w-3 text-muted-foreground" />}
+                          {s < 5 && <ChevronRight className="h-3 w-3 text-muted-foreground" />}
                         </div>
                       ))}
                     </div>
@@ -1051,41 +1791,89 @@ export default function AdminCustomizerPages() {
                     {/* Product first */}
                     <div>
                       <Label>Product</Label>
-                      {blanksLoading ? (
+                      {blanksLoading || ensureCatalogProductMutation.isPending ? (
                         <div className="mt-1 flex h-10 items-center gap-2 rounded-md border border-input bg-muted/30 px-3">
                           <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">Loading Products…</span>
+                          <span className="text-sm text-muted-foreground">
+                            {ensureCatalogProductMutation.isPending
+                              ? "Preparing product from catalogue…"
+                              : "Loading Products…"}
+                          </span>
                         </div>
-                      ) : (blanksData?.blanks ?? []).length === 0 ? (
+                      ) : (blanksData?.blanks ?? []).length === 0 &&
+                        (setupCatalogData?.entries ?? []).length === 0 ? (
                         <p className="text-sm text-destructive mt-1">
-                          No products found. Import products from Printify first.
+                          No products found. Open Products Catalogue or ask an operator to publish items.
                         </p>
                       ) : (
-                        <Select value={formProductId} onValueChange={(val) => { setFormProductId(val); }}>
+                        <Select
+                          value={formProductId}
+                          onValueChange={(val) => {
+                            if (val.startsWith("bp:")) {
+                              const bpId = parseInt(val.slice(3), 10);
+                              if (Number.isFinite(bpId)) ensureCatalogProductMutation.mutate(bpId);
+                              return;
+                            }
+                            setFormProductId(val);
+                          }}
+                        >
                           <SelectTrigger className="mt-1">
                             <SelectValue placeholder="Select a product…" />
                           </SelectTrigger>
                           <SelectContent>
-                            {(blanksData?.blanks ?? []).map((blank) => {
+                            {sortedCreateBlanks.map((blank) => {
                               const val = blank.productId ? blank.productId : `pt:${blank.productTypeId}`;
+                              const isLive = liveProductTypeIds.has(blank.productTypeId);
                               return (
                                 <SelectItem key={val} value={val}>
                                   {blank.title}
+                                  {isLive ? " (Live)" : ""}
                                   {blank.needsShopifySync
                                     ? " (not on this store yet — will be created)"
                                     : ""}
                                 </SelectItem>
                               );
                             })}
+                            {(setupCatalogData?.entries ?? [])
+                              .filter((entry) => {
+                                const blanks = blanksData?.blanks ?? [];
+                                return !blanks.some(
+                                  (b) =>
+                                    b.printifyBlueprintId === entry.blueprintId ||
+                                    (entry.existingProductType != null &&
+                                      b.productTypeId === entry.existingProductType.id),
+                                );
+                              })
+                              .map((entry) => (
+                                <SelectItem
+                                  key={`bp:${entry.blueprintId}`}
+                                  value={`bp:${entry.blueprintId}`}
+                                >
+                                  {entry.label} (from catalogue — will be prepared)
+                                </SelectItem>
+                              ))}
                           </SelectContent>
                         </Select>
                       )}
+                      {selectedBlank && existingPagesForSelectedProduct.length > 0 && (
+                        <p className="text-xs text-amber-800 mt-1 rounded-md border border-amber-200 bg-amber-50 p-2">
+                          This product already has{" "}
+                          {existingPagesForSelectedProduct.length === 1
+                            ? "a customizer page"
+                            : `${existingPagesForSelectedProduct.length} customizer pages`}
+                          {" "}
+                          (
+                          {existingPagesForSelectedProduct
+                            .map((p) => `${p.title} · /pages/${p.handle}${p.status === "active" ? " · Live" : ""}`)
+                            .join("; ")}
+                          ). Use a unique page title and URL handle, or edit the existing page instead.
+                        </p>
+                      )}
                       {selectedBlank?.needsShopifySync ? (
                         <p className="text-xs text-muted-foreground mt-1">
-                          This catalog product is not linked to a Shopify product in this store
-                          (or the link is stale). Finishing this page will create/send it to the
-                          store. Having a customizer page elsewhere does not mean it is already
-                          on Shopify here.
+                          This product is not on Shopify in this store yet — finishing Create Page will
+                          send it. Deleting a customizer page does not remove the Shopify product, so
+                          products that were already sent stay listed without “will be created”.
                         </p>
                       ) : null}
                       {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
@@ -1117,6 +1905,13 @@ export default function AdminCustomizerPages() {
                       <p className="text-xs text-muted-foreground mt-1">
                         Auto-filled from product name — feel free to edit.
                       </p>
+                      {titleAlreadyUsedForProduct && (
+                        <p className="text-xs text-destructive mt-1 font-medium">
+                          This title is already used for this product
+                          {titleAlreadyUsedForProduct.status === "active" ? " (Live)" : ""}. Choose a
+                          unique title before continuing.
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -1130,12 +1925,19 @@ export default function AdminCustomizerPages() {
                           placeholder="custom-pillow"
                           value={formHandle}
                           onChange={(e) => { setHandleTouched(true); setFormHandle(slugify(e.target.value)); }}
-                          className="rounded-l-none"
+                          className={`rounded-l-none ${handleAlreadyUsed ? "border-destructive" : ""}`}
                         />
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Storefront URL: /pages/{formHandle || "..."}
-                      </p>
+                      {handleAlreadyUsed ? (
+                        <p className="text-xs text-destructive mt-1 font-medium">
+                          /pages/{formHandle} is already used by “{handleAlreadyUsed.title}”. Change the
+                          handle before continuing.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Storefront URL: /pages/{formHandle || "..."}
+                        </p>
+                      )}
                     </div>
 
                     {selectedBlank && (
@@ -1244,27 +2046,335 @@ export default function AdminCustomizerPages() {
                         !formHandle.trim() ||
                         !formProductId ||
                         !!formStyleError ||
+                        !!handleAlreadyUsed ||
+                        !!titleAlreadyUsedForProduct ||
                         selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
                       }
                       onClick={advanceToStep2}
                     >
-                      Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" />
+                      Next: Print Provider <ChevronRight className="h-4 w-4 ml-1" />
                     </Button>
                   </div>
                 )}
 
-                {/* ── STEP 2: Pricing ── */}
+                {/* ── STEP 2: Print provider ── */}
                 {formStep === 2 && (
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        Choose the Printify supplier that will produce{" "}
+                        <strong>{selectedBlank?.title}</strong>. Switching suppliers can change
+                        production costs and suggested retail pricing.
+                      </p>
+                      {!selectedBlank?.printifyBlueprintId ? (
+                        <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3">
+                          This product is not linked to a Printify blueprint, so no suppliers are available.
+                        </p>
+                      ) : wizardProvidersLoading ? (
+                        <div className="flex items-center justify-center py-8">
+                          <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                          <span className="text-sm text-muted-foreground">Loading print providers…</span>
+                        </div>
+                      ) : (wizardProvidersData ?? []).length === 0 ? (
+                        <p className="text-sm text-muted-foreground rounded-md border p-3">
+                          No print providers found for this product.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {wizardProvidersData!.map((provider) => {
+                            const isSelected = wizardProviderId === provider.id;
+                            const isCurrent = provider.id === selectedBlank?.printifyProviderId;
+                            const shipsTo = (provider.fulfillment_countries ?? []).slice(0, 6).join(", ");
+                            const methods = (provider.decoration_methods ?? [])
+                              .map((m) => String(m).toUpperCase())
+                              .join(" · ");
+                            const fromPrice =
+                              provider.pricingFromCents != null && provider.pricingFromCents > 0
+                                ? (provider.pricingFromCents / 100).toFixed(2)
+                                : null;
+                            const variantLabel =
+                              provider.variantCount != null && provider.variantCount > 0
+                                ? `${provider.variantCount} variants`
+                                : null;
+                            return (
+                              <button
+                                key={provider.id}
+                                type="button"
+                                className={`w-full flex items-center justify-between gap-2 rounded-md border p-3 text-left transition-colors ${
+                                  isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                                }`}
+                                onClick={() => setWizardProviderId(provider.id)}
+                              >
+                                <span className="min-w-0 space-y-0.5">
+                                  <span className="text-sm font-medium block truncate">{provider.title}</span>
+                                  <span className="text-xs text-muted-foreground block">
+                                    {provider.location?.country
+                                      ? `Ships from ${provider.location.country}`
+                                      : "Shipping origin unknown"}
+                                    {shipsTo ? ` · Ships to ${shipsTo}${((provider.fulfillment_countries ?? []).length > 6) ? "…" : ""}` : ""}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground block">
+                                    {[
+                                      methods || null,
+                                      fromPrice ? `From ~$${fromPrice}` : "From price pending sync",
+                                      variantLabel,
+                                      provider.supportsBothSides ? "Front + back print" : null,
+                                      provider.rating != null ? `Rating ${provider.rating.toFixed(1)}` : null,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </span>
+                                </span>
+                                <span className="flex items-center gap-2 shrink-0">
+                                  {isCurrent && (
+                                    <Badge variant="outline" className="text-[10px]">Current</Badge>
+                                  )}
+                                  {isSelected && <CheckCircle2 className="h-4 w-4 text-primary" />}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex gap-2 pt-2 shrink-0">
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => setFormStep(1)}
+                      >
+                        Back
+                      </Button>
+                      <Button
+                        className="flex-1"
+                        onClick={advanceFromProvider}
+                        disabled={wizardProviderId == null}
+                      >
+                        Next: Variants <ChevronRight className="h-4 w-4 ml-1" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── STEP 3: Variants ── */}
+                {formStep === 3 && (
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
+                      <p className="text-sm text-muted-foreground">
+                        Choose sizes and colours for{" "}
+                        <strong>{wizardProviderLabel ?? "this supplier"}</strong>. Shopify allows up to{" "}
+                        {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants.
+                      </p>
+                      {(prepareProviderMutation.isPending ||
+                        (costsLoading && formStep === 3) ||
+                        (costsAvailable && formStep === 3)) && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+                          {(prepareProviderMutation.isPending || (costsLoading && !costsAvailable)) && (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          )}
+                          {prepareProviderMutation.isPending
+                            ? "Preparing supplier in the background…"
+                            : costsLoading && !costsAvailable
+                              ? "Loading suggested pricing in the background — this can take up to a minute."
+                              : costsAvailable
+                                ? "Suggested pricing is ready — continue when you’ve finished picking variants."
+                                : null}
+                        </p>
+                      )}
+                      <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
+                        <span className="text-sm font-medium">Total variants</span>
+                        <span
+                          className={`text-lg font-bold ${
+                            wizardVariantCountValid ? "text-green-600" : "text-destructive"
+                          }`}
+                        >
+                          {wizardVariantCount}
+                        </span>
+                      </div>
+                      {wizardVariantsLoading ? (
+                        <div className="flex flex-col items-center justify-center py-10 gap-2">
+                          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                          <p className="text-sm text-muted-foreground">Loading sizes &amp; colours…</p>
+                        </div>
+                      ) : (
+                        <>
+                          {wizardSizes.length > 0 && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-sm font-medium">
+                                  Sizes ({wizardSizeIds.size}/{wizardSizes.length})
+                                </Label>
+                                <div className="flex gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setWizardSizeIds(new Set(wizardSizes.map((s) => s.id)))}
+                                  >
+                                    Select all
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setWizardSizeIds(new Set())}
+                                  >
+                                    Clear
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                                {wizardSizes.map((size) => (
+                                  <label
+                                    key={size.id}
+                                    className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                                  >
+                                    <Checkbox
+                                      checked={wizardSizeIds.has(size.id)}
+                                      onCheckedChange={() => {
+                                        setWizardSizeIds((prev) => {
+                                          const next = new Set(prev);
+                                          if (next.has(size.id)) next.delete(size.id);
+                                          else next.add(size.id);
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                    <span className="text-sm">{size.name}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {wizardColors.length > 0 && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-sm font-medium">
+                                  Colours ({wizardColorIds.size}/{wizardColors.length})
+                                </Label>
+                                <div className="flex gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setWizardColorIds(new Set(wizardColors.map((c) => c.id)))}
+                                  >
+                                    Select all
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setWizardColorIds(new Set())}
+                                  >
+                                    Clear
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                                {wizardColors.map((color) => (
+                                  <label
+                                    key={color.id}
+                                    className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                                  >
+                                    <Checkbox
+                                      checked={wizardColorIds.has(color.id)}
+                                      onCheckedChange={() => {
+                                        setWizardColorIds((prev) => {
+                                          const next = new Set(prev);
+                                          if (next.has(color.id)) next.delete(color.id);
+                                          else next.add(color.id);
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                    {color.hex ? (
+                                      <span
+                                        className="h-3 w-3 rounded-full border shrink-0"
+                                        style={{ backgroundColor: color.hex }}
+                                      />
+                                    ) : null}
+                                    <span className="text-sm truncate">{color.name}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {!wizardVariantsReady && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                if (selectedBlank?.printifyBlueprintId && wizardProviderId != null) {
+                                  void loadWizardVariants(selectedBlank.printifyBlueprintId, wizardProviderId);
+                                }
+                              }}
+                            >
+                              Retry load variants
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex gap-2 pt-2 shrink-0">
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => setFormStep(2)}
+                        disabled={applySupplierAndVariantsMutation.isPending}
+                      >
+                        Back
+                      </Button>
+                      <Button
+                        className="flex-1"
+                        onClick={advanceFromVariants}
+                        disabled={!wizardVariantCountValid || applySupplierAndVariantsMutation.isPending}
+                      >
+                        {applySupplierAndVariantsMutation.isPending ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Applying…</>
+                        ) : (
+                          <>Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" /></>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── STEP 4: Pricing ── */}
+                {formStep === 4 && (
                   <div className="flex flex-col min-h-0 flex-1 pt-2">
                     {blanksLoading ? (
                       <div className="flex flex-col items-center justify-center py-12 gap-3">
                         <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                        <p className="text-sm text-muted-foreground">Loading variant prices…</p>
+                        <p className="text-sm text-muted-foreground">Loading variants…</p>
+                      </div>
+                    ) : costsLoading && !costsAvailable ? (
+                      <div className="flex flex-col items-center justify-center py-14 gap-3 px-4 text-center">
+                        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                        <p className="text-sm font-medium">Loading Printify production costs…</p>
+                        <p className="text-xs text-muted-foreground max-w-sm">
+                          This can take up to a minute depending on the product (especially tees with many
+                          size/colour combinations). Keep this window open — suggested retail prices appear
+                          when costs finish.
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void refetchCosts()}
+                          disabled={costsLoading}
+                        >
+                          Still waiting? Retry
+                        </Button>
                       </div>
                     ) : (
                     <>
                     <div className="flex items-center justify-between">
-                      <p className="text-sm text-muted-foreground">Set a retail price for each variant.</p>
+                      <p className="text-sm text-muted-foreground">
+                        Set a retail price for each variant
+                        {supportsBothSidePricing ? " (front-only and front+back)." : "."}
+                      </p>
                       <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
                         <DialogTrigger asChild>
                           <Button variant="outline" size="sm">
@@ -1318,10 +2428,15 @@ export default function AdminCustomizerPages() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  onClick={() => clearCostsMutation.mutate()}
-                                  disabled={clearCostsMutation.isPending || costsLoading}
+                                  onClick={() => {
+                                    if (!selectedBlank?.productTypeId) return;
+                                    productSyncMutation.mutate(selectedBlank.productTypeId, {
+                                      onSuccess: () => void refetchCosts(),
+                                    });
+                                  }}
+                                  disabled={productSyncMutation.isPending || costsLoading}
                                 >
-                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${productSyncMutation.isPending ? 'animate-spin' : ''}`} />
                                   Refresh Costs
                                 </Button>
                               </div>
@@ -1444,12 +2559,13 @@ export default function AdminCustomizerPages() {
                                     <Button
                                       variant="outline"
                                       size="sm"
-                                      onClick={() => clearCostsMutation.mutate()}
-                                      disabled={clearCostsMutation.isPending || costsLoading}
+                                      onClick={() => productSyncMutation.mutate()}
+                                      disabled={productSyncMutation.isPending || costsLoading || !selectedBlank?.productTypeId}
                                       className="ml-auto shrink-0"
+                                      title="Sync COGS and availability from Printify into Product Intelligence"
                                     >
-                                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
-                                      Refresh Pricing
+                                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${productSyncMutation.isPending ? 'animate-spin' : ''}`} />
+                                      Product Sync
                                     </Button>
                                   </div>
                                   {shippingData.countries && shippingData.countries.length > 0 && (
@@ -1619,9 +2735,45 @@ export default function AdminCustomizerPages() {
                       <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
                         <span>
                           {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
-                          {" "}Click Refresh costs or wait a moment — lookup can take up to a minute for apparel with many variants.
+                          {" "}Retry runs Product Sync then a Printify cost probe — apparel can take up to a minute.
                         </span>
-                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          disabled={productSyncMutation.isPending || costsLoading}
+                          onClick={async () => {
+                            const ptId = selectedBlank?.productTypeId;
+                            if (ptId) {
+                              try {
+                                await productSyncMutation.mutateAsync(ptId);
+                              } catch {
+                                /* still try legacy costs */
+                              }
+                            }
+                            try {
+                              const res = await apiRequest(
+                                "GET",
+                                `/api/admin/printify/costs/${ptId}?legacy=1`,
+                              );
+                              if (res.ok) {
+                                const data = await res.json();
+                                queryClient.setQueryData(
+                                  ["/api/admin/printify/costs", ptId],
+                                  data,
+                                );
+                                return;
+                              }
+                            } catch {
+                              /* fall through */
+                            }
+                            void refetchCosts();
+                          }}
+                        >
+                          {productSyncMutation.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          ) : null}
                           Retry
                         </Button>
                       </p>
@@ -1647,12 +2799,16 @@ export default function AdminCustomizerPages() {
                           size="sm"
                           className="h-8"
                           onClick={() => {
-                            clearCostsMutation.mutate(undefined, {
+                            if (!selectedBlank?.productTypeId) return;
+                            productSyncMutation.mutate(selectedBlank.productTypeId, {
                               onSuccess: () => void refetchCosts(),
                             });
                           }}
-                          disabled={clearCostsMutation.isPending}
+                          disabled={productSyncMutation.isPending}
                         >
+                          {productSyncMutation.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          ) : null}
                           Refresh costs
                         </Button>
                       </p>
@@ -1668,7 +2824,39 @@ export default function AdminCustomizerPages() {
                           “from $front” and charges the front+back price when Print on Back is on.
                         </p>
                       )}
-                      {selectedVariants.map((v) => (
+                      {selectedVariants.map((v) => {
+                        const frontLabelToCost: Record<string, number> = {};
+                        if (costsData?.printifyVariantLabels && costsData.costs) {
+                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                            const c = costsData.costs[printifyVid];
+                            if (c != null) frontLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
+                          }
+                        }
+                        const bothLabelToCost: Record<string, number> = {};
+                        if (supportsBothSidePricing && costsData?.printifyVariantLabels && costsData.costsBoth) {
+                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                            const c = costsData.costsBoth[printifyVid];
+                            if (c != null) bothLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
+                          }
+                        }
+                        const frontCogs = costsData
+                          ? resolveBlankVariantCostCents(v, costsData, frontLabelToCost)
+                          : undefined;
+                        const bothCogs =
+                          supportsBothSidePricing && costsData
+                            ? resolveBlankVariantCostCents(
+                                v,
+                                { ...costsData, costs: costsData.costsBoth || {} },
+                                bothLabelToCost,
+                              )
+                            : undefined;
+                        const retailN = parseFloat(variantPrices[v.id] || "");
+                        const frontProfit =
+                          Number.isFinite(retailN) && frontCogs != null
+                            ? retailN - frontCogs / 100
+                            : null;
+
+                        return (
                         <div key={v.id} className="space-y-1.5">
                           <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
                           <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
@@ -1694,6 +2882,17 @@ export default function AdminCustomizerPages() {
                                   onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
                                 />
                               </div>
+                              <p className="text-[10px] text-muted-foreground">
+                                {frontCogs != null
+                                  ? `COGS $${(frontCogs / 100).toFixed(2)}${
+                                      frontProfit != null
+                                        ? ` · Profit $${frontProfit.toFixed(2)}`
+                                        : ""
+                                    }`
+                                  : costsAvailable
+                                    ? "COGS unavailable for this variant"
+                                    : "COGS loading…"}
+                              </p>
                             </div>
                             {supportsBothSidePricing && (
                               <div className="space-y-1">
@@ -1712,6 +2911,15 @@ export default function AdminCustomizerPages() {
                                     onChange={(e) => setVariantPricesBoth({ ...variantPricesBoth, [v.id]: e.target.value })}
                                   />
                                 </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                  {bothCogs != null
+                                    ? `COGS $${(bothCogs / 100).toFixed(2)}${(() => {
+                                        const bothRetail = parseFloat(variantPricesBoth[v.id] || "");
+                                        if (!Number.isFinite(bothRetail)) return "";
+                                        return ` · Profit $${(bothRetail - bothCogs / 100).toFixed(2)}`;
+                                      })()}`
+                                    : "Front+back COGS pending — open Printify Costs or Retry"}
+                                </p>
                               </div>
                             )}
                           </div>
@@ -1719,21 +2927,24 @@ export default function AdminCustomizerPages() {
                             <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div className="flex gap-2 pt-2 shrink-0">
-                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(1)}>
+                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(3)}>
                         Back
                       </Button>
                       <Button
                         className="flex-1"
-                        onClick={advanceToStep3}
-                        disabled={selectedBlankFullyOos}
+                        onClick={advanceToStep4}
+                        disabled={selectedBlankFullyOos || !costsAvailable || costsError}
                         title={
                           selectedBlankFullyOos
                             ? "Cannot create a customizer page while this Printify supplier has no stock"
-                            : undefined
+                            : !costsAvailable || costsError
+                              ? "Suggested prices from Printify are required before creating this page"
+                              : undefined
                         }
                       >
                         Review & Create <ChevronRight className="h-4 w-4 ml-1" />
@@ -1744,8 +2955,8 @@ export default function AdminCustomizerPages() {
                   </div>
                 )}
 
-                {/* ── STEP 3: Confirm ── */}
-                {formStep === 3 && (
+                {/* ── STEP 5: Confirm ── */}
+                {formStep === 5 && (
                   <div className="flex flex-col min-h-0 flex-1 pt-2">
                     <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                     <div className="rounded-lg border bg-muted/30 p-4 space-y-2 text-sm">
@@ -1760,6 +2971,10 @@ export default function AdminCustomizerPages() {
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Product</span>
                         <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Print provider</span>
+                        <span className="font-medium">{wizardProviderLabel ?? "—"}</span>
                       </div>
                       <div className="flex justify-between gap-4">
                         <span className="text-muted-foreground shrink-0">Art styles</span>
@@ -1798,7 +3013,7 @@ export default function AdminCustomizerPages() {
                     </p>
                     </div>
                     <div className="flex gap-2 shrink-0 pt-2">
-                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(selectedVariants.length === 0 ? 1 : 2)} disabled={createMutation.isPending}>
+                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(4)} disabled={createMutation.isPending}>
                         Back
                       </Button>
                       <Button className="flex-1" onClick={handleSubmitCreate} disabled={createMutation.isPending}>
@@ -1812,8 +3027,8 @@ export default function AdminCustomizerPages() {
                   </div>
                 )}
 
-                {/* ── STEP 4: Success ── */}
-                {formStep === 4 && createdPageResult && (
+                {/* ── STEP 6: Success ── */}
+                {formStep === 6 && createdPageResult && (
                   <div className="space-y-6 py-4 text-center">
                     <div className="flex flex-col items-center space-y-2">
                       <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
@@ -1885,6 +3100,24 @@ export default function AdminCustomizerPages() {
             </Dialog>
           )}
         </div>
+
+        {!printifyConnected && (
+          <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium">Connect Printify to go Live</p>
+                <p className="text-sm text-muted-foreground">
+                  Preview pages are for you only. Add your Printify API token in Settings before
+                  customers can see a Live page and orders can be fulfilled.
+                </p>
+              </div>
+              <Button onClick={() => navigate("/admin/settings")} data-testid="button-connect-printify-banner">
+                <Factory className="h-4 w-4 mr-2" />
+                Connect Printify
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Reauth Banner */}
         {reauthData && (
@@ -1990,6 +3223,21 @@ export default function AdminCustomizerPages() {
             <GenerationQuotaUsage onUpgradeClick={() => navigate("/admin/plan")} />
 
             {/* ── PAGES LIST ── */}
+            {pages.length > 0 && (
+              <CatalogFilterBar
+                search={listSearch}
+                onSearchChange={setListSearch}
+                category={listCategory}
+                onCategoryChange={setListCategory}
+                showShippingFilters={false}
+                showStatusFilter
+                statusFilter={listStatus}
+                onStatusFilterChange={setListStatus}
+                resultCount={filteredPages.length}
+                totalCount={pages.length}
+                searchPlaceholder="Search pages..."
+              />
+            )}
             {pagesLoading ? (
               <div className="space-y-3">
                 {[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full rounded-lg" />)}
@@ -2008,9 +3256,15 @@ export default function AdminCustomizerPages() {
                   </Button>
                 </CardContent>
               </Card>
+            ) : filteredPages.length === 0 ? (
+              <Card>
+                <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                  No pages match these filters.
+                </CardContent>
+              </Card>
             ) : (
               <div className="space-y-3">
-                {pages.map((page) => {
+                {filteredPages.map((page) => {
                   const blank = blanksData?.blanks.find((b) => b.productTypeId === page.productTypeId);
                   const oosStatus = blank?.oosStatus;
                   const oosBadgeLabel =
@@ -2039,8 +3293,16 @@ export default function AdminCustomizerPages() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold">{page.title}</span>
-                            <Badge variant={page.status === "active" ? "default" : "secondary"}>
-                              {page.status}
+                            <Badge
+                              variant={
+                                page.status === "active"
+                                  ? "default"
+                                  : page.status === "preview"
+                                    ? "outline"
+                                    : "secondary"
+                              }
+                            >
+                              {statusBadgeLabel(page.status)}
                             </Badge>
                             {oosBadgeLabel && (
                               <Badge
@@ -2090,13 +3352,25 @@ export default function AdminCustomizerPages() {
                             variant="ghost"
                             size="icon"
                             disabled={toggleMutation.isPending}
-                            title={page.status === "active" ? "Disable page" : "Enable page"}
-                            onClick={() =>
-                              toggleMutation.mutate({
-                                id: page.id,
-                                status: page.status === "active" ? "disabled" : "active",
-                              })
+                            title={
+                              page.status === "active"
+                                ? "Disable page"
+                                : page.status === "preview"
+                                  ? "Set Live"
+                                  : "Set Live"
                             }
+                            onClick={() => {
+                              const nextStatus = page.status === "active" ? "disabled" : "active";
+                              if (nextStatus === "active" && parseFloat(page.baseProductPrice || "0") <= 0) {
+                                toast({
+                                  title: "Set prices via Resync Prices before going Live",
+                                  description: `"${page.title}" doesn't have a retail price yet.`,
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+                              toggleMutation.mutate({ id: page.id, status: nextStatus });
+                            }}
                           >
                             {page.status === "active" ? (
                               <ToggleRight className="h-4 w-4 text-primary" />
@@ -2209,6 +3483,210 @@ export default function AdminCustomizerPages() {
                 <p className="text-xs text-muted-foreground">
                   Saved locally and synced to the linked Shopify product description.
                 </p>
+              </div>
+
+              <div className="space-y-3 rounded-md border p-3">
+                <p className="text-sm font-medium">Pricing strategy</p>
+                <div className="space-y-2">
+                  <Label>When supplier costs change</Label>
+                  <Select value={editPricingStrategy} onValueChange={setEditPricingStrategy}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="notify_only">Notify only</SelectItem>
+                      <SelectItem value="maintain_margin">Maintain margin (auto Resync)</SelectItem>
+                      <SelectItem value="maintain_price">Maintain retail price</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-markup">Markup %</Label>
+                    <Input
+                      id="edit-markup"
+                      type="number"
+                      min={0}
+                      value={editMarkupPercent}
+                      onChange={(e) => setEditMarkupPercent(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-min-margin">Min margin %</Label>
+                    <Input
+                      id="edit-min-margin"
+                      type="number"
+                      min={0}
+                      max={99}
+                      placeholder="optional"
+                      value={editMinMarginPercent}
+                      onChange={(e) => setEditMinMarginPercent(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-2">
+                <Label>Print provider</Label>
+                <p className="text-sm font-medium">
+                  {editBlank.printifyProviderName ||
+                    (editBlank.printifyProviderId != null
+                      ? `Provider #${editBlank.printifyProviderId}`
+                      : "Not set")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  To switch suppliers, create a new Customizer Page for this product and pick a different
+                  Printify provider (variants and costs are provider-specific).
+                </p>
+              </div>
+
+              <div className="rounded-md border p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <Label>Variants (sizes &amp; colours)</Label>
+                  <div className="flex items-center gap-2">
+                    {editVariantOverLimit && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={editVariantsLoading}
+                        onClick={() => {
+                          const trimmed = trimSelectionToShopifyMax(
+                            Array.from(editSizeIds),
+                            Array.from(editColorIds),
+                          );
+                          setEditSizeIds(new Set(trimmed.sizeIds));
+                          setEditColorIds(new Set(trimmed.colorIds));
+                          toast({
+                            title: "Trimmed to Shopify limit",
+                            description: `Kept ${trimmed.count} variants (all sizes where possible, fewer colours). Save to apply.`,
+                          });
+                        }}
+                      >
+                        Auto-trim to {SHOPIFY_MAX_VARIANTS_PER_PRODUCT}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        editVariantsMutation.isPending ||
+                        editVariantsLoading ||
+                        editVariantOverLimit
+                      }
+                      onClick={() => editVariantsMutation.mutate()}
+                    >
+                      {editVariantsMutation.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : null}
+                      Save variants
+                    </Button>
+                  </div>
+                </div>
+                {editVariantsLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading variant options…
+                  </div>
+                ) : (
+                  <>
+                    <p
+                      className={`text-xs font-medium ${
+                        editVariantOverLimit ? "text-destructive" : "text-muted-foreground"
+                      }`}
+                    >
+                      Selected: {editVariantCount} / {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} max
+                      {editVariantOverLimit
+                        ? " — over Shopify’s limit. Deselect colours or Auto-trim before saving."
+                        : ""}
+                    </p>
+                    {editSizes.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">
+                          Sizes ({editSizeIds.size}/{editSizes.length})
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-32 overflow-y-auto border rounded-md p-2">
+                          {editSizes.map((size) => (
+                            <label key={size.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                              <Checkbox
+                                checked={editSizeIds.has(size.id)}
+                                onCheckedChange={() => {
+                                  setEditSizeIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(size.id)) next.delete(size.id);
+                                    else next.add(size.id);
+                                    return next;
+                                  });
+                                }}
+                              />
+                              {size.name}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {editColors.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">
+                          Colours ({editColorIds.size}/{editColors.length})
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-40 overflow-y-auto border rounded-md p-2">
+                          {editColors.map((color) => (
+                            <label
+                              key={color.id}
+                              className="flex items-center gap-2 text-sm cursor-pointer p-1 hover:bg-muted rounded"
+                            >
+                              <Checkbox
+                                checked={editColorIds.has(color.id)}
+                                onCheckedChange={() => {
+                                  setEditColorIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(color.id)) next.delete(color.id);
+                                    else next.add(color.id);
+                                    return next;
+                                  });
+                                }}
+                              />
+                              <span
+                                className="w-4 h-4 rounded-full border border-border flex-shrink-0 flex items-center justify-center text-[8px] text-muted-foreground"
+                                style={
+                                  color.hex
+                                    ? { backgroundColor: color.hex }
+                                    : { backgroundColor: "var(--muted)" }
+                                }
+                                title={color.hex || "No swatch"}
+                              >
+                                {!color.hex && color.name?.charAt(0).toUpperCase()}
+                              </span>
+                              <span className="truncate">{color.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="rounded-md border p-3 flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
+                <div>
+                  <Label>Pricing</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Front / front+back retail when Printify supports both print sides. Open Resync Prices to
+                    update Shopify.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (editTarget) setSyncPricesTarget(editTarget);
+                  }}
+                >
+                  <DollarSign className="h-3.5 w-3.5 mr-1" />
+                  Resync Prices
+                </Button>
               </div>
 
               {editStyleConfig && (

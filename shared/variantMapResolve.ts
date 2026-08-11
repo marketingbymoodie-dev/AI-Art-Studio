@@ -186,3 +186,40 @@ export function countActiveVariantMapKeys(
   }
   return count;
 }
+
+/**
+ * Trim size/color picks so the active variantMap count stays within Shopify's
+ * 100-variant product limit. Prefers keeping all sizes and dropping colors from
+ * the end of the list; if still over, trims sizes from the end too.
+ * Used by Setup → Activate (no variant picker UI).
+ */
+export function capVariantSelectionForShopifyLimit(
+  sizeIds: string[],
+  colorIds: string[],
+  variantMap: VariantMap | Record<string, VariantMapEntry> | null | undefined,
+  max: number = SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
+): { sizeIds: string[]; colorIds: string[]; variantCount: number; capped: boolean } {
+  let sizes = sizeIds.filter(Boolean);
+  let colors = colorIds.filter(Boolean);
+  if (sizes.length === 0) sizes = ["default"];
+  if (colors.length === 0) colors = ["default"];
+
+  let variantCount = countActiveVariantMapKeys(variantMap, sizes, colors);
+  if (variantCount <= max) {
+    return { sizeIds: sizes, colorIds: colors, variantCount, capped: false };
+  }
+
+  while (colors.length > 1 && countActiveVariantMapKeys(variantMap, sizes, colors) > max) {
+    colors = colors.slice(0, -1);
+  }
+  variantCount = countActiveVariantMapKeys(variantMap, sizes, colors);
+  if (variantCount <= max) {
+    return { sizeIds: sizes, colorIds: colors, variantCount, capped: true };
+  }
+
+  while (sizes.length > 1 && countActiveVariantMapKeys(variantMap, sizes, colors) > max) {
+    sizes = sizes.slice(0, -1);
+  }
+  variantCount = countActiveVariantMapKeys(variantMap, sizes, colors);
+  return { sizeIds: sizes, colorIds: colors, variantCount, capped: true };
+}

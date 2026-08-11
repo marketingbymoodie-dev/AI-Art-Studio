@@ -10,7 +10,6 @@ Covered systems include:
 
 - Railway application and PostgreSQL environments.
 - Shopify app credentials, OAuth tokens, webhooks, and app configuration.
-- Stripe Checkout/session metadata used for credit purchases.
 - Object storage used for generated artwork and mockups.
 - GitHub repositories, deployment credentials, and CI/deployment logs.
 
@@ -36,13 +35,13 @@ Only people who need production access to investigate or remediate an incident s
    - Classify severity and identify immediate containment actions.
 
 2. Containment
-   - Revoke or rotate impacted credentials: Shopify app secrets, Railway variables, database passwords, Stripe keys, Supabase/object storage keys, and GitHub tokens as needed.
+   - Revoke or rotate impacted credentials: Shopify app secrets, Railway variables, database passwords, Supabase/object storage keys, and GitHub tokens as needed.
    - Disable affected integrations or endpoints if they continue to expose data.
    - Block suspicious IPs or sessions where supported.
 
 3. Investigation
    - Determine affected shops, customers, tables, files, time window, and data categories.
-   - Review Railway deploy history, application logs, database access, Git commits, Shopify webhook activity, and Stripe event logs.
+   - Review Railway deploy history, application logs, database access, Git commits, and Shopify webhook activity.
    - Confirm whether data was accessed, exfiltrated, altered, or deleted.
 
 4. Eradication and Recovery

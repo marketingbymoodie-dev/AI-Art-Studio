@@ -1,5 +1,13 @@
 /**
  * Apply merchant/customer billing after a successful generation.
+ *
+ * Billing model (Studio Credits — one charge per generation):
+ *  - merchant       : merchant plan quota (no customer wallet)
+ *  - customer_paid  : Studio Credit spend
+ *      * source = "earned" → also burns merchant quota
+ *      * source = "pack"   → does NOT burn merchant quota (already billed wholesale at grant)
+ *  - customer_free  : storefront free-gen (wallet-tracked); burns merchant quota
+ *  - session        : anonymous visitor free-gen; burns merchant quota
  */
 import { storage } from "./storage";
 import {
@@ -9,6 +17,7 @@ import {
 } from "./generation-quota";
 import { syncMerchantQuotaAlerts } from "./merchant-quota-alerts";
 import { logMerchantGeneration, type MerchantGenerationLogInput } from "./merchant-generation-log";
+import { spendStudioCredit, type CreditSource } from "./studio-credits";
 import type { ShopifyInstallation } from "@shared/schema";
 
 export type GenerationBillingMode = "merchant" | "customer_paid" | "customer_free" | "session";
@@ -29,14 +38,27 @@ export async function applyCustomerBillingOnSuccess(params: {
   mode: "customer_paid" | "customer_free";
   idempotencyKey: string;
   externalRef: string;
-}): Promise<boolean> {
-  const { customerId, mode, idempotencyKey, externalRef } = params;
+  freeGenerationLimit?: number;
+  shop?: string | null;
+}): Promise<{ consumed: boolean; source: CreditSource | null }> {
+  const { customerId, mode, idempotencyKey, externalRef, freeGenerationLimit, shop } = params;
   if (mode === "customer_paid") {
-    const r = await storage.consumePaidCredit(customerId, idempotencyKey, externalRef);
-    return r.consumed;
+    const r = await spendStudioCredit({
+      customerId,
+      idempotencyKey,
+      externalRef,
+      shop: shop ?? null,
+      quotaBucketKey: null,
+    });
+    return { consumed: r.spent, source: r.source };
   }
-  const r = await storage.consumeFreeGeneration(customerId, idempotencyKey, externalRef);
-  return r.consumed;
+  const r = await storage.consumeFreeGeneration(
+    customerId,
+    idempotencyKey,
+    externalRef,
+    freeGenerationLimit ?? 5,
+  );
+  return { consumed: r.consumed, source: null };
 }
 
 export async function applyMerchantBillingOnSuccess(
@@ -63,20 +85,28 @@ export async function finalizeGenerationBilling(params: {
   billingMode: GenerationBillingMode;
   customerId?: string | null;
   idempotencyKey: string;
+  freeGenerationLimit?: number;
 }): Promise<MerchantQuotaDecision | null> {
-  const { installation, billingMode, customerId, idempotencyKey } = params;
+  const { installation, billingMode, customerId, idempotencyKey, freeGenerationLimit } = params;
+  const shop = installation.shopDomain ?? null;
 
   if (billingMode === "merchant") {
     return applyMerchantBillingOnSuccess(installation);
   }
 
   if (billingMode === "customer_paid" && customerId) {
-    await applyCustomerBillingOnSuccess({
+    const result = await applyCustomerBillingOnSuccess({
       customerId,
       mode: "customer_paid",
       idempotencyKey,
       externalRef: idempotencyKey,
+      shop,
     });
+    // "earned" credits still burn merchant quota (reward-ladder credits back-fill from plan);
+    // "pack" credits were billed wholesale at grant time and do not touch merchant quota.
+    if (result.source === "earned") {
+      return applyMerchantBillingOnSuccess(installation);
+    }
     return null;
   }
 
@@ -86,11 +116,18 @@ export async function finalizeGenerationBilling(params: {
       mode: "customer_free",
       idempotencyKey: `storefront-free-generation:${idempotencyKey}`,
       externalRef: idempotencyKey,
+      freeGenerationLimit,
+      shop,
     });
-    return null;
+    // Free visitor gens also count against the merchant monthly allotment.
+    return applyMerchantBillingOnSuccess(installation);
   }
 
-  // session + anonymous: job completion is the meter (countSessionGenerations)
+  // Anonymous session gens still come off the merchant monthly allotment.
+  if (billingMode === "session") {
+    return applyMerchantBillingOnSuccess(installation);
+  }
+
   return null;
 }
 

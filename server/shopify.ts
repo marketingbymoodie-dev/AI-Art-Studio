@@ -1,8 +1,8 @@
 import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import { storage } from "./storage";
-import { ensureCreditDiscountActivated } from "./credit-discount-activation";
 import { registerShopifyGdprRoutes } from "./shopify-gdpr";
+import { exchangeAuthorizationCode } from "./shopify-offline-token";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
@@ -62,7 +62,9 @@ export async function registerCartScript(shop: string, accessToken: string): Pro
 }
 
 function getAppUrl(): string {
-  const appUrl = process.env.APP_URL;
+  // Staging often sets PUBLIC_APP_URL only; OAuth redirect_uri must be the
+  // public Railway URL — never localhost — or Shopify install never saves a token.
+  const appUrl = process.env.APP_URL || process.env.PUBLIC_APP_URL;
   if (appUrl) {
     return appUrl.replace(/\/$/, "");
   }
@@ -265,30 +267,23 @@ if (res.locals.shopify?.session?.shop) {
     }
 
     try {
-      const accessTokenUrl = `https://${shop}/admin/oauth/access_token`;
-      
-      const response = await fetch(accessTokenUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: SHOPIFY_API_KEY,
-          client_secret: SHOPIFY_API_SECRET,
-          code
-        })
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        console.error("Shopify token exchange failed:", error);
+      // Public apps require expiring offline tokens (expiring=1).
+      const tokenResult = await exchangeAuthorizationCode(shop, code);
+      if (!tokenResult.ok) {
+        console.error("Shopify token exchange failed:", tokenResult.status, tokenResult.error);
         return res.status(500).send("Failed to get access token from Shopify");
       }
 
-      const tokenData = await response.json();
-      const { access_token, scope } = tokenData;
-      
+      const { fields } = tokenResult;
+      const access_token = fields.accessToken;
+      const scope = fields.scope || "";
+
       console.log(`Shopify OAuth completed for ${shop}`);
-      console.log(`Scopes granted: ${scope || 'NONE'}`);
+      console.log(`Scopes granted: ${scope || "NONE"}`);
       console.log(`Requested scopes were: ${SHOPIFY_SCOPES}`);
+      console.log(
+        `Token mode: ${fields.refreshToken ? "expiring offline" : "non-expiring offline (unexpected)"}`,
+      );
 
       // Get merchant ID from cookie if available
       const merchantId = req.cookies?.shopify_merchant || null;
@@ -297,11 +292,14 @@ if (res.locals.shopify?.session?.shop) {
       }
 
       let installation = await storage.getShopifyInstallationByShop(shop);
-      
+
       if (installation) {
         const updates: any = {
           accessToken: access_token,
-          scope: scope || "",
+          refreshToken: fields.refreshToken,
+          accessTokenExpiresAt: fields.accessTokenExpiresAt,
+          refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
+          scope,
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
@@ -309,7 +307,7 @@ if (res.locals.shopify?.session?.shop) {
         // Always update merchant ID on reinstall if we have one (handles reinstall with different logged-in user)
         if (merchantId) {
           updates.merchantId = merchantId;
-          console.log(`Reinstall: Updating merchant ID from ${installation.merchantId || 'none'} to ${merchantId}`);
+          console.log(`Reinstall: Updating merchant ID from ${installation.merchantId || "none"} to ${merchantId}`);
         }
         await storage.updateShopifyInstallation(installation.id, updates);
         console.log(`Updated existing installation for ${shop} (reinstall detected)`);
@@ -317,21 +315,18 @@ if (res.locals.shopify?.session?.shop) {
         installation = await storage.createShopifyInstallation({
           shopDomain: shop,
           accessToken: access_token,
-          scope: scope || "",
+          refreshToken: fields.refreshToken,
+          accessTokenExpiresAt: fields.accessTokenExpiresAt,
+          refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
+          scope,
           status: "active",
           installedAt: new Date(),
           merchantId: merchantId,
         });
-        console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ''}`);
+        console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ""}`);
       }
 
       await registerCartScript(shop, access_token);
-
-      // Idempotently create the AppAI Credit Buyer automatic discount (Function-backed).
-      // Best-effort — if the function isn't deployed yet, this is a no-op.
-      ensureCreditDiscountActivated(shop, access_token).catch((err) =>
-        console.warn(`[shopify/callback] credit discount activation failed for ${shop}:`, err?.message),
-      );
 
       res.clearCookie("shopify_state");
       res.clearCookie("shopify_merchant");
@@ -435,9 +430,7 @@ if (res.locals.shopify?.session?.shop) {
     const installation = await storage.getShopifyInstallationByShop(shop);
     if (installation) {
       // Guard against a late-arriving uninstall webhook overwriting a fresh reinstall.
-      // Shopify can deliver the app/uninstalled webhook seconds to minutes after removal.
-      // If the installation was updated within the last 90 seconds, a new OAuth just
-      // completed — skip marking it uninstalled so the fresh token is preserved.
+      // Shopify can deliver app/uninstalled seconds to minutes after removal.
       const ageMs = Date.now() - new Date(installation.installedAt).getTime();
       if (ageMs < 90_000) {
         console.warn(
@@ -445,6 +438,21 @@ if (res.locals.shopify?.session?.shop) {
           `installation is only ${Math.round(ageMs / 1000)}s old (fresh reinstall detected)`
         );
         return res.status(200).send("OK");
+      }
+      // Stronger guard: if the stored token still works, the app was reinstalled
+      // and this webhook is stale (can arrive well after the 90s window).
+      if (
+        installation.accessToken &&
+        installation.accessToken !== "NEEDS_RECONNECT" &&
+        installation.status === "active"
+      ) {
+        const stillValid = await validateShopifyToken(shop, installation.accessToken);
+        if (stillValid.valid) {
+          console.warn(
+            `[uninstall-webhook] Skipping stale uninstall for ${shop} — access token still valid (reinstalled)`,
+          );
+          return res.status(200).send("OK");
+        }
       }
       await storage.updateShopifyInstallation(installation.id, {
         status: "uninstalled",

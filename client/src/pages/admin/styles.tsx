@@ -407,8 +407,8 @@ export default function AdminStyles() {
         {/* Header */}
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold" data-testid="text-styles-title">Styles</h1>
-            <p className="text-muted-foreground">Create custom art styles for your customers</p>
+            <h1 className="text-2xl font-bold" data-testid="text-styles-title">Art Styles</h1>
+            <p className="text-muted-foreground">Create and manage art styles for your customers — including custom styles per product</p>
           </div>
           <div className="flex gap-2 flex-wrap">
             <Button

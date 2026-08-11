@@ -30,6 +30,7 @@ function colorSelectable(
   variantMap: VariantMap | null | undefined,
 ): boolean {
   if (color.variantAvailable === false) return false;
+  if (color.inStock === false) return false;
   if (!variantMap) return true;
   // Check across all sizes so XL/2XL selection doesn't grey out colors that
   // exist for S/M/L — the mockup server falls back to any matching-color variant.
@@ -70,6 +71,7 @@ export function FrameColorSelector({
         <SelectContent position="popper" sideOffset={4} className="z-[200]">
           {frameColors.map((color) => {
             const selectable = colorSelectable(color, variantMap);
+            const oos = color.inStock === false;
             return (
               <SelectItem
                 key={color.id}
@@ -78,7 +80,9 @@ export function FrameColorSelector({
                 title={
                   selectable
                     ? undefined
-                    : "This colour is not linked to a Printify variant — re-import or refresh variants in Admin."
+                    : oos
+                      ? "Out of stock"
+                      : "This colour is not linked to a Printify variant — re-import or refresh variants in Admin."
                 }
                 data-testid={`option-frame-${color.id}`}
               >
@@ -91,7 +95,9 @@ export function FrameColorSelector({
                   )}
                   {color.name}
                   {!selectable && (
-                    <span className="text-[10px] text-muted-foreground">(unavailable)</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {oos ? "(out of stock)" : "(unavailable)"}
+                    </span>
                   )}
                 </span>
               </SelectItem>

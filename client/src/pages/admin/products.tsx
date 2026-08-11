@@ -30,6 +30,7 @@ import {
 } from "@shared/productLayoutPolicy";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
+import CatalogActivateSection from "@/components/admin/CatalogActivateSection";
 import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
 import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
@@ -146,6 +147,11 @@ export default function AdminProducts() {
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
   const [pullCanonicalMutatingId, setPullCanonicalMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
+  const [pricingTarget, setPricingTarget] = useState<ProductType | null>(null);
+  const [pricingStrategyDraft, setPricingStrategyDraft] = useState("notify_only");
+  const [pricingMarkupDraft, setPricingMarkupDraft] = useState("60");
+  const [pricingMinMarginDraft, setPricingMinMarginDraft] = useState("");
+  const [productSyncMutatingId, setProductSyncMutatingId] = useState<number | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -221,7 +227,8 @@ export default function AdminProducts() {
     refetch: refetchBlueprints,
     error: blueprintsFetchError,
   } = usePrintifyCatalogFilters({
-    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
+    // Platform PRINTIFY_API_TOKEN backs catalog reads — merchant token not required.
+    enabled: printifyImportOpen,
     maxResults: 80,
     extraFilter: catalogAllowlistFilter,
   });
@@ -426,6 +433,32 @@ export default function AdminProducts() {
     },
   });
 
+  const productSyncMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setProductSyncMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/product-sync`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Product Sync failed");
+      return data;
+    },
+    onSuccess: (data) => {
+      setProductSyncMutatingId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      const r = data?.result;
+      toast({
+        title: r?.ok === false ? "Product Sync finished with issues" : "Product Sync complete",
+        description: r?.error
+          ? r.error
+          : `Variants checked: ${r?.variantsChecked ?? 0}. Health: ${r?.productHealth ?? "—"}.`,
+        variant: r?.ok === false ? "destructive" : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      setProductSyncMutatingId(null);
+      toast({ title: "Product Sync failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Toggle isAllOverPrint flag
   const toggleAopMutation = useMutation({
     mutationFn: async (data: { id: number; isAllOverPrint: boolean }) => {
@@ -497,6 +530,34 @@ export default function AdminProducts() {
       toast({ title: "Failed to update layout policy", description: error.message, variant: "destructive" });
     },
     onSettled: () => setLayoutPolicyMutatingId(null),
+  });
+
+  const savePricingStrategyMutation = useMutation({
+    mutationFn: async (data: {
+      id: number;
+      pricingStrategy: string;
+      defaultMarkupPercent: number | null;
+      minMarginPercent: number | null;
+    }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        pricingStrategy: data.pricingStrategy,
+        defaultMarkupPercent: data.defaultMarkupPercent,
+        minMarginPercent: data.minMarginPercent,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to save pricing strategy");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      setPricingTarget(null);
+      toast({ title: "Pricing strategy saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not save pricing strategy", description: error.message, variant: "destructive" });
+    },
   });
 
   const pullCanonicalCalibrationMutation = useMutation({
@@ -815,26 +876,32 @@ export default function AdminProducts() {
       <div className="space-y-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold" data-testid="text-products-title">Products</h1>
-            <p className="text-muted-foreground">Manage your product types for the AI design studio</p>
+            <h1 className="text-2xl font-bold" data-testid="text-products-title">Products Catalogue</h1>
+            <p className="text-muted-foreground">
+              Every product below is ready — Preview in-app, or Create Page (Printify supplier + suggested
+              retail) without Previewing first. Provider, pricing, variants, and Art Styles live on the
+              Customizer Page.
+            </p>
           </div>
-          <Button onClick={handleOpenPrintifyImport} disabled={!merchant?.printifyApiToken} data-testid="button-import-printify">
+          <Button
+            variant="outline"
+            onClick={handleOpenPrintifyImport}
+            data-testid="button-import-printify"
+          >
             <Download className="h-4 w-4 mr-2" />
-            Import from Printify
+            Product settings
           </Button>
         </div>
 
-        {!merchant?.printifyApiToken && (
-          <Card className="border-yellow-200 bg-yellow-50 dark:bg-yellow-900/20 dark:border-yellow-800">
-            <CardContent className="pt-6">
-              <p className="text-sm">
-                Connect your Printify account in{" "}
-                <a href="/admin/settings" className="text-primary underline">Settings</a>
-                {" "}to import products from the Printify catalog.
-              </p>
-            </CardContent>
-          </Card>
-        )}
+        <CatalogActivateSection mode="catalogue" title="Ready-to-go products" />
+
+        <div>
+          <h2 className="text-lg font-semibold mb-1">Your product types</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Products you&apos;ve previewed or imported. Print provider, pricing, variants, and Art Styles are
+            managed on Customizer Pages when you Create Page or edit a Live page.
+          </p>
+        </div>
 
         {productTypesLoading ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -893,9 +960,45 @@ export default function AdminProducts() {
                           <div>Blueprint: {pt.printifyBlueprintId || "Custom"}</div>
                         </CardDescription>
                       </div>
-                      <Badge variant="outline" className="text-xs">
-                        {pt.designerType}
-                      </Badge>
+                      <div className="flex flex-col items-end gap-1">
+                        <Badge variant="outline" className="text-xs">
+                          {pt.designerType}
+                        </Badge>
+                        {(() => {
+                          const health = (pt as any).productHealth as string | undefined;
+                          if (!health || health === "healthy") {
+                            return (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+                                data-testid={`badge-health-${pt.id}`}
+                              >
+                                Healthy
+                              </Badge>
+                            );
+                          }
+                          if (health === "needs_review") {
+                            return (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                                data-testid={`badge-health-${pt.id}`}
+                              >
+                                Needs review
+                              </Badge>
+                            );
+                          }
+                          return (
+                            <Badge
+                              variant="destructive"
+                              className="text-[10px]"
+                              data-testid={`badge-health-${pt.id}`}
+                            >
+                              Attention
+                            </Badge>
+                          );
+                        })()}
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -1132,6 +1235,19 @@ export default function AdminProducts() {
                           Create Customizer Page
                         </Button>
                       )}
+                      {pt.printifyBlueprintId && pt.printifyProviderId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => productSyncMutation.mutate(pt.id)}
+                          disabled={productSyncMutatingId === pt.id}
+                          title="Sync COGS, shipping, and availability from Printify into Product Intelligence."
+                          data-testid={`button-product-sync-${pt.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${productSyncMutatingId === pt.id ? "animate-spin" : ""}`} />
+                          Product Sync
+                        </Button>
+                      )}
                       {pt.shopifyProductId && (
                         <Button
                           variant="outline"
@@ -1143,6 +1259,24 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setPricingTarget(pt);
+                          setPricingStrategyDraft((pt as any).pricingStrategy || "notify_only");
+                          setPricingMarkupDraft(String((pt as any).defaultMarkupPercent ?? 60));
+                          setPricingMinMarginDraft(
+                            (pt as any).minMarginPercent != null
+                              ? String((pt as any).minMarginPercent)
+                              : "",
+                          );
+                        }}
+                        title="Maintain margin, hold retail, or notify-only when COGS change"
+                        data-testid={`button-pricing-strategy-${pt.id}`}
+                      >
+                        Pricing strategy
+                      </Button>
                       {/* Calibration harvest lives in Platform Catalog; pull overwrites stale merchant harvest. */}
                       {showOperatorCalibrationTools &&
                         (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
@@ -1189,14 +1323,10 @@ export default function AdminProducts() {
           <Card>
             <CardContent className="py-12 text-center">
               <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="font-medium mb-2">No products yet</h3>
+              <h3 className="font-medium mb-2">No product types yet</h3>
               <p className="text-sm text-muted-foreground mb-4">
-                Import products from Printify to get started
+                Preview or Create Page from the catalogue above to get started.
               </p>
-              <Button onClick={handleOpenPrintifyImport} disabled={!merchant?.printifyApiToken}>
-                <Download className="h-4 w-4 mr-2" />
-                Import from Printify
-              </Button>
             </CardContent>
           </Card>
         )}
@@ -1204,7 +1334,7 @@ export default function AdminProducts() {
         <Dialog open={printifyImportOpen} onOpenChange={setPrintifyImportOpen}>
           <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Import from Printify Catalog</DialogTitle>
+              <DialogTitle>Product settings — Printify import</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
@@ -1848,6 +1978,82 @@ export default function AdminProducts() {
           title={resyncPricesTarget?.name ?? ""}
           productTypeId={resyncPricesTarget?.id ?? 0}
         />
+
+        <Dialog open={!!pricingTarget} onOpenChange={(v) => { if (!v) setPricingTarget(null); }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Pricing strategy — {pricingTarget?.name}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-2">
+              <div className="space-y-2">
+                <Label>When supplier costs change</Label>
+                <Select value={pricingStrategyDraft} onValueChange={setPricingStrategyDraft}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="notify_only">Notify only (default)</SelectItem>
+                    <SelectItem value="maintain_margin">Maintain margin (auto Resync)</SelectItem>
+                    <SelectItem value="maintain_price">Maintain retail price</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Maintain margin uses Product Sync + your markup to push Shopify retail. Never silently
+                  undercuts your floor when min margin is set.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="pricing-markup">Default markup %</Label>
+                <Input
+                  id="pricing-markup"
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={pricingMarkupDraft}
+                  onChange={(e) => setPricingMarkupDraft(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="pricing-min-margin">Minimum margin % (optional)</Label>
+                <Input
+                  id="pricing-min-margin"
+                  type="number"
+                  min={0}
+                  max={99}
+                  placeholder="e.g. 35"
+                  value={pricingMinMarginDraft}
+                  onChange={(e) => setPricingMinMarginDraft(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setPricingTarget(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={savePricingStrategyMutation.isPending || !pricingTarget}
+                  onClick={() => {
+                    if (!pricingTarget) return;
+                    const markup = parseInt(pricingMarkupDraft, 10);
+                    const minM = pricingMinMarginDraft.trim()
+                      ? parseInt(pricingMinMarginDraft, 10)
+                      : null;
+                    savePricingStrategyMutation.mutate({
+                      id: pricingTarget.id,
+                      pricingStrategy: pricingStrategyDraft,
+                      defaultMarkupPercent: Number.isFinite(markup) ? markup : null,
+                      minMarginPercent: minM != null && Number.isFinite(minM) ? minM : null,
+                    });
+                  }}
+                >
+                  {savePricingStrategyMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : null}
+                  Save
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </AdminLayout>
   );

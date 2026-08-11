@@ -38,6 +38,9 @@ import {
   Crosshair,
   Shirt,
   Sparkles,
+  Activity,
+  Calculator,
+  Users,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -49,19 +52,23 @@ interface AdminLayoutProps {
 const menuItems = [
   { title: "Dashboard", url: "/admin", icon: BarChart3 },
   { title: "Setup", url: "/admin/setup", icon: Sparkles },
-  { title: "Products Import", url: "/admin/products", icon: Package },
-  { title: "Art Generator Tester", url: "/admin/create-product", icon: Plus },
+  { title: "Products Catalogue", url: "/admin/products", icon: Package },
+  { title: "Preview Studio", url: "/admin/create-product", icon: Plus },
   { title: "Customizer Pages", url: "/admin/customizer-pages", icon: LayoutTemplate },
-  { title: "Styles", url: "/admin/styles", icon: Palette },
+  { title: "Art Styles", url: "/admin/styles", icon: Palette },
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
+  { title: "Profit Insights", url: "/admin/insights", icon: Calculator },
   { title: "Settings", url: "/admin/settings", icon: Settings },
 ];
 
 const platformMenuItems = [
   { title: "Operator Catalog", url: "/admin/platform/operator-catalog", icon: Package },
   { title: "Platform Catalog", url: "/admin/platform/catalog", icon: Globe },
+  { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
+  { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
+  { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];

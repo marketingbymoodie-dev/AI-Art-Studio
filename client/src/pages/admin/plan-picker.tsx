@@ -1,10 +1,7 @@
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,125 +15,145 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Info } from "lucide-react";
-import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Loader2, Zap, LayoutTemplate, Star, Rocket, Crown, Info } from "lucide-react";
+import GenerationQuotaUsage, {
+  usePlanGenerationQuota,
+} from "@/components/admin/GenerationQuotaUsage";
+import { OverageOptInForm, planMaxBudgetFromApi } from "@/components/admin/OverageOptInForm";
+import { OverageManageForm } from "@/components/admin/OverageManageForm";
+import {
+  OVERAGE_PRICE_USD,
+  PAID_PLAN_DEFINITIONS,
+  PLAN_DISPLAY_NAMES,
+  PLAN_GENERATION_QUOTAS,
+  PLAN_PAGE_LIMITS,
+} from "@shared/customizerPlans";
 
-/**
- * Shared note appended to every paid plan's info popover (and the Trial card).
- * Explains the per-customer 10-free-generation limit and the $1 top-up packs.
- */
-const CUSTOMER_ABUSE_NOTE =
-  "Free generations per customer are limited to 10 to avoid abuse of free generations. " +
-  "Customers are offered extra packs of 10 generations for a dollar directly from AI Art Studio " +
-  "if they wish to continue creating. The maximum of a dollar is reimbursed if the customer makes a physical transaction.";
+const PLAN_ROW_META: Record<
+  string,
+  { descriptionFor: (pageLimit: number) => string; highlight?: boolean; icon: ReactNode }
+> = {
+  starter: {
+    descriptionFor: (n) =>
+      `Perfect for shops selling up to ${n} custom product${n === 1 ? "" : "s"}.`,
+    icon: <LayoutTemplate className="h-4 w-4 text-blue-500" />,
+  },
+  dabbler: {
+    descriptionFor: (n) => `Try several products with up to ${n} customizer pages.`,
+    highlight: true,
+    icon: <Star className="h-4 w-4 text-purple-500" />,
+  },
+  pro: {
+    descriptionFor: (n) => `Scale across your full catalog with ${n} pages.`,
+    icon: <Rocket className="h-4 w-4 text-green-500" />,
+  },
+  pro_plus: {
+    descriptionFor: (n) => `Maximum scale: ${n} customizer pages for large catalogs.`,
+    icon: <Rocket className="h-4 w-4 text-orange-500" />,
+  },
+  mogul: {
+    descriptionFor: (n) => `Enterprise scale: ${n} customizer pages — talk to us to get started.`,
+    icon: <Crown className="h-4 w-4 text-red-600" />,
+  },
+};
 
-interface PlanCardProps {
-  name: string;
-  displayName: string;
-  price: number | null;
-  pageLimit: number;
-  /** Monthly free AI-generation allotment for this plan. */
-  freeGenerations: number;
-  description: string;
-  /** First line of the info popover, describing this plan's overage terms (paid plans only). */
-  overageNote?: string;
-  /** Extra free-text shown on the Trial card explaining the upgrade path. */
-  trialNote?: string;
-  highlight?: boolean;
-  icon: React.ReactNode;
-  ctaLabel: string;
-  onSelect: () => void;
-  loading: boolean;
+function overageNoteForCap(overageCap: number, overagePriceUsd: number): string {
+  return `Additional generations can be added at $${overagePriceUsd.toFixed(2)} per generation, capped at an extra ${overageCap} generations per calendar month.`;
 }
 
-function PlanCard({
-  displayName, price, pageLimit, freeGenerations, description, overageNote, trialNote,
-  highlight, icon, ctaLabel, onSelect, loading,
-}: PlanCardProps) {
+const CUSTOMER_ABUSE_NOTE =
+  "Free generations per customer default to 2 (merchant can raise up to 10) to avoid abuse. " +
+  "Customers can earn more Studio Credits via the Reward Ladder (email signup, sharing a design, and optionally a purchase threshold). " +
+  "Merchant-sold credit packs are coming soon.";
+
+type PlanRow = {
+  planName: string;
+  displayName: string;
+  priceUsd: number | null;
+  pageLimit: number;
+  generationQuota: number;
+  overageCap: number;
+  selfServe: boolean;
+  description: string;
+  overageNote?: string;
+  trialNote?: string;
+  highlight?: boolean;
+  icon: ReactNode;
+};
+
+function PlanInfoPopover({
+  displayName,
+  overageNote,
+  trialNote,
+  description,
+}: {
+  displayName: string;
+  overageNote?: string;
+  trialNote?: string;
+  description?: string;
+}) {
   return (
-    <Card className={`relative flex flex-col ${highlight ? "border-primary ring-2 ring-primary/20" : ""}`}>
-      {highlight && (
-        <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-          <Badge className="bg-primary text-primary-foreground px-3">Most Popular</Badge>
-        </div>
-      )}
-      <CardHeader className="pb-2">
-        <div className="flex items-center gap-2 mb-1">
-          {icon}
-          <CardTitle className="text-lg">{displayName}</CardTitle>
-        </div>
-        <div className="flex items-baseline gap-1">
-          {price === null ? (
-            <span className="text-3xl font-bold">Free</span>
-          ) : (
-            <>
-              <span className="text-3xl font-bold">${price}</span>
-              <span className="text-muted-foreground text-sm">/month</span>
-            </>
-          )}
-        </div>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col flex-1">
-        <ul className="space-y-2 mb-6 flex-1 text-sm">
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span className="flex items-center gap-1">
-              <span>
-                {freeGenerations.toLocaleString()} free generation{freeGenerations !== 1 ? "s" : ""}
-                {price === null ? "" : "/mo"}
-              </span>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={`${displayName} generation details`}
-                    className="inline-flex text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring rounded-full"
-                  >
-                    <Info className="h-3.5 w-3.5" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="start" className="text-sm leading-relaxed space-y-2">
-                  {overageNote ? <p>{overageNote}</p> : null}
-                  {trialNote ? <p>{trialNote}</p> : null}
-                  <p className="text-muted-foreground">{CUSTOMER_ABUSE_NOTE}</p>
-                </PopoverContent>
-              </Popover>
-            </span>
-          </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span>{pageLimit} customizer page{pageLimit !== 1 ? "s" : ""}</span>
-          </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span>Native cart & checkout mockups</span>
-          </li>
-        </ul>
-        <Button
-          variant={highlight ? "default" : "outline"}
-          className="w-full"
-          onClick={onSelect}
-          disabled={loading}
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${displayName} plan details`}
+          className="inline-flex shrink-0 rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-          {ctaLabel}
-        </Button>
-      </CardContent>
-    </Card>
+          <Info className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="space-y-2 text-sm leading-relaxed">
+        {description ? <p>{description}</p> : null}
+        {overageNote ? <p>{overageNote}</p> : null}
+        {trialNote ? <p>{trialNote}</p> : null}
+        <p className="text-muted-foreground">{CUSTOMER_ABUSE_NOTE}</p>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 interface PlanPickerProps {
-  /** Called after a plan is activated (trial or paid) so parent can refetch. */
   onActivated?: () => void;
-  /** If true, renders inline (no AdminLayout wrapping). */
   inline?: boolean;
 }
 
 export default function PlanPicker({ onActivated, inline = false }: PlanPickerProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const overageAgreementRef = useRef<HTMLDivElement>(null);
+  const didScrollToOverage = useRef(false);
+  const { data: planStatus } = usePlanGenerationQuota();
+  const { data: planCatalog } = useQuery<{
+    catalogueId: number;
+    overagePriceUsd: number;
+    trial: { pageLimit: number; generationQuota: number };
+    plans: Array<{
+      planName: string;
+      displayName: string;
+      priceUsd: number;
+      pageLimit: number;
+      generationQuota: number;
+      overageCap: number;
+      selfServe?: boolean;
+    }>;
+  }>({
+    queryKey: ["/api/appai/billing/plan-catalog"],
+  });
+  const offerPlans = planCatalog?.plans?.length
+    ? planCatalog.plans
+    : PAID_PLAN_DEFINITIONS.map((p) => ({ ...p, selfServe: true as boolean }));
+  const overagePriceUsd = planCatalog?.overagePriceUsd ?? OVERAGE_PRICE_USD;
+  const trialPages = planCatalog?.trial?.pageLimit ?? PLAN_PAGE_LIMITS.trial;
+  const trialGens = planCatalog?.trial?.generationQuota ?? PLAN_GENERATION_QUOTAS.trial;
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [upgradePlan, setUpgradePlan] = useState<string | null>(null);
   const [upgradePreview, setUpgradePreview] = useState<{
@@ -147,6 +164,53 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
   } | null>(null);
   const [upgradeAcknowledged, setUpgradeAcknowledged] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  const quota = planStatus?.generationQuota;
+  const planName = planStatus?.planName;
+  const overage = planStatus?.overage;
+  const optedIn = !!(overage?.optInEnabled || quota?.overageOptInEnabled);
+  const overageUsedLive =
+    planStatus?.extra?.used ?? quota?.extraUsed ?? quota?.overageUsed ?? 0;
+  const extraBudgetCents =
+    planStatus?.extra?.budgetCents ?? quota?.extraBudgetCents ?? null;
+  const extraSpentCents = planStatus?.extra?.spentCents ?? quota?.extraSpentCents ?? 0;
+  const needsOverageAgreement =
+    !optedIn &&
+    !quota?.unlimited &&
+    !!planName &&
+    planName !== "trial" &&
+    !!(overage?.showOptInForm || quota?.showOptInForm);
+  const showOverageEnableForm =
+    !optedIn && !quota?.unlimited && !!planName && planName !== "trial";
+  const showOverageManageForm =
+    optedIn && !quota?.unlimited && !!planName && planName !== "trial";
+
+  useEffect(() => {
+    if (!planStatus || didScrollToOverage.current) return;
+    const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
+    const hashWantsOverage =
+      hash === "overage" ||
+      hash === "overage-agreement" ||
+      hash === "overage-details" ||
+      hash === "payg";
+    if (!needsOverageAgreement && !hashWantsOverage) return;
+    if (!showOverageEnableForm && !showOverageManageForm && !hashWantsOverage) return;
+
+    didScrollToOverage.current = true;
+    // After layout/tables paint so the section isn't still at the top of an empty page.
+    const t = window.setTimeout(() => {
+      const target =
+        document.getElementById("overage-details") ?? overageAgreementRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [planStatus, needsOverageAgreement, showOverageEnableForm, showOverageManageForm]);
+
+  const scrollToOverageDetails = () => {
+    document
+      .getElementById("overage-details")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const trialMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/appai/billing/start-trial"),
@@ -165,22 +229,26 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
 
   const subscriptionMutation = useMutation({
     mutationFn: (plan: string) =>
-      apiRequest("POST", "/api/appai/billing/create-subscription", { plan }).then(r => r.json()),
+      apiRequest("POST", "/api/appai/billing/create-subscription", { plan }).then((r) => r.json()),
     onSuccess: (data: { confirmationUrl?: string; activated?: boolean }) => {
       setLoadingPlan(null);
       if (data.activated) {
-        // Owner bypass: plan was activated directly without Shopify billing
         queryClient.invalidateQueries({ queryKey: ["/api/appai/plan"] });
         queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
         toast({ title: "Plan activated!", description: "Your plan has been set." });
         onActivated?.();
       } else if (data.confirmationUrl) {
-        // Redirect the full window to Shopify billing confirmation
-        window.top ? (window.top.location.href = data.confirmationUrl) : (window.location.href = data.confirmationUrl);
+        window.top
+          ? (window.top.location.href = data.confirmationUrl)
+          : (window.location.href = data.confirmationUrl);
       }
     },
     onError: (err: Error) => {
-      toast({ title: "Billing error", description: err.message, variant: "destructive" });
+      toast({
+        title: "Billing error",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      });
       setLoadingPlan(null);
     },
   });
@@ -195,7 +263,10 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
     setUpgradePlan(plan);
     setUpgradeAcknowledged(false);
     try {
-      const res = await apiRequest("GET", `/api/appai/billing/upgrade-preview?plan=${encodeURIComponent(plan)}`);
+      const res = await apiRequest(
+        "GET",
+        `/api/appai/billing/upgrade-preview?plan=${encodeURIComponent(plan)}`,
+      );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not load upgrade preview");
       setUpgradePreview({
@@ -220,95 +291,254 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
     setUpgradePreview(null);
   };
 
-  const content = (
-    <div className="max-w-5xl mx-auto py-8 px-4">
-      <GenerationQuotaUsage showManageLink={false} className="mb-6" />
+  const rows: PlanRow[] = [
+    {
+      planName: "trial",
+      displayName: "Trial",
+      priceUsd: null,
+      pageLimit: trialPages,
+      generationQuota: trialGens,
+      overageCap: 0,
+      selfServe: true,
+      description: `Evaluate the app with ${trialPages} customizer page${trialPages === 1 ? "" : "s"}. No credit card needed.`,
+      trialNote: `Your trial includes ${trialGens} generations. Once they're used, upgrade to the ${PLAN_DISPLAY_NAMES.starter} plan to keep using the customizer page you set up.`,
+      icon: <Zap className="h-4 w-4 text-yellow-500" />,
+    },
+    ...offerPlans.map((plan) => {
+      const meta = PLAN_ROW_META[plan.planName];
+      const contactUs = plan.selfServe === false;
+      return {
+        planName: plan.planName,
+        displayName: plan.displayName,
+        priceUsd: plan.priceUsd,
+        pageLimit: plan.pageLimit,
+        generationQuota: plan.generationQuota,
+        overageCap: plan.overageCap,
+        selfServe: !contactUs,
+        description:
+          meta?.descriptionFor(plan.pageLimit) ?? `${plan.pageLimit} customizer pages.`,
+        overageNote: contactUs
+          ? "Enterprise plan — contact us to subscribe. Overage and billing terms are arranged with our team."
+          : overageNoteForCap(plan.overageCap, overagePriceUsd),
+        highlight: meta?.highlight,
+        icon: meta?.icon ?? <Rocket className="h-4 w-4 text-orange-500" />,
+      } satisfies PlanRow;
+    }),
+  ];
 
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-bold mb-2">Pick a plan to get started</h2>
+  const paidOverageRows = rows.filter((r) => r.planName !== "trial");
+
+  const selectRow = (row: PlanRow) => {
+    if (row.planName === "trial") {
+      handleTrial();
+      return;
+    }
+    if (!row.selfServe) {
+      const subject = encodeURIComponent(`AI Art Studio — ${row.displayName} plan enquiry`);
+      window.open(
+        `mailto:hello@aiartstudio.app?subject=${subject}`,
+        "_blank",
+        "noopener,noreferrer",
+      );
+      return;
+    }
+    handlePaid(row.planName);
+  };
+
+  const ctaLabel = (row: PlanRow) => {
+    if (row.planName === "trial") return "Start free trial";
+    if (!row.selfServe) return "Contact us";
+    return `Choose ${row.displayName}`;
+  };
+
+  const content = (
+    <div className="mx-auto max-w-5xl px-4 py-8">
+      <GenerationQuotaUsage
+        showManageLink={false}
+        showOptInForm={false}
+        onSeeOverageDetails={scrollToOverageDetails}
+        className="mb-6"
+      />
+
+      <div className="mb-6 text-center">
+        <h2 className="mb-2 text-2xl font-bold">Pick a plan to get started</h2>
         <p className="text-muted-foreground">
           Start with a free trial, or pick a paid plan for more customizer pages and a larger
-          monthly allotment of free AI generations.
+          monthly allotment of included AI generations.
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 mb-8">
-        {/* Trial */}
-        <PlanCard
-          name="trial"
-          displayName="Trial"
-          price={null}
-          pageLimit={1}
-          freeGenerations={20}
-          description="Evaluate the app with 1 customizer page. No credit card needed."
-          trialNote="Your trial includes 20 free generations. Once they're used, upgrade to the Starter plan to keep using the customizer page you set up."
-          icon={<Zap className="h-5 w-5 text-yellow-500" />}
-          ctaLabel="Start Free Trial"
-          onSelect={handleTrial}
-          loading={loadingPlan === "trial"}
-        />
-        {/* Starter */}
-        <PlanCard
-          name="starter"
-          displayName="Starter"
-          price={29}
-          pageLimit={1}
-          freeGenerations={250}
-          description="Perfect for shops selling 1 custom product."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 200 generations per calendar month."
-          icon={<LayoutTemplate className="h-5 w-5 text-blue-500" />}
-          ctaLabel="Choose Starter"
-          onSelect={() => handlePaid("starter")}
-          loading={loadingPlan === "starter"}
-        />
-        {/* Dabbler */}
-        <PlanCard
-          name="dabbler"
-          displayName="Dabbler"
-          price={49}
-          pageLimit={5}
-          freeGenerations={600}
-          description="Try several products with up to 5 customizer pages."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 300 generations per calendar month."
-          highlight
-          icon={<Star className="h-5 w-5 text-purple-500" />}
-          ctaLabel="Choose Dabbler"
-          onSelect={() => handlePaid("dabbler")}
-          loading={loadingPlan === "dabbler"}
-        />
-        {/* Pro */}
-        <PlanCard
-          name="pro"
-          displayName="Pro"
-          price={99}
-          pageLimit={15}
-          freeGenerations={1500}
-          description="Scale across your full catalog with 15 pages."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 500 generations per calendar month."
-          icon={<Rocket className="h-5 w-5 text-green-500" />}
-          ctaLabel="Choose Pro"
-          onSelect={() => handlePaid("pro")}
-          loading={loadingPlan === "pro"}
-        />
-        {/* Pro Plus */}
-        <PlanCard
-          name="pro_plus"
-          displayName="Pro Plus"
-          price={199}
-          pageLimit={30}
-          freeGenerations={3000}
-          description="Maximum scale: 30 customizer pages for large catalogs."
-          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 1000 generations per calendar month."
-          icon={<Rocket className="h-5 w-5 text-orange-500" />}
-          ctaLabel="Choose Pro Plus"
-          onSelect={() => handlePaid("pro_plus")}
-          loading={loadingPlan === "pro_plus"}
-        />
+      <div className="mb-8 overflow-hidden rounded-lg border" data-testid="plan-picker-table">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[220px]">Plan</TableHead>
+              <TableHead>Price</TableHead>
+              <TableHead>Included gens</TableHead>
+              <TableHead>Pages</TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => {
+              const loading = loadingPlan === row.planName;
+              return (
+                <TableRow
+                  key={row.planName}
+                  data-testid={`plan-picker-card-${row.planName}`}
+                  className={row.highlight ? "bg-muted/40" : undefined}
+                >
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0">{row.icon}</span>
+                      <span className="font-medium">{row.displayName}</span>
+                      {row.highlight ? (
+                        <Badge className="bg-primary text-primary-foreground">Most popular</Badge>
+                      ) : null}
+                      {!row.selfServe && row.planName !== "trial" ? (
+                        <Badge variant="secondary">Contact us</Badge>
+                      ) : null}
+                      <PlanInfoPopover
+                        displayName={row.displayName}
+                        description={row.description}
+                        overageNote={row.overageNote}
+                        trialNote={row.trialNote}
+                      />
+                    </div>
+                  </TableCell>
+                  <TableCell data-testid={`plan-picker-price-${row.planName}`}>
+                    {row.priceUsd == null ? (
+                      <span className="font-semibold">Free</span>
+                    ) : (
+                      <span className="font-semibold">
+                        ${Math.round(row.priceUsd).toLocaleString("en-US")}
+                        <span className="ml-1 text-sm font-normal text-muted-foreground">/mo</span>
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {row.generationQuota.toLocaleString()}
+                    {row.priceUsd == null ? "" : "/mo"}
+                  </TableCell>
+                  <TableCell>{row.pageLimit}</TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      size="sm"
+                      variant={row.highlight && row.selfServe ? "default" : "outline"}
+                      className="min-w-[8.5rem]"
+                      onClick={() => selectRow(row)}
+                      disabled={loading}
+                    >
+                      {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {ctaLabel(row)}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+
+      <div id="overage-details" className="mb-8 scroll-mt-6">
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold">Pay-as-you-go overage</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            After your included allowance, extra generations are{" "}
+            <span data-testid="plan-picker-overage-rate">
+              ${overagePriceUsd.toFixed(2)} USD each
+            </span>
+            , billed through Shopify up to the plan cap below (requires in-app opt-in).
+          </p>
+        </div>
+
+        <div
+          className="mb-8 overflow-hidden rounded-lg border"
+          data-testid="plan-picker-overage-table"
+        >
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[220px]">Plan</TableHead>
+                <TableHead>Max overage gens / mo</TableHead>
+                <TableHead>Max overage spend / mo</TableHead>
+                <TableHead>Notes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paidOverageRows.map((row) => {
+                const maxSpend =
+                  row.overageCap > 0
+                    ? Math.round(row.overageCap * overagePriceUsd * 100) / 100
+                    : 0;
+                return (
+                  <TableRow key={`overage-${row.planName}`}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0">{row.icon}</span>
+                        <span className="font-medium">{row.displayName}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {row.overageCap > 0 ? row.overageCap.toLocaleString() : "—"}
+                    </TableCell>
+                    <TableCell>
+                      {row.overageCap > 0
+                        ? `$${maxSpend.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {!row.selfServe
+                        ? "Arranged with our team"
+                        : row.overageCap > 0
+                          ? "Enable agreement below"
+                          : "No overage"}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+
+        {(showOverageEnableForm || showOverageManageForm) && (
+          <div
+            ref={overageAgreementRef}
+            id="overage-agreement"
+            className="scroll-mt-6"
+            data-testid="plan-picker-overage-agreement"
+          >
+            <h3 className="text-lg font-semibold">
+              {showOverageManageForm
+                ? "Your pay-as-you-go agreement"
+                : "Enable pay-as-you-go overage"}
+            </h3>
+            <p className="mt-1 mb-4 text-sm text-muted-foreground">
+              {showOverageManageForm
+                ? "Adjust your period budget or turn extra generations off. Charges already incurred stay in Shopify billing."
+                : "Agree to the terms below to allow extra generations after your included allowance, billed through Shopify up to your chosen cap."}
+            </p>
+            {showOverageEnableForm ? (
+              <OverageOptInForm planMaxBudgetCents={planMaxBudgetFromApi(planStatus)} />
+            ) : (
+              <OverageManageForm
+                planMaxBudgetCents={planMaxBudgetFromApi(planStatus)}
+                spentCents={extraSpentCents}
+                overageUsed={overageUsedLive}
+                currentBudgetCents={extraBudgetCents ?? planMaxBudgetFromApi(planStatus)}
+                recurring={!!(overage?.recurring || quota?.overageRecurring)}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
-        Paid plans are billed monthly through Shopify in USD. Cancel anytime.
-        Extra generations require in-app opt-in ($0.08 USD each, pay-as-you-go). Tap ⓘ on a plan for details.
+        Paid plans are billed monthly through Shopify in USD. Cancel anytime. Tap ⓘ on a plan for
+        details.
       </p>
 
       <Dialog open={!!upgradePlan} onOpenChange={(open) => !open && setUpgradePlan(null)}>
@@ -356,7 +586,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
   if (inline) return content;
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-muted/30 p-4">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-muted/30 p-4">
       {content}
     </div>
   );

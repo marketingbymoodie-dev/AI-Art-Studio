@@ -315,6 +315,17 @@ export default function PlatformCatalogPage() {
           </Select>
         </div>
 
+        {!isLoading && (
+          <p className="text-sm text-muted-foreground" data-testid="text-platform-catalog-count">
+            Showing {filteredProducts.length} of {products.length} products
+            {statusFilter === "live"
+              ? " (published)"
+              : statusFilter === "draft"
+                ? " (draft)"
+                : ""}
+          </p>
+        )}
+
         {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading catalog…

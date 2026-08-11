@@ -168,6 +168,23 @@ export function trialToPaidMeteringReset(now: Date = new Date()) {
   };
 }
 
+/**
+ * On paid_upgrade: PAYG-billed gens must not advance the freeQuota watermark.
+ * Rebase used → included only; clear live overage counter (charges already on Shopify).
+ */
+export function paidUpgradeMeteringRebase(
+  monthlyGenerationsUsed: number,
+  monthlyOverageUsed: number,
+): { monthlyGenerationsUsed: number; monthlyOverageUsed: number } {
+  const used = Math.max(0, Math.floor(monthlyGenerationsUsed || 0));
+  const overage = Math.max(0, Math.floor(monthlyOverageUsed || 0));
+  const included = Math.max(0, used - overage);
+  return {
+    monthlyGenerationsUsed: included,
+    monthlyOverageUsed: 0,
+  };
+}
+
 /** Reset metering when a deferred downgrade takes effect (no gen rollover). */
 export function downgradeMeteringReset(now: Date = new Date()) {
   return {

@@ -3,6 +3,7 @@
  */
 import { storage } from "./storage";
 import { getPageLimit } from "./customizer-plans";
+import { getActiveCatalogue, findCataloguePlan } from "./pricing-catalogue";
 import { downgradeMeteringReset, isPaidPlan } from "./plan-transitions";
 import type { ShopifyInstallation } from "@shared/schema";
 
@@ -18,11 +19,15 @@ export async function applyPendingPlanIfDue(
     return { applied: false, deactivatedPageIds: [] };
   }
 
-  const pageLimit = getPageLimit(pending);
+  const active = await getActiveCatalogue();
+  const catPlan = findCataloguePlan(active, pending);
+  const pageLimit = catPlan?.pageLimit ?? getPageLimit(pending);
   const baseUpdates: Partial<ShopifyInstallation> = {
     planName: pending,
     pendingPlanName: null,
     pendingPlanEffectiveAt: null,
+    // Deferred apply stamps the *active* offer at apply time (new terms).
+    pricingVersion: active.id,
   };
 
   if (pending === "trial") {

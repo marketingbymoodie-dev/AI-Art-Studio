@@ -4,10 +4,13 @@
 import { storage } from "./storage";
 import {
   getEffectivePlan,
+  isOwnerQuotaBypassShop,
   resolveGenerationQuota,
+  resolveOveragePriceUsd,
   PLAN_DISPLAY_NAMES,
   type GenerationQuotaConfig,
 } from "./customizer-plans";
+import { getCatalogueForInstallation } from "./pricing-catalogue";
 import { emitOverageUsageCharge } from "./usage-billing";
 import {
   includedUsedFromCounters,
@@ -59,12 +62,6 @@ export interface MerchantQuotaDecision {
   /** True when included quota exhausted and not opted in. */
   includedExhausted: boolean;
   currency: "USD";
-}
-
-function isOwnerShop(shopDomain: string | null | undefined): boolean {
-  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-  if (!ownerShop || !shopDomain) return false;
-  return shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop;
 }
 
 function enrichDecision(
@@ -221,7 +218,14 @@ async function resolveQuotaContext(installation: ShopifyInstallation): Promise<{
   // prevents tyre-kicker abuse on a page nobody can actually fulfil yet.
   const merchant = await storage.getMerchantByShop(refreshed.shopDomain);
   const printifyConnected = isPrintifyConnected(merchant);
-  const quota = resolveGenerationQuota(eff.planName, eff.isActive && printifyConnected);
+  // Enforcement catalogue = shop stamp (not active offer).
+  const catalogue = await getCatalogueForInstallation(refreshed.pricingVersion);
+  const quota = resolveGenerationQuota(
+    eff.planName,
+    eff.isActive && printifyConnected,
+    new Date(),
+    catalogue,
+  );
   const effectiveOverageCap = resolveEffectiveOverageCap(refreshed, quota);
   const hardCap = quota.freeQuota + effectiveOverageCap;
   return { quota, effectiveOverageCap, hardCap };
@@ -253,7 +257,7 @@ function classifyBlock(
 export async function peekMerchantGenerationQuota(
   installation: ShopifyInstallation,
 ): Promise<MerchantQuotaDecision> {
-  if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
+  if (isOwnerQuotaBypassShop(installation.shopDomain)) return unlimitedDecision(null);
 
   const { quota, effectiveOverageCap, hardCap } = await resolveQuotaContext(installation);
   const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
@@ -293,7 +297,7 @@ export async function peekMerchantGenerationQuota(
 export async function consumeMerchantGenerationQuota(
   installation: ShopifyInstallation,
 ): Promise<MerchantQuotaDecision> {
-  if (isOwnerShop(installation.shopDomain)) return unlimitedDecision(null);
+  if (isOwnerQuotaBypassShop(installation.shopDomain)) return unlimitedDecision(null);
 
   const { quota, effectiveOverageCap } = await resolveQuotaContext(installation);
   const refreshed = (await storage.getShopifyInstallation(installation.id)) ?? installation;
@@ -313,11 +317,13 @@ export async function consumeMerchantGenerationQuota(
   }
 
   if (r.isOverage && quota.overagePriceUsd > 0) {
+    // Volume-aware price from the shop's stamped catalogue schedule.
+    const priceUsd = resolveOveragePriceUsd(r.overageUsed, quota.overageSchedule);
     void emitOverageUsageCharge({
       installation: refreshed,
       bucketKey: quota.bucketKey,
       overageSeq: r.overageUsed,
-      priceUsd: quota.overagePriceUsd,
+      priceUsd,
     }).catch((err) => {
       console.error(
         `[generation-quota] overage charge emit failed for ${refreshed.shopDomain}:`,

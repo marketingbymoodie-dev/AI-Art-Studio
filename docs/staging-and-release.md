@@ -27,7 +27,6 @@ You + Cursor edit code
 | Database | **new** Postgres (auto with Railway) | existing DB — never point staging at this |
 | Shopify Partner app | **new** app e.g. `AI Art Studio (Staging)` | current `AI Art Studio` |
 | Store | your **demo / development** store only | merchant stores |
-| Stripe | **test** keys | live keys |
 | Supabase | same project OK at first (see below) | same project |
 
 ---
@@ -58,6 +57,38 @@ That publishes theme/checkout extensions to the **staging** Partner app only.
 
 **Install Shopify CLI once** (Windows): follow [Shopify CLI install](https://shopify.dev/docs/api/shopify-cli). You only need the terminal for Shopify extension deploy / occasional `shopify app dev` — not for every code edit.
 
+### B0b. Copy curated Platform Catalog (once)
+
+Staging Postgres does **not** inherit production’s `platform_catalog_blueprints`.
+Calibrations / panel templates in Supabase are already shared — you only copy the
+allowlist rows (no re-harvest).
+
+From the repo (use each Postgres **Variables → `DATABASE_PUBLIC_URL`** if your PC
+cannot reach the private `DATABASE_URL`):
+
+```powershell
+$env:SOURCE_DATABASE_URL = "<production DATABASE_PUBLIC_URL>"
+$env:TARGET_DATABASE_URL = "<staging DATABASE_PUBLIC_URL>"
+npm run sync:platform-catalog
+```
+
+Then hard-refresh **Platform Catalog** on the staging app.
+
+### B0. Fresh staging database (required once)
+
+Railway Staging Postgres starts **empty**. Production schema is NOT copied when you
+duplicate an environment. On first boot the app runs startup migrations that
+`CREATE TABLE IF NOT EXISTS` for core tables (`shopify_installations`, `merchants`, …).
+
+After the first green Staging deploy with those migrations:
+
+1. Re-install **AI Art Studio (Staging)** on the demo store (or open the app so OAuth
+   writes a real install row) — earlier installs may have failed to save.
+2. Then continue Setup (App Embed → product).
+
+If logs show `relation "shopify_installations" does not exist`, Staging is still on an
+old build or migrations failed — redeploy Staging and check startup logs.
+
 ### B. Railway (staging service)
 
 1. In Railway → open the **current production** project.
@@ -75,12 +106,10 @@ That publishes theme/checkout extensions to the **staging** Partner app only.
 
 | Variable | Staging value |
 |----------|----------------|
-| `APP_URL` / `PUBLIC_APP_URL` | Staging Railway HTTPS URL |
+| `APP_URL` / `PUBLIC_APP_URL` | Staging Railway HTTPS URL (set **both** to the same URL if unsure — OAuth uses these for `/shopify/callback`) |
 | `SHOPIFY_API_KEY` | Staging app **Client ID** |
 | `SHOPIFY_API_SECRET` | Staging app **Client secret** |
 | `DATABASE_URL` | **New** staging Postgres only |
-| `STRIPE_SECRET_KEY` | Stripe **test** secret (`sk_test_…`) |
-| `STRIPE_WEBHOOK_SECRET` | Webhook secret for staging endpoint (see Stripe below) |
 | `OWNER_SHOP_DOMAIN` | Your **demo** store `something.myshopify.com` |
 | `NODE_ENV` | `production` (normal for Railway hosts) |
 
@@ -114,14 +143,7 @@ Optional later (only if staging files clutter production buckets):
 
 **Never** point staging `DATABASE_URL` at production Postgres. That is the dangerous mix-up — not Supabase buckets.
 
-### E. Stripe (if you test billing on staging)
-
-1. Stripe Dashboard → **Test mode**.
-2. Webhooks → add endpoint: `https://<staging-railway-url>/…` (same path as production webhook).
-3. Put the test signing secret into staging `STRIPE_WEBHOOK_SECRET`.
-4. Production keeps live keys + live webhook.
-
-### F. Lock the habit
+### E. Lock the habit
 
 - Day-to-day default Shopify config: **staging** (`npm run shopify:config:use:staging`).
 - Only use production Shopify deploy when going live (`npm run shopify:deploy:production`).
@@ -146,7 +168,6 @@ Cursor will drive this. Your job is mostly answering prompts.
 - Add to cart → cart thumbnail is the custom mockup (shadow SKU)
 - Checkout image still correct
 - Hard refresh still lands near the preview (not buried at footer)
-- If you touched billing: Stripe **test** mode only
 
 ---
 

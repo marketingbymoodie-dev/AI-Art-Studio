@@ -94,7 +94,12 @@ export function usePrintifyCatalogFilters(options: UsePrintifyCatalogFiltersOpti
     queryKey: ["/api/admin/printify/blueprints", "all"],
     queryFn: async () => {
       const res = await fetch("/api/admin/printify/blueprints", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch Printify catalog");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as { message?: string; error?: string }));
+        throw new Error(
+          body.message || body.error || "Failed to fetch Printify catalog",
+        );
+      }
       return res.json();
     },
     enabled,

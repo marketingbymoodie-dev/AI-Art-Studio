@@ -78,11 +78,20 @@ import {
 import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
+  isVariantKeyAvailable,
+  parseVariantAvailabilityMap,
+  type VariantAvailabilityMap,
+} from "@shared/productIntelligence";
+import {
   detectStylePromptMismatch,
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
 import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
-import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  STOREFRONT_FREE_GENERATION_DEFAULT,
+  STOREFRONT_FREE_GENERATION_LIMIT,
+  storefrontArtworksRemaining,
+} from "@shared/storefront-credits";
 import {
   canvasOrientationFromAspect,
   filterSizesByCanvasOrientation,
@@ -259,8 +268,17 @@ interface ProductTypeConfig {
   printShape?: PrintShape;
   canvasConfig?: CanvasConfig;
   sizes: Array<{ id: string; name: string; width: number; height: number; aspectRatio?: string }>;
-  frameColors: Array<{ id: string; name: string; hex: string; variantAvailable?: boolean }>;
+  frameColors: Array<{
+    id: string;
+    name: string;
+    hex: string;
+    variantAvailable?: boolean;
+    inStock?: boolean;
+  }>;
   variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
+  /** Product Intelligence: sizeId:colorId → stock status */
+  variantAvailability?: VariantAvailabilityMap;
+  unavailableVariantKeys?: string[];
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, any>;
   doubleSidedPrint?: boolean;
@@ -1748,6 +1766,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
+  /** Disabled customizer pages may reopen a saved design for ATC, but not Start Fresh / new generate. */
+  const [freshDesignAllowed, setFreshDesignAllowed] = useState(
+    () => searchParams.get("freshDesignAllowed") !== "0",
+  );
   const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
@@ -1821,6 +1843,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       ),
     [frameColorObjects],
   );
+
+  /** Product Intelligence: sizes unavailable for the selected colour. */
+  const outOfStockSizeIds = useMemo(() => {
+    const avail =
+      typeof productTypeConfig?.variantAvailability === "string"
+        ? parseVariantAvailabilityMap(productTypeConfig.variantAvailability)
+        : (productTypeConfig?.variantAvailability ?? {});
+    if (Object.keys(avail).length === 0) return [] as string[];
+    const colorId = selectedFrameColor || "default";
+    const oos: string[] = [];
+    for (const size of printSizes) {
+      if (!isVariantKeyAvailable(avail, size.id, colorId)) oos.push(size.id);
+    }
+    return oos;
+  }, [productTypeConfig?.variantAvailability, printSizes, selectedFrameColor]);
+
+  // If the current size becomes OOS for this colour, move to the first in-stock size.
+  useEffect(() => {
+    if (!selectedSize || outOfStockSizeIds.length === 0) return;
+    if (!outOfStockSizeIds.includes(selectedSize)) return;
+    const next = printSizes.find((s) => !outOfStockSizeIds.includes(s.id));
+    if (next) setSelectedSize(next.id);
+  }, [selectedSize, outOfStockSizeIds, printSizes]);
 
   // Hide the redundant Printify "Model" dropdown when models already live in Size.
   const showFrameColorSelector =
@@ -1991,6 +2036,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false);
+  const [freeGenerationLimit, setFreeGenerationLimit] = useState(STOREFRONT_FREE_GENERATION_DEFAULT);
+  type PublicRewardRung = {
+    rungKey: "email_signup" | "share_design" | "purchase_threshold";
+    enabled: boolean;
+    creditAmount: number;
+    thresholdCents: number | null;
+    sortOrder?: number;
+  };
+  type PublicRewardLadder = {
+    purchaseRewardsEnabled: boolean;
+    rungs: PublicRewardRung[];
+  };
+  const [rewardLadderPublic, setRewardLadderPublic] = useState<PublicRewardLadder | null>(null);
   const [centralAppUrl, setCentralAppUrl] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const googleAuthNonceRef = useRef<string | null>(null);
@@ -2144,6 +2202,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       .then(data => {
         setGoogleAuthEnabled(!!data.googleClientId);
         setCentralAppUrl(typeof data.appUrl === "string" ? data.appUrl.replace(/\/$/, "") : buildCentralAppUrl(""));
+        if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
+          setFreeGenerationLimit(data.freeGenerationLimit);
+        }
+        const ladder = data.rewardLadder;
+        if (ladder && Array.isArray(ladder.rungs)) {
+          setRewardLadderPublic({
+            purchaseRewardsEnabled: ladder.purchaseRewardsEnabled !== false,
+            rungs: ladder.rungs.filter(
+              (r: any) =>
+                r &&
+                (r.rungKey === "email_signup" ||
+                  r.rungKey === "share_design" ||
+                  r.rungKey === "purchase_threshold"),
+            ),
+          });
+        }
       })
       .catch(() => {
         setGoogleAuthEnabled(false);
@@ -2284,12 +2358,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
   const [creditsPopoverOpen, setCreditsPopoverOpen] = useState(false);
-  const [creditsPurchaseLoading, setCreditsPurchaseLoading] = useState(false);
   const paidCredits = customer?.credits ?? 0;
   const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
   const artworksRemaining = storefrontArtworksRemaining({
     freeGenerationsUsed: freeGenerationsUsedCount,
     paidCredits,
+    freeGenerationLimit,
   });
   const hasGenerationCapacity = artworksRemaining > 0;
   const storefrontLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
@@ -2443,7 +2517,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [isAdminTester],
   );
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
-  const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   // Ensures quick successive AOP edits do not let an older mockup response overwrite the latest one.
@@ -2453,15 +2526,46 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
 
+  const activeEarnRungs = useMemo(() => {
+    if (!rewardLadderPublic?.rungs?.length) return [] as PublicRewardRung[];
+    return [...rewardLadderPublic.rungs]
+      .filter((r) => {
+        if (!r.enabled || !(r.creditAmount > 0)) return false;
+        if (r.rungKey === "purchase_threshold" && !rewardLadderPublic.purchaseRewardsEnabled) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  }, [rewardLadderPublic]);
+
+  const describeEarnRung = useCallback((rung: PublicRewardRung) => {
+    const n = rung.creditAmount;
+    const credits = `${n} Studio Credit${n === 1 ? "" : "s"}`;
+    if (rung.rungKey === "email_signup") return `Sign in to earn ${credits}`;
+    if (rung.rungKey === "share_design") {
+      return `Share a design — earn ${credits} when someone opens your link`;
+    }
+    if (rung.rungKey === "purchase_threshold") {
+      const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
+      return `Order over $${dollars} — earn ${credits}`;
+    }
+    return credits;
+  }, []);
+
   const notifyInsufficientCredits = useCallback(() => {
     setCreditsPopoverOpen(true);
+    const hints = activeEarnRungs.map(describeEarnRung);
     toast({
       title: "No artwork credits remaining",
-      description:
-        "Purchase more credits to generate new artwork. Credits are refunded when you complete a purchase.",
+      description: hints.length
+        ? hints.slice(0, 2).join(". ") + (hints.length > 2 ? "." : "")
+        : storefrontLoggedIn
+          ? "Check Studio Credits for ways to earn more."
+          : "Sign in to earn Studio Credits.",
       duration: 8000,
     });
-  }, [toast]);
+  }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn]);
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
@@ -4093,6 +4197,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       designerConfig: config.designerConfig,
       stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
     });
+    if (typeof config.freshDesignAllowed === "boolean") {
+      setFreshDesignAllowed(config.freshDesignAllowed);
+    }
 
     const mockupSrc = (design.mockupUrls && design.mockupUrls[0]) || "";
     const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : "";
@@ -4255,6 +4362,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       designerConfig: config.designerConfig,
       stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
     });
+    if (typeof config.freshDesignAllowed === "boolean") {
+      setFreshDesignAllowed(config.freshDesignAllowed);
+    }
 
     try {
       const parentUrl = new URL(window.parent.location.href);
@@ -6329,6 +6439,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             : storefrontArtworksRemaining({
                 freeGenerationsUsed: nextFreeUsed,
                 paidCredits: nextPaidCredits,
+                freeGenerationLimit,
               });
 
         console.log('[EmbedDesign] Updating balance — paid:', nextPaidCredits, 'freeUsed:', nextFreeUsed, 'remaining:', remaining);
@@ -6630,74 +6741,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return headers;
   };
 
-  const handleBuyMoreCredits = async () => {
-    if (!storefrontCustomerId) {
-      setCreditsPopoverOpen(false);
-      setLoginError("Please sign in before purchasing more artwork credits.");
-      toast({
-        title: "Sign in required",
-        description: "Sign in first, then you can purchase more artwork credits.",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (!shopDomain) {
-      toast({
-        title: "Shop missing",
-        description: "Reload the customizer and try again.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setCreditsPurchaseLoading(true);
-
-    // Persist the exact storefront customerId BEFORE navigating away so we can
-    // recover it after Stripe redirects us back to the designer page. We never
-    // rely on logged_in_customer_id from Shopify — the app proxy omits it.
-    try {
-      localStorage.setItem('appai_customer_id', storefrontCustomerId);
-      localStorage.setItem('appai_credits_pending_customer_id', storefrontCustomerId);
-      sessionStorage.setItem('appai_credits_pending_customer_id', storefrontCustomerId);
-    } catch {}
-
-    // Build a clean storefront-proxy return URL (never admin.shopify.com).
-    // Preserve useful query params (product/variant/etc) from the current URL
-    // so the designer re-opens in the same context after checkout.
-    const returnUrl = new URL(`https://${shopDomain}/apps/appai/s/designer`);
-    try {
-      const currentQuery = new URLSearchParams(window.location.search);
-      currentQuery.forEach((value, key) => {
-        if (!value) return;
-        if (key === 'credits' || key === 'session_id' || key === 'customerId' || key === 'shop') return;
-        returnUrl.searchParams.set(key, value);
-      });
-    } catch {}
-    returnUrl.searchParams.set('shop', shopDomain);
-    returnUrl.searchParams.set('customerId', storefrontCustomerId);
-
-    const params = new URLSearchParams({
-      customerId: storefrontCustomerId,
-      shop: shopDomain,
-      package: "10",
-      returnUrl: returnUrl.toString(),
-    });
-    const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
-    console.log('[More Credits] redirecting to checkout for customerId', storefrontCustomerId);
-    try {
-      window.top!.location.href = checkoutUrl;
-    } catch {
-      window.location.href = checkoutUrl;
-    }
-    window.setTimeout(() => setCreditsPurchaseLoading(false), 8000);
-  };
-
   const handleGenerate = async (options?: {
     skipStyleMismatchCheck?: boolean;
     overridePresetId?: string;
     overridePrompt?: string;
     overrideReferenceImagesBase64?: string[];
   }) => {
+    if (!freshDesignAllowed) {
+      toast({
+        title: "Fresh designs unavailable",
+        description: "This page is not Live. You can still add a saved design to cart.",
+        variant: "destructive",
+      });
+      return;
+    }
     let effectivePresetId = options?.overridePresetId ?? selectedPreset;
     if (options?.overridePresetId) {
       setSelectedPreset(options.overridePresetId);
@@ -7661,6 +7718,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
 
+    // Product Intelligence: refuse OOS size/colour before shadow resolve / cart.
+    if (selectedSize && outOfStockSizeIds.includes(selectedSize)) {
+      setVariantError(
+        isPhoneCaseProduct
+          ? "That model is currently out of stock. Please choose another."
+          : "That size is currently out of stock. Please choose another.",
+      );
+      return;
+    }
+    {
+      const avail =
+        typeof productTypeConfig?.variantAvailability === "string"
+          ? parseVariantAvailabilityMap(productTypeConfig.variantAvailability)
+          : (productTypeConfig?.variantAvailability ?? {});
+      if (
+        Object.keys(avail).length > 0 &&
+        selectedSize &&
+        !isVariantKeyAvailable(avail, selectedSize, selectedFrameColor || "default")
+      ) {
+        setVariantError("That size/color combination is currently out of stock.");
+        return;
+      }
+    }
+
     // Flat apparel: if either enabled face is past the dashed guide, confirm first.
     if (
       usesFlatOnTheFlyPreview &&
@@ -7896,6 +7977,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             variantId: normalizedVariant,
             designId: properties['_design_id'],
             mockupUrl: mockupFullUrl,
+            productTypeId: productTypeConfig?.id ?? productTypeId,
+            sizeId: selectedSize,
+            colorId: selectedFrameColor || "default",
             ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
           }),
           signal: controller.signal,
@@ -8646,16 +8730,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           text: `Check out this custom design I created: "${prompt}"`,
           url: shareUrl,
         });
+        const shareRung = activeEarnRungs.find((r) => r.rungKey === "share_design");
         toast({
           title: "Shared!",
-          description: "Your design was shared successfully.",
+          description: shareRung
+            ? `Shared successfully. You'll earn ${shareRung.creditAmount} Studio Credit${shareRung.creditAmount === 1 ? "" : "s"} when someone else opens your link.`
+            : "Your design was shared successfully.",
         });
       } else {
         // Fallback: copy to clipboard
         await navigator.clipboard.writeText(shareUrl);
+        const shareRung = activeEarnRungs.find((r) => r.rungKey === "share_design");
         toast({
           title: "Link Copied!",
-          description: "Share link copied to clipboard.",
+          description: shareRung
+            ? `Link copied. You'll earn ${shareRung.creditAmount} Studio Credit${shareRung.creditAmount === 1 ? "" : "s"} when someone else opens it.`
+            : "Share link copied to clipboard.",
         });
       }
     } catch (err: any) {
@@ -9282,6 +9372,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         if (event.data.styleConfig !== undefined) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
+        }
+        if (typeof event.data.freshDesignAllowed === "boolean") {
+          setFreshDesignAllowed(event.data.freshDesignAllowed);
         }
         setConfigLoading(false);
       }
@@ -10777,7 +10870,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const credits = paidCredits;
   const artworksRemainingLabel = (() => {
     if (sessionLoading && !customer) {
-      return `${STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
+      return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
     }
     if (artworksRemaining > 0) {
       const noun = isLoggedIn ? 'artwork' : 'free artwork';
@@ -10785,119 +10878,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     return '0 artworks remaining';
   })();
-  useEffect(() => {
-    if (!isStorefront || creditsReturnHandledRef.current || !shopDomain) return;
-    const params = new URLSearchParams(window.location.search);
-    const creditsStatus = params.get("credits");
-    if (creditsStatus !== "success" && creditsStatus !== "cancelled") return;
-
-    creditsReturnHandledRef.current = true;
-    if (creditsStatus === "cancelled") {
-      toast({ title: "Checkout cancelled", description: "No credits were added." });
-      // Clean URL so a manual reload does not re-trigger this flow
-      try {
-        const cleaned = new URL(window.location.href);
-        cleaned.searchParams.delete('credits');
-        cleaned.searchParams.delete('session_id');
-        window.history.replaceState({}, document.title, cleaned.toString());
-      } catch {}
-      return;
-    }
-
-    // Resolve the customerId deterministically — Shopify app proxy omits
-    // logged_in_customer_id, so we cannot rely on it. Order of preference:
-    //   1. ?customerId= query string we attached to the success_url
-    //   2. sessionStorage / localStorage marker saved before redirect
-    //   3. current storefrontCustomerId state (hydrated from localStorage)
-    let resolvedCustomerId: string | null = params.get("customerId");
-    if (!resolvedCustomerId) {
-      try { resolvedCustomerId = sessionStorage.getItem('appai_credits_pending_customer_id'); } catch {}
-    }
-    if (!resolvedCustomerId) {
-      try { resolvedCustomerId = localStorage.getItem('appai_credits_pending_customer_id'); } catch {}
-    }
-    if (!resolvedCustomerId) {
-      try { resolvedCustomerId = localStorage.getItem('appai_customer_id'); } catch {}
-    }
-    if (!resolvedCustomerId) resolvedCustomerId = storefrontCustomerId;
-
-    if (!resolvedCustomerId) {
-      console.warn('[Credits Return] no customerId available after Stripe redirect');
-      return;
-    }
-
-    // Keep app state + localStorage aligned with whichever ID we recovered.
-    try {
-      localStorage.setItem('appai_customer_id', resolvedCustomerId);
-      localStorage.removeItem('appai_credits_pending_customer_id');
-      sessionStorage.removeItem('appai_credits_pending_customer_id');
-    } catch {}
-    if (resolvedCustomerId !== storefrontCustomerId) {
-      setStorefrontCustomerId(resolvedCustomerId);
-    }
-
-    console.log('[Credits Return] refreshing status for customerId', resolvedCustomerId);
-    toast({ title: "Payment complete", description: "Refreshing your artwork credits..." });
-
-    const checkoutSessionId = params.get("session_id");
-    const refreshCredits = () => {
-      const statusParams = new URLSearchParams({
-        shop: shopDomain,
-        customerId: resolvedCustomerId!,
-      });
-      if (checkoutSessionId) statusParams.set("session_id", checkoutSessionId);
-      const statusUrl = `${API_BASE}/api/storefront/credits/status?${statusParams.toString()}`;
-      const headers: Record<string, string> = {};
-      if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
-      safeFetch(statusUrl, { headers })
-        .then((res) => res.json())
-        .then((data) => {
-          if (!data || data.ok === false) {
-            console.warn('[Credits Return] status response not ok', data);
-            return;
-          }
-          if (data.identityToken) {
-            setStorefrontIdentityToken(data.identityToken);
-            try { localStorage.setItem('appai_identity_token', data.identityToken); } catch {}
-          }
-          console.log('[Credits Return] new balance', data.credits);
-          setCustomer((prev) => {
-            const next = {
-              ...(prev || { id: resolvedCustomerId!, isLoggedIn: true }),
-              id: resolvedCustomerId!,
-              credits: typeof data.credits === 'number' ? data.credits : (prev?.credits ?? 0),
-              freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed,
-              isLoggedIn: true,
-            };
-            try { localStorage.setItem('appai_customer', JSON.stringify(next)); } catch {}
-            return next;
-          });
-          toast({
-            title: 'Credits added',
-            description: `You now have ${data.credits ?? 0} artwork credit${(data.credits ?? 0) === 1 ? '' : 's'}.`,
-          });
-        })
-        .catch((err) => {
-          console.error('[Credits Return] status fetch failed', err);
-        });
-    };
-
-    // Refresh once immediately, then again shortly after — the Stripe webhook
-    // may land a moment after the browser redirect, so a short retry avoids
-    // a stale zero-balance.
-    refreshCredits();
-    window.setTimeout(refreshCredits, 2500);
-    window.setTimeout(refreshCredits, 6000);
-
-    // Strip the credits/session_id params so refreshes do not re-trigger.
-    try {
-      const cleaned = new URL(window.location.href);
-      cleaned.searchParams.delete('credits');
-      cleaned.searchParams.delete('session_id');
-      window.history.replaceState({}, document.title, cleaned.toString());
-    } catch {}
-  }, [isStorefront, storefrontCustomerId, storefrontIdentityToken, shopDomain, toast]);
-
   useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
@@ -11095,7 +11075,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               }
               handleGenerate();
             }}
-            disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+            disabled={!freshDesignAllowed || !!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
@@ -11120,44 +11100,46 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {isStorefront && bridgeError && (
               <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-bridge-error")}>{bridgeError}</p>
             )}
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-              onClick={() => {
-                setGeneratedDesign(null);
-                lastAopPanelUrlsRef.current = null;
-                setFlatPlacerState(null);
-                setFlatPlacerEditOpen(false);
-                setFlatApplyStatus("idle");
-                setFlatRenderFailed(false);
-                setDesignSource(null);
-                setAddedToCart(false);
-                loadDesignAppliedRef.current = false;
-                setBridgeLoadDesignId('');
-                setReferenceImages([]);
-                setReferencePreviews([]);
-                if (fileInputRef.current) fileInputRef.current.value = '';
-                setSelectedPreset('');
-                setSelectedStyleOption('');
-                setSelectedSize('');
-                setSelectedFrameColor('');
-                try {
-                  const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                  sessionStorage.removeItem(stateKey);
-                } catch (_) {}
-                const url = new URL(window.location.href);
-                url.searchParams.delete('loadDesignId');
-                window.history.replaceState({}, '', url.toString());
-                try {
-                  const parentUrl = new URL(window.parent.location.href);
-                  parentUrl.searchParams.delete('loadDesignId');
-                  window.parent.history.replaceState({}, '', parentUrl.toString());
-                } catch (_) {}
-              }}
-            >
-              <Plus className="w-3 h-3" />
-              Start Fresh Design
-            </button>
+            {freshDesignAllowed && (
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                onClick={() => {
+                  setGeneratedDesign(null);
+                  lastAopPanelUrlsRef.current = null;
+                  setFlatPlacerState(null);
+                  setFlatPlacerEditOpen(false);
+                  setFlatApplyStatus("idle");
+                  setFlatRenderFailed(false);
+                  setDesignSource(null);
+                  setAddedToCart(false);
+                  loadDesignAppliedRef.current = false;
+                  setBridgeLoadDesignId('');
+                  setReferenceImages([]);
+                  setReferencePreviews([]);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                  setSelectedPreset('');
+                  setSelectedStyleOption('');
+                  setSelectedSize('');
+                  setSelectedFrameColor('');
+                  try {
+                    const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+                    sessionStorage.removeItem(stateKey);
+                  } catch (_) {}
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete('loadDesignId');
+                  window.history.replaceState({}, '', url.toString());
+                  try {
+                    const parentUrl = new URL(window.parent.location.href);
+                    parentUrl.searchParams.delete('loadDesignId');
+                    window.parent.history.replaceState({}, '', parentUrl.toString());
+                  } catch (_) {}
+                }}
+              >
+                <Plus className="w-3 h-3" />
+                Start Fresh Design
+              </button>
+            )}
             {isStorefront && (
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                 {artworksRemainingLabel}
@@ -11384,27 +11366,64 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
         <DialogContent className="text-sm space-y-3 sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Artwork Credits</DialogTitle>
+            <DialogTitle>Studio Credits</DialogTitle>
           </DialogHeader>
-          <p className="text-muted-foreground">You get {STOREFRONT_FREE_GENERATION_LIMIT} free AI-generated artworks to try.</p>
-                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="w-full"
-                    onClick={handleBuyMoreCredits}
-                    disabled={creditsPurchaseLoading}
-                  >
-                    {creditsPurchaseLoading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Opening Checkout...
-                      </>
-                    ) : (
-                      "More Credits"
-                    )}
-                  </Button>
+          <p className="text-muted-foreground">
+            Balance: {paidCredits} Studio Credit{paidCredits === 1 ? "" : "s"}.
+          </p>
+          <p className="text-muted-foreground">
+            {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
+            {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
+          </p>
+          {activeEarnRungs.length > 0 ? (
+            <div className="rounded-md bg-muted p-3 space-y-2">
+              <p className="font-medium text-foreground">Ways to earn</p>
+              <ul className="space-y-1.5 text-muted-foreground list-disc pl-4">
+                {activeEarnRungs.map((rung) => (
+                  <li key={rung.rungKey}>{describeEarnRung(rung)}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="rounded-md bg-muted p-3 text-muted-foreground">
+              No earn rewards are enabled for this shop right now.
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            {!storefrontLoggedIn && (
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => {
+                  setCreditsPopoverOpen(false);
+                  setShowOtpLogin(true);
+                }}
+              >
+                Sign in to earn credits
+              </Button>
+            )}
+            {activeEarnRungs.some((r) => r.rungKey === "share_design") && !!generatedDesign?.imageUrl && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={isSharing}
+                onClick={() => {
+                  setCreditsPopoverOpen(false);
+                  void handleShare();
+                }}
+              >
+                {isSharing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Sharing…
+                  </>
+                ) : (
+                  "Share a design"
+                )}
+              </Button>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
@@ -11448,7 +11467,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
             <CardContent className="py-3">
               <p className="text-orange-700 dark:text-orange-300 text-sm font-medium">
-                You've used all 10 free generations. Create an account to continue designing!
+                You've used all {freeGenerationLimit} free generations. Create an account to continue designing!
               </p>
             </CardContent>
           </Card>
@@ -12194,7 +12213,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         handleGenerate();
                       }}
-                      disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+                      disabled={!freshDesignAllowed || !!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -12220,40 +12239,42 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       {isStorefront && bridgeError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
                       )}
-                      <button
-                        type="button"
-                        className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-                        onClick={() => {
-                          setGeneratedDesign(null);
-                          lastAopPanelUrlsRef.current = null;
-                          setDesignSource(null);
-                          setAddedToCart(false);
-                          loadDesignAppliedRef.current = false;
-                          setBridgeLoadDesignId('');
-                          setReferenceImages([]);
-                          setReferencePreviews([]);
-                          if (fileInputRef.current) fileInputRef.current.value = '';
-                          setSelectedPreset('');
-                          setSelectedStyleOption('');
-                          setSelectedSize('');
-                          setSelectedFrameColor('');
-                          try {
-                            const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                            sessionStorage.removeItem(stateKey);
-                          } catch (_) {}
-                          const url = new URL(window.location.href);
-                          url.searchParams.delete('loadDesignId');
-                          window.history.replaceState({}, '', url.toString());
-                          try {
-                            const parentUrl = new URL(window.parent.location.href);
-                            parentUrl.searchParams.delete('loadDesignId');
-                            window.parent.history.replaceState({}, '', parentUrl.toString());
-                          } catch (_) {}
-                        }}
-                      >
-                        <Plus className="w-3 h-3" />
-                        Start Fresh Design
-                      </button>
+                      {freshDesignAllowed && (
+                        <button
+                          type="button"
+                          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                          onClick={() => {
+                            setGeneratedDesign(null);
+                            lastAopPanelUrlsRef.current = null;
+                            setDesignSource(null);
+                            setAddedToCart(false);
+                            loadDesignAppliedRef.current = false;
+                            setBridgeLoadDesignId('');
+                            setReferenceImages([]);
+                            setReferencePreviews([]);
+                            if (fileInputRef.current) fileInputRef.current.value = '';
+                            setSelectedPreset('');
+                            setSelectedStyleOption('');
+                            setSelectedSize('');
+                            setSelectedFrameColor('');
+                            try {
+                              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+                              sessionStorage.removeItem(stateKey);
+                            } catch (_) {}
+                            const url = new URL(window.location.href);
+                            url.searchParams.delete('loadDesignId');
+                            window.history.replaceState({}, '', url.toString());
+                            try {
+                              const parentUrl = new URL(window.parent.location.href);
+                              parentUrl.searchParams.delete('loadDesignId');
+                              window.parent.history.replaceState({}, '', parentUrl.toString());
+                            } catch (_) {}
+                          }}
+                        >
+                          <Plus className="w-3 h-3" />
+                          Start Fresh Design
+                        </button>
+                      )}
                       {isStorefront && (
                         <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                           {artworksRemainingLabel}
@@ -12478,6 +12499,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           }
                         }}
                         prices={buildPriceMap()}
+                        outOfStockSizeIds={outOfStockSizeIds}
                       />
                       <div className="mt-0.5 min-h-[1rem]">
                         {selectedSize === "" && (
@@ -12535,6 +12557,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                       }}
                       prices={buildPriceMap()}
+                      outOfStockSizeIds={outOfStockSizeIds}
                     />
                     <div className="mt-0.5 min-h-[1rem]">
                       {selectedSize === "" && (

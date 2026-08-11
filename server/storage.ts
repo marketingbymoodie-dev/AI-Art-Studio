@@ -3,8 +3,6 @@ import {
   customerAliases, type CustomerAlias, type InsertCustomerAlias,
   creditBalances, type CreditBalance,
   creditLedger, type CreditLedger, type InsertCreditLedger,
-  stripeEvents,
-  orderDiscountClaims, type OrderDiscountClaim, type InsertOrderDiscountClaim,
   merchants, type Merchant, type InsertMerchant,
   designs, type Design, type InsertDesign,
   orders, type Order, type InsertOrder,
@@ -45,12 +43,14 @@ export interface IStorage {
   addCustomerAlias(customerId: string, alias: Omit<InsertCustomerAlias, "customerId">): Promise<CustomerAlias | undefined>;
   applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }>;
   consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
-  consumeFreeGeneration(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
-  recordStripeEvent(stripeEventId: string, type: string): Promise<boolean>;
-  markStripeEventOutcome(stripeEventId: string, outcome: string): Promise<void>;
-  // Order discount claim audit row written when an orders/paid webhook reports
-  // an AppAI credit discount was applied. Idempotent on shopify_order_id.
-  recordOrderDiscountClaim(claim: InsertOrderDiscountClaim): Promise<{ inserted: boolean; claim: OrderDiscountClaim | undefined }>;
+  consumeFreeGeneration(
+    customerId: string,
+    idempotencyKey: string,
+    externalRef?: string,
+    freeGenerationLimit?: number,
+  ): Promise<{ consumed: boolean; balance: CreditBalance | undefined }>;
+  mergeCustomerWallets(fromCustomerId: string, toCustomerId: string): Promise<void>;
+  linkAnonCustomerToSignedIn(anonCustomerId: string, signedInCustomerId: string): Promise<void>;
   
   // Merchants
   getMerchant(id: string): Promise<Merchant | undefined>;
@@ -255,7 +255,7 @@ export class DatabaseStorage implements IStorage {
     if (!customer) {
       customer = await this.createCustomer({
         userId,
-        credits: 5,
+        credits: 0,
         freeGenerationsUsed: 0,
         totalGenerations: 0,
         totalSpent: "0.00",
@@ -291,8 +291,9 @@ export class DatabaseStorage implements IStorage {
       .values({
         customerId,
         credits: customer?.credits ?? 0,
+        earnedCredits: 0,
+        packCredits: 0,
         freeGenerationsUsed: customer?.freeGenerationsUsed ?? 0,
-        discountEntitlementCents: 0,
         version: 0,
         updatedAt: new Date(),
       })
@@ -383,6 +384,93 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  async mergeCustomerWallets(fromCustomerId: string, toCustomerId: string): Promise<void> {
+    if (fromCustomerId === toCustomerId) return;
+
+    await db.transaction(async (tx) => {
+      await tx
+        .insert(creditBalances)
+        .values([
+          { customerId: fromCustomerId, credits: 0, earnedCredits: 0, packCredits: 0, freeGenerationsUsed: 0, version: 0, updatedAt: new Date() },
+          { customerId: toCustomerId, credits: 0, earnedCredits: 0, packCredits: 0, freeGenerationsUsed: 0, version: 0, updatedAt: new Date() },
+        ])
+        .onConflictDoNothing();
+
+      const balances = await tx
+        .select()
+        .from(creditBalances)
+        .where(inArray(creditBalances.customerId, [fromCustomerId, toCustomerId]))
+        .for("update");
+      const fromBalance = balances.find((balance) => balance.customerId === fromCustomerId);
+      const toBalance = balances.find((balance) => balance.customerId === toCustomerId);
+      if (!fromBalance || !toBalance) {
+        throw new Error("Could not load customer wallets for merge");
+      }
+
+      const aliases = await tx
+        .select()
+        .from(customerAliases)
+        .where(eq(customerAliases.customerId, fromCustomerId));
+      for (const alias of aliases) {
+        await tx
+          .insert(customerAliases)
+          .values({
+            customerId: toCustomerId,
+            aliasType: alias.aliasType,
+            aliasValue: alias.aliasValue,
+            shop: alias.shop,
+          })
+          .onConflictDoNothing();
+      }
+      await tx.delete(customerAliases).where(eq(customerAliases.customerId, fromCustomerId));
+
+      const mergedCredits = toBalance.credits + fromBalance.credits;
+      const mergedEarnedCredits = toBalance.earnedCredits + fromBalance.earnedCredits;
+      const mergedPackCredits = toBalance.packCredits + fromBalance.packCredits;
+      const mergedFreeGenerations = toBalance.freeGenerationsUsed + fromBalance.freeGenerationsUsed;
+      const now = new Date();
+
+      await tx
+        .update(creditBalances)
+        .set({
+          credits: mergedCredits,
+          earnedCredits: mergedEarnedCredits,
+          packCredits: mergedPackCredits,
+          freeGenerationsUsed: mergedFreeGenerations,
+          version: sql`${creditBalances.version} + 1`,
+          updatedAt: now,
+        })
+        .where(eq(creditBalances.customerId, toCustomerId));
+      await tx
+        .update(creditBalances)
+        .set({
+          credits: 0,
+          earnedCredits: 0,
+          packCredits: 0,
+          freeGenerationsUsed: 0,
+          version: sql`${creditBalances.version} + 1`,
+          updatedAt: now,
+        })
+        .where(eq(creditBalances.customerId, fromCustomerId));
+      await tx
+        .update(customers)
+        .set({ credits: mergedCredits, freeGenerationsUsed: mergedFreeGenerations, updatedAt: now })
+        .where(eq(customers.id, toCustomerId));
+      await tx
+        .update(customers)
+        .set({ credits: 0, freeGenerationsUsed: 0, updatedAt: now })
+        .where(eq(customers.id, fromCustomerId));
+      await tx
+        .update(generationJobs)
+        .set({ customerId: toCustomerId, updatedAt: now })
+        .where(eq(generationJobs.customerId, fromCustomerId));
+    });
+  }
+
+  async linkAnonCustomerToSignedIn(anonCustomerId: string, signedInCustomerId: string): Promise<void> {
+    await this.mergeCustomerWallets(anonCustomerId, signedInCustomerId);
+  }
+
   async applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }> {
     return db.transaction(async (tx) => {
       await tx
@@ -390,8 +478,9 @@ export class DatabaseStorage implements IStorage {
         .values({
           customerId: entry.customerId,
           credits: 0,
+          earnedCredits: 0,
+          packCredits: 0,
           freeGenerationsUsed: 0,
-          discountEntitlementCents: 0,
           version: 0,
           updatedAt: new Date(),
         })
@@ -412,7 +501,12 @@ export class DatabaseStorage implements IStorage {
         .update(creditBalances)
         .set({
           credits: sql`GREATEST(0, ${creditBalances.credits} + ${entry.deltaCredits})`,
-          discountEntitlementCents: sql`LEAST(100, GREATEST(0, ${creditBalances.discountEntitlementCents} + ${entry.deltaEntitlementCents}))`,
+          ...(entry.source === "earned"
+            ? { earnedCredits: sql`GREATEST(0, ${creditBalances.earnedCredits} + ${entry.deltaCredits})` }
+            : {}),
+          ...(entry.source === "pack"
+            ? { packCredits: sql`GREATEST(0, ${creditBalances.packCredits} + ${entry.deltaCredits})` }
+            : {}),
           version: sql`${creditBalances.version} + 1`,
           updatedAt: new Date(),
         })
@@ -433,11 +527,17 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  /**
+   * Legacy: bucket-agnostic credit spend (does not distinguish earned vs pack,
+   * does not burn merchant quota on "earned"). Retained for coupon/manual
+   * paths only. Generation billing should use `spendStudioCredit` from
+   * `./studio-credits` so bucket accounting and quota burn stay correct.
+   */
   async consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
     return db.transaction(async (tx) => {
       await tx
         .insert(creditBalances)
-        .values({ customerId, credits: 0, freeGenerationsUsed: 0, discountEntitlementCents: 0, version: 0, updatedAt: new Date() })
+        .values({ customerId, credits: 0, earnedCredits: 0, packCredits: 0, freeGenerationsUsed: 0, version: 0, updatedAt: new Date() })
         .onConflictDoNothing();
 
       const [existingLedger] = await tx.select().from(creditLedger).where(eq(creditLedger.idempotencyKey, idempotencyKey));
@@ -461,7 +561,6 @@ export class DatabaseStorage implements IStorage {
       await tx.insert(creditLedger).values({
         customerId,
         deltaCredits: -1,
-        deltaEntitlementCents: 0,
         reason: "generation",
         idempotencyKey,
         externalRef,
@@ -477,12 +576,17 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async consumeFreeGeneration(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
-    const FREE_GENERATION_LIMIT = 10;
+  async consumeFreeGeneration(
+    customerId: string,
+    idempotencyKey: string,
+    externalRef?: string,
+    freeGenerationLimit: number = 5,
+  ): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
+    const limit = Math.min(10, Math.max(1, Math.round(freeGenerationLimit) || 5));
     return db.transaction(async (tx) => {
       await tx
         .insert(creditBalances)
-        .values({ customerId, credits: 0, freeGenerationsUsed: 0, discountEntitlementCents: 0, version: 0, updatedAt: new Date() })
+        .values({ customerId, credits: 0, earnedCredits: 0, packCredits: 0, freeGenerationsUsed: 0, version: 0, updatedAt: new Date() })
         .onConflictDoNothing();
 
       const [existingLedger] = await tx.select().from(creditLedger).where(eq(creditLedger.idempotencyKey, idempotencyKey));
@@ -498,7 +602,7 @@ export class DatabaseStorage implements IStorage {
           version: sql`${creditBalances.version} + 1`,
           updatedAt: new Date(),
         })
-        .where(and(eq(creditBalances.customerId, customerId), sql`${creditBalances.freeGenerationsUsed} < ${FREE_GENERATION_LIMIT}`))
+        .where(and(eq(creditBalances.customerId, customerId), sql`${creditBalances.freeGenerationsUsed} < ${limit}`))
         .returning();
 
       if (!balance) return { consumed: false, balance: undefined };
@@ -506,7 +610,6 @@ export class DatabaseStorage implements IStorage {
       await tx.insert(creditLedger).values({
         customerId,
         deltaCredits: 0,
-        deltaEntitlementCents: 0,
         reason: "free_generation",
         idempotencyKey,
         externalRef,
@@ -520,39 +623,6 @@ export class DatabaseStorage implements IStorage {
 
       return { consumed: true, balance };
     });
-  }
-
-  async recordStripeEvent(stripeEventId: string, type: string): Promise<boolean> {
-    const [row] = await db
-      .insert(stripeEvents)
-      .values({ stripeEventId, type, outcome: "received" })
-      .onConflictDoNothing()
-      .returning();
-    return !!row;
-  }
-
-  async markStripeEventOutcome(stripeEventId: string, outcome: string): Promise<void> {
-    await db.update(stripeEvents).set({ outcome }).where(eq(stripeEvents.stripeEventId, stripeEventId));
-  }
-
-  async recordOrderDiscountClaim(
-    claim: InsertOrderDiscountClaim,
-  ): Promise<{ inserted: boolean; claim: OrderDiscountClaim | undefined }> {
-    const [row] = await db
-      .insert(orderDiscountClaims)
-      .values(claim)
-      .onConflictDoNothing()
-      .returning();
-    if (row) return { inserted: true, claim: row };
-
-    if (claim.shopifyOrderId) {
-      const [existing] = await db
-        .select()
-        .from(orderDiscountClaims)
-        .where(eq(orderDiscountClaims.shopifyOrderId, claim.shopifyOrderId));
-      return { inserted: false, claim: existing };
-    }
-    return { inserted: false, claim: undefined };
   }
 
    // Merchants
@@ -1007,6 +1077,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .set({
         overageOptInEnabled: false,
         overageBudgetCents: null,
+        overageRecurring: false,
         overageOptInAt: null,
         overageOptInBucketKey: null,
       })
@@ -1049,7 +1120,6 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       await tx.insert(creditLedger).values({
         customerId,
         deltaCredits: 1,
-        deltaEntitlementCents: 0,
         reason: "generation_refund",
         idempotencyKey: refundKey,
         externalRef: externalRef ?? idempotencyKey,
@@ -1108,7 +1178,6 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       await tx.insert(creditLedger).values({
         customerId,
         deltaCredits: 0,
-        deltaEntitlementCents: 0,
         reason: "free_generation_refund",
         idempotencyKey: refundKey,
         externalRef: externalRef ?? idempotencyKey,

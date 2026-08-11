@@ -9,10 +9,7 @@ Use this document as the source of truth for Shopify's Protected Customer Data a
 AI Art Studio processes the minimum customer personal data required to:
 
 - Generate and save customer-created artwork.
-- Maintain paid credit and free generation balances.
-- Sync a Shopify customer metafield used by the discount function.
-- Apply a one-time checkout discount for customers who purchased credits.
-- Reconcile redeemed discounts against orders and debit the app credit ledger.
+- Maintain Studio Credit and free generation balances.
 - Troubleshoot merchant support issues and comply with Shopify privacy webhooks.
 
 The app does not sell customer personal data, use customer data for unrelated advertising, or use personal data for automated decisions with legal or similarly significant effects.
@@ -25,10 +22,9 @@ The app may process:
 - Shopify customer ID.
 - Customer email address when provided for OTP or Shopify customer identity resolution.
 - Artwork prompts and generated design metadata.
-- Credit balances, credit ledger entries, and Stripe Checkout references.
-- Shopify order ID and discount application metadata when a credit discount is redeemed.
+- Credit balances, credit ledger entries, and free generation usage.
 
-The app does not need customer names, full postal addresses, or phone numbers for the credit discount workflow. If an orders/paid webhook payload contains those fields, the app ignores them and only stores the minimal audit data required for credit reconciliation.
+The app does not need customer names, full postal addresses, or phone numbers for Studio Credits. If an orders/paid webhook payload contains those fields, the app ignores them unless required for fulfillment.
 
 ## Retention
 

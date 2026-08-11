@@ -8,9 +8,8 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { OVERAGE_PRICE_USD } from "@shared/customizerPlans";
 import type { PlanApiResponse } from "./GenerationQuotaUsage";
-
-const OVERAGE_PRICE_USD = 0.08;
 
 interface OverageOptInFormProps {
   planMaxBudgetCents: number;
@@ -56,7 +55,10 @@ export function OverageOptInForm({ planMaxBudgetCents, onSuccess, className }: O
   });
 
   return (
-    <div className={`rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-4 space-y-4 ${className ?? ""}`}>
+    <div
+      className={`rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-4 space-y-4 ${className ?? ""}`}
+      data-testid="overage-opt-in-form"
+    >
       <div>
         <p className="text-sm font-medium">Enable pay-as-you-go extra generations (USD)</p>
         <p className="text-xs text-muted-foreground mt-1">

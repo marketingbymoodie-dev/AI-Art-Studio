@@ -24,6 +24,16 @@ const h = vi.hoisted(() => {
 vi.mock("./db", () => ({ db: h.db, pool: {} }));
 
 import { extractUsageLineItemId, emitOverageUsageCharge } from "./usage-billing";
+import {
+  resolveOveragePriceUsd,
+  type OveragePriceTier,
+} from "@shared/customizerPlans";
+
+/** Fixture only — proves volume selects a tier before emit (not live schedule). */
+const TWO_TIER_SCHEDULE: readonly OveragePriceTier[] = [
+  { upToInclusive: 2, priceUsd: 0.1 },
+  { upToInclusive: null, priceUsd: 0.06 },
+];
 
 // ── Pure: extract the usage line item GID ───────────────────────────────────
 describe("extractUsageLineItemId", () => {
@@ -159,6 +169,42 @@ describe("emitOverageUsageCharge", () => {
     });
 
     expect(res.status).toBe("failed");
+    vi.unstubAllGlobals();
+  });
+
+  it("threads resolveOveragePriceUsd(volume) from a two-tier schedule into the Shopify usage record", async () => {
+    // Mirrors generation-quota emit: priceUsd = resolveOveragePriceUsd(overageSeq, schedule)
+    const overageSeq = 3;
+    const priceUsd = resolveOveragePriceUsd(overageSeq, TWO_TIER_SCHEDULE);
+    expect(priceUsd).toBe(0.06); // beyond first tier (upToInclusive: 2)
+
+    const fetchMock = mockFetchOk();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await emitOverageUsageCharge({
+      installation: installWithLine,
+      bucketKey: "2026-08",
+      overageSeq,
+      priceUsd,
+    });
+
+    expect(res.status).toBe("charged");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.variables.price).toEqual({ amount: "0.06", currencyCode: "USD" });
+
+    // First-tier volume must not silently use the open-ended rate.
+    const tier1 = resolveOveragePriceUsd(1, TWO_TIER_SCHEDULE);
+    expect(tier1).toBe(0.1);
+    h.returning.mockResolvedValue([{ id: 456 }]);
+    await emitOverageUsageCharge({
+      installation: installWithLine,
+      bucketKey: "2026-08",
+      overageSeq: 1,
+      priceUsd: tier1,
+    });
+    const body1 = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(body1.variables.price).toEqual({ amount: "0.10", currencyCode: "USD" });
+
     vi.unstubAllGlobals();
   });
 });

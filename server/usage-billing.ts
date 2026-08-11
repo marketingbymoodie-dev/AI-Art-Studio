@@ -6,7 +6,8 @@
  * subscription price is billed by Shopify automatically. The *overage* units are
  * metered: each one that the merchant actually uses is billed as a Shopify
  * **usage charge** (`appUsageRecordCreate`) against the subscription's metered
- * (usage) pricing line, at $0.08 each up to the plan's capped amount.
+ * (usage) pricing line, at the catalogue overage rate (see resolveOveragePriceUsd)
+ * each up to the plan's capped amount.
  *
  * This module owns:
  *   - emitting a usage charge per overage generation (idempotent + resilient),

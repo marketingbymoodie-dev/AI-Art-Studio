@@ -17,7 +17,7 @@ import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./appar
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique(),
-  credits: integer("credits").notNull().default(5),
+  credits: integer("credits").notNull().default(0),
   freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
   totalGenerations: integer("total_generations").notNull().default(0),
   totalSpent: decimal("total_spent", { precision: 10, scale: 2 }).notNull().default("0.00"),
@@ -54,13 +54,17 @@ export const insertCustomerAliasSchema = createInsertSchema(customerAliases).omi
 export type CustomerAlias = typeof customerAliases.$inferSelect;
 export type InsertCustomerAlias = z.infer<typeof insertCustomerAliasSchema>;
 
-// Materialized credit balance. The ledger remains authoritative for audit, this
-// table makes reads and atomic debits simple.
+// Materialized credit balance. Atomic enforcement point for Studio Credits;
+// credit_ledger is the audit + idempotency trail.
 export const creditBalances = pgTable("credit_balances", {
   customerId: varchar("customer_id").primaryKey(),
+  /** Total Studio Credits (earned + pack). Authoritative for spend checks. */
   credits: integer("credits").notNull().default(0),
+  /** Credits earned via Reward Ladder (burn merchant quota at spend). */
+  earnedCredits: integer("earned_credits").notNull().default(0),
+  /** Credits from merchant-mediated packs (billed wholesale at grant; no quota burn). */
+  packCredits: integer("pack_credits").notNull().default(0),
   freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
-  discountEntitlementCents: integer("discount_entitlement_cents").notNull().default(0),
   version: integer("version").notNull().default(0),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -74,7 +78,11 @@ export const creditLedger = pgTable("credit_ledger", {
   id: serial("id").primaryKey(),
   customerId: varchar("customer_id").notNull(),
   deltaCredits: integer("delta_credits").notNull(),
-  deltaEntitlementCents: integer("delta_entitlement_cents").notNull().default(0),
+  /** Bucket this delta applies to: earned | pack (null for free_generation bookkeeping). */
+  source: text("source"),
+  shop: text("shop"),
+  relatedEntityId: text("related_entity_id"),
+  quotaBucketKey: text("quota_bucket_key"),
   reason: text("reason").notNull(),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   externalRef: text("external_ref"),
@@ -82,6 +90,7 @@ export const creditLedger = pgTable("credit_ledger", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("credit_ledger_customer_created_idx").on(table.customerId, table.createdAt),
+  index("credit_ledger_related_entity_idx").on(table.relatedEntityId),
 ]);
 
 export const insertCreditLedgerSchema = createInsertSchema(creditLedger).omit({
@@ -91,39 +100,54 @@ export const insertCreditLedgerSchema = createInsertSchema(creditLedger).omit({
 export type CreditLedger = typeof creditLedger.$inferSelect;
 export type InsertCreditLedger = z.infer<typeof insertCreditLedgerSchema>;
 
-export const stripeEvents = pgTable("stripe_events", {
-  stripeEventId: text("stripe_event_id").primaryKey(),
-  type: text("type").notNull(),
-  outcome: text("outcome"),
-  receivedAt: timestamp("received_at").defaultNow().notNull(),
-});
-
-export const insertStripeEventSchema = createInsertSchema(stripeEvents).omit({
-  receivedAt: true,
-});
-export type StripeEvent = typeof stripeEvents.$inferSelect;
-export type InsertStripeEvent = z.infer<typeof insertStripeEventSchema>;
-
-export const orderDiscountClaims = pgTable("order_discount_claims", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  customerId: varchar("customer_id").notNull(),
-  shopifyOrderId: text("shopify_order_id").unique(),
+/** Per-shop Reward Ladder rung configuration. */
+export const rewardLadderRungs = pgTable("reward_ladder_rungs", {
+  id: serial("id").primaryKey(),
   shop: text("shop").notNull(),
-  entitlementCents: integer("entitlement_cents").notNull(),
-  status: text("status").notNull().default("pending"), // pending | applied | reversed
+  /** free_anonymous | email_signup | share_design | purchase_threshold */
+  rungKey: text("rung_key").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  /** Credits granted when the rung is completed (free_anonymous uses free-gen limit instead). */
+  creditAmount: integer("credit_amount").notNull().default(1),
+  /** For purchase_threshold: minimum order subtotal in cents. */
+  thresholdCents: integer("threshold_cents"),
+  sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
-  index("order_discount_claims_customer_idx").on(table.customerId),
+  uniqueIndex("reward_ladder_rungs_shop_key").on(table.shop, table.rungKey),
+  index("reward_ladder_rungs_shop_idx").on(table.shop),
 ]);
 
-export const insertOrderDiscountClaimSchema = createInsertSchema(orderDiscountClaims).omit({
+export const insertRewardLadderRungSchema = createInsertSchema(rewardLadderRungs).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
 });
-export type OrderDiscountClaim = typeof orderDiscountClaims.$inferSelect;
-export type InsertOrderDiscountClaim = z.infer<typeof insertOrderDiscountClaimSchema>;
+export type RewardLadderRung = typeof rewardLadderRungs.$inferSelect;
+export type InsertRewardLadderRung = z.infer<typeof insertRewardLadderRungSchema>;
+
+/** Idempotent grant of a Reward Ladder rung to a customer (or anon identity). */
+export const rewardGrants = pgTable("reward_grants", {
+  id: serial("id").primaryKey(),
+  shop: text("shop").notNull(),
+  customerId: varchar("customer_id").notNull(),
+  rungKey: text("rung_key").notNull(),
+  creditsGranted: integer("credits_granted").notNull().default(0),
+  relatedEntityId: text("related_entity_id"),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("reward_grants_shop_customer_rung").on(table.shop, table.customerId, table.rungKey),
+  index("reward_grants_customer_idx").on(table.customerId),
+]);
+
+export const insertRewardGrantSchema = createInsertSchema(rewardGrants).omit({
+  id: true,
+  createdAt: true,
+});
+export type RewardGrant = typeof rewardGrants.$inferSelect;
+export type InsertRewardGrant = z.infer<typeof insertRewardGrantSchema>;
 
 // Merchant settings
 export const merchants = pgTable("merchants", {
@@ -148,6 +172,12 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   merchantId: varchar("merchant_id"),
   shopDomain: text("shop_domain").notNull().unique(),
   accessToken: text("access_token").notNull(),
+  /** Refresh token for Shopify expiring offline access tokens (null = legacy non-expiring). */
+  refreshToken: text("refresh_token"),
+  /** When accessToken expires (null = non-expiring / unknown). */
+  accessTokenExpiresAt: timestamp("access_token_expires_at"),
+  /** When refreshToken expires (typically ~90 days). */
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
   scope: text("scope"),
   status: text("status").notNull().default("active"),
   installedAt: timestamp("installed_at").defaultNow().notNull(),
@@ -190,7 +220,65 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   pendingPlanEffectiveAt: timestamp("pending_plan_effective_at"),
   /** Merchant clicked "I've enabled it" on the setup rail's App Embed step. */
   embedConfirmedAt: timestamp("embed_confirmed_at"),
+  /**
+   * Free AI generations each unique storefront visitor gets before paid credits.
+   * Clamped 1–10 in app code; default 2.
+   */
+  storefrontFreeGensPerVisitor: integer("storefront_free_gens_per_visitor").notNull().default(2),
+  /** Bucket key of last "leftover gens / coupon promo" reminder email (YYYY-MM). */
+  leftoverGensReminderBucketKey: text("leftover_gens_reminder_bucket_key"),
+  /**
+   * Wholesale credit cents owed back to the merchant after pack refunds
+   * (netted off against future usage charges). Phase 2.
+   */
+  wholesaleCreditCents: integer("wholesale_credit_cents").notNull().default(0),
+  /**
+   * Which pricing catalogue this installation is enforced under.
+   * Always stamped (backfilled to 0). Offer/new-sub uses the active catalogue;
+   * enforcement uses this stamp until the shop re-subscribes.
+   */
+  pricingVersion: integer("pricing_version").default(0),
 });
+
+/** Versioned SaaS plan catalogue (commit ≠ activate). */
+export const pricingCatalogues = pgTable("pricing_catalogues", {
+  id: serial("id").primaryKey(),
+  label: text("label").notNull(),
+  status: text("status").notNull(), // committed | active | superseded
+  overageSchedule: jsonb("overage_schedule").notNull().$type<
+    Array<{ upToInclusive: number | null; priceUsd: number }>
+  >(),
+  aiCostPerGenUsd: decimal("ai_cost_per_gen_usd", { precision: 10, scale: 4 }).notNull().default("0.0450"),
+  committedAt: timestamp("committed_at").defaultNow().notNull(),
+  activatedAt: timestamp("activated_at"),
+  createdBy: text("created_by"),
+});
+
+export const pricingCataloguePlans = pgTable(
+  "pricing_catalogue_plans",
+  {
+    id: serial("id").primaryKey(),
+    catalogueId: integer("catalogue_id")
+      .notNull()
+      .references(() => pricingCatalogues.id, { onDelete: "cascade" }),
+    planKey: text("plan_key").notNull(),
+    displayName: text("display_name").notNull(),
+    priceUsd: decimal("price_usd", { precision: 10, scale: 2 }).notNull(),
+    generationQuota: integer("generation_quota").notNull(),
+    pageLimit: integer("page_limit").notNull(),
+    designProductLimit: integer("design_product_limit").notNull().default(0),
+    overageCapUnits: integer("overage_cap_units").notNull().default(0),
+    marginOverAiCostPct: decimal("margin_over_ai_cost_pct", { precision: 6, scale: 2 }).notNull().default("50"),
+    selfServe: boolean("self_serve").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("pricing_catalogue_plans_catalogue_plan_uidx").on(t.catalogueId, t.planKey),
+  ],
+);
+
+export type PricingCatalogue = typeof pricingCatalogues.$inferSelect;
+export type PricingCataloguePlan = typeof pricingCataloguePlans.$inferSelect;
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
   id: true,
@@ -534,6 +622,25 @@ export const productTypes = pgTable("product_types", {
   oosTotalVariants: integer("oos_total_variants"),
   oosStatus: text("oos_status"),
   oosDetail: text("oos_detail").default("{}"),
+  /**
+   * Product Intelligence (see docs/product-intelligence-architecture.md).
+   * pricingStrategy: maintain_margin | maintain_price | notify_only
+   * productHealth: healthy | needs_review | attention_required
+   * variantAvailability: JSON map sizeId:colorId → in_stock | out_of_stock | removed
+   */
+  pricingVersion: integer("pricing_version").notNull().default(0),
+  lastProductSyncAt: timestamp("last_product_sync_at"),
+  defaultMarkupPercent: integer("default_markup_percent"),
+  pricingStrategy: text("pricing_strategy").notNull().default("notify_only"),
+  minMarginPercent: integer("min_margin_percent"),
+  productHealth: text("product_health").notNull().default("healthy"),
+  variantAvailability: text("variant_availability").default("{}"),
+  shippingSnapshot: text("shipping_snapshot").default("{}"),
+  /**
+   * Platform catalogue reference row (not a merchant import). Used so daily
+   * Product Sync / OOS cover every published blueprint for Profit Insights.
+   */
+  isPlatformCatalogRef: boolean("is_platform_catalog_ref").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -545,6 +652,124 @@ export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
 });
 export type ProductType = typeof productTypes.$inferSelect;
 export type InsertProductType = z.infer<typeof insertProductTypeSchema>;
+
+/** Current Product Intelligence row: one supplier variant × print-area config. */
+export const catalogVariantCosts = pgTable(
+  "catalog_variant_costs",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id").notNull(),
+    supplier: text("supplier").notNull().default("printify"),
+    blueprintId: integer("blueprint_id"),
+    providerId: integer("provider_id"),
+    supplierProductId: text("supplier_product_id"),
+    supplierVariantId: text("supplier_variant_id").notNull(),
+    productName: text("product_name"),
+    variantName: text("variant_name"),
+    size: text("size"),
+    color: text("color"),
+    printAreaKey: text("print_area_key").notNull().default("front"),
+    printAreasJson: text("print_areas_json").default("[]"),
+    baseCogsCents: integer("base_cogs_cents"),
+    previousCogsCents: integer("previous_cogs_cents"),
+    shippingFirstItemUsCents: integer("shipping_first_item_us_cents"),
+    currency: text("currency").notNull().default("USD"),
+    available: boolean("available").notNull().default(true),
+    availabilityStatus: text("availability_status").notNull().default("unknown"),
+    priceChanged: boolean("price_changed").notNull().default(false),
+    availabilityChanged: boolean("availability_changed").notNull().default(false),
+    isNewVariant: boolean("is_new_variant").notNull().default(false),
+    isRemoved: boolean("is_removed").notNull().default(false),
+    pricingVersion: integer("pricing_version").notNull().default(1),
+    costChecksum: text("cost_checksum"),
+    lastSyncedAt: timestamp("last_synced_at").defaultNow().notNull(),
+    priceLastChangedAt: timestamp("price_last_changed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("catalog_variant_costs_product_type_idx").on(table.productTypeId),
+    index("catalog_variant_costs_variant_idx").on(
+      table.productTypeId,
+      table.supplier,
+      table.supplierVariantId,
+      table.printAreaKey,
+    ),
+  ],
+);
+
+export type CatalogVariantCost = typeof catalogVariantCosts.$inferSelect;
+export type InsertCatalogVariantCost = typeof catalogVariantCosts.$inferInsert;
+
+/** One Product Sync run (catalogue-wide or single product). */
+export const catalogSyncRuns = pgTable("catalog_sync_runs", {
+  id: serial("id").primaryKey(),
+  scope: text("scope").notNull().default("catalogue"), // catalogue | product
+  productTypeId: integer("product_type_id"),
+  source: text("source").notNull().default("manual"), // manual | daily | backfill | import
+  status: text("status").notNull().default("running"), // running | complete | failed
+  productsChecked: integer("products_checked").notNull().default(0),
+  variantsChecked: integer("variants_checked").notNull().default(0),
+  priceChanges: integer("price_changes").notNull().default(0),
+  availabilityChanges: integer("availability_changes").notNull().default(0),
+  newVariants: integer("new_variants").notNull().default(0),
+  removedVariants: integer("removed_variants").notNull().default(0),
+  syncFailures: integer("sync_failures").notNull().default(0),
+  summaryJson: text("summary_json").default("{}"),
+  error: text("error"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type CatalogSyncRun = typeof catalogSyncRuns.$inferSelect;
+
+/** Per-variant cost history for pricing_version audit trail. */
+export const catalogVariantCostHistory = pgTable(
+  "catalog_variant_cost_history",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id").notNull(),
+    supplier: text("supplier").notNull().default("printify"),
+    supplierVariantId: text("supplier_variant_id").notNull(),
+    printAreaKey: text("print_area_key").notNull().default("front"),
+    pricingVersion: integer("pricing_version").notNull(),
+    previousCogsCents: integer("previous_cogs_cents"),
+    newCogsCents: integer("new_cogs_cents"),
+    previousShippingUsCents: integer("previous_shipping_us_cents"),
+    newShippingUsCents: integer("new_shipping_us_cents"),
+    changeReason: text("change_reason").notNull(),
+    syncRunId: integer("sync_run_id"),
+    changedAt: timestamp("changed_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("catalog_variant_cost_history_product_idx").on(table.productTypeId),
+  ],
+);
+
+export type CatalogVariantCostHistory = typeof catalogVariantCostHistory.$inferSelect;
+
+/** Granular Product Intelligence change feed. */
+export const catalogSyncEvents = pgTable(
+  "catalog_sync_events",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id"),
+    syncRunId: integer("sync_run_id"),
+    pricingVersion: integer("pricing_version"),
+    eventType: text("event_type").notNull(),
+    supplierVariantId: text("supplier_variant_id"),
+    printAreaKey: text("print_area_key"),
+    payloadJson: text("payload_json").default("{}"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("catalog_sync_events_product_idx").on(table.productTypeId),
+    index("catalog_sync_events_run_idx").on(table.syncRunId),
+  ],
+);
+
+export type CatalogSyncEvent = typeof catalogSyncEvents.$inferSelect;
 
 // Shared designs for public sharing via URLs
 export const sharedDesigns = pgTable("shared_designs", {
@@ -566,6 +791,8 @@ export const sharedDesigns = pgTable("shared_designs", {
   productTypeId: integer("product_type_id"),
   expiresAt: timestamp("expires_at"),
   viewCount: integer("view_count").notNull().default(0),
+  /** Internal customer id of the sharer, if known — used by the Reward Ladder share_design rung. */
+  ownerCustomerId: varchar("owner_customer_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -614,7 +841,8 @@ export const customizerPages = pgTable("customizer_pages", {
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
   styleConfig: json("style_config"),
-  status: text("status").notNull().default("active"),  // active | disabled
+  /** preview = merchant-only draft; active = Live; disabled = off (settings retained). */
+  status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -635,6 +863,9 @@ export const generationJobs = pgTable("generation_jobs", {
   shop: text("shop").notNull(),
   sessionId: text("session_id"),
   customerId: text("customer_id"),
+  /** Creator Marketplace attribution (nullable — merchant storefronts leave null). */
+  creatorId: varchar("creator_id"),
+  creatorSessionId: varchar("creator_session_id"),
   status: text("status").notNull().default("pending"), // pending | running | complete | failed
   prompt: text("prompt").notNull(),
   userPrompt: text("user_prompt"),               // User's original short prompt (without style prefix/suffix)
@@ -1164,3 +1395,351 @@ export const insertPlatformCatalogBlueprintSchema = createInsertSchema(platformC
 });
 export type PlatformCatalogBlueprint = typeof platformCatalogBlueprints.$inferSelect;
 export type InsertPlatformCatalogBlueprint = z.infer<typeof insertPlatformCatalogBlueprintSchema>;
+
+// ── Creator Marketplace ───────────────────────────────────────────────────────
+
+/** Global platform key/value config (e.g. AI_GENERATION_COST_USD). */
+export const platformConfig = pgTable("platform_config", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type PlatformConfigRow = typeof platformConfig.$inferSelect;
+
+/**
+ * First-class creator / beta merchant identity.
+ * Subdomain storefronts resolve to this row; attribution never depends on URL alone.
+ */
+export const creators = pgTable(
+  "creators",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    username: text("username").notNull(),
+    subdomain: text("subdomain").notNull(),
+    displayName: text("display_name").notNull(),
+    email: text("email").notNull(),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    socialPlatform: text("social_platform"),
+    socialUsername: text("social_username"),
+    socialUrl: text("social_url"),
+    followerCount: integer("follower_count"),
+    niche: text("niche"),
+    audienceDescription: text("audience_description"),
+    profileImageUrl: text("profile_image_url"),
+    bio: text("bio"),
+    status: text("status").notNull().default("application"),
+    creatorType: text("creator_type").notNull().default("creator"),
+    shopDomain: text("shop_domain"),
+    onboardingStatus: text("onboarding_status").notNull().default("pending"),
+    onboardingChecklist: jsonb("onboarding_checklist").$type<Record<string, boolean>>(),
+    branding: jsonb("branding").$type<Record<string, unknown>>(),
+    betaStartAt: timestamp("beta_start_at"),
+    betaEndAt: timestamp("beta_end_at"),
+    freeGensPerCustomer: integer("free_gens_per_customer").notNull().default(2),
+    monthlyGenerationAllowance: integer("monthly_generation_allowance").notNull().default(250),
+    generationMonth: text("generation_month"),
+    monthlyGenerationsUsed: integer("monthly_generations_used").notNull().default(0),
+    overageCap: integer("overage_cap").notNull().default(0),
+    shareBasis: text("share_basis").notNull().default("net_contribution"),
+    revenueShareCreatorPct: integer("revenue_share_creator_pct").notNull().default(100),
+    revenueShareAasPct: integer("revenue_share_aas_pct").notNull().default(0),
+    agreementStatus: text("agreement_status"),
+    agreementStartAt: timestamp("agreement_start_at"),
+    agreementEndAt: timestamp("agreement_end_at"),
+    emailAutomationToggles: jsonb("email_automation_toggles").$type<Record<string, boolean>>(),
+    applicationId: varchar("application_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creators_username_uidx").on(table.username),
+    uniqueIndex("creators_subdomain_uidx").on(table.subdomain),
+    index("creators_status_idx").on(table.status),
+    index("creators_email_idx").on(table.email),
+  ],
+);
+
+export type Creator = typeof creators.$inferSelect;
+
+export const creatorApplications = pgTable(
+  "creator_applications",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    firstName: text("first_name").notNull(),
+    lastName: text("last_name").notNull(),
+    email: text("email").notNull(),
+    socialPlatform: text("social_platform").notNull(),
+    socialUsername: text("social_username").notNull(),
+    socialUrl: text("social_url"),
+    followerCount: integer("follower_count"),
+    niche: text("niche").notNull(),
+    audienceDescription: text("audience_description"),
+    hasShopifyStore: boolean("has_shopify_store").notNull().default(false),
+    shopifyStoreUrl: text("shopify_store_url"),
+    interestedProducts: text("interested_products"),
+    preferredCategory: text("preferred_category"),
+    whyParticipate: text("why_participate"),
+    expectedReach: text("expected_reach"),
+    additionalInfo: text("additional_info"),
+    status: text("status").notNull().default("submitted"),
+    assignedUsername: text("assigned_username"),
+    creatorId: varchar("creator_id"),
+    adminNotes: text("admin_notes"),
+    reviewedAt: timestamp("reviewed_at"),
+    reviewedBy: text("reviewed_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("creator_applications_status_idx").on(table.status),
+    index("creator_applications_email_idx").on(table.email),
+    index("creator_applications_created_idx").on(table.createdAt),
+  ],
+);
+
+export type CreatorApplication = typeof creatorApplications.$inferSelect;
+
+export const creatorCustomizerPages = pgTable(
+  "creator_customizer_pages",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    customizerPageId: varchar("customizer_page_id").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    titleOverride: text("title_override"),
+    descriptionOverride: text("description_override"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_customizer_pages_uidx").on(table.creatorId, table.customizerPageId),
+    index("creator_customizer_pages_creator_idx").on(table.creatorId),
+  ],
+);
+
+export const creatorSessions = pgTable(
+  "creator_sessions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    firstSeenAt: timestamp("first_seen_at").defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+    landingPath: text("landing_path"),
+    referrer: text("referrer"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmContent: text("utm_content"),
+    device: text("device"),
+    country: text("country"),
+  },
+  (table) => [
+    index("creator_sessions_creator_idx").on(table.creatorId, table.lastSeenAt),
+  ],
+);
+
+export const creatorEvents = pgTable(
+  "creator_events",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    sessionId: varchar("session_id"),
+    eventType: text("event_type").notNull(),
+    customizerPageId: varchar("customizer_page_id"),
+    productTypeId: integer("product_type_id"),
+    generationJobId: varchar("generation_job_id"),
+    stylePreset: text("style_preset"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("creator_events_creator_idx").on(table.creatorId, table.createdAt),
+    index("creator_events_type_idx").on(table.creatorId, table.eventType, table.createdAt),
+  ],
+);
+
+export const creatorCustomerFreeGens = pgTable(
+  "creator_customer_free_gens",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    customerId: text("customer_id").notNull(),
+    used: integer("used").notNull().default(0),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_customer_free_gens_uidx").on(table.creatorId, table.customerId),
+  ],
+);
+
+export const creatorGenerationCosts = pgTable(
+  "creator_generation_costs",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    generationJobId: varchar("generation_job_id").notNull(),
+    sessionId: varchar("session_id"),
+    customerId: text("customer_id"),
+    customizerPageId: varchar("customizer_page_id"),
+    costCents: integer("cost_cents").notNull(),
+    billingMode: text("billing_mode"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_generation_costs_job_uidx").on(table.generationJobId),
+    index("creator_generation_costs_creator_idx").on(table.creatorId, table.createdAt),
+  ],
+);
+
+export const creatorDailyStats = pgTable(
+  "creator_daily_stats",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id").notNull(),
+    day: text("day").notNull(),
+    visitors: integer("visitors").notNull().default(0),
+    sessions: integer("sessions").notNull().default(0),
+    pageViews: integer("page_views").notNull().default(0),
+    generations: integer("generations").notNull().default(0),
+    genCostCents: integer("gen_cost_cents").notNull().default(0),
+    atcCount: integer("atc_count").notNull().default(0),
+    orders: integer("orders").notNull().default(0),
+    grossCents: integer("gross_cents").notNull().default(0),
+    productProfitCents: integer("product_profit_cents").notNull().default(0),
+    netContributionCents: integer("net_contribution_cents").notNull().default(0),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_daily_stats_uidx").on(table.creatorId, table.day),
+  ],
+);
+
+export const creatorOrders = pgTable(
+  "creator_orders",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    shopifyOrderId: text("shopify_order_id").notNull(),
+    shopifyOrderName: text("shopify_order_name"),
+    sessionId: varchar("session_id"),
+    attributionSnapshot: jsonb("attribution_snapshot"),
+    grossCents: integer("gross_cents").notNull().default(0),
+    discountCents: integer("discount_cents").notNull().default(0),
+    shippingCollectedCents: integer("shipping_collected_cents").notNull().default(0),
+    fulfilmentCostCents: integer("fulfilment_cost_cents").notNull().default(0),
+    transactionFeeCents: integer("transaction_fee_cents").notNull().default(0),
+    productProfitCents: integer("product_profit_cents").notNull().default(0),
+    aiGenCostCents: integer("ai_gen_cost_cents").notNull().default(0),
+    netContributionCents: integer("net_contribution_cents").notNull().default(0),
+    creatorShareCents: integer("creator_share_cents").notNull().default(0),
+    aasShareCents: integer("aas_share_cents").notNull().default(0),
+    refundCents: integer("refund_cents").notNull().default(0),
+    status: text("status").notNull().default("paid"),
+    payoutId: varchar("payout_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_orders_shopify_uidx").on(table.creatorId, table.shopifyOrderId),
+    index("creator_orders_creator_idx").on(table.creatorId, table.createdAt),
+  ],
+);
+
+export const creatorOrderLines = pgTable(
+  "creator_order_lines",
+  {
+    id: serial("id").primaryKey(),
+    creatorOrderId: varchar("creator_order_id").notNull(),
+    shopifyLineId: text("shopify_line_id"),
+    productTypeId: integer("product_type_id"),
+    generationJobId: varchar("generation_job_id"),
+    quantity: integer("quantity").notNull().default(1),
+    unitRevenueCents: integer("unit_revenue_cents").notNull().default(0),
+    unitCogsCents: integer("unit_cogs_cents").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("creator_order_lines_order_idx").on(table.creatorOrderId)],
+);
+
+export const creatorRankSnapshots = pgTable(
+  "creator_rank_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    periodType: text("period_type").notNull(),
+    periodKey: text("period_key").notNull(),
+    metricKey: text("metric_key").notNull(),
+    creatorId: varchar("creator_id").notNull(),
+    valueCents: integer("value_cents"),
+    value: decimal("value", { precision: 18, scale: 6 }),
+    rank: integer("rank").notNull(),
+    ofCount: integer("of_count").notNull(),
+    percentile: decimal("percentile", { precision: 8, scale: 4 }),
+    sharePct: decimal("share_pct", { precision: 8, scale: 4 }),
+    computedAt: timestamp("computed_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_rank_snapshots_uidx").on(
+      table.periodType,
+      table.periodKey,
+      table.metricKey,
+      table.creatorId,
+    ),
+    index("creator_rank_snapshots_lookup_idx").on(
+      table.periodType,
+      table.periodKey,
+      table.metricKey,
+      table.rank,
+    ),
+  ],
+);
+
+export const creatorPayouts = pgTable(
+  "creator_payouts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    periodStart: timestamp("period_start"),
+    periodEnd: timestamp("period_end"),
+    amountCents: integer("amount_cents").notNull(),
+    method: text("method"),
+    status: text("status").notNull().default("pending"),
+    adminNote: text("admin_note"),
+    paidAt: timestamp("paid_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("creator_payouts_creator_idx").on(table.creatorId)],
+);
+
+export const creatorNotes = pgTable(
+  "creator_notes",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id"),
+    applicationId: varchar("application_id"),
+    author: text("author"),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("creator_notes_creator_idx").on(table.creatorId),
+    index("creator_notes_application_idx").on(table.applicationId),
+  ],
+);
+
+export const creatorEmailLog = pgTable(
+  "creator_email_log",
+  {
+    id: serial("id").primaryKey(),
+    creatorId: varchar("creator_id"),
+    applicationId: varchar("application_id"),
+    templateKey: text("template_key").notNull(),
+    recipient: text("recipient").notNull(),
+    status: text("status").notNull().default("skipped"),
+    error: text("error"),
+    sentAt: timestamp("sent_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("creator_email_log_creator_idx").on(table.creatorId)],
+);

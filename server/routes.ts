@@ -35,6 +35,7 @@ import {
   resolveVariantFromMap,
   variantMapKey,
   countActiveVariantMapKeys,
+  capVariantSelectionForShopifyLimit,
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
@@ -60,7 +61,14 @@ import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
 import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
-import { STOREFRONT_FREE_GENERATION_LIMIT, storefrontArtworksRemaining } from "@shared/storefront-credits";
+import {
+  STOREFRONT_FREE_GENERATION_DEFAULT,
+  STOREFRONT_FREE_GENERATION_LIMIT,
+  STOREFRONT_FREE_GENERATION_MAX,
+  STOREFRONT_FREE_GENERATION_MIN,
+  clampStorefrontFreeGens,
+  storefrontArtworksRemaining,
+} from "@shared/storefront-credits";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
@@ -89,11 +97,18 @@ import {
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
+import { ensureValidOfflineAccessToken, getBearerTokenFromRequest } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
-import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
-import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import {
+  findCataloguePlan,
+  getActiveCatalogue,
+  getCatalogueForInstallation,
+  getPlanOverageCappedAmountForCatalogue,
+  overageUsageTermsForCatalogue,
+} from "./pricing-catalogue";
+import { applyApprovedSubscription } from "./billing-plan-apply";
 import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import {
@@ -101,7 +116,6 @@ import {
   buildDowngradePreview,
   classifyPlanChange,
   resolveCarryoverIncludedUsed,
-  trialToPaidMeteringReset,
 } from "./plan-transitions";
 import { maybeApplyPendingPlan } from "./plan-transition-apply";
 import {
@@ -111,11 +125,46 @@ import {
   applyCustomerBillingOnSuccess,
   type GenerationBillingMode,
 } from "./generation-billing";
+import {
+  ensureRewardLadder,
+  getRewardLadder,
+  patchRewardLadder,
+  tryGrantEmailSignup,
+  tryGrantShareDesign,
+  tryGrantPurchaseThreshold,
+  clawbackPurchaseThresholdForOrder,
+  type RewardRungKey,
+} from "./reward-ladder";
+import {
+  consumeMerchantCouponUnits,
+  merchantCanCoverCouponUnits,
+  resolveInstallationForMerchant,
+} from "./merchant-coupon-quota";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
 import {
+  runCatalogueProductSync,
+  getProductIntelligence,
+  listRecentSyncRuns,
+  listRecentSyncEvents,
+  getCatalogueHealthOverview,
+  getVariantCostHistory,
+  ensureBackfillForProductType,
+  syncProductTypeIntelligence,
+  costsResponseFromProductIntelligence,
+} from "./product-intelligence-sync";
+import {
+  parseVariantAvailabilityMap,
+  unavailableVariantKeys,
+  isVariantKeyAvailable,
+  resolveEffectivePricingStrategy,
+  suggestedRetailDollarsString,
+} from "@shared/productIntelligence";
+import { buildActivePrintifyVariantLabels } from "@shared/printifyVariantLabels";
+import {
   planMaxOverageBudgetCents,
   budgetCentsToOverageUnits,
+  extraSpentCents,
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
 import { logMerchantGeneration } from "./merchant-generation-log";
@@ -324,7 +373,6 @@ function toCleanBuffer(buf: Buffer) {
 }
 
 const objectStorage = new ObjectStorageService();
-const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" }) : null;
 
 async function captureAopCustomerFlowSnapshot(params: {
   jobId: string;
@@ -401,53 +449,17 @@ async function captureAopCustomerFlowSnapshot(params: {
   }
 }
 
-/**
- * Build a storefront app-proxy designer URL for Stripe's success_url / cancel_url.
- *
- * Hard guarantees:
- *   - Host is always `{shop}/apps/appai/s/designer` (never admin.shopify.com).
- *   - `shop` and `customerId` are always present as query params.
- *   - Query params from the caller-supplied returnUrl are preserved (product,
- *     variantId, etc.), except admin-session or credits/session markers.
- *
- * Even if the caller passes an admin.shopify.com URL, a junk URL, or nothing,
- * we fall back to `https://{shop}/apps/appai/s/designer?shop=...&customerId=...`.
- */
-function buildStorefrontCreditReturnUrl(
-  shop: string,
-  storefrontCustomerId: string,
-  rawReturnUrl: string | undefined,
-): string {
-  const base = new URL(`https://${shop}/apps/appai/s/designer`);
-  try {
-    if (rawReturnUrl && /^https?:\/\//i.test(rawReturnUrl)) {
-      const parsed = new URL(rawReturnUrl);
-      parsed.searchParams.forEach((value, key) => {
-        const lower = key.toLowerCase();
-        if (
-          lower === "credits" ||
-          lower === "session_id" ||
-          lower === "customerid" ||
-          lower === "shop" ||
-          lower === "session" ||
-          lower === "hmac" ||
-          lower === "host" ||
-          lower === "embedded" ||
-          lower === "id_token"
-        ) return;
-        base.searchParams.set(key, value);
-      });
-    }
-  } catch {}
-  base.searchParams.set("shop", shop);
-  base.searchParams.set("customerId", storefrontCustomerId);
-  return base.toString();
-}
-
 const STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 function getIdentitySecret(): string {
-  return process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET || process.env.STRIPE_SECRET_KEY || "appai-dev-identity-secret";
+  const secret = process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("APPAI_IDENTITY_SECRET or SESSION_SECRET must be set");
+    }
+    return "appai-dev-identity-secret";
+  }
+  return secret;
 }
 
 function signStorefrontIdentityToken(customerId: string, shop: string): string {
@@ -2258,7 +2270,7 @@ export async function registerRoutes(
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -2363,7 +2375,7 @@ export async function registerRoutes(
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -6457,14 +6469,24 @@ ${orientationExtra}
           aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
         };
       }),
-      frameColors: frameColors.map((c: any) => ({
-        id: c.id,
-        name: c.name,
-        hex: c.hex,
-        variantAvailable: sizes.some((s: any) =>
-          hasExactVariantMapping(variantMap as VariantMap, s.id, c.id),
-        ),
-      })),
+      frameColors: frameColors.map((c: any) => {
+        const availMap = parseVariantAvailabilityMap(
+          (productTypeToUse as any).variantAvailability,
+        );
+        const hasMap = Object.keys(availMap).length > 0;
+        return {
+          id: c.id,
+          name: c.name,
+          hex: c.hex,
+          variantAvailable: sizes.some((s: any) =>
+            hasExactVariantMapping(variantMap as VariantMap, s.id, c.id),
+          ),
+          // Product Intelligence stock: at least one size in stock for this colour
+          inStock: !hasMap
+            ? true
+            : sizes.some((s: any) => isVariantKeyAvailable(availMap, s.id, c.id)),
+        };
+      }),
       // Determine the label for the color/option selector
       colorLabel: getColorOptionName(frameColors, productTypeToUse.colorOptionName),
       sizeChart: sizeChart || null,
@@ -6475,6 +6497,14 @@ ${orientationExtra}
         safeZoneMargin,
       },
       variantMap,
+      variantAvailability: parseVariantAvailabilityMap(
+        (productTypeToUse as any).variantAvailability,
+      ),
+      unavailableVariantKeys: unavailableVariantKeys(
+        parseVariantAvailabilityMap((productTypeToUse as any).variantAvailability),
+      ),
+      productHealth: (productTypeToUse as any).productHealth || "healthy",
+      lastProductSyncAt: (productTypeToUse as any).lastProductSyncAt || null,
       // Front+back retail tier (Shopify base variants stay at front-only prices).
       // Expand printify: blank keys → Shopify id / size:color so storefront lookups hit
       // even when Resync originally persisted printify-only keys.
@@ -7266,16 +7296,18 @@ ${orientationExtra}
       const { shop, sessionId, customerId } = req.query;
       if (!shop) return res.status(400).json({ error: "Shop domain required" });
 
-      const FREE_GENERATION_LIMIT = 10;
+      const installation = await getAuthorizedInstallation(String(shop));
+      const FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
+        (installation as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      );
 
       // Read-only status endpoint. Generation is responsible for consumption.
       if (!customerId && sessionId) {
-        // Anonymous session limit
         const count = await storage.countSessionGenerations(shop as string, sessionId as string);
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
             error: "FREE_LIMIT_REACHED",
-            message: "You have used all 10 of your free generations. Please log in to purchase more credits.",
+            message: `You have used all ${FREE_GENERATION_LIMIT} of your free generations. Please log in to purchase more credits.`,
           });
         }
       }
@@ -7301,7 +7333,7 @@ ${orientationExtra}
         generationsUsed,
         freeLimit: FREE_GENERATION_LIMIT,
         creditsRemaining,
-        isLimitReached: generationsUsed >= FREE_GENERATION_LIMIT && creditsRemaining <= 0
+        isLimitReached: generationsUsed >= FREE_GENERATION_LIMIT && creditsRemaining <= 0,
       });
     } catch (error) {
       console.error("Error checking storefront status:", error);
@@ -7468,12 +7500,15 @@ ${orientationExtra}
       }
 
       // Per-merchant monthly plan quota — fail fast before job creation.
-      // Customer-paid credits ($1 packs) are billed to the customer, not the shop plan.
+      // Customer-paid Studio Credits are spent on the wallet directly; only
+      // reward-earned credits also burn merchant quota (see generation-billing).
       let usedCustomerPaidCredit = false;
       let storefrontBillingMode: GenerationBillingMode = "merchant";
 
-      // Generation limit logic (10 free generations total per customer/session)
-      const FREE_GENERATION_LIMIT = 10;
+      // Free generations per visitor (merchant-configurable, default 5, max 10)
+      const FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
+        (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      );
 
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
@@ -7502,7 +7537,7 @@ ${orientationExtra}
             if (freeUsed >= FREE_GENERATION_LIMIT) {
               return res.status(403).json({
                 error: "FREE_LIMIT_REACHED",
-                message: "You've used all 10 free generations. Purchase credits to continue.",
+                message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Purchase credits to continue.`,
                 generationsUsed: freeUsed,
                 limit: FREE_GENERATION_LIMIT,
               });
@@ -7512,19 +7547,52 @@ ${orientationExtra}
           }
         }
       } else if (sessionId) {
-        const count = await storage.countSessionGenerations(shop, sessionId);
-        if (count >= FREE_GENERATION_LIMIT) {
-          return res.status(403).json({
-            error: "FREE_LIMIT_REACHED",
-            message: "You've used all 10 free generations. Create an account to continue.",
-            generationsUsed: count,
-            limit: FREE_GENERATION_LIMIT,
-          });
+        // Unified anon path: back the session with an internal customer via
+        // customer_aliases so free-gen accounting lives on credit_balances,
+        // survives across generations, and merges into the signed-in wallet
+        // on login (see /api/storefront/merge-session).
+        const anonCustomer = await storage.resolveOrCreateCustomerAlias({
+          aliasType: "anon_session",
+          aliasValue: String(sessionId),
+          shop,
+          legacyUserId: `anon:${shop}:${sessionId}`,
+        } as any).catch((err: any) => {
+          console.warn(P, reqId, `anon customer resolve failed for session ${sessionId}:`, err?.message);
+          return null;
+        });
+
+        if (anonCustomer) {
+          resolvedJobCustomerId = anonCustomer.id;
+          const balance = await storage.ensureCustomerBalance(anonCustomer.id);
+          const freeUsed = balance.freeGenerationsUsed || 0;
+          if (freeUsed >= FREE_GENERATION_LIMIT) {
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
+              generationsUsed: freeUsed,
+              limit: FREE_GENERATION_LIMIT,
+            });
+          }
+          // Anon free gens use the wallet-tracked customer_free path so they
+          // merge into the signed-in customer's wallet after login.
+          storefrontBillingMode = "customer_free";
+        } else {
+          // Fallback to the legacy job-count path if the alias lookup fails.
+          const count = await storage.countSessionGenerations(shop, sessionId);
+          if (count >= FREE_GENERATION_LIMIT) {
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
+              generationsUsed: count,
+              limit: FREE_GENERATION_LIMIT,
+            });
+          }
+          storefrontBillingMode = "session";
         }
-        storefrontBillingMode = "session";
       }
 
-      if (!usedCustomerPaidCredit && storefrontBillingMode === "merchant") {
+      // Free / session gens come off the merchant allotment — peek before creating the job.
+      if (!usedCustomerPaidCredit) {
         const sfQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
         if (!sfQuotaPeek.allowed) {
           return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
@@ -8046,6 +8114,7 @@ ${orientationExtra}
             billingMode: storefrontBillingMode,
             customerId: resolvedJobCustomerId,
             idempotencyKey: reqId.toString(),
+            freeGenerationLimit: FREE_GENERATION_LIMIT,
           });
 
           void recordGenerationOutcomeForFounder(installation, true);
@@ -8138,6 +8207,11 @@ ${orientationExtra}
         let creditsRemaining = 0;
         let freeGenerationsUsed = 0;
         let artworksRemaining = 0;
+        // One-shot on complete (not every pending poll) — need merchant free-gens setting.
+        const completeInstall = await getAuthorizedInstallation(shop);
+        const freeLimit = clampStorefrontFreeGens(
+          (completeInstall as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+        );
         if (job.customerId) {
           const balance = await storage.ensureCustomerBalance(job.customerId);
           creditsRemaining = balance.credits;
@@ -8145,11 +8219,12 @@ ${orientationExtra}
           artworksRemaining = storefrontArtworksRemaining({
             freeGenerationsUsed,
             paidCredits: balance.credits,
+            freeGenerationLimit: freeLimit,
           });
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
           freeGenerationsUsed = count;
-          creditsRemaining = Math.max(0, STOREFRONT_FREE_GENERATION_LIMIT - count);
+          creditsRemaining = Math.max(0, freeLimit - count);
           artworksRemaining = creditsRemaining;
         }
 
@@ -8203,10 +8278,41 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const merged = await storage.mergeSessionToCustomer(shop, sessionId, customerId);
-      console.log(`[Storefront Merge] shop=${shop} session=${sessionId} customer=${customerId} merged=${merged}`);
+      // Resolve the signed-in customer to our internal UUID. The client can send
+      // either the internal id (bearer token / bootstrap) or a Shopify customer id.
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(customerId));
+      const signedInCustomer = await resolveStorefrontCustomerIdentity({
+        shop,
+        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? String(customerId) : null),
+        shopifyCustomerId: isInternalCustomer ? null : String(customerId),
+      }).catch((err) => {
+        console.warn(`[Storefront Merge] could not resolve signed-in customer ${customerId}:`, err?.message);
+        return null;
+      });
 
-      return res.json({ merged });
+      const signedInCustomerId = signedInCustomer?.id ?? String(customerId);
+
+      const merged = await storage.mergeSessionToCustomer(shop, sessionId, signedInCustomerId);
+
+      // If an anon customer wallet was already created for this session, fold it
+      // into the signed-in wallet so free gens / rewards survive login.
+      let walletsLinked = false;
+      const anonCustomer = await storage
+        .findCustomerByAlias("anon_session", String(sessionId), shop)
+        .catch(() => undefined);
+      if (anonCustomer && anonCustomer.id !== signedInCustomerId) {
+        try {
+          await storage.linkAnonCustomerToSignedIn(anonCustomer.id, signedInCustomerId);
+          walletsLinked = true;
+        } catch (err: any) {
+          console.warn(`[Storefront Merge] wallet link failed anon=${anonCustomer.id} → signed=${signedInCustomerId}:`, err?.message);
+        }
+      }
+
+      console.log(`[Storefront Merge] shop=${shop} session=${sessionId} customer=${signedInCustomerId} merged=${merged} walletsLinked=${walletsLinked}`);
+
+      return res.json({ merged, walletsLinked });
     } catch (error) {
       console.error("[Storefront Merge Session] Error:", error);
       res.status(500).json({ error: "Failed to merge session" });
@@ -9107,13 +9213,53 @@ ${orientationExtra}
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
-      const { shop: shopRaw, variantId, designId, mockupUrl, price: priceOverride } = req.body;
+      const {
+        shop: shopRaw,
+        variantId,
+        designId,
+        mockupUrl,
+        price: priceOverride,
+        productTypeId: productTypeIdRaw,
+        sizeId,
+        colorId,
+      } = req.body;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }
       if (!mockupUrl.startsWith("https://")) {
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
+      }
+
+      // Product Intelligence OOS guard — refuse shadow create for unavailable size/colour.
+      try {
+        let ptId =
+          productTypeIdRaw != null && String(productTypeIdRaw).trim() !== ""
+            ? parseInt(String(productTypeIdRaw), 10)
+            : NaN;
+        if (!Number.isFinite(ptId) || ptId <= 0) {
+          const designNum = parseInt(String(designId).replace(/\D/g, ""), 10);
+          if (Number.isFinite(designNum) && designNum > 0) {
+            const design = await storage.getDesign(designNum);
+            if (design?.productTypeId) ptId = design.productTypeId;
+          }
+        }
+        if (Number.isFinite(ptId) && ptId > 0 && sizeId) {
+          const pt = await storage.getProductType(ptId);
+          const avail = parseVariantAvailabilityMap((pt as any)?.variantAvailability);
+          if (
+            Object.keys(avail).length > 0 &&
+            !isVariantKeyAvailable(avail, String(sizeId), String(colorId || "default"))
+          ) {
+            return res.status(409).json({
+              success: false,
+              error: "Selected size/color is out of stock",
+              code: "variant_out_of_stock",
+            });
+          }
+        }
+      } catch (oosErr: any) {
+        console.warn("[ShadowProduct] OOS guard skipped:", oosErr?.message || oosErr);
       }
       // Optional retail override for front+back (or other surcharge tiers). Validated below.
       const overridePriceNum =
@@ -9706,10 +9852,30 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      const ladder = await ensureRewardLadder(installation.shopDomain);
+      const publicRungs = ladder
+        .filter((r) =>
+          r.rungKey === "email_signup" ||
+          r.rungKey === "share_design" ||
+          r.rungKey === "purchase_threshold",
+        )
+        .map((r) => ({
+          rungKey: r.rungKey,
+          enabled: !!r.enabled,
+          creditAmount: Math.max(0, Math.floor(r.creditAmount || 0)),
+          thresholdCents: r.thresholdCents ?? null,
+          sortOrder: r.sortOrder,
+        }));
       return res.json({
         googleClientId: getGoogleOAuthClientId(),
-        freeGenerationLimit: STOREFRONT_FREE_GENERATION_LIMIT,
+        freeGenerationLimit: clampStorefrontFreeGens(
+          (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+        ),
         appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, ""),
+        rewardLadder: {
+          purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
+          rungs: publicRungs,
+        },
       });
     } catch (error: any) {
       console.error("[Auth Config] error:", error);
@@ -9771,6 +9937,19 @@ ${orientationExtra}
       }
 
       await storage.ensureCustomerBalance(customer.id);
+
+      // Reward Ladder — email_signup rung (idempotent per customer).
+      if (emailNorm) {
+        try {
+          const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
+          if (r.granted) {
+            console.log(`[Google Auth] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
+          }
+        } catch (rewardErr: any) {
+          console.warn(`[Google Auth] email_signup grant failed:`, rewardErr?.message);
+        }
+      }
+
       const balance = await storage.getCreditBalance(customer.id);
       console.log(`[Google Auth] Signed in ${emailNorm || googleSub} for shop ${shop}, customer ${customer.id}`);
 
@@ -9780,7 +9959,6 @@ ${orientationExtra}
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance?.credits ?? customer.credits,
         freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
-        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
         email: emailNorm || undefined,
         name: payload.name,
       });
@@ -9900,6 +10078,17 @@ ${orientationExtra}
       console.log(`[OTP] Verified ${emailNorm} for shop ${shop}, customer ${customer.id}`);
       await storage.ensureCustomerBalance(customer.id);
       await storage.addCustomerAlias(customer.id, { aliasType: "otp_email", aliasValue: emailNorm, shop });
+
+      // Reward Ladder — email_signup rung (idempotent per customer).
+      try {
+        const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
+        if (r.granted) {
+          console.log(`[OTP] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
+        }
+      } catch (rewardErr: any) {
+        console.warn(`[OTP] email_signup grant failed:`, rewardErr?.message);
+      }
+
       const balance = await storage.getCreditBalance(customer.id);
       res.json({
         ok: true,
@@ -9907,7 +10096,6 @@ ${orientationExtra}
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance?.credits ?? customer.credits,
         freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
-        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
       });
     } catch (error: any) {
       console.error("[OTP] verify-otp error:", error);
@@ -9939,7 +10127,6 @@ ${orientationExtra}
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance.credits,
         freeGenerationsUsed: balance.freeGenerationsUsed,
-        discountEntitlementCents: balance.discountEntitlementCents,
       });
     } catch (error: any) {
       console.error("[Storefront Identity] bootstrap error:", error);
@@ -9966,6 +10153,9 @@ ${orientationExtra}
       if (!coupon) {
         return res.status(404).json({ error: "Invalid coupon code" });
       }
+      if (installation.merchantId && coupon.merchantId !== installation.merchantId) {
+        return res.status(404).json({ error: "Invalid coupon code" });
+      }
       if (!coupon.isActive) {
         return res.status(400).json({ error: "Coupon is no longer active" });
       }
@@ -9983,10 +10173,27 @@ ${orientationExtra}
           return res.status(400).json({ error: "You have already redeemed this coupon" });
         }
       }
+
+      // Coupon credits debit the merchant monthly allotment at redeem time
+      // (spent later as customer_paid — no second merchant debit).
+      const cover = await merchantCanCoverCouponUnits(installation, coupon.creditAmount);
+      if (!cover.ok) {
+        return res.status(402).json({
+          error: "MERCHANT_QUOTA_EXHAUSTED",
+          message: cover.message || "This shop cannot issue more coupon credits right now.",
+        });
+      }
+      const consumed = await consumeMerchantCouponUnits(installation, coupon.creditAmount);
+      if (!consumed.ok) {
+        return res.status(402).json({
+          error: "MERCHANT_QUOTA_EXHAUSTED",
+          message: consumed.message || "This shop cannot issue more coupon credits right now.",
+        });
+      }
+
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
-        deltaEntitlementCents: 0,
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -10048,262 +10255,17 @@ ${orientationExtra}
         return res.status(404).json({ error: "Customer not found" });
       }
       const balance = await storage.ensureCustomerBalance(customer.id);
-      let finalBalance = balance;
-
-      const checkoutSessionId = typeof stripeSessionId === "string"
-        ? stripeSessionId
-        : (typeof sessionId === "string" ? sessionId : null);
-      if (checkoutSessionId && stripe) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(checkoutSessionId);
-          const sessionCustomerId = session.metadata?.internal_customer_id || session.metadata?.customerId;
-          const sessionShop = session.metadata?.shop;
-          if (
-            session.payment_status === "paid" &&
-            sessionCustomerId === customer.id &&
-            sessionShop === shop
-          ) {
-            const credits = Number.parseInt(session.metadata?.credits || "0", 10);
-            const entitlementCents = Number.parseInt(session.metadata?.entitlement_cents || "100", 10);
-            if (Number.isFinite(credits) && credits > 0) {
-              const ledgerResult = await storage.applyCreditLedgerEntry({
-                customerId: customer.id,
-                deltaCredits: credits,
-                deltaEntitlementCents: Math.min(100, Math.max(0, entitlementCents || 0)),
-                reason: "purchase",
-                idempotencyKey: session.metadata?.idempotency_key || `stripe:session:${session.id}`,
-                externalRef: session.id,
-                metadata: {
-                  source: "credits-status-fallback",
-                  paymentIntent: typeof session.payment_intent === "string" ? session.payment_intent : null,
-                  priceInCents: session.amount_total || 0,
-                },
-              });
-              if (ledgerResult.inserted) {
-                await storage.createCreditTransaction({
-                  customerId: customer.id,
-                  type: "purchase",
-                  amount: credits,
-                  priceInCents: session.amount_total || 0,
-                  description: `Purchased ${credits} credits via Stripe`,
-                });
-                await syncCreditEntitlementMetafield(customer.id).catch((err) =>
-                  console.warn("[Credits Status] entitlement metafield sync failed", err),
-                );
-              }
-              finalBalance = ledgerResult.balance || finalBalance;
-              console.log("[Credits Status] Stripe fallback", {
-                sessionId: session.id,
-                customerId: customer.id,
-                inserted: ledgerResult.inserted,
-                credits: finalBalance.credits,
-              });
-            }
-          } else {
-            console.warn("[Credits Status] Stripe fallback ignored session mismatch", {
-              checkoutSessionId,
-              requestedCustomerId: customer.id,
-              sessionCustomerId,
-              requestedShop: shop,
-              sessionShop,
-              paymentStatus: session.payment_status,
-            });
-          }
-        } catch (err: any) {
-          console.warn("[Credits Status] Stripe fallback failed", { checkoutSessionId, error: err?.message });
-        }
-      }
-
-      console.log("[Credits Status] returning balance", finalBalance.credits, "for customerId", customer.id);
+      console.log("[Credits Status] returning balance", balance.credits, "for customerId", customer.id);
       return res.json({
         ok: true,
-        requestedCustomerId: customerId,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: finalBalance.credits,
-        freeGenerationsUsed: finalBalance.freeGenerationsUsed,
-        discountEntitlementCents: finalBalance.discountEntitlementCents,
+        credits: balance.credits,
+        freeGenerationsUsed: balance.freeGenerationsUsed,
       });
     } catch (error: any) {
       console.error("[Credits Status] error:", error);
       res.status(500).json({ error: "Failed to fetch credit status" });
-    }
-  });
-
-  app.post("/api/storefront/credits/purchase", async (req: Request, res: Response) => {
-    try {
-      const { customerId, shop, package: creditPackage, returnUrl } = req.body;
-      if (!customerId || !shop) {
-        return res.status(400).json({ error: "customerId and shop are required" });
-      }
-      const storefrontCustomerId = String(customerId);
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
-        return res.status(400).json({ error: "Invalid shop domain" });
-      }
-      if (!stripe) {
-        return res.status(503).json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY to Railway." });
-      }
-
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(403).json({ error: "Shop not authorized" });
-      }
-
-      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
-        shop,
-        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? storefrontCustomerId : null),
-        shopifyCustomerId: isInternalCustomer ? null : storefrontCustomerId,
-      });
-      if (!customer) {
-        return res.status(404).json({ error: "Customer not found" });
-      }
-
-      let creditsToAdd = 0;
-      let priceInCents = 0;
-      if ((creditPackage || "10") === "10") {
-        creditsToAdd = 10;
-        priceInCents = 100;
-      } else {
-        return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
-      }
-
-      const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
-      // safeReturnUrl always includes "?shop=...&customerId=...", so use & here.
-      const separator = safeReturnUrl.includes("?") ? "&" : "?";
-      const idempotencyKey = crypto.randomUUID();
-
-      console.log("[Credits Purchase] session for customerId", customer.id, "returnUrl", safeReturnUrl);
-
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork",
-              },
-              unit_amount: priceInCents,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: `${safeReturnUrl}${separator}credits=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
-        customer_email: (customer as any).email || undefined,
-        metadata: {
-          customerId: customer.id,
-          internal_customer_id: customer.id,
-          idempotency_key: idempotencyKey,
-          shop,
-          credits: creditsToAdd.toString(),
-          entitlement_cents: "100",
-          type: "credit_purchase",
-          returnUrl: safeReturnUrl,
-          legacy_customer_id: storefrontCustomerId,
-        },
-      });
-
-      if (session.url) {
-        return res.json({ url: session.url });
-      }
-      return res.status(500).json({ error: "Failed to create checkout session" });
-    } catch (error: any) {
-      console.error("[Credits Purchase] error:", error);
-      res.status(500).json({ error: error.message || "Failed to initiate credit purchase" });
-    }
-  });
-
-  app.get("/api/storefront/credits/purchase", async (req: Request, res: Response) => {
-    try {
-      const { customerId, shop, package: creditPackage, returnUrl } = req.query;
-      if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
-        return res.status(400).send("customerId and shop are required");
-      }
-      const storefrontCustomerId = customerId;
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
-        return res.status(400).send("Invalid shop domain");
-      }
-      if (!stripe) {
-        return res.status(503).send("Payments are not configured.");
-      }
-
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(403).send("Shop not authorized");
-      }
-
-      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
-        shop,
-        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? storefrontCustomerId : null),
-        shopifyCustomerId: isInternalCustomer ? null : storefrontCustomerId,
-      });
-      if (!customer) {
-        return res.status(404).send("Customer not found");
-      }
-
-      let creditsToAdd = 0;
-      let priceInCents = 0;
-      if ((typeof creditPackage === "string" ? creditPackage : "10") === "10") {
-        creditsToAdd = 10;
-        priceInCents = 100;
-      } else {
-        return res.status(400).send("Invalid credit package");
-      }
-
-      const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
-      const separator = safeReturnUrl.includes("?") ? "&" : "?";
-      const idempotencyKey = crypto.randomUUID();
-
-      console.log("[Credits Purchase] GET redirect session for customerId", customer.id, "returnUrl", safeReturnUrl);
-
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork",
-              },
-              unit_amount: priceInCents,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: `${safeReturnUrl}${separator}credits=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
-        customer_email: (customer as any).email || undefined,
-        metadata: {
-          customerId: customer.id,
-          internal_customer_id: customer.id,
-          idempotency_key: idempotencyKey,
-          shop,
-          credits: creditsToAdd.toString(),
-          entitlement_cents: "100",
-          type: "credit_purchase",
-          returnUrl: safeReturnUrl,
-          legacy_customer_id: storefrontCustomerId,
-        },
-      });
-
-      if (!session.url) {
-        return res.status(500).send("Failed to create checkout session");
-      }
-      return res.redirect(303, session.url);
-    } catch (error: any) {
-      console.error("[Credits Purchase] GET redirect error:", error);
-      return res.status(500).send(error.message || "Failed to initiate credit purchase");
     }
   });
 
@@ -10312,55 +10274,48 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      // Compute webhook HMAC validity. The legacy credit-ledger path below is
-      // preserved as-is (additive change); the NEW Printify fulfillment path is
-      // strictly gated behind a valid HMAC + the FLAT_ORDER_FULFILLMENT_ENABLED
-      // flag, so forged/unverified requests can never trigger a Printify order.
-      const hmacValid = verifyShopifyWebhookHmac(req);
-      console.log("[Shopify Orders Paid] received", { shop, orderId, hmacValid });
-      const shopifyCustomerId = order.customer?.admin_graphql_api_id || order.customer?.id;
-      const discountApplications = Array.isArray(order.discount_applications) ? order.discount_applications : [];
-      const appaiDiscountApplied = discountApplications.some((discount: any) =>
-        String(discount.title || discount.code || discount.description || "").toLowerCase().includes("appai")
-      );
-      const totalDiscountCents = Math.round(Number.parseFloat(String(order.total_discounts || "0")) * 100);
-      if (shop && shopifyCustomerId && appaiDiscountApplied && totalDiscountCents > 0) {
-        const customer = await resolveStorefrontCustomerIdentity({
-          shop,
-          shopifyCustomerId: String(shopifyCustomerId).replace("gid://shopify/Customer/", ""),
-        });
-        const debitCents = Math.min(100, totalDiscountCents);
-        const result = await storage.applyCreditLedgerEntry({
-          customerId: customer.id,
-          deltaCredits: 0,
-          deltaEntitlementCents: -debitCents,
-          reason: "order_redemption",
-          idempotencyKey: `shopify-order-paid:${orderId}`,
-          externalRef: String(orderId),
-          metadata: { shop, totalDiscountCents, discountApplications },
-        });
-        // Always attempt the claim row (idempotent on shopify_order_id) so we
-        // have an audit trail even if a duplicate webhook is replayed.
-        const claimResult = await storage.recordOrderDiscountClaim({
-          customerId: customer.id,
-          shopifyOrderId: String(orderId),
-          shop,
-          entitlementCents: debitCents,
-          status: "applied",
-        });
-        if (result.inserted) {
-          console.log("[Shopify Orders Paid] debited entitlement", {
-            customerId: customer.id,
-            orderId,
-            debitCents,
-            claimInserted: claimResult.inserted,
-          });
-          await syncCreditEntitlementMetafield(customer.id);
-        } else {
-          console.log("[Shopify Orders Paid] duplicate ledger entry, skipping debit", {
-            customerId: customer.id,
-            orderId,
-          });
+      if (!verifyShopifyWebhookHmac(req)) {
+        console.warn("[Shopify Orders Paid] invalid HMAC", { shop, orderId });
+        return res.status(401).send("Unauthorized");
+      }
+      console.log("[Shopify Orders Paid] received", { shop, orderId });
+
+      // Reward Ladder — purchase_threshold rung (gated by PURCHASE_REWARDS_ENABLED).
+      // Resolve the buyer to our internal customer via customer_aliases.
+      if (
+        process.env.PURCHASE_REWARDS_ENABLED !== "false" &&
+        shop &&
+        orderId &&
+        order?.customer
+      ) {
+        const shopifyCustomerRaw = order.customer.admin_graphql_api_id
+          ?? (order.customer.id != null ? `gid://shopify/Customer/${order.customer.id}` : null);
+        const shopifyCustomerId = shopifyCustomerRaw ? String(shopifyCustomerRaw).replace("gid://shopify/Customer/", "") : null;
+        const subtotalCents = Math.max(
+          0,
+          Math.round(Number(order.subtotal_price || order.current_subtotal_price || order.total_price || 0) * 100),
+        );
+        if (shopifyCustomerId && subtotalCents > 0) {
+          void (async () => {
+            try {
+              const resolved = await resolveStorefrontCustomerIdentity({
+                shop,
+                shopifyCustomerId,
+              }).catch(() => null);
+              if (!resolved) return;
+              const r = await tryGrantPurchaseThreshold({
+                shop,
+                customerId: resolved.id,
+                orderId: String(orderId),
+                subtotalCents,
+              });
+              if (r.granted) {
+                console.log(`[Shopify Orders Paid] granted purchase_threshold rung to ${resolved.id} for order ${orderId}`);
+              }
+            } catch (err: any) {
+              console.warn("[Shopify Orders Paid] purchase_threshold grant failed:", err?.message);
+            }
+          })();
         }
       }
 
@@ -10369,7 +10324,7 @@ ${orientationExtra}
       // production until prerequisites (e.g. Protected Customer Data approval
       // for shipping address access) are met. Requires a valid webhook HMAC.
       // Runs async AFTER we return 200 so the webhook stays fast.
-      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && hmacValid && Array.isArray(order.line_items)) {
+      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && Array.isArray(order.line_items)) {
         const rawLines = order.line_items as any[];
         const shippingAddress = order.shipping_address || order.customer?.default_address || {};
         // Map the Shopify shipping address → Printify address_to. NOTE: this
@@ -10418,7 +10373,7 @@ ${orientationExtra}
       // FLAT_ORDER_FULFILLMENT_ENABLED — just a valid webhook HMAC. Dormant in
       // practice until orders/paid is resubscribed in shopify.app.toml (see the
       // comment there re: Protected Customer Data approval).
-      if (shop && hmacValid && Array.isArray(order.line_items)) {
+      if (shop && Array.isArray(order.line_items)) {
         void recordDesignProductSalesForOrder(shop, order).catch((e: any) =>
           console.warn("[Shopify Orders Paid] design product sale recording failed:", e?.message || e),
         );
@@ -10463,6 +10418,65 @@ ${orientationExtra}
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Carts Update] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  // ── Refund / cancel → Reward Ladder clawback ─────────────────────────────
+  // Phase 1: only reverses purchase_threshold Reward Ladder grants tied to the
+  // order id. Studio Credits pack refunds are Phase 2 (wholesale credit netting).
+  app.post("/shopify/webhooks/refunds-create", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const body = req.body || {};
+      const orderId = body.order_id || body.admin_graphql_api_order_id || body.order?.id;
+      if (!verifyShopifyWebhookHmac(req)) {
+        console.warn("[Shopify Refunds Create] invalid HMAC", { shop, orderId });
+        return res.status(401).send("Unauthorized");
+      }
+      if (shop && orderId) {
+        void clawbackPurchaseThresholdForOrder({
+          shop,
+          orderId: String(orderId),
+          reason: "reward_clawback:refund",
+          idempotencyKey: `clawback:order-refund:${orderId}`,
+        }).then((r) => {
+          if (r.clawedGrants > 0) {
+            console.log(`[Shopify Refunds Create] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
+          }
+        }).catch((err: any) => console.warn("[Shopify Refunds Create] clawback failed:", err?.message));
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Refunds Create] error:", error);
+      return res.status(200).send("OK");
+    }
+  });
+
+  app.post("/shopify/webhooks/orders-cancelled", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const order = req.body || {};
+      const orderId = order.admin_graphql_api_id || order.id;
+      if (!verifyShopifyWebhookHmac(req)) {
+        console.warn("[Shopify Orders Cancelled] invalid HMAC", { shop, orderId });
+        return res.status(401).send("Unauthorized");
+      }
+      if (shop && orderId) {
+        void clawbackPurchaseThresholdForOrder({
+          shop,
+          orderId: String(orderId),
+          reason: "reward_clawback:cancel",
+          idempotencyKey: `clawback:order-cancel:${orderId}`,
+        }).then((r) => {
+          if (r.clawedGrants > 0) {
+            console.log(`[Shopify Orders Cancelled] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
+          }
+        }).catch((err: any) => console.warn("[Shopify Orders Cancelled] clawback failed:", err?.message));
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Orders Cancelled] error:", error);
       return res.status(200).send("OK");
     }
   });
@@ -10738,6 +10752,32 @@ ${orientationExtra}
     runOosCatalogueScan().catch((e: Error) => console.error("[OOS Catalogue Scan] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
+  // Daily Product Intelligence sync (COGS + availability + shipping snapshot).
+  // Shares a 20h guard with POST /api/internal/product-intelligence-sync.
+  // Staggered 15 min after boot so it doesn't pile on with the OOS scan.
+  setTimeout(() => {
+    runCatalogueProductSync({ source: "daily" }).catch((e: Error) =>
+      console.error("[Product Intelligence Sync] Startup run error:", e),
+    );
+  }, 15 * 60 * 1000);
+  setInterval(() => {
+    runCatalogueProductSync({ source: "daily" }).catch((e: Error) =>
+      console.error("[Product Intelligence Sync] Interval error:", e),
+    );
+  }, 24 * 60 * 60 * 1000);
+
+  // Last week of month: remind merchants about leftover included gens → coupon promos.
+  setTimeout(() => {
+    import("./leftover-gens-reminder")
+      .then(({ runLeftoverGensReminders }) => runLeftoverGensReminders())
+      .catch((e: Error) => console.error("[Leftover Gens Reminder] Startup error:", e));
+  }, 25 * 60 * 1000);
+  setInterval(() => {
+    import("./leftover-gens-reminder")
+      .then(({ runLeftoverGensReminders }) => runLeftoverGensReminders())
+      .catch((e: Error) => console.error("[Leftover Gens Reminder] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
   // POST /api/pattern/preview - Generate a tiled AOP pattern
   // Accepts { imageUrl, mode, pattern, scale, width, height, bgColor,
   //           singleScale, singleRotation, singlePosX, singlePosY }
@@ -10986,7 +11026,9 @@ ${orientationExtra}
 
       const types = isPlatformAdminRequest(req)
         ? await storage.getActiveProductTypes()
-        : (await storage.getProductTypesByMerchant(merchant.id)).filter((pt) => pt.isActive);
+        : (await storage.getProductTypesByMerchant(merchant.id)).filter(
+            (pt) => pt.isActive && !(pt as any).isPlatformCatalogRef,
+          );
 
       res.json(types);
     } catch (error) {
@@ -11070,6 +11112,51 @@ ${orientationExtra}
       res.status(500).json({ error: "Failed to update product type" });
     }
   });
+
+  /** Pull Printify blueprint description when a product type was imported without one. */
+  app.post(
+    "/api/admin/product-types/:id/refresh-description",
+    isAuthenticated,
+    asyncHandler(async (req: any, res: Response) => {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: "Invalid product type ID" });
+      }
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const productType = await storage.getProductType(id);
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+      if (!productType?.printifyBlueprintId) {
+        return res.status(400).json({ error: "Not a Printify catalog product", code: "NO_BLUEPRINT" });
+      }
+
+      const existing = String(productType.description || "").trim();
+      if (existing) {
+        return res.json({ description: productType.description, refreshed: false });
+      }
+
+      const token = resolveCatalogPrintifyToken(merchant);
+      if (!token) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const fetched = await fetchPrintifyBlueprintDescriptionHtml(
+        token,
+        Number(productType.printifyBlueprintId),
+      );
+      if (!fetched) {
+        return res.status(404).json({ error: "No description found on Printify for this blueprint" });
+      }
+
+      const updated = await storage.updateProductType(id, { description: fetched });
+      return res.json({ description: updated?.description ?? fetched, refreshed: true });
+    }),
+  );
 
   app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -11218,6 +11305,7 @@ ${orientationExtra}
         shopDomain,
         productId,
         productHandle,
+        customerId: rawOwnerCustomerId,
       } = req.body;
 
       if (!imageUrl || !prompt || !size || !frameColor) {
@@ -11258,6 +11346,20 @@ ${orientationExtra}
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
 
+      // Resolve the sharer's internal customer id (for the share_design Reward Ladder rung).
+      // Accept either the internal UUID or a Shopify customer id; verify via bearer token when present.
+      let ownerCustomerId: string | null = null;
+      if (rawOwnerCustomerId && shopDomain && /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shopDomain))) {
+        const tokenIdentity = verifyStorefrontIdentityToken(req);
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rawOwnerCustomerId));
+        const resolved = await resolveStorefrontCustomerIdentity({
+          shop: String(shopDomain),
+          customerId: tokenIdentity && tokenIdentity.shop === shopDomain ? tokenIdentity.customerId : (isInternalCustomer ? String(rawOwnerCustomerId) : null),
+          shopifyCustomerId: isInternalCustomer ? null : String(rawOwnerCustomerId),
+        }).catch(() => null);
+        if (resolved) ownerCustomerId = resolved.id;
+      }
+
       const sharedDesign = await storage.createSharedDesign({
         designId: null, // Nullable for unsaved designs
         shareToken,
@@ -11274,6 +11376,7 @@ ${orientationExtra}
         shopDomain: shopDomain || null,
         productId: productId || null,
         productHandle: productHandle || null,
+        ownerCustomerId,
         expiresAt,
         viewCount: 0,
       });
@@ -11316,6 +11419,22 @@ ${orientationExtra}
 
       // Increment view count
       await storage.incrementSharedDesignViewCount(sharedDesign.id);
+
+      // Reward Ladder — share_design rung. Grant to the sharer when a different
+      // visitor opens the link. visitorKey/visitorCustomerId come from the client
+      // (appai_uid localStorage + logged-in identity when available).
+      const ownerId = (sharedDesign as any).ownerCustomerId as string | null | undefined;
+      if (ownerId && sharedDesign.shopDomain) {
+        const visitorKey = typeof req.query.visitorKey === "string" ? req.query.visitorKey : null;
+        const visitorCustomerId = typeof req.query.customerId === "string" ? req.query.customerId : null;
+        void tryGrantShareDesign({
+          shop: String(sharedDesign.shopDomain),
+          ownerCustomerId: ownerId,
+          visitorCustomerId,
+          visitorKey,
+          shareId: sharedDesign.id,
+        }).catch((err: any) => console.warn(`[Share View] share_design grant failed:`, err?.message));
+      }
 
       res.json({
         id: sharedDesign.id,
@@ -11461,7 +11580,7 @@ ${orientationExtra}
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
@@ -11533,80 +11652,6 @@ ${orientationExtra}
       res.status(500).json({ error: "Failed to save reused design" });
     }
   });
-
-  // Purchase credits via Stripe Checkout
-  app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
-    try {
-      const userId = req.user.claims.sub;
-      const { package: creditPackage, shop } = req.body;
-      
-      if (!stripe) {
-        return res.status(503).json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY to Railway." });
-      }
-
-      let customer = await storage.getCustomerByUserId(userId);
-      if (!customer) {
-        customer = await storage.createCustomer({
-          userId,
-          credits: 0,
-          freeGenerationsUsed: 0,
-          totalGenerations: 0,
-          totalSpent: "0.00",
-        });
-      }
-
-      // Credit packages: $1 for 10 credits
-      let creditsToAdd = 0;
-      let priceInCents = 0;
-      
-      if (creditPackage === "10") {
-        creditsToAdd = 10;
-        priceInCents = 100; // $1.00
-      } else {
-        return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
-      }
-
-      const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
-      
-      // Create Stripe Checkout Session
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: `${creditsToAdd} AI Generation Credits`,
-                description: "Credits for generating custom AI artwork",
-              },
-              unit_amount: priceInCents,
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        success_url: `${appUrl}/designs?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/designs?payment=cancelled`,
-        customer_email: customer.email || undefined,
-        metadata: {
-          customerId: customer.id,
-          creditsToAdd: creditsToAdd.toString(),
-          shop: shop || "",
-        },
-      });
-
-      if (session.url) {
-        res.json({ url: session.url });
-      } else {
-        res.status(500).json({ error: "Failed to create checkout session" });
-      }
-    } catch (error: any) {
-      console.error("Error creating checkout session:", error);
-      res.status(500).json({ error: error.message || "Failed to initiate purchase" });
-    }
-  });
-
-
 
   // Get credit transactions
   app.get("/api/credits/transactions", isAuthenticated, async (req: any, res: Response) => {
@@ -12044,17 +12089,37 @@ ${orientationExtra}
         return res.status(400).json({ error: "Code and credit amount are required" });
       }
 
+      const credits = parseInt(creditAmount, 10);
+      const maxUsesN = maxUses != null && maxUses !== "" ? parseInt(maxUses, 10) : null;
+      if (!Number.isFinite(credits) || credits <= 0) {
+        return res.status(400).json({ error: "Credit amount must be a positive number" });
+      }
+
       // Check if code already exists
       const existingCoupon = await storage.getCouponByCode(code);
       if (existingCoupon) {
         return res.status(400).json({ error: "Coupon code already exists" });
       }
 
+      // Soft check: enough allotment for one full burn of creditAmount × maxUses
+      // (unlimited maxUses → check a single redemption only).
+      const installation = await resolveInstallationForMerchant(merchant.id);
+      if (installation) {
+        const reserveUnits = credits * (maxUsesN != null && maxUsesN > 0 ? maxUsesN : 1);
+        const cover = await merchantCanCoverCouponUnits(installation, reserveUnits);
+        if (!cover.ok) {
+          return res.status(402).json({
+            error: "MERCHANT_QUOTA_EXHAUSTED",
+            message: cover.message,
+          });
+        }
+      }
+
       const coupon = await storage.createCoupon({
         merchantId: merchant.id,
         code,
-        creditAmount: parseInt(creditAmount),
-        maxUses: maxUses ? parseInt(maxUses) : null,
+        creditAmount: credits,
+        maxUses: maxUsesN != null && Number.isFinite(maxUsesN) ? maxUsesN : null,
         isActive: true,
         expiresAt: expiresAt ? new Date(expiresAt) : null,
       });
@@ -12161,10 +12226,27 @@ ${orientationExtra}
         }
       }
 
+      const installation = await resolveInstallationForMerchant(coupon.merchantId);
+      if (installation) {
+        const cover = await merchantCanCoverCouponUnits(installation, coupon.creditAmount);
+        if (!cover.ok) {
+          return res.status(402).json({
+            error: "MERCHANT_QUOTA_EXHAUSTED",
+            message: cover.message || "This shop cannot issue more coupon credits right now.",
+          });
+        }
+        const consumed = await consumeMerchantCouponUnits(installation, coupon.creditAmount);
+        if (!consumed.ok) {
+          return res.status(402).json({
+            error: "MERCHANT_QUOTA_EXHAUSTED",
+            message: consumed.message || "This shop cannot issue more coupon credits right now.",
+          });
+        }
+      }
+
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
-        deltaEntitlementCents: 0,
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -12602,23 +12684,29 @@ ${orientationExtra}
     });
   });
 
+  /** Merchant Settings token, else platform PRINTIFY_API_TOKEN (operator catalog / staging). */
+  function resolveCatalogPrintifyToken(merchant: { printifyApiToken?: string | null } | undefined | null): string {
+    return String(merchant?.printifyApiToken || process.env.PRINTIFY_API_TOKEN || "").trim();
+  }
+
   // Fetch all blueprints from Printify catalog with optional location filtering
   app.get("/api/admin/printify/blueprints", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const locationFilter = req.query.location as string | undefined;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ 
           error: "Printify API token not configured",
-          message: "Please add your Printify API token in Settings first"
+          message: "Add a Printify API token in Settings, or set PRINTIFY_API_TOKEN on the server."
         });
       }
 
       const response = await fetch("https://api.printify.com/v1/catalog/blueprints.json", {
         headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Authorization": `Bearer ${printifyToken}`,
           "Content-Type": "application/json"
         }
       });
@@ -12680,8 +12768,9 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const { blueprintIds } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -12719,7 +12808,7 @@ ${orientationExtra}
                 `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
                 {
                   headers: {
-                    "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                    "Authorization": `Bearer ${printifyToken}`,
                     "Content-Type": "application/json"
                   }
                 },
@@ -12755,7 +12844,7 @@ ${orientationExtra}
                   `https://api.printify.com/v1/catalog/print_providers/${providerId}.json`,
                   {
                     headers: {
-                      "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                      "Authorization": `Bearer ${printifyToken}`,
                       "Content-Type": "application/json"
                     }
                   },
@@ -12836,14 +12925,15 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const blueprintId = req.params.id;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
         headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Authorization": `Bearer ${printifyToken}`,
           "Content-Type": "application/json"
         }
       });
@@ -12872,15 +12962,16 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const blueprintId = req.params.id;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       // Fetch blueprint-specific providers
       const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`, {
         headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Authorization": `Bearer ${printifyToken}`,
           "Content-Type": "application/json"
         }
       });
@@ -12890,36 +12981,102 @@ ${orientationExtra}
       }
 
       const providers = await response.json();
-      
-      // Fetch detailed info for each provider to get location data
-      const enrichedProviders = await Promise.all(
-        providers.map(async (provider: any) => {
-          try {
-            const detailResponse = await fetch(
-              `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
-              {
-                headers: {
-                  "Authorization": `Bearer ${merchant.printifyApiToken}`,
-                  "Content-Type": "application/json"
+      const providerList = Array.isArray(providers) ? providers : [];
+
+      // Enrich each provider: location, catalog "from" price, variant count (bounded concurrency).
+      const enrichedProviders: any[] = [];
+      const CONCURRENCY = 3;
+      for (let i = 0; i < providerList.length; i += CONCURRENCY) {
+        const chunk = providerList.slice(i, i + CONCURRENCY);
+        const chunkResults = await Promise.all(
+          chunk.map(async (provider: any) => {
+            let location = provider.location;
+            let fulfillment_countries = provider.fulfillment_countries || [];
+            try {
+              const detailResponse = await fetch(
+                `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${printifyToken}`,
+                    "Content-Type": "application/json",
+                  },
+                },
+              );
+              if (detailResponse.ok) {
+                const details = await detailResponse.json();
+                location = details.location ?? location;
+                fulfillment_countries = details.fulfillment_countries || fulfillment_countries;
+              }
+            } catch (err) {
+              console.error(`Error fetching provider ${provider.id} details:`, err);
+            }
+
+            let pricingFromCents: number | null = null;
+            let variantCount: number | null = null;
+            let supportsBothSides = false;
+
+            try {
+              const cachedCosts = await findPlatformCostsForBlueprint(blueprintId, Number(provider.id));
+              const cachedVals = Object.values(cachedCosts).filter((n) => Number.isFinite(n) && n > 0);
+              if (cachedVals.length > 0) pricingFromCents = Math.min(...cachedVals);
+            } catch {
+              /* ignore */
+            }
+
+            try {
+              const vRes = await fetch(
+                `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${provider.id}/variants.json?show-out-of-stock=1`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${printifyToken}`,
+                    "Content-Type": "application/json",
+                  },
+                },
+              );
+              if (vRes.ok) {
+                const vData = await vRes.json();
+                const variants = Array.isArray(vData?.variants)
+                  ? vData.variants
+                  : Array.isArray(vData)
+                    ? vData
+                    : [];
+                variantCount = variants.length;
+                const catalogCosts = extractCostsFromCatalogVariants(variants);
+                const vals = Object.values(catalogCosts).filter((n) => Number.isFinite(n) && n > 0);
+                if (vals.length > 0) {
+                  const minCatalog = Math.min(...vals);
+                  pricingFromCents =
+                    pricingFromCents == null ? minCatalog : Math.min(pricingFromCents, minCatalog);
+                }
+                for (const sample of variants.slice(0, 12)) {
+                  const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+                  if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) {
+                    supportsBothSides = true;
+                    break;
+                  }
                 }
               }
-            );
-            
-            if (detailResponse.ok) {
-              const details = await detailResponse.json();
-              return {
-                ...provider,
-                location: details.location,
-                fulfillment_countries: details.fulfillment_countries || [],
-              };
+            } catch (err) {
+              console.warn(`[providers] variants enrich failed for provider ${provider.id}:`, err);
             }
-          } catch (err) {
-            console.error(`Error fetching provider ${provider.id} details:`, err);
-          }
-          return provider;
-        })
-      );
-      
+
+            return {
+              ...provider,
+              location,
+              fulfillment_countries,
+              decoration_methods: Array.isArray(provider.decoration_methods)
+                ? provider.decoration_methods
+                : [],
+              pricingFromCents,
+              variantCount,
+              supportsBothSides,
+              rating: typeof provider.rating === "number" ? provider.rating : null,
+            };
+          }),
+        );
+        enrichedProviders.push(...chunkResults);
+      }
+
       res.json(enrichedProviders);
     } catch (error) {
       console.error("Error fetching print providers:", error);
@@ -12992,15 +13149,16 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const { blueprintId, providerId } = req.params;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       const dual = await fetchPrintifyProviderVariantsDual(
         blueprintId,
         providerId,
-        merchant.printifyApiToken,
+        printifyToken,
       );
       res.json(dual.payload);
     } catch (error) {
@@ -13016,8 +13174,9 @@ ${orientationExtra}
       const { blueprintId } = req.params;
       const { providerId } = req.query;
       const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant || !merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -13038,7 +13197,7 @@ ${orientationExtra}
       const dual = await fetchPrintifyProviderVariantsDual(
         blueprintId,
         actualProviderId,
-        merchant.printifyApiToken,
+        printifyToken,
       );
       const variants = dual.variants;
       
@@ -13443,13 +13602,14 @@ ${orientationExtra}
       const userId = req.user.claims.sub;
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
-      if (!merchant.printifyApiToken) return res.status(400).json({ error: "Printify API token not configured" });
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+      if (!printifyToken) return res.status(400).json({ error: "Printify API token not configured" });
 
       const blueprintId = parseInt(req.params.blueprintId);
       const providerId = parseInt(req.params.providerId);
       if (!blueprintId || !providerId) return res.status(400).json({ error: "Invalid blueprint or provider ID" });
 
-      const images = await fetchPrintifyPlaceholderOptions(merchant.printifyApiToken, blueprintId, providerId);
+      const images = await fetchPrintifyPlaceholderOptions(printifyToken, blueprintId, providerId);
       res.json({ images });
     } catch (error) {
       console.error("Error fetching Printify placeholder images:", error);
@@ -13470,7 +13630,7 @@ ${orientationExtra}
   async function handlePrintifyImportRequest(
     req: any,
     res: any,
-    opts?: { printifyTokenOverride?: string },
+    opts?: { printifyTokenOverride?: string; autoCapVariants?: boolean },
   ) {
     try {
       const userId = req.user.claims.sub;
@@ -13481,9 +13641,13 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const printifyToken = opts?.printifyTokenOverride || merchant.printifyApiToken;
+      const printifyToken =
+        opts?.printifyTokenOverride || resolveCatalogPrintifyToken(merchant);
       if (!printifyToken) {
-        return res.status(400).json({ error: "Printify API token not configured" });
+        return res.status(400).json({
+          error: "Printify API token not configured",
+          message: "Add a Printify API token in Settings, or set PRINTIFY_API_TOKEN on the server.",
+        });
       }
 
       if (!blueprintId || !name) {
@@ -13491,6 +13655,9 @@ ${orientationExtra}
       }
 
       const blueprintIdNum = parseInt(blueprintId, 10);
+      // Create Page / import often omit description — filled from Printify blueprint JSON below.
+      let resolvedDescription = typeof description === "string" ? description.trim() : "";
+
       const catalogEntry = await getPlatformCatalogEntry(blueprintIdNum);
       const isOperator = isPlatformAdminRequest(req);
 
@@ -13585,6 +13752,17 @@ ${orientationExtra}
           Number(pt.printifyProviderId) === providerId,
       );
       if (alreadyImported) {
+        // Backfill description if Create Page / earlier import left it empty.
+        if (!String(alreadyImported.description || "").trim()) {
+          const fetched = await fetchPrintifyBlueprintDescriptionHtml(printifyToken, blueprintIdNum);
+          if (fetched) {
+            try {
+              await storage.updateProductType(alreadyImported.id, { description: fetched });
+            } catch (e: any) {
+              console.warn("[printify-import] description backfill failed:", e?.message ?? e);
+            }
+          }
+        }
         const providerTitle =
           (providers as Array<{ id: number; title?: string }>).find((p) => Number(p.id) === providerId)?.title ||
           `provider #${providerId}`;
@@ -13614,6 +13792,10 @@ ${orientationExtra}
       let blueprintColorOptionName: string | null = null; // Actual option name from Printify (e.g. "Material", "Fabric", "Color")
       if (blueprintResponse.ok) {
         const blueprintData = await blueprintResponse.json();
+        if (!resolvedDescription) {
+          const rawDesc = typeof blueprintData?.description === "string" ? blueprintData.description.trim() : "";
+          if (rawDesc) resolvedDescription = sanitizeDesignProductDescriptionHtml(rawDesc);
+        }
         // Extract the non-size option from blueprint options
         // First try color-type options, then fall back to any non-size option
         const colorOptions = blueprintData.options?.find((opt: any) => 
@@ -14376,19 +14558,47 @@ ${orientationExtra}
         height: placeholderDimensions[pos].height,
       }));
 
-      const importSizeIds: string[] = Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
+      let importSizeIds: string[] = Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
         ? selectedSizeIds
         : sizes.map((s: { id: string }) => s.id);
-      const importColorIds: string[] = Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+      let importColorIds: string[] = Array.isArray(selectedColorIds) && selectedColorIds.length > 0
         ? selectedColorIds
         : frameColors.map((c: { id: string }) => c.id);
-      const importVariantCount = countActiveVariantMapKeys(variantMap, importSizeIds, importColorIds);
+      let importVariantCount = countActiveVariantMapKeys(variantMap, importSizeIds, importColorIds);
+      const explicitVariantPick =
+        (Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0) ||
+        (Array.isArray(selectedColorIds) && selectedColorIds.length > 0);
+      // Setup → Activate has no size/color picker. Auto-trim to Shopify's 100
+      // variant cap (prefer all sizes, fewer colors). Products Import still
+      // errors when the merchant explicitly picks too many.
       if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-        return res.status(400).json({
-          error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
-          code: "SHOPIFY_VARIANT_LIMIT",
-          variantCount: importVariantCount,
-        });
+        if (opts?.autoCapVariants || !explicitVariantPick) {
+          const capped = capVariantSelectionForShopifyLimit(
+            importSizeIds,
+            importColorIds,
+            variantMap,
+          );
+          importSizeIds = capped.sizeIds;
+          importColorIds = capped.colorIds;
+          importVariantCount = capped.variantCount;
+          console.log(
+            `[Import] Auto-capped blueprint ${blueprintIdNum} to ${importVariantCount} variants ` +
+              `(${importSizeIds.length} sizes × ${importColorIds.length} colors)`,
+          );
+          if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+            return res.status(400).json({
+              error: `Too many variants (${importVariantCount}) even after auto-select. Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product.`,
+              code: "SHOPIFY_VARIANT_LIMIT",
+              variantCount: importVariantCount,
+            });
+          }
+        } else {
+          return res.status(400).json({
+            error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
+            code: "SHOPIFY_VARIANT_LIMIT",
+            variantCount: importVariantCount,
+          });
+        }
       }
 
       const importPrintifyVariantIds = [
@@ -14436,7 +14646,7 @@ ${orientationExtra}
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
-        description: description || null,
+        description: resolvedDescription || null,
         printifyBlueprintId: blueprintIdNum,
         printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
@@ -14444,16 +14654,9 @@ ${orientationExtra}
         variantMap: JSON.stringify(variantMap),
         // Empty [] from a failed/partial variants wizard must mean "select all", not
         // "intentionally none" (that would hide storefront color/size dropdowns).
-        selectedSizeIds: JSON.stringify(
-          Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
-            ? selectedSizeIds
-            : sizes.map((s: { id: string }) => s.id),
-        ),
-        selectedColorIds: JSON.stringify(
-          Array.isArray(selectedColorIds) && selectedColorIds.length > 0
-            ? selectedColorIds
-            : frameColors.map((c: { id: string }) => c.id),
-        ),
+        // Use importSizeIds / importColorIds (may be auto-capped for Setup Activate).
+        selectedSizeIds: JSON.stringify(importSizeIds),
+        selectedColorIds: JSON.stringify(importColorIds),
         aspectRatio,
         printShape,
         // Store only physical dimensions (inches) for unit consistency
@@ -15596,32 +15799,214 @@ ${orientationExtra}
     return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
   }
 
-  // Helper: fetch the first placeholder position for a blueprint/provider/variant
-  async function fetchPlaceholderPosition(
+  /**
+   * Minimal body placeholders for cost probes (avoid filling every AOP panel).
+   * Zip 451 has no bare "front"; leggings use left_side/right_side.
+   */
+  function minimalCostProbePositions(blueprintId: number): string[] | null {
+    switch (Number(blueprintId)) {
+      case 451:
+        return ["front_left", "front_right"];
+      case 256:
+      case 1050:
+        return ["left_side", "right_side"];
+      case 450:
+        return ["front"];
+      default:
+        return null;
+    }
+  }
+
+  /** Raw placeholder list from Printify (no minimal filtering). */
+  async function fetchRawPlaceholderPositions(
     blueprintId: number,
     providerId: number,
     variantId: number,
-    apiToken: string
-  ): Promise<string> {
+    apiToken: string,
+  ): Promise<string[]> {
     try {
       const resp = await fetch(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variantId}/placeholders.json`,
-        { headers: { Authorization: `Bearer ${apiToken}` } }
+        { headers: { Authorization: `Bearer ${apiToken}` } },
       );
       if (resp.ok) {
         const data = await resp.json();
         const list = data.placeholders || data || [];
-        if (Array.isArray(list) && list.length > 0 && list[0]?.position) {
-          console.log(`[Printify Costs] Placeholder position: "${list[0].position}"`);
-          return list[0].position;
+        if (Array.isArray(list) && list.length > 0) {
+          return [
+            ...new Set(
+              list
+                .map((p: any) => String(p?.position || "").trim())
+                .filter(Boolean),
+            ),
+          ];
         }
       } else {
         console.warn(`[Printify Costs] Placeholder API returned ${resp.status}`);
       }
     } catch (e) {
-      console.warn("[Printify Costs] Could not fetch placeholder position:", e);
+      console.warn("[Printify Costs] Could not fetch placeholder positions:", e);
     }
-    return "front";
+    return [];
+  }
+
+  /**
+   * Positions for cost temp-products. Prefers a minimal body set for known AOP
+   * blueprints so zip/leggings don't 422 on "front" or oversized multi-panel creates.
+   */
+  async function fetchPlaceholderPositions(
+    blueprintId: number,
+    providerId: number,
+    variantId: number,
+    apiToken: string,
+  ): Promise<string[]> {
+    const raw = await fetchRawPlaceholderPositions(blueprintId, providerId, variantId, apiToken);
+    const minimal = minimalCostProbePositions(blueprintId);
+    if (minimal) {
+      if (raw.length === 0 || minimal.every((p) => raw.includes(p))) {
+        console.log(`[Printify Costs] Minimal probe positions: ${minimal.join(", ")}`);
+        return minimal;
+      }
+    }
+    if (raw.length > 0) {
+      console.log(`[Printify Costs] Placeholder positions: ${raw.join(", ")}`);
+      return raw;
+    }
+    return minimal || ["front"];
+  }
+
+  async function fetchPlaceholderPosition(
+    blueprintId: number,
+    providerId: number,
+    variantId: number,
+    apiToken: string,
+  ): Promise<string> {
+    const positions = await fetchPlaceholderPositions(blueprintId, providerId, variantId, apiToken);
+    return positions[0] || "front";
+  }
+
+  /**
+   * Known DTG front+back blueprints (placeholders.json can be empty on stale
+   * platform refs / OOS providers). Not AOP — AOP stays single-tier.
+   */
+  const KNOWN_DUAL_SIDED_BLUEPRINTS = new Set<number>([
+    26, // Men's Lightweight Fashion Tee
+    79, // Unisex 3/4 Sleeve Baseball Tee
+    6, // Unisex Cotton Crew Tee (common)
+    12, // Unisex Heavy Cotton Tee
+    77, // Unisex Heavy Blend Hooded Sweatshirt
+    49, // Unisex Heavy Blend Crewneck
+  ]);
+
+  /** True when catalog/product placeholders include a separate back print area (not AOP). */
+  async function catalogHasBackPlaceholder(
+    blueprintId: number,
+    providerId: number,
+    apiToken: string,
+    opts?: {
+      isAllOverPrint?: boolean;
+      placeholderPositionsJson?: string | null;
+      doubleSidedPrint?: boolean | null;
+      sampleVariantId?: number | null;
+    },
+  ): Promise<boolean> {
+    if (opts?.isAllOverPrint) return false;
+    if (KNOWN_DUAL_SIDED_BLUEPRINTS.has(Number(blueprintId))) return true;
+    try {
+      const positions: { position?: string }[] =
+        typeof opts?.placeholderPositionsJson === "string"
+          ? JSON.parse(opts.placeholderPositionsJson || "[]")
+          : [];
+      if (positions.some((p) => String(p?.position || "").toLowerCase() === "back")) return true;
+    } catch {
+      /* continue */
+    }
+    if (opts?.doubleSidedPrint) return true;
+
+    // Nested variants.json placeholders are usually empty — use placeholders.json.
+    // Prefer show-out-of-stock so fully OOS providers (baseball tee) still resolve.
+    let sampleVid = opts?.sampleVariantId != null ? Number(opts.sampleVariantId) : NaN;
+    if (!Number.isFinite(sampleVid) || sampleVid <= 0) {
+      try {
+        const vResp = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        );
+        if (vResp.ok) {
+          const vData = await vResp.json();
+          const variants = Array.isArray(vData.variants) ? vData.variants : [];
+          sampleVid = Number(variants[0]?.id);
+        }
+      } catch {
+        return false;
+      }
+    }
+    if (!Number.isFinite(sampleVid) || sampleVid <= 0) return false;
+    const positions = await fetchRawPlaceholderPositions(
+      blueprintId,
+      providerId,
+      sampleVid,
+      apiToken,
+    );
+    return positions.some((p) => p.toLowerCase() === "back");
+  }
+
+  /** Probe front+back COGS via a short-lived Printify product (DTG dual-sided). */
+  async function probeFrontAndBackCosts(args: {
+    shopId: string;
+    apiToken: string;
+    blueprintId: number;
+    providerId: number;
+    variantIds: number[];
+    baseMockupImages?: Record<string, unknown>;
+  }): Promise<Record<string, number>> {
+    if (!args.shopId?.trim() || args.variantIds.length === 0) return {};
+    const images = (args.baseMockupImages || {}) as Record<string, any>;
+    const mockupUrl: string | undefined =
+      images.primary ||
+      images.front ||
+      (Object.values(images).find((v) => typeof v === "string") as string | undefined);
+    const probeImageId = await ensureCostProbeImageId(args.apiToken, mockupUrl);
+    const imageSpec = probeImageId
+      ? { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }
+      : null;
+    // OOS-heavy providers (baseball) often fail large chunks — try progressively.
+    const seen = new Set<string>();
+    const attempts: number[][] = [];
+    for (const n of [10, 3, 1]) {
+      const chunk = args.variantIds.slice(0, n);
+      const key = chunk.join(",");
+      if (chunk.length === 0 || seen.has(key)) continue;
+      seen.add(key);
+      attempts.push(chunk);
+    }
+
+    for (const chunk of attempts) {
+      const specs = imageSpec ? [imageSpec, null] : [null];
+      for (const spec of specs) {
+        const bothProbe = await tryCreateTempProductForCosts(
+          args.shopId,
+          args.apiToken,
+          args.blueprintId,
+          args.providerId,
+          chunk,
+          ["front", "back"],
+          spec,
+        );
+        if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+          console.log(
+            `[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs` +
+              ` (n=${chunk.length}${spec ? ", with image" : ", empty images"})`,
+          );
+          return bothProbe.costs;
+        }
+        console.warn(
+          `[Printify Costs] Front+back probe failed n=${chunk.length}` +
+            ` (${bothProbe.status}): ${bothProbe.error?.slice(0, 160)}`,
+        );
+      }
+    }
+    return {};
   }
 
   // Helper: attempt to create a Printify temp product and immediately delete it, returning variant costs.
@@ -15874,7 +16259,19 @@ ${orientationExtra}
   }> {
     const diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
     const firstVid = variantIds[0];
-    const position = await fetchPlaceholderPosition(blueprintId, providerId, firstVid, apiToken);
+    // Prefer minimal AOP body set; fall back to full catalog list if creates fail.
+    const rawPositions = await fetchRawPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
+    const minimal = minimalCostProbePositions(blueprintId);
+    const positionAttempts: string[][] = [];
+    if (minimal && (rawPositions.length === 0 || minimal.every((p) => rawPositions.includes(p)))) {
+      positionAttempts.push(minimal);
+    }
+    if (rawPositions.length > 0) {
+      const key = rawPositions.join("|");
+      if (!positionAttempts.some((a) => a.join("|") === key)) positionAttempts.push(rawPositions);
+    }
+    if (positionAttempts.length === 0) positionAttempts.push(minimal || ["front"]);
+    let positions = positionAttempts[0]!;
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
     // Printify API rejects temp product creation if variant count exceeds 100.
@@ -16009,84 +16406,110 @@ ${orientationExtra}
       console.warn("[Printify Costs] Strategy 0 error:", s0Err);
     }
 
-    if (probeImageId) {
-      // Strategy A: available (or all) variants in one temp product (up to Printify's 100 limit).
-      // Using only in-stock IDs avoids create failures when the blueprint is largely OOS.
-      console.log(
-        `[Printify Costs] Strategy A — bulk ${availableBulk.length} variants with probe image` +
-          (availableBulk.length < bulkVariantIds.length
-            ? ` (filtered from ${bulkVariantIds.length}; skipped OOS)`
-            : ""),
+    for (let posIdx = 0; posIdx < positionAttempts.length; posIdx++) {
+      positions = positionAttempts[posIdx]!;
+      const posTag = positions.join(",");
+      console.log(`[Printify Costs] Position attempt ${posIdx + 1}/${positionAttempts.length}: [${posTag}]`);
+
+      if (probeImageId) {
+        console.log(
+          `[Printify Costs] Strategy A — bulk ${availableBulk.length} variants with probe image` +
+            (availableBulk.length < bulkVariantIds.length
+              ? ` (filtered from ${bulkVariantIds.length}; skipped OOS)`
+              : ""),
+        );
+        const sBulk = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, availableBulk, positions, imageSpec(probeImageId),
+        );
+        diagnostics.push({
+          strategy: `bulk_with_image:${posTag}`,
+          status: sBulk.status,
+          success: sBulk.success && hasCosts(sBulk.costs),
+          error: sBulk.error,
+        });
+        if (sBulk.success && hasCosts(sBulk.costs)) {
+          return { costs: sBulk.costs, strategyUsed: "bulk_with_image", diagnostics };
+        }
+        console.warn(`[Printify Costs] Strategy A failed (${sBulk.status}): ${sBulk.error?.slice(0, 200)}`);
+      } else if (posIdx === 0) {
+        diagnostics.push({ strategy: "bulk_with_image", success: false, error: "Could not upload probe artwork to Printify" });
+      }
+
+      if (probeImageId) {
+        const s1 = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, availableChunk, positions, imageSpec(probeImageId),
+        );
+        diagnostics.push({
+          strategy: `chunk_with_image:${posTag}`,
+          status: s1.status,
+          success: s1.success && hasCosts(s1.costs),
+          error: s1.error,
+        });
+        if (s1.success && hasCosts(s1.costs)) {
+          return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
+        }
+      }
+
+      const s2 = await tryCreateTempProductForCosts(
+        shopId, apiToken, blueprintId, providerId, availableChunk, positions, null,
       );
-      const sBulk = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, availableBulk, position, imageSpec(probeImageId),
-      );
-      diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
-      if (sBulk.success && hasCosts(sBulk.costs)) {
-        return { costs: sBulk.costs, strategyUsed: "bulk_with_image", diagnostics };
-      }
-      console.warn(`[Printify Costs] Strategy A failed (${sBulk.status}): ${sBulk.error?.slice(0, 200)}`);
-    } else {
-      diagnostics.push({ strategy: "bulk_with_image", success: false, error: "Could not upload probe artwork to Printify" });
-    }
-
-    // Strategy 1: smaller chunk with probe image
-    if (probeImageId) {
-      console.log("[Printify Costs] Strategy 1 — chunk with probe image");
-      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, imageSpec(probeImageId));
-      diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
-      if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
-      console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
-    }
-
-    // Strategy 2: print_areas with empty images array
-    console.log(`[Printify Costs] Strategy 2 — empty images[] for position "${position}"`);
-    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, availableChunk, position, null);
-    diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
-    if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
-
-    console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
-
-    // Strategy 3: upload the stored mockup image URL (Printify CDN) — if different from probe source
-    if (mockupUrl && probeImageId) {
-      console.log(`[Printify Costs] Strategy 3a — mockup URL chunk: ${mockupUrl.slice(0, 80)}`);
-      const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
-      diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
-      if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
-    }
-
-    // Strategy 4: parallel single-variant probe (prefer in-stock IDs when catalog flagged OOS)
-    if (probeImageId) {
-      const singleProbeIds = effectiveProbeIds.length > 0 ? effectiveProbeIds : variantIds;
-      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${singleProbeIds.length} variants)`);
-      const probedCosts: Record<string, number> = {};
-      const BATCH = 8;
-      for (let i = 0; i < singleProbeIds.length; i += BATCH) {
-        const batch = singleProbeIds.slice(i, i + BATCH);
-        await Promise.all(batch.map(async (vid) => {
-          const probe = await tryCreateTempProductForCosts(
-            shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
-          );
-          if (probe.success && hasCosts(probe.costs)) {
-            Object.assign(probedCosts, probe.costs);
-          }
-        }));
-      }
-      if (hasCosts(probedCosts)) {
-        diagnostics.push({ strategy: "single_variant_probe", success: true });
-        return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
-      }
       diagnostics.push({
-        strategy: "single_variant_probe",
-        success: false,
-        error:
-          catalogAvailableVariantIds.length === 0 && variantIds.length > 0
+        strategy: `empty_images:${posTag}`,
+        status: s2.status,
+        success: s2.success && hasCosts(s2.costs),
+        error: s2.error,
+      });
+      if (s2.success && hasCosts(s2.costs)) {
+        return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
+      }
+
+      if (mockupUrl && probeImageId) {
+        const s3a = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, variantChunk, positions, imageSpec(probeImageId),
+        );
+        diagnostics.push({
+          strategy: `upload_mockup_url:${posTag}`,
+          status: s3a.status,
+          success: s3a.success && hasCosts(s3a.costs),
+          error: s3a.error,
+        });
+        if (s3a.success && hasCosts(s3a.costs)) {
+          return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
+        }
+      }
+
+      if (probeImageId) {
+        const singleProbeIds = effectiveProbeIds.length > 0 ? effectiveProbeIds : variantIds;
+        const probedCosts: Record<string, number> = {};
+        const BATCH = 8;
+        for (let i = 0; i < singleProbeIds.length; i += BATCH) {
+          const batch = singleProbeIds.slice(i, i + BATCH);
+          await Promise.all(batch.map(async (vid) => {
+            const probe = await tryCreateTempProductForCosts(
+              shopId, apiToken, blueprintId, providerId, [vid], positions, imageSpec(probeImageId),
+            );
+            if (probe.success && hasCosts(probe.costs)) {
+              Object.assign(probedCosts, probe.costs);
+            }
+          }));
+        }
+        if (hasCosts(probedCosts)) {
+          diagnostics.push({ strategy: `single_variant_probe:${posTag}`, success: true });
+          return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
+        }
+      }
+    }
+
+    diagnostics.push({
+      strategy: "single_variant_probe",
+      success: false,
+      error:
+        !probeImageId
+          ? "No probe artwork available"
+          : catalogAvailableVariantIds.length === 0 && variantIds.length > 0
             ? "No costs extracted — catalog shows no in-stock variants (provider may be fully OOS)"
             : "No costs extracted from single-variant probes",
-      });
-    } else {
-      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No probe artwork available" });
-    }
+    });
 
     return { costs: {}, strategyUsed: null, diagnostics };
   }
@@ -16127,6 +16550,552 @@ ${orientationExtra}
     }
   });
 
+  /**
+   * GET /api/admin/printify/blueprint-costs/:blueprintId
+   * Profit Insights / catalogue browsing: COGS for a platform-catalogue blueprint
+   * without requiring the merchant to import it first.
+   * Prefers the merchant's own product_type when present; else platform cost cache
+   * + catalog variant labels for a chosen/default provider.
+   */
+  app.get("/api/admin/printify/blueprint-costs/:blueprintId", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      if (!Number.isFinite(blueprintId) || blueprintId <= 0) {
+        return res.status(400).json({ error: "Invalid blueprint ID" });
+      }
+
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+      if (!printifyToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      // Prefer merchant import, then platform catalogue reference PI row.
+      const ownTypes = await storage.getProductTypesByMerchant(merchant.id);
+      const own = ownTypes.find(
+        (pt) => Number(pt.printifyBlueprintId) === blueprintId && !(pt as any).isPlatformCatalogRef,
+      );
+      const { findPlatformCatalogRef, ensurePlatformCatalogueProductType } = await import(
+        "./platform-catalogue-pi"
+      );
+      let platformRef = await findPlatformCatalogRef(blueprintId);
+      if (!own && (!platformRef || req.query.refresh === "1")) {
+        platformRef =
+          (await ensurePlatformCatalogueProductType(blueprintId)) || platformRef;
+      }
+      let preferred = own || platformRef;
+      if (preferred && req.query.refresh === "1") {
+        try {
+          const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+          await syncProductTypeIntelligence(preferred, printifyToken, {
+            source: "insights_refresh",
+            skipShipping: false,
+          });
+          preferred = (await storage.getProductType(preferred.id)) || preferred;
+        } catch (e) {
+          console.warn(`[blueprint-costs] refresh sync failed for pt ${preferred.id}:`, e);
+        }
+      }
+      if (preferred) {
+        const shopIdForProbe =
+          merchant.printifyShopId?.trim() ||
+          process.env.PRINTIFY_SHOP_ID?.trim() ||
+          "";
+        const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
+
+        /** Fill costsBoth when the blueprint has a back print area (baseball tee, etc.). */
+        const ensureBothSideCosts = async (
+          front: Record<string, number>,
+          both: Record<string, number>,
+          variantIds: number[],
+          allowProbe: boolean,
+        ): Promise<Record<string, number>> => {
+          if (Object.keys(both).length > 0) return both;
+          if (!allowProbe) return both;
+          if (Object.keys(front).length === 0) return both;
+          if (!preferred?.printifyProviderId) return both;
+          const wantsBoth = await catalogHasBackPlaceholder(
+            blueprintId,
+            Number(preferred.printifyProviderId),
+            printifyToken,
+            {
+              isAllOverPrint: !!(preferred as any).isAllOverPrint,
+              placeholderPositionsJson: (preferred as any).placeholderPositions,
+              doubleSidedPrint: !!(preferred as any).doubleSidedPrint,
+            },
+          );
+          if (!wantsBoth) return both;
+          if (!shopIdForProbe) {
+            console.warn("[blueprint-costs] Front+back probe skipped — no Printify shop ID");
+            return both;
+          }
+          const probed = await probeFrontAndBackCosts({
+            shopId: shopIdForProbe,
+            apiToken: printifyToken,
+            blueprintId,
+            providerId: Number(preferred.printifyProviderId),
+            variantIds:
+              variantIds.length > 0
+                ? variantIds
+                : Object.keys(front)
+                    .map((id) => Number(id))
+                    .filter((id) => Number.isFinite(id) && id > 0),
+          });
+          if (Object.keys(probed).length === 0) return both;
+          await storage.updateProductType(preferred.id, {
+            printifyCosts: serializePrintifyCostsCache({ front, both: probed }),
+          });
+          preferred = (await storage.getProductType(preferred.id)) || preferred;
+          try {
+            const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+            await syncProductTypeIntelligence(preferred, printifyToken, {
+              source: "blueprint_costs_both_probe",
+              skipShipping: true,
+            });
+            preferred = (await storage.getProductType(preferred.id)) || preferred;
+          } catch (e) {
+            console.warn("[blueprint-costs] both-probe PI sync failed:", e);
+          }
+          return probed;
+        };
+
+        let fromPi = await costsResponseFromProductIntelligence(preferred);
+        // Require real front COGS — empty PI payloads must fall through to waterfall /
+        // multi-provider (zip 451 / leggings 256 previously stuck on labels_only).
+        if (fromPi && Object.keys(fromPi.costs).length > 0) {
+          const vmIds = Object.keys(fromPi.costs)
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0);
+          // Probe front+back when missing (Insights used to hide Fetch once front
+          // COGS existed, so baseball never got a both-tier fill).
+          const costsBoth = await ensureBothSideCosts(
+            fromPi.costs,
+            fromPi.costsBoth || {},
+            vmIds,
+            forceRefresh || Object.keys(fromPi.costsBoth || {}).length === 0,
+          );
+          if (Object.keys(costsBoth).length > 0 && Object.keys(fromPi.costsBoth || {}).length === 0) {
+            fromPi = (await costsResponseFromProductIntelligence(preferred)) || {
+              ...fromPi,
+              costsBoth,
+              supportsBothSides: true,
+            };
+          }
+          const bothOut =
+            Object.keys(fromPi.costsBoth || {}).length > 0 ? fromPi.costsBoth : costsBoth;
+          const hasBoth = Object.keys(bothOut || {}).length > 0;
+          const catalogBoth =
+            hasBoth ||
+            (preferred.printifyProviderId != null &&
+              (await catalogHasBackPlaceholder(
+                blueprintId,
+                Number(preferred.printifyProviderId),
+                printifyToken,
+                {
+                  isAllOverPrint: !!(preferred as any).isAllOverPrint,
+                  placeholderPositionsJson: (preferred as any).placeholderPositions,
+                  doubleSidedPrint: !!(preferred as any).doubleSidedPrint,
+                },
+              )));
+          return res.json({
+            ...fromPi,
+            costsBoth: bothOut,
+            supportsBothSides: catalogBoth,
+            blueprintId,
+            productTypeId: preferred.id,
+            providerId: preferred.printifyProviderId ?? null,
+            source: own ? "merchant_product_type" : "platform_catalog_ref",
+          });
+        }
+        let cached = parsePrintifyCostsCache(preferred.printifyCosts);
+        // Catalog variants often omit cost fields (esp. AOP). Probe via production-cost
+        // waterfall and persist onto the product_type so the next read is instant.
+        if (Object.keys(cached.front).length === 0 && preferred.printifyProviderId != null) {
+          try {
+            const { fetchPrintifyProviderVariantsDual } = await import(
+              "./printifyCatalogVariantsFetch"
+            );
+            const dual = await fetchPrintifyProviderVariantsDual(
+              blueprintId,
+              Number(preferred.printifyProviderId),
+              printifyToken,
+            );
+            const vm = JSON.parse(preferred.variantMap || "{}") as Record<
+              string,
+              { printifyVariantId?: number }
+            >;
+            const printifyVariantIds = [
+              ...new Set(
+                Object.values(vm)
+                  .map((e) => Number(e?.printifyVariantId))
+                  .filter((id) => Number.isFinite(id) && id > 0),
+              ),
+            ];
+            const ids =
+              printifyVariantIds.length > 0
+                ? printifyVariantIds
+                : dual.variants
+                    .map((v: any) => Number(v?.id))
+                    .filter((id: number) => Number.isFinite(id) && id > 0);
+            const resolved = await resolvePrintifyProductionCosts({
+              merchant: {
+                id: merchant.id,
+                printifyApiToken: printifyToken,
+                printifyShopId: shopIdForProbe,
+              },
+              blueprintId,
+              providerId: Number(preferred.printifyProviderId),
+              catalogVariants: dual.variants,
+              printifyVariantIds: ids,
+              baseMockupImages: {},
+            });
+            if (Object.keys(resolved.costs).length > 0) {
+              // Always allow both-probe after a fresh front waterfall (first-time fill).
+              const costsBoth = await ensureBothSideCosts(resolved.costs, {}, ids, true);
+              await storage.updateProductType(preferred.id, {
+                printifyCosts: serializePrintifyCostsCache(
+                  Object.keys(costsBoth).length > 0
+                    ? { front: resolved.costs, both: costsBoth }
+                    : resolved.costs,
+                ),
+              });
+              const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+              await syncProductTypeIntelligence(
+                (await storage.getProductType(preferred.id)) || preferred,
+                printifyToken,
+                { source: "blueprint_costs_waterfall", skipShipping: false },
+              );
+              preferred = (await storage.getProductType(preferred.id)) || preferred;
+              fromPi = await costsResponseFromProductIntelligence(preferred);
+              if (fromPi) {
+                return res.json({
+                  ...fromPi,
+                  blueprintId,
+                  productTypeId: preferred.id,
+                  providerId: preferred.printifyProviderId ?? null,
+                  source: `waterfall:${resolved.source}`,
+                });
+              }
+              cached = parsePrintifyCostsCache(preferred.printifyCosts);
+            } else {
+              console.warn(
+                `[blueprint-costs] waterfall returned no costs for bp ${blueprintId} (${resolved.source})`,
+              );
+            }
+          } catch (e) {
+            console.warn(`[blueprint-costs] waterfall probe failed for bp ${blueprintId}:`, e);
+          }
+        }
+        if (Object.keys(cached.front).length > 0) {
+          const labels = buildActivePrintifyVariantLabels(preferred);
+          const vm = JSON.parse(preferred.variantMap || "{}") as Record<
+            string,
+            { printifyVariantId?: number }
+          >;
+          const ids = [
+            ...new Set(
+              Object.values(vm)
+                .map((e) => Number(e?.printifyVariantId))
+                .filter((id) => Number.isFinite(id) && id > 0),
+            ),
+          ];
+          const costsBoth = await ensureBothSideCosts(
+            cached.front,
+            cached.both,
+            ids,
+            forceRefresh || Object.keys(cached.both).length === 0,
+          );
+          const hasBoth = Object.keys(costsBoth).length > 0;
+          const catalogBoth =
+            hasBoth ||
+            (preferred.printifyProviderId != null &&
+              (await catalogHasBackPlaceholder(
+                blueprintId,
+                Number(preferred.printifyProviderId),
+                printifyToken,
+                {
+                  isAllOverPrint: !!(preferred as any).isAllOverPrint,
+                  placeholderPositionsJson: (preferred as any).placeholderPositions,
+                  doubleSidedPrint: !!(preferred as any).doubleSidedPrint,
+                },
+              )));
+          return res.json({
+            costs: cached.front,
+            costsBoth,
+            printifyVariantLabels: labels,
+            supportsBothSides: catalogBoth,
+            blueprintId,
+            productTypeId: preferred.id,
+            providerId: preferred.printifyProviderId ?? null,
+            source: own ? "merchant_product_type_cache" : "platform_catalog_ref_cache",
+          });
+        }
+        // Still no COGS on preferred provider — try other catalog providers before labels_only.
+        try {
+          const pRes = await fetch(
+            `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+            { headers: { Authorization: `Bearer ${printifyToken}` } },
+          );
+          if (pRes.ok) {
+            const raw = await pRes.json();
+            const providers = (Array.isArray(raw) ? raw : [])
+              .map((p: any) => ({ id: Number(p.id), title: String(p.title || "") }))
+              .filter((p: { id: number }) => Number.isFinite(p.id) && p.id > 0)
+              .filter((p: { id: number }) => p.id !== Number(preferred.printifyProviderId));
+            // Prefer Printify Choice, then try the rest.
+            providers.sort(
+              (a: { title: string }, b: { title: string }) =>
+                Number(/printify choice/i.test(b.title)) - Number(/printify choice/i.test(a.title)),
+            );
+            const vm = JSON.parse(preferred.variantMap || "{}") as Record<
+              string,
+              { printifyVariantId?: number }
+            >;
+            const fallbackIds = [
+              ...new Set(
+                Object.values(vm)
+                  .map((e) => Number(e?.printifyVariantId))
+                  .filter((id) => Number.isFinite(id) && id > 0),
+              ),
+            ];
+            for (const prov of providers.slice(0, 6)) {
+              try {
+                const { fetchPrintifyProviderVariantsDual } = await import(
+                  "./printifyCatalogVariantsFetch"
+                );
+                const dual = await fetchPrintifyProviderVariantsDual(
+                  blueprintId,
+                  prov.id,
+                  printifyToken,
+                );
+                const ids =
+                  dual.variants
+                    .map((v: any) => Number(v?.id))
+                    .filter((id: number) => Number.isFinite(id) && id > 0)
+                    .slice(0, 80) || fallbackIds;
+                if (ids.length === 0) continue;
+                const resolved = await resolvePrintifyProductionCosts({
+                  merchant: {
+                    id: merchant.id,
+                    printifyApiToken: printifyToken,
+                    printifyShopId: shopIdForProbe,
+                  },
+                  blueprintId,
+                  providerId: prov.id,
+                  catalogVariants: dual.variants,
+                  printifyVariantIds: ids,
+                  baseMockupImages: {},
+                });
+                if (Object.keys(resolved.costs).length === 0) continue;
+                console.log(
+                  `[blueprint-costs] Multi-provider hit bp ${blueprintId} via ${prov.title || prov.id} (${resolved.source})`,
+                );
+                const costsBoth = await ensureBothSideCosts(
+                  resolved.costs,
+                  {},
+                  ids,
+                  true,
+                );
+                const axes = dual.variants.length
+                  ? (
+                      await import("./platform-catalogue-pi")
+                    ).buildCatalogVariantAxes(dual.variants)
+                  : null;
+                await storage.updateProductType(preferred.id, {
+                  printifyProviderId: prov.id,
+                  printifyCosts: serializePrintifyCostsCache(
+                    Object.keys(costsBoth).length > 0
+                      ? { front: resolved.costs, both: costsBoth }
+                      : resolved.costs,
+                  ),
+                  ...(axes
+                    ? {
+                        sizes: JSON.stringify(axes.sizes),
+                        frameColors: JSON.stringify(axes.colors),
+                        variantMap: JSON.stringify(axes.variantMap),
+                        selectedSizeIds: JSON.stringify(axes.selectedSizeIds),
+                        selectedColorIds: JSON.stringify(axes.selectedColorIds),
+                      }
+                    : {}),
+                } as any);
+                preferred = (await storage.getProductType(preferred.id)) || preferred;
+                const { syncProductTypeIntelligence } = await import("./product-intelligence-sync");
+                await syncProductTypeIntelligence(preferred, printifyToken, {
+                  source: "blueprint_costs_alt_provider",
+                  skipShipping: false,
+                });
+                preferred = (await storage.getProductType(preferred.id)) || preferred;
+                fromPi = await costsResponseFromProductIntelligence(preferred);
+                if (fromPi) {
+                  return res.json({
+                    ...fromPi,
+                    blueprintId,
+                    productTypeId: preferred.id,
+                    providerId: preferred.printifyProviderId ?? prov.id,
+                    source: `alt_provider:${resolved.source}`,
+                  });
+                }
+                const cachedAlt = parsePrintifyCostsCache(preferred.printifyCosts);
+                if (Object.keys(cachedAlt.front).length > 0) {
+                  return res.json({
+                    costs: cachedAlt.front,
+                    costsBoth: cachedAlt.both,
+                    printifyVariantLabels: buildActivePrintifyVariantLabels(preferred),
+                    supportsBothSides: Object.keys(cachedAlt.both).length > 0,
+                    blueprintId,
+                    productTypeId: preferred.id,
+                    providerId: preferred.printifyProviderId ?? prov.id,
+                    source: `alt_provider:${resolved.source}`,
+                  });
+                }
+              } catch (provErr) {
+                console.warn(
+                  `[blueprint-costs] alt provider ${prov.id} failed for bp ${blueprintId}:`,
+                  provErr,
+                );
+              }
+            }
+          }
+        } catch (multiErr) {
+          console.warn(`[blueprint-costs] multi-provider scan failed for bp ${blueprintId}:`, multiErr);
+        }
+
+        // Still no COGS — return size labels so Insights can show the dropdown (with "no COGS").
+        const labelsOnly = buildActivePrintifyVariantLabels(preferred);
+        if (Object.keys(labelsOnly).length > 0) {
+          return res.json({
+            costs: {},
+            costsBoth: {},
+            printifyVariantLabels: labelsOnly,
+            supportsBothSides: false,
+            blueprintId,
+            productTypeId: preferred.id,
+            providerId: preferred.printifyProviderId ?? null,
+            source: "labels_only",
+          });
+        }
+      }
+
+      // Discover providers; prefer one with cached platform costs, else first provider.
+      let providerList: Array<{ id: number; title?: string }> = [];
+      try {
+        const pRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+          { headers: { Authorization: `Bearer ${printifyToken}` } },
+        );
+        if (pRes.ok) {
+          const raw = await pRes.json();
+          providerList = (Array.isArray(raw) ? raw : []).map((p: any) => ({
+            id: Number(p.id),
+            title: p.title,
+          })).filter((p: { id: number }) => Number.isFinite(p.id) && p.id > 0);
+        }
+      } catch (err) {
+        console.warn(`[blueprint-costs] providers fetch failed for ${blueprintId}:`, err);
+      }
+
+      const preferChoice = (title?: string) => /printify choice/i.test(String(title || ""));
+      providerList.sort((a, b) => Number(preferChoice(b.title)) - Number(preferChoice(a.title)));
+
+      let chosenProviderId: number | null = null;
+      let costs: Record<string, number> = {};
+      let costsBoth: Record<string, number> = {};
+
+      const allTypes = await storage.getActiveProductTypes();
+      const typesForBlueprint = allTypes.filter(
+        (pt) => Number(pt.printifyBlueprintId) === blueprintId,
+      );
+      for (const p of providerList) {
+        for (const pt of typesForBlueprint) {
+          if (Number(pt.printifyProviderId) !== p.id) continue;
+          const parsed = parsePrintifyCostsCache(pt.printifyCosts);
+          if (Object.keys(parsed.front).length === 0) continue;
+          chosenProviderId = p.id;
+          costs = parsed.front;
+          costsBoth = parsed.both;
+          break;
+        }
+        if (chosenProviderId != null) break;
+      }
+      // Fallback: any product type on this blueprint with a cost cache (provider not in live list).
+      if (chosenProviderId == null) {
+        for (const pt of typesForBlueprint) {
+          const parsed = parsePrintifyCostsCache(pt.printifyCosts);
+          if (Object.keys(parsed.front).length === 0) continue;
+          chosenProviderId = pt.printifyProviderId != null ? Number(pt.printifyProviderId) : null;
+          costs = parsed.front;
+          costsBoth = parsed.both;
+          break;
+        }
+      }
+
+      if (chosenProviderId == null && providerList[0]) {
+        chosenProviderId = providerList[0].id;
+      }
+
+      if (chosenProviderId == null) {
+        return res.status(404).json({ error: "No Printify providers found for this blueprint" });
+      }
+
+      // Labels (+ catalog costs fallback) from Printify catalog variants.
+      const printifyVariantLabels: Record<string, string> = {};
+      try {
+        const vRes = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${chosenProviderId}/variants.json?show-out-of-stock=1`,
+          { headers: { Authorization: `Bearer ${printifyToken}` } },
+        );
+        if (vRes.ok) {
+          const vData = await vRes.json();
+          const variants = Array.isArray(vData?.variants)
+            ? vData.variants
+            : Array.isArray(vData)
+              ? vData
+              : [];
+          for (const v of variants) {
+            const vid = String(v?.id ?? "");
+            if (!vid) continue;
+            const size = String(v?.options?.size || "").trim();
+            const color = String(v?.options?.color || "").trim();
+            const title = String(v?.title || "").trim();
+            printifyVariantLabels[vid] =
+              size && color ? `${size} / ${color}` : size || color || title || vid;
+          }
+          if (Object.keys(costs).length === 0) {
+            costs = extractCostsFromCatalogVariants(variants);
+          }
+          if (Object.keys(costsBoth).length === 0) {
+            for (const sample of variants.slice(0, 12)) {
+              const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
+              if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) {
+                // Front+back COGS need a dual-sided probe; catalogue alone rarely has both.
+                break;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[blueprint-costs] variants fetch failed for ${blueprintId}/${chosenProviderId}:`, err);
+      }
+
+      return res.json({
+        costs,
+        costsBoth,
+        printifyVariantLabels,
+        supportsBothSides: Object.keys(costsBoth).length > 0,
+        blueprintId,
+        productTypeId: preferred?.id ?? null,
+        providerId: chosenProviderId,
+        source: Object.keys(costs).length > 0 ? "platform_or_catalog" : "empty",
+      });
+    } catch (err: any) {
+      console.error("[/api/admin/printify/blueprint-costs]", err);
+      return res.status(500).json({ error: "Failed to load blueprint costs", detail: String(err) });
+    }
+  });
+
   // GET /api/admin/printify/costs/:productTypeId
   // Creates a temporary Printify product to read variant production costs, then deletes it.
   // Returns cached costs if available and less than 24 hours old.
@@ -16136,22 +17105,34 @@ ${orientationExtra}
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
 
-      const apiToken = merchant.printifyApiToken;
-      if (!apiToken) {
-        return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
-      }
-
       const productTypeId = parseInt(req.params.productTypeId, 10);
       if (!productTypeId) return res.status(400).json({ error: "Invalid product type ID" });
 
       const productType = await storage.getProductType(productTypeId);
       if (!productType) return res.status(404).json({ error: "Product type not found" });
-      const accessErr = adminProductTypeAccessError(req, productType, merchant);
-      if (accessErr) {
-        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      // Platform catalogue refs are readable by any merchant (Profit Insights); mutations stay owner-only.
+      const isPlatformRef = !!(productType as any).isPlatformCatalogRef;
+      if (!isPlatformRef) {
+        const accessErr = adminProductTypeAccessError(req, productType, merchant);
+        if (accessErr) {
+          return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+        }
       }
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
+      }
+
+      // Product Intelligence first. Force refresh prefers Product Sync (not the temp-product waterfall).
+      // Escape hatch: ?legacy=1 keeps the Printify waterfall for operator debugging.
+      const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
+      const useLegacyWaterfall = req.query.legacy === "1";
+      const catalogToken = (process.env.PRINTIFY_API_TOKEN || "").trim();
+      const apiToken = isPlatformRef
+        ? catalogToken || merchant.printifyApiToken
+        : merchant.printifyApiToken;
+
+      if (!apiToken) {
+        return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
       }
 
       const variantMap = JSON.parse(productType.variantMap || "{}");
@@ -16169,33 +17150,49 @@ ${orientationExtra}
       const bothCacheHits = Object.keys(cachedBothOnly).length > 0;
 
       async function detectHasBackPlaceholder(): Promise<boolean> {
-        if (productType.isAllOverPrint) return false;
-        try {
-          const positions: { position?: string }[] =
-            typeof productType.placeholderPositions === "string"
-              ? JSON.parse(productType.placeholderPositions || "[]")
-              : (productType.placeholderPositions || []);
-          if (positions.some((p) => String(p?.position || "").toLowerCase() === "back")) return true;
-        } catch {
-          /* continue */
-        }
-        if (productType.doubleSidedPrint) return true;
-        try {
-          const vResp = await fetch(
-            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
-            { headers: { Authorization: `Bearer ${apiToken}` } },
-          );
-          if (!vResp.ok) return false;
-          const vData = await vResp.json();
-          const variants = Array.isArray(vData.variants) ? vData.variants : [];
-          for (const sample of variants.slice(0, 8)) {
-            const ph = Array.isArray(sample?.placeholders) ? sample.placeholders : [];
-            if (ph.some((p: any) => String(p?.position || "").toLowerCase() === "back")) return true;
+        const sampleVid = [...currentPrintifyVariantIds][0] ?? null;
+        return catalogHasBackPlaceholder(
+          productType.printifyBlueprintId!,
+          productType.printifyProviderId!,
+          apiToken,
+          {
+            isAllOverPrint: !!productType.isAllOverPrint,
+            placeholderPositionsJson:
+              typeof productType.placeholderPositions === "string"
+                ? productType.placeholderPositions
+                : JSON.stringify(productType.placeholderPositions || []),
+            doubleSidedPrint: !!productType.doubleSidedPrint,
+            sampleVariantId: sampleVid,
+          },
+        );
+      }
+
+      if (forceRefresh && !useLegacyWaterfall) {
+        const synced = await syncProductTypeIntelligence(productType, apiToken, { source: "manual" });
+        const fresh = (await storage.getProductType(productTypeId)) || productType;
+        const fromPi = await costsResponseFromProductIntelligence(fresh);
+        if (fromPi) {
+          const needsBothProbe =
+            Object.keys(fromPi.costsBoth || {}).length === 0 && (await detectHasBackPlaceholder());
+          if (!needsBothProbe) {
+            return res.json({
+              ...fromPi,
+              refreshedVia: "product_sync",
+              productHealth: synced.productHealth,
+              priceChanges: synced.priceChanges,
+              availabilityChanges: synced.availabilityChanges,
+            });
           }
-        } catch {
-          return false;
+          // Fall through to waterfall to fill front+back COGS.
         }
-        return false;
+      } else if (!forceRefresh) {
+        const fromPi = await costsResponseFromProductIntelligence(productType);
+        if (fromPi) {
+          const needsBothProbe =
+            Object.keys(fromPi.costsBoth || {}).length === 0 && (await detectHasBackPlaceholder());
+          if (!needsBothProbe) return res.json(fromPi);
+          // Fall through to waterfall to fill front+back COGS.
+        }
       }
 
       const needsBothProbe = frontCacheHits && !bothCacheHits && (await detectHasBackPlaceholder());
@@ -16353,33 +17350,14 @@ ${orientationExtra}
       const hasBackPlaceholder = needsBothProbe || (await detectHasBackPlaceholder());
 
       if (hasBackPlaceholder && shopId?.trim() && costApiToken && !productType.isAllOverPrint) {
-        const mockupUrl: string | undefined =
-          baseMockupImages.primary ||
-          baseMockupImages.front ||
-          (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
-        const probeImageId = await ensureCostProbeImageId(costApiToken, mockupUrl);
-        if (probeImageId) {
-          const chunk = printifyVariantIds.slice(0, 10);
-          const bothProbe = await tryCreateTempProductForCosts(
-            shopId,
-            costApiToken,
-            productType.printifyBlueprintId,
-            productType.printifyProviderId,
-            chunk,
-            ["front", "back"],
-            { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 },
-          );
-          if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
-            costsBoth = bothProbe.costs;
-            console.log(`[Printify Costs] Front+back probe extracted ${Object.keys(costsBoth).length} costs`);
-          } else {
-            console.warn(
-              `[Printify Costs] Front+back probe failed (${bothProbe.status}): ${bothProbe.error?.slice(0, 200)}`,
-            );
-          }
-        } else {
-          console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
-        }
+        costsBoth = await probeFrontAndBackCosts({
+          shopId,
+          apiToken: costApiToken,
+          blueprintId: productType.printifyBlueprintId,
+          providerId: productType.printifyProviderId,
+          variantIds: printifyVariantIds,
+          baseMockupImages,
+        });
       } else if (hasBackPlaceholder && !shopId?.trim()) {
         console.warn(
           "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
@@ -16443,7 +17421,9 @@ ${orientationExtra}
         printifyVariantLabels,
         costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
         costsBothByNormalizedLabel: buildCostsByNormalizedLabel(costsBoth, printifyVariantLabels),
-        supportsBothSides: Object.keys(costsBoth).length > 0,
+        // Keep supportsBothSides true even when the dual probe failed so Insights
+        // can show Front/Back placeholders + Fetch COGS (baseball OOS case).
+        supportsBothSides: Object.keys(costsBoth).length > 0 || hasBackPlaceholder,
         cached: false,
         strategyUsed,
       });
@@ -16930,8 +17910,13 @@ ${orientationExtra}
         console.log(`[resolver] SHOP_NOT_CONNECTED: ${shopDomain}`);
         return { ok: false, status: 400, error: "SHOP_NOT_CONNECTED" };
       }
-      if (raw.status === "token_invalid") {
-        console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain}`);
+      const needsOAuth =
+        raw.status === "token_invalid" ||
+        raw.status === "needs_reconnect" ||
+        !raw.accessToken ||
+        raw.accessToken === "NEEDS_RECONNECT";
+      if (needsOAuth) {
+        console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain} (status=${raw.status})`);
         return {
           ok: false,
           status: 401,
@@ -16944,6 +17929,39 @@ ${orientationExtra}
     }
 
     return { ok: true, installation };
+  }
+
+  /**
+   * Setup-rail resolver: prefer a live token, but still allow progress flags
+   * (embed confirmed, trial, etc.) when the install row exists with a stale /
+   * placeholder token — common right after a fresh staging install.
+   */
+  async function resolveShopInstallationForSetup(req: any): Promise<
+    | { ok: true; installation: any }
+    | { ok: false; status: number; error: string; reinstallUrl?: string }
+  > {
+    const authorized = await resolveShopInstallation(req);
+    if (authorized.ok) return authorized;
+
+    const rawDomain = req.shopDomain as string | undefined;
+    if (!rawDomain) return authorized;
+
+    const shopDomain = rawDomain.toLowerCase().replace(/^https?:\/\//, "");
+    const raw = await storage.getShopifyInstallationByShop(shopDomain);
+    if (!raw) return authorized;
+    if (raw.status === "uninstalled") {
+      return {
+        ok: false,
+        status: 403,
+        error: "SHOP_NOT_ACTIVE",
+        reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`,
+      };
+    }
+
+    console.log(
+      `[resolver:setup] Using installation ${shopDomain} with status=${raw.status} (token not fully authorized)`,
+    );
+    return { ok: true, installation: raw };
   }
 
   // ==================== MERCHANT DESIGN STUDIO IDENTITY ====================
@@ -17149,6 +18167,25 @@ ${orientationExtra}
       .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
       .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
       .replace(/javascript:/gi, "");
+  }
+
+  /** Fetch + sanitize Printify catalog blueprint description (used by import / Create Page / activate). */
+  async function fetchPrintifyBlueprintDescriptionHtml(
+    printifyToken: string,
+    blueprintId: number,
+  ): Promise<string | null> {
+    try {
+      const bpRes = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
+        headers: { Authorization: `Bearer ${printifyToken}` },
+      });
+      if (!bpRes.ok) return null;
+      const bp = await bpRes.json();
+      const raw = typeof bp?.description === "string" ? bp.description.trim() : "";
+      return raw ? sanitizeDesignProductDescriptionHtml(raw) : null;
+    } catch (e: any) {
+      console.warn("[printify] blueprint description fetch failed:", e?.message ?? e);
+      return null;
+    }
   }
 
   /** Mirrors client/src/components/SizeChartTable.tsx's inch→cm conversion so the standalone
@@ -17849,6 +18886,28 @@ ${orientationExtra}
         return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
+      // Ensure Shopify gets Printify's catalog description even if Create Page import omitted it.
+      if (
+        ptForSync?.printifyBlueprintId &&
+        !String(ptForSync.description || "").trim()
+      ) {
+        const token = resolveCatalogPrintifyToken(merchant);
+        if (token) {
+          const fetched = await fetchPrintifyBlueprintDescriptionHtml(
+            token,
+            Number(ptForSync.printifyBlueprintId),
+          );
+          if (fetched) {
+            try {
+              await storage.updateProductType(ptForSync.id, { description: fetched });
+              ptForSync.description = fetched;
+            } catch (e: any) {
+              console.warn("[customizer-pages] description backfill failed:", e?.message ?? e);
+            }
+          }
+        }
+      }
+
       const ptVariantMap =
         typeof ptForSync.variantMap === "string"
           ? JSON.parse(ptForSync.variantMap || "{}")
@@ -17931,12 +18990,78 @@ ${orientationExtra}
       }
     }
 
-    // Plan limit check - only for ACTIVE pages
+    // Plan limit check - only for ACTIVE (Live) pages (enforcement catalogue stamp)
     const activeCount = await storage.countActiveCustomizerPages(shop);
-    const { allowed, limit } = canCreatePage(plan.planName, activeCount);
-    
-    // We allow creating INACTIVE pages even if over limit
+    const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
+    const enforcePageLimit =
+      findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+    const allowed = activeCount < enforcePageLimit;
+    const limit = enforcePageLimit;
+
+    // Create Page wizard goes Live — requires Printify + an available Live slot.
+    // Over-limit merchants can still create a disabled page and enable later.
+    if (allowed && !isPrintifyConnected(merchant)) {
+      return res.status(400).json({
+        error: "Connect Printify in Settings before creating a Live customizer page.",
+        code: "PRINTIFY_NOT_CONNECTED",
+      });
+    }
+
+    // Second page for the same product only when Printify is connected + unique H1/title.
+    if (incomingProductTypeId) {
+      const existingForType = (await storage.listCustomizerPagesByProductTypeId(incomingProductTypeId)).filter(
+        (p) => p.shop === shop,
+      );
+      if (existingForType.length > 0) {
+        if (!isPrintifyConnected(merchant)) {
+          return res.status(409).json({
+            error:
+              "A customizer page already exists for this product. Open it from Customizer Pages, or connect Printify to create another page with a unique title.",
+            code: "PAGE_EXISTS",
+            existingPageId: existingForType[0].id,
+          });
+        }
+        const titleNorm = title.trim().toLowerCase();
+        if (existingForType.some((p) => p.title.trim().toLowerCase() === titleNorm)) {
+          return res.status(409).json({
+            error:
+              'Choose a unique page title for this product (for example add "UK/EU Only" to the H1).',
+            code: "TITLE_NOT_UNIQUE",
+          });
+        }
+      }
+    }
+
     const initialStatus = allowed ? "active" : "disabled";
+
+    // Live Create Page requires an explicit print provider + positive retail prices.
+    // (Disabled overflow pages may still be created; Set Live is gated on PATCH.)
+    if (initialStatus === "active") {
+      const ptForLiveGate =
+        ptForSync ||
+        (incomingProductTypeId ? await storage.getProductType(incomingProductTypeId) : undefined);
+      if (ptForLiveGate && !ptForLiveGate.printifyProviderId) {
+        return res.status(400).json({
+          error: "Choose a Printify print provider before creating a Live customizer page.",
+          code: "PROVIDER_REQUIRED",
+        });
+      }
+      if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+        return res.status(400).json({
+          error: "Suggested retail prices from Printify are required before creating a Live customizer page.",
+          code: "PRICES_REQUIRED",
+        });
+      }
+      for (const [vid, price] of Object.entries(variantPrices)) {
+        const num = parseFloat(String(price));
+        if (isNaN(num) || num <= 0) {
+          return res.status(400).json({
+            error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.`,
+            code: "PRICES_REQUIRED",
+          });
+        }
+      }
+    }
 
     // Resolve variant + product info via Admin API.
     // New flow: merchant selects a product → fetch product and use its first variant.
@@ -18335,25 +19460,48 @@ ${orientationExtra}
     }
     if (req.body.status !== undefined) {
       const s = req.body.status;
-      if (s !== "active" && s !== "disabled") {
-        return res.status(400).json({ error: 'Status must be "active" or "disabled"' });
+      if (s !== "active" && s !== "disabled" && s !== "preview") {
+        return res.status(400).json({ error: 'Status must be "preview", "active", or "disabled"' });
       }
-      
+
       if (s === "active" && dbPage.status !== "active") {
-        // Plan limit check
+        const merchantForLive = await storage.getMerchantByShop(shop);
+        if (!isPrintifyConnected(merchantForLive)) {
+          return res.status(400).json({
+            error: "Connect Printify in Settings before setting a page Live.",
+            code: "PRINTIFY_NOT_CONNECTED",
+          });
+        }
+        const livePrice = parseFloat(String(dbPage.baseProductPrice || "0"));
+        if (!Number.isFinite(livePrice) || livePrice <= 0) {
+          return res.status(400).json({
+            error: "Set retail prices (Resync Prices or Create Page pricing) before setting a page Live.",
+            code: "PRICES_REQUIRED",
+          });
+        }
+        if (linkedProductTypeEarly && !linkedProductTypeEarly.printifyProviderId) {
+          return res.status(400).json({
+            error: "Choose a Printify print provider before setting a page Live.",
+            code: "PROVIDER_REQUIRED",
+          });
+        }
+        // Plan limit check — Live (active) pages only (enforcement catalogue stamp)
         const plan = getEffectivePlan(installation as any, shop);
         const activeCount = await storage.countActiveCustomizerPages(shop);
-        const { allowed, limit } = canCreatePage(plan.planName, activeCount);
+        const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
+        const limit =
+          findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+        const allowed = activeCount < limit;
         if (!allowed) {
           return res.status(402).json({
-            error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} active customizer page${limit === 1 ? "" : "s"}. Upgrade to activate more.`,
+            error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} Live customizer page${limit === 1 ? "" : "s"}. Upgrade to set more Live.`,
             limit,
             activeCount,
             planName: plan.planName,
           });
         }
       }
-      
+
       updates.status = s;
     }
 
@@ -18846,6 +19994,201 @@ ${orientationExtra}
     return res.json({ ok: true, ...result });
   }));
 
+  /**
+   * POST /api/admin/product-types/:id/product-sync — Product Intelligence sync
+   * for one product (variants, COGS from catalog/cache, shipping, availability).
+   */
+  app.post("/api/admin/product-types/:id/product-sync", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const productTypeId = parseInt(req.params.id, 10);
+    const productType = await storage.getProductType(productTypeId);
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+    }
+    if (!merchant.printifyApiToken) {
+      return res.status(400).json({ error: "Printify is not connected for this merchant." });
+    }
+    if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+      return res.status(400).json({ error: "Product is missing a Printify blueprint/provider." });
+    }
+
+    // Prefer DB-first PI; refresh waterfall costs into printify_costs when empty.
+    await ensureBackfillForProductType(productTypeId);
+    const fresh = await storage.getProductType(productTypeId);
+    const result = await syncProductTypeIntelligence(fresh!, merchant.printifyApiToken, {
+      source: "manual",
+    });
+
+    // Maintain Margin: push suggested retail via the existing Resync Prices writer.
+    let retailAutoUpdate: { attempted: boolean; successCount?: number; totalCount?: number; error?: string } = {
+      attempted: false,
+    };
+    const after = (await storage.getProductType(productTypeId)) || fresh!;
+    const strategy = resolveEffectivePricingStrategy(after.pricingStrategy, after.defaultMarkupPercent);
+    if (
+      result.ok &&
+      strategy === "maintain_margin" &&
+      after.shopifyProductId &&
+      after.defaultMarkupPercent != null
+    ) {
+      retailAutoUpdate.attempted = true;
+      try {
+        const costsPi = await costsResponseFromProductIntelligence(after);
+        const costs = costsPi?.costs || {};
+        const variantPrices: Record<string, string> = {};
+        for (const [vid, cents] of Object.entries(costs)) {
+          const suggested = suggestedRetailDollarsString(cents, after.defaultMarkupPercent!);
+          if (suggested) variantPrices[`printify:${vid}`] = suggested;
+        }
+        if (Object.keys(variantPrices).length === 0) {
+          retailAutoUpdate.error = "No COGS available to build suggested retail";
+        } else {
+          const shop =
+            after.shopifyShopDomain ||
+            merchant.shopDomain ||
+            "";
+          const installation = shop
+            ? await storage.getShopifyInstallationByShop(shop)
+            : null;
+          if (!installation?.accessToken) {
+            retailAutoUpdate.error = "No Shopify installation for retail push";
+          } else {
+            const applied = await applyShopifyVariantPrices({
+              shop: installation.shopDomain,
+              accessToken: installation.accessToken,
+              baseProductId: after.shopifyProductId,
+              productType: after,
+              variantPrices,
+            });
+            retailAutoUpdate.successCount = applied.successCount;
+            retailAutoUpdate.totalCount = applied.totalCount;
+            if (applied.successCount < applied.totalCount) {
+              await storage.updateProductType(after.id, {
+                productHealth: "attention_required",
+              } as any);
+            }
+          }
+        }
+      } catch (e: any) {
+        retailAutoUpdate.error = e?.message || String(e);
+        await storage.updateProductType(after.id, {
+          productHealth: "attention_required",
+        } as any);
+      }
+    }
+
+    return res.json({ success: result.ok, result, retailAutoUpdate });
+  }));
+
+  /** POST /api/admin/product-intelligence/sync-all — catalogue Product Sync */
+  app.post("/api/admin/product-intelligence/sync-all", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const result = await runCatalogueProductSync({
+      force: true,
+      source: "manual",
+      skipShipping: req.query.skipShipping === "1",
+    });
+    return res.json({ ok: true, ...result });
+  }));
+
+  /** GET /api/admin/product-intelligence/runs — recent sync runs (operators) */
+  app.get("/api/admin/product-intelligence/runs", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const runs = await listRecentSyncRuns(30);
+    return res.json({ runs });
+  }));
+
+  /** GET /api/admin/product-intelligence/events — recent change feed (operators) */
+  app.get("/api/admin/product-intelligence/events", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const syncRunId =
+      typeof req.query.syncRunId === "string" ? parseInt(req.query.syncRunId, 10) : undefined;
+    const eventType = typeof req.query.eventType === "string" ? req.query.eventType : undefined;
+    const events = await listRecentSyncEvents({
+      limit: 100,
+      syncRunId: Number.isFinite(syncRunId) ? syncRunId : undefined,
+      eventType: eventType || undefined,
+    });
+    return res.json({ events });
+  }));
+
+  /** GET /api/admin/product-intelligence/health — catalogue health summary (operators) */
+  app.get("/api/admin/product-intelligence/health", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform operator only" });
+    }
+    const overview = await getCatalogueHealthOverview();
+    return res.json(overview);
+  }));
+
+  /** GET /api/admin/product-intelligence/:productTypeId */
+  app.get("/api/admin/product-intelligence/:productTypeId", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const productTypeId = parseInt(req.params.productTypeId, 10);
+    if (!Number.isFinite(productTypeId)) {
+      return res.status(400).json({ error: "Invalid product type id" });
+    }
+    const productType = await storage.getProductType(productTypeId);
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+    if (!(productType as any).isPlatformCatalogRef) {
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+    }
+    await ensureBackfillForProductType(productTypeId);
+    const data = await getProductIntelligence(productTypeId);
+    return res.json(data);
+  }));
+
+  /** GET /api/admin/product-intelligence/:productTypeId/history */
+  app.get("/api/admin/product-intelligence/:productTypeId/history", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const productTypeId = parseInt(req.params.productTypeId, 10);
+    const productType = await storage.getProductType(productTypeId);
+    if (!productType) return res.status(404).json({ error: "Product type not found" });
+    if (!(productType as any).isPlatformCatalogRef) {
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
+    }
+    const history = await getVariantCostHistory(
+      productTypeId,
+      typeof req.query.variantId === "string" ? req.query.variantId : undefined,
+      typeof req.query.printAreaKey === "string" ? req.query.printAreaKey : undefined,
+    );
+    return res.json({ history });
+  }));
+
+  app.post("/api/internal/product-intelligence-sync", asyncHandler(async (req: Request, res: Response) => {
+    const secret = process.env.PRODUCT_SYNC_SECRET || process.env.OOS_SCAN_SECRET;
+    if (!secret) return res.status(404).json({ error: "Not found" });
+    const header = req.header("x-product-sync-secret") || req.header("x-oos-scan-secret");
+    if (header !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const result = await runCatalogueProductSync({
+      force: req.query.force === "1",
+      source: "daily",
+    });
+    return res.json({ ok: true, ...result });
+  }));
+
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
   // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
   app.get("/api/appai/blanks", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
@@ -18947,6 +20290,11 @@ ${orientationExtra}
           }
         }
 
+        const allSizes = JSON.parse(pt.sizes || pt.frameSizes || "[]");
+        const allColors = JSON.parse(pt.frameColors || "[]");
+        const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
+        const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
+
         enriched.push({
           productTypeId: pt.id,
           productId: resolvedProductId,
@@ -18958,6 +20306,10 @@ ${orientationExtra}
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
           printifyVariantLabels: pvLabels,
+          sizes: allSizes,
+          frameColors: allColors,
+          selectedSizeIds: savedSizeIds,
+          selectedColorIds: savedColorIds,
           description: pt.description ?? "",
           baseMockupImages: typeof pt.baseMockupImages === "string"
             ? JSON.parse(pt.baseMockupImages || "{}")
@@ -18970,6 +20322,15 @@ ${orientationExtra}
           oosTotalVariants: pt.oosTotalVariants ?? null,
           lastOosScanAt: pt.lastOosScanAt ?? null,
           printifyProviderName: parseOosProviderName(pt.oosDetail) ?? null,
+          productHealth: (pt as any).productHealth ?? "healthy",
+          lastProductSyncAt: (pt as any).lastProductSyncAt ?? null,
+          pricingStrategy: (pt as any).pricingStrategy ?? "notify_only",
+          defaultMarkupPercent: (pt as any).defaultMarkupPercent ?? null,
+          minMarginPercent: (pt as any).minMarginPercent ?? null,
+          variantAvailability: parseVariantAvailabilityMap((pt as any).variantAvailability),
+          unavailableVariantKeys: unavailableVariantKeys(
+            parseVariantAvailabilityMap((pt as any).variantAvailability),
+          ),
         });
       }
       return res.json({ blanks: enriched });
@@ -19242,7 +20603,9 @@ ${orientationExtra}
       baseProductPrice: p.baseProductPrice,
       status: p.status,
       publiclyMountable:
-        p.status === "active" && (printifyConnected || verifyPreviewToken(previewToken, shop, p.handle)),
+        (p.status === "active" && printifyConnected) ||
+        ((p.status === "active" || p.status === "preview") &&
+          verifyPreviewToken(previewToken, shop, p.handle)),
     }));
 
     // Include fallback URL so embed can redirect disabled-page visitors
@@ -19271,16 +20634,39 @@ ${orientationExtra}
         : "";
       if (bare) page = await storage.getCustomizerPageByHandle(bare, handle);
     }
-    if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
+    if (!page) return res.status(404).json({ error: "Customizer page not found" });
 
     const installation = await storage.getShopifyInstallationByShop(shop);
-
-    // Locked setup-rail rule: no public customizer without Printify connected.
-    // A merchant's own signed preview link (appai_preview) bypasses this so
-    // they can see + tester-generate on the page before connecting.
     const merchantForGate = await storage.getMerchantByShop(shop);
     const previewOk = verifyPreviewToken(req.query.appai_preview as string | undefined, shop, page.handle);
-    if (!isPrintifyConnected(merchantForGate) && !previewOk) {
+    // Saved-design reopen while page is disabled: allow config load for ATC, not fresh design.
+    const savedDesignReopen = String(req.query.savedDesignId || "").trim().length > 0;
+    const pageLive = page.status === "active";
+    const pagePreview = page.status === "preview";
+    const pageDisabled = page.status === "disabled";
+
+    if (pagePreview && !previewOk) {
+      return res.status(404).json({
+        error: "Customizer page not found",
+        code: "PAGE_NOT_LIVE",
+        fallbackUrl: installation?.customizerHubUrl ?? "/",
+      });
+    }
+    if (pageDisabled && !savedDesignReopen && !previewOk) {
+      return res.status(404).json({
+        error: "Customizer page not found",
+        code: "PAGE_DISABLED",
+        fallbackUrl: installation?.customizerHubUrl ?? "/",
+        freshDesignAllowed: false,
+      });
+    }
+    if (!pageLive && !pagePreview && !pageDisabled) {
+      return res.status(404).json({ error: "Customizer page not found" });
+    }
+
+    // Locked setup-rail rule: no public customizer without Printify connected.
+    // Merchant preview token or saved-design reopen bypasses for limited access.
+    if (pageLive && !isPrintifyConnected(merchantForGate) && !previewOk) {
       return res.status(404).json({
         error: "Customizer page not found",
         code: "PRINTIFY_NOT_CONNECTED",
@@ -19423,6 +20809,7 @@ ${orientationExtra}
       id: page.id,
       handle: page.handle,
       title: page.title,
+      status: page.status,
       baseVariantId: page.baseVariantId,
       baseProductId: page.baseProductId ?? null,
       baseProductHandle: (page as any).baseProductHandle ?? null,
@@ -19436,6 +20823,8 @@ ${orientationExtra}
       stylePresets,
       styleConfig: pageStyleConfig,
       productPublished,
+      // Disabled pages: saved designs may ATC; new blank sessions cannot start.
+      freshDesignAllowed: page.status === "active" || page.status === "preview",
     });
   }));
 
@@ -19781,7 +21170,7 @@ ${orientationExtra}
 
   /** GET /api/appai/setup/status — setup rail readiness flags (silently starts the trial). */
   app.get("/api/appai/setup/status", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const resolved = await resolveShopInstallation(req);
+    const resolved = await resolveShopInstallationForSetup(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const installation = await ensureTrialStarted(resolved.installation);
@@ -19792,18 +21181,73 @@ ${orientationExtra}
 
   /** POST /api/appai/setup/confirm-embed — merchant clicked "I've enabled it" on the App Embed step. */
   app.post("/api/appai/setup/confirm-embed", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const resolved = await resolveShopInstallation(req);
+    const resolved = await resolveShopInstallationForSetup(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
-    await storage.updateShopifyInstallation(resolved.installation.id, {
-      embedConfirmedAt: new Date(),
-    } as any);
-    return res.json({ success: true });
+    try {
+      // Fresh staging DBs can miss this column if an earlier startup migration failed.
+      await pool.query(
+        `ALTER TABLE "shopify_installations" ADD COLUMN IF NOT EXISTS "embed_confirmed_at" TIMESTAMP`,
+      );
+
+      const now = new Date();
+      const result = await pool.query(
+        `UPDATE "shopify_installations"
+         SET "embed_confirmed_at" = $1
+         WHERE "id" = $2
+         RETURNING "id", "embed_confirmed_at"`,
+        [now, resolved.installation.id],
+      );
+      if (!result.rowCount) {
+        return res.status(500).json({ error: "Installation row not found while saving embed confirmation" });
+      }
+      return res.json({
+        success: true,
+        embedConfirmedAt: result.rows[0].embed_confirmed_at,
+      });
+    } catch (err: any) {
+      console.error("[confirm-embed] failed:", err?.message ?? err);
+      return res.status(500).json({
+        error: "Failed to save embed confirmation",
+        details: String(err?.message ?? err),
+      });
+    }
   }));
 
-  /** GET /api/appai/setup/catalog — published platform catalogue entries merchants can instantly activate. */
-  app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (_req: Request, res: Response) => {
+  /** GET /api/appai/setup/catalog — published platform catalogue + imported product types. */
+  app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const entries = await listMerchantImportableCatalog();
+    const resolved = await resolveShopInstallation(req);
+    const existingByBlueprint = new Map<
+      number,
+      { id: number; name: string; printifyProviderId: number | null }
+    >();
+
+    if (resolved.ok) {
+      const shop = resolved.installation.shopDomain;
+      let merchant =
+        (resolved.installation.merchantId
+          ? await storage.getMerchant(resolved.installation.merchantId)
+          : null) || (await storage.getMerchantByShop(shop));
+      const types = merchant ? await storage.getProductTypesByMerchant(merchant.id) : [];
+      for (const pt of types) {
+        const bp = pt.printifyBlueprintId;
+        if (bp == null) continue;
+        // Skip platform catalogue reference rows — merchants get their own imports only.
+        if ((pt as any).isPlatformCatalogRef) continue;
+        if (!existingByBlueprint.has(bp)) {
+          existingByBlueprint.set(bp, {
+            id: pt.id,
+            name: pt.name,
+            printifyProviderId: pt.printifyProviderId ?? null,
+          });
+        }
+      }
+    }
+
+    const { platformCatalogRefIdByBlueprint } = await import("./platform-catalogue-pi");
+    const platformRefByBp = await platformCatalogRefIdByBlueprint();
+
     return res.json({
       entries: entries.map((e) => ({
         blueprintId: e.printifyBlueprintId,
@@ -19811,6 +21255,9 @@ ${orientationExtra}
         brand: e.brand ?? null,
         category: e.category ?? null,
         kind: e.kind,
+        existingProductType: existingByBlueprint.get(e.printifyBlueprintId) ?? null,
+        /** Platform PI reference product_type (COGS/shipping/OOS) for Insights. */
+        platformProductTypeId: platformRefByBp.get(e.printifyBlueprintId) ?? null,
       })),
     });
   }));
@@ -19829,22 +21276,37 @@ ${orientationExtra}
   }));
 
   /**
-   * POST /api/appai/setup/activate-product — the setup rail's "instant" product
-   * activation: imports a published platform-catalogue blueprint using the
-   * PLATFORM's Printify token (public catalog reads only — never the
-   * merchant's own account), auto-creates the Shopify product, and creates an
-   * active customizer page — all without requiring the merchant to have
-   * connected Printify yet.
+   * POST /api/appai/setup/activate-product — in-app Preview only.
+   * Imports a published platform-catalogue blueprint as a merchant product_type
+   * (platform Printify catalog token). Does NOT create a Shopify Online Store
+   * page or customizer_pages row — Live pages come only from Create Page.
    */
   app.post("/api/appai/setup/activate-product", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+    if (!resolved.ok) {
+      const shopHint = String(req.shopDomain || "").toLowerCase().replace(/^https?:\/\//, "");
+      const reinstallUrl =
+        resolved.reinstallUrl ||
+        (shopHint ? `/shopify/install?shop=${encodeURIComponent(shopHint)}` : undefined);
+      return res.status(resolved.status).json({
+        error: resolved.error,
+        ...(reinstallUrl ? { reinstallUrl } : {}),
+        message:
+          resolved.error === "SHOP_NOT_ACTIVE" ||
+          resolved.error === "REAUTH_REQUIRED" ||
+          resolved.error === "SHOP_NOT_CONNECTED"
+            ? "Reconnect the app from Shopify Admin so we can save a fresh access token, then retry Preview."
+            : undefined,
+      });
+    }
 
     const installation = await ensureTrialStarted(resolved.installation);
     const shop = installation.shopDomain;
     const userId = req.user.claims.sub;
-    const merchant = await storage.getMerchantByUserId(userId);
-    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    let merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) {
+      merchant = await storage.getOrCreateShopifyMerchant(shop);
+    }
 
     const plan = getEffectivePlan(installation as any, shop);
     if (plan.requiresPlan) {
@@ -19866,16 +21328,21 @@ ${orientationExtra}
 
     const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
     let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
+    const reused = !!productType;
+
+    const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
+
+    async function fetchBlueprintDescription(token: string): Promise<string | null> {
+      return fetchPrintifyBlueprintDescriptionHtml(token, blueprintId);
+    }
 
     if (!productType) {
-      const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
       if (!platformPrintifyToken) {
         console.error("[setup/activate-product] PRINTIFY_API_TOKEN not configured on the platform");
-        return res.status(503).json({ error: "Instant activation isn't available right now. Please try again shortly." });
+        return res.status(503).json({ error: "Instant preview isn't available right now. Please try again shortly." });
       }
 
-      // Auto-select a print provider for this blueprint using the platform
-      // token (public Printify catalog read — no merchant account required).
+      // Temporary provider for in-app mockups only — Create Page forces a merchant pick.
       let providerId: number | undefined;
       try {
         const providersRes = await fetch(
@@ -19893,10 +21360,11 @@ ${orientationExtra}
         return res.status(502).json({ error: "Could not reach the Printify catalog. Please try again shortly." });
       }
 
+      const description = await fetchBlueprintDescription(platformPrintifyToken);
       const fakeReq: any = {
         user: { claims: { sub: userId } },
         shopDomain: shop,
-        body: { blueprintId, name: entry.label, description: undefined, providerId },
+        body: { blueprintId, name: entry.label, description: description ?? undefined, providerId },
       };
       let capturedStatus = 200;
       let capturedBody: any;
@@ -19904,7 +21372,10 @@ ${orientationExtra}
         status(code: number) { capturedStatus = code; return fakeRes; },
         json(body: any) { capturedBody = body; return fakeRes; },
       };
-      await handlePrintifyImportRequest(fakeReq, fakeRes, { printifyTokenOverride: platformPrintifyToken });
+      await handlePrintifyImportRequest(fakeReq, fakeRes, {
+        printifyTokenOverride: platformPrintifyToken,
+        autoCapVariants: true,
+      });
       if (capturedStatus >= 400) {
         return res.status(capturedStatus).json(capturedBody);
       }
@@ -19912,72 +21383,22 @@ ${orientationExtra}
     }
 
     if (!productType) {
-      return res.status(500).json({ error: "Failed to activate product." });
+      return res.status(500).json({ error: "Failed to prepare product for preview." });
     }
 
-    // Auto-send the product to Shopify (unlisted) if it isn't there yet.
-    let shopifyProductId: string | undefined = productType.shopifyProductId ?? undefined;
-    if (!shopifyProductId) {
-      try {
-        const created = await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
-        shopifyProductId = created.shopifyProductId;
-      } catch (e: any) {
-        return res.status(400).json({ error: e?.message || "Failed to send product to Shopify." });
+    if (!String(productType.description || "").trim() && platformPrintifyToken) {
+      const description = await fetchBlueprintDescription(platformPrintifyToken);
+      if (description) {
+        await storage.updateProductType(productType.id, { description });
+        productType = { ...productType, description };
       }
     }
 
-    const prodResult = await shopifyApiCall(shop, installation.accessToken, `products/${shopifyProductId}.json?fields=id,title,handle,variants`);
-    if (!prodResult.ok || !prodResult.data?.product?.variants?.length) {
-      return res.status(500).json({ error: "Product was created but could not be loaded. Please try again." });
-    }
-    const product = prodResult.data.product;
-    const variant = product.variants[0];
-
-    // Unique customizer page handle derived from the catalog label.
-    const baseHandle = entry.label.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `product-${blueprintId}`;
-    let handle = baseHandle;
-    let suffix = 2;
-    while (await storage.getCustomizerPageByHandle(shop, handle)) {
-      handle = `${baseHandle}-${suffix++}`;
-    }
-
-    const activeCount = await storage.countActiveCustomizerPages(shop);
-    const { allowed: pageAllowed } = canCreatePage(plan.planName, activeCount);
-    const initialStatus = pageAllowed ? "active" : "disabled";
-
-    const pageBody = await shopifyApiCall(shop, installation.accessToken, "pages.json", {
-      method: "POST",
-      body: JSON.stringify({
-        page: { title: entry.label, handle, body_html: buildCustomizerBootHtml(), published: true },
-      }),
-    });
-    if (!pageBody.ok || !pageBody.data?.page?.id) {
-      return res.status(500).json({ error: `Failed to create Shopify page: ${pageBody.error ?? "unknown error"}` });
-    }
-    const shopifyPage = pageBody.data.page;
-
-    const styleConfig = defaultStyleConfigForDesignerType(productType.designerType);
-    const page = await storage.createCustomizerPage({
-      shop,
-      shopifyPageId: String(shopifyPage.id),
-      handle,
-      title: entry.label,
-      baseVariantId: String(variant.id),
-      baseProductId: String(variant.product_id ?? product.id),
-      baseProductHandle: product.handle,
-      baseProductTitle: product.title ?? "",
-      baseVariantTitle: variant.title ?? "",
-      baseProductPrice: variant.price ?? "",
+    return res.status(reused ? 200 : 201).json({
       productTypeId: productType.id,
-      styleConfig: styleConfig as any,
-      status: initialStatus,
-    });
-
-    return res.status(201).json({
-      page,
-      productTypeId: productType.id,
-      previewUrl: buildPreviewUrl(shop, handle),
-      storefrontUrl: `/pages/${handle}`,
+      productTypeName: productType.name ?? entry.label,
+      reused,
+      openInAppPath: `/admin/create-product?productTypeId=${productType.id}`,
     });
   }));
 
@@ -20095,6 +21516,51 @@ ${orientationExtra}
     });
   }));
 
+  /**
+   * GET /api/appai/billing/plan-catalog — active offer (paid plans + overage).
+   * Includes non-self-serve tiers (e.g. Mogul) with selfServe:false so the picker
+   * can show a Contact us card. Merchant surfaces should use this, not frozen copies.
+   */
+  app.get("/api/appai/billing/plan-catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) {
+      return res.status(resolved.status).json({
+        error: resolved.error,
+        ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}),
+      });
+    }
+    const active = await getActiveCatalogue();
+    const paid = active.plans
+      .filter((p) => p.planKey !== "trial")
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((p) => ({
+        planName: p.planKey,
+        displayName: p.displayName,
+        priceUsd: p.priceUsd,
+        pageLimit: p.pageLimit,
+        generationQuota: p.generationQuota,
+        overageCap: p.overageCapUnits,
+        designProductLimit: p.designProductLimit,
+        selfServe: !!p.selfServe,
+      }));
+    const trial = findCataloguePlan(active, "trial");
+    const headlineOverage = active.overageSchedule[0]?.priceUsd ?? 0.08;
+    res.json({
+      catalogueId: active.id,
+      catalogueLabel: active.label,
+      overagePriceUsd: headlineOverage,
+      overageSchedule: active.overageSchedule,
+      trial: trial
+        ? {
+            pageLimit: trial.pageLimit,
+            generationQuota: trial.generationQuota,
+          }
+        : { pageLimit: 1, generationQuota: PLAN_GENERATION_QUOTAS.trial ?? 10 },
+      plans: paid,
+      installationPricingVersion: resolved.installation.pricingVersion ?? 0,
+    });
+  }));
+
   /** GET /api/appai/billing/upgrade-preview?plan=starter — confirm before Shopify redirect */
   app.get("/api/appai/billing/upgrade-preview", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
@@ -20108,8 +21574,9 @@ ${orientationExtra}
 
     const current = getEffectivePlan(installation as any, installation.shopDomain);
     const q = await peekMerchantGenerationQuota(installation);
-    const newPriceUsd = PLAN_PRICES_USD[newPlan] ?? 0;
-    const newQuota = resolveGenerationQuota(newPlan, true);
+    const activeCatalogue = await getActiveCatalogue();
+    const newPriceUsd = findCataloguePlan(activeCatalogue, newPlan)?.priceUsd ?? PLAN_PRICES_USD[newPlan] ?? 0;
+    const newQuota = resolveGenerationQuota(newPlan, true, new Date(), activeCatalogue);
 
     const currentPlanName = current.planName ?? "trial";
     const changeKind = classifyPlanChange(currentPlanName, newPlan);
@@ -20177,6 +21644,16 @@ ${orientationExtra}
     }
 
     const quota = resolveGenerationQuota(plan.planName, true);
+    const usage = await storage.getMerchantGenerationUsage(installation.id, quota.bucketKey);
+    const floorCents = extraSpentCents(usage.overageUsed);
+    if (budget < floorCents) {
+      return res.status(400).json({
+        error: `Budget cannot be below $${(floorCents / 100).toFixed(2)} USD already incurred this period.`,
+        minBudgetCents: floorCents,
+        overageUsed: usage.overageUsed,
+      });
+    }
+
     const units = budgetCentsToOverageUnits(budget);
     if (units <= 0) {
       return res.status(400).json({ error: "Budget too low for any extra generations." });
@@ -20253,30 +21730,38 @@ ${orientationExtra}
     const shop: string = installation.shopDomain;
     const { plan } = req.body as { plan?: string };
 
-    if (!plan || !(PAID_PLANS as readonly string[]).includes(plan)) {
-      return res.status(400).json({ error: `Invalid plan. Must be one of: ${PAID_PLANS.join(", ")}` });
+    const activeCatalogue = await getActiveCatalogue();
+    const offerPlan = findCataloguePlan(activeCatalogue, plan);
+    const selfServeKeys = activeCatalogue.plans
+      .filter((p) => p.selfServe && p.planKey !== "trial")
+      .map((p) => p.planKey);
+    if (!plan || !offerPlan || !selfServeKeys.includes(plan)) {
+      return res.status(400).json({
+        error: `Invalid plan. Must be one of: ${selfServeKeys.join(", ") || PAID_PLANS.join(", ")}`,
+      });
     }
 
-    // Owner bypass: skip Shopify Billing API entirely and write plan directly to DB
-    const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-    if (ownerShop && shop.toLowerCase() === ownerShop) {
+    // Owner bypass: skip Shopify Billing API entirely and write plan directly to DB.
+    // Honours OWNER_BYPASS_QUOTA=false so staging can exercise real approve + carryover.
+    if (isOwnerQuotaBypassShop(shop)) {
       console.log(`[billing] Owner bypass: setting plan=${plan} for ${shop} without Shopify billing`);
       await storage.updateShopifyInstallation(installation.id, {
         planName: plan,
         planStatus: "active",
+        pricingVersion: activeCatalogue.id,
       });
       return res.json({ activated: true, plan });
     }
 
-    const priceUsd = PLAN_PRICES_USD[plan];
-    const displayName = PLAN_DISPLAY_NAMES[plan] ?? plan;
+    const priceUsd = offerPlan.priceUsd;
+    const displayName = offerPlan.displayName || PLAN_DISPLAY_NAMES[plan] || plan;
     const appUrl = process.env.APP_URL?.replace(/\/$/, "") ?? `https://${req.headers.host}`;
     const returnUrl = `${appUrl}/api/appai/billing/callback?shop=${encodeURIComponent(installation.shopDomain)}&plan=${encodeURIComponent(plan)}`;
 
     // Metered (usage) pricing line for AI-generation overages. The cappedAmount
-    // is the plan's max monthly overage cost (overage cap × $0.08); Shopify
-    // rejects usage records once that amount is reached, matching our hard cap.
-    const overageCappedUsd = getPlanOverageCappedAmountUsd(plan);
+    // is the plan's max monthly overage cost from the *active* catalogue.
+    const overageCappedUsd = getPlanOverageCappedAmountForCatalogue(plan, activeCatalogue);
+    const overageTerms = overageUsageTermsForCatalogue(activeCatalogue);
     const lineItems: any[] = [{
       plan: {
         appRecurringPricingDetails: {
@@ -20289,12 +21774,30 @@ ${orientationExtra}
       lineItems.push({
         plan: {
           appUsagePricingDetails: {
-            terms: OVERAGE_USAGE_TERMS,
+            terms: overageTerms,
             cappedAmount: { amount: overageCappedUsd, currencyCode: "USD" },
           },
         },
       });
     }
+
+    // Public apps require expiring offline tokens — migrate/refresh, or recover via
+    // the live App Bridge session token when the stored offline token is dead.
+    const tokenReady = await ensureValidOfflineAccessToken(installation, {
+      sessionToken: getBearerTokenFromRequest(req),
+    });
+    if (!tokenReady.ok) {
+      console.error("[Billing] Offline token not usable:", tokenReady.error);
+      const reinstallUrl = `/shopify/install?shop=${encodeURIComponent(shop)}`;
+      return res.status(tokenReady.needsReinstall ? 401 : 502).json({
+        error: tokenReady.needsReinstall
+          ? "Shopify connection expired. Reinstall the app, then retry Choose Plan."
+          : tokenReady.error,
+        needsReinstall: tokenReady.needsReinstall || undefined,
+        reinstallUrl: tokenReady.needsReinstall ? reinstallUrl : undefined,
+      });
+    }
+    const accessToken = tokenReady.accessToken;
 
     // Call Shopify Admin GraphQL to create app subscription. We request the
     // line items + their pricing-detail typenames so we can store the usage
@@ -20330,7 +21833,7 @@ ${orientationExtra}
       {
         method: "POST",
         headers: {
-          "X-Shopify-Access-Token": installation.accessToken,
+          "X-Shopify-Access-Token": accessToken,
           "Content-Type": "application/json",
         },
         body: gqlBody,
@@ -20338,8 +21841,12 @@ ${orientationExtra}
     );
 
     if (!gqlResponse.ok) {
-      console.error("[Billing] GraphQL request failed:", gqlResponse.status);
-      return res.status(502).json({ error: "Failed to contact Shopify billing API" });
+      const errBody = (await gqlResponse.text()).slice(0, 800);
+      console.error("[Billing] GraphQL request failed:", gqlResponse.status, errBody);
+      return res.status(502).json({
+        error: `Shopify billing API returned ${gqlResponse.status}`,
+        detail: errBody || undefined,
+      });
     }
 
     const gqlData = await gqlResponse.json() as any;
@@ -20436,38 +21943,27 @@ ${orientationExtra}
       }
 
       if (subscriptionStatus === "ACTIVE" || subscriptionStatus === "PENDING") {
-        const currentPlanName = installation.planName ?? "trial";
-        const changeKind = classifyPlanChange(currentPlanName, plan);
-        const billingFields = {
-          billingSubscriptionId: charge_id,
-          billingUsageLineItemId: usageLineItemId,
-          billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
-        };
-
-        if (changeKind === "paid_downgrade") {
-          const effectiveAt =
-            currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          await storage.updateShopifyInstallation(installation.id, {
-            ...billingFields,
-            pendingPlanName: plan,
-            pendingPlanEffectiveAt: effectiveAt,
-          } as any);
+        const applied = await applyApprovedSubscription(
+          installation,
+          {
+            plan,
+            chargeId: charge_id,
+            subscriptionStatus,
+            currentPeriodEnd,
+            usageLineItemId,
+          },
+          {
+            updateInstallation: (id, updates) =>
+              storage.updateShopifyInstallation(id, updates as any),
+            getActiveCatalogue,
+          },
+        );
+        if (applied) {
           console.log(
-            `[Billing] Scheduled downgrade ${currentPlanName} → ${plan} for ${shop} effective ${effectiveAt.toISOString()}`,
+            applied.deferred
+              ? `[Billing] Scheduled downgrade → ${plan} for ${shop}`
+              : `[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"}; kind=${applied.changeKind})`,
           );
-        } else {
-          const planUpdates: Record<string, unknown> = {
-            ...billingFields,
-            planName: plan,
-            planStatus: "active",
-            pendingPlanName: null,
-            pendingPlanEffectiveAt: null,
-          };
-          if (changeKind === "trial_to_paid") {
-            Object.assign(planUpdates, trialToPaidMeteringReset());
-          }
-          await storage.updateShopifyInstallation(installation.id, planUpdates as any);
-          console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
         }
 
         // A re-subscribe may have just attached a usage line — flush any overage
@@ -20481,27 +21977,22 @@ ${orientationExtra}
       }
     } catch (err: any) {
       console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);
-      const currentPlanName = installation.planName ?? "trial";
-      const changeKind = classifyPlanChange(currentPlanName, plan);
-      if (changeKind === "paid_downgrade") {
-        await storage.updateShopifyInstallation(installation.id, {
-          billingSubscriptionId: charge_id,
-          pendingPlanName: plan,
-          pendingPlanEffectiveAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        } as any);
-      } else {
-        const planUpdates: Record<string, unknown> = {
-          planName: plan,
-          planStatus: "active",
-          billingSubscriptionId: charge_id,
-          pendingPlanName: null,
-          pendingPlanEffectiveAt: null,
-        };
-        if (changeKind === "trial_to_paid") {
-          Object.assign(planUpdates, trialToPaidMeteringReset());
-        }
-        await storage.updateShopifyInstallation(installation.id, planUpdates as any);
-      }
+      // Fallback: still apply from simulated ACTIVE payload (no GraphQL).
+      await applyApprovedSubscription(
+        installation,
+        {
+          plan,
+          chargeId: charge_id,
+          subscriptionStatus: "ACTIVE",
+          currentPeriodEnd: null,
+          usageLineItemId: null,
+        },
+        {
+          updateInstallation: (id, updates) =>
+            storage.updateShopifyInstallation(id, updates as any),
+          getActiveCatalogue,
+        },
+      );
     }
 
     // Redirect back to the Shopify Admin app
@@ -20543,6 +22034,104 @@ ${orientationExtra}
 
   // ==================== BRANDING & STYLING ====================
 
+  // Storefront free generations (merchant-configurable)
+  app.get("/api/admin/storefront-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    return res.json({
+      storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
+        (installation as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      ),
+      min: STOREFRONT_FREE_GENERATION_MIN,
+      max: STOREFRONT_FREE_GENERATION_MAX,
+      default: STOREFRONT_FREE_GENERATION_DEFAULT,
+      shopDomain: installation?.shopDomain ?? null,
+    });
+  }));
+
+  app.patch("/api/admin/storefront-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) {
+      return res.status(404).json({ error: "No Shopify store connected" });
+    }
+    const updates: Record<string, unknown> = {};
+    if (req.body?.storefrontFreeGensPerVisitor != null) {
+      updates.storefrontFreeGensPerVisitor = clampStorefrontFreeGens(
+        req.body.storefrontFreeGensPerVisitor,
+      );
+    }
+    if (Object.keys(updates).length > 0) {
+      await storage.updateShopifyInstallation(installation.id, updates as any);
+    }
+    const fresh = (await storage.getShopifyInstallation(installation.id)) || installation;
+    return res.json({
+      storefrontFreeGensPerVisitor: clampStorefrontFreeGens(
+        (fresh as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
+      ),
+      min: STOREFRONT_FREE_GENERATION_MIN,
+      max: STOREFRONT_FREE_GENERATION_MAX,
+      default: STOREFRONT_FREE_GENERATION_DEFAULT,
+      shopDomain: fresh.shopDomain,
+    });
+  }));
+
+  // Reward Ladder — per-shop rung configuration for the admin Settings page.
+  app.get("/api/admin/reward-ladder", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) return res.status(404).json({ error: "No Shopify store connected" });
+    const rungs = await ensureRewardLadder(installation.shopDomain);
+    return res.json({
+      shopDomain: installation.shopDomain,
+      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
+      rungs,
+    });
+  }));
+
+  app.patch("/api/admin/reward-ladder", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+    const installation = await resolveInstallationForMerchant(merchant.id);
+    if (!installation) return res.status(404).json({ error: "No Shopify store connected" });
+    const patches = Array.isArray(req.body?.rungs) ? req.body.rungs : [];
+    const validKeys: RewardRungKey[] = ["free_anonymous", "email_signup", "share_design", "purchase_threshold"];
+    const asFiniteNumber = (v: unknown): number | undefined => {
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string" && v.trim() !== "") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : undefined;
+      }
+      return undefined;
+    };
+    const updates = patches
+      .filter((p: any) => p && typeof p.rungKey === "string" && validKeys.includes(p.rungKey))
+      .map((p: any) => ({
+        rungKey: p.rungKey as RewardRungKey,
+        patch: {
+          enabled: typeof p.enabled === "boolean" ? p.enabled : undefined,
+          creditAmount: asFiniteNumber(p.creditAmount),
+          thresholdCents:
+            p.thresholdCents === null
+              ? null
+              : asFiniteNumber(p.thresholdCents),
+        },
+      }));
+    const rungs = await patchRewardLadder(installation.shopDomain, updates);
+    return res.json({
+      shopDomain: installation.shopDomain,
+      purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
+      rungs,
+    });
+  }));
+
   // GET branding settings for current merchant
   app.get("/api/admin/branding", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const userId = req.user.claims.sub;
@@ -20570,8 +22159,13 @@ ${orientationExtra}
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
+
+  const { registerPricingModellerRoutes } = await import("./routes/pricing-modeller");
+  registerPricingModellerRoutes(app, { isAuthenticated });
   const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
+  const { registerCreatorMarketplaceRoutes } = await import("./routes/creators");
+  registerCreatorMarketplaceRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");

@@ -20,6 +20,8 @@ import FlatCalibrationMapperPage from "@/pages/flat-calibration-mapper";
 import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
 import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
+import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
+import PlatformPricingModellerPage from "@/pages/admin/platform-pricing-modeller";
 import NotFound from "@/pages/not-found";
 
 import AdminSetupPage from "@/pages/admin/setup";
@@ -33,6 +35,16 @@ import AdminCreateProduct from "@/pages/admin/create-product";
 import AdminCustomizerPages from "@/pages/admin/customizer-pages";
 import AdminDesignStudio from "@/pages/admin/design-studio";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
+import AdminInsights from "@/pages/admin/insights";
+import PlatformCreatorsPage from "@/pages/admin/platform-creators";
+import BetaLandingPage from "@/pages/creators/beta-landing";
+import CreatorsLandingPage from "@/pages/creators/creators-landing";
+import ShopifyBetaLandingPage from "@/pages/creators/shopify-beta-landing";
+import CreatorApplyPage from "@/pages/creators/apply";
+import CreatorPathStorefrontPage, {
+  CreatorBootStorefrontPage,
+  hasCreatorBootPayload,
+} from "@/pages/creators/storefront";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -40,6 +52,19 @@ import DevStorefrontPreview from "@/pages/dev-storefront-preview";
 import DevHoodiePlacerPage from "@/pages/dev-hoodie-placer";
 
 function AppRouter() {
+  // Creator subdomain boot: server injected window.__CREATOR__ — isolate storefront SPA.
+  if (hasCreatorBootPayload()) {
+    return (
+      <Switch>
+        <Route path="/products" component={CreatorBootStorefrontPage} />
+        <Route path="/about" component={CreatorBootStorefrontPage} />
+        <Route path="/customize/:handle" component={CreatorBootStorefrontPage} />
+        <Route path="/" component={CreatorBootStorefrontPage} />
+        <Route component={CreatorBootStorefrontPage} />
+      </Switch>
+    );
+  }
+
   return (
     <Switch>
       {/* Home */}
@@ -58,7 +83,20 @@ function AppRouter() {
       <Route path="/admin/platform/catalog" component={PlatformCatalogPage} />
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
+      <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
+      <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
+      <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
+
+      {/* Creator Marketplace marketing (public) */}
+      <Route path="/beta" component={BetaLandingPage} />
+      <Route path="/creators/apply" component={CreatorApplyPage} />
+      <Route path="/creators" component={CreatorsLandingPage} />
+      <Route path="/shopify-beta" component={ShopifyBetaLandingPage} />
+      <Route path="/c/:username/products" component={CreatorPathStorefrontPage} />
+      <Route path="/c/:username/about" component={CreatorPathStorefrontPage} />
+      <Route path="/c/:username/customize/:handle" component={CreatorPathStorefrontPage} />
+      <Route path="/c/:username" component={CreatorPathStorefrontPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />
@@ -75,6 +113,7 @@ function AppRouter() {
       <Route path="/admin/customizer-pages" component={AdminCustomizerPages} />
       <Route path="/admin/design-studio" component={AdminDesignStudio} />
       <Route path="/admin/plan" component={AdminPlanPicker} />
+      <Route path="/admin/insights" component={AdminInsights} />
       <Route path="/admin" component={AdminDashboard} />
 
       {/* DEV-ONLY: Storefront preview launcher */}

@@ -3,86 +3,55 @@
  *
  * Maps plan name → max customizer pages allowed.
  * The plan state lives on shopifyInstallations.planName / planStatus.
- */
-
-export const PLAN_PAGE_LIMITS: Record<string, number> = {
-  trial:    1,
-  starter:  1,
-  dabbler:  5,
-  pro:      15,
-  pro_plus: 30,
-};
-
-/**
- * Max ACTIVE permanent "design products" (merchant-published standalone product
- * listings from My Designs) allowed per plan. Trial gets none. Saved designs in
- * the library are capped separately at a flat 30 regardless of plan (see
- * MERCHANT_STUDIO_GALLERY_LIMIT in server/routes.ts) — this limit only governs
- * how many of those saved designs can be live Shopify products at once.
- */
-export const PLAN_DESIGN_PRODUCT_LIMITS: Record<string, number> = {
-  trial:    0,
-  starter:  1,
-  dabbler:  5,
-  pro:      15,
-  pro_plus: 30,
-};
-
-export function getDesignProductLimit(planName: string | null | undefined): number {
-  if (!planName) return 0;
-  return PLAN_DESIGN_PRODUCT_LIMITS[planName] ?? 0;
-}
-
-/**
- * Monthly free AI-generation allotment per plan.
  *
- * NOTE: These numbers currently drive the billing/pricing DISPLAY (plan picker
- * cards). Per-merchant monthly quota *enforcement* (counting generations,
- * blocking at the cap, charging overages) is NOT yet wired up — see
- * `merchants.monthlyGenerationLimit` / `generationsThisMonth` in the schema,
- * which still default to 100 and are not tied to these values. Wire these in
- * when implementing metered billing.
- *
- * The separate per-CUSTOMER 10-free-generation limit IS enforced today
- * (FREE_GENERATION_LIMIT in server/routes.ts + server/storage.ts).
+ * Numeric plan table (fees, gens, pages, overage) lives in
+ * `@shared/customizerPlans` — import from there (or re-exports below).
  */
-export const PLAN_GENERATION_QUOTAS: Record<string, number> = {
-  trial:    20,
-  starter:  250,
-  dabbler:  600,
-  pro:      1500,
-  pro_plus: 3000,
-};
 
-/** Per-generation overage price in USD (applies once the monthly quota is exhausted). */
-export const OVERAGE_PRICE_USD = 0.08;
+export {
+  PLAN_PAGE_LIMITS,
+  PLAN_DESIGN_PRODUCT_LIMITS,
+  PLAN_GENERATION_QUOTAS,
+  OVERAGE_PRICE_SCHEDULE,
+  OVERAGE_PRICE_USD,
+  PLAN_OVERAGE_CAPS,
+  PLAN_PRICES_USD,
+  PLAN_DISPLAY_NAMES,
+  PAID_PLANS,
+  PAID_PLAN_DEFINITIONS,
+  CURRENT_PRICING_VERSION,
+  SEED_PRICING_VERSION,
+  PLATFORM_AI_COST_PER_GEN_USD,
+  OVERAGE_USAGE_TERMS,
+  getPageLimit,
+  getDesignProductLimit,
+  getPlanOverageCappedAmountUsd,
+  resolveOveragePriceUsd,
+  overageCostForUnitsUsd,
+  buildSeedCatalogueSnapshot,
+  planDefinitionsFromCatalogue,
+  findCataloguePlan,
+  priceFromMarginOverAiCost,
+  aiCostAtFullAllowanceUsd,
+  type PaidPlan,
+  type PlanDefinition,
+  type OveragePriceTier,
+  type PricingCatalogueSnapshot,
+  type CataloguePlanRow,
+} from "@shared/customizerPlans";
 
-/** Max extra (overage) generations allowed per calendar month, per paid plan. */
-export const PLAN_OVERAGE_CAPS: Record<string, number> = {
-  starter:  200,
-  dabbler:  300,
-  pro:      500,
-  pro_plus: 1000,
-};
-
-/** Monthly price in USD (shown in plan picker UI). */
-export const PLAN_PRICES_USD: Record<string, number> = {
-  starter:  29,
-  dabbler:  49,
-  pro:      99,
-  pro_plus: 199,
-};
-
-export const PLAN_DISPLAY_NAMES: Record<string, string> = {
-  trial:    "Trial",
-  starter:  "Starter",
-  dabbler:  "Dabbler",
-  pro:      "Pro",
-  pro_plus: "Pro Plus",
-};
-
-export const PAID_PLANS = ["starter", "dabbler", "pro", "pro_plus"] as const;
-export type PaidPlan = typeof PAID_PLANS[number];
+import {
+  PAID_PLANS,
+  PLAN_PAGE_LIMITS,
+  PLAN_GENERATION_QUOTAS,
+  PLAN_OVERAGE_CAPS,
+  PLAN_DISPLAY_NAMES,
+  getPageLimit,
+  getDesignProductLimit,
+  resolveOveragePriceUsd,
+  type PricingCatalogueSnapshot,
+  findCataloguePlan,
+} from "@shared/customizerPlans";
 
 /** Merchant My Designs save/library — Starter and above only (not trial / inactive). */
 export function canSaveMerchantDesigns(
@@ -94,38 +63,36 @@ export function canSaveMerchantDesigns(
 }
 
 /**
- * Maximum monthly overage cost (USD) a plan can incur = overage cap × per-unit
- * price. This is the `cappedAmount` Shopify requires on a usage-pricing line:
- * Shopify will reject usage records once the merchant's accrued usage for the
- * billing period reaches this amount, which lines up with our own hard cap
- * (overageCap units × OVERAGE_PRICE_USD). Returns 0 for plans without overage.
- *
- *   Starter : 200 × $0.08 = $16.00
- *   Dabbler : 300 × $0.08 = $24.00
- *   Pro     : 500 × $0.08 = $40.00
- *   Pro Plus: 1000 × $0.08 = $80.00
+ * When false/0/off/no, OWNER_SHOP_DOMAIN still grants platform-admin access but
+ * does **not** force Pro Plus / unlimited metering / skip-Shopify billing.
+ * Default (unset): bypass on. Staging QA: set OWNER_BYPASS_QUOTA=false.
  */
-export function getPlanOverageCappedAmountUsd(planName: string | null | undefined): number {
-  if (!planName) return 0;
-  const cap = PLAN_OVERAGE_CAPS[planName] ?? 0;
-  // Round to cents to avoid float drift (e.g. 16.000000000000004).
-  return Math.round(cap * OVERAGE_PRICE_USD * 100) / 100;
+export function isOwnerQuotaBypassEnabled(): boolean {
+  const v = (process.env.OWNER_BYPASS_QUOTA ?? "true").toLowerCase().trim();
+  return v !== "false" && v !== "0" && v !== "off" && v !== "no";
 }
 
-/** Human-readable terms shown on the metered (usage) pricing line at approval. */
-export const OVERAGE_USAGE_TERMS = `$${OVERAGE_PRICE_USD.toFixed(2)} USD per additional AI generation beyond your monthly included allotment (pay-as-you-go; requires in-app opt-in; not a prepaid pack)`;
+/** True when shopDomain matches OWNER_SHOP_DOMAIN (ignores OWNER_BYPASS_QUOTA). */
+export function shopMatchesOwnerDomain(shopDomain?: string | null): boolean {
+  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
+  if (!ownerShop || !shopDomain) return false;
+  return shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop;
+}
 
-export function getPageLimit(planName: string | null | undefined): number {
-  if (!planName) return 0;
-  return PLAN_PAGE_LIMITS[planName] ?? 0;
+/**
+ * Owner shop with quota bypass enabled — unlimited metering / forced Pro Plus.
+ * Platform admin still uses OWNER_SHOP_DOMAIN alone (see platformAdmin.ts).
+ */
+export function isOwnerQuotaBypassShop(shopDomain?: string | null): boolean {
+  return isOwnerQuotaBypassEnabled() && shopMatchesOwnerDomain(shopDomain);
 }
 
 /**
  * Derive the effective plan status for an installation.
  * Returns a normalized object the UI and server can act on.
  *
- * If OWNER_SHOP_DOMAIN env var is set and shopDomain matches, unconditionally
- * returns Pro Plus active — bypasses all billing/DB state for the developer's store.
+ * If OWNER_SHOP_DOMAIN matches and OWNER_BYPASS_QUOTA is enabled (default),
+ * returns Pro Plus active — bypasses billing/DB plan state for the developer store.
  */
 export function getEffectivePlan(
   installation: {
@@ -143,9 +110,7 @@ export function getEffectivePlan(
   pageLimit: number;
   displayName: string;
 } {
-  // Owner bypass: env-var-configured shop always gets Pro Plus without payment
-  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-  if (ownerShop && shopDomain && shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop) {
+  if (isOwnerQuotaBypassShop(shopDomain)) {
     return {
       planName: "pro_plus",
       planStatus: "active",
@@ -193,8 +158,15 @@ export interface GenerationQuotaConfig {
   overageCap: number;
   /** Hard cap for the bucket = freeQuota + overageCap. */
   hardCap: number;
-  /** Per-overage-generation price in USD (0 for plans with no overage). */
+  /**
+   * Headline overage price (first tier). Emit path must call
+   * `resolveOveragePriceUsd(overageSeq, overageSchedule)` so volume can select a tier.
+   */
   overagePriceUsd: number;
+  /** Catalogue schedule for volume-aware emit (optional; defaults to seed). */
+  overageSchedule?: import("@shared/customizerPlans").OveragePriceTier[];
+  /** Catalogue id this quota was resolved from. */
+  pricingVersion?: number;
   /** Counter bucket key the monthly counters belong to. */
   bucketKey: string;
   /** Whether the bucket resets per calendar month (paid) or is cumulative (trial). */
@@ -216,33 +188,49 @@ export function generationMonthKey(now: Date = new Date()): string {
 export function resolveGenerationQuota(
   planName: string | null | undefined,
   isActive: boolean,
-  now: Date = new Date()
+  now: Date = new Date(),
+  catalogue?: PricingCatalogueSnapshot | null,
 ): GenerationQuotaConfig {
-  const isPaidActive =
-    isActive && !!planName && (PAID_PLANS as readonly string[]).includes(planName);
+  const catPlan = catalogue ? findCataloguePlan(catalogue, planName) : null;
+  const isPaidActive = catalogue
+    ? !!(
+        isActive &&
+        catPlan &&
+        catPlan.planKey !== "trial" &&
+        (catPlan.priceUsd > 0 || catPlan.generationQuota > 0)
+      )
+    : isActive && !!planName && (PAID_PLANS as readonly string[]).includes(planName);
+
+  const schedule = catalogue?.overageSchedule;
+  const pricingVersion = catalogue?.id;
 
   if (isPaidActive) {
-    const freeQuota = PLAN_GENERATION_QUOTAS[planName!] ?? 0;
-    const overageCap = PLAN_OVERAGE_CAPS[planName!] ?? 0;
+    const freeQuota = catPlan?.generationQuota ?? PLAN_GENERATION_QUOTAS[planName!] ?? 0;
+    const overageCap = catPlan?.overageCapUnits ?? PLAN_OVERAGE_CAPS[planName!] ?? 0;
     return {
       effectivePlan: planName!,
       freeQuota,
       overageCap,
       hardCap: freeQuota + overageCap,
-      overagePriceUsd: overageCap > 0 ? OVERAGE_PRICE_USD : 0,
+      overagePriceUsd: overageCap > 0 ? resolveOveragePriceUsd(undefined, schedule) : 0,
+      overageSchedule: schedule ? schedule.map((t) => ({ ...t })) : undefined,
+      pricingVersion,
       bucketKey: generationMonthKey(now),
       monthly: true,
     };
   }
 
-  // Trial / no plan / inactive → cumulative 20 free, no overage.
-  const freeQuota = PLAN_GENERATION_QUOTAS["trial"] ?? 20;
+  // Trial / no plan / inactive → cumulative free, no overage.
+  const trialPlan = catalogue ? findCataloguePlan(catalogue, "trial") : null;
+  const freeQuota = trialPlan?.generationQuota ?? PLAN_GENERATION_QUOTAS["trial"] ?? 20;
   return {
     effectivePlan: "trial",
     freeQuota,
     overageCap: 0,
     hardCap: freeQuota,
     overagePriceUsd: 0,
+    overageSchedule: schedule ? schedule.map((t) => ({ ...t })) : undefined,
+    pricingVersion,
     bucketKey: "trial",
     monthly: false,
   };

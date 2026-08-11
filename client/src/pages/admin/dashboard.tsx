@@ -16,13 +16,11 @@ interface GenerationStats {
 
 const SETUP_STEP_LABELS: Partial<Record<SetupNextStep, string>> = {
   enable_embed: "Enable the App Embed",
-  choose_product: "Choose a Customizer Page product",
   connect_printify: "Connect Printify to fulfil orders",
 };
 const SETUP_STEP_NUMBERS: Partial<Record<SetupNextStep, number>> = {
   enable_embed: 2,
-  choose_product: 3,
-  connect_printify: 4,
+  connect_printify: 3,
 };
 
 /** Dashboard's setup-rail pointer — mirrors /admin/setup's live status instead of a static list of steps. */
@@ -39,14 +37,13 @@ function SetupStatusCard() {
             <CardTitle>Setup complete</CardTitle>
           </div>
           <CardDescription>
-            Printify is connected and your Customizer Page{status.activePagesCount > 1 ? "s are" : " is"} live for
-            customers.
+            Printify is connected. Open Products Catalogue to Preview in-app or Create a Live page.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Button asChild variant="outline" size="sm" data-testid="button-setup-add-product">
-            <Link href="/admin/setup">
-              Activate another product
+            <Link href="/admin/products">
+              Open Products Catalogue
               <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
             </Link>
           </Button>
@@ -63,7 +60,7 @@ function SetupStatusCard() {
           <CardTitle>Finish setting up</CardTitle>
         </div>
         <CardDescription>
-          Step {SETUP_STEP_NUMBERS[status.nextStep]} of 4 — {SETUP_STEP_LABELS[status.nextStep]}
+          Step {SETUP_STEP_NUMBERS[status.nextStep]} of 3 — {SETUP_STEP_LABELS[status.nextStep]}
         </CardDescription>
       </CardHeader>
       <CardContent>

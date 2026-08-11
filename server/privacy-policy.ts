@@ -18,8 +18,8 @@ export const privacyPolicyHtml = `<!doctype html>
 
   <p>
     AI Art Studio ("we", "us") provides AI artwork generation,
-    product customization, cart/checkout image support, and customer credit
-    purchase features for Shopify merchants.
+    product customization, cart/checkout image support, and Studio Credits
+    features for Shopify merchants.
   </p>
 
   <h2>Personal Data We Process</h2>
@@ -28,8 +28,7 @@ export const privacyPolicyHtml = `<!doctype html>
     <li>Shopify shop domain and app installation details.</li>
     <li>Shopify customer ID and, where provided by the customer, email address.</li>
     <li>Customer artwork prompts, generated design metadata, and design status.</li>
-    <li>Credit balances, credit ledger entries, Stripe Checkout session references, and discount entitlement amounts.</li>
-    <li>Shopify order ID and discount application metadata when a credit discount is redeemed.</li>
+    <li>Credit balances, credit ledger entries, and free generation usage.</li>
   </ul>
   <p>
     We do not sell customer personal data and we do not use it for unrelated
@@ -40,8 +39,7 @@ export const privacyPolicyHtml = `<!doctype html>
   <p>We use this data only to:</p>
   <ul>
     <li>Generate and display customer-created artwork.</li>
-    <li>Maintain accurate paid credit and free generation balances.</li>
-    <li>Apply and consume one-time checkout credit discounts.</li>
+    <li>Maintain accurate Studio Credit and free generation balances.</li>
     <li>Create product/mockup records needed for cart and checkout display.</li>
     <li>Support merchant troubleshooting, fraud prevention, and legal compliance.</li>
   </ul>
@@ -49,10 +47,9 @@ export const privacyPolicyHtml = `<!doctype html>
   <h2>Sharing</h2>
   <p>
     We share data only with service providers required to operate the app,
-    including Shopify, Railway-hosted infrastructure, Stripe for payment
-    processing, Supabase or object storage providers for generated assets, and
-    email delivery providers for verification messages. These providers process
-    data on our behalf.
+    including Shopify, Railway-hosted infrastructure, Supabase or object storage
+    providers for generated assets, and email delivery providers for verification
+    messages. These providers process data on our behalf.
   </p>
 
   <h2>Security and Retention</h2>

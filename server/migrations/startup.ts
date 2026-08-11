@@ -38,6 +38,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customizer_pages",      column: "style_config",                type: "JSONB" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
+  { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
+  { table: "generation_jobs",       column: "creator_session_id",          type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "variant_prices_both",         type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "is_all_over_print",           type: "BOOLEAN NOT NULL DEFAULT FALSE" },
@@ -78,10 +80,43 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "oos_total_variants",          type: "INTEGER" },
   { table: "product_types",         column: "oos_status",                  type: "TEXT" },
   { table: "product_types",         column: "oos_detail",                  type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "pricing_version",             type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "product_types",         column: "last_product_sync_at",        type: "TIMESTAMP" },
+  { table: "product_types",         column: "default_markup_percent",      type: "INTEGER" },
+  { table: "product_types",         column: "pricing_strategy",            type: "TEXT NOT NULL DEFAULT 'notify_only'" },
+  { table: "product_types",         column: "min_margin_percent",          type: "INTEGER" },
+  { table: "product_types",         column: "product_health",              type: "TEXT NOT NULL DEFAULT 'healthy'" },
+  { table: "product_types",         column: "variant_availability",        type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "shipping_snapshot",           type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "is_platform_catalog_ref",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
+  { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
+  { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "shopify_installations", column: "pricing_version", type: "INTEGER DEFAULT 0" },
+  { table: "shopify_installations", column: "refresh_token", type: "TEXT" },
+  { table: "shopify_installations", column: "access_token_expires_at", type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "refresh_token_expires_at", type: "TIMESTAMP" },
+  { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "credit_ledger",          column: "source",                     type: "TEXT" },
+  { table: "credit_ledger",          column: "shop",                       type: "TEXT" },
+  { table: "credit_ledger",          column: "related_entity_id",          type: "TEXT" },
+  { table: "credit_ledger",          column: "quota_bucket_key",           type: "TEXT" },
+  { table: "shared_designs",         column: "owner_customer_id",          type: "VARCHAR" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
 const DATA_MIGRATIONS: string[] = [
+  `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
+  `ALTER TABLE shopify_installations ALTER COLUMN storefront_free_gens_per_visitor SET DEFAULT 2`,
+  `UPDATE shopify_installations SET storefront_free_gens_per_visitor = 2`,
+  // Required: every installation must have a pricing catalogue stamp for enforcement.
+  `UPDATE shopify_installations SET pricing_version = 0 WHERE pricing_version IS NULL`,
+  `ALTER TABLE shopify_installations ALTER COLUMN pricing_version SET DEFAULT 0`,
+  // Trial allotment: 20 → 10 included generations (operator decision 2026-08).
+  `UPDATE pricing_catalogue_plans
+   SET generation_quota = 10
+   WHERE plan_key = 'trial' AND generation_quota = 20`,
   // Adjustable tote: folded fulfillment + flat storefront mockups (override AOP name defaults).
   `UPDATE platform_catalog_blueprints
    SET fulfillment_layout = 'tote_folded_v1',
@@ -124,16 +159,18 @@ const DATA_MIGRATIONS: string[] = [
   `INSERT INTO credit_balances (
       customer_id,
       credits,
+      earned_credits,
+      pack_credits,
       free_generations_used,
-      discount_entitlement_cents,
       version,
       updated_at
     )
     SELECT
       id,
       COALESCE(credits, 0),
-      COALESCE(free_generations_used, 0),
       0,
+      0,
+      COALESCE(free_generations_used, 0),
       0,
       NOW()
     FROM customers
@@ -163,7 +200,7 @@ const DATA_MIGRATIONS: string[] = [
   `INSERT INTO credit_ledger (
       customer_id,
       delta_credits,
-      delta_entitlement_cents,
+      source,
       reason,
       idempotency_key,
       external_ref,
@@ -173,7 +210,7 @@ const DATA_MIGRATIONS: string[] = [
     SELECT
       customer_id,
       amount,
-      CASE WHEN type = 'purchase' AND amount > 0 THEN LEAST(100, COALESCE(price_in_cents, 0)) ELSE 0 END,
+      CASE WHEN type = 'purchase' THEN 'pack' ELSE NULL END,
       type,
       'legacy:credit_transaction:' || id,
       CASE WHEN order_id IS NULL THEN NULL ELSE 'legacy_order:' || order_id END,
@@ -221,12 +258,253 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of', prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of' WHERE lower(name) = 'illustrated motif'`,
   `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of', prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of' WHERE lower(name) = 'centered graphic'`,
   `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of', prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of' WHERE lower(name) = 'pet portraits' AND category = 'apparel'`,
+  // Creator Marketplace: seed accounting cost ($0.05). Do not overwrite if already set.
+  `INSERT INTO platform_config ("key", "value", "updated_at")
+   VALUES ('AI_GENERATION_COST_USD', '0.05', NOW())
+   ON CONFLICT ("key") DO NOTHING`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
 // SQL matches shared/schema.ts exactly.
+//
+// Fresh environments (e.g. Railway Staging Postgres) have ZERO tables.
+// drizzle-kit push is NOT run at deploy time — these CREATE TABLE IF NOT EXISTS
+// statements (plus COLUMN_MIGRATIONS) are what bootstrap an empty database.
+// Core tables that predate this file MUST be listed here or staging breaks.
 
 const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "pgcrypto_extension",
+    sql: `CREATE EXTENSION IF NOT EXISTS "pgcrypto"`,
+  },
+  {
+    name: "users",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "users" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "email" varchar UNIQUE,
+        "first_name" varchar,
+        "last_name" varchar,
+        "profile_image_url" varchar,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      )
+    `,
+  },
+  {
+    name: "merchants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "merchants" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "user_id" varchar NOT NULL UNIQUE,
+        "store_name" text,
+        "printify_api_token" text,
+        "printify_shop_id" text,
+        "use_built_in_nano_banana" boolean NOT NULL DEFAULT true,
+        "custom_nano_banana_token" text,
+        "subscription_tier" text NOT NULL DEFAULT 'free',
+        "monthly_generation_limit" integer NOT NULL DEFAULT 100,
+        "generations_this_month" integer NOT NULL DEFAULT 0,
+        "branding_settings" json,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shopify_installations",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shopify_installations" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar,
+        "shop_domain" text NOT NULL UNIQUE,
+        "access_token" text NOT NULL,
+        "refresh_token" text,
+        "access_token_expires_at" timestamp,
+        "refresh_token_expires_at" timestamp,
+        "scope" text,
+        "status" text NOT NULL DEFAULT 'active',
+        "installed_at" timestamp DEFAULT now() NOT NULL,
+        "uninstalled_at" timestamp,
+        "customizer_hub_url" text,
+        "plan_name" text,
+        "plan_status" text,
+        "trial_started_at" timestamp,
+        "billing_subscription_id" text,
+        "billing_usage_line_item_id" text,
+        "billing_current_period_end" timestamp,
+        "generation_month" text,
+        "monthly_generations_used" integer NOT NULL DEFAULT 0,
+        "monthly_overage_used" integer NOT NULL DEFAULT 0,
+        "overage_opt_in_enabled" boolean NOT NULL DEFAULT false,
+        "overage_budget_cents" integer,
+        "overage_recurring" boolean NOT NULL DEFAULT false,
+        "overage_opt_in_at" timestamp,
+        "overage_opt_in_bucket_key" text,
+        "quota_alert_90_bucket_key" text,
+        "quota_alert_100_bucket_key" text,
+        "pending_plan_name" text,
+        "pending_plan_effective_at" timestamp,
+        "embed_confirmed_at" timestamp,
+        "storefront_free_gens_per_visitor" integer NOT NULL DEFAULT 2,
+        "leftover_gens_reminder_bucket_key" text,
+        "wholesale_credit_cents" integer NOT NULL DEFAULT 0,
+        "pricing_version" integer DEFAULT 0
+      )
+    `,
+  },
+  {
+    name: "pricing_catalogues",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "pricing_catalogues" (
+        "id" serial PRIMARY KEY,
+        "label" text NOT NULL,
+        "status" text NOT NULL,
+        "overage_schedule" jsonb NOT NULL,
+        "ai_cost_per_gen_usd" numeric(10, 4) NOT NULL DEFAULT 0.0450,
+        "committed_at" timestamp DEFAULT now() NOT NULL,
+        "activated_at" timestamp,
+        "created_by" text
+      )
+    `,
+  },
+  {
+    name: "pricing_catalogue_plans",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "pricing_catalogue_plans" (
+        "id" serial PRIMARY KEY,
+        "catalogue_id" integer NOT NULL REFERENCES "pricing_catalogues"("id") ON DELETE CASCADE,
+        "plan_key" text NOT NULL,
+        "display_name" text NOT NULL,
+        "price_usd" numeric(10, 2) NOT NULL,
+        "generation_quota" integer NOT NULL,
+        "page_limit" integer NOT NULL,
+        "design_product_limit" integer NOT NULL DEFAULT 0,
+        "overage_cap_units" integer NOT NULL DEFAULT 0,
+        "margin_over_ai_cost_pct" numeric(6, 2) NOT NULL DEFAULT 50,
+        "self_serve" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0
+      )
+    `,
+  },
+  {
+    name: "customers",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "customers" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "user_id" varchar NOT NULL UNIQUE,
+        "credits" integer NOT NULL DEFAULT 0,
+        "free_generations_used" integer NOT NULL DEFAULT 0,
+        "total_generations" integer NOT NULL DEFAULT 0,
+        "total_spent" numeric(10, 2) NOT NULL DEFAULT '0.00',
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "style_presets",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_presets" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar NOT NULL,
+        "name" text NOT NULL,
+        "prompt_prefix" text NOT NULL,
+        "prompt_prefix_dark" text,
+        "category" text NOT NULL DEFAULT 'all',
+        "is_active" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "base_image_url" text,
+        "prompt_placeholder" text,
+        "description_optional" boolean NOT NULL DEFAULT false,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "product_types",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "product_types" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar,
+        "name" text NOT NULL,
+        "description" text,
+        "printify_blueprint_id" integer,
+        "printify_provider_id" integer,
+        "mockup_template_url" text,
+        "sizes" text NOT NULL DEFAULT '[]',
+        "frame_colors" text NOT NULL DEFAULT '[]',
+        "variant_map" text NOT NULL DEFAULT '{}',
+        "selected_size_ids" text NOT NULL DEFAULT '[]',
+        "selected_color_ids" text NOT NULL DEFAULT '[]',
+        "aspect_ratio" text NOT NULL DEFAULT '3:4',
+        "print_shape" text NOT NULL DEFAULT 'rectangle',
+        "print_area_width" integer,
+        "print_area_height" integer,
+        "bleed_margin_percent" integer NOT NULL DEFAULT 5,
+        "designer_type" text NOT NULL DEFAULT 'generic',
+        "size_type" text NOT NULL DEFAULT 'dimensional',
+        "has_printify_mockups" boolean NOT NULL DEFAULT false,
+        "base_mockup_images" text NOT NULL DEFAULT '{}',
+        "primary_mockup_index" integer NOT NULL DEFAULT 0,
+        "double_sided_print" boolean NOT NULL DEFAULT false,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "shopify_product_id" text,
+        "shopify_product_handle" text,
+        "shopify_product_url" text,
+        "shopify_shop_domain" text,
+        "shopify_variant_ids" json,
+        "last_pushed_to_shopify" timestamp,
+        "printify_costs" text DEFAULT '{}',
+        "variant_prices_both" text DEFAULT '{}',
+        "is_all_over_print" boolean NOT NULL DEFAULT false,
+        "placeholder_positions" text DEFAULT '[]',
+        "panel_flat_lay_images" text DEFAULT '{}',
+        "aop_template_id" text,
+        "panel_mapping_template" text,
+        "on_the_fly_tier" text,
+        "flat_calibration_status" text,
+        "flat_calibration" text DEFAULT '{}',
+        "storefront_mockup_mode" text,
+        "fulfillment_layout" text,
+        "fabric_weave_texture" boolean,
+        "color_option_name" text,
+        "last_oos_scan_at" timestamp,
+        "oos_available_variants" integer,
+        "oos_total_variants" integer,
+        "oos_status" text,
+        "oos_detail" text DEFAULT '{}',
+        "pricing_version" integer NOT NULL DEFAULT 0,
+        "last_product_sync_at" timestamp,
+        "default_markup_percent" integer,
+        "pricing_strategy" text NOT NULL DEFAULT 'notify_only',
+        "min_margin_percent" integer,
+        "product_health" text NOT NULL DEFAULT 'healthy',
+        "variant_availability" text DEFAULT '{}',
+        "shipping_snapshot" text DEFAULT '{}',
+        "is_platform_catalog_ref" boolean NOT NULL DEFAULT false,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "credit_transactions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "credit_transactions" (
+        "id" serial PRIMARY KEY,
+        "customer_id" varchar NOT NULL,
+        "type" text NOT NULL,
+        "amount" integer NOT NULL,
+        "price_in_cents" integer,
+        "order_id" integer,
+        "description" text,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
   {
     name: "design_sku_mappings",
     sql: `
@@ -350,8 +628,9 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       CREATE TABLE IF NOT EXISTS "credit_balances" (
         "customer_id"                 VARCHAR PRIMARY KEY,
         "credits"                     INTEGER NOT NULL DEFAULT 0 CHECK ("credits" >= 0),
+        "earned_credits"              INTEGER NOT NULL DEFAULT 0 CHECK ("earned_credits" >= 0),
+        "pack_credits"                INTEGER NOT NULL DEFAULT 0 CHECK ("pack_credits" >= 0),
         "free_generations_used"       INTEGER NOT NULL DEFAULT 0 CHECK ("free_generations_used" >= 0),
-        "discount_entitlement_cents"  INTEGER NOT NULL DEFAULT 0 CHECK ("discount_entitlement_cents" >= 0),
         "version"                     INTEGER NOT NULL DEFAULT 0,
         "updated_at"                  TIMESTAMP DEFAULT NOW() NOT NULL
       )
@@ -364,7 +643,10 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "id"                       SERIAL PRIMARY KEY,
         "customer_id"              VARCHAR NOT NULL,
         "delta_credits"            INTEGER NOT NULL,
-        "delta_entitlement_cents"  INTEGER NOT NULL DEFAULT 0,
+        "source"                   TEXT,
+        "shop"                     TEXT,
+        "related_entity_id"        TEXT,
+        "quota_bucket_key"         TEXT,
         "reason"                   TEXT NOT NULL,
         "idempotency_key"          TEXT NOT NULL UNIQUE,
         "external_ref"             TEXT,
@@ -374,28 +656,35 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
-    name: "stripe_events",
+    name: "reward_ladder_rungs",
     sql: `
-      CREATE TABLE IF NOT EXISTS "stripe_events" (
-        "stripe_event_id" TEXT PRIMARY KEY,
-        "type"            TEXT NOT NULL,
-        "outcome"         TEXT,
-        "received_at"     TIMESTAMP DEFAULT NOW() NOT NULL
+      CREATE TABLE IF NOT EXISTS "reward_ladder_rungs" (
+        "id"              SERIAL PRIMARY KEY,
+        "shop"            TEXT NOT NULL,
+        "rung_key"        TEXT NOT NULL,
+        "enabled"         BOOLEAN NOT NULL DEFAULT TRUE,
+        "credit_amount"   INTEGER NOT NULL DEFAULT 1,
+        "threshold_cents" INTEGER,
+        "sort_order"      INTEGER NOT NULL DEFAULT 0,
+        "created_at"      TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"      TIMESTAMP DEFAULT NOW() NOT NULL,
+        UNIQUE ("shop", "rung_key")
       )
     `,
   },
   {
-    name: "order_discount_claims",
+    name: "reward_grants",
     sql: `
-      CREATE TABLE IF NOT EXISTS "order_discount_claims" (
-        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        "customer_id"         VARCHAR NOT NULL,
-        "shopify_order_id"    TEXT UNIQUE,
-        "shop"                TEXT NOT NULL,
-        "entitlement_cents"   INTEGER NOT NULL,
-        "status"              TEXT NOT NULL DEFAULT 'pending',
-        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
-        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      CREATE TABLE IF NOT EXISTS "reward_grants" (
+        "id"                SERIAL PRIMARY KEY,
+        "shop"              TEXT NOT NULL,
+        "customer_id"       VARCHAR NOT NULL,
+        "rung_key"          TEXT NOT NULL,
+        "credits_granted"   INTEGER NOT NULL DEFAULT 0,
+        "related_entity_id" TEXT,
+        "idempotency_key"   TEXT NOT NULL UNIQUE,
+        "created_at"        TIMESTAMP DEFAULT NOW() NOT NULL,
+        UNIQUE ("shop", "customer_id", "rung_key")
       )
     `,
   },
@@ -592,6 +881,398 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "catalog_variant_costs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_variant_costs" (
+        "id"                            SERIAL PRIMARY KEY,
+        "product_type_id"               INTEGER NOT NULL,
+        "supplier"                      TEXT NOT NULL DEFAULT 'printify',
+        "blueprint_id"                  INTEGER,
+        "provider_id"                   INTEGER,
+        "supplier_product_id"           TEXT,
+        "supplier_variant_id"           TEXT NOT NULL,
+        "product_name"                  TEXT,
+        "variant_name"                  TEXT,
+        "size"                          TEXT,
+        "color"                         TEXT,
+        "print_area_key"                TEXT NOT NULL DEFAULT 'front',
+        "print_areas_json"              TEXT DEFAULT '[]',
+        "base_cogs_cents"               INTEGER,
+        "previous_cogs_cents"           INTEGER,
+        "shipping_first_item_us_cents"  INTEGER,
+        "currency"                      TEXT NOT NULL DEFAULT 'USD',
+        "available"                     BOOLEAN NOT NULL DEFAULT TRUE,
+        "availability_status"           TEXT NOT NULL DEFAULT 'unknown',
+        "price_changed"                 BOOLEAN NOT NULL DEFAULT FALSE,
+        "availability_changed"          BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_new_variant"                BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_removed"                    BOOLEAN NOT NULL DEFAULT FALSE,
+        "pricing_version"               INTEGER NOT NULL DEFAULT 1,
+        "cost_checksum"                 TEXT,
+        "last_synced_at"                TIMESTAMP DEFAULT NOW() NOT NULL,
+        "price_last_changed_at"         TIMESTAMP,
+        "created_at"                    TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"                    TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalog_sync_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_sync_runs" (
+        "id"                      SERIAL PRIMARY KEY,
+        "scope"                   TEXT NOT NULL DEFAULT 'catalogue',
+        "product_type_id"         INTEGER,
+        "source"                  TEXT NOT NULL DEFAULT 'manual',
+        "status"                  TEXT NOT NULL DEFAULT 'running',
+        "products_checked"        INTEGER NOT NULL DEFAULT 0,
+        "variants_checked"        INTEGER NOT NULL DEFAULT 0,
+        "price_changes"           INTEGER NOT NULL DEFAULT 0,
+        "availability_changes"    INTEGER NOT NULL DEFAULT 0,
+        "new_variants"            INTEGER NOT NULL DEFAULT 0,
+        "removed_variants"        INTEGER NOT NULL DEFAULT 0,
+        "sync_failures"           INTEGER NOT NULL DEFAULT 0,
+        "summary_json"            TEXT DEFAULT '{}',
+        "error"                   TEXT,
+        "started_at"              TIMESTAMP DEFAULT NOW() NOT NULL,
+        "finished_at"             TIMESTAMP,
+        "created_at"              TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalog_variant_cost_history",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_variant_cost_history" (
+        "id"                           SERIAL PRIMARY KEY,
+        "product_type_id"              INTEGER NOT NULL,
+        "supplier"                     TEXT NOT NULL DEFAULT 'printify',
+        "supplier_variant_id"          TEXT NOT NULL,
+        "print_area_key"               TEXT NOT NULL DEFAULT 'front',
+        "pricing_version"              INTEGER NOT NULL,
+        "previous_cogs_cents"          INTEGER,
+        "new_cogs_cents"               INTEGER,
+        "previous_shipping_us_cents"   INTEGER,
+        "new_shipping_us_cents"        INTEGER,
+        "change_reason"                TEXT NOT NULL,
+        "sync_run_id"                  INTEGER,
+        "changed_at"                   TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalog_sync_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalog_sync_events" (
+        "id"                   SERIAL PRIMARY KEY,
+        "product_type_id"      INTEGER,
+        "sync_run_id"          INTEGER,
+        "pricing_version"      INTEGER,
+        "event_type"           TEXT NOT NULL,
+        "supplier_variant_id"  TEXT,
+        "print_area_key"       TEXT,
+        "payload_json"         TEXT DEFAULT '{}',
+        "created_at"           TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "platform_config",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "platform_config" (
+        "key" TEXT PRIMARY KEY,
+        "value" TEXT NOT NULL,
+        "updated_at" TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creators",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creators" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "username" text NOT NULL,
+        "subdomain" text NOT NULL,
+        "display_name" text NOT NULL,
+        "email" text NOT NULL,
+        "first_name" text,
+        "last_name" text,
+        "social_platform" text,
+        "social_username" text,
+        "social_url" text,
+        "follower_count" integer,
+        "niche" text,
+        "audience_description" text,
+        "profile_image_url" text,
+        "bio" text,
+        "status" text NOT NULL DEFAULT 'application',
+        "creator_type" text NOT NULL DEFAULT 'creator',
+        "shop_domain" text,
+        "onboarding_status" text NOT NULL DEFAULT 'pending',
+        "onboarding_checklist" jsonb,
+        "branding" jsonb,
+        "beta_start_at" timestamp,
+        "beta_end_at" timestamp,
+        "free_gens_per_customer" integer NOT NULL DEFAULT 2,
+        "monthly_generation_allowance" integer NOT NULL DEFAULT 250,
+        "generation_month" text,
+        "monthly_generations_used" integer NOT NULL DEFAULT 0,
+        "overage_cap" integer NOT NULL DEFAULT 0,
+        "share_basis" text NOT NULL DEFAULT 'net_contribution',
+        "revenue_share_creator_pct" integer NOT NULL DEFAULT 100,
+        "revenue_share_aas_pct" integer NOT NULL DEFAULT 0,
+        "agreement_status" text,
+        "agreement_start_at" timestamp,
+        "agreement_end_at" timestamp,
+        "email_automation_toggles" jsonb,
+        "application_id" varchar,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_applications",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_applications" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "first_name" text NOT NULL,
+        "last_name" text NOT NULL,
+        "email" text NOT NULL,
+        "social_platform" text NOT NULL,
+        "social_username" text NOT NULL,
+        "social_url" text,
+        "follower_count" integer,
+        "niche" text NOT NULL,
+        "audience_description" text,
+        "has_shopify_store" boolean NOT NULL DEFAULT FALSE,
+        "shopify_store_url" text,
+        "interested_products" text,
+        "preferred_category" text,
+        "why_participate" text,
+        "expected_reach" text,
+        "additional_info" text,
+        "status" text NOT NULL DEFAULT 'submitted',
+        "assigned_username" text,
+        "creator_id" varchar,
+        "admin_notes" text,
+        "reviewed_at" timestamp,
+        "reviewed_by" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_customizer_pages",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_customizer_pages" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "customizer_page_id" varchar NOT NULL,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "title_override" text,
+        "description_override" text,
+        "enabled" boolean NOT NULL DEFAULT TRUE,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_sessions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_sessions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "first_seen_at" timestamp DEFAULT NOW() NOT NULL,
+        "last_seen_at" timestamp DEFAULT NOW() NOT NULL,
+        "landing_path" text,
+        "referrer" text,
+        "utm_source" text,
+        "utm_medium" text,
+        "utm_campaign" text,
+        "utm_content" text,
+        "device" text,
+        "country" text
+      )
+    `,
+  },
+  {
+    name: "creator_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_events" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "session_id" varchar,
+        "event_type" text NOT NULL,
+        "customizer_page_id" varchar,
+        "product_type_id" integer,
+        "generation_job_id" varchar,
+        "style_preset" text,
+        "metadata" jsonb,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_customer_free_gens",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_customer_free_gens" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "customer_id" text NOT NULL,
+        "used" integer NOT NULL DEFAULT 0,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_generation_costs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "generation_job_id" varchar NOT NULL,
+        "session_id" varchar,
+        "customer_id" text,
+        "customizer_page_id" varchar,
+        "cost_cents" integer NOT NULL,
+        "billing_mode" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_daily_stats",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_daily_stats" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar NOT NULL,
+        "day" text NOT NULL,
+        "visitors" integer NOT NULL DEFAULT 0,
+        "sessions" integer NOT NULL DEFAULT 0,
+        "page_views" integer NOT NULL DEFAULT 0,
+        "generations" integer NOT NULL DEFAULT 0,
+        "gen_cost_cents" integer NOT NULL DEFAULT 0,
+        "atc_count" integer NOT NULL DEFAULT 0,
+        "orders" integer NOT NULL DEFAULT 0,
+        "gross_cents" integer NOT NULL DEFAULT 0,
+        "product_profit_cents" integer NOT NULL DEFAULT 0,
+        "net_contribution_cents" integer NOT NULL DEFAULT 0,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_orders",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_orders" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "shopify_order_id" text NOT NULL,
+        "shopify_order_name" text,
+        "session_id" varchar,
+        "attribution_snapshot" jsonb,
+        "gross_cents" integer NOT NULL DEFAULT 0,
+        "discount_cents" integer NOT NULL DEFAULT 0,
+        "shipping_collected_cents" integer NOT NULL DEFAULT 0,
+        "fulfilment_cost_cents" integer NOT NULL DEFAULT 0,
+        "transaction_fee_cents" integer NOT NULL DEFAULT 0,
+        "product_profit_cents" integer NOT NULL DEFAULT 0,
+        "ai_gen_cost_cents" integer NOT NULL DEFAULT 0,
+        "net_contribution_cents" integer NOT NULL DEFAULT 0,
+        "creator_share_cents" integer NOT NULL DEFAULT 0,
+        "aas_share_cents" integer NOT NULL DEFAULT 0,
+        "refund_cents" integer NOT NULL DEFAULT 0,
+        "status" text NOT NULL DEFAULT 'paid',
+        "payout_id" varchar,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_order_lines",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_order_lines" (
+        "id" serial PRIMARY KEY,
+        "creator_order_id" varchar NOT NULL,
+        "shopify_line_id" text,
+        "product_type_id" integer,
+        "generation_job_id" varchar,
+        "quantity" integer NOT NULL DEFAULT 1,
+        "unit_revenue_cents" integer NOT NULL DEFAULT 0,
+        "unit_cogs_cents" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_rank_snapshots",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_rank_snapshots" (
+        "id" serial PRIMARY KEY,
+        "period_type" text NOT NULL,
+        "period_key" text NOT NULL,
+        "metric_key" text NOT NULL,
+        "creator_id" varchar NOT NULL,
+        "value_cents" integer,
+        "value" numeric(18, 6),
+        "rank" integer NOT NULL,
+        "of_count" integer NOT NULL,
+        "percentile" numeric(8, 4),
+        "share_pct" numeric(8, 4),
+        "computed_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_payouts",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_payouts" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "period_start" timestamp,
+        "period_end" timestamp,
+        "amount_cents" integer NOT NULL,
+        "method" text,
+        "status" text NOT NULL DEFAULT 'pending',
+        "admin_note" text,
+        "paid_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_notes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_notes" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar,
+        "application_id" varchar,
+        "author" text,
+        "body" text NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_email_log",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_email_log" (
+        "id" serial PRIMARY KEY,
+        "creator_id" varchar,
+        "application_id" varchar,
+        "template_key" text NOT NULL,
+        "recipient" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'skipped',
+        "error" text,
+        "sent_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -611,9 +1292,19 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
       ON "credit_ledger" ("customer_id", "created_at")`,
   },
   {
-    name: "order_discount_claims_customer_idx",
-    sql: `CREATE INDEX IF NOT EXISTS "order_discount_claims_customer_idx"
-      ON "order_discount_claims" ("customer_id")`,
+    name: "credit_ledger_related_entity_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "credit_ledger_related_entity_idx"
+      ON "credit_ledger" ("related_entity_id")`,
+  },
+  {
+    name: "reward_ladder_rungs_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "reward_ladder_rungs_shop_idx"
+      ON "reward_ladder_rungs" ("shop")`,
+  },
+  {
+    name: "reward_grants_customer_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "reward_grants_customer_idx"
+      ON "reward_grants" ("customer_id")`,
   },
   {
     name: "aop_calibration_runs_product_type_idx",
@@ -681,6 +1372,42 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
       ON "founder_alerts" ("shop_domain", "created_at")`,
   },
   {
+    name: "catalog_variant_costs_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_variant_costs_product_type_idx"
+      ON "catalog_variant_costs" ("product_type_id")`,
+  },
+  {
+    name: "catalog_variant_costs_variant_unique",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "catalog_variant_costs_variant_unique"
+      ON "catalog_variant_costs" ("product_type_id", "supplier", "supplier_variant_id", "print_area_key")`,
+  },
+  {
+    name: "catalog_variant_cost_history_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_variant_cost_history_product_idx"
+      ON "catalog_variant_cost_history" ("product_type_id")`,
+  },
+  {
+    name: "catalog_sync_events_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_sync_events_product_idx"
+      ON "catalog_sync_events" ("product_type_id")`,
+  },
+  {
+    name: "catalog_sync_events_run_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalog_sync_events_run_idx"
+      ON "catalog_sync_events" ("sync_run_id")`,
+  },
+  {
+    name: "pricing_catalogue_plans_catalogue_plan_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "pricing_catalogue_plans_catalogue_plan_uidx"
+      ON "pricing_catalogue_plans" ("catalogue_id", "plan_key")`,
+  },
+  {
+    name: "pricing_catalogues_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "pricing_catalogues_status_idx"
+      ON "pricing_catalogues" ("status")`,
+  },
+
+  {
     name: "design_products_merchant_idx",
     sql: `CREATE INDEX IF NOT EXISTS "design_products_merchant_idx"
       ON "design_products" ("merchant_id", "status")`,
@@ -713,6 +1440,74 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "design_product_events_sale_dedupe_idx"
       ON "design_product_events" ("design_product_id", "shopify_order_id", "cart_token")
       WHERE "event_type" = 'sale' AND "shopify_order_id" IS NOT NULL AND "cart_token" IS NOT NULL`,
+  },
+  {
+    name: "creators_username_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creators_username_uidx" ON "creators" ("username")`,
+  },
+  {
+    name: "creators_subdomain_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creators_subdomain_uidx" ON "creators" ("subdomain")`,
+  },
+  {
+    name: "creators_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creators_status_idx" ON "creators" ("status")`,
+  },
+  {
+    name: "creators_email_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creators_email_idx" ON "creators" ("email")`,
+  },
+  {
+    name: "creator_applications_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_applications_status_idx" ON "creator_applications" ("status")`,
+  },
+  {
+    name: "creator_applications_email_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_applications_email_idx" ON "creator_applications" ("email")`,
+  },
+  {
+    name: "creator_applications_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_applications_created_idx" ON "creator_applications" ("created_at")`,
+  },
+  {
+    name: "creator_customizer_pages_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customizer_pages_uidx"
+      ON "creator_customizer_pages" ("creator_id", "customizer_page_id")`,
+  },
+  {
+    name: "creator_sessions_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_sessions_creator_idx"
+      ON "creator_sessions" ("creator_id", "last_seen_at")`,
+  },
+  {
+    name: "creator_events_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_events_creator_idx"
+      ON "creator_events" ("creator_id", "created_at")`,
+  },
+  {
+    name: "creator_customer_free_gens_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_free_gens_uidx"
+      ON "creator_customer_free_gens" ("creator_id", "customer_id")`,
+  },
+  {
+    name: "creator_generation_costs_job_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_generation_costs_job_uidx"
+      ON "creator_generation_costs" ("generation_job_id")`,
+  },
+  {
+    name: "creator_daily_stats_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_daily_stats_uidx"
+      ON "creator_daily_stats" ("creator_id", "day")`,
+  },
+  {
+    name: "creator_orders_shopify_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_orders_shopify_uidx"
+      ON "creator_orders" ("creator_id", "shopify_order_id")`,
+  },
+  {
+    name: "creator_rank_snapshots_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_rank_snapshots_uidx"
+      ON "creator_rank_snapshots" ("period_type", "period_key", "metric_key", "creator_id")`,
   },
 ];
 

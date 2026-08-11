@@ -8,10 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2 } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2, Sparkles } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
 import type { Merchant } from "@shared/schema";
+import {
+  STOREFRONT_FREE_GENERATION_DEFAULT,
+  STOREFRONT_FREE_GENERATION_MAX,
+  STOREFRONT_FREE_GENERATION_MIN,
+} from "@shared/storefront-credits";
 
 interface ShopifyInstallation {
   id: number;
@@ -19,6 +24,14 @@ interface ShopifyInstallation {
   status: string;
   scope: string | null;
 }
+
+type StorefrontSettings = {
+  storefrontFreeGensPerVisitor: number;
+  min: number;
+  max: number;
+  default: number;
+  shopDomain: string | null;
+};
 
 export default function AdminSettings() {
   const { toast } = useToast();
@@ -29,6 +42,7 @@ export default function AdminSettings() {
   const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string; recommended?: boolean }[]; instructions?: string[] } | null>(null);
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
+  const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(STOREFRONT_FREE_GENERATION_DEFAULT));
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -42,6 +56,96 @@ export default function AdminSettings() {
     queryKey: ["/api/shopify/installations"],
     select: (data) => data.installations,
   });
+
+  const { data: storefrontSettings } = useQuery<StorefrontSettings>({
+    queryKey: ["/api/admin/storefront-settings"],
+  });
+
+  type RewardRung = {
+    id: number;
+    shop: string;
+    rungKey: "free_anonymous" | "email_signup" | "share_design" | "purchase_threshold";
+    enabled: boolean;
+    creditAmount: number;
+    thresholdCents: number | null;
+    sortOrder: number;
+  };
+  type RewardLadderResponse = {
+    shopDomain: string;
+    purchaseRewardsEnabled: boolean;
+    rungs: RewardRung[];
+  };
+
+  const { data: rewardLadder } = useQuery<RewardLadderResponse>({
+    queryKey: ["/api/admin/reward-ladder"],
+  });
+
+  type RewardRungDraft = { creditAmount: string; thresholdDollars: string };
+  const [rewardDrafts, setRewardDrafts] = useState<Record<string, RewardRungDraft>>({});
+
+  useEffect(() => {
+    if (!rewardLadder?.rungs?.length) return;
+    const next: Record<string, RewardRungDraft> = {};
+    for (const rung of rewardLadder.rungs) {
+      next[rung.rungKey] = {
+        creditAmount: String(rung.creditAmount ?? 0),
+        thresholdDollars:
+          rung.thresholdCents != null && rung.thresholdCents > 0
+            ? String(Math.round(rung.thresholdCents) / 100)
+            : "50",
+      };
+    }
+    setRewardDrafts(next);
+  }, [rewardLadder]);
+
+  type RewardRungPatch = {
+    rungKey: RewardRung["rungKey"];
+    enabled?: boolean;
+    creditAmount?: number;
+    thresholdCents?: number | null;
+  };
+
+  const updateRewardLadderMutation = useMutation({
+    mutationFn: async (rung: RewardRungPatch) => {
+      const res = await apiRequest("PATCH", "/api/admin/reward-ladder", {
+        rungs: [rung],
+      });
+      return res.json() as Promise<RewardLadderResponse>;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/reward-ladder"] });
+      if (variables.creditAmount !== undefined || variables.thresholdCents !== undefined) {
+        toast({ title: "Saved", description: "Reward Ladder updated." });
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const saveRewardRungAmounts = (rung: RewardRung) => {
+    const draft = rewardDrafts[rung.rungKey];
+    if (!draft) return;
+    const creditAmount = Math.max(0, Math.min(50, Math.floor(Number(draft.creditAmount) || 0)));
+    const patch: RewardRungPatch = { rungKey: rung.rungKey, creditAmount };
+    if (rung.rungKey === "purchase_threshold") {
+      const dollars = Number(draft.thresholdDollars);
+      if (!Number.isFinite(dollars) || dollars < 1) {
+        toast({
+          title: "Invalid threshold",
+          description: "Purchase threshold must be at least $1.",
+          variant: "destructive",
+        });
+        return;
+      }
+      patch.thresholdCents = Math.round(dollars * 100);
+    }
+    updateRewardLadderMutation.mutate(patch);
+  };
 
   const handleReconnectStore = async (shopDomain: string) => {
     try {
@@ -120,12 +224,57 @@ export default function AdminSettings() {
     }
   }, [merchant]);
 
+  useEffect(() => {
+    if (storefrontSettings?.storefrontFreeGensPerVisitor != null) {
+      setFreeGensPerVisitor(String(storefrontSettings.storefrontFreeGensPerVisitor));
+    }
+  }, [storefrontSettings]);
+
+  const updateStorefrontSettingsMutation = useMutation({
+    mutationFn: async (body: {
+      storefrontFreeGensPerVisitor: number;
+    }) => {
+      const res = await apiRequest("PATCH", "/api/admin/storefront-settings", body);
+      return res.json() as Promise<StorefrontSettings>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/storefront-settings"] });
+      setFreeGensPerVisitor(String(data.storefrontFreeGensPerVisitor));
+      toast({
+        title: "Storefront settings saved",
+        description: `Visitors get ${data.storefrontFreeGensPerVisitor} free generation${data.storefrontFreeGensPerVisitor === 1 ? "" : "s"}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleSave = () => {
     updateMerchantMutation.mutate({
       printifyApiToken: printifyToken,
       printifyShopId: printifyShopId,
       useBuiltInNanoBanana: useBuiltIn,
       customNanoBananaToken: customToken,
+    });
+  };
+
+  const handleSaveStorefrontSettings = () => {
+    const n = parseInt(freeGensPerVisitor, 10);
+    if (!Number.isFinite(n)) {
+      toast({
+        title: "Invalid value",
+        description: `Enter a number between ${STOREFRONT_FREE_GENERATION_MIN} and ${STOREFRONT_FREE_GENERATION_MAX}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    updateStorefrontSettingsMutation.mutate({
+      storefrontFreeGensPerVisitor: n,
     });
   };
 
@@ -304,6 +453,189 @@ export default function AdminSettings() {
                 </div>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              Storefront credits
+            </CardTitle>
+            <CardDescription>
+              Free generations come off your monthly plan allotment (default{" "}
+              {STOREFRONT_FREE_GENERATION_DEFAULT}, max {STOREFRONT_FREE_GENERATION_MAX}).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="space-y-2 max-w-xs">
+              <Label htmlFor="free-gens-visitor">Free gens per visitor</Label>
+              <Input
+                id="free-gens-visitor"
+                type="number"
+                min={STOREFRONT_FREE_GENERATION_MIN}
+                max={STOREFRONT_FREE_GENERATION_MAX}
+                step={1}
+                value={freeGensPerVisitor}
+                onChange={(e) => setFreeGensPerVisitor(e.target.value)}
+              />
+            </div>
+
+            <Button
+              type="button"
+              onClick={handleSaveStorefrontSettings}
+              disabled={updateStorefrontSettingsMutation.isPending}
+              className="gap-2"
+            >
+              {updateStorefrontSettingsMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              Save storefront credits
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              Reward Ladder
+            </CardTitle>
+            <CardDescription>
+              Credits for email signup and share-design are a one-time reward per customer.
+              When spent, they count against your shop plan quota.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {rewardLadder?.rungs?.length ? (
+              rewardLadder.rungs
+                .filter((rung) => rung.rungKey !== "free_anonymous")
+                .sort((a, b) => a.sortOrder - b.sortOrder)
+                .map((rung) => {
+                  const draft = rewardDrafts[rung.rungKey] ?? {
+                    creditAmount: String(rung.creditAmount ?? 0),
+                    thresholdDollars: "50",
+                  };
+                  const label = rung.rungKey === "email_signup"
+                    ? "Email sign-up"
+                    : rung.rungKey === "share_design"
+                      ? "Share a design"
+                      : rung.rungKey === "purchase_threshold"
+                        ? "Purchase threshold"
+                        : rung.rungKey;
+                  const description = rung.rungKey === "email_signup"
+                    ? "Studio Credits when a visitor signs in with Google or email OTP (once per customer)."
+                    : rung.rungKey === "share_design"
+                      ? "Studio Credits when someone else opens their shared design (once per customer)."
+                      : rung.rungKey === "purchase_threshold"
+                        ? rewardLadder.purchaseRewardsEnabled
+                          ? "Studio Credits when a customer’s paid order clears this amount (once per customer)."
+                          : "Temporarily disabled by the app operator."
+                        : "";
+                  const disabled =
+                    rung.rungKey === "purchase_threshold" && !rewardLadder.purchaseRewardsEnabled;
+                  const creditsDirty = Number(draft.creditAmount) !== rung.creditAmount;
+                  const thresholdDirty =
+                    rung.rungKey === "purchase_threshold" &&
+                    Math.round(Number(draft.thresholdDollars) * 100) !== (rung.thresholdCents ?? 0);
+                  const amountsDirty = creditsDirty || thresholdDirty;
+                  return (
+                    <div
+                      key={rung.rungKey}
+                      className="space-y-3 rounded-lg border p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <Label className="text-sm font-medium">{label}</Label>
+                          <p className="text-xs text-muted-foreground">{description}</p>
+                        </div>
+                        <Switch
+                          checked={rung.enabled && !disabled}
+                          disabled={disabled || updateRewardLadderMutation.isPending}
+                          onCheckedChange={(checked) =>
+                            updateRewardLadderMutation.mutate({
+                              rungKey: rung.rungKey,
+                              enabled: checked,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="space-y-1">
+                          <Label htmlFor={`reward-credits-${rung.rungKey}`} className="text-xs text-muted-foreground">
+                            Credits
+                          </Label>
+                          <Input
+                            id={`reward-credits-${rung.rungKey}`}
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={1}
+                            className="w-24"
+                            value={draft.creditAmount}
+                            disabled={disabled || updateRewardLadderMutation.isPending}
+                            onChange={(e) =>
+                              setRewardDrafts((prev) => ({
+                                ...prev,
+                                [rung.rungKey]: {
+                                  ...draft,
+                                  creditAmount: e.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        {rung.rungKey === "purchase_threshold" && (
+                          <div className="space-y-1">
+                            <Label htmlFor={`reward-threshold-${rung.rungKey}`} className="text-xs text-muted-foreground">
+                              Order total ($)
+                            </Label>
+                            <Input
+                              id={`reward-threshold-${rung.rungKey}`}
+                              type="number"
+                              min={1}
+                              max={1000}
+                              step={1}
+                              className="w-28"
+                              value={draft.thresholdDollars}
+                              disabled={disabled || updateRewardLadderMutation.isPending}
+                              onChange={(e) =>
+                                setRewardDrafts((prev) => ({
+                                  ...prev,
+                                  [rung.rungKey]: {
+                                    ...draft,
+                                    thresholdDollars: e.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                          </div>
+                        )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={disabled || !amountsDirty || updateRewardLadderMutation.isPending}
+                          onClick={() => saveRewardRungAmounts(rung)}
+                        >
+                          {updateRewardLadderMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Save className="h-3.5 w-3.5 mr-1" />
+                              Save
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+            ) : (
+              <Skeleton className="h-24 w-full" />
+            )}
           </CardContent>
         </Card>
 

@@ -12,3 +12,9 @@ tmp/
 tmp_dev_log*.txt
 .commit-msg.tmp
 
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+

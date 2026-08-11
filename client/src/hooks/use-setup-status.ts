@@ -10,10 +10,13 @@ export interface MerchantSetupStatus {
   printifyConnected: boolean;
   pagesCount: number;
   activePagesCount: number;
+  productTypesCount?: number;
   planName: string | null;
   planStatus: string | null;
   quota: { used: number; limit: number | null; plan: string | null };
   nextStep: SetupNextStep;
+  shopAuthorized?: boolean;
+  reconnectUrl?: string | null;
 }
 
 /** Shared setup-rail status query — used by both /admin/setup and the daily Printify nag modal. */
