@@ -79,6 +79,8 @@ export default function PlatformCreatorsPage() {
   const [monthlyAllowance, setMonthlyAllowance] = useState("250");
   const [creatorStatus, setCreatorStatus] = useState("onboarding");
   const [merchantShop, setMerchantShop] = useState("");
+  const [shopName, setShopName] = useState("");
+  const [shopDescription, setShopDescription] = useState("");
 
   const { data: creatorsData } = useQuery<{
     creators: Array<{
@@ -91,6 +93,7 @@ export default function PlatformCreatorsPage() {
       monthlyGenerationsUsed: number;
       shopDomain: string | null;
       creatorType: string;
+      branding: Record<string, unknown> | null;
     }>;
   }>({
     queryKey: ["/api/platform/creators"],
@@ -218,6 +221,8 @@ export default function PlatformCreatorsPage() {
         monthlyGenerationAllowance: Number(monthlyAllowance),
         status: creatorStatus,
         shopDomain: merchantShop || null,
+        shopName,
+        shopDescription,
       });
       const res = await apiRequest("PUT", `/api/platform/creators/${creatorEditId}/pages`, {
         customizerPageIds: selectedPageIds,
@@ -408,6 +413,17 @@ export default function PlatformCreatorsPage() {
                             setCreatorStatus(c.status);
                             setMerchantShop(c.shopDomain || "");
                             setSelectedPageIds([]);
+                            const b = c.branding || {};
+                            setShopName(
+                              typeof b.headline === "string" && b.headline
+                                ? b.headline
+                                : "",
+                            );
+                            setShopDescription(
+                              typeof b.description === "string" && b.description
+                                ? b.description
+                                : "",
+                            );
                           }}
                         >
                           Configure
@@ -539,6 +555,29 @@ export default function PlatformCreatorsPage() {
               <DialogTitle>Configure creator</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 text-sm">
+              <div className="space-y-1">
+                <Label>Shop name</Label>
+                <Input
+                  placeholder="e.g. Big Melting Pod"
+                  value={shopName}
+                  onChange={(e) => setShopName(e.target.value)}
+                  data-testid="creator-shop-name"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Storefront title in the header and hero. Blank = default
+                  &quot;Name&apos;s AI Shop&quot;.
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label>Shop description</Label>
+                <Textarea
+                  placeholder="Short pitch under the shop name…"
+                  value={shopDescription}
+                  onChange={(e) => setShopDescription(e.target.value)}
+                  rows={3}
+                  data-testid="creator-shop-description"
+                />
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label>Free gens / customer</Label>

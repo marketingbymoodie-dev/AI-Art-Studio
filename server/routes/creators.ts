@@ -687,6 +687,28 @@ export function registerCreatorMarketplaceRoutes(
         if (body.onboardingStatus != null) {
           patch.onboardingStatus = String(body.onboardingStatus);
         }
+        if (body.displayName != null) {
+          const dn = String(body.displayName || "").trim();
+          if (dn) patch.displayName = dn.slice(0, 120);
+        }
+        // Shop name / tagline live in branding JSON (storefront reads headline + description).
+        if (body.shopName !== undefined || body.shopDescription !== undefined) {
+          const prev =
+            creator.branding && typeof creator.branding === "object"
+              ? { ...(creator.branding as Record<string, unknown>) }
+              : {};
+          if (body.shopName !== undefined) {
+            const headline = String(body.shopName || "").trim().slice(0, 120);
+            if (headline) prev.headline = headline;
+            else delete prev.headline;
+          }
+          if (body.shopDescription !== undefined) {
+            const description = String(body.shopDescription || "").trim().slice(0, 500);
+            if (description) prev.description = description;
+            else delete prev.description;
+          }
+          patch.branding = prev;
+        }
 
         const [updated] = await db
           .update(creators)
