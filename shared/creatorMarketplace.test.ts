@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
+  extractSubdomainFromHost,
+  extractUsernameFromPath,
   normalizeCreatorUsername,
 } from "./creatorMarketplace";
 
@@ -31,5 +33,18 @@ describe("quota clamps", () => {
   it("clamps monthly allowance", () => {
     expect(clampMonthlyGenerationAllowance(250)).toBe(250);
     expect(clampMonthlyGenerationAllowance(-5)).toBe(0);
+  });
+});
+
+describe("host / path resolution", () => {
+  it("parses creator subdomains", () => {
+    expect(extractSubdomainFromHost("max.aiartstudio.app")).toBe("max");
+    expect(extractSubdomainFromHost("aiartstudio.app")).toBeNull();
+    expect(extractSubdomainFromHost("ai-art-studio-staging.up.railway.app")).toBeNull();
+  });
+
+  it("parses /c/:username paths", () => {
+    expect(extractUsernameFromPath("/c/max")).toBe("max");
+    expect(extractUsernameFromPath("/c/skate-king/products")).toBe("skate-king");
   });
 });

@@ -2,8 +2,18 @@ import type { Express, Request, Response, NextFunction } from "express";
 import express from "express";
 import path from "path";
 import fs from "fs";
+import type { CreatorStorefrontBoot } from "./creator-host";
 
 let staticInitialized = false;
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      creatorStorefront?: CreatorStorefrontBoot | null;
+    }
+  }
+}
 
 // Cross-environment directory resolution.
 // In production (esbuild CJS): __dirname is natively available and equals dist/.
@@ -37,7 +47,7 @@ export function serveStatic(app: Express) {
   const indexPath = path.join(publicDir, "index.html");
   const indexExists = fs.existsSync(indexPath);
 
-  /** Storefront routes must not load App Bridge — the `shop` query param would trigger admin redirect. */
+  /** Storefront / creator routes must not load App Bridge — shop query would trigger admin redirect. */
   let indexHtml = "";
   let storefrontIndexHtml = "";
   if (indexExists) {
@@ -48,7 +58,19 @@ export function serveStatic(app: Express) {
   }
 
   function isStorefrontSpaPath(pathname: string): boolean {
-    return pathname.startsWith("/s/") || pathname.startsWith("/storefront/");
+    return (
+      pathname.startsWith("/s/") ||
+      pathname.startsWith("/storefront/") ||
+      pathname.startsWith("/c/")
+    );
+  }
+
+  function injectCreatorBoot(html: string, boot: CreatorStorefrontBoot): string {
+    const payload = JSON.stringify(boot).replace(/</g, "\\u003c");
+    return html.replace(
+      /<head>/i,
+      `<head><script>window.__CREATOR__=${payload};</script>`,
+    );
   }
 
   // Startup log (only once)
@@ -91,8 +113,27 @@ export function serveStatic(app: Express) {
     // Log SPA fallback requests in production
     console.log(`[SPA fallback] ${req.method} ${req.originalUrl}`);
 
-    if (isStorefrontSpaPath(req.path) && storefrontIndexHtml) {
-      res.status(200).set({ "Content-Type": "text/html; charset=UTF-8" }).end(storefrontIndexHtml);
+    const creatorBoot = req.creatorStorefront;
+    if ((isStorefrontSpaPath(req.path) || creatorBoot) && storefrontIndexHtml) {
+      let html = storefrontIndexHtml;
+      if (creatorBoot) {
+        html = injectCreatorBoot(html, creatorBoot);
+      }
+      res.status(200).set({ "Content-Type": "text/html; charset=UTF-8" }).end(html);
+      return;
+    }
+
+    if (creatorBoot && indexHtml) {
+      const html = injectCreatorBoot(
+        indexHtml
+          .replace(/<meta name="shopify-api-key"[^>]*>\s*/g, "")
+          .replace(
+            /<script src="https:\/\/cdn\.shopify\.com\/shopifycloud\/app-bridge\.js"><\/script>\s*/g,
+            "",
+          ),
+        creatorBoot,
+      );
+      res.status(200).set({ "Content-Type": "text/html; charset=UTF-8" }).end(html);
       return;
     }
 

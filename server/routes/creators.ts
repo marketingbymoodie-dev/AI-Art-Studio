@@ -26,6 +26,10 @@ import {
   getAiGenerationCostUsd,
   isCreatorMarketplaceEnabled,
 } from "../creator-config";
+import {
+  getCreatorStorefrontByUsername,
+  invalidateCreatorHostCache,
+} from "../creator-host";
 
 type AuthMw = any;
 
@@ -55,6 +59,21 @@ export function registerCreatorMarketplaceRoutes(
       enabled: isCreatorMarketplaceEnabled(),
       aiGenerationCostUsd: await getAiGenerationCostUsd(),
     });
+  });
+
+  /** Public storefront boot payload (path fallback + client refresh). */
+  app.get("/api/creators/storefront/:username", async (req, res) => {
+    if (!isCreatorMarketplaceEnabled()) {
+      return res.status(404).json({ error: "Creator Marketplace is not enabled." });
+    }
+    try {
+      const boot = await getCreatorStorefrontByUsername(req.params.username);
+      if (!boot) return res.status(404).json({ error: "Creator storefront not found." });
+      res.json({ creator: boot });
+    } catch (e: any) {
+      console.error("[creators] storefront lookup failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load storefront" });
+    }
   });
 
   app.post("/api/creators/apply", async (req, res) => {
@@ -329,6 +348,7 @@ export function registerCreatorMarketplaceRoutes(
           .where(eq(creatorApplications.id, appRow.id))
           .returning();
 
+        invalidateCreatorHostCache(suggested);
         res.status(201).json({ creator, application: updatedApp });
       } catch (e: any) {
         console.error("[creators] start-onboarding failed:", e);

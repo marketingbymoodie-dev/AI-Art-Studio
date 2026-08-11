@@ -32,3 +32,21 @@ Seeded on boot (idempotent): `platform_config.AI_GENERATION_COST_USD = 0.05`.
 | Admin queue | `/admin/platform/creators` (platform admin only) |
 
 Emails are **not** sent automatically yet.
+
+## Phase 2 — storefront shell (no DNS required yet)
+
+| Surface | Path |
+|---------|------|
+| Path preview (staging) | `/c/{username}` · `/c/{username}/products` · `/about` |
+| Subdomain (later) | `{username}.aiartstudio.app` — needs Railway wildcard + DNS |
+| Public boot API | `GET /api/creators/storefront/:username` |
+
+Visible statuses: `onboarding`, `active_beta`, `partner`, `paused` (paused shows a paused page).
+
+### Wildcard DNS (production later — do not change until approved)
+
+1. Railway **production** → Custom Domain → add `*.aiartstudio.app`
+2. DNS provider → `CNAME *` → Railway target (see Railway “DNS records”)
+3. Keep apex `aiartstudio.app` as today
+
+Staging continues to use `/c/{username}` until a staging wildcard exists.

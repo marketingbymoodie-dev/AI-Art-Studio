@@ -172,6 +172,47 @@ declare module "http" {
 
 app.use(cookieParser());
 
+// Creator Marketplace host / path resolution (sets req.creatorStorefront for SPA HTML).
+app.use(async (req, res, next) => {
+  if (
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/assets") ||
+    req.path.startsWith("/shopify") ||
+    req.path.startsWith("/objects") ||
+    req.path.startsWith("/scripts")
+  ) {
+    return next();
+  }
+  try {
+    const { resolveCreatorForRequest, extractSubdomainFromHost, extractUsernameFromPath } =
+      await import("./creator-host");
+    const result = await resolveCreatorForRequest(req);
+    if (result === null || result === "disabled" || result === "reserved") {
+      return next();
+    }
+    if (result === "not_found") {
+      const looking =
+        extractSubdomainFromHost(req.headers.host) || extractUsernameFromPath(req.path);
+      if (looking && req.method === "GET" && !req.path.includes(".")) {
+        res
+          .status(404)
+          .type("html")
+          .send(`<!doctype html><html><head><meta charset="utf-8"/><title>Store not found</title>
+<style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#fafafa;color:#111}
+main{text-align:center;padding:2rem}a{color:#111}</style></head>
+<body><main><h1>Store not found</h1><p>This creator storefront is unavailable.</p>
+<p><a href="https://aiartstudio.app/creators">Browse AI Art Studio Creators</a></p></main></body></html>`);
+        return;
+      }
+      return next();
+    }
+    (req as any).creatorStorefront = result;
+  } catch (err) {
+    console.error("[creator-host] resolve failed:", err);
+  }
+  next();
+});
+
 // Static assets (non-build scripts)
 app.use("/scripts", express.static(path.resolve(process.cwd(), "public/scripts")));
 

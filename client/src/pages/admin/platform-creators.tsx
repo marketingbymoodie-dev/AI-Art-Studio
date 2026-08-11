@@ -122,10 +122,19 @@ export default function PlatformCreatorsPage() {
       );
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: { creator?: { username?: string } }) => {
       qc.invalidateQueries({ queryKey: [listUrl] });
-      toast({ title: "Onboarding started", description: "Creator record created." });
+      const u = data?.creator?.username;
+      toast({
+        title: "Onboarding started",
+        description: u
+          ? `Creator created. Preview: /c/${u}`
+          : "Creator record created.",
+      });
       setSelectedId(null);
+      if (u && typeof window !== "undefined") {
+        window.open(`/c/${u}`, "_blank", "noopener,noreferrer");
+      }
     },
     onError: (err: Error) =>
       toast({ title: "Could not start onboarding", description: err.message, variant: "destructive" }),

@@ -117,3 +117,31 @@ export function clampMonthlyGenerationAllowance(n: number): number {
   if (!Number.isFinite(n)) return DEFAULT_CREATOR_MONTHLY_GENERATION_ALLOWANCE;
   return Math.min(1_000_000, Math.max(0, Math.floor(n)));
 }
+
+/** Parse creator subdomain from Host header (max.aiartstudio.app → max). */
+export function extractSubdomainFromHost(hostHeader: string | undefined): string | null {
+  if (!hostHeader) return null;
+  const host = hostHeader.split(":")[0]?.toLowerCase() || "";
+  if (!host || host === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return null;
+
+  if (host.endsWith(".aiartstudio.app")) {
+    const sub = host.slice(0, -".aiartstudio.app".length);
+    if (!sub || sub.includes(".")) return null;
+    return sub;
+  }
+
+  if (host.endsWith(".staging.aiartstudio.app")) {
+    const sub = host.slice(0, -".staging.aiartstudio.app".length);
+    if (!sub || sub.includes(".")) return null;
+    return sub;
+  }
+
+  return null;
+}
+
+/** Parse /c/:username path fallback. */
+export function extractUsernameFromPath(pathname: string): string | null {
+  const m = pathname.match(/^\/c\/([a-z0-9-]+)(?:\/|$)/i);
+  if (!m) return null;
+  return normalizeCreatorUsername(m[1]!);
+}
