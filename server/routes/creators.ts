@@ -478,7 +478,7 @@ export function registerCreatorMarketplaceRoutes(
         return res.status(503).json({
           error: "CREATOR_STOREFRONT_NOT_CONFIGURED",
           message:
-            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_PLATFORM_STOREFRONT_TOKEN on Railway staging.",
+            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_STOREFRONT_API_TOKEN on Railway staging.",
         });
       }
 

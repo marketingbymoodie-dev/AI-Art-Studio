@@ -1,6 +1,7 @@
 /**
  * Shopify Storefront API client for Creator Marketplace carts/checkouts.
- * Uses CREATOR_PLATFORM_STOREFRONT_TOKEN on CREATOR_PLATFORM_SHOP_DOMAIN.
+ * Uses CREATOR_STOREFRONT_API_TOKEN (or legacy CREATOR_PLATFORM_STOREFRONT_TOKEN)
+ * on CREATOR_PLATFORM_SHOP_DOMAIN.
  */
 import {
   getCreatorPlatformShopDomain,
@@ -26,7 +27,7 @@ async function storefrontGraphql<T>(
   const token = getCreatorPlatformStorefrontToken();
   if (!shop || !token) {
     throw new Error(
-      "Creator Storefront API is not configured (CREATOR_PLATFORM_SHOP_DOMAIN + CREATOR_PLATFORM_STOREFRONT_TOKEN).",
+      "Creator Storefront API is not configured (CREATOR_PLATFORM_SHOP_DOMAIN + CREATOR_STOREFRONT_API_TOKEN).",
     );
   }
 

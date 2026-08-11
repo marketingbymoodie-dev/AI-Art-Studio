@@ -8,14 +8,15 @@ Phased feature. See the Cursor plan for full architecture. This doc tracks ops p
 |----------|---------|
 | `CREATOR_MARKETPLACE_ENABLED` | `true` / `1` to enable public apply + admin APIs |
 | `CREATOR_PLATFORM_SHOP_DOMAIN` | Platform Shopify shop (`{handle}.myshopify.com`) that backs creator checkouts |
-| `CREATOR_PLATFORM_STOREFRONT_TOKEN` | Storefront API access token from a **custom app on that shop** (not Partners dashboard) |
+| `CREATOR_STOREFRONT_API_TOKEN` | Preferred Storefront API access token (custom app on the platform shop) |
+| `CREATOR_PLATFORM_STOREFRONT_TOKEN` | Legacy alias for the same token (optional) |
 
 Seeded on boot (idempotent): `platform_config.AI_GENERATION_COST_USD = 0.05`.
 
 ## Phase 0 checklist (manual — do not automate without approval)
 
 1. **Choose platform store** — preferably a dedicated Shopify store (or staging demo) for all creator subdomain checkouts. Set `CREATOR_PLATFORM_SHOP_DOMAIN`.
-2. **Storefront API token** — store admin → Settings → Apps → Develop apps → custom app → Storefront API scopes → Install → copy token → set `CREATOR_PLATFORM_STOREFRONT_TOKEN` on Railway (staging first).
+2. **Storefront API token** — store admin → Settings → Apps → Develop apps → custom app → Storefront API scopes → Install → copy token → set `CREATOR_STOREFRONT_API_TOKEN` on Railway (staging first).
 3. **Shopify Protected Customer Data** — production `orders/paid` / `refunds/create` webhooks stay commented in `shopify.app.production.toml` until PCD approval. File/renew the request so the creator revenue ledger can go live.
 4. **Wildcard DNS** (later phase, approval required):
    - Railway custom domain: `*.aiartstudio.app`
@@ -64,7 +65,7 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 
 **Staging smoke test**
 
-1. Set `CREATOR_PLATFORM_STOREFRONT_TOKEN` on Railway staging (redeploy).
+1. Set `CREATOR_STOREFRONT_API_TOKEN` on Railway staging (redeploy).
 2. On `ai-art-studio-staging`, create 1–3 **Live** Customizer Pages (Path B).
 3. Admin → Creator Marketplace → Configure creator → assign those pages → set status `active_beta` if desired.
 4. Open `/c/{username}/products` → customize → generate → Add to cart → should redirect to Shopify checkout.

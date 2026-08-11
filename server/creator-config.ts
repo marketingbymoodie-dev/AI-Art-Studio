@@ -21,9 +21,17 @@ export function getCreatorPlatformShopDomain(): string | null {
   return d || null;
 }
 
-/** Storefront API access token for the platform shop (custom app on that shop). */
+/**
+ * Storefront API access token for the platform shop (custom app on that shop).
+ * Prefer CREATOR_STOREFRONT_API_TOKEN — Railway Railpack has intermittently failed
+ * builds when only CREATOR_PLATFORM_STOREFRONT_TOKEN is present ("secret … not found").
+ */
 export function getCreatorPlatformStorefrontToken(): string | null {
-  const t = (process.env.CREATOR_PLATFORM_STOREFRONT_TOKEN || "").trim();
+  const t = (
+    process.env.CREATOR_STOREFRONT_API_TOKEN ||
+    process.env.CREATOR_PLATFORM_STOREFRONT_TOKEN ||
+    ""
+  ).trim();
   return t || null;
 }
 
