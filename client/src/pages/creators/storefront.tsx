@@ -22,9 +22,35 @@ export type CreatorBoot = {
   paused: boolean;
 };
 
+type StorefrontPage = {
+  id: number;
+  customizerPageId: string;
+  handle: string;
+  title: string;
+  description: string | null;
+  baseProductTitle: string | null;
+  baseProductPrice: string | null;
+  productTypeId: number | null;
+  sortOrder: number;
+};
+
 function readBootFromWindow(): CreatorBoot | null {
   if (typeof window === "undefined") return null;
   return ((window as any).__CREATOR__ as CreatorBoot | undefined) ?? null;
+}
+
+function designerHref(opts: {
+  handle: string;
+  platformShop: string | null;
+  creator: CreatorBoot;
+}): string {
+  const params = new URLSearchParams();
+  if (opts.platformShop) params.set("shop", opts.platformShop);
+  params.set("page", opts.handle);
+  params.set("creatorUsername", opts.creator.username);
+  params.set("creatorId", opts.creator.id);
+  params.set("storefront", "true");
+  return `/s/designer?${params.toString()}`;
 }
 
 function StoreShell({
@@ -93,12 +119,25 @@ function StoreShell({
   );
 }
 
+function useCreatorPages(username: string) {
+  return useQuery<{
+    platformShopDomain: string | null;
+    pages: StorefrontPage[];
+  }>({
+    queryKey: [`/api/creators/storefront/${username}/pages`],
+    enabled: !!username,
+  });
+}
+
 function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
   const branding = creator.branding || {};
   const description =
     (typeof branding.description === "string" && branding.description) ||
     creator.bio ||
     `Generate one-of-a-kind designs and put them on premium products — curated by ${creator.displayName}.`;
+  const { data } = useCreatorPages(creator.username);
+  const pages = data?.pages ?? [];
+  const platformShop = data?.platformShopDomain ?? null;
 
   return (
     <div className="space-y-10">
@@ -115,6 +154,13 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
           <Button asChild>
             <Link href={`${basePath}/products`}>Shop products</Link>
           </Button>
+          {pages[0] && platformShop ? (
+            <Button asChild variant="secondary">
+              <a href={designerHref({ handle: pages[0].handle, platformShop, creator })}>
+                Start designing
+              </a>
+            </Button>
+          ) : null}
           {creator.socialUrl ? (
             <Button asChild variant="outline">
               <a href={creator.socialUrl} target="_blank" rel="noopener noreferrer">
@@ -125,29 +171,101 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
           ) : null}
         </div>
       </section>
-      <section className="rounded-lg border bg-muted/30 p-6">
-        <h2 className="font-semibold">Customizer coming next</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Phase 3 wires this storefront to AI Art Studio customizer pages (same designer merchants
-          use today). For now this is your branded shell at{" "}
-          <span className="font-mono text-foreground">
-            {creator.username}.aiartstudio.app
-          </span>{" "}
-          (staging preview: <span className="font-mono text-foreground">{basePath || "/"}</span>).
-        </p>
-      </section>
+      {pages.length > 0 ? (
+        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {pages.slice(0, 3).map((p) => (
+            <ProductCard
+              key={p.id}
+              page={p}
+              href={
+                platformShop
+                  ? designerHref({ handle: p.handle, platformShop, creator })
+                  : `${basePath}/customize/${p.handle}`
+              }
+            />
+          ))}
+        </section>
+      ) : (
+        <section className="rounded-lg border bg-muted/30 p-6">
+          <h2 className="font-semibold">Products coming soon</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This creator is still onboarding. Customizer products will appear here once assigned
+            in Creator Marketplace admin.
+          </p>
+        </section>
+      )}
     </div>
   );
 }
 
-function ProductsView({ basePath }: { basePath: string }) {
+function ProductCard({
+  page,
+  href,
+}: {
+  page: StorefrontPage;
+  href: string;
+}) {
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Products</h1>
-      <p className="text-muted-foreground">
-        Product cards and customizer links will appear here after onboarding assigns 1–3 products
-        (Phase 3).
-      </p>
+    <a
+      href={href}
+      className="block rounded-lg border p-5 transition-colors hover:border-foreground/40 hover:bg-muted/20"
+    >
+      <div className="font-semibold">{page.title}</div>
+      {page.baseProductTitle ? (
+        <div className="mt-1 text-sm text-muted-foreground">{page.baseProductTitle}</div>
+      ) : null}
+      {page.baseProductPrice ? (
+        <div className="mt-2 text-sm font-medium">From {page.baseProductPrice}</div>
+      ) : null}
+      {page.description ? (
+        <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{page.description}</p>
+      ) : null}
+      <div className="mt-4 text-sm font-medium text-primary">Customize →</div>
+    </a>
+  );
+}
+
+function ProductsView({
+  creator,
+  basePath,
+}: {
+  creator: CreatorBoot;
+  basePath: string;
+}) {
+  const { data, isLoading } = useCreatorPages(creator.username);
+  const pages = data?.pages ?? [];
+  const platformShop = data?.platformShopDomain ?? null;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Products</h1>
+        <p className="text-muted-foreground">
+          Pick a product and generate a design curated by {creator.displayName}.
+        </p>
+      </div>
+      {isLoading ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      ) : pages.length === 0 ? (
+        <p className="text-muted-foreground">No products assigned yet.</p>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {pages.map((p) => (
+            <ProductCard
+              key={p.id}
+              page={p}
+              href={
+                platformShop
+                  ? designerHref({ handle: p.handle, platformShop, creator })
+                  : `${basePath}/customize/${p.handle}`
+              }
+            />
+          ))}
+        </div>
+      )}
       <Button asChild variant="outline">
         <Link href={basePath || "/"}>Back home</Link>
       </Button>
@@ -182,6 +300,27 @@ function PausedView({ creator }: { creator: CreatorBoot }) {
   );
 }
 
+function CustomizeRedirect({ creator }: { creator: CreatorBoot }) {
+  const params = useParams<{ handle?: string }>();
+  const { data } = useCreatorPages(creator.username);
+  const platformShop = data?.platformShopDomain ?? null;
+  const handle = params.handle || "";
+
+  useEffect(() => {
+    if (!handle || !platformShop) return;
+    window.location.replace(
+      designerHref({ handle, platformShop, creator }),
+    );
+  }, [handle, platformShop, creator]);
+
+  return (
+    <div className="space-y-3 py-10 text-center">
+      <Skeleton className="mx-auto h-8 w-48" />
+      <p className="text-sm text-muted-foreground">Opening customizer…</p>
+    </div>
+  );
+}
+
 function CreatorStoreRoutes({
   creator,
   basePath,
@@ -201,22 +340,13 @@ function CreatorStoreRoutes({
     <StoreShell creator={creator} basePath={basePath}>
       <Switch>
         <Route path={`${basePath}/products`}>
-          <ProductsView basePath={basePath} />
+          <ProductsView creator={creator} basePath={basePath} />
         </Route>
         <Route path={`${basePath}/about`}>
           <AboutView creator={creator} />
         </Route>
         <Route path={`${basePath}/customize/:handle`}>
-          <div className="space-y-3">
-            <h1 className="text-2xl font-bold">Customizer</h1>
-            <p className="text-muted-foreground">
-              Customizer pages mount here in Phase 3. Handle:{" "}
-              <CustomizeHandleHint />
-            </p>
-            <Button asChild variant="outline">
-              <Link href={basePath || "/"}>Back</Link>
-            </Button>
-          </div>
+          <CustomizeRedirect creator={creator} />
         </Route>
         <Route>
           <HomeView creator={creator} basePath={basePath} />
@@ -224,11 +354,6 @@ function CreatorStoreRoutes({
       </Switch>
     </StoreShell>
   );
-}
-
-function CustomizeHandleHint() {
-  const params = useParams<{ handle?: string }>();
-  return <span className="font-mono">{params.handle || "—"}</span>;
 }
 
 /** Path-based storefront: /c/:username/... */

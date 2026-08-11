@@ -21,6 +21,12 @@ export function getCreatorPlatformShopDomain(): string | null {
   return d || null;
 }
 
+/** Storefront API access token for the platform shop (custom app on that shop). */
+export function getCreatorPlatformStorefrontToken(): string | null {
+  const t = (process.env.CREATOR_PLATFORM_STOREFRONT_TOKEN || "").trim();
+  return t || null;
+}
+
 let cachedAiCost: { value: number; at: number } | null = null;
 const AI_COST_CACHE_MS = 60_000;
 

@@ -1,20 +1,21 @@
 # Creator Marketplace (Creator Beta)
 
-Phased feature. See the Cursor plan for full architecture. This doc tracks **Phase 0–1** ops prerequisites and env vars.
+Phased feature. See the Cursor plan for full architecture. This doc tracks ops prerequisites, env vars, and shipped phases.
 
 ## Environment
 
 | Variable | Purpose |
 |----------|---------|
 | `CREATOR_MARKETPLACE_ENABLED` | `true` / `1` to enable public apply + admin APIs |
-| `CREATOR_PLATFORM_SHOP_DOMAIN` | Platform Shopify shop (`{handle}.myshopify.com`) that will back creator storefront checkouts (Phase 2+) |
+| `CREATOR_PLATFORM_SHOP_DOMAIN` | Platform Shopify shop (`{handle}.myshopify.com`) that backs creator checkouts |
+| `CREATOR_PLATFORM_STOREFRONT_TOKEN` | Storefront API access token from a **custom app on that shop** (not Partners dashboard) |
 
 Seeded on boot (idempotent): `platform_config.AI_GENERATION_COST_USD = 0.05`.
 
 ## Phase 0 checklist (manual — do not automate without approval)
 
 1. **Choose platform store** — preferably a dedicated Shopify store (or staging demo) for all creator subdomain checkouts. Set `CREATOR_PLATFORM_SHOP_DOMAIN`.
-2. **Storefront API token** — create a Storefront API access token on that shop (needed Phase 3+ for cart/checkout).
+2. **Storefront API token** — store admin → Settings → Apps → Develop apps → custom app → Storefront API scopes → Install → copy token → set `CREATOR_PLATFORM_STOREFRONT_TOKEN` on Railway (staging first).
 3. **Shopify Protected Customer Data** — production `orders/paid` / `refunds/create` webhooks stay commented in `shopify.app.production.toml` until PCD approval. File/renew the request so the creator revenue ledger can go live.
 4. **Wildcard DNS** (later phase, approval required):
    - Railway custom domain: `*.aiartstudio.app`
@@ -50,3 +51,21 @@ Visible statuses: `onboarding`, `active_beta`, `partner`, `paused` (paused shows
 3. Keep apex `aiartstudio.app` as today
 
 Staging continues to use `/c/{username}` until a staging wildcard exists.
+
+## Phase 3 — customizer + dual quotas + Storefront cart
+
+| Surface | Path / behaviour |
+|---------|------------------|
+| Product list | `GET /api/creators/storefront/:username/pages` |
+| Designer | `/s/designer?shop={platformShop}&page={handle}&creatorUsername=&creatorId=&storefront=true` |
+| Dual quota | Creator monthly allowance → per-(creator, customer) free gens → wallet credits |
+| ATC | Shadow resolve (Admin) → `POST /api/creators/cart/checkout` → Shopify `checkoutUrl` |
+| Admin | Creator Marketplace → **Configure** on a creator → assign pages + quotas |
+
+**Staging smoke test**
+
+1. Set `CREATOR_PLATFORM_STOREFRONT_TOKEN` on Railway staging (redeploy).
+2. On `ai-art-studio-staging`, create 1–3 **Live** Customizer Pages (Path B).
+3. Admin → Creator Marketplace → Configure creator → assign those pages → set status `active_beta` if desired.
+4. Open `/c/{username}/products` → customize → generate → Add to cart → should redirect to Shopify checkout.
+5. Confirm merchant storefront free-gens path is unchanged (no `creatorUsername` param).

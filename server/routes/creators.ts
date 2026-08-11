@@ -1,16 +1,18 @@
 /**
- * Creator Marketplace — Phase 1 routes:
- * - Public application submit
- * - Admin application queue + review actions
+ * Creator Marketplace — Phase 1–3 routes:
+ * - Public application submit + storefront pages + Storefront API cart
+ * - Admin application queue, page assign, quota config
  * - Platform config read (AI generation cost)
  */
 import { type Express, type Response } from "express";
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   creatorApplications,
+  creatorCustomizerPages,
   creatorNotes,
   creators,
+  customizerPages,
 } from "@shared/schema";
 import {
   CREATOR_APPLICATION_STATUSES,
@@ -18,18 +20,24 @@ import {
   DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER,
   DEFAULT_CREATOR_MONTHLY_GENERATION_ALLOWANCE,
   SOCIAL_PLATFORMS,
+  clampFreeGensPerCustomer,
+  clampMonthlyGenerationAllowance,
   normalizeCreatorUsername,
   type CreatorApplicationStatus,
 } from "@shared/creatorMarketplace";
 import { requirePlatformAdmin } from "../platformAdmin";
 import {
   getAiGenerationCostUsd,
+  getCreatorPlatformShopDomain,
+  getCreatorPlatformStorefrontToken,
   isCreatorMarketplaceEnabled,
 } from "../creator-config";
 import {
   getCreatorStorefrontByUsername,
   invalidateCreatorHostCache,
+  lookupCreatorByUsername,
 } from "../creator-host";
+import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
 
 type AuthMw = any;
 
@@ -377,7 +385,8 @@ export function registerCreatorMarketplaceRoutes(
     if (!requirePlatformAdmin(req, res)) return;
     res.json({
       enabled: isCreatorMarketplaceEnabled(),
-      platformShopDomain: process.env.CREATOR_PLATFORM_SHOP_DOMAIN || null,
+      platformShopDomain: getCreatorPlatformShopDomain(),
+      storefrontTokenConfigured: !!getCreatorPlatformStorefrontToken(),
       aiGenerationCostUsd: await getAiGenerationCostUsd(),
       applicationCount: (
         await db.select({ n: sql<number>`count(*)::int` }).from(creatorApplications)
@@ -387,4 +396,330 @@ export function registerCreatorMarketplaceRoutes(
       )[0]?.n ?? 0,
     });
   });
+
+  /** Public: assigned customizer pages for a creator storefront. */
+  app.get("/api/creators/storefront/:username/pages", async (req, res) => {
+    if (!isCreatorMarketplaceEnabled()) {
+      return res.status(404).json({ error: "Creator Marketplace is not enabled." });
+    }
+    try {
+      const username = normalizeCreatorUsername(req.params.username);
+      if (!username) return res.status(404).json({ error: "Creator storefront not found." });
+      const creator = await lookupCreatorByUsername(username);
+      if (!creator) {
+        return res.status(404).json({ error: "Creator storefront not found." });
+      }
+      const visible = ["onboarding", "active_beta", "partner"].includes(creator.status);
+      if (!visible) {
+        return res.status(404).json({ error: "Creator storefront not found." });
+      }
+
+      const links = await db
+        .select()
+        .from(creatorCustomizerPages)
+        .where(
+          and(
+            eq(creatorCustomizerPages.creatorId, creator.id),
+            eq(creatorCustomizerPages.enabled, true),
+          ),
+        )
+        .orderBy(asc(creatorCustomizerPages.sortOrder), asc(creatorCustomizerPages.id));
+
+      if (links.length === 0) {
+        return res.json({
+          platformShopDomain: getCreatorPlatformShopDomain(),
+          pages: [],
+        });
+      }
+
+      const pageIds = links.map((l) => l.customizerPageId);
+      const pages = await db
+        .select()
+        .from(customizerPages)
+        .where(inArray(customizerPages.id, pageIds));
+      const byId = new Map(pages.map((p) => [p.id, p]));
+
+      const out = links
+        .map((link) => {
+          const page = byId.get(link.customizerPageId);
+          if (!page || page.status === "disabled") return null;
+          return {
+            id: link.id,
+            customizerPageId: page.id,
+            handle: page.handle,
+            title: link.titleOverride || page.title,
+            description: link.descriptionOverride || null,
+            baseProductTitle: page.baseProductTitle,
+            baseProductPrice: page.baseProductPrice,
+            productTypeId: page.productTypeId,
+            sortOrder: link.sortOrder,
+          };
+        })
+        .filter(Boolean);
+
+      res.json({
+        platformShopDomain: getCreatorPlatformShopDomain(),
+        pages: out,
+      });
+    } catch (e: any) {
+      console.error("[creators] storefront pages failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load pages" });
+    }
+  });
+
+  /**
+   * Create a Storefront API cart on the platform shop and return checkoutUrl.
+   * Client resolves shadow variant first, then posts here (creator host adapter).
+   */
+  app.post("/api/creators/cart/checkout", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      if (!isCreatorStorefrontConfigured()) {
+        return res.status(503).json({
+          error: "CREATOR_STOREFRONT_NOT_CONFIGURED",
+          message:
+            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_PLATFORM_STOREFRONT_TOKEN on Railway staging.",
+        });
+      }
+
+      const body = req.body ?? {};
+      const username = normalizeCreatorUsername(String(body.creatorUsername || ""));
+      const variantId = String(body.variantId || "").trim();
+      if (!username || !variantId) {
+        return res.status(400).json({ error: "creatorUsername and variantId are required." });
+      }
+
+      const creator = await lookupCreatorByUsername(username);
+      if (!creator) {
+        return res.status(404).json({ error: "Creator not found." });
+      }
+      if (["paused", "suspended", "archived"].includes(creator.status)) {
+        return res.status(403).json({ error: "This creator shop is not accepting checkouts." });
+      }
+
+      const props = (body.properties && typeof body.properties === "object"
+        ? body.properties
+        : {}) as Record<string, string>;
+
+      const attributes: Array<{ key: string; value: string }> = [
+        { key: "_creator_id", value: creator.id },
+        { key: "_creator_username", value: creator.username },
+      ];
+      if (body.creatorSessionId) {
+        attributes.push({ key: "_creator_session", value: String(body.creatorSessionId) });
+      }
+      for (const [key, value] of Object.entries(props)) {
+        if (!key || value == null) continue;
+        attributes.push({ key, value: String(value) });
+      }
+
+      const cart = await createCreatorCheckoutCart({
+        variantId,
+        quantity: Number(body.quantity) || 1,
+        attributes,
+      });
+
+      res.json({
+        success: true,
+        cartId: cart.cartId,
+        checkoutUrl: cart.checkoutUrl,
+        platformShopDomain: getCreatorPlatformShopDomain(),
+      });
+    } catch (e: any) {
+      console.error("[creators] cart checkout failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to create checkout cart" });
+    }
+  });
+
+  /** Admin: list customizer pages available to assign (platform shop + optional merchant shop). */
+  app.get(
+    "/api/platform/creators/:id/assignable-pages",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const [creator] = await db
+          .select()
+          .from(creators)
+          .where(eq(creators.id, req.params.id))
+          .limit(1);
+        if (!creator) return res.status(404).json({ error: "Creator not found" });
+
+        const platformShop = getCreatorPlatformShopDomain();
+        const shops = new Set<string>();
+        if (platformShop) shops.add(platformShop);
+        if (creator.shopDomain) shops.add(creator.shopDomain.toLowerCase());
+        // Path A: merchant may still have pages on their own shop even if shopDomain not set yet
+        const merchantShop = String(req.query.merchantShop || "")
+          .trim()
+          .toLowerCase();
+        if (merchantShop.endsWith(".myshopify.com")) shops.add(merchantShop);
+
+        if (shops.size === 0) {
+          return res.json({ pages: [], platformShopDomain: null });
+        }
+
+        const pages = await db
+          .select()
+          .from(customizerPages)
+          .where(
+            and(
+              inArray(customizerPages.shop, [...shops]),
+              sql`${customizerPages.status} IS DISTINCT FROM 'disabled'`,
+            ),
+          )
+          .orderBy(asc(customizerPages.shop), asc(customizerPages.title))
+          .limit(500);
+
+        const assigned = await db
+          .select()
+          .from(creatorCustomizerPages)
+          .where(eq(creatorCustomizerPages.creatorId, creator.id));
+
+        res.json({
+          platformShopDomain: platformShop,
+          assigned,
+          pages: pages.map((p) => ({
+            id: p.id,
+            shop: p.shop,
+            handle: p.handle,
+            title: p.title,
+            status: p.status,
+            baseProductTitle: p.baseProductTitle,
+            productTypeId: p.productTypeId,
+          })),
+        });
+      } catch (e: any) {
+        console.error("[creators] assignable-pages failed:", e);
+        res.status(500).json({ error: e?.message || "Failed to list pages" });
+      }
+    },
+  );
+
+  /** Admin: replace assigned customizer pages for a creator. */
+  app.put(
+    "/api/platform/creators/:id/pages",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const [creator] = await db
+          .select()
+          .from(creators)
+          .where(eq(creators.id, req.params.id))
+          .limit(1);
+        if (!creator) return res.status(404).json({ error: "Creator not found" });
+
+        const pageIds = Array.isArray(req.body?.customizerPageIds)
+          ? (req.body.customizerPageIds as unknown[])
+              .map((x) => String(x || "").trim())
+              .filter(Boolean)
+          : [];
+
+        await db
+          .delete(creatorCustomizerPages)
+          .where(eq(creatorCustomizerPages.creatorId, creator.id));
+
+        if (pageIds.length > 0) {
+          await db.insert(creatorCustomizerPages).values(
+            pageIds.map((customizerPageId, i) => ({
+              creatorId: creator.id,
+              customizerPageId,
+              sortOrder: i,
+              enabled: true,
+            })),
+          );
+        }
+
+        const assigned = await db
+          .select()
+          .from(creatorCustomizerPages)
+          .where(eq(creatorCustomizerPages.creatorId, creator.id))
+          .orderBy(asc(creatorCustomizerPages.sortOrder));
+
+        invalidateCreatorHostCache(creator.username);
+        res.json({ assigned });
+      } catch (e: any) {
+        console.error("[creators] set pages failed:", e);
+        res.status(500).json({ error: e?.message || "Failed to assign pages" });
+      }
+    },
+  );
+
+  /** Admin: update creator quotas / status / shop link (Path A). */
+  app.patch(
+    "/api/platform/creators/:id",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const [creator] = await db
+          .select()
+          .from(creators)
+          .where(eq(creators.id, req.params.id))
+          .limit(1);
+        if (!creator) return res.status(404).json({ error: "Creator not found" });
+
+        const body = req.body ?? {};
+        const patch: Partial<typeof creators.$inferInsert> = { updatedAt: new Date() };
+
+        if (body.freeGensPerCustomer != null) {
+          patch.freeGensPerCustomer = clampFreeGensPerCustomer(Number(body.freeGensPerCustomer));
+        }
+        if (body.monthlyGenerationAllowance != null) {
+          patch.monthlyGenerationAllowance = clampMonthlyGenerationAllowance(
+            Number(body.monthlyGenerationAllowance),
+          );
+        }
+        if (body.status && (CREATOR_STATUSES as readonly string[]).includes(String(body.status))) {
+          patch.status = String(body.status);
+        }
+        if (body.shopDomain !== undefined) {
+          const d = String(body.shopDomain || "")
+            .trim()
+            .toLowerCase();
+          patch.shopDomain = d
+            ? d.endsWith(".myshopify.com")
+              ? d
+              : `${d.replace(/\.myshopify\.com$/i, "")}.myshopify.com`
+            : null;
+        }
+        if (body.onboardingStatus != null) {
+          patch.onboardingStatus = String(body.onboardingStatus);
+        }
+
+        const [updated] = await db
+          .update(creators)
+          .set(patch)
+          .where(eq(creators.id, creator.id))
+          .returning();
+
+        invalidateCreatorHostCache(updated.username);
+        res.json({ creator: updated });
+      } catch (e: any) {
+        console.error("[creators] patch creator failed:", e);
+        res.status(500).json({ error: e?.message || "Failed to update creator" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/platform/creators/:id",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const [creator] = await db
+        .select()
+        .from(creators)
+        .where(eq(creators.id, req.params.id))
+        .limit(1);
+      if (!creator) return res.status(404).json({ error: "Creator not found" });
+      const assigned = await db
+        .select()
+        .from(creatorCustomizerPages)
+        .where(eq(creatorCustomizerPages.creatorId, creator.id))
+        .orderBy(asc(creatorCustomizerPages.sortOrder));
+      res.json({ creator, assigned });
+    },
+  );
 }

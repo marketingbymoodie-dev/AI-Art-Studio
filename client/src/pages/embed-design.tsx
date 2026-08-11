@@ -1439,6 +1439,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
   const isMerchantStudio = runtimeMode === 'merchant-studio';
   const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
+  /** Creator Marketplace host: dual quota + Storefront API cart (not theme /cart/add.js). */
+  const creatorUsernameParam = (searchParams.get("creatorUsername") || "").trim().toLowerCase();
+  const creatorIdParam = (searchParams.get("creatorId") || "").trim();
+  const isCreatorStorefront = isStorefront && !isMerchantStudio && !!(creatorUsernameParam || creatorIdParam);
+  const creatorSessionIdRef = useRef<string>("");
+  if (!creatorSessionIdRef.current && typeof window !== "undefined") {
+    try {
+      const key = "appai_creator_session";
+      let sid = sessionStorage.getItem(key);
+      if (!sid) {
+        sid = crypto.randomUUID();
+        sessionStorage.setItem(key, sid);
+      }
+      creatorSessionIdRef.current = sid;
+    } catch {
+      creatorSessionIdRef.current = `cs_${Date.now()}`;
+    }
+  }
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
@@ -6277,6 +6295,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       productTypeId?: string;
       sessionId?: string;
       customerId?: string;
+      creatorUsername?: string;
+      creatorId?: string;
+      creatorSessionId?: string;
     }) => {
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/generate`
@@ -6312,6 +6333,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setFreeLimitReached(true);
             setCreditsPopoverOpen(true);
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
+          }
+          if (jobData.error === 'CREATOR_MONTHLY_EXHAUSTED' || jobData.error === 'CREATOR_STORE_PAUSED') {
+            throw new Error(jobData.message || "This creator shop is unavailable for generations right now.");
           }
           if (jobData.error === 'INSUFFICIENT_CREDITS') {
             notifyInsufficientCredits();
@@ -6917,6 +6941,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         // to the merchant's identity afterward via the auto-save-on-success save-design call
         // (see saveCustomerId fallback to storefrontCustomerId below).
         customerId: isMerchantStudio ? undefined : (storefrontCustomerId || undefined),
+        ...(isCreatorStorefront
+          ? {
+              creatorUsername: creatorUsernameParam || undefined,
+              creatorId: creatorIdParam || undefined,
+              creatorSessionId: creatorSessionIdRef.current || undefined,
+            }
+          : {}),
       });
       scrollArtworkIntoViewOnMobile(50);
     } catch (err: any) {
@@ -7996,6 +8027,43 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       } catch (e: any) {
         console.warn('[Design Studio] resolve-design-variant error/timeout:', e?.message || e);
+      }
+    }
+
+    // Creator Marketplace: Storefront API cart on platform shop → checkout URL
+    if (isCreatorStorefront) {
+      try {
+        const cartRes = await safeFetch(`${API_BASE}/api/creators/cart/checkout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            creatorUsername: creatorUsernameParam || undefined,
+            creatorId: creatorIdParam || undefined,
+            creatorSessionId: creatorSessionIdRef.current || undefined,
+            variantId: finalVariantId,
+            quantity: 1,
+            properties: {
+              ...properties,
+              ...(normalizedVariant ? { _base_variant_id: normalizedVariant } : {}),
+            },
+          }),
+        });
+        const cartData = await cartRes.json().catch(() => ({}));
+        if (!cartRes.ok || !cartData?.checkoutUrl) {
+          throw new Error(cartData?.error || cartData?.message || "Could not start checkout");
+        }
+        setAddedToCart(true);
+        toast({
+          title: "Checkout ready",
+          description: "Redirecting to secure Shopify checkout…",
+        });
+        window.location.assign(String(cartData.checkoutUrl));
+        return;
+      } catch (e: any) {
+        console.error("[Design Studio] Creator Storefront cart failed:", e);
+        setVariantError(e?.message || "Could not start checkout. Please try again.");
+        setIsAddingToCart(false);
+        return;
       }
     }
 

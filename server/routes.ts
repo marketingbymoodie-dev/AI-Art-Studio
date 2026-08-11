@@ -7471,7 +7471,24 @@ ${orientationExtra}
     }
 
     try {
-      const { prompt, userPrompt: rawUserPrompt, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArrSf, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
+      const {
+        prompt,
+        userPrompt: rawUserPrompt,
+        stylePreset,
+        size,
+        frameColor,
+        referenceImage,
+        referenceImages: referenceImagesArrSf,
+        shop,
+        bgRemovalSensitivity,
+        productTypeId,
+        sessionId,
+        customerId,
+        baseImageUrl: clientBaseImageUrlSf,
+        creatorUsername: rawCreatorUsername,
+        creatorId: rawCreatorId,
+        creatorSessionId: rawCreatorSessionId,
+      } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
 
       if (!shop) {
@@ -7499,16 +7516,78 @@ ${orientationExtra}
         });
       }
 
+      // Optional Creator Marketplace context (dual quota; does not use merchant free-gens).
+      let creatorCtx: { id: string; freeGensPerCustomer: number; sessionId: string | null } | null = null;
+      if (rawCreatorUsername || rawCreatorId) {
+        try {
+          const { isCreatorMarketplaceEnabled } = await import("./creator-config");
+          const { normalizeCreatorUsername } = await import("@shared/creatorMarketplace");
+          const { lookupCreatorByUsername } = await import("./creator-host");
+          const { peekCreatorMonthlyAllowance } = await import("./creator-quota");
+          if (!isCreatorMarketplaceEnabled()) {
+            return res.status(404).json({ error: "Creator Marketplace is not enabled.", reqId });
+          }
+          let creatorRow = null as Awaited<ReturnType<typeof lookupCreatorByUsername>>;
+          if (rawCreatorId) {
+            const { creators: creatorsTable } = await import("@shared/schema");
+            const [byId] = await db
+              .select()
+              .from(creatorsTable)
+              .where(eq(creatorsTable.id, String(rawCreatorId)))
+              .limit(1);
+            creatorRow = byId ?? null;
+          }
+          if (!creatorRow && rawCreatorUsername) {
+            const u = normalizeCreatorUsername(String(rawCreatorUsername));
+            if (u) creatorRow = await lookupCreatorByUsername(u);
+          }
+          if (!creatorRow) {
+            return res.status(404).json({ error: "Creator not found", reqId, stage: "creator" });
+          }
+          if (["paused", "suspended", "archived"].includes(creatorRow.status)) {
+            return res.status(403).json({
+              error: "CREATOR_STORE_PAUSED",
+              message: "This creator shop is temporarily unavailable.",
+              reqId,
+            });
+          }
+          const monthly = await peekCreatorMonthlyAllowance(creatorRow);
+          if (!monthly.allowed) {
+            return res.status(403).json({
+              error: monthly.error,
+              message: monthly.message,
+              used: monthly.used,
+              limit: monthly.allowance,
+              reqId,
+            });
+          }
+          creatorCtx = {
+            id: creatorRow.id,
+            freeGensPerCustomer: creatorRow.freeGensPerCustomer,
+            sessionId: rawCreatorSessionId ? String(rawCreatorSessionId) : null,
+          };
+          console.log(P, reqId, `creator ctx ${creatorCtx.id} monthly ${monthly.used}/${monthly.allowance}`);
+        } catch (e: any) {
+          console.error(P, reqId, "creator context failed:", e);
+          return res.status(500).json({ error: e?.message || "Creator context failed", reqId });
+        }
+      }
+
       // Per-merchant monthly plan quota — fail fast before job creation.
       // Customer-paid Studio Credits are spent on the wallet directly; only
       // reward-earned credits also burn merchant quota (see generation-billing).
+      // Creator storefront gens use creator monthly allowance instead of merchant plan.
       let usedCustomerPaidCredit = false;
       let storefrontBillingMode: GenerationBillingMode = "merchant";
 
       // Free generations per visitor (merchant-configurable, default 5, max 10)
-      const FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
+      // Creator storefronts override this with creators.free_gens_per_customer.
+      let FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
         (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
       );
+      if (creatorCtx) {
+        FREE_GENERATION_LIMIT = Math.min(10, Math.max(0, creatorCtx.freeGensPerCustomer));
+      }
 
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
@@ -7532,6 +7611,23 @@ ${orientationExtra}
             usedCustomerPaidCredit = true;
             storefrontBillingMode = "customer_paid";
             console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits — will deduct on success`);
+          } else if (creatorCtx) {
+            const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
+            const freePeek = await peekCreatorCustomerFreeGens({
+              creatorId: creatorCtx.id,
+              customerId: customer.id,
+              freeGensPerCustomer: FREE_GENERATION_LIMIT,
+            });
+            if (!freePeek.allowed) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: `You've used all ${freePeek.limit} free generations on this creator shop. Purchase credits to continue.`,
+                generationsUsed: freePeek.used,
+                limit: freePeek.limit,
+              });
+            }
+            storefrontBillingMode = "customer_free";
+            console.log(P, reqId, `creator free gen ${freePeek.used + 1}/${freePeek.limit}`);
           } else {
             const freeUsed = balance.freeGenerationsUsed || 0;
             if (freeUsed >= FREE_GENERATION_LIMIT) {
@@ -7563,19 +7659,37 @@ ${orientationExtra}
 
         if (anonCustomer) {
           resolvedJobCustomerId = anonCustomer.id;
-          const balance = await storage.ensureCustomerBalance(anonCustomer.id);
-          const freeUsed = balance.freeGenerationsUsed || 0;
-          if (freeUsed >= FREE_GENERATION_LIMIT) {
-            return res.status(403).json({
-              error: "FREE_LIMIT_REACHED",
-              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
-              generationsUsed: freeUsed,
-              limit: FREE_GENERATION_LIMIT,
+          if (creatorCtx) {
+            const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
+            const freePeek = await peekCreatorCustomerFreeGens({
+              creatorId: creatorCtx.id,
+              customerId: anonCustomer.id,
+              freeGensPerCustomer: FREE_GENERATION_LIMIT,
             });
+            if (!freePeek.allowed) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: `You've used all ${freePeek.limit} free generations on this creator shop. Create an account to continue.`,
+                generationsUsed: freePeek.used,
+                limit: freePeek.limit,
+              });
+            }
+            storefrontBillingMode = "customer_free";
+          } else {
+            const balance = await storage.ensureCustomerBalance(anonCustomer.id);
+            const freeUsed = balance.freeGenerationsUsed || 0;
+            if (freeUsed >= FREE_GENERATION_LIMIT) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
+                generationsUsed: freeUsed,
+                limit: FREE_GENERATION_LIMIT,
+              });
+            }
+            // Anon free gens use the wallet-tracked customer_free path so they
+            // merge into the signed-in customer's wallet after login.
+            storefrontBillingMode = "customer_free";
           }
-          // Anon free gens use the wallet-tracked customer_free path so they
-          // merge into the signed-in customer's wallet after login.
-          storefrontBillingMode = "customer_free";
         } else {
           // Fallback to the legacy job-count path if the alias lookup fails.
           const count = await storage.countSessionGenerations(shop, sessionId);
@@ -7592,7 +7706,8 @@ ${orientationExtra}
       }
 
       // Free / session gens come off the merchant allotment — peek before creating the job.
-      if (!usedCustomerPaidCredit) {
+      // Creator storefronts use creator monthly allowance (already peeked) instead.
+      if (!usedCustomerPaidCredit && !creatorCtx) {
         const sfQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
         if (!sfQuotaPeek.allowed) {
           return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
@@ -7945,9 +8060,17 @@ ${orientationExtra}
         referenceImageUrl: null,
         billingMode: storefrontBillingMode,
         expiresAt,
+        creatorId: creatorCtx?.id ?? null,
+        creatorSessionId: creatorCtx?.sessionId ?? null,
       }), 8000, "createGenerationJob");
       const jobId = job.id;
       console.log(P, reqId, `created jobId=${jobId} in ${Date.now() - t1}ms (total pre-response ${Date.now() - t0}ms)`);
+
+      // Capture for worker closure (creator dual-quota finalize).
+      const workerCreatorCtx = creatorCtx;
+      const workerFreeLimit = FREE_GENERATION_LIMIT;
+      const workerBillingMode = storefrontBillingMode;
+      const workerCustomerId = resolvedJobCustomerId;
 
       // ── Background worker: AI call + storage save ─────────────────────────────
       // Fire-and-forget; never awaited. Railway keeps the process alive.
@@ -8109,19 +8232,44 @@ ${orientationExtra}
             designId,
           });
 
-          await finalizeGenerationBilling({
-            installation,
-            billingMode: storefrontBillingMode,
-            customerId: resolvedJobCustomerId,
-            idempotencyKey: reqId.toString(),
-            freeGenerationLimit: FREE_GENERATION_LIMIT,
-          });
+          if (workerCreatorCtx) {
+            // Creator dual quota: burn monthly allowance + per-creator free (or wallet credits).
+            // Do not burn platform-shop merchant plan quota.
+            const {
+              consumeCreatorMonthlyAllowance,
+              consumeCreatorCustomerFreeGen,
+            } = await import("./creator-quota");
+            await consumeCreatorMonthlyAllowance(workerCreatorCtx.id);
+            if (workerBillingMode === "customer_paid" && workerCustomerId) {
+              await applyCustomerBillingOnSuccess({
+                customerId: workerCustomerId,
+                mode: "customer_paid",
+                idempotencyKey: reqId.toString(),
+                externalRef: reqId.toString(),
+                shop,
+              });
+            } else if (workerBillingMode === "customer_free" && workerCustomerId) {
+              await consumeCreatorCustomerFreeGen({
+                creatorId: workerCreatorCtx.id,
+                customerId: workerCustomerId,
+                freeGensPerCustomer: workerFreeLimit,
+              });
+            }
+          } else {
+            await finalizeGenerationBilling({
+              installation,
+              billingMode: workerBillingMode,
+              customerId: workerCustomerId,
+              idempotencyKey: reqId.toString(),
+              freeGenerationLimit: workerFreeLimit,
+            });
+          }
 
           void recordGenerationOutcomeForFounder(installation, true);
 
           void logMerchantGeneration({
             installation,
-            customerId: resolvedJobCustomerId,
+            customerId: workerCustomerId,
             designId,
             promptLength: String(rawUserPrompt ?? prompt ?? "").length,
             hadReferenceImage:

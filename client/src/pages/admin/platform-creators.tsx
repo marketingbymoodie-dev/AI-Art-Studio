@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { apiRequest } from "@/lib/queryClient";
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -30,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { CREATOR_APPLICATION_STATUSES } from "@shared/creatorMarketplace";
+import { CREATOR_APPLICATION_STATUSES, CREATOR_STATUSES } from "@shared/creatorMarketplace";
 import { Loader2 } from "lucide-react";
 
 type Application = {
@@ -67,8 +68,59 @@ export default function PlatformCreatorsPage() {
     applicationCount: number;
     creatorCount: number;
     platformShopDomain: string | null;
+    storefrontTokenConfigured?: boolean;
   }>({
     queryKey: ["/api/platform/creators/config"],
+  });
+
+  const [creatorEditId, setCreatorEditId] = useState<string | null>(null);
+  const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
+  const [freeGens, setFreeGens] = useState("2");
+  const [monthlyAllowance, setMonthlyAllowance] = useState("250");
+  const [creatorStatus, setCreatorStatus] = useState("onboarding");
+  const [merchantShop, setMerchantShop] = useState("");
+
+  const { data: creatorsData } = useQuery<{
+    creators: Array<{
+      id: string;
+      username: string;
+      displayName: string;
+      status: string;
+      freeGensPerCustomer: number;
+      monthlyGenerationAllowance: number;
+      monthlyGenerationsUsed: number;
+      shopDomain: string | null;
+      creatorType: string;
+    }>;
+  }>({
+    queryKey: ["/api/platform/creators"],
+  });
+
+  const { data: assignable } = useQuery<{
+    pages: Array<{
+      id: string;
+      shop: string;
+      handle: string;
+      title: string;
+      baseProductTitle: string | null;
+    }>;
+    assigned: Array<{ customizerPageId: string }>;
+  }>({
+    queryKey: [
+      `/api/platform/creators/${creatorEditId}/assignable-pages`,
+      merchantShop,
+    ],
+    queryFn: async () => {
+      const qs = merchantShop.trim()
+        ? `?merchantShop=${encodeURIComponent(merchantShop.trim())}`
+        : "";
+      const res = await apiRequest(
+        "GET",
+        `/api/platform/creators/${creatorEditId}/assignable-pages${qs}`,
+      );
+      return res.json();
+    },
+    enabled: !!creatorEditId,
   });
 
   const listUrl = useMemo(() => {
@@ -159,7 +211,37 @@ export default function PlatformCreatorsPage() {
     },
   });
 
+  const saveCreatorMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PATCH", `/api/platform/creators/${creatorEditId}`, {
+        freeGensPerCustomer: Number(freeGens),
+        monthlyGenerationAllowance: Number(monthlyAllowance),
+        status: creatorStatus,
+        shopDomain: merchantShop || null,
+      });
+      const res = await apiRequest("PUT", `/api/platform/creators/${creatorEditId}/pages`, {
+        customizerPageIds: selectedPageIds,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/platform/creators"] });
+      toast({ title: "Creator updated" });
+      setCreatorEditId(null);
+    },
+    onError: (err: Error) =>
+      toast({ title: "Save failed", description: err.message, variant: "destructive" }),
+  });
+
+  useEffect(() => {
+    if (!assignable?.assigned) return;
+    setSelectedPageIds((prev) =>
+      prev.length > 0 ? prev : assignable.assigned.map((a) => a.customizerPageId),
+    );
+  }, [assignable?.assigned]);
+
   const apps = data?.applications ?? [];
+  const creatorRows = creatorsData?.creators ?? [];
 
   return (
     <AdminLayout>
@@ -178,6 +260,9 @@ export default function PlatformCreatorsPage() {
                 {config.platformShopDomain
                   ? ` · platform shop ${config.platformShopDomain}`
                   : " · CREATOR_PLATFORM_SHOP_DOMAIN not set"}
+                {config.storefrontTokenConfigured
+                  ? " · Storefront token OK"
+                  : " · CREATOR_PLATFORM_STOREFRONT_TOKEN missing"}
               </span>
             ) : null}
           </p>
@@ -274,6 +359,71 @@ export default function PlatformCreatorsPage() {
               )}
             </TableBody>
           </Table>
+        </div>
+
+        <div className="space-y-3">
+          <h2 className="text-lg font-semibold">Creators (onboarding / beta)</h2>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Creator</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Free gens</TableHead>
+                  <TableHead>Monthly</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {creatorRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-muted-foreground">
+                      No creators yet — accept an application to start onboarding.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  creatorRows.map((c) => (
+                    <TableRow key={c.id}>
+                      <TableCell>
+                        <div className="font-medium">{c.displayName}</div>
+                        <div className="text-xs text-muted-foreground">
+                          @{c.username} · {c.creatorType}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{c.status}</Badge>
+                      </TableCell>
+                      <TableCell>{c.freeGensPerCustomer}/customer</TableCell>
+                      <TableCell>
+                        {c.monthlyGenerationsUsed}/{c.monthlyGenerationAllowance}
+                      </TableCell>
+                      <TableCell className="text-right space-x-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setCreatorEditId(c.id);
+                            setFreeGens(String(c.freeGensPerCustomer));
+                            setMonthlyAllowance(String(c.monthlyGenerationAllowance));
+                            setCreatorStatus(c.status);
+                            setMerchantShop(c.shopDomain || "");
+                            setSelectedPageIds([]);
+                          }}
+                        >
+                          Configure
+                        </Button>
+                        <Button size="sm" variant="ghost" asChild>
+                          <a href={`/c/${c.username}`} target="_blank" rel="noreferrer">
+                            Preview
+                          </a>
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </div>
 
         <Dialog open={!!selectedId} onOpenChange={(o) => !o && setSelectedId(null)}>
@@ -373,6 +523,126 @@ export default function PlatformCreatorsPage() {
             <DialogFooter>
               <Button variant="outline" onClick={() => setSelectedId(null)}>
                 Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={!!creatorEditId}
+          onOpenChange={(o) => {
+            if (!o) setCreatorEditId(null);
+          }}
+        >
+          <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Configure creator</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Free gens / customer</Label>
+                  <Input value={freeGens} onChange={(e) => setFreeGens(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Monthly allowance</Label>
+                  <Input
+                    value={monthlyAllowance}
+                    onChange={(e) => setMonthlyAllowance(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label>Status</Label>
+                <Select value={creatorStatus} onValueChange={setCreatorStatus}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CREATOR_STATUSES.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Merchant shop (Path A, optional)</Label>
+                <Input
+                  placeholder="their-store.myshopify.com"
+                  value={merchantShop}
+                  onChange={(e) => setMerchantShop(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Path B uses platform shop pages. Path A can also list pages from the
+                  merchant&apos;s shop if set.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Assign customizer pages</Label>
+                {!assignable ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (assignable.pages || []).length === 0 ? (
+                  <p className="text-muted-foreground">
+                    No customizer pages found on the platform shop
+                    {config?.platformShopDomain ? ` (${config.platformShopDomain})` : ""}.
+                    Create Live pages under Customizer Pages on that shop first.
+                  </p>
+                ) : (
+                  <div className="max-h-56 space-y-2 overflow-y-auto rounded border p-2">
+                    {(assignable.pages || []).map((p) => {
+                      const checked = selectedPageIds.includes(p.id);
+                      return (
+                        <label
+                          key={p.id}
+                          className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 hover:bg-muted/40"
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(v) => {
+                              setSelectedPageIds((prev) =>
+                                v ? [...prev, p.id] : prev.filter((id) => id !== p.id),
+                              );
+                            }}
+                          />
+                          <span>
+                            <span className="font-medium">{p.title}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              {p.shop} · /{p.handle}
+                              {p.baseProductTitle ? ` · ${p.baseProductTitle}` : ""}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                {assignable?.assigned?.length && selectedPageIds.length === 0 ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() =>
+                      setSelectedPageIds(assignable.assigned.map((a) => a.customizerPageId))
+                    }
+                  >
+                    Load currently assigned
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCreatorEditId(null)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => saveCreatorMutation.mutate()}
+                disabled={saveCreatorMutation.isPending}
+              >
+                {saveCreatorMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                Save
               </Button>
             </DialogFooter>
           </DialogContent>

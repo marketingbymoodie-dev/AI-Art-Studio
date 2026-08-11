@@ -43,7 +43,7 @@ export type CreatorStorefrontBoot = {
   paused: boolean;
 };
 
-async function lookupCreatorByUsername(username: string): Promise<Creator | null> {
+export async function lookupCreatorByUsername(username: string): Promise<Creator | null> {
   const key = username.toLowerCase();
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.creator;
