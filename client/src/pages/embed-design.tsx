@@ -8141,9 +8141,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
     }
 
-    // Creator Marketplace: Storefront API cart on platform shop → checkout URL
+    // Creator Marketplace: Storefront API cart on platform shop → checkout URL.
+    // Checkout thumbnails come from the shadow variant image (not line properties),
+    // so never send the base catalog variant — that shows the generic product photo.
     if (isCreatorStorefront) {
       try {
+        if (!mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
+          throw new Error(
+            "Custom mockup is still preparing. Wait for the preview to finish, then try again.",
+          );
+        }
+        if (!finalVariantId || finalVariantId === normalizedVariant) {
+          throw new Error(
+            "Could not prepare a custom checkout image for this design. Please try Add to cart again.",
+          );
+        }
         const cartRes = await safeFetch(`${API_BASE}/api/creators/cart/checkout`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

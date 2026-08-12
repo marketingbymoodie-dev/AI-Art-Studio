@@ -60,7 +60,9 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 | Product list | `GET /api/creators/storefront/:username/pages` |
 | Designer | `/s/designer?shop={platformShop}&page={handle}&creatorUsername=&creatorId=&storefront=true` |
 | Dual quota | Creator monthly allowance → per-(creator, customer) free gens → wallet credits |
-| ATC | Shadow resolve (Admin) → `POST /api/creators/cart/checkout` → Shopify `checkoutUrl` |
+| ATC | Shadow resolve (Admin) → `POST /api/creators/cart/checkout` → Shopify `checkoutUrl` (skips theme cart on purpose) |
+| Styles | Merchant `style_presets` when seeded; otherwise hardcoded `STYLE_PRESETS` so Creator customizer always shows the dropdown |
+| Checkout image | Requires shadow variant (HTTPS mockup). Creator ATC blocks checkout if resolve falls back to the base catalog variant |
 | Admin | Creator Marketplace → **Configure** on a creator → assign pages + quotas |
 
 **Staging smoke test**

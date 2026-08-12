@@ -6179,6 +6179,21 @@ ${orientationExtra}
     });
   }
 
+  /** Hardcoded catalog styles when the merchant has no seeded `style_presets` rows. */
+  function hardcodedStylePresetsForDesigner() {
+    return STYLE_PRESETS.map((s) => ({
+      id: s.id,
+      name: s.name,
+      promptSuffix: s.promptPrefix,
+      promptPrefix: s.promptPrefix,
+      category: s.category || "all",
+      promptPlaceholder: (s as any).promptPlaceholder,
+      options: (s as any).options,
+      baseImageUrl: (s as any).baseImageUrl || undefined,
+      descriptionOptional: !!(s as any).descriptionOptional,
+    }));
+  }
+
   /**
    * Merchant-scoped + page-filtered styles — identical set to the live store
    * for this product type. Never use getAllActiveStylePresets here (cross-tenant
@@ -6208,6 +6223,11 @@ ${orientationExtra}
         `[stylePresets] Failed to load merchant styles for pt ${productType.id}:`,
         e,
       );
+    }
+    if (stylePresets.length === 0) {
+      stylePresets = hardcodedStylePresetsForDesigner() as ReturnType<
+        typeof mapDbStylesForDesigner
+      >;
     }
     stylePresets = filterStylePresetsForPage(
       stylePresets,
@@ -7434,23 +7454,13 @@ ${orientationExtra}
       const dbStyles = merchantId
         ? await storage.getActiveStylePresetsByMerchant(merchantId)
         : [];
-      stylePresets = dbStyles.map((s: any) => {
-        const hardcoded = STYLE_PRESETS.find(
-          (h) => h.id === s.id.toString() || h.name === s.name,
-        );
-        return {
-          id: s.id.toString(),
-          name: s.name,
-          promptSuffix: s.promptPrefix,
-          category: s.category || "all",
-          promptPlaceholder: s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-          options: s.options || (hardcoded as any)?.options,
-          baseImageUrl: s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
-          descriptionOptional: !!s.descriptionOptional,
-        };
-      });
+      stylePresets =
+        dbStyles.length > 0
+          ? mapDbStylesForDesigner(dbStyles)
+          : hardcodedStylePresetsForDesigner();
     } catch (e) {
       console.warn(`[storefront/customizer-page] stylePresets failed:`, e);
+      stylePresets = hardcodedStylePresetsForDesigner();
     }
 
     const pageStyleConfig =
@@ -21087,27 +21097,21 @@ ${orientationExtra}
 
     // Fetch style presets for this shop's merchant only (never all merchants —
     // getAllActiveStylePresets duplicates names across tenants).
+    // If the merchant has no seeded rows, fall back to hardcoded STYLE_PRESETS
+    // (same as Creator Marketplace /api/storefront/customizer-page).
     let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string; descriptionOptional?: boolean }> = [];
     try {
       const merchantId = installation?.merchantId;
       const dbStyles = merchantId
         ? await storage.getActiveStylePresetsByMerchant(merchantId)
         : [];
-      stylePresets = dbStyles.map((s: any) => {
-        const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
-        return {
-          id: s.id.toString(),
-          name: s.name,
-          promptSuffix: s.promptPrefix,
-          category: s.category || "all",
-          promptPlaceholder: s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-          options: s.options || (hardcoded as any)?.options,
-          baseImageUrl: s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
-          descriptionOptional: !!s.descriptionOptional,
-        };
-      });
+      stylePresets =
+        dbStyles.length > 0
+          ? mapDbStylesForDesigner(dbStyles)
+          : hardcodedStylePresetsForDesigner();
     } catch (e) {
       console.warn(`[proxy/customizer-page] Failed to load stylePresets:`, e);
+      stylePresets = hardcodedStylePresetsForDesigner();
     }
 
     const pageStyleConfig =
