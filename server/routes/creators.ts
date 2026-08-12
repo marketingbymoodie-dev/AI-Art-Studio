@@ -1,8 +1,7 @@
 /**
- * Creator Marketplace — Phase 1–3 routes:
- * - Public application submit + storefront pages + Storefront API cart
- * - Admin application queue, page assign, quota config
- * - Platform config read (AI generation cost)
+ * Creator Marketplace — Phase 1–4 routes:
+ * - Public apply, storefront, Storefront cart, analytics session/events
+ * - Admin applications, page assign, quotas, daily stats
  */
 import { type Express, type Response } from "express";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
@@ -10,6 +9,7 @@ import { db } from "../db";
 import {
   creatorApplications,
   creatorCustomizerPages,
+  creatorDailyStats,
   creatorNotes,
   creators,
   customizerPages,
@@ -38,6 +38,14 @@ import {
   lookupCreatorByUsername,
 } from "../creator-host";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
+import {
+  isCreatorEventType,
+  recordCreatorEvent,
+  resolveCreatorId,
+  rollupCreatorDailyStats,
+  upsertCreatorSession,
+  utcDayKey,
+} from "../creator-analytics";
 
 type AuthMw = any;
 
@@ -467,6 +475,86 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  /** Upsert creator visitor session (UTM / referrer). Returns sessionId. */
+  app.post("/api/creators/analytics/session", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      const body = req.body ?? {};
+      const creatorId = await resolveCreatorId({
+        creatorId: body.creatorId,
+        creatorUsername: body.creatorUsername,
+      });
+      if (!creatorId) return res.status(404).json({ error: "Creator not found." });
+
+      const result = await upsertCreatorSession({
+        creatorId,
+        sessionId: body.sessionId ? String(body.sessionId) : null,
+        landingPath: body.landingPath ? String(body.landingPath).slice(0, 500) : null,
+        referrer: body.referrer ? String(body.referrer).slice(0, 500) : null,
+        utmSource: body.utmSource ? String(body.utmSource).slice(0, 120) : null,
+        utmMedium: body.utmMedium ? String(body.utmMedium).slice(0, 120) : null,
+        utmCampaign: body.utmCampaign ? String(body.utmCampaign).slice(0, 120) : null,
+        utmContent: body.utmContent ? String(body.utmContent).slice(0, 120) : null,
+        userAgent: req.get("user-agent"),
+      });
+      res.json(result);
+    } catch (e: any) {
+      console.error("[creators] analytics session failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to upsert session" });
+    }
+  });
+
+  /** Record a creator attribution event (page_view, customizer_open, …). */
+  app.post("/api/creators/analytics/event", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      const body = req.body ?? {};
+      const eventType = String(body.eventType || "");
+      if (!isCreatorEventType(eventType)) {
+        return res.status(400).json({ error: "Invalid eventType." });
+      }
+      const creatorId = await resolveCreatorId({
+        creatorId: body.creatorId,
+        creatorUsername: body.creatorUsername,
+      });
+      if (!creatorId) return res.status(404).json({ error: "Creator not found." });
+
+      let sessionId = body.sessionId ? String(body.sessionId) : null;
+      if (!sessionId) {
+        const s = await upsertCreatorSession({
+          creatorId,
+          userAgent: req.get("user-agent"),
+          landingPath: body.path ? String(body.path).slice(0, 500) : null,
+        });
+        sessionId = s.sessionId;
+      }
+
+      await recordCreatorEvent({
+        creatorId,
+        sessionId,
+        eventType,
+        customizerPageId: body.customizerPageId ? String(body.customizerPageId) : null,
+        productTypeId:
+          body.productTypeId != null && Number.isFinite(Number(body.productTypeId))
+            ? Number(body.productTypeId)
+            : null,
+        generationJobId: body.generationJobId ? String(body.generationJobId) : null,
+        stylePreset: body.stylePreset ? String(body.stylePreset).slice(0, 120) : null,
+        metadata:
+          body.metadata && typeof body.metadata === "object"
+            ? (body.metadata as Record<string, unknown>)
+            : body.path
+              ? { path: String(body.path).slice(0, 500) }
+              : null,
+      });
+
+      res.json({ ok: true, sessionId });
+    } catch (e: any) {
+      console.error("[creators] analytics event failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to record event" });
+    }
+  });
+
   /**
    * Create a Storefront API cart on the platform shop and return checkoutUrl.
    * Client resolves shadow variant first, then posts here (creator host adapter).
@@ -518,6 +606,22 @@ export function registerCreatorMarketplaceRoutes(
         quantity: Number(body.quantity) || 1,
         attributes,
       });
+
+      const sessionId = body.creatorSessionId ? String(body.creatorSessionId) : null;
+      void recordCreatorEvent({
+        creatorId: creator.id,
+        sessionId,
+        eventType: "atc",
+        generationJobId: props._appai_job_id || null,
+        metadata: { variantId, cartId: cart.cartId },
+      }).catch(() => {});
+      void recordCreatorEvent({
+        creatorId: creator.id,
+        sessionId,
+        eventType: "checkout_started",
+        generationJobId: props._appai_job_id || null,
+        metadata: { cartId: cart.cartId },
+      }).catch(() => {});
 
       res.json({
         success: true,
@@ -742,6 +846,28 @@ export function registerCreatorMarketplaceRoutes(
         .where(eq(creatorCustomizerPages.creatorId, creator.id))
         .orderBy(asc(creatorCustomizerPages.sortOrder));
       res.json({ creator, assigned });
+    },
+  );
+
+  /** Admin: recent daily attribution rollups for a creator. */
+  app.get(
+    "/api/platform/creators/:id/stats",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const days = Math.min(90, Math.max(1, parseInt(String(req.query.days || "14"), 10) || 14));
+      // Ensure today is fresh before reading.
+      await rollupCreatorDailyStats({
+        day: utcDayKey(),
+        creatorId: req.params.id,
+      }).catch(() => {});
+      const rows = await db
+        .select()
+        .from(creatorDailyStats)
+        .where(eq(creatorDailyStats.creatorId, req.params.id))
+        .orderBy(desc(creatorDailyStats.day))
+        .limit(days);
+      res.json({ days: rows });
     },
   );
 }

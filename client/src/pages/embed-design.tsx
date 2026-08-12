@@ -1,4 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import {
+  ensureCreatorAnalyticsSession,
+  getOrCreateCreatorSessionId,
+  trackCreatorEvent,
+} from "@/lib/creator-analytics";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
@@ -1443,20 +1448,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const creatorUsernameParam = (searchParams.get("creatorUsername") || "").trim().toLowerCase();
   const creatorIdParam = (searchParams.get("creatorId") || "").trim();
   const isCreatorStorefront = isStorefront && !isMerchantStudio && !!(creatorUsernameParam || creatorIdParam);
-  const creatorSessionIdRef = useRef<string>("");
-  if (!creatorSessionIdRef.current && typeof window !== "undefined") {
-    try {
-      const key = "appai_creator_session";
-      let sid = sessionStorage.getItem(key);
-      if (!sid) {
-        sid = crypto.randomUUID();
-        sessionStorage.setItem(key, sid);
-      }
-      creatorSessionIdRef.current = sid;
-    } catch {
-      creatorSessionIdRef.current = `cs_${Date.now()}`;
-    }
-  }
+  const creatorSessionIdRef = useRef<string>(
+    typeof window !== "undefined" ? getOrCreateCreatorSessionId() : "",
+  );
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
@@ -2043,6 +2037,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   };
   
   const shopDomain = resolveShopDomain();
+
+  // Phase 4: creator customizer_open + ensure analytics session id matches storefront.
+  const creatorOpenTracked = useRef(false);
+  useEffect(() => {
+    if (!isCreatorStorefront || creatorOpenTracked.current) return;
+    creatorOpenTracked.current = true;
+    void (async () => {
+      const sid = await ensureCreatorAnalyticsSession({
+        creatorId: creatorIdParam || undefined,
+        creatorUsername: creatorUsernameParam || undefined,
+      });
+      creatorSessionIdRef.current = sid;
+      trackCreatorEvent({
+        creatorId: creatorIdParam || undefined,
+        creatorUsername: creatorUsernameParam || undefined,
+        eventType: "customizer_open",
+        productTypeId: searchParams.get("productTypeId"),
+        metadata: {
+          page: searchParams.get("page") || searchParams.get("pageHandle") || null,
+        },
+      });
+    })();
+  }, [isCreatorStorefront, creatorIdParam, creatorUsernameParam]);
+
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [customer, setCustomer] = useState<CustomerInfo | null>(() => {
     try {

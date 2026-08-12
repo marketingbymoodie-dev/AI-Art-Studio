@@ -4,6 +4,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink, Palette } from "lucide-react";
+import {
+  ensureCreatorAnalyticsSession,
+  trackCreatorEvent,
+} from "@/lib/creator-analytics";
 
 export type CreatorBoot = {
   id: string;
@@ -360,6 +364,30 @@ function CreatorStoreRoutes({
   creator: CreatorBoot;
   basePath: string;
 }) {
+  const [location] = useLocation();
+
+  useEffect(() => {
+    if (creator.paused) return;
+    let cancelled = false;
+    (async () => {
+      await ensureCreatorAnalyticsSession({
+        creatorId: creator.id,
+        creatorUsername: creator.username,
+      });
+      if (cancelled) return;
+      trackCreatorEvent({
+        creatorId: creator.id,
+        creatorUsername: creator.username,
+        eventType: "page_view",
+        path: location || "/",
+        metadata: { surface: "creator_storefront" },
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [creator.id, creator.username, creator.paused, location]);
+
   if (creator.paused) {
     return (
       <StoreShell creator={creator} basePath={basePath}>

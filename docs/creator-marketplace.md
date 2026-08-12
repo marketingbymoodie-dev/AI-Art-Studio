@@ -70,3 +70,15 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 3. Admin → Creator Marketplace → Configure creator → assign those pages → set status `active_beta` if desired.
 4. Open `/c/{username}/products` → customize → generate → Add to cart → should redirect to Shopify checkout.
 5. Confirm merchant storefront free-gens path is unchanged (no `creatorUsername` param).
+
+## Phase 4 — attribution + analytics
+
+| Piece | Behaviour |
+|-------|-----------|
+| Session | `POST /api/creators/analytics/session` — UTM/referrer/device; id in `sessionStorage` (`appai_creator_session`) |
+| Events | `POST /api/creators/analytics/event` — `page_view`, `customizer_open`, `generation`, `atc`, `checkout_started` |
+| Job stamp | `generation_jobs.creator_id` / `creator_session_id` (Phase 3) + `generation` event on success |
+| ATC | `POST /api/creators/cart/checkout` records `atc` + `checkout_started` |
+| Rollup | Daily job → `creator_daily_stats`; admin `GET /api/platform/creators/:id/stats?days=14` |
+
+Orders / AI cost cents in daily stats land in Phase 5.

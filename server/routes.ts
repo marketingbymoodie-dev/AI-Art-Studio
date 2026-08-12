@@ -8399,6 +8399,19 @@ ${orientationExtra}
                 freeGensPerCustomer: workerFreeLimit,
               });
             }
+            void import("./creator-analytics")
+              .then(({ recordCreatorEvent }) =>
+                recordCreatorEvent({
+                  creatorId: workerCreatorCtx.id,
+                  sessionId: workerCreatorCtx.sessionId,
+                  eventType: "generation",
+                  generationJobId: jobId,
+                  productTypeId: productTypeId ? Number(productTypeId) || null : null,
+                  stylePreset: stylePreset ? String(stylePreset) : null,
+                  metadata: { billingMode: workerBillingMode },
+                }),
+              )
+              .catch(() => {});
           } else {
             await finalizeGenerationBilling({
               installation,
@@ -11068,6 +11081,18 @@ ${orientationExtra}
     import("./leftover-gens-reminder")
       .then(({ runLeftoverGensReminders }) => runLeftoverGensReminders())
       .catch((e: Error) => console.error("[Leftover Gens Reminder] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Creator Marketplace daily attribution rollups (sessions/events → creator_daily_stats).
+  setTimeout(() => {
+    import("./creator-analytics")
+      .then(({ runCreatorDailyStatsRollup }) => runCreatorDailyStatsRollup())
+      .catch((e: Error) => console.error("[Creator Daily Stats] Startup error:", e));
+  }, 30 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-analytics")
+      .then(({ runCreatorDailyStatsRollup }) => runCreatorDailyStatsRollup())
+      .catch((e: Error) => console.error("[Creator Daily Stats] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern

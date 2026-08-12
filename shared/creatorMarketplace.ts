@@ -12,6 +12,16 @@ export const PLATFORM_CONFIG_KEYS = {
   CREATOR_TRANSACTION_FEE_FIXED_CENTS: "CREATOR_TRANSACTION_FEE_FIXED_CENTS",
 } as const;
 
+/** Attribution event types (Phase 4). */
+export const CREATOR_EVENT_TYPES = [
+  "page_view",
+  "customizer_open",
+  "generation",
+  "atc",
+  "checkout_started",
+] as const;
+export type CreatorEventType = (typeof CREATOR_EVENT_TYPES)[number];
+
 /** Default free gens each unique customer gets on a creator storefront. */
 export const DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER = 2;
 
