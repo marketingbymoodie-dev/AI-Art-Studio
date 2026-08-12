@@ -158,22 +158,10 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         </h1>
         <p className="mt-4 text-lg text-muted-foreground">{description}</p>
         <div className="mt-6 flex flex-wrap gap-3">
-          <Button asChild>
-            <Link href={`${basePath}/products`}>Shop products</Link>
-          </Button>
-          {pages[0] && platformShop ? (
-            <Button asChild variant="secondary">
-              <a
-                href={designerHref({
-                  handle: pages[0].handle,
-                  platformShop,
-                  creator,
-                  productTypeId: pages[0].productTypeId,
-                  title: pages[0].title,
-                })}
-              >
-                Start designing
-              </a>
+          {/* Home shows up to 3 cards; Shop products is for the full catalogue when larger. */}
+          {pages.length > 3 ? (
+            <Button asChild>
+              <Link href={`${basePath}/products`}>Shop all products</Link>
             </Button>
           ) : null}
           {creator.socialUrl ? (
@@ -187,24 +175,35 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         </div>
       </section>
       {pages.length > 0 ? (
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {pages.slice(0, 3).map((p) => (
-            <ProductCard
-              key={p.id}
-              page={p}
-              href={
-                platformShop
-                  ? designerHref({
-                      handle: p.handle,
-                      platformShop,
-                      creator,
-                      productTypeId: p.productTypeId,
-                      title: p.title,
-                    })
-                  : `${basePath}/customize/${p.handle}`
-              }
-            />
-          ))}
+        <section className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {pages.slice(0, 3).map((p) => (
+              <ProductCard
+                key={p.id}
+                page={p}
+                href={
+                  platformShop
+                    ? designerHref({
+                        handle: p.handle,
+                        platformShop,
+                        creator,
+                        productTypeId: p.productTypeId,
+                        title: p.title,
+                      })
+                    : `${basePath}/customize/${p.handle}`
+                }
+              />
+            ))}
+          </div>
+          {pages.length > 3 ? (
+            <div className="text-center">
+              <Button asChild variant="outline">
+                <Link href={`${basePath}/products`}>
+                  View all {pages.length} products
+                </Link>
+              </Button>
+            </div>
+          ) : null}
         </section>
       ) : (
         <section className="rounded-lg border bg-muted/30 p-6">
