@@ -1,7 +1,7 @@
 /**
- * Creator Marketplace — Phase 1–5 routes:
- * - Public apply, storefront, Storefront cart, analytics session/events
- * - Admin applications, page assign, quotas, daily stats, order ledger
+ * Creator Marketplace — Phase 1–9 routes:
+ * - Public apply, storefront, Storefront cart, analytics, credit packs
+ * - Admin applications, quotas, ledger, partner/payouts, beta lifecycle
  */
 import { type Express, type Response } from "express";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
@@ -10,6 +10,7 @@ import {
   creatorApplications,
   creatorCustomizerPages,
   creatorDailyStats,
+  creatorEmailLog,
   creatorNotes,
   creatorOrderLines,
   creatorOrders,
@@ -19,6 +20,7 @@ import {
 import {
   CREATOR_APPLICATION_STATUSES,
   CREATOR_STATUSES,
+  DEFAULT_CREATOR_BETA_DAYS,
   DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER,
   DEFAULT_CREATOR_MONTHLY_GENERATION_ALLOWANCE,
   SOCIAL_PLATFORMS,
@@ -48,6 +50,17 @@ import {
   upsertCreatorSession,
   utcDayKey,
 } from "../creator-analytics";
+import { checkCreatorRateLimit, clientIpFromReq } from "../creator-rate-limit";
+import {
+  applyCreatorBetaAction,
+  getCreatorPayoutSummary,
+  isCreatorBetaAction,
+  listCreatorPayouts,
+  parseSharePatch,
+  recordCreatorPayout,
+  updateCreatorPayoutStatus,
+} from "../creator-partner";
+import { isCreatorEmailsEnabled, queueCreatorEmail } from "../creator-emails";
 
 type AuthMw = any;
 
@@ -96,6 +109,15 @@ export function registerCreatorMarketplaceRoutes(
 
   app.post("/api/creators/apply", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `apply:${clientIpFromReq(req)}`,
+      limit: 8,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Too many applications. Try again later." });
+    }
     try {
       const body = req.body ?? {};
       const firstName = String(body.firstName || "").trim();
@@ -288,7 +310,7 @@ export function registerCreatorMarketplaceRoutes(
 
   /**
    * Accept application → create creators row (onboarding) + link application.
-   * Does not send email yet (toggles / Phase 9).
+   * Emails are logged; sent only when CREATOR_EMAILS_ENABLED=true.
    */
   app.post(
     "/api/platform/creators/applications/:id/start-onboarding",
@@ -367,6 +389,11 @@ export function registerCreatorMarketplaceRoutes(
           .returning();
 
         invalidateCreatorHostCache(suggested);
+        void queueCreatorEmail({
+          creatorId: creator.id,
+          templateKey: "application_accepted",
+          applicationId: appRow.id,
+        }).catch(() => {});
         res.status(201).json({ creator, application: updatedApp });
       } catch (e: any) {
         console.error("[creators] start-onboarding failed:", e);
@@ -388,7 +415,42 @@ export function registerCreatorMarketplaceRoutes(
       .where(where)
       .orderBy(desc(creators.createdAt))
       .limit(500);
-    res.json({ creators: rows });
+
+    // Last-30d rollup summary for admin table (attribution + money).
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - 30);
+    const sinceDay = utcDayKey(since);
+    const money = await db
+      .select({
+        creatorId: creatorDailyStats.creatorId,
+        visitors: sql<number>`coalesce(sum(${creatorDailyStats.visitors}), 0)::int`,
+        generations: sql<number>`coalesce(sum(${creatorDailyStats.generations}), 0)::int`,
+        orders: sql<number>`coalesce(sum(${creatorDailyStats.orders}), 0)::int`,
+        grossCents: sql<number>`coalesce(sum(${creatorDailyStats.grossCents}), 0)::int`,
+        productProfitCents: sql<number>`coalesce(sum(${creatorDailyStats.productProfitCents}), 0)::int`,
+        netContributionCents: sql<number>`coalesce(sum(${creatorDailyStats.netContributionCents}), 0)::int`,
+      })
+      .from(creatorDailyStats)
+      .where(sql`${creatorDailyStats.day} >= ${sinceDay}`)
+      .groupBy(creatorDailyStats.creatorId);
+    const byId = new Map(money.map((m) => [m.creatorId, m]));
+
+    res.json({
+      creators: rows.map((c) => {
+        const m = byId.get(c.id);
+        return {
+          ...c,
+          stats30d: {
+            visitors: m?.visitors ?? 0,
+            generations: m?.generations ?? 0,
+            orders: m?.orders ?? 0,
+            grossCents: m?.grossCents ?? 0,
+            productProfitCents: m?.productProfitCents ?? 0,
+            netContributionCents: m?.netContributionCents ?? 0,
+          },
+        };
+      }),
+    });
   });
 
   app.get("/api/platform/creators/config", isAuthenticated, async (req: any, res: Response) => {
@@ -398,6 +460,7 @@ export function registerCreatorMarketplaceRoutes(
       platformShopDomain: getCreatorPlatformShopDomain(),
       storefrontTokenConfigured: !!getCreatorPlatformStorefrontToken(),
       aiGenerationCostUsd: await getAiGenerationCostUsd(),
+      emailsEnabled: isCreatorEmailsEnabled(),
       applicationCount: (
         await db.select({ n: sql<number>`count(*)::int` }).from(creatorApplications)
       )[0]?.n ?? 0,
@@ -505,6 +568,15 @@ export function registerCreatorMarketplaceRoutes(
   /** Upsert creator visitor session (UTM / referrer). Returns sessionId. */
   app.post("/api/creators/analytics/session", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `analytics-session:${clientIpFromReq(req)}`,
+      limit: 120,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Rate limited." });
+    }
     try {
       const body = req.body ?? {};
       const creatorId = await resolveCreatorId({
@@ -534,6 +606,15 @@ export function registerCreatorMarketplaceRoutes(
   /** Record a creator attribution event (page_view, customizer_open, …). */
   app.post("/api/creators/analytics/event", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `analytics-event:${clientIpFromReq(req)}`,
+      limit: 600,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Rate limited." });
+    }
     try {
       const body = req.body ?? {};
       const eventType = String(body.eventType || "");
@@ -609,6 +690,15 @@ export function registerCreatorMarketplaceRoutes(
    */
   app.post("/api/creators/credits/checkout", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `pack-checkout:${clientIpFromReq(req)}`,
+      limit: 30,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Too many checkout attempts. Try again later." });
+    }
     try {
       if (!isCreatorStorefrontConfigured()) {
         return res.status(503).json({
@@ -881,6 +971,26 @@ export function registerCreatorMarketplaceRoutes(
           const dn = String(body.displayName || "").trim();
           if (dn) patch.displayName = dn.slice(0, 120);
         }
+        if (body.overageCap != null) {
+          patch.overageCap = Math.max(0, Math.round(Number(body.overageCap) || 0));
+        }
+        const share = parseSharePatch(body);
+        if (share.shareBasis) patch.shareBasis = share.shareBasis;
+        if (share.revenueShareCreatorPct != null) {
+          patch.revenueShareCreatorPct = share.revenueShareCreatorPct;
+        }
+        if (share.revenueShareAasPct != null) {
+          patch.revenueShareAasPct = share.revenueShareAasPct;
+        }
+        if (body.betaStartAt !== undefined) {
+          patch.betaStartAt = body.betaStartAt ? new Date(String(body.betaStartAt)) : null;
+        }
+        if (body.betaEndAt !== undefined) {
+          patch.betaEndAt = body.betaEndAt ? new Date(String(body.betaEndAt)) : null;
+        }
+        if (body.emailAutomationToggles && typeof body.emailAutomationToggles === "object") {
+          patch.emailAutomationToggles = body.emailAutomationToggles as Record<string, boolean>;
+        }
         // Shop name / tagline live in branding JSON (storefront reads headline + description).
         if (body.shopName !== undefined || body.shopDescription !== undefined) {
           const prev =
@@ -898,6 +1008,21 @@ export function registerCreatorMarketplaceRoutes(
             else delete prev.description;
           }
           patch.branding = prev;
+        }
+
+        // Starting active_beta without end date → default beta window.
+        if (patch.status === "active_beta" && !creator.betaStartAt && patch.betaStartAt === undefined) {
+          patch.betaStartAt = new Date();
+        }
+        if (
+          patch.status === "active_beta" &&
+          !creator.betaEndAt &&
+          patch.betaEndAt === undefined &&
+          body.betaEndAt === undefined
+        ) {
+          const end = new Date();
+          end.setUTCDate(end.getUTCDate() + DEFAULT_CREATOR_BETA_DAYS);
+          patch.betaEndAt = end;
         }
 
         const [updated] = await db
@@ -931,7 +1056,131 @@ export function registerCreatorMarketplaceRoutes(
         .from(creatorCustomizerPages)
         .where(eq(creatorCustomizerPages.creatorId, creator.id))
         .orderBy(asc(creatorCustomizerPages.sortOrder));
-      res.json({ creator, assigned });
+      const payoutSummary = await getCreatorPayoutSummary(creator.id);
+      const notes = await db
+        .select()
+        .from(creatorNotes)
+        .where(eq(creatorNotes.creatorId, creator.id))
+        .orderBy(desc(creatorNotes.createdAt))
+        .limit(50);
+      const emails = await db
+        .select()
+        .from(creatorEmailLog)
+        .where(eq(creatorEmailLog.creatorId, creator.id))
+        .orderBy(desc(creatorEmailLog.createdAt))
+        .limit(30);
+      res.json({ creator, assigned, payoutSummary, notes, emails });
+    },
+  );
+
+  /** Partner / beta lifecycle actions. */
+  app.post(
+    "/api/platform/creators/:id/actions",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const action = String(req.body?.action || "");
+        if (!isCreatorBetaAction(action)) {
+          return res.status(400).json({ error: "Invalid action." });
+        }
+        const [creator] = await db
+          .select()
+          .from(creators)
+          .where(eq(creators.id, req.params.id))
+          .limit(1);
+        if (!creator) return res.status(404).json({ error: "Creator not found" });
+        const updated = await applyCreatorBetaAction({
+          creator,
+          action,
+          extendDays: req.body?.extendDays != null ? Number(req.body.extendDays) : undefined,
+        });
+        res.json({ creator: updated });
+      } catch (e: any) {
+        console.error("[creators] action failed:", e);
+        res.status(500).json({ error: e?.message || "Action failed" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/platform/creators/:id/payouts",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const summary = await getCreatorPayoutSummary(req.params.id);
+      const payouts = await listCreatorPayouts(req.params.id);
+      res.json({ summary, payouts });
+    },
+  );
+
+  app.post(
+    "/api/platform/creators/:id/payouts",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const body = req.body ?? {};
+        const amountCents =
+          body.amountCents != null
+            ? Math.round(Number(body.amountCents))
+            : Math.round(Number(body.amountDollars || 0) * 100);
+        const payout = await recordCreatorPayout({
+          creatorId: req.params.id,
+          amountCents,
+          method: body.method ? String(body.method) : null,
+          adminNote: body.adminNote ? String(body.adminNote) : null,
+          markPaid: !!body.markPaid,
+          status: body.status,
+          periodStart: body.periodStart ? new Date(String(body.periodStart)) : null,
+          periodEnd: body.periodEnd ? new Date(String(body.periodEnd)) : null,
+        });
+        const summary = await getCreatorPayoutSummary(req.params.id);
+        res.status(201).json({ payout, summary });
+      } catch (e: any) {
+        console.error("[creators] record payout failed:", e);
+        res.status(400).json({ error: e?.message || "Failed to record payout" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/platform/creators/:id/payouts/:payoutId",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const status = String(req.body?.status || "");
+        const payout = await updateCreatorPayoutStatus({
+          payoutId: req.params.payoutId,
+          creatorId: req.params.id,
+          status: status as any,
+        });
+        if (!payout) return res.status(404).json({ error: "Payout not found" });
+        const summary = await getCreatorPayoutSummary(req.params.id);
+        res.json({ payout, summary });
+      } catch (e: any) {
+        res.status(400).json({ error: e?.message || "Failed to update payout" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/platform/creators/:id/notes",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const body = String(req.body?.body || "").trim();
+      if (!body) return res.status(400).json({ error: "Note body is required." });
+      const [note] = await db
+        .insert(creatorNotes)
+        .values({
+          creatorId: req.params.id,
+          author: req.shopDomain || "admin",
+          body: body.slice(0, 5000),
+        })
+        .returning();
+      res.status(201).json({ note });
     },
   );
 

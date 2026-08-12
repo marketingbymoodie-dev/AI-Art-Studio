@@ -10,6 +10,9 @@ Phased feature. See the Cursor plan for full architecture. This doc tracks ops p
 | `CREATOR_PLATFORM_SHOP_DOMAIN` | Platform Shopify shop (`{handle}.myshopify.com`) that backs creator checkouts |
 | `CREATOR_STOREFRONT_API_TOKEN` | Preferred Storefront API access token (custom app on the platform shop) |
 | `CREATOR_PLATFORM_STOREFRONT_TOKEN` | Legacy alias for the same token (optional) |
+| `CREATOR_EMAILS_ENABLED` | `true` to actually send beta/partner emails (default: log only) |
+| `CREATOR_PACK_GENS_BURN_ALLOWANCE` | `true` if pack-paid gens should burn creator monthly allowance |
+| `CREATOR_PACK_VARIANTS_JSON` | Optional `{"5":"variantId",…}` override for pack SKUs |
 
 Seeded on boot (idempotent): `platform_config.AI_GENERATION_COST_USD = 0.05`.
 
@@ -111,6 +114,33 @@ Customer top-ups on the **platform shop** via Shopify checkout (no Stripe). Wall
 | UI | Creator embed Studio Credits dialog — buy pack buttons when out of gens |
 
 Line attrs on pack cart: `_credit_pack_id`, `_appai_customer_id`, `_creator_id`, `_creator_username`.
+
+## Phase 9 — Admin + Partner Program
+
+| Piece | Behaviour |
+|-------|-----------|
+| Admin table | Creators list with 30d visitors/gens/orders/net + share % |
+| Detail dialog | Tabs: Overview / Partner·beta / Financials / Payouts / Notes |
+| Revenue share | Per-creator `share_basis`, `revenue_share_creator_pct`, `revenue_share_aas_pct` |
+| Lifecycle | Actions: reactivate/extend/end beta, promote partner, pause, archive |
+| Beta cron | Daily: 7/3/1-day reminders + auto `beta_completed` when `beta_end_at` passes |
+| Emails | Templates logged to `creator_email_log`; **sent only if** `CREATOR_EMAILS_ENABLED=true` |
+| Payouts | Manual ledger `creator_payouts` + outstanding = earned share − paid − pending |
+
+## Phase 10 — Production hardening (code + checklist)
+
+**Shipped in code**
+- Rate limits: apply form, analytics beacons, pack checkout, portal OTP (IP)
+- Portal APIs remain own-creator scoped via JWT (`requireCreator`)
+- Feature remains env-gated (`CREATOR_MARKETPLACE_ENABLED`)
+
+**Manual before production go-live**
+1. Shopify **Protected Customer Data** approved → uncomment `orders/paid` / `refunds/create` in `shopify.app.production.toml` → reinstall/redeploy app
+2. Production env: `CREATOR_MARKETPLACE_ENABLED`, `CREATOR_PLATFORM_SHOP_DOMAIN`, `CREATOR_STOREFRONT_API_TOKEN`
+3. Optional: `CREATOR_EMAILS_ENABLED=true` only after reviewing templates
+4. Wildcard DNS `*.aiartstudio.app` → Railway production (path `/c/:username` works without it)
+5. E2E smoke: apply → onboard → storefront → generate → ATC → checkout → ledger → pack buy → portal rank
+6. Explicit **yes, go live** before merging `production`
 
 ## Phase 6 — Creator Portal
 

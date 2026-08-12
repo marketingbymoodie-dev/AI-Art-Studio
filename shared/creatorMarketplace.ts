@@ -86,6 +86,34 @@ export type CreatorRankPeriodType = (typeof CREATOR_RANK_PERIOD_TYPES)[number];
 /** V1 leaderboard metric — Net Creator Contribution (cents). */
 export const CREATOR_RANK_METRIC_NET_CONTRIBUTION = "net_contribution";
 
+/** Admin lifecycle actions (Phase 9 Partner Program). */
+export const CREATOR_BETA_ACTIONS = [
+  "end_beta",
+  "extend_beta",
+  "promote_partner",
+  "pause",
+  "archive",
+  "reactivate_beta",
+] as const;
+export type CreatorBetaAction = (typeof CREATOR_BETA_ACTIONS)[number];
+
+/** Email template keys — logged always; auto-send only when globally enabled + per-creator toggle. */
+export const CREATOR_EMAIL_TEMPLATE_KEYS = [
+  "beta_ending_7d",
+  "beta_ending_3d",
+  "beta_ending_1d",
+  "beta_ended",
+  "partner_welcome",
+  "application_accepted",
+] as const;
+export type CreatorEmailTemplateKey = (typeof CREATOR_EMAIL_TEMPLATE_KEYS)[number];
+
+export const CREATOR_PAYOUT_STATUSES = ["pending", "paid", "cancelled"] as const;
+export type CreatorPayoutStatus = (typeof CREATOR_PAYOUT_STATUSES)[number];
+
+/** Default beta length when starting active_beta without an end date. */
+export const DEFAULT_CREATOR_BETA_DAYS = 30;
+
 export type CreatorRankRowInput = { creatorId: string; valueCents: number };
 
 export type CreatorRankComputed = {

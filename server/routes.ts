@@ -11236,6 +11236,18 @@ ${orientationExtra}
       .catch((e: Error) => console.error("[Creator Rankings] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
+  // Creator beta lifecycle (7/3/1 day reminders + auto beta_completed).
+  setTimeout(() => {
+    import("./creator-beta-lifecycle")
+      .then(({ runCreatorBetaLifecycle }) => runCreatorBetaLifecycle())
+      .catch((e: Error) => console.error("[Creator Beta Lifecycle] Startup error:", e));
+  }, 50 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-beta-lifecycle")
+      .then(({ runCreatorBetaLifecycle }) => runCreatorBetaLifecycle())
+      .catch((e: Error) => console.error("[Creator Beta Lifecycle] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
   // POST /api/pattern/preview - Generate a tiled AOP pattern
   // Accepts { imageUrl, mode, pattern, scale, width, height, bgColor,
   //           singleScale, singleRotation, singlePosX, singlePosY }

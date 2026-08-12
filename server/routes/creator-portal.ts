@@ -28,6 +28,7 @@ import {
 } from "../creator-auth";
 import { rollupCreatorDailyStats, utcDayKey } from "../creator-analytics";
 import { getCreatorOwnRanks, runCreatorRankSnapshots } from "../creator-rankings";
+import { checkCreatorRateLimit, clientIpFromReq } from "../creator-rate-limit";
 
 const otpRate = new Map<string, number>();
 const OTP_RATE_MS = 60_000;
@@ -49,6 +50,15 @@ function parseDays(raw: unknown, fallback = 14): number {
 export function registerCreatorPortalRoutes(app: Express): void {
   app.post("/api/creator/auth/request-otp", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const ipRl = checkCreatorRateLimit({
+      key: `portal-otp-ip:${clientIpFromReq(req)}`,
+      limit: 20,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!ipRl.ok) {
+      res.setHeader("Retry-After", String(ipRl.retryAfterSec));
+      return res.status(429).json({ error: "Too many login attempts. Try again later." });
+    }
     try {
       const email = String(req.body?.email || "").toLowerCase().trim();
       if (!email || !email.includes("@")) {
