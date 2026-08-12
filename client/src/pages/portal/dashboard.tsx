@@ -88,6 +88,31 @@ type PerformancePayload = {
   trafficSources: Array<{ source: string; count: number }>;
 };
 
+type RankPeriod = {
+  periodType: string;
+  periodKey: string;
+  rank: number | null;
+  ofCount: number;
+  percentile: number | null;
+  sharePct: number | null;
+  valueCents: number;
+  title: string;
+  computedAt: string | null;
+};
+
+type RankPayload = {
+  metricKey: string;
+  periods: RankPeriod[];
+};
+
+function periodLabel(periodType: string): string {
+  if (periodType === "daily") return "Today";
+  if (periodType === "weekly") return "This week";
+  if (periodType === "monthly") return "This month";
+  if (periodType === "lifetime") return "Lifetime";
+  return periodType;
+}
+
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
@@ -181,6 +206,16 @@ export default function CreatorPortalDashboardPage() {
       const res = await creatorPortalFetch(`/api/creator/performance?days=${days}`);
       if (!res.ok) throw new Error("Failed to load performance");
       return (await res.json()) as PerformancePayload;
+    },
+  });
+
+  const rankQuery = useQuery({
+    queryKey: ["creator-portal-rank"],
+    enabled: !!meQuery.data,
+    queryFn: async () => {
+      const res = await creatorPortalFetch("/api/creator/rank");
+      if (!res.ok) throw new Error("Failed to load ranks");
+      return (await res.json()) as RankPayload;
     },
   });
 
@@ -317,22 +352,75 @@ export default function CreatorPortalDashboardPage() {
           </TabsContent>
 
           <TabsContent value="rank" className="space-y-4">
-            <div className="rounded-xl border border-dashed border-stone-300 bg-white p-6">
-              <h2 className="font-serif text-xl">Rankings coming next</h2>
-              <p className="mt-2 max-w-lg text-sm text-stone-600">
-                Daily, weekly, monthly, and lifetime ranks across the Creator Network ship in Phase 7.
-                You&apos;ll only ever see your own rank and percentile — never other creators&apos; numbers.
-              </p>
-            </div>
+            <p className="text-sm text-stone-600">
+              Ranked by Net Creator Contribution. Only your position is shown — never other creators&apos; figures.
+            </p>
+            {rankQuery.isLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-stone-400" />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(rankQuery.data?.periods || []).map((p) => (
+                  <div key={`${p.periodType}-${p.periodKey}`} className="rounded-xl border border-stone-200 bg-white p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
+                      {periodLabel(p.periodType)}
+                    </p>
+                    {p.rank != null && p.ofCount > 0 ? (
+                      <>
+                        <p className="mt-2 font-serif text-2xl text-stone-900">
+                          #{p.rank}{" "}
+                          <span className="text-base font-sans font-normal text-stone-500">
+                            of {p.ofCount}
+                          </span>
+                        </p>
+                        <p className="mt-1 text-sm font-medium text-stone-700">{p.title}</p>
+                        <p className="mt-2 text-xs text-stone-500">
+                          {p.percentile != null ? `Top ${Math.max(1, Math.round(p.percentile))}% · ` : ""}
+                          {formatCents(p.valueCents)} contribution
+                        </p>
+                      </>
+                    ) : (
+                      <p className="mt-2 text-sm text-stone-500">No rank yet for this period.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="network" className="space-y-4">
-            <div className="rounded-xl border border-dashed border-stone-300 bg-white p-6">
-              <h2 className="font-serif text-xl">Network share</h2>
-              <p className="mt-2 max-w-lg text-sm text-stone-600">
-                Your share of Creator Network contribution and percentile land with rankings in Phase 7.
-              </p>
-            </div>
+            {rankQuery.isLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-stone-400" />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(rankQuery.data?.periods || [])
+                  .filter((p) => p.periodType === "monthly" || p.periodType === "lifetime")
+                  .map((p) => (
+                    <div key={`net-${p.periodType}`} className="rounded-xl border border-stone-200 bg-white p-4">
+                      <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
+                        {periodLabel(p.periodType)} network share
+                      </p>
+                      {p.sharePct != null && p.ofCount > 0 ? (
+                        <>
+                          <p className="mt-2 font-serif text-2xl tabular-nums text-stone-900">
+                            {p.sharePct.toFixed(1)}%
+                          </p>
+                          <p className="mt-1 text-sm text-stone-600">
+                            of Creator Network contribution
+                            {p.rank != null ? ` · rank #${p.rank} of ${p.ofCount}` : ""}
+                          </p>
+                          {p.percentile != null ? (
+                            <p className="mt-2 text-xs text-stone-500">
+                              Top {p.percentile.toFixed(1)}% of the network
+                            </p>
+                          ) : null}
+                        </>
+                      ) : (
+                        <p className="mt-2 text-sm text-stone-500">No network share yet.</p>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
             <RankList
               title="Traffic sources (this period)"
               rows={(perfQuery.data?.trafficSources || []).map((t) => ({

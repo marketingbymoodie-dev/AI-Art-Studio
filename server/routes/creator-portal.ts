@@ -27,6 +27,7 @@ import {
   type CreatorAuthedRequest,
 } from "../creator-auth";
 import { rollupCreatorDailyStats, utcDayKey } from "../creator-analytics";
+import { getCreatorOwnRanks, runCreatorRankSnapshots } from "../creator-rankings";
 
 const otpRate = new Map<string, number>();
 const OTP_RATE_MS = 60_000;
@@ -115,6 +116,21 @@ export function registerCreatorPortalRoutes(app: Express): void {
 
   app.get("/api/creator/me", requireCreator, async (req: CreatorAuthedRequest, res) => {
     res.json({ creator: publicCreatorProfile(req.creator!) });
+  });
+
+  app.get("/api/creator/rank", requireCreator, async (req: CreatorAuthedRequest, res) => {
+    try {
+      // Ensure snapshots exist for first visitors (cheap if already warm / deduped).
+      await runCreatorRankSnapshots().catch(() => {});
+      const periods = await getCreatorOwnRanks(req.creatorId!);
+      res.json({
+        metricKey: "net_contribution",
+        periods,
+      });
+    } catch (e: any) {
+      console.error("[creator portal] rank failed:", e);
+      res.status(500).json({ error: "Failed to load ranks" });
+    }
   });
 
   app.get("/api/creator/stats", requireCreator, async (req: CreatorAuthedRequest, res) => {

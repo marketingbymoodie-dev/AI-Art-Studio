@@ -407,6 +407,31 @@ export function registerCreatorMarketplaceRoutes(
     });
   });
 
+  /** Admin: Creator Network leaderboard (full board — never expose on public/portal). */
+  app.get(
+    "/api/platform/creators/leaderboard",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const { getLeaderboard, isCreatorRankPeriodType, runCreatorRankSnapshots } =
+          await import("../creator-rankings");
+        const periodTypeRaw = String(req.query.periodType || "monthly");
+        const periodType = isCreatorRankPeriodType(periodTypeRaw) ? periodTypeRaw : "monthly";
+        await runCreatorRankSnapshots().catch(() => {});
+        const board = await getLeaderboard({
+          periodType,
+          periodKey: req.query.periodKey ? String(req.query.periodKey) : undefined,
+          limit: parseInt(String(req.query.limit || "50"), 10) || 50,
+        });
+        res.json(board);
+      } catch (e: any) {
+        console.error("[platform creators] leaderboard failed:", e);
+        res.status(500).json({ error: "Failed to load leaderboard" });
+      }
+    },
+  );
+
   /** Public: assigned customizer pages for a creator storefront. */
   app.get("/api/creators/storefront/:username/pages", async (req, res) => {
     if (!isCreatorMarketplaceEnabled()) {

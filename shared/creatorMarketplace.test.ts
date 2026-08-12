@@ -4,10 +4,13 @@ import {
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
   computeCreatorOrderPnl,
+  computeCreatorRanks,
   computeTransactionFeeCents,
   extractSubdomainFromHost,
   extractUsernameFromPath,
+  isoWeekPeriodKey,
   normalizeCreatorUsername,
+  titleForRank,
 } from "./creatorMarketplace";
 
 describe("normalizeCreatorUsername", () => {
@@ -58,6 +61,28 @@ describe("portal login statuses", () => {
     expect(canCreatorAccessPortal("onboarding")).toBe(true);
     expect(canCreatorAccessPortal("suspended")).toBe(false);
     expect(canCreatorAccessPortal("application")).toBe(false);
+  });
+});
+
+describe("Phase 7 rankings", () => {
+  it("ranks by net contribution with ties and share pct", () => {
+    const ranks = computeCreatorRanks(
+      [
+        { creatorId: "a", valueCents: 4250 },
+        { creatorId: "b", valueCents: 1000 },
+        { creatorId: "c", valueCents: 4250 },
+      ],
+      "monthly",
+    );
+    expect(ranks).toHaveLength(3);
+    expect(ranks.filter((r) => r.rank === 1)).toHaveLength(2);
+    expect(ranks.find((r) => r.creatorId === "b")?.rank).toBe(3);
+    expect(ranks.find((r) => r.creatorId === "a")?.sharePct).toBeCloseTo(44.7368, 3);
+    expect(titleForRank(1, 43, "monthly")).toBe("Monthly Top Creator");
+  });
+
+  it("formats ISO week keys", () => {
+    expect(isoWeekPeriodKey(new Date("2026-08-12T12:00:00Z"))).toMatch(/^2026-W\d{2}$/);
   });
 });
 

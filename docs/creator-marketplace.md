@@ -83,6 +83,18 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 | ATC | `POST /api/creators/cart/checkout` records `atc` + `checkout_started` |
 | Rollup | Daily job → `creator_daily_stats`; admin `GET /api/platform/creators/:id/stats?days=14` |
 
+## Phase 7 — Creator Network rankings
+
+| Piece | Behaviour |
+|-------|-----------|
+| Metric | `net_contribution` (sum of `creator_daily_stats.net_contribution_cents`) |
+| Periods | `daily` / `weekly` / `monthly` / `lifetime` → `creator_rank_snapshots` |
+| Cron | Nightly (+ boot) after daily rollup |
+| Portal | `/api/creator/rank` — own rank, top %, share % only (Rank + Network tabs) |
+| Admin | `/api/platform/creators/leaderboard` — full board on Creator Marketplace page |
+
+Other creators’ numbers are never exposed on the portal or public routes.
+
 ## Phase 6 — Creator Portal
 
 | Surface | Path |

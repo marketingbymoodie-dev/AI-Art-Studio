@@ -58,6 +58,7 @@ export default function PlatformCreatorsPage() {
   const qc = useQueryClient();
   const [status, setStatus] = useState<string>("all");
   const [q, setQ] = useState("");
+  const [boardPeriod, setBoardPeriod] = useState("monthly");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [notes, setNotes] = useState("");
@@ -97,6 +98,30 @@ export default function PlatformCreatorsPage() {
     }>;
   }>({
     queryKey: ["/api/platform/creators"],
+  });
+
+  const { data: leaderboard, isLoading: boardLoading } = useQuery<{
+    periodType: string;
+    periodKey: string;
+    leaders: Array<{
+      rank: number;
+      ofCount: number;
+      username: string | null;
+      displayName: string | null;
+      valueCents: number;
+      sharePct: number | null;
+      title: string;
+    }>;
+  }>({
+    queryKey: ["/api/platform/creators/leaderboard", boardPeriod],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/platform/creators/leaderboard?periodType=${encodeURIComponent(boardPeriod)}&limit=25`,
+      );
+      return res.json();
+    },
+    enabled: !!config?.enabled,
   });
 
   const { data: assignable } = useQuery<{
@@ -277,6 +302,69 @@ export default function PlatformCreatorsPage() {
           <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             Set <code className="font-mono">CREATOR_MARKETPLACE_ENABLED=true</code> on Railway
             staging to accept applications and use this queue.
+          </div>
+        )}
+
+        {config?.enabled && (
+          <div className="rounded-md border p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Creator Network leaderboard</h2>
+                <p className="text-xs text-muted-foreground">
+                  Net Creator Contribution · {leaderboard?.periodKey || boardPeriod}
+                </p>
+              </div>
+              <Select value={boardPeriod} onValueChange={setBoardPeriod}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                  <SelectItem value="lifetime">Lifetime</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {boardLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (leaderboard?.leaders.length || 0) === 0 ? (
+              <p className="text-sm text-muted-foreground">No rank snapshots yet.</p>
+            ) : (
+              <div className="rounded-md border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-16">Rank</TableHead>
+                      <TableHead>Creator</TableHead>
+                      <TableHead>Title</TableHead>
+                      <TableHead>Net</TableHead>
+                      <TableHead>Share</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {leaderboard!.leaders.map((row) => (
+                      <TableRow key={`${row.rank}-${row.username}`}>
+                        <TableCell>#{row.rank}</TableCell>
+                        <TableCell>
+                          {row.displayName || "—"}
+                          {row.username ? (
+                            <span className="ml-1 text-muted-foreground">@{row.username}</span>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{row.title}</TableCell>
+                        <TableCell>
+                          ${((row.valueCents || 0) / 100).toFixed(2)}
+                        </TableCell>
+                        <TableCell>
+                          {row.sharePct != null ? `${row.sharePct.toFixed(1)}%` : "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </div>
         )}
 

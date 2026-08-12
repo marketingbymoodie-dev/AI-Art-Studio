@@ -11174,6 +11174,18 @@ ${orientationExtra}
       .catch((e: Error) => console.error("[Creator Daily Stats] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
+  // Creator Network rank snapshots (after daily rollup has fresh money fields).
+  setTimeout(() => {
+    import("./creator-rankings")
+      .then(({ runCreatorRankSnapshots }) => runCreatorRankSnapshots({ force: true }))
+      .catch((e: Error) => console.error("[Creator Rankings] Startup error:", e));
+  }, 40 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-rankings")
+      .then(({ runCreatorRankSnapshots }) => runCreatorRankSnapshots())
+      .catch((e: Error) => console.error("[Creator Rankings] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
   // POST /api/pattern/preview - Generate a tiled AOP pattern
   // Accepts { imageUrl, mode, pattern, scale, width, height, bgColor,
   //           singleScale, singleRotation, singlePosX, singlePosY }

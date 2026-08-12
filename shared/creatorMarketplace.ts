@@ -79,6 +79,103 @@ export function canCreatorAccessPortal(status: string | null | undefined): boole
   return (CREATOR_PORTAL_LOGIN_STATUSES as readonly string[]).includes(String(status || ""));
 }
 
+/** Rank periods (Phase 7). */
+export const CREATOR_RANK_PERIOD_TYPES = ["daily", "weekly", "monthly", "lifetime"] as const;
+export type CreatorRankPeriodType = (typeof CREATOR_RANK_PERIOD_TYPES)[number];
+
+/** V1 leaderboard metric — Net Creator Contribution (cents). */
+export const CREATOR_RANK_METRIC_NET_CONTRIBUTION = "net_contribution";
+
+export type CreatorRankRowInput = { creatorId: string; valueCents: number };
+
+export type CreatorRankComputed = {
+  creatorId: string;
+  valueCents: number;
+  rank: number;
+  ofCount: number;
+  percentile: number;
+  sharePct: number;
+  title: string;
+};
+
+/**
+ * Dense rank (ties share rank; next rank skips).
+ * `percentile` is stored as “top X%” (rank 1 of 100 → 1; rank 7 of 43 → ~16.3).
+ * Share = value / total network value.
+ */
+export function computeCreatorRanks(
+  rows: CreatorRankRowInput[],
+  periodType: CreatorRankPeriodType,
+): CreatorRankComputed[] {
+  const sorted = [...rows].sort((a, b) => b.valueCents - a.valueCents);
+  const ofCount = sorted.length;
+  if (ofCount === 0) return [];
+
+  const total = sorted.reduce((s, r) => s + Math.max(0, r.valueCents), 0);
+  const out: CreatorRankComputed[] = [];
+  let i = 0;
+  while (i < sorted.length) {
+    const valueCents = sorted[i]!.valueCents;
+    let j = i;
+    while (j < sorted.length && sorted[j]!.valueCents === valueCents) j++;
+    const rank = i + 1;
+    const percentile =
+      ofCount <= 1 ? 100 : Math.max(0.0001, Math.min(100, (rank / ofCount) * 100));
+    const sharePct = total > 0 ? (Math.max(0, valueCents) / total) * 100 : 0;
+    for (let k = i; k < j; k++) {
+      const row = sorted[k]!;
+      out.push({
+        creatorId: row.creatorId,
+        valueCents: row.valueCents,
+        rank,
+        ofCount,
+        percentile: +percentile.toFixed(4),
+        sharePct: +sharePct.toFixed(4),
+        title: titleForRank(rank, ofCount, periodType),
+      });
+    }
+    i = j;
+  }
+  return out;
+}
+
+export function titleForRank(
+  rank: number,
+  ofCount: number,
+  periodType: CreatorRankPeriodType,
+): string {
+  if (ofCount <= 0) return "Unranked";
+  if (rank === 1) {
+    if (periodType === "lifetime") return "Lifetime Leader";
+    if (periodType === "daily") return "Daily Top Creator";
+    if (periodType === "weekly") return "Weekly Top Creator";
+    return "Monthly Top Creator";
+  }
+  if (rank <= 3) return "Top 3 Creator";
+  const topPct = ofCount <= 1 ? 100 : (rank / ofCount) * 100;
+  if (topPct <= 10) return "Top 10%";
+  if (topPct <= 25) return "Top Quartile";
+  return "Active Creator";
+}
+
+/** ISO week key YYYY-Www (UTC). */
+export function isoWeekPeriodKey(d = new Date()): string {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // Thursday in current week decides the year.
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+export function monthPeriodKey(d = new Date()): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+export function dayPeriodKey(d = new Date()): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 /** Pure P&L helpers (Phase 5) — unit-tested; no DB. */
 export type CreatorOrderPnlInput = {
   grossCents: number;
