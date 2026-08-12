@@ -40,6 +40,7 @@ import {
   getCreatorStorefrontByUsername,
   invalidateCreatorHostCache,
   lookupCreatorByUsername,
+  sanitizeCreatorForAdmin,
 } from "../creator-host";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
 import {
@@ -439,7 +440,7 @@ export function registerCreatorMarketplaceRoutes(
       creators: rows.map((c) => {
         const m = byId.get(c.id);
         return {
-          ...c,
+          ...sanitizeCreatorForAdmin(c),
           stats30d: {
             visitors: m?.visitors ?? 0,
             generations: m?.generations ?? 0,
@@ -582,6 +583,8 @@ export function registerCreatorMarketplaceRoutes(
       const creatorId = await resolveCreatorId({
         creatorId: body.creatorId,
         creatorUsername: body.creatorUsername,
+        shop: body.shop || getCreatorPlatformShopDomain(),
+        requirePlatformShop: false,
       });
       if (!creatorId) return res.status(404).json({ error: "Creator not found." });
 
@@ -624,6 +627,8 @@ export function registerCreatorMarketplaceRoutes(
       const creatorId = await resolveCreatorId({
         creatorId: body.creatorId,
         creatorUsername: body.creatorUsername,
+        shop: body.shop || getCreatorPlatformShopDomain(),
+        requirePlatformShop: false,
       });
       if (!creatorId) return res.status(404).json({ error: "Creator not found." });
 
@@ -737,6 +742,15 @@ export function registerCreatorMarketplaceRoutes(
    */
   app.post("/api/creators/cart/checkout", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `cart-checkout:${clientIpFromReq(req)}`,
+      limit: 60,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Too many checkout attempts. Try again later." });
+    }
     try {
       if (!isCreatorStorefrontConfigured()) {
         return res.status(503).json({
@@ -753,13 +767,16 @@ export function registerCreatorMarketplaceRoutes(
         return res.status(400).json({ error: "creatorUsername and variantId are required." });
       }
 
-      const creator = await lookupCreatorByUsername(username);
-      if (!creator) {
-        return res.status(404).json({ error: "Creator not found." });
+      const { assertPublicCreatorApiContext } = await import("../creator-host");
+      const asserted = await assertPublicCreatorApiContext({
+        shop: getCreatorPlatformShopDomain(),
+        creatorUsername: username,
+        requirePlatformShop: true,
+      });
+      if (!asserted.ok) {
+        return res.status(asserted.status).json({ error: asserted.error });
       }
-      if (["paused", "suspended", "archived"].includes(creator.status)) {
-        return res.status(403).json({ error: "This creator shop is not accepting checkouts." });
-      }
+      const creator = asserted.creator;
 
       const props = (body.properties && typeof body.properties === "object"
         ? body.properties
@@ -1032,7 +1049,7 @@ export function registerCreatorMarketplaceRoutes(
           .returning();
 
         invalidateCreatorHostCache(updated.username);
-        res.json({ creator: updated });
+        res.json({ creator: sanitizeCreatorForAdmin(updated) });
       } catch (e: any) {
         console.error("[creators] patch creator failed:", e);
         res.status(500).json({ error: e?.message || "Failed to update creator" });
@@ -1069,7 +1086,13 @@ export function registerCreatorMarketplaceRoutes(
         .where(eq(creatorEmailLog.creatorId, creator.id))
         .orderBy(desc(creatorEmailLog.createdAt))
         .limit(30);
-      res.json({ creator, assigned, payoutSummary, notes, emails });
+      res.json({
+        creator: sanitizeCreatorForAdmin(creator),
+        assigned,
+        payoutSummary,
+        notes,
+        emails,
+      });
     },
   );
 
@@ -1095,7 +1118,7 @@ export function registerCreatorMarketplaceRoutes(
           action,
           extendDays: req.body?.extendDays != null ? Number(req.body.extendDays) : undefined,
         });
-        res.json({ creator: updated });
+        res.json({ creator: sanitizeCreatorForAdmin(updated) });
       } catch (e: any) {
         console.error("[creators] action failed:", e);
         res.status(500).json({ error: e?.message || "Action failed" });

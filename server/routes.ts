@@ -7671,40 +7671,57 @@ ${orientationExtra}
       }
 
       // Optional Creator Marketplace context (dual quota; does not use merchant free-gens).
+      // Phase 10: platform-shop only, active statuses, id/username match, per-IP rate limit.
       let creatorCtx: { id: string; freeGensPerCustomer: number; sessionId: string | null } | null = null;
       if (rawCreatorUsername || rawCreatorId) {
         try {
-          const { isCreatorMarketplaceEnabled } = await import("./creator-config");
-          const { normalizeCreatorUsername } = await import("@shared/creatorMarketplace");
-          const { lookupCreatorByUsername } = await import("./creator-host");
+          const { assertPublicCreatorApiContext } = await import("./creator-host");
           const { peekCreatorMonthlyAllowance } = await import("./creator-quota");
-          if (!isCreatorMarketplaceEnabled()) {
-            return res.status(404).json({ error: "Creator Marketplace is not enabled.", reqId });
+          const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+
+          const asserted = await assertPublicCreatorApiContext({
+            shop,
+            creatorId: rawCreatorId ? String(rawCreatorId) : null,
+            creatorUsername: rawCreatorUsername ? String(rawCreatorUsername) : null,
+            requirePlatformShop: true,
+          });
+          if (!asserted.ok) {
+            return res.status(asserted.status).json({
+              error: asserted.code || asserted.error,
+              message: asserted.error,
+              reqId,
+              stage: "creator",
+            });
           }
-          let creatorRow = null as Awaited<ReturnType<typeof lookupCreatorByUsername>>;
-          if (rawCreatorId) {
-            const { creators: creatorsTable } = await import("@shared/schema");
-            const [byId] = await db
-              .select()
-              .from(creatorsTable)
-              .where(eq(creatorsTable.id, String(rawCreatorId)))
-              .limit(1);
-            creatorRow = byId ?? null;
-          }
-          if (!creatorRow && rawCreatorUsername) {
-            const u = normalizeCreatorUsername(String(rawCreatorUsername));
-            if (u) creatorRow = await lookupCreatorByUsername(u);
-          }
-          if (!creatorRow) {
-            return res.status(404).json({ error: "Creator not found", reqId, stage: "creator" });
-          }
-          if (["paused", "suspended", "archived"].includes(creatorRow.status)) {
-            return res.status(403).json({
-              error: "CREATOR_STORE_PAUSED",
-              message: "This creator shop is temporarily unavailable.",
+
+          const ipRl = checkCreatorRateLimit({
+            key: `sf-gen-ip:${clientIpFromReq(req)}`,
+            limit: 40,
+            windowMs: 60 * 60 * 1000,
+          });
+          if (!ipRl.ok) {
+            res.setHeader("Retry-After", String(ipRl.retryAfterSec));
+            return res.status(429).json({
+              error: "Rate limit exceeded. Please try again later.",
+              retryAfter: ipRl.retryAfterSec,
               reqId,
             });
           }
+          const creatorRl = checkCreatorRateLimit({
+            key: `sf-gen-creator:${asserted.creator.id}:${clientIpFromReq(req)}`,
+            limit: 25,
+            windowMs: 60 * 60 * 1000,
+          });
+          if (!creatorRl.ok) {
+            res.setHeader("Retry-After", String(creatorRl.retryAfterSec));
+            return res.status(429).json({
+              error: "Rate limit exceeded. Please try again later.",
+              retryAfter: creatorRl.retryAfterSec,
+              reqId,
+            });
+          }
+
+          const creatorRow = asserted.creator;
           const monthly = await peekCreatorMonthlyAllowance(creatorRow);
           if (!monthly.allowed) {
             return res.status(403).json({

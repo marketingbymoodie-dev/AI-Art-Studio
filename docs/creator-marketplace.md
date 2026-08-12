@@ -130,12 +130,16 @@ Line attrs on pack cart: `_credit_pack_id`, `_appai_customer_id`, `_creator_id`,
 ## Phase 10 — Production hardening (code + checklist)
 
 **Shipped in code**
-- Rate limits: apply form, analytics beacons, pack checkout, portal OTP (IP)
-- Portal APIs remain own-creator scoped via JWT (`requireCreator`)
-- Feature remains env-gated (`CREATOR_MARKETPLACE_ENABLED`)
+- Shared `assertPublicCreatorApiContext` — platform shop + active status + id/username match
+- Creator generate: platform-shop only; IP + creator rate limits
+- Rate limits: apply, analytics, pack/cart checkout, portal OTP request + verify
+- Admin APIs strip `otpCode` / `otpExpiresAt`
+- Rollup upserts + rank inserts chunked for scale
+- Portal APIs own-creator scoped via JWT (`requireCreator`)
+- Feature env-gated (`CREATOR_MARKETPLACE_ENABLED`)
 
 **Manual before production go-live**
-1. Shopify **Protected Customer Data** approved → uncomment `orders/paid` / `refunds/create` in `shopify.app.production.toml` → reinstall/redeploy app
+1. Shopify **Protected Customer Data** approved → uncomment `orders/paid`, `refunds/create`, `orders/cancelled` in `shopify.app.production.toml` → redeploy production app
 2. Production env: `CREATOR_MARKETPLACE_ENABLED`, `CREATOR_PLATFORM_SHOP_DOMAIN`, `CREATOR_STOREFRONT_API_TOKEN`
 3. Optional: `CREATOR_EMAILS_ENABLED=true` only after reviewing templates
 4. Wildcard DNS `*.aiartstudio.app` → Railway production (path `/c/:username` works without it)

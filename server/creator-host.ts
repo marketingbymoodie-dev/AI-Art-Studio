@@ -1,5 +1,6 @@
 /**
  * Resolve creator storefronts from Host subdomain or /c/:username path.
+ * Also exposes public API validation for generate / analytics / cart (Phase 10).
  */
 import { eq, or } from "drizzle-orm";
 import type { Request } from "express";
@@ -11,16 +12,141 @@ import {
   extractUsernameFromPath,
   normalizeCreatorUsername,
 } from "@shared/creatorMarketplace";
-import { isCreatorMarketplaceEnabled } from "./creator-config";
+import {
+  getCreatorPlatformShopDomain,
+  isCreatorMarketplaceEnabled,
+} from "./creator-config";
 
 export { extractSubdomainFromHost, extractUsernameFromPath };
 
-const STOREFRONT_VISIBLE_STATUSES = new Set([
+/** HTML storefront can show these (paused shows a paused page). */
+export const STOREFRONT_VISIBLE_STATUSES = new Set([
   "onboarding",
   "active_beta",
   "partner",
   "paused",
 ]);
+
+/** Generate / cart / pack — must be actively selling. */
+export const CREATOR_API_ACTIVE_STATUSES = new Set([
+  "onboarding",
+  "active_beta",
+  "partner",
+]);
+
+function normalizeShopDomain(shop: string | null | undefined): string {
+  return String(shop || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
+}
+
+export function isCreatorPlatformShop(shop: string | null | undefined): boolean {
+  const platform = normalizeShopDomain(getCreatorPlatformShopDomain());
+  if (!platform) return false;
+  const s = normalizeShopDomain(shop);
+  return s === platform || s === platform.replace(/\.myshopify\.com$/, "");
+}
+
+/**
+ * Validate creator identity for public APIs (generate, analytics, cart).
+ * Enforces platform shop (optional), status allowlist, and id/username match.
+ */
+export async function assertPublicCreatorApiContext(params: {
+  shop?: string | null;
+  creatorId?: string | null;
+  creatorUsername?: string | null;
+  requirePlatformShop?: boolean;
+  allowedStatuses?: Set<string>;
+}): Promise<
+  | { ok: true; creator: Creator }
+  | { ok: false; status: number; error: string; code?: string }
+> {
+  if (!isCreatorMarketplaceEnabled()) {
+    return { ok: false, status: 404, error: "Creator Marketplace is not enabled." };
+  }
+
+  const requirePlatform = params.requirePlatformShop !== false;
+  if (requirePlatform) {
+    const platform = getCreatorPlatformShopDomain();
+    if (!platform) {
+      return {
+        ok: false,
+        status: 503,
+        error: "CREATOR_PLATFORM_SHOP_DOMAIN is not configured.",
+        code: "CREATOR_PLATFORM_SHOP_MISSING",
+      };
+    }
+    if (!isCreatorPlatformShop(params.shop)) {
+      return {
+        ok: false,
+        status: 403,
+        error: "Creator context is only valid on the platform shop.",
+        code: "CREATOR_WRONG_SHOP",
+      };
+    }
+  }
+
+  const rawId = params.creatorId ? String(params.creatorId).trim() : "";
+  const username = normalizeCreatorUsername(String(params.creatorUsername || ""));
+  if (!rawId && !username) {
+    return { ok: false, status: 400, error: "creatorId or creatorUsername is required." };
+  }
+
+  let byId: Creator | null = null;
+  let byUsername: Creator | null = null;
+
+  if (rawId) {
+    const [row] = await db.select().from(creators).where(eq(creators.id, rawId)).limit(1);
+    byId = row ?? null;
+  }
+  if (username) {
+    byUsername = await lookupCreatorByUsername(username);
+  }
+
+  if (rawId && username) {
+    if (!byId || !byUsername || byId.id !== byUsername.id) {
+      return {
+        ok: false,
+        status: 400,
+        error: "creatorId and creatorUsername do not match.",
+        code: "CREATOR_ID_MISMATCH",
+      };
+    }
+  }
+
+  const creator = byId || byUsername;
+  if (!creator) {
+    return { ok: false, status: 404, error: "Creator not found." };
+  }
+
+  const allowed = params.allowedStatuses || CREATOR_API_ACTIVE_STATUSES;
+  if (!allowed.has(creator.status)) {
+    const paused = ["paused", "suspended", "archived"].includes(creator.status);
+    return {
+      ok: false,
+      status: paused ? 403 : 404,
+      error: paused
+        ? "This creator shop is temporarily unavailable."
+        : "Creator storefront not available.",
+      code: paused ? "CREATOR_STORE_PAUSED" : "CREATOR_NOT_AVAILABLE",
+    };
+  }
+
+  return { ok: true, creator };
+}
+
+/** Strip sensitive fields before returning creators to admin UI. */
+export function sanitizeCreatorForAdmin<T extends Record<string, unknown> | Creator>(
+  row: T,
+): Omit<T, "otpCode" | "otpExpiresAt"> {
+  const { otpCode: _o, otpExpiresAt: _e, ...rest } = row as T & {
+    otpCode?: unknown;
+    otpExpiresAt?: unknown;
+  };
+  return rest as Omit<T, "otpCode" | "otpExpiresAt">;
+}
 
 type CacheEntry = { at: number; creator: Creator | null };
 const cache = new Map<string, CacheEntry>();

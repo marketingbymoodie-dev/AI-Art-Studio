@@ -92,11 +92,29 @@ export function registerCreatorPortalRoutes(app: Express): void {
 
   app.post("/api/creator/auth/verify-otp", async (req, res) => {
     if (!marketplaceGate(res)) return;
+    const ipRl = checkCreatorRateLimit({
+      key: `portal-otp-verify-ip:${clientIpFromReq(req)}`,
+      limit: 40,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!ipRl.ok) {
+      res.setHeader("Retry-After", String(ipRl.retryAfterSec));
+      return res.status(429).json({ error: "Too many attempts. Try again later." });
+    }
     try {
       const email = String(req.body?.email || "").toLowerCase().trim();
       const code = String(req.body?.code || "").trim();
       if (!email || !code) {
         return res.status(400).json({ error: "Email and code are required." });
+      }
+      const emailRl = checkCreatorRateLimit({
+        key: `portal-otp-verify-email:${email}`,
+        limit: 12,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!emailRl.ok) {
+        res.setHeader("Retry-After", String(emailRl.retryAfterSec));
+        return res.status(429).json({ error: "Too many attempts for this email. Try again later." });
       }
       const creator = await findPortalCreatorByEmail(email);
       if (!creator || !creator.otpCode || creator.otpCode !== code) {

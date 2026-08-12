@@ -7,14 +7,11 @@ import {
   creatorDailyStats,
   creatorEvents,
   creatorSessions,
-  creators,
 } from "@shared/schema";
 import {
   CREATOR_EVENT_TYPES,
-  normalizeCreatorUsername,
   type CreatorEventType,
 } from "@shared/creatorMarketplace";
-import { lookupCreatorByUsername } from "./creator-host";
 import { sumCreatorMoneyForDay } from "./creator-ledger";
 
 const UUID_RE =
@@ -43,19 +40,22 @@ function detectDevice(ua: string | undefined): string | null {
 export async function resolveCreatorId(params: {
   creatorId?: string | null;
   creatorUsername?: string | null;
+  /** When set, enforce platform-shop + status (analytics allows paused). */
+  shop?: string | null;
+  requirePlatformShop?: boolean;
 }): Promise<string | null> {
-  if (params.creatorId) {
-    const [row] = await db
-      .select({ id: creators.id })
-      .from(creators)
-      .where(eq(creators.id, String(params.creatorId)))
-      .limit(1);
-    if (row) return row.id;
-  }
-  const u = normalizeCreatorUsername(String(params.creatorUsername || ""));
-  if (!u) return null;
-  const creator = await lookupCreatorByUsername(u);
-  return creator?.id ?? null;
+  const { assertPublicCreatorApiContext, STOREFRONT_VISIBLE_STATUSES } = await import(
+    "./creator-host"
+  );
+  const asserted = await assertPublicCreatorApiContext({
+    shop: params.shop,
+    creatorId: params.creatorId,
+    creatorUsername: params.creatorUsername,
+    // Beacons may fire without shop; only enforce shop when provided.
+    requirePlatformShop: params.requirePlatformShop ?? !!params.shop,
+    allowedStatuses: STOREFRONT_VISIBLE_STATUSES,
+  });
+  return asserted.ok ? asserted.creator.id : null;
 }
 
 export async function upsertCreatorSession(params: {
@@ -244,65 +244,71 @@ export async function rollupCreatorDailyStats(opts?: {
     creatorId: opts?.creatorId,
   });
 
-  const ids = new Set([
+  const ids = [...new Set([
     ...byCreator.keys(),
     ...sessionMap.keys(),
     ...moneyByCreator.keys(),
-  ]);
+  ])];
   let creatorsUpdated = 0;
+  const CHUNK = 50;
 
-  for (const creatorId of ids) {
-    const ev = byCreator.get(creatorId) || {
-      pageViews: 0,
-      generations: 0,
-      atcCount: 0,
-      checkoutStarted: 0,
-      eventSessions: 0,
-    };
-    const sessions = sessionMap.get(creatorId) ?? ev.eventSessions;
-    const visitors = sessions; // v1: 1 session ≈ 1 visitor
-    const money = moneyByCreator.get(creatorId) || {
-      genCostCents: 0,
-      orders: 0,
-      grossCents: 0,
-      productProfitCents: 0,
-      netContributionCents: 0,
-    };
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    await Promise.all(
+      slice.map(async (creatorId) => {
+        const ev = byCreator.get(creatorId) || {
+          pageViews: 0,
+          generations: 0,
+          atcCount: 0,
+          checkoutStarted: 0,
+          eventSessions: 0,
+        };
+        const sessions = sessionMap.get(creatorId) ?? ev.eventSessions;
+        const visitors = sessions; // v1: 1 session ≈ 1 visitor
+        const money = moneyByCreator.get(creatorId) || {
+          genCostCents: 0,
+          orders: 0,
+          grossCents: 0,
+          productProfitCents: 0,
+          netContributionCents: 0,
+        };
 
-    await db
-      .insert(creatorDailyStats)
-      .values({
-        creatorId,
-        day,
-        visitors,
-        sessions,
-        pageViews: ev.pageViews,
-        generations: ev.generations,
-        genCostCents: money.genCostCents,
-        atcCount: ev.atcCount,
-        orders: money.orders,
-        grossCents: money.grossCents,
-        productProfitCents: money.productProfitCents,
-        netContributionCents: money.netContributionCents,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [creatorDailyStats.creatorId, creatorDailyStats.day],
-        set: {
-          visitors,
-          sessions,
-          pageViews: ev.pageViews,
-          generations: ev.generations,
-          genCostCents: money.genCostCents,
-          atcCount: ev.atcCount,
-          orders: money.orders,
-          grossCents: money.grossCents,
-          productProfitCents: money.productProfitCents,
-          netContributionCents: money.netContributionCents,
-          updatedAt: new Date(),
-        },
-      });
-    creatorsUpdated++;
+        await db
+          .insert(creatorDailyStats)
+          .values({
+            creatorId,
+            day,
+            visitors,
+            sessions,
+            pageViews: ev.pageViews,
+            generations: ev.generations,
+            genCostCents: money.genCostCents,
+            atcCount: ev.atcCount,
+            orders: money.orders,
+            grossCents: money.grossCents,
+            productProfitCents: money.productProfitCents,
+            netContributionCents: money.netContributionCents,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [creatorDailyStats.creatorId, creatorDailyStats.day],
+            set: {
+              visitors,
+              sessions,
+              pageViews: ev.pageViews,
+              generations: ev.generations,
+              genCostCents: money.genCostCents,
+              atcCount: ev.atcCount,
+              orders: money.orders,
+              grossCents: money.grossCents,
+              productProfitCents: money.productProfitCents,
+              netContributionCents: money.netContributionCents,
+              updatedAt: new Date(),
+            },
+          });
+      }),
+    );
+    creatorsUpdated += slice.length;
   }
 
   return { day, creatorsUpdated };

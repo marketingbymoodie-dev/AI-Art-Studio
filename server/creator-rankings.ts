@@ -61,21 +61,25 @@ async function sumNetContribution(params: {
   for (const id of params.creatorIds) out.set(id, 0);
   if (params.creatorIds.length === 0) return out;
 
-  const conditions = [inArray(creatorDailyStats.creatorId, params.creatorIds)];
-  if (params.startDay) conditions.push(gte(creatorDailyStats.day, params.startDay));
-  if (params.endDay) conditions.push(lte(creatorDailyStats.day, params.endDay));
+  const IN_CHUNK = 400;
+  for (let i = 0; i < params.creatorIds.length; i += IN_CHUNK) {
+    const chunk = params.creatorIds.slice(i, i + IN_CHUNK);
+    const conditions = [inArray(creatorDailyStats.creatorId, chunk)];
+    if (params.startDay) conditions.push(gte(creatorDailyStats.day, params.startDay));
+    if (params.endDay) conditions.push(lte(creatorDailyStats.day, params.endDay));
 
-  const rows = await db
-    .select({
-      creatorId: creatorDailyStats.creatorId,
-      total: sql<number>`coalesce(sum(${creatorDailyStats.netContributionCents}), 0)::int`,
-    })
-    .from(creatorDailyStats)
-    .where(and(...conditions))
-    .groupBy(creatorDailyStats.creatorId);
+    const rows = await db
+      .select({
+        creatorId: creatorDailyStats.creatorId,
+        total: sql<number>`coalesce(sum(${creatorDailyStats.netContributionCents}), 0)::int`,
+      })
+      .from(creatorDailyStats)
+      .where(and(...conditions))
+      .groupBy(creatorDailyStats.creatorId);
 
-  for (const row of rows) {
-    out.set(row.creatorId, Number(row.total) || 0);
+    for (const row of rows) {
+      out.set(row.creatorId, Number(row.total) || 0);
+    }
   }
   return out;
 }
@@ -105,21 +109,25 @@ async function persistPeriod(params: {
 
   if (ranked.length === 0) return 0;
 
-  await db.insert(creatorRankSnapshots).values(
-    ranked.map((r) => ({
-      periodType: params.periodType,
-      periodKey: params.periodKey,
-      metricKey: CREATOR_RANK_METRIC_NET_CONTRIBUTION,
-      creatorId: r.creatorId,
-      valueCents: r.valueCents,
-      value: null,
-      rank: r.rank,
-      ofCount: r.ofCount,
-      percentile: String(r.percentile),
-      sharePct: String(r.sharePct),
-      computedAt: now,
-    })),
-  );
+  const INSERT_CHUNK = 100;
+  for (let i = 0; i < ranked.length; i += INSERT_CHUNK) {
+    const slice = ranked.slice(i, i + INSERT_CHUNK);
+    await db.insert(creatorRankSnapshots).values(
+      slice.map((r) => ({
+        periodType: params.periodType,
+        periodKey: params.periodKey,
+        metricKey: CREATOR_RANK_METRIC_NET_CONTRIBUTION,
+        creatorId: r.creatorId,
+        valueCents: r.valueCents,
+        value: null,
+        rank: r.rank,
+        ofCount: r.ofCount,
+        percentile: String(r.percentile),
+        sharePct: String(r.sharePct),
+        computedAt: now,
+      })),
+    );
+  }
   return ranked.length;
 }
 
