@@ -308,6 +308,10 @@ export async function recordCreatorOrdersFromPaidWebhook(
   for (const raw of order.line_items) {
     const line = normalizeShopifyOrderLine(raw);
     const props = line.properties;
+    // Phase 8 packs are wallet top-ups, not product P&L.
+    if (props._credit_pack_id || String(raw.sku || "").startsWith("appai-pack-")) {
+      continue;
+    }
     const qty = Math.max(1, Number(raw.quantity) || 1);
     const linePriceCents = dollarsToCents(raw.price);
     const lineDiscountCents = Array.isArray(raw.discount_allocations)

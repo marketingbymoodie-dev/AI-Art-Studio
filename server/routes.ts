@@ -8389,25 +8389,33 @@ ${orientationExtra}
           if (workerCreatorCtx) {
             // Creator dual quota: burn monthly allowance + per-creator free (or wallet credits).
             // Do not burn platform-shop merchant plan quota.
+            // Pack-paid gens skip monthly allowance by default (CREATOR_PACK_GENS_BURN_ALLOWANCE opt-in).
             const {
               consumeCreatorMonthlyAllowance,
               consumeCreatorCustomerFreeGen,
             } = await import("./creator-quota");
-            await consumeCreatorMonthlyAllowance(workerCreatorCtx.id);
+            const { packGensBurnCreatorAllowance } = await import("./creator-packs");
+            let spentCreditSource: "pack" | "earned" | null = null;
             if (workerBillingMode === "customer_paid" && workerCustomerId) {
-              await applyCustomerBillingOnSuccess({
+              const paid = await applyCustomerBillingOnSuccess({
                 customerId: workerCustomerId,
                 mode: "customer_paid",
                 idempotencyKey: reqId.toString(),
                 externalRef: reqId.toString(),
                 shop,
               });
+              spentCreditSource = paid.source;
             } else if (workerBillingMode === "customer_free" && workerCustomerId) {
               await consumeCreatorCustomerFreeGen({
                 creatorId: workerCreatorCtx.id,
                 customerId: workerCustomerId,
                 freeGensPerCustomer: workerFreeLimit,
               });
+            }
+            const skipMonthlyForPack =
+              spentCreditSource === "pack" && !packGensBurnCreatorAllowance();
+            if (!skipMonthlyForPack) {
+              await consumeCreatorMonthlyAllowance(workerCreatorCtx.id);
             }
             void import("./creator-analytics")
               .then(({ recordCreatorEvent }) =>
@@ -10724,6 +10732,22 @@ ${orientationExtra}
           );
       }
 
+      // ── Creator Marketplace credit packs (Phase 8) ─────────────────────────
+      if (shop && Array.isArray(order.line_items)) {
+        void import("./creator-packs")
+          .then(({ grantCreatorPacksFromPaidOrder }) =>
+            grantCreatorPacksFromPaidOrder(shop, order),
+          )
+          .then((r) => {
+            if (r.granted > 0) {
+              console.log("[Shopify Orders Paid] creator packs granted", r);
+            }
+          })
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] creator packs failed:", e?.message || e),
+          );
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
@@ -10816,6 +10840,19 @@ ${orientationExtra}
               console.warn("[Shopify Refunds Create] creator ledger failed:", err?.message),
             );
         }
+
+        void import("./creator-packs")
+          .then(({ clawbackCreatorPacksForOrder }) =>
+            clawbackCreatorPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Refunds Create] creator packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Refunds Create] creator packs failed:", err?.message),
+          );
       }
       return res.status(200).send("OK");
     } catch (error: any) {
@@ -10856,6 +10893,19 @@ ${orientationExtra}
           })
           .catch((err: any) =>
             console.warn("[Shopify Orders Cancelled] creator ledger failed:", err?.message),
+          );
+
+        void import("./creator-packs")
+          .then(({ clawbackCreatorPacksForOrder }) =>
+            clawbackCreatorPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Orders Cancelled] creator packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Orders Cancelled] creator packs failed:", err?.message),
           );
       }
       return res.status(200).send("OK");

@@ -2410,6 +2410,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
   const [creditsPopoverOpen, setCreditsPopoverOpen] = useState(false);
+  const [creatorCreditPacks, setCreatorCreditPacks] = useState<
+    Array<{ packId: string; credits: number; priceInCents: number; label: string }>
+  >([]);
+  const [packCheckoutLoadingId, setPackCheckoutLoadingId] = useState<string | null>(null);
   const paidCredits = customer?.credits ?? 0;
   const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
   const artworksRemaining = storefrontArtworksRemaining({
@@ -2607,6 +2611,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const notifyInsufficientCredits = useCallback(() => {
     setCreditsPopoverOpen(true);
+    if (isCreatorStorefront) {
+      toast({
+        title: "No artwork credits remaining",
+        description: "Buy a Studio Credits pack to keep generating, or earn credits if rewards are enabled.",
+        duration: 8000,
+      });
+      return;
+    }
     const hints = activeEarnRungs.map(describeEarnRung);
     toast({
       title: "No artwork credits remaining",
@@ -2617,7 +2629,79 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           : "Sign in to earn Studio Credits.",
       duration: 8000,
     });
-  }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn]);
+  }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn, isCreatorStorefront]);
+
+  useEffect(() => {
+    if (!creditsPopoverOpen || !isCreatorStorefront) return;
+    let cancelled = false;
+    void safeFetch(`${API_BASE}/api/creators/credits/packs`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data || !Array.isArray(data.packs)) return;
+        setCreatorCreditPacks(
+          data.packs.map((p: any) => ({
+            packId: String(p.packId),
+            credits: Number(p.credits) || 0,
+            priceInCents: Number(p.priceInCents) || 0,
+            label: String(p.label || `${p.credits} credits`),
+          })),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [creditsPopoverOpen, isCreatorStorefront]);
+
+  const buyCreatorCreditPack = useCallback(
+    async (packId: string) => {
+      const customerId = storefrontCustomerId || customer?.id;
+      if (!customerId) {
+        toast({
+          title: "Almost ready",
+          description: "Finish loading your session, then try buying credits again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!creatorUsernameParam) {
+        toast({
+          title: "Unavailable",
+          description: "Credit packs are only available on creator shops.",
+          variant: "destructive",
+        });
+        return;
+      }
+      setPackCheckoutLoadingId(packId);
+      try {
+        const res = await safeFetch(`${API_BASE}/api/creators/credits/checkout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            packId,
+            creatorUsername: creatorUsernameParam,
+            customerId,
+            creatorSessionId: creatorSessionIdRef.current || undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.checkoutUrl) {
+          throw new Error(data?.error || data?.message || "Could not start checkout");
+        }
+        const target = window.top || window;
+        target.location.href = String(data.checkoutUrl);
+      } catch (e: any) {
+        toast({
+          title: "Pack checkout failed",
+          description: e?.message || "Please try again.",
+          variant: "destructive",
+        });
+      } finally {
+        setPackCheckoutLoadingId(null);
+      }
+    },
+    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast],
+  );
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
@@ -11566,6 +11650,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
           </p>
+          {isCreatorStorefront && (
+            <div className="rounded-md bg-muted p-3 space-y-2">
+              <p className="font-medium text-foreground">Buy more generations</p>
+              <p className="text-muted-foreground text-xs">
+                Checkout on Shopify. Credits are added after payment.
+              </p>
+              <div className="flex flex-col gap-2">
+                {(creatorCreditPacks.length
+                  ? creatorCreditPacks
+                  : [
+                      { packId: "5", credits: 5, priceInCents: 100, label: "5 Studio Credits for $1" },
+                      { packId: "10", credits: 10, priceInCents: 200, label: "10 Studio Credits for $2" },
+                      { packId: "20", credits: 20, priceInCents: 300, label: "20 Studio Credits for $3" },
+                    ]
+                ).map((pack) => (
+                  <Button
+                    key={pack.packId}
+                    type="button"
+                    variant="outline"
+                    className="w-full justify-between"
+                    disabled={packCheckoutLoadingId === pack.packId}
+                    onClick={() => void buyCreatorCreditPack(pack.packId)}
+                  >
+                    <span>{pack.label}</span>
+                    {packCheckoutLoadingId === pack.packId ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <span>${(pack.priceInCents / 100).toFixed(0)}</span>
+                    )}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
           {activeEarnRungs.length > 0 ? (
             <div className="rounded-md bg-muted p-3 space-y-2">
               <p className="font-medium text-foreground">Ways to earn</p>
@@ -11575,11 +11693,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 ))}
               </ul>
             </div>
-          ) : (
+          ) : !isCreatorStorefront ? (
             <p className="rounded-md bg-muted p-3 text-muted-foreground">
               No earn rewards are enabled for this shop right now.
             </p>
-          )}
+          ) : null}
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (
               <Button

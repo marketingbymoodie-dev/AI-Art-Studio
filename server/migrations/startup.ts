@@ -1256,6 +1256,26 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "creator_pack_purchases",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_pack_purchases" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "customer_id" text NOT NULL,
+        "session_id" varchar,
+        "shopify_order_id" text NOT NULL,
+        "shopify_line_id" text NOT NULL,
+        "pack_id" text NOT NULL,
+        "credits" integer NOT NULL,
+        "price_cents" integer NOT NULL DEFAULT 0,
+        "credits_clawed" integer NOT NULL DEFAULT 0,
+        "status" text NOT NULL DEFAULT 'paid',
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_notes",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_notes" (
@@ -1519,6 +1539,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_rank_snapshots_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_rank_snapshots_uidx"
       ON "creator_rank_snapshots" ("period_type", "period_key", "metric_key", "creator_id")`,
+  },
+  {
+    name: "creator_pack_purchases_line_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_pack_purchases_line_uidx"
+      ON "creator_pack_purchases" ("shopify_order_id", "shopify_line_id")`,
+  },
+  {
+    name: "creator_pack_purchases_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_pack_purchases_creator_idx"
+      ON "creator_pack_purchases" ("creator_id", "created_at")`,
   },
 ];
 

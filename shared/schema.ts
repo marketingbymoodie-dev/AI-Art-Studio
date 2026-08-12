@@ -1715,6 +1715,34 @@ export const creatorPayouts = pgTable(
   (table) => [index("creator_payouts_creator_idx").on(table.creatorId)],
 );
 
+/** Creator Marketplace Phase 8 — customer generation pack purchases (platform shop). */
+export const creatorPackPurchases = pgTable(
+  "creator_pack_purchases",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    customerId: text("customer_id").notNull(),
+    sessionId: varchar("session_id"),
+    shopifyOrderId: text("shopify_order_id").notNull(),
+    shopifyLineId: text("shopify_line_id").notNull(),
+    packId: text("pack_id").notNull(),
+    credits: integer("credits").notNull(),
+    priceCents: integer("price_cents").notNull().default(0),
+    creditsClawed: integer("credits_clawed").notNull().default(0),
+    status: text("status").notNull().default("paid"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_pack_purchases_line_uidx").on(
+      table.shopifyOrderId,
+      table.shopifyLineId,
+    ),
+    index("creator_pack_purchases_creator_idx").on(table.creatorId, table.createdAt),
+    index("creator_pack_purchases_customer_idx").on(table.customerId),
+  ],
+);
+
 export const creatorNotes = pgTable(
   "creator_notes",
   {

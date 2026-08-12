@@ -582,6 +582,65 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  /** List Studio Credit packs available on the creator storefront. */
+  app.get("/api/creators/credits/packs", async (_req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      const { listCreatorPacksForSale } = await import("../creator-packs");
+      const packs = await listCreatorPacksForSale();
+      res.json({
+        packs: packs.map((p) => ({
+          packId: p.packId,
+          credits: p.credits,
+          priceInCents: p.priceInCents,
+          label: p.label,
+        })),
+        storefrontReady: isCreatorStorefrontConfigured(),
+      });
+    } catch (e: any) {
+      console.error("[creators] list packs failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to list packs" });
+    }
+  });
+
+  /**
+   * Create Shopify checkout for a generation credit pack (platform shop).
+   * Credits are granted on orders/paid via creator-packs grant.
+   */
+  app.post("/api/creators/credits/checkout", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      if (!isCreatorStorefrontConfigured()) {
+        return res.status(503).json({
+          error: "CREATOR_STOREFRONT_NOT_CONFIGURED",
+          message:
+            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_STOREFRONT_API_TOKEN on Railway staging.",
+        });
+      }
+      const body = req.body ?? {};
+      const { createCreatorPackCheckout } = await import("../creator-packs");
+      const result = await createCreatorPackCheckout({
+        packId: String(body.packId || ""),
+        creatorUsername: String(body.creatorUsername || ""),
+        customerId: String(body.customerId || ""),
+        creatorSessionId: body.creatorSessionId ? String(body.creatorSessionId) : null,
+      });
+      res.json({
+        success: true,
+        checkoutUrl: result.checkoutUrl,
+        cartId: result.cartId,
+        pack: result.pack,
+        platformShopDomain: getCreatorPlatformShopDomain(),
+      });
+    } catch (e: any) {
+      console.error("[creators] pack checkout failed:", e);
+      const msg = e?.message || "Failed to create pack checkout";
+      const status =
+        /required|Unknown|Invalid|not found|not accepting/i.test(msg) ? 400 : 500;
+      res.status(status).json({ error: msg });
+    }
+  });
+
   /**
    * Create a Storefront API cart on the platform shop and return checkoutUrl.
    * Client resolves shadow variant first, then posts here (creator host adapter).

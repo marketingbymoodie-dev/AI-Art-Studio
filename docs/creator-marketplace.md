@@ -95,6 +95,23 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 
 Other creators’ numbers are never exposed on the portal or public routes.
 
+## Phase 8 — generation credit packs
+
+Customer top-ups on the **platform shop** via Shopify checkout (no Stripe). Wallet reuse: `grantStudioCredits({ source: "pack" })` / spend earned→pack / clawback prefers pack.
+
+| Piece | Behaviour |
+|-------|-----------|
+| Catalog | `shared/storefront-credits.ts` — 5/$1, 10/$2, 20/$3 |
+| Shopify SKUs | Auto-created on platform shop (`appai-pack-{id}`); variant ids cached in `platform_config` or `CREATOR_PACK_VARIANTS_JSON` |
+| Checkout | `GET /api/creators/credits/packs` · `POST /api/creators/credits/checkout` → Storefront cart → `checkoutUrl` |
+| Grant | Platform-shop `orders/paid` → `creator_pack_purchases` + pack credit grant (idempotent per order line) |
+| Refund / cancel | Clawback pack credits; purchase row status `refunded` / `partially_refunded` |
+| Allowance | Pack-paid gens **do not** burn creator monthly allowance by default (`CREATOR_PACK_GENS_BURN_ALLOWANCE=true` to opt in) |
+| Ledger | Pack lines skipped in `creator_orders` P&L (wallet top-up, not product revenue) |
+| UI | Creator embed Studio Credits dialog — buy pack buttons when out of gens |
+
+Line attrs on pack cart: `_credit_pack_id`, `_appai_customer_id`, `_creator_id`, `_creator_username`.
+
 ## Phase 6 — Creator Portal
 
 | Surface | Path |
