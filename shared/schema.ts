@@ -1450,6 +1450,9 @@ export const creators = pgTable(
     agreementEndAt: timestamp("agreement_end_at"),
     emailAutomationToggles: jsonb("email_automation_toggles").$type<Record<string, boolean>>(),
     applicationId: varchar("application_id"),
+    /** Creator Portal OTP (Phase 6) — cleared after verify. */
+    otpCode: text("otp_code"),
+    otpExpiresAt: timestamp("otp_expires_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

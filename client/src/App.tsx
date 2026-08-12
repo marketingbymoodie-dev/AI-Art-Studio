@@ -45,6 +45,8 @@ import CreatorPathStorefrontPage, {
   CreatorBootStorefrontPage,
   hasCreatorBootPayload,
 } from "@/pages/creators/storefront";
+import CreatorPortalLoginPage from "@/pages/portal/login";
+import CreatorPortalDashboardPage from "@/pages/portal/dashboard";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -97,6 +99,10 @@ function AppRouter() {
       <Route path="/c/:username/about" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username/customize/:handle" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username" component={CreatorPathStorefrontPage} />
+
+      {/* Creator Portal (OTP auth — own data only) */}
+      <Route path="/portal/login" component={CreatorPortalLoginPage} />
+      <Route path="/portal" component={CreatorPortalDashboardPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />

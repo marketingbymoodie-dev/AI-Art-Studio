@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canCreatorAccessPortal,
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
   computeCreatorOrderPnl,
@@ -48,6 +49,15 @@ describe("host / path resolution", () => {
   it("parses /c/:username paths", () => {
     expect(extractUsernameFromPath("/c/max")).toBe("max");
     expect(extractUsernameFromPath("/c/skate-king/products")).toBe("skate-king");
+  });
+});
+
+describe("portal login statuses", () => {
+  it("allows active creators and blocks suspended", () => {
+    expect(canCreatorAccessPortal("active_beta")).toBe(true);
+    expect(canCreatorAccessPortal("onboarding")).toBe(true);
+    expect(canCreatorAccessPortal("suspended")).toBe(false);
+    expect(canCreatorAccessPortal("application")).toBe(false);
   });
 });
 

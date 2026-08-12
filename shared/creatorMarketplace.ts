@@ -65,6 +65,20 @@ export type CreatorType = (typeof CREATOR_TYPES)[number];
 export const CREATOR_SHARE_BASES = ["product_profit", "net_contribution"] as const;
 export type CreatorShareBasis = (typeof CREATOR_SHARE_BASES)[number];
 
+/** Statuses allowed to sign into Creator Portal (Phase 6). */
+export const CREATOR_PORTAL_LOGIN_STATUSES = [
+  "onboarding",
+  "active_beta",
+  "partner",
+  "paused",
+  "beta_completed",
+] as const;
+export type CreatorPortalLoginStatus = (typeof CREATOR_PORTAL_LOGIN_STATUSES)[number];
+
+export function canCreatorAccessPortal(status: string | null | undefined): boolean {
+  return (CREATOR_PORTAL_LOGIN_STATUSES as readonly string[]).includes(String(status || ""));
+}
+
 /** Pure P&L helpers (Phase 5) — unit-tested; no DB. */
 export type CreatorOrderPnlInput = {
   grossCents: number;

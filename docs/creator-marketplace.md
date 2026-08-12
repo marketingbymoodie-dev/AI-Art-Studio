@@ -83,6 +83,17 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 | ATC | `POST /api/creators/cart/checkout` records `atc` + `checkout_started` |
 | Rollup | Daily job → `creator_daily_stats`; admin `GET /api/platform/creators/:id/stats?days=14` |
 
+## Phase 6 — Creator Portal
+
+| Surface | Path |
+|---------|------|
+| Login | `/portal/login` — email OTP via Resend |
+| Dashboard | `/portal` — Today / Rank (placeholder) / Network (placeholder + traffic) / Performance |
+| Auth API | `POST /api/creator/auth/request-otp`, `verify-otp`, `logout` · `GET /api/creator/me` |
+| Data API | `GET /api/creator/stats`, `/orders`, `/performance` (own creator only via JWT) |
+
+Sign-in statuses: `onboarding`, `active_beta`, `partner`, `paused`, `beta_completed`. Token: Bearer + httpOnly cookie `appai_creator_token`.
+
 ## Phase 5 — financial ledger
 
 | Piece | Behaviour |

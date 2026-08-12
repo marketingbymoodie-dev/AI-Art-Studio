@@ -61,7 +61,8 @@ export function serveStatic(app: Express) {
     return (
       pathname.startsWith("/s/") ||
       pathname.startsWith("/storefront/") ||
-      pathname.startsWith("/c/")
+      pathname.startsWith("/c/") ||
+      pathname.startsWith("/portal")
     );
   }
 
