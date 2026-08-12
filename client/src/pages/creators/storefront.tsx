@@ -43,10 +43,17 @@ function designerHref(opts: {
   handle: string;
   platformShop: string | null;
   creator: CreatorBoot;
+  productTypeId?: number | null;
+  title?: string | null;
 }): string {
   const params = new URLSearchParams();
   if (opts.platformShop) params.set("shop", opts.platformShop);
   params.set("page", opts.handle);
+  params.set("pageHandle", opts.handle);
+  if (opts.productTypeId != null && opts.productTypeId > 0) {
+    params.set("productTypeId", String(opts.productTypeId));
+  }
+  if (opts.title) params.set("productTitle", opts.title);
   params.set("creatorUsername", opts.creator.username);
   params.set("creatorId", opts.creator.id);
   params.set("storefront", "true");
@@ -156,7 +163,15 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
           </Button>
           {pages[0] && platformShop ? (
             <Button asChild variant="secondary">
-              <a href={designerHref({ handle: pages[0].handle, platformShop, creator })}>
+              <a
+                href={designerHref({
+                  handle: pages[0].handle,
+                  platformShop,
+                  creator,
+                  productTypeId: pages[0].productTypeId,
+                  title: pages[0].title,
+                })}
+              >
                 Start designing
               </a>
             </Button>
@@ -179,7 +194,13 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
               page={p}
               href={
                 platformShop
-                  ? designerHref({ handle: p.handle, platformShop, creator })
+                  ? designerHref({
+                      handle: p.handle,
+                      platformShop,
+                      creator,
+                      productTypeId: p.productTypeId,
+                      title: p.title,
+                    })
                   : `${basePath}/customize/${p.handle}`
               }
             />
@@ -259,7 +280,13 @@ function ProductsView({
               page={p}
               href={
                 platformShop
-                  ? designerHref({ handle: p.handle, platformShop, creator })
+                  ? designerHref({
+                      handle: p.handle,
+                      platformShop,
+                      creator,
+                      productTypeId: p.productTypeId,
+                      title: p.title,
+                    })
                   : `${basePath}/customize/${p.handle}`
               }
             />
@@ -305,13 +332,20 @@ function CustomizeRedirect({ creator }: { creator: CreatorBoot }) {
   const { data } = useCreatorPages(creator.username);
   const platformShop = data?.platformShopDomain ?? null;
   const handle = params.handle || "";
+  const page = (data?.pages || []).find((p) => p.handle === handle);
 
   useEffect(() => {
     if (!handle || !platformShop) return;
     window.location.replace(
-      designerHref({ handle, platformShop, creator }),
+      designerHref({
+        handle,
+        platformShop,
+        creator,
+        productTypeId: page?.productTypeId,
+        title: page?.title,
+      }),
     );
-  }, [handle, platformShop, creator]);
+  }, [handle, platformShop, creator, page?.productTypeId, page?.title]);
 
   return (
     <div className="space-y-3 py-10 text-center">

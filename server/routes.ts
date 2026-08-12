@@ -7341,6 +7341,150 @@ ${orientationExtra}
     }
   });
 
+  /**
+   * GET /api/storefront/customizer-page?shop=&handle=
+   * Same payload shape as App Proxy /api/proxy/customizer-page, but for
+   * Creator Marketplace / Railway-hosted designer (no proxy HMAC).
+   */
+  app.get("/api/storefront/customizer-page", asyncHandler(async (req: Request, res: Response) => {
+    const shop = normalizeMyshopifyShopDomain(String(req.query.shop || ""));
+    const handle = String(req.query.handle || "").trim();
+    if (!shop || !handle) {
+      return res.status(400).json({ error: "Missing shop or handle" });
+    }
+
+    let page = await storage.getCustomizerPageByHandle(shop, handle);
+    if (!page) {
+      const bare = shop.endsWith(".myshopify.com")
+        ? shop.slice(0, -".myshopify.com".length)
+        : "";
+      if (bare) page = await storage.getCustomizerPageByHandle(bare, handle);
+    }
+    if (!page || page.status === "disabled") {
+      return res.status(404).json({ error: "Customizer page not found" });
+    }
+
+    const installation = await getAuthorizedInstallation(shop);
+
+    let designerConfig = null;
+    if (page.productTypeId) {
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (pt) {
+          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+            allowUnpublishedHarvest: true,
+          });
+          const sizeChart = ptForDesigner!.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
+            : null;
+          designerConfig = buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, sizeChart);
+        }
+      } catch (e) {
+        console.warn(
+          `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
+          e,
+        );
+      }
+    }
+
+    let variants: Array<{ id: string; title: string; price: string }> = [];
+    if (page.baseProductId && installation?.accessToken) {
+      try {
+        const prodResult = await shopifyApiCall(
+          shop,
+          installation.accessToken,
+          `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
+        );
+        const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
+        const productImages: any[] = prodResult.data?.product?.images ?? [];
+        let baseVariants = selectBaseCatalogVariants(rawVariants);
+        if (baseVariants.length === 0 && page.productTypeId) {
+          const pt = await storage.getProductType(page.productTypeId);
+          if (pt) {
+            const fallback = enrichVariantsWithShopifyPrices(
+              buildFallbackVariantsFromProductType(pt),
+              rawVariants,
+            );
+            if (fallback.length > 0) baseVariants = fallback;
+          }
+        }
+        variants = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
+          id: String(v.id),
+          title: v.title || "",
+          price: v.price || "0.00",
+          option1: v.option1 ?? undefined,
+          option2: v.option2 ?? undefined,
+          option3: v.option3 ?? undefined,
+          imageSrc: v.imageSrc ?? undefined,
+        }));
+        const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
+        if (productIdNum) {
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum).catch(
+            () => {},
+          );
+        }
+      } catch (e) {
+        console.warn(`[storefront/customizer-page] variants failed:`, e);
+      }
+    }
+
+    let stylePresets: any[] = [];
+    try {
+      const merchantId = installation?.merchantId;
+      const dbStyles = merchantId
+        ? await storage.getActiveStylePresetsByMerchant(merchantId)
+        : [];
+      stylePresets = dbStyles.map((s: any) => {
+        const hardcoded = STYLE_PRESETS.find(
+          (h) => h.id === s.id.toString() || h.name === s.name,
+        );
+        return {
+          id: s.id.toString(),
+          name: s.name,
+          promptSuffix: s.promptPrefix,
+          category: s.category || "all",
+          promptPlaceholder: s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
+          options: s.options || (hardcoded as any)?.options,
+          baseImageUrl: s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+          descriptionOptional: !!s.descriptionOptional,
+        };
+      });
+    } catch (e) {
+      console.warn(`[storefront/customizer-page] stylePresets failed:`, e);
+    }
+
+    const pageStyleConfig =
+      parseCustomizerPageStyleConfig(page.styleConfig) ??
+      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+    stylePresets = filterStylePresetsForPage(
+      stylePresets,
+      pageStyleConfig,
+      designerConfig?.designerType,
+    ).map((s) => ({
+      ...s,
+      promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
+    }));
+
+    return res.json({
+      id: page.id,
+      handle: page.handle,
+      title: page.title,
+      status: page.status,
+      baseVariantId: page.baseVariantId,
+      baseProductId: page.baseProductId ?? null,
+      baseProductHandle: (page as any).baseProductHandle ?? null,
+      baseProductTitle: page.baseProductTitle ?? null,
+      baseVariantTitle: page.baseVariantTitle ?? null,
+      baseProductPrice: page.baseProductPrice ?? null,
+      productTypeId: page.productTypeId ?? null,
+      designerConfig,
+      variants,
+      stylePresets,
+      styleConfig: pageStyleConfig,
+      freshDesignAllowed: page.status === "active" || page.status === "preview",
+    });
+  }));
+
   // Resolve product type ID from shop + product handle
   app.get("/api/storefront/resolve-product-type", asyncHandler(async (req: Request, res: Response) => {
     const shop = req.query.shop as string;

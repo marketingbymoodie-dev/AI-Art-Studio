@@ -1553,6 +1553,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const initialProductTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Product");
   const getInitialPageHandle = (): string => {
+    // Creator Marketplace / direct designer links: ?page= or ?pageHandle=
+    const fromQuery =
+      (searchParams.get("page") || searchParams.get("pageHandle") || "").trim();
+    if (fromQuery) return fromQuery;
     try {
       const parentPath = window.parent.location.pathname || "";
       const match = parentPath.match(/^\/pages\/([^/?#]+)/);
@@ -1562,19 +1566,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     return "";
   };
-  const [activeProductContext, setActiveProductContext] = useState(() => ({
-    productTypeId: embeddedContext?.productTypeId != null
-      ? String(embeddedContext.productTypeId)
-      : (searchParams.get("productTypeId") || "1"),
-    productId: searchParams.get("productId") || "",
-    productHandle: getInitialProductHandle(),
-    productTitle: initialProductTitle,
-    displayName: decodeURIComponent(searchParams.get("displayName") || initialProductTitle.replace("Custom ", "")),
-    selectedVariant: searchParams.get("selectedVariant") || "",
-    pageHandle: getInitialPageHandle(),
-    designerConfig: null as any,
-    stylePresets: null as StylePreset[] | null,
-  }));
+  const initialPageHandle = getInitialPageHandle();
+  const [activeProductContext, setActiveProductContext] = useState(() => {
+    const fromUrlPt =
+      embeddedContext?.productTypeId != null
+        ? String(embeddedContext.productTypeId)
+        : searchParams.get("productTypeId") || "";
+    // Never default to productTypeId "1" (hoodie) when a customizer page handle is present —
+    // that made every Creator Marketplace product open the Unisex Hoodie designer.
+    const productTypeIdInit =
+      fromUrlPt ||
+      (initialPageHandle ? "0" : "1");
+    return {
+      productTypeId: productTypeIdInit,
+      productId: searchParams.get("productId") || "",
+      productHandle: getInitialProductHandle(),
+      productTitle: initialProductTitle,
+      displayName: decodeURIComponent(
+        searchParams.get("displayName") || initialProductTitle.replace("Custom ", ""),
+      ),
+      selectedVariant: searchParams.get("selectedVariant") || "",
+      pageHandle: initialPageHandle,
+      designerConfig: null as any,
+      stylePresets: null as StylePreset[] | null,
+    };
+  });
 
   const productTypeId = activeProductContext.productTypeId || "1";
   const productId = activeProductContext.productId || "";
@@ -3409,7 +3425,76 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       const cacheBuster = `_t=${Date.now()}`;
       const myshopifyDomain = getMyShopifyDomain();
-      console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);
+      const pageHandleForLoad =
+        activeProductContext.pageHandle ||
+        searchParams.get("page") ||
+        searchParams.get("pageHandle") ||
+        "";
+      console.log(
+        '[EmbedDesign] Loading config - productTypeId:',
+        productTypeId,
+        'productHandle:',
+        productHandle,
+        'pageHandle:',
+        pageHandleForLoad,
+        'shop:',
+        myshopifyDomain,
+      );
+
+      // Creator Marketplace / ?page=handle: load the assigned customizer page (not productTypeId=1 hoodie).
+      if (isStorefront && pageHandleForLoad && myshopifyDomain && !activeProductContext.designerConfig) {
+        try {
+          const pageUrl =
+            `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(myshopifyDomain)}` +
+            `&handle=${encodeURIComponent(pageHandleForLoad)}&${cacheBuster}`;
+          console.log(`${logPrefix} Fetching storefront customizer page:`, pageUrl);
+          const pageRes = await fetchWithRetry(pageUrl, 1);
+          if (pageRes.ok) {
+            const pageCfg = await pageRes.json();
+            if (pageCfg?.designerConfig) {
+              if (Array.isArray(pageCfg.stylePresets) && pageCfg.stylePresets.length > 0) {
+                setStylePresets(pageCfg.stylePresets);
+              }
+              if (pageCfg.styleConfig !== undefined) {
+                setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
+              }
+              if (Array.isArray(pageCfg.variants) && pageCfg.variants.length > 0) {
+                setShopifyVariants(
+                  pageCfg.variants.map((v: any) => ({
+                    id: String(v.id),
+                    title: v.title || "",
+                    price: v.price || "0.00",
+                    option1: v.option1,
+                    option2: v.option2,
+                    option3: v.option3,
+                    imageSrc: v.imageSrc,
+                  })),
+                );
+              }
+              setActiveProductContext((prev) => ({
+                ...prev,
+                productTypeId: pageCfg.productTypeId
+                  ? String(pageCfg.productTypeId)
+                  : prev.productTypeId,
+                productId: pageCfg.baseProductId ? String(pageCfg.baseProductId) : prev.productId,
+                productHandle: pageCfg.baseProductHandle || prev.productHandle,
+                productTitle: pageCfg.title || pageCfg.baseProductTitle || prev.productTitle,
+                displayName: pageCfg.title || pageCfg.baseProductTitle || prev.displayName,
+                pageHandle: pageCfg.handle || pageHandleForLoad,
+                designerConfig: pageCfg.designerConfig,
+                stylePresets: pageCfg.stylePresets || prev.stylePresets,
+              }));
+              applyDesignerConfig(pageCfg.designerConfig, "STOREFRONT CUSTOMIZER PAGE");
+              if (!isCancelled) setConfigLoading(false);
+              return;
+            }
+          } else {
+            console.warn(`${logPrefix} customizer-page HTTP ${pageRes.status}`);
+          }
+        } catch (pageErr) {
+          console.warn(`${logPrefix} customizer-page load failed, falling back:`, pageErr);
+        }
+      }
 
       // Step 1: Resolve productTypeId — only call the resolver when we don't already
       // have a valid (non-zero) productTypeId.  When the config supplies a real ID
@@ -3655,7 +3740,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       isCancelled = true;
       masterAbort.abort();
     };
-  }, [productTypeId, productHandle, activeProductContext.designerConfig, activeProductContext.stylePresets, applyDesignerConfig]);
+  }, [
+    productTypeId,
+    productHandle,
+    activeProductContext.pageHandle,
+    activeProductContext.designerConfig,
+    activeProductContext.stylePresets,
+    applyDesignerConfig,
+    isStorefront,
+  ]);
 
   // Fetch merchant's branding settings and apply to designer
   useEffect(() => {
