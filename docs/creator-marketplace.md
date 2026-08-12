@@ -83,4 +83,18 @@ Staging continues to use `/c/{username}` until a staging wildcard exists.
 | ATC | `POST /api/creators/cart/checkout` records `atc` + `checkout_started` |
 | Rollup | Daily job → `creator_daily_stats`; admin `GET /api/platform/creators/:id/stats?days=14` |
 
-Orders / AI cost cents in daily stats land in Phase 5.
+## Phase 5 — financial ledger
+
+| Piece | Behaviour |
+|-------|-----------|
+| AI gen cost | On creator gen complete → `creator_generation_costs` (snapshot of `AI_GENERATION_COST_USD`) |
+| Paid order | Platform-shop `orders/paid` → `creator_orders` + `creator_order_lines` (gross, discounts, COGS, txn fee, Product Profit, Net Creator Contribution, shares) |
+| Refunds / cancel | `refunds/create` / `orders-cancelled` adjust `refund_cents` + recompute P&L |
+| Daily rollup | `creator_daily_stats` fills `gen_cost_cents`, `orders`, `gross_cents`, `product_profit_cents`, `net_contribution_cents` |
+| Admin | `GET /api/platform/creators/:id/stats` (money fields) · `GET /api/platform/creators/:id/orders` |
+| Txn fee config | `CREATOR_TRANSACTION_FEE_PCT` (default 2.9) + `CREATOR_TRANSACTION_FEE_FIXED_CENTS` (default 30) |
+
+**Formula:** Product Profit = gross − discounts − fulfilment/COGS − txn fees − refunds.  
+Net Creator Contribution = Product Profit − AI generation costs (period rollup uses day sum of gen costs).
+
+Production `orders/paid` / `refunds/create` still need Shopify PCD + toml subscribe before live merchant ledger data.

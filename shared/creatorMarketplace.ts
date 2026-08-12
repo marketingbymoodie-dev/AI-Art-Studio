@@ -12,6 +12,12 @@ export const PLATFORM_CONFIG_KEYS = {
   CREATOR_TRANSACTION_FEE_FIXED_CENTS: "CREATOR_TRANSACTION_FEE_FIXED_CENTS",
 } as const;
 
+/** Default Shopify Payments-style fee (percent of charged amount). */
+export const DEFAULT_CREATOR_TRANSACTION_FEE_PCT = 2.9;
+
+/** Default fixed fee per order (cents), e.g. Shopify Payments $0.30. */
+export const DEFAULT_CREATOR_TRANSACTION_FEE_FIXED_CENTS = 30;
+
 /** Attribution event types (Phase 4). */
 export const CREATOR_EVENT_TYPES = [
   "page_view",
@@ -58,6 +64,84 @@ export type CreatorType = (typeof CREATOR_TYPES)[number];
 
 export const CREATOR_SHARE_BASES = ["product_profit", "net_contribution"] as const;
 export type CreatorShareBasis = (typeof CREATOR_SHARE_BASES)[number];
+
+/** Pure P&L helpers (Phase 5) — unit-tested; no DB. */
+export type CreatorOrderPnlInput = {
+  grossCents: number;
+  discountCents: number;
+  fulfilmentCostCents: number;
+  transactionFeeCents: number;
+  aiGenCostCents: number;
+  refundCents?: number;
+  shareBasis: CreatorShareBasis;
+  revenueShareCreatorPct: number;
+  revenueShareAasPct: number;
+};
+
+export type CreatorOrderPnlResult = {
+  productProfitCents: number;
+  netContributionCents: number;
+  creatorShareCents: number;
+  aasShareCents: number;
+};
+
+export function computeTransactionFeeCents(params: {
+  amountCents: number;
+  feePct?: number;
+  feeFixedCents?: number;
+}): number {
+  const amount = Math.max(0, Math.round(params.amountCents || 0));
+  const pct =
+    params.feePct != null && Number.isFinite(params.feePct)
+      ? Math.max(0, params.feePct)
+      : DEFAULT_CREATOR_TRANSACTION_FEE_PCT;
+  const fixed =
+    params.feeFixedCents != null && Number.isFinite(params.feeFixedCents)
+      ? Math.max(0, Math.round(params.feeFixedCents))
+      : DEFAULT_CREATOR_TRANSACTION_FEE_FIXED_CENTS;
+  if (amount <= 0) return 0;
+  return Math.round((amount * pct) / 100) + fixed;
+}
+
+/**
+ * Product Profit = gross − discounts − fulfilment/COGS − txn fees − refunds.
+ * Net Creator Contribution = Product Profit − AI generation costs.
+ * Shares apply to the chosen basis (`product_profit` | `net_contribution`).
+ */
+export function computeCreatorOrderPnl(input: CreatorOrderPnlInput): CreatorOrderPnlResult {
+  const gross = Math.max(0, Math.round(input.grossCents || 0));
+  const discount = Math.max(0, Math.round(input.discountCents || 0));
+  const fulfilment = Math.max(0, Math.round(input.fulfilmentCostCents || 0));
+  const fee = Math.max(0, Math.round(input.transactionFeeCents || 0));
+  const ai = Math.max(0, Math.round(input.aiGenCostCents || 0));
+  const refund = Math.max(0, Math.round(input.refundCents || 0));
+
+  const productProfitCents = gross - discount - fulfilment - fee - refund;
+  const netContributionCents = productProfitCents - ai;
+
+  const creatorPct = Math.min(
+    100,
+    Math.max(0, Math.round(input.revenueShareCreatorPct || 0)),
+  );
+  const aasPct = Math.min(
+    100,
+    Math.max(0, Math.round(input.revenueShareAasPct || 0)),
+  );
+  const basis =
+    input.shareBasis === "product_profit" ? productProfitCents : netContributionCents;
+  const creatorShareCents = Math.round((basis * creatorPct) / 100);
+  const aasShareCents =
+    aasPct > 0 && creatorPct + aasPct === 100
+      ? basis - creatorShareCents
+      : Math.round((basis * aasPct) / 100);
+
+  return {
+    productProfitCents,
+    netContributionCents,
+    creatorShareCents,
+    aasShareCents,
+  };
+}
 
 export const SOCIAL_PLATFORMS = [
   "instagram",

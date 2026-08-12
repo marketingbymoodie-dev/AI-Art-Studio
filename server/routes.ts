@@ -8422,6 +8422,19 @@ ${orientationExtra}
                 }),
               )
               .catch(() => {});
+            void import("./creator-ledger")
+              .then(({ recordCreatorGenerationCost }) =>
+                recordCreatorGenerationCost({
+                  creatorId: workerCreatorCtx.id,
+                  generationJobId: jobId,
+                  sessionId: workerCreatorCtx.sessionId,
+                  customerId: workerCustomerId,
+                  billingMode: workerBillingMode,
+                }),
+              )
+              .catch((e: any) =>
+                console.warn("[Storefront Generate] creator gen cost failed:", e?.message || e),
+              );
           } else {
             await finalizeGenerationBilling({
               installation,
@@ -10694,6 +10707,23 @@ ${orientationExtra}
         );
       }
 
+      // ── Creator Marketplace financial ledger (Phase 5) ─────────────────────
+      // Platform-shop orders with `_creator_id` / job.creator_id → creator_orders.
+      if (shop && Array.isArray(order.line_items)) {
+        void import("./creator-ledger")
+          .then(({ recordCreatorOrdersFromPaidWebhook }) =>
+            recordCreatorOrdersFromPaidWebhook(shop, order),
+          )
+          .then((r) => {
+            if (r.ordersUpserted > 0) {
+              console.log("[Shopify Orders Paid] creator ledger", r);
+            }
+          })
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] creator ledger failed:", e?.message || e),
+          );
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
@@ -10760,6 +10790,32 @@ ${orientationExtra}
             console.log(`[Shopify Refunds Create] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
           }
         }).catch((err: any) => console.warn("[Shopify Refunds Create] clawback failed:", err?.message));
+
+        // Creator ledger: accumulate refunded cents from this refund event.
+        const refundCents = Array.isArray(body.transactions)
+          ? body.transactions.reduce(
+              (s: number, t: any) => s + Math.max(0, Math.round(Number(t.amount || 0) * 100)),
+              0,
+            )
+          : Math.max(0, Math.round(Number(body.amount || 0) * 100));
+        if (refundCents > 0) {
+          void import("./creator-ledger")
+            .then(({ addCreatorOrderRefund }) =>
+              addCreatorOrderRefund({
+                shop,
+                orderId: String(orderId),
+                additionalRefundCents: refundCents,
+              }),
+            )
+            .then((r) => {
+              if (r.updated > 0) {
+                console.log("[Shopify Refunds Create] creator ledger updated", r);
+              }
+            })
+            .catch((err: any) =>
+              console.warn("[Shopify Refunds Create] creator ledger failed:", err?.message),
+            );
+        }
       }
       return res.status(200).send("OK");
     } catch (error: any) {
@@ -10788,6 +10844,19 @@ ${orientationExtra}
             console.log(`[Shopify Orders Cancelled] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
           }
         }).catch((err: any) => console.warn("[Shopify Orders Cancelled] clawback failed:", err?.message));
+
+        void import("./creator-ledger")
+          .then(({ applyCreatorOrderCancelled }) =>
+            applyCreatorOrderCancelled({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.updated > 0) {
+              console.log("[Shopify Orders Cancelled] creator ledger updated", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Orders Cancelled] creator ledger failed:", err?.message),
+          );
       }
       return res.status(200).send("OK");
     } catch (error: any) {

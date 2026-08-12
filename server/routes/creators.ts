@@ -1,7 +1,7 @@
 /**
- * Creator Marketplace — Phase 1–4 routes:
+ * Creator Marketplace — Phase 1–5 routes:
  * - Public apply, storefront, Storefront cart, analytics session/events
- * - Admin applications, page assign, quotas, daily stats
+ * - Admin applications, page assign, quotas, daily stats, order ledger
  */
 import { type Express, type Response } from "express";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
@@ -11,6 +11,8 @@ import {
   creatorCustomizerPages,
   creatorDailyStats,
   creatorNotes,
+  creatorOrderLines,
+  creatorOrders,
   creators,
   customizerPages,
 } from "@shared/schema";
@@ -868,6 +870,42 @@ export function registerCreatorMarketplaceRoutes(
         .orderBy(desc(creatorDailyStats.day))
         .limit(days);
       res.json({ days: rows });
+    },
+  );
+
+  /** Admin: recent creator order ledger rows (+ lines). */
+  app.get(
+    "/api/platform/creators/:id/orders",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "25"), 10) || 25));
+      const orders = await db
+        .select()
+        .from(creatorOrders)
+        .where(eq(creatorOrders.creatorId, req.params.id))
+        .orderBy(desc(creatorOrders.createdAt))
+        .limit(limit);
+      const orderIds = orders.map((o) => o.id);
+      const lines =
+        orderIds.length === 0
+          ? []
+          : await db
+              .select()
+              .from(creatorOrderLines)
+              .where(inArray(creatorOrderLines.creatorOrderId, orderIds));
+      const linesByOrder = new Map<string, typeof lines>();
+      for (const line of lines) {
+        const list = linesByOrder.get(line.creatorOrderId) || [];
+        list.push(line);
+        linesByOrder.set(line.creatorOrderId, list);
+      }
+      res.json({
+        orders: orders.map((o) => ({
+          ...o,
+          lines: linesByOrder.get(o.id) || [],
+        })),
+      });
     },
   );
 }

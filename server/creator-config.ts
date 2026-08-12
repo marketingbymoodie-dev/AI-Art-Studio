@@ -7,6 +7,8 @@ import { db } from "./db";
 import { platformConfig } from "@shared/schema";
 import {
   DEFAULT_AI_GENERATION_COST_USD,
+  DEFAULT_CREATOR_TRANSACTION_FEE_FIXED_CENTS,
+  DEFAULT_CREATOR_TRANSACTION_FEE_PCT,
   PLATFORM_CONFIG_KEYS,
 } from "@shared/creatorMarketplace";
 
@@ -36,7 +38,9 @@ export function getCreatorPlatformStorefrontToken(): string | null {
 }
 
 let cachedAiCost: { value: number; at: number } | null = null;
+let cachedTxnFees: { pct: number; fixedCents: number; at: number } | null = null;
 const AI_COST_CACHE_MS = 60_000;
+const TXN_FEE_CACHE_MS = 60_000;
 
 export async function getAiGenerationCostUsd(): Promise<number> {
   const now = Date.now();
@@ -63,6 +67,47 @@ export function aiCostUsdToCents(costUsd: number): number {
   return Math.round(Math.max(0, costUsd) * 100);
 }
 
+export async function getCreatorTransactionFeeConfig(): Promise<{
+  feePct: number;
+  feeFixedCents: number;
+}> {
+  const now = Date.now();
+  if (cachedTxnFees && now - cachedTxnFees.at < TXN_FEE_CACHE_MS) {
+    return { feePct: cachedTxnFees.pct, feeFixedCents: cachedTxnFees.fixedCents };
+  }
+  let feePct = DEFAULT_CREATOR_TRANSACTION_FEE_PCT;
+  let feeFixedCents = DEFAULT_CREATOR_TRANSACTION_FEE_FIXED_CENTS;
+  try {
+    const rows = await db
+      .select()
+      .from(platformConfig)
+      .where(
+        eq(platformConfig.key, PLATFORM_CONFIG_KEYS.CREATOR_TRANSACTION_FEE_PCT),
+      )
+      .limit(1);
+    const pctRow = rows[0];
+    if (pctRow) {
+      const parsed = Number(pctRow.value);
+      if (Number.isFinite(parsed) && parsed >= 0) feePct = parsed;
+    }
+    const [fixedRow] = await db
+      .select()
+      .from(platformConfig)
+      .where(
+        eq(platformConfig.key, PLATFORM_CONFIG_KEYS.CREATOR_TRANSACTION_FEE_FIXED_CENTS),
+      )
+      .limit(1);
+    if (fixedRow) {
+      const parsed = Number(fixedRow.value);
+      if (Number.isFinite(parsed) && parsed >= 0) feeFixedCents = Math.round(parsed);
+    }
+  } catch {
+    /* defaults */
+  }
+  cachedTxnFees = { pct: feePct, fixedCents: feeFixedCents, at: now };
+  return { feePct, feeFixedCents };
+}
+
 export async function setPlatformConfig(key: string, value: string): Promise<void> {
   await db
     .insert(platformConfig)
@@ -73,5 +118,11 @@ export async function setPlatformConfig(key: string, value: string): Promise<voi
     });
   if (key === PLATFORM_CONFIG_KEYS.AI_GENERATION_COST_USD) {
     cachedAiCost = null;
+  }
+  if (
+    key === PLATFORM_CONFIG_KEYS.CREATOR_TRANSACTION_FEE_PCT ||
+    key === PLATFORM_CONFIG_KEYS.CREATOR_TRANSACTION_FEE_FIXED_CENTS
+  ) {
+    cachedTxnFees = null;
   }
 }

@@ -15,6 +15,7 @@ import {
   type CreatorEventType,
 } from "@shared/creatorMarketplace";
 import { lookupCreatorByUsername } from "./creator-host";
+import { sumCreatorMoneyForDay } from "./creator-ledger";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -238,7 +239,16 @@ export async function rollupCreatorDailyStats(opts?: {
     sessionRows.map((r) => [r.creatorId, Number(r.sessions) || 0]),
   );
 
-  const ids = new Set([...byCreator.keys(), ...sessionMap.keys()]);
+  const moneyByCreator = await sumCreatorMoneyForDay({
+    day,
+    creatorId: opts?.creatorId,
+  });
+
+  const ids = new Set([
+    ...byCreator.keys(),
+    ...sessionMap.keys(),
+    ...moneyByCreator.keys(),
+  ]);
   let creatorsUpdated = 0;
 
   for (const creatorId of ids) {
@@ -251,6 +261,13 @@ export async function rollupCreatorDailyStats(opts?: {
     };
     const sessions = sessionMap.get(creatorId) ?? ev.eventSessions;
     const visitors = sessions; // v1: 1 session ≈ 1 visitor
+    const money = moneyByCreator.get(creatorId) || {
+      genCostCents: 0,
+      orders: 0,
+      grossCents: 0,
+      productProfitCents: 0,
+      netContributionCents: 0,
+    };
 
     await db
       .insert(creatorDailyStats)
@@ -261,12 +278,12 @@ export async function rollupCreatorDailyStats(opts?: {
         sessions,
         pageViews: ev.pageViews,
         generations: ev.generations,
-        genCostCents: 0, // Phase 5 fills from creator_generation_costs
+        genCostCents: money.genCostCents,
         atcCount: ev.atcCount,
-        orders: 0,
-        grossCents: 0,
-        productProfitCents: 0,
-        netContributionCents: 0,
+        orders: money.orders,
+        grossCents: money.grossCents,
+        productProfitCents: money.productProfitCents,
+        netContributionCents: money.netContributionCents,
         updatedAt: new Date(),
       })
       .onConflictDoUpdate({
@@ -276,7 +293,12 @@ export async function rollupCreatorDailyStats(opts?: {
           sessions,
           pageViews: ev.pageViews,
           generations: ev.generations,
+          genCostCents: money.genCostCents,
           atcCount: ev.atcCount,
+          orders: money.orders,
+          grossCents: money.grossCents,
+          productProfitCents: money.productProfitCents,
+          netContributionCents: money.netContributionCents,
           updatedAt: new Date(),
         },
       });

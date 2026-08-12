@@ -262,6 +262,13 @@ const DATA_MIGRATIONS: string[] = [
   `INSERT INTO platform_config ("key", "value", "updated_at")
    VALUES ('AI_GENERATION_COST_USD', '0.05', NOW())
    ON CONFLICT ("key") DO NOTHING`,
+  // Creator Marketplace: default Shopify Payments-style txn fee (2.9% + 30¢).
+  `INSERT INTO platform_config ("key", "value", "updated_at")
+   VALUES ('CREATOR_TRANSACTION_FEE_PCT', '2.9', NOW())
+   ON CONFLICT ("key") DO NOTHING`,
+  `INSERT INTO platform_config ("key", "value", "updated_at")
+   VALUES ('CREATOR_TRANSACTION_FEE_FIXED_CENTS', '30', NOW())
+   ON CONFLICT ("key") DO NOTHING`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
