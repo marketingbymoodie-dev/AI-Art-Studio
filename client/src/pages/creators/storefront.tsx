@@ -158,10 +158,11 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         </h1>
         <p className="mt-4 text-lg text-muted-foreground">{description}</p>
         <div className="mt-6 flex flex-wrap gap-3">
-          {/* Home shows up to 3 cards; Shop products is for the full catalogue when larger. */}
-          {pages.length > 3 ? (
+          {pages.length > 0 ? (
             <Button asChild>
-              <Link href={`${basePath}/products`}>Shop all products</Link>
+              <Link href={`${basePath}/products`}>
+                {pages.length > 3 ? "Shop All Products" : "Shop Products"}
+              </Link>
             </Button>
           ) : null}
           {creator.socialUrl ? (
@@ -198,9 +199,7 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
           {pages.length > 3 ? (
             <div className="text-center">
               <Button asChild variant="outline">
-                <Link href={`${basePath}/products`}>
-                  View all {pages.length} products
-                </Link>
+                <Link href={`${basePath}/products`}>Shop All Products</Link>
               </Button>
             </div>
           ) : null}
