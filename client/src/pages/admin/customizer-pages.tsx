@@ -1844,7 +1844,10 @@ export default function AdminCustomizerPages() {
                                 <SelectItem key={val} value={val}>
                                   {blank.title}
                                   {isLive ? " (Live)" : ""}
-                                  {blank.needsShopifySync
+                                  {/* A live page means the product already exists on
+                                      this store — never contradict it with "will be
+                                      created" even if Admin sync resolution is stale. */}
+                                  {blank.needsShopifySync && !isLive
                                     ? " (not on this store yet — will be created)"
                                     : ""}
                                 </SelectItem>
@@ -1885,7 +1888,8 @@ export default function AdminCustomizerPages() {
                           ). Use a unique page title and URL handle, or edit the existing page instead.
                         </p>
                       )}
-                      {selectedBlank?.needsShopifySync ? (
+                      {selectedBlank?.needsShopifySync &&
+                      !(selectedBlank && liveProductTypeIds.has(selectedBlank.productTypeId)) ? (
                         <p className="text-xs text-muted-foreground mt-1">
                           This product is not on Shopify in this store yet — finishing Create Page will
                           send it. Deleting a customizer page does not remove the Shopify product, so

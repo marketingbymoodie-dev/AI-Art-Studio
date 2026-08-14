@@ -6224,6 +6224,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       add(url, i === 0 ? "Primary" : `View ${i + 1}`, i === 0 ? "primary" : "gallery");
     });
 
+    // Admin Preview Studio (admin-tester) has no Shopify variant image, and a
+    // freshly activated AOP product may have no curated Primary/Gallery yet — so
+    // the storefront colour-lead + merchant slides can all be empty and the
+    // tester shows a blank void. Fall back to any harvested base mockup (incl.
+    // the admin picker pool `available`, which we deliberately keep OFF the
+    // storefront carousel). Scoped to admin-tester so storefront is untouched.
+    if (slides.length === 0 && isAdminTester) {
+      const imgs = (productTypeConfig?.baseMockupImages ?? {}) as Record<string, any>;
+      const availableFirst = Array.isArray(imgs.available) ? imgs.available[0] : null;
+      add(imgs.primary || imgs.front || availableFirst || imgs.lifestyle || null, "Blank", "primary");
+    }
+
     return slides;
   }, [
     orientationBlankOverride,
@@ -6232,6 +6244,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     catalogPreviewImages,
     frameColorObjects,
     selectedFrameColor,
+    isAdminTester,
+    productTypeConfig?.baseMockupImages,
   ]);
 
   useEffect(() => {

@@ -15,7 +15,48 @@ import {
   type LandingCopy,
   type LandingScene,
 } from "@shared/landingContent";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Plus, Trash2 } from "lucide-react";
+
+function moveItem<T>(items: T[], from: number, to: number): T[] {
+  if (to < 0 || to >= items.length || from === to) return items;
+  const next = items.slice();
+  const [row] = next.splice(from, 1);
+  next.splice(to, 0, row);
+  return next;
+}
+
+function ReorderButtons({
+  index,
+  count,
+  onMove,
+}: {
+  index: number;
+  count: number;
+  onMove: (to: number) => void;
+}) {
+  return (
+    <div className="flex items-center">
+      <Button
+        variant="ghost"
+        size="icon"
+        disabled={index === 0}
+        aria-label="Move up"
+        onClick={() => onMove(index - 1)}
+      >
+        <ChevronUp className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        disabled={index >= count - 1}
+        aria-label="Move down"
+        onClick={() => onMove(index + 1)}
+      >
+        <ChevronDown className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
 
 async function uploadFile(file: File): Promise<string> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -172,14 +213,22 @@ function MediaList({
         <article key={item.id} className="space-y-3 rounded-lg border p-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Slide {i + 1}</h3>
-            <Button
-              variant="ghost"
-              size="icon"
-              disabled={items.length < 2}
-              onClick={() => onChange(items.filter((_, idx) => idx !== i))}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center">
+              <ReorderButtons
+                index={i}
+                count={items.length}
+                onMove={(to) => onChange(moveItem(items, i, to))}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={items.length < 2}
+                aria-label="Delete slide"
+                onClick={() => onChange(items.filter((_, idx) => idx !== i))}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
           {item.imageUrl ? (
             <img src={item.imageUrl} alt="" className="h-36 w-full rounded-md object-cover" />
@@ -228,14 +277,22 @@ function CardList({
         <article key={item.id} className="space-y-3 rounded-lg border p-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Card {i + 1}</h3>
-            <Button
-              variant="ghost"
-              size="icon"
-              disabled={items.length < 2}
-              onClick={() => onChange(items.filter((_, idx) => idx !== i))}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center">
+              <ReorderButtons
+                index={i}
+                count={items.length}
+                onMove={(to) => onChange(moveItem(items, i, to))}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={items.length < 2}
+                aria-label="Delete card"
+                onClick={() => onChange(items.filter((_, idx) => idx !== i))}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
           {item.imageUrl ? (
             <img src={item.imageUrl} alt="" className="h-36 w-full rounded-md object-cover" />
