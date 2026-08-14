@@ -152,8 +152,15 @@ export async function exchangeSessionTokenForOffline(
   return { ok: true, fields: offlineTokenFieldsFromPayload(result.data) };
 }
 
+function coerceExpiryDate(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function needsAccessRefresh(installation: ShopifyInstallation): boolean {
-  const expiresAt = installation.accessTokenExpiresAt;
+  const expiresAt = coerceExpiryDate(installation.accessTokenExpiresAt);
   if (!expiresAt) return false;
   return expiresAt.getTime() <= Date.now() + REFRESH_SKEW_MS;
 }
@@ -187,6 +194,8 @@ export type EnsureOfflineTokenResult =
 export type EnsureOfflineTokenOptions = {
   /** Live App Bridge session JWT from Authorization: Bearer … */
   sessionToken?: string | null;
+  /** Skip the "token looks unexpired" short-circuit (e.g. after a Shopify 401). */
+  forceRefresh?: boolean;
 };
 
 /**
@@ -206,6 +215,7 @@ export async function ensureValidOfflineAccessToken(
   }
 
   let current = installation;
+  const forceRefresh = !!options.forceRefresh;
   const missingOffline =
     !current.accessToken || current.accessToken === "NEEDS_RECONNECT";
 
@@ -233,8 +243,9 @@ export async function ensureValidOfflineAccessToken(
     }
   }
 
-  if (needsAccessRefresh(current) && hasRefreshToken(current)) {
-    console.log(`[shopify-token] Refreshing offline token for ${shop}`);
+  let refreshedThisCall = false;
+  if ((forceRefresh || needsAccessRefresh(current)) && hasRefreshToken(current)) {
+    console.log(`[shopify-token] Refreshing offline token for ${shop}${forceRefresh ? " (forced)" : ""}`);
     const refreshed = await refreshOfflineToken(shop, current.refreshToken!);
     if (refreshed.ok) {
       const updated = await persistOfflineToken(current.id, refreshed.fields);
@@ -242,6 +253,7 @@ export async function ensureValidOfflineAccessToken(
         return { ok: false, needsReinstall: false, error: "Failed to persist refreshed token" };
       }
       current = updated;
+      refreshedThisCall = true;
     } else {
       console.error(`[shopify-token] Refresh failed for ${shop}:`, refreshed.status, refreshed.error);
       if (!sessionToken) {
@@ -256,7 +268,9 @@ export async function ensureValidOfflineAccessToken(
   }
 
   // Already have a usable expiring offline token.
-  if (hasRefreshToken(current) && !needsAccessRefresh(current)) {
+  // After a forced refresh that failed, the DB expiry may still look valid —
+  // do not return that dead token; recover via session exchange instead.
+  if (hasRefreshToken(current) && !needsAccessRefresh(current) && (!forceRefresh || refreshedThisCall)) {
     return { ok: true, accessToken: current.accessToken, installation: current };
   }
 

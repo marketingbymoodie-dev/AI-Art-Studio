@@ -4072,6 +4072,36 @@ ${orientationExtra}
     return { shopifyProductId: newShopifyProductId, shopifyHandle };
   }
 
+  function isShopifyAuthError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err ?? "");
+    return /Shopify API error 401|Invalid API key or access token|Access token is invalid/i.test(msg);
+  }
+
+  async function createShopifyProductForTypeHealed(
+    req: any,
+    shop: string,
+    installation: any,
+    productType: any,
+    merchant: any,
+  ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
+    try {
+      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
+    } catch (e: any) {
+      if (!isShopifyAuthError(e)) throw e;
+      const retried = await ensureValidOfflineAccessToken(installation, {
+        sessionToken: getBearerTokenFromRequest(req),
+        forceRefresh: true,
+      });
+      if (!retried.ok) {
+        const err = new Error("REAUTH_REQUIRED");
+        (err as any).reinstallUrl = `/shopify/install?shop=${encodeURIComponent(shop)}`;
+        throw err;
+      }
+      Object.assign(installation, retried.installation);
+      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, []);
+    }
+  }
+
   app.post("/api/shopify/products", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -18550,7 +18580,25 @@ ${orientationExtra}
       return { ok: false, status: 403, error: "SHOP_NOT_ACTIVE" };
     }
 
-    return { ok: true, installation };
+    // Public apps use expiring offline tokens. Refresh (or recover via the live
+    // App Bridge session JWT) before any Admin API write — otherwise Create Page
+    // posts with a stale token and Shopify returns 401 Invalid API key.
+    const tokenReady = await ensureValidOfflineAccessToken(installation, {
+      sessionToken: getBearerTokenFromRequest(req),
+    });
+    if (!tokenReady.ok) {
+      console.log(`[resolver] TOKEN_UNUSABLE: ${shopDomain} — ${tokenReady.error}`);
+      return {
+        ok: false,
+        status: tokenReady.needsReinstall ? 401 : 502,
+        error: tokenReady.needsReinstall ? "REAUTH_REQUIRED" : tokenReady.error,
+        reinstallUrl: tokenReady.needsReinstall
+          ? `/shopify/install?shop=${encodeURIComponent(shopDomain)}`
+          : undefined,
+      };
+    }
+
+    return { ok: true, installation: tokenReady.installation };
   }
 
   /**
@@ -19601,9 +19649,21 @@ ${orientationExtra}
       // auto-publish the product to Shopify now.
       if (!resolvedBaseProductId) {
         try {
-          const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, ptForSync, merchant, []);
+          const { shopifyProductId } = await createShopifyProductForTypeHealed(
+            req,
+            shop,
+            installation,
+            ptForSync,
+            merchant,
+          );
           resolvedBaseProductId = shopifyProductId;
         } catch (e: any) {
+          if (e?.message === "REAUTH_REQUIRED" || isShopifyAuthError(e)) {
+            return res.status(401).json({
+              error: "REAUTH_REQUIRED",
+              reinstallUrl: e?.reinstallUrl || `/shopify/install?shop=${encodeURIComponent(shop)}`,
+            });
+          }
           return res.status(400).json({ error: e.message || "Failed to send product to Shopify. Try using Generator Tester to send it first." });
         }
         if (!resolvedBaseProductId) {
@@ -19722,9 +19782,21 @@ ${orientationExtra}
             shopifyVariantIds: null as any,
           });
           try {
-            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, recoveryPt, merchant, []);
+            const { shopifyProductId } = await createShopifyProductForTypeHealed(
+              req,
+              shop,
+              installation,
+              recoveryPt,
+              merchant,
+            );
             resolvedBaseProductId = shopifyProductId;
           } catch (e: any) {
+            if (e?.message === "REAUTH_REQUIRED" || isShopifyAuthError(e)) {
+              return res.status(401).json({
+                error: "REAUTH_REQUIRED",
+                reinstallUrl: e?.reinstallUrl || `/shopify/install?shop=${encodeURIComponent(shop)}`,
+              });
+            }
             return res.status(400).json({ error: e.message || `Product could not be created in your store. Open Products, send "${recoveryPt.name}" to Shopify, then try again.` });
           }
           if (!resolvedBaseProductId) {
