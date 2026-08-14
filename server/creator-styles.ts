@@ -72,47 +72,88 @@ export function getNormalizedPlatformShop(): string | null {
   return shop || null;
 }
 
-export async function getPlatformMerchantId(): Promise<string | null> {
-  const shop = getNormalizedPlatformShop();
-  if (!shop) return null;
-  const shopVariants = [shop, shop.replace(/\.myshopify\.com$/, "")].filter(
+function shopLookupVariants(shop: string): string[] {
+  return [shop, shop.replace(/\.myshopify\.com$/, "")].filter(
     (s, i, arr) => !!s && arr.indexOf(s) === i,
   );
+}
 
-  for (const candidate of shopVariants) {
+function addMerchantId(ids: string[], id?: string | null) {
+  const v = String(id || "").trim();
+  if (v && !ids.includes(v)) ids.push(v);
+}
+
+/** Every merchant id that might own platform-shop styles (user row vs install row). */
+export async function resolvePlatformStyleMerchantIds(
+  fallbackMerchantId?: string | null,
+): Promise<string[]> {
+  const ids: string[] = [];
+  const shop = getNormalizedPlatformShop();
+  const variants = shop ? shopLookupVariants(shop) : [];
+
+  for (const candidate of variants) {
     const byUser = await storage.getMerchantByShop(candidate);
-    if (byUser?.id) return byUser.id;
+    addMerchantId(ids, byUser?.id);
+    addMerchantId(ids, byUser?.userId);
     const inst = await storage.getShopifyInstallationByShop(candidate);
-    if (inst?.merchantId) return inst.merchantId;
+    addMerchantId(ids, inst?.merchantId);
   }
 
-  const [page] = await db
-    .select({ productTypeId: customizerPages.productTypeId })
-    .from(customizerPages)
-    .where(inArray(customizerPages.shop, shopVariants))
-    .limit(1);
-  if (page?.productTypeId) {
-    const [pt] = await db
-      .select({ merchantId: productTypes.merchantId })
-      .from(productTypes)
-      .where(eq(productTypes.id, page.productTypeId))
+  addMerchantId(ids, fallbackMerchantId);
+  if (fallbackMerchantId) {
+    const fallback = await storage.getMerchant(fallbackMerchantId);
+    addMerchantId(ids, fallback?.userId);
+  }
+
+  if (variants.length > 0) {
+    const [page] = await db
+      .select({ productTypeId: customizerPages.productTypeId })
+      .from(customizerPages)
+      .where(inArray(customizerPages.shop, variants))
       .limit(1);
-    if (pt?.merchantId) return pt.merchantId;
+    if (page?.productTypeId) {
+      const [pt] = await db
+        .select({ merchantId: productTypes.merchantId })
+        .from(productTypes)
+        .where(eq(productTypes.id, page.productTypeId))
+        .limit(1);
+      addMerchantId(ids, pt?.merchantId);
+    }
   }
 
-  return null;
+  return ids;
+}
+
+export async function getPlatformMerchantId(): Promise<string | null> {
+  const ids = await resolvePlatformStyleMerchantIds();
+  if (ids.length === 0) return null;
+  if (ids.length === 1) return ids[0];
+
+  let best = ids[0];
+  let bestCount = -1;
+  for (const id of ids) {
+    const rows = await db
+      .select({ id: stylePresets.id })
+      .from(stylePresets)
+      .where(eq(stylePresets.merchantId, id));
+    if (rows.length > bestCount) {
+      best = id;
+      bestCount = rows.length;
+    }
+  }
+  return best;
 }
 
 /** Mark platform-shop catalog rows as global (eligible to assign). Idempotent. */
 export async function ensurePlatformStylesMarkedGlobal(): Promise<number> {
-  const merchantId = await getPlatformMerchantId();
-  if (!merchantId) return 0;
+  const merchantIds = await resolvePlatformStyleMerchantIds();
+  if (merchantIds.length === 0) return 0;
   const result = await db
     .update(stylePresets)
     .set({ creatorScope: "global" })
     .where(
       and(
-        eq(stylePresets.merchantId, merchantId),
+        inArray(stylePresets.merchantId, merchantIds),
         eq(stylePresets.creatorScope, "merchant"),
       ),
     );
@@ -192,40 +233,27 @@ export async function backfillExistingCreatorGlobalAssignments(): Promise<number
 export async function listAssignableCatalog(opts?: {
   fallbackMerchantId?: string | null;
 }): Promise<StylePresetDB[]> {
-  await ensurePlatformStylesMarkedGlobal();
-  let merchantId = await getPlatformMerchantId();
-  if (!merchantId && opts?.fallbackMerchantId) {
-    merchantId = opts.fallbackMerchantId;
+  const merchantIds = await resolvePlatformStyleMerchantIds(opts?.fallbackMerchantId);
+  if (merchantIds.length > 0) {
     await db
       .update(stylePresets)
       .set({ creatorScope: "global" })
       .where(
         and(
-          eq(stylePresets.merchantId, merchantId),
+          inArray(stylePresets.merchantId, merchantIds),
           eq(stylePresets.creatorScope, "merchant"),
         ),
       );
-  }
-
-  if (merchantId) {
-    const scoped = await db
+    const rows = await db
       .select()
       .from(stylePresets)
-      .where(
-        and(
-          eq(stylePresets.merchantId, merchantId),
-          inArray(stylePresets.creatorScope, [...CREATOR_ASSIGNABLE_STYLE_SCOPES]),
-        ),
-      )
+      .where(inArray(stylePresets.merchantId, merchantIds))
       .orderBy(stylePresets.sortOrder, stylePresets.name);
-    if (scoped.length > 0) return scoped;
-    return db
-      .select()
-      .from(stylePresets)
-      .where(eq(stylePresets.merchantId, merchantId))
-      .orderBy(stylePresets.sortOrder, stylePresets.name);
+    if (rows.length > 0) return rows;
+    console.warn("[creator-styles] catalog empty for merchant ids", merchantIds);
   }
 
+  await ensurePlatformStylesMarkedGlobal();
   return db
     .select()
     .from(stylePresets)
