@@ -10,6 +10,7 @@ export const PLATFORM_CONFIG_KEYS = {
   AI_GENERATION_COST_USD: "AI_GENERATION_COST_USD",
   CREATOR_TRANSACTION_FEE_PCT: "CREATOR_TRANSACTION_FEE_PCT",
   CREATOR_TRANSACTION_FEE_FIXED_CENTS: "CREATOR_TRANSACTION_FEE_FIXED_CENTS",
+  CREATOR_STYLE_ASSIGNMENT_BACKFILL_AT: "CREATOR_STYLE_ASSIGNMENT_BACKFILL_AT",
 } as const;
 
 /** Default Shopify Payments-style fee (percent of charged amount). */
@@ -85,6 +86,39 @@ export type CreatorRankPeriodType = (typeof CREATOR_RANK_PERIOD_TYPES)[number];
 
 /** V1 leaderboard metric — Net Creator Contribution (cents). */
 export const CREATOR_RANK_METRIC_NET_CONTRIBUTION = "net_contribution";
+
+/** Who may be assigned a style on the creator platform (not merchant create path). */
+export const CREATOR_STYLE_SCOPES = ["merchant", "global", "custom"] as const;
+export type CreatorStyleScope = (typeof CREATOR_STYLE_SCOPES)[number];
+export const CREATOR_ASSIGNABLE_STYLE_SCOPES = ["global", "custom"] as const;
+
+export function isAssignableCreatorScope(scope: string | null | undefined): boolean {
+  return (CREATOR_ASSIGNABLE_STYLE_SCOPES as readonly string[]).includes(String(scope || ""));
+}
+
+/** Assignment-row visibility. No row means the style is not in any creator list. */
+export function computeStyleVisibility(input: {
+  enabled: boolean;
+  available: boolean;
+  isActive: boolean;
+}): {
+  enabled: boolean;
+  available: boolean;
+  currentlyAvailable: boolean;
+  storefrontVisible: boolean;
+  portalUnavailable: boolean;
+} {
+  const enabled = !!input.enabled;
+  const available = !!input.available;
+  const currentlyAvailable = available && !!input.isActive;
+  return {
+    enabled,
+    available,
+    currentlyAvailable,
+    storefrontVisible: currentlyAvailable && enabled,
+    portalUnavailable: !currentlyAvailable,
+  };
+}
 
 /** Admin lifecycle actions (Phase 9 Partner Program). */
 export const CREATOR_BETA_ACTIONS = [

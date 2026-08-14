@@ -151,9 +151,9 @@ Line attrs on pack cart: `_credit_pack_id`, `_appai_customer_id`, `_creator_id`,
 | Surface | Path |
 |---------|------|
 | Login | `/portal/login` — email OTP via Resend |
-| Dashboard | `/portal` — Today / Rank (placeholder) / Network (placeholder + traffic) / Performance |
+| Dashboard | `/portal` — Today / Rank / Network / Performance / Styles |
 | Auth API | `POST /api/creator/auth/request-otp`, `verify-otp`, `logout` · `GET /api/creator/me` |
-| Data API | `GET /api/creator/stats`, `/orders`, `/performance` (own creator only via JWT) |
+| Data API | `GET /api/creator/stats`, `/orders`, `/performance`, `/styles` · `PATCH /api/creator/styles/:id` (enabled only) |
 
 Sign-in statuses: `onboarding`, `active_beta`, `partner`, `paused`, `beta_completed`. Token: Bearer + httpOnly cookie `appai_creator_token`.
 
@@ -172,3 +172,25 @@ Sign-in statuses: `onboarding`, `active_beta`, `partner`, `paused`, `beta_comple
 Net Creator Contribution = Product Profit − AI generation costs (period rollup uses day sum of gen costs).
 
 Production `orders/paid` / `refunds/create` still need Shopify PCD + toml subscribe before live merchant ledger data.
+
+## Creator platform styles (assignment + availability)
+
+Two products share the same `style_presets` table and category/base-ruleset (Decor / Apparel / any, apparel background-removal). They do **not** share create/edit permission.
+
+| Product | Who creates styles | Who sees them |
+|---------|--------------------|---------------|
+| Shopify merchant app | Merchant via `/admin/styles` (`creator_scope = merchant`) | That merchant’s storefront only |
+| Creator platform | Operator only. Creators cannot create or edit. | Only styles with an assignment row for that creator |
+
+**Scope** is a property of the style (`global` = eligible to assign to anyone; `custom` = operator-made, still assigned explicitly). **Visibility** is the assignment row.
+
+| Field | Who sets it | Meaning |
+|-------|-------------|---------|
+| `enabled` | Creator portal toggle | Their on/off. Default `true` on assign. Off hides from customers; still listed in portal. |
+| `available` | Operator | Still offered. Unassign/retire sets `false` and **keeps the row**. Portal shows grey **Currently Unavailable** regardless of `enabled`. Re-offer sets `available = true` and preserves `enabled`. |
+
+No assignment row = style does not appear. No global-disable-list. Assigned styles apply on every customizer page that creator can use; page `style_config` still filters by category after entitlement.
+
+Storefront / generate require: assignment + `available` + `enabled` + style `is_active`.
+
+Operator UI: `/admin/platform/creators` → Manage → **Styles**. APIs under `/api/platform/creators/:id/styles` (assign / retire / duplicate-exclusive) and `GET /api/platform/style-catalog`. Do not use `/api/admin/styles` for creator customs (those rows are hidden from the merchant Styles page).

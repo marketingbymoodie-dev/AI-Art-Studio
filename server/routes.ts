@@ -6215,7 +6215,9 @@ ${orientationExtra}
     try {
       const merchantId = productType.merchantId;
       if (merchantId) {
-        const dbStyles = await storage.getActiveStylePresetsByMerchant(merchantId);
+        const dbStyles = (await storage.getActiveStylePresetsByMerchant(merchantId)).filter(
+          (s: any) => (s.creatorScope || "merchant") !== "custom",
+        );
         stylePresets = mapDbStylesForDesigner(dbStyles);
       }
     } catch (e) {
@@ -7385,6 +7387,8 @@ ${orientationExtra}
     }
 
     const installation = await getAuthorizedInstallation(shop);
+    const rawCreatorUsername = String(req.query.creatorUsername || "").trim();
+    const rawCreatorId = String(req.query.creatorId || "").trim();
 
     let designerConfig = null;
     if (page.productTypeId) {
@@ -7452,7 +7456,9 @@ ${orientationExtra}
     try {
       const merchantId = installation?.merchantId;
       const dbStyles = merchantId
-        ? await storage.getActiveStylePresetsByMerchant(merchantId)
+        ? (await storage.getActiveStylePresetsByMerchant(merchantId)).filter(
+            (s: any) => (s.creatorScope || "merchant") !== "custom",
+          )
         : [];
       stylePresets =
         dbStyles.length > 0
@@ -7461,6 +7467,38 @@ ${orientationExtra}
     } catch (e) {
       console.warn(`[storefront/customizer-page] stylePresets failed:`, e);
       stylePresets = hardcodedStylePresetsForDesigner();
+    }
+
+    if (rawCreatorUsername || rawCreatorId) {
+      try {
+        const { assertPublicCreatorApiContext } = await import("./creator-host");
+        const { resolveCreatorStorefrontStyles } = await import("./creator-styles");
+        const asserted = await assertPublicCreatorApiContext({
+          shop,
+          creatorId: rawCreatorId || null,
+          creatorUsername: rawCreatorUsername || null,
+          requirePlatformShop: true,
+        });
+        if (asserted.ok) {
+          const entitled = await resolveCreatorStorefrontStyles(asserted.creator.id);
+          stylePresets = mapDbStylesForDesigner(
+            entitled.map((s) => ({
+              id: s.stylePresetId,
+              name: s.name,
+              promptPrefix: s.promptPrefix,
+              category: s.category,
+              baseImageUrl: s.baseImageUrl,
+              promptPlaceholder: s.promptPlaceholder,
+              descriptionOptional: s.descriptionOptional,
+            })),
+          );
+        } else {
+          stylePresets = [];
+        }
+      } catch (e) {
+        console.warn("[storefront/customizer-page] creator styles failed:", e);
+        stylePresets = [];
+      }
     }
 
     const pageStyleConfig =
@@ -7939,13 +7977,30 @@ ${orientationExtra}
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
+      if (creatorCtx && stylePreset) {
+        const { isStyleEntitledForGenerate } = await import("./creator-styles");
+        const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
+        if (!entitled) {
+          return res.status(403).json({
+            error: "STYLE_NOT_AVAILABLE",
+            message: "This style is not available.",
+            reqId,
+            stage: "style",
+          });
+        }
+      }
+
       if (stylePreset && installation.merchantId) {
         t1 = Date.now();
         const dbStyles = await withTimeout(
           storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
         );
         console.log(P, reqId, `style presets lookup ok in ${Date.now() - t1}ms`);
-        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null; creatorScope?: string | null }) => {
+          if (s.id.toString() !== String(stylePreset)) return false;
+          if (!creatorCtx && (s.creatorScope || "merchant") === "custom") return false;
+          return true;
+        });
         if (selectedStyle) {
           styleName = selectedStyle.name || "";
           sfStyleCategory = selectedStyle.category || "all";
@@ -7958,7 +8013,7 @@ ${orientationExtra}
           sfStyleBaseImageUrls = dbBaseUrls;
           if (dbBaseUrls.length > 0) sfStyleBaseImageUrl = dbBaseUrls[0];
         }
-        if (!stylePromptPrefix && !styleName) {
+        if (!stylePromptPrefix && !styleName && !creatorCtx) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
@@ -12783,7 +12838,9 @@ ${orientationExtra}
       if (!merchant) {
         return res.json([]);
       }
-      const presets = await storage.getStylePresetsByMerchant(merchant.id);
+      const presets = (await storage.getStylePresetsByMerchant(merchant.id)).filter(
+        (s: any) => (s.creatorScope || "merchant") !== "custom",
+      );
       // Enrich each DB record with hardcoded options/promptPlaceholder when the DB column is null
       // (styles seeded before the options column was added won't have these fields populated)
       const enriched = presets.map((s: any) => {
@@ -12829,6 +12886,7 @@ ${orientationExtra}
         baseImageUrl: baseImageUrl || null,
         promptPlaceholder: promptPlaceholder || null,
         descriptionOptional: !!descriptionOptional,
+        creatorScope: "merchant",
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
@@ -21263,7 +21321,9 @@ ${orientationExtra}
     try {
       const merchantId = installation?.merchantId;
       const dbStyles = merchantId
-        ? await storage.getActiveStylePresetsByMerchant(merchantId)
+        ? (await storage.getActiveStylePresetsByMerchant(merchantId)).filter(
+            (s: any) => (s.creatorScope || "merchant") !== "custom",
+          )
         : [];
       stylePresets =
         dbStyles.length > 0

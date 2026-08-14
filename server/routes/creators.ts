@@ -1264,4 +1264,121 @@ export function registerCreatorMarketplaceRoutes(
       });
     },
   );
+
+  app.get(
+    "/api/platform/style-catalog",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const { listAssignableCatalog } = await import("../creator-styles");
+        const styles = await listAssignableCatalog();
+        res.json({
+          styles: styles.map((s) => ({
+            id: s.id,
+            name: s.name,
+            category: s.category,
+            creatorScope: (s as any).creatorScope || "merchant",
+            isActive: s.isActive,
+            sortOrder: s.sortOrder,
+          })),
+        });
+      } catch (e: any) {
+        console.error("[creators] style catalog failed:", e);
+        res.status(500).json({ error: e?.message || "Failed to load style catalog" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/platform/creators/:id/styles",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const [creator] = await db
+        .select({ id: creators.id })
+        .from(creators)
+        .where(eq(creators.id, req.params.id))
+        .limit(1);
+      if (!creator) return res.status(404).json({ error: "Creator not found" });
+      const { listCreatorStyleAssignments } = await import("../creator-styles");
+      const styles = await listCreatorStyleAssignments(creator.id);
+      res.json({ styles });
+    },
+  );
+
+  app.post(
+    "/api/platform/creators/:id/styles/assign",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const ids = parseStylePresetIds(req.body?.stylePresetIds);
+        if (ids.length === 0) {
+          return res.status(400).json({ error: "stylePresetIds is required." });
+        }
+        const { assignStylesToCreator } = await import("../creator-styles");
+        const styles = await assignStylesToCreator({
+          creatorId: req.params.id,
+          stylePresetIds: ids,
+        });
+        res.json({ styles });
+      } catch (e: any) {
+        console.error("[creators] assign styles failed:", e);
+        res.status(400).json({ error: e?.message || "Failed to assign styles" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/platform/creators/:id/styles/retire",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const ids = parseStylePresetIds(req.body?.stylePresetIds);
+        if (ids.length === 0) {
+          return res.status(400).json({ error: "stylePresetIds is required." });
+        }
+        const { retireCreatorStyles } = await import("../creator-styles");
+        const styles = await retireCreatorStyles({
+          creatorId: req.params.id,
+          stylePresetIds: ids,
+        });
+        res.json({ styles });
+      } catch (e: any) {
+        console.error("[creators] retire styles failed:", e);
+        res.status(400).json({ error: e?.message || "Failed to retire styles" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/platform/creators/:id/styles/duplicate",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const sourceStylePresetId = Number(req.body?.sourceStylePresetId);
+        if (!Number.isInteger(sourceStylePresetId) || sourceStylePresetId <= 0) {
+          return res.status(400).json({ error: "sourceStylePresetId is required." });
+        }
+        const { duplicateStyleAndAssignExclusive } = await import("../creator-styles");
+        const style = await duplicateStyleAndAssignExclusive({
+          sourceStylePresetId,
+          creatorId: req.params.id,
+          name: req.body?.name ? String(req.body.name) : undefined,
+        });
+        res.status(201).json({ style });
+      } catch (e: any) {
+        console.error("[creators] duplicate style failed:", e);
+        res.status(400).json({ error: e?.message || "Failed to duplicate style" });
+      }
+    },
+  );
+}
+
+function parseStylePresetIds(raw: unknown): number[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return [...new Set(arr.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0))];
 }

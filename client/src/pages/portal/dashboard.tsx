@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
@@ -28,6 +28,7 @@ import {
   getCreatorPortalToken,
   type CreatorPortalProfile,
 } from "@/lib/creator-portal-auth";
+import { Switch } from "@/components/ui/switch";
 import { Loader2 } from "lucide-react";
 
 type StatsPayload = {
@@ -105,6 +106,16 @@ type RankPayload = {
   periods: RankPeriod[];
 };
 
+type PortalStyle = {
+  stylePresetId: number;
+  name: string;
+  category: string;
+  creatorScope: string;
+  enabled: boolean;
+  available: boolean;
+  currentlyAvailable: boolean;
+};
+
 function periodLabel(periodType: string): string {
   if (periodType === "daily") return "Today";
   if (periodType === "weekly") return "This week";
@@ -154,6 +165,7 @@ function RankList({
 
 export default function CreatorPortalDashboardPage() {
   const [, setLocation] = useLocation();
+  const qc = useQueryClient();
   const [days, setDays] = useState("14");
   const hasToken = !!getCreatorPortalToken();
 
@@ -216,6 +228,33 @@ export default function CreatorPortalDashboardPage() {
       const res = await creatorPortalFetch("/api/creator/rank");
       if (!res.ok) throw new Error("Failed to load ranks");
       return (await res.json()) as RankPayload;
+    },
+  });
+
+  const stylesQuery = useQuery({
+    queryKey: ["creator-portal-styles"],
+    enabled: !!meQuery.data,
+    queryFn: async () => {
+      const res = await creatorPortalFetch("/api/creator/styles");
+      if (!res.ok) throw new Error("Failed to load styles");
+      return (await res.json()) as { styles: PortalStyle[] };
+    },
+  });
+
+  const styleToggle = useMutation({
+    mutationFn: async (params: { stylePresetId: number; enabled: boolean }) => {
+      const res = await creatorPortalFetch(`/api/creator/styles/${params.stylePresetId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: params.enabled }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update style");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["creator-portal-styles"] });
     },
   });
 
@@ -283,6 +322,7 @@ export default function CreatorPortalDashboardPage() {
             <TabsTrigger value="rank">Rank</TabsTrigger>
             <TabsTrigger value="network">Network</TabsTrigger>
             <TabsTrigger value="performance">Performance</TabsTrigger>
+            <TabsTrigger value="styles">Styles</TabsTrigger>
           </TabsList>
 
           <TabsContent value="today" className="space-y-6">
@@ -485,6 +525,73 @@ export default function CreatorPortalDashboardPage() {
                 }))}
               />
             </div>
+          </TabsContent>
+
+          <TabsContent value="styles" className="space-y-4">
+            <p className="text-sm text-stone-600">
+              These are the styles assigned to your shop. Turning one off hides it from customers.
+              Greyed styles are <span className="font-medium">Currently Unavailable</span> — that
+              is an operator change, not the same as you toggling a style off.
+            </p>
+            {stylesQuery.isLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-stone-400" />
+            ) : (stylesQuery.data?.styles.length || 0) === 0 ? (
+              <p className="text-sm text-stone-500">No styles have been assigned yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {["apparel", "decor", "graphics", "all"].map((cat) => {
+                  const rows = (stylesQuery.data?.styles || []).filter(
+                    (s) => (s.category || "all") === cat,
+                  );
+                  if (rows.length === 0) return null;
+                  return (
+                    <section
+                      key={cat}
+                      className="rounded-xl border border-stone-200 bg-white p-4"
+                    >
+                      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-stone-500">
+                        {cat}
+                      </h3>
+                      <ul className="space-y-3">
+                        {rows.map((s) => (
+                          <li
+                            key={s.stylePresetId}
+                            className={`flex items-center justify-between gap-3 ${
+                              s.currentlyAvailable ? "" : "opacity-50"
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-stone-800">
+                                {s.name}
+                              </p>
+                              {s.currentlyAvailable ? (
+                                <p className="text-xs text-stone-500">
+                                  {s.enabled ? "Shown to customers" : "Hidden from customers"}
+                                </p>
+                              ) : (
+                                <p className="text-xs font-medium text-stone-500">
+                                  Currently Unavailable
+                                </p>
+                              )}
+                            </div>
+                            <Switch
+                              checked={s.enabled}
+                              disabled={styleToggle.isPending}
+                              onCheckedChange={(enabled) =>
+                                styleToggle.mutate({
+                                  stylePresetId: s.stylePresetId,
+                                  enabled,
+                                })
+                              }
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  );
+                })}
+              </div>
+            )}
           </TabsContent>
         </Tabs>
 

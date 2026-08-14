@@ -78,6 +78,7 @@ export default function PlatformCreatorDetailDialog({
   const [payoutDollars, setPayoutDollars] = useState("");
   const [payoutMethod, setPayoutMethod] = useState("manual");
   const [payoutNote, setPayoutNote] = useState("");
+  const [catalogPickIds, setCatalogPickIds] = useState<number[]>([]);
 
   const { data, isLoading } = useQuery<{
     creator: any;
@@ -159,6 +160,35 @@ export default function PlatformCreatorDetailDialog({
     }>;
   }>({
     queryKey: [`/api/platform/creators/${creatorId}/payouts`],
+    enabled: !!creatorId,
+  });
+
+  const { data: styleCatalog } = useQuery<{
+    styles: Array<{
+      id: number;
+      name: string;
+      category: string;
+      creatorScope: string;
+      isActive: boolean;
+    }>;
+  }>({
+    queryKey: ["/api/platform/style-catalog"],
+    enabled: !!creatorId,
+  });
+
+  const { data: assignedStyles, refetch: refetchStyles } = useQuery<{
+    styles: Array<{
+      stylePresetId: number;
+      name: string;
+      category: string;
+      creatorScope: string;
+      enabled: boolean;
+      available: boolean;
+      currentlyAvailable: boolean;
+      isActive: boolean;
+    }>;
+  }>({
+    queryKey: [`/api/platform/creators/${creatorId}/styles`],
     enabled: !!creatorId,
   });
 
@@ -264,6 +294,57 @@ export default function PlatformCreatorDetailDialog({
     },
   });
 
+  const invalidateStyles = () => {
+    qc.invalidateQueries({ queryKey: [`/api/platform/creators/${creatorId}/styles`] });
+    qc.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
+  };
+
+  const assignStylesMutation = useMutation({
+    mutationFn: async (stylePresetIds: number[]) => {
+      const res = await apiRequest("POST", `/api/platform/creators/${creatorId}/styles/assign`, {
+        stylePresetIds,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setCatalogPickIds([]);
+      invalidateStyles();
+      toast({ title: "Styles assigned" });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Assign failed", description: err.message, variant: "destructive" }),
+  });
+
+  const retireStylesMutation = useMutation({
+    mutationFn: async (stylePresetIds: number[]) => {
+      const res = await apiRequest("POST", `/api/platform/creators/${creatorId}/styles/retire`, {
+        stylePresetIds,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      refetchStyles();
+      toast({ title: "Style marked unavailable" });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Retire failed", description: err.message, variant: "destructive" }),
+  });
+
+  const duplicateStyleMutation = useMutation({
+    mutationFn: async (sourceStylePresetId: number) => {
+      const res = await apiRequest("POST", `/api/platform/creators/${creatorId}/styles/duplicate`, {
+        sourceStylePresetId,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidateStyles();
+      toast({ title: "Custom style created and assigned" });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Duplicate failed", description: err.message, variant: "destructive" }),
+  });
+
   const c = data?.creator;
   const summary = data?.payoutSummary || payoutsData?.summary;
 
@@ -293,6 +374,7 @@ export default function PlatformCreatorDetailDialog({
               <TabsTrigger value="financials">Financials</TabsTrigger>
               <TabsTrigger value="payouts">Payouts</TabsTrigger>
               <TabsTrigger value="notes">Notes</TabsTrigger>
+              <TabsTrigger value="styles">Styles</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" className="space-y-4 text-sm">
@@ -600,6 +682,128 @@ export default function PlatformCreatorDetailDialog({
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="styles" className="space-y-4 text-sm">
+              <p className="text-muted-foreground text-xs">
+                Hand-pick globals and customs for this creator. Unassign sets{" "}
+                <span className="font-medium">Currently Unavailable</span> — the row stays so
+                they can see it greyed out. Re-assign restores the offer without resetting
+                their on/off.
+              </p>
+              <div className="space-y-2">
+                <Label>Assigned</Label>
+                {(assignedStyles?.styles || []).length === 0 ? (
+                  <p className="text-muted-foreground text-xs">None yet — assign from the catalog below.</p>
+                ) : (
+                  <div className="max-h-56 space-y-2 overflow-y-auto rounded border p-2">
+                    {(assignedStyles?.styles || []).map((s) => (
+                      <div
+                        key={s.stylePresetId}
+                        className={`flex items-start justify-between gap-2 rounded px-1 py-1 ${
+                          s.currentlyAvailable ? "" : "opacity-60"
+                        }`}
+                      >
+                        <div>
+                          <div className="font-medium">{s.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {s.category} · {s.creatorScope}
+                            {s.currentlyAvailable ? "" : " · Currently Unavailable"}
+                            {s.enabled ? "" : " · creator off"}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          {s.currentlyAvailable ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={retireStylesMutation.isPending}
+                              onClick={() => retireStylesMutation.mutate([s.stylePresetId])}
+                            >
+                              Unassign
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={assignStylesMutation.isPending}
+                              onClick={() => assignStylesMutation.mutate([s.stylePresetId])}
+                            >
+                              Re-offer
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={duplicateStyleMutation.isPending}
+                            onClick={() => duplicateStyleMutation.mutate(s.stylePresetId)}
+                          >
+                            Duplicate exclusive
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Catalog (not assigned)</Label>
+                {(() => {
+                  const assignedIds = new Set(
+                    (assignedStyles?.styles || []).map((s) => s.stylePresetId),
+                  );
+                  const unassigned = (styleCatalog?.styles || []).filter(
+                    (s) => !assignedIds.has(s.id),
+                  );
+                  if (unassigned.length === 0) {
+                    return (
+                      <p className="text-muted-foreground text-xs">
+                        Every catalog style already has an assignment row.
+                      </p>
+                    );
+                  }
+                  return (
+                    <>
+                      <div className="max-h-48 space-y-2 overflow-y-auto rounded border p-2">
+                        {unassigned.map((s) => {
+                          const checked = catalogPickIds.includes(s.id);
+                          return (
+                            <label
+                              key={s.id}
+                              className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 hover:bg-muted/40"
+                            >
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(v) => {
+                                  setCatalogPickIds((prev) =>
+                                    v ? [...prev, s.id] : prev.filter((id) => id !== s.id),
+                                  );
+                                }}
+                              />
+                              <span>
+                                <span className="font-medium">{s.name}</span>
+                                <span className="block text-xs text-muted-foreground">
+                                  {s.category} · {s.creatorScope}
+                                  {s.isActive ? "" : " · catalog inactive"}
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <Button
+                        size="sm"
+                        disabled={
+                          catalogPickIds.length === 0 || assignStylesMutation.isPending
+                        }
+                        onClick={() => assignStylesMutation.mutate(catalogPickIds)}
+                      >
+                        Assign selected
+                      </Button>
+                    </>
+                  );
+                })()}
               </div>
             </TabsContent>
 

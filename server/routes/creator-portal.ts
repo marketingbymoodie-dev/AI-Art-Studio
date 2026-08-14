@@ -426,6 +426,44 @@ export function registerCreatorPortalRoutes(app: Express): void {
       res.status(500).json({ error: "Failed to load performance" });
     }
   });
+
+  app.get("/api/creator/styles", requireCreator, async (req: CreatorAuthedRequest, res) => {
+    try {
+      const { listCreatorStyleAssignments } = await import("../creator-styles");
+      const styles = await listCreatorStyleAssignments(req.creatorId!);
+      res.json({ styles });
+    } catch (e: any) {
+      console.error("[creator portal] styles failed:", e);
+      res.status(500).json({ error: "Failed to load styles" });
+    }
+  });
+
+  app.patch(
+    "/api/creator/styles/:stylePresetId",
+    requireCreator,
+    async (req: CreatorAuthedRequest, res) => {
+      try {
+        const stylePresetId = Number(req.params.stylePresetId);
+        if (!Number.isInteger(stylePresetId) || stylePresetId <= 0) {
+          return res.status(400).json({ error: "Invalid style." });
+        }
+        if (typeof req.body?.enabled !== "boolean") {
+          return res.status(400).json({ error: "enabled must be a boolean." });
+        }
+        const { setCreatorStyleEnabled } = await import("../creator-styles");
+        const style = await setCreatorStyleEnabled({
+          creatorId: req.creatorId!,
+          stylePresetId,
+          enabled: req.body.enabled,
+        });
+        if (!style) return res.status(404).json({ error: "Style is not assigned to you." });
+        res.json({ style });
+      } catch (e: any) {
+        console.error("[creator portal] style toggle failed:", e);
+        res.status(500).json({ error: "Failed to update style" });
+      }
+    },
+  );
 }
 
 function safeHost(url: string): string {

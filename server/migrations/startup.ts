@@ -57,6 +57,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'style_presets',         column: 'prompt_placeholder',          type: 'TEXT' },
   { table: 'style_presets',         column: 'options',                     type: 'JSONB' },
   { table: 'style_presets',         column: 'description_optional',        type: 'BOOLEAN NOT NULL DEFAULT FALSE' },
+  { table: "style_presets",         column: "creator_scope",               type: "TEXT NOT NULL DEFAULT 'merchant'" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -426,6 +427,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "base_image_url" text,
         "prompt_placeholder" text,
         "description_optional" boolean NOT NULL DEFAULT false,
+        "creator_scope" text NOT NULL DEFAULT 'merchant',
         "created_at" timestamp DEFAULT now() NOT NULL,
         "updated_at" timestamp DEFAULT now() NOT NULL
       )
@@ -1276,6 +1278,20 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "creator_style_assignments",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_style_assignments" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "style_preset_id" integer NOT NULL,
+        "enabled" boolean NOT NULL DEFAULT true,
+        "available" boolean NOT NULL DEFAULT true,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_notes",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_notes" (
@@ -1544,6 +1560,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_pack_purchases_line_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_pack_purchases_line_uidx"
       ON "creator_pack_purchases" ("shopify_order_id", "shopify_line_id")`,
+  },
+  {
+    name: "creator_style_assignments_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_style_assignments_uidx"
+      ON "creator_style_assignments" ("creator_id", "style_preset_id")`,
+  },
+  {
+    name: "creator_style_assignments_style_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_style_assignments_style_idx"
+      ON "creator_style_assignments" ("style_preset_id")`,
   },
   {
     name: "creator_pack_purchases_creator_idx",

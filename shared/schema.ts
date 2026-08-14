@@ -512,6 +512,8 @@ export const stylePresets = pgTable("style_presets", {
   baseImageUrl: text("base_image_url"),
   promptPlaceholder: text("prompt_placeholder"),
   descriptionOptional: boolean("description_optional").notNull().default(false),
+  /** merchant = Shopify app row; global/custom = creator-platform catalog eligibility. */
+  creatorScope: text("creator_scope").notNull().default("merchant"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1740,6 +1742,26 @@ export const creatorPackPurchases = pgTable(
     ),
     index("creator_pack_purchases_creator_idx").on(table.creatorId, table.createdAt),
     index("creator_pack_purchases_customer_idx").on(table.customerId),
+  ],
+);
+
+/** Operator-curated style visibility per creator (globals and customs). */
+export const creatorStyleAssignments = pgTable(
+  "creator_style_assignments",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    stylePresetId: integer("style_preset_id").notNull(),
+    /** Creator on/off. */
+    enabled: boolean("enabled").notNull().default(true),
+    /** Operator offer. Retire/unassign sets false; do not delete the row. */
+    available: boolean("available").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_style_assignments_uidx").on(table.creatorId, table.stylePresetId),
+    index("creator_style_assignments_style_idx").on(table.stylePresetId),
   ],
 );
 

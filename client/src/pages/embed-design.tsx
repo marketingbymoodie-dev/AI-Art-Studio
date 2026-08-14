@@ -3548,7 +3548,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         try {
           const pageUrl =
             `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(myshopifyDomain)}` +
-            `&handle=${encodeURIComponent(pageHandleForLoad)}&${cacheBuster}`;
+            `&handle=${encodeURIComponent(pageHandleForLoad)}&${cacheBuster}` +
+            (creatorUsernameParam
+              ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}`
+              : "") +
+            (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : "");
           console.log(`${logPrefix} Fetching storefront customizer page:`, pageUrl);
           const pageRes = await fetchWithRetry(pageUrl, 1);
           if (pageRes.ok) {
