@@ -182,14 +182,19 @@ function Landing({
     <section className="luxe-page luxe-landing">
       <div className="luxe-landing-grid">
         <div className="luxe-landing-copy">
-          <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
           <StackedHeadline text={content.copy.landingHeadline} />
           <p className="luxe-lede">{content.copy.landingLede}</p>
-          <div className="luxe-cta-desktop">{cta}</div>
+          <div className="luxe-cta-desktop">
+            <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
+            {cta}
+          </div>
         </div>
         <div className="luxe-landing-bottom">
           {flow}
-          <div className="luxe-cta-mobile">{cta}</div>
+          <div className="luxe-cta-mobile">
+            <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
+            {cta}
+          </div>
         </div>
       </div>
       <LandingKeys onLeft={() => go(index - 1)} onRight={() => go(index + 1)} />
@@ -250,6 +255,8 @@ const LUXE_CSS = `
   .luxe-cta { display: flex; flex-wrap: wrap; gap: 12px; }
   .luxe-cta-mobile { display: none; }
   .luxe-cta-desktop { display: block; margin-top: 22px; }
+  .luxe-cta-desktop .luxe-eyebrow,
+  .luxe-cta-mobile .luxe-eyebrow { margin-bottom: 12px; }
   .luxe-eyebrow { margin: 0 0 10px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(245,245,247,0.62); }
   .luxe-h1 { margin: 0; font-size: clamp(32px, 4.4vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
   .luxe-lede { margin: 14px 0 0; max-width: 36rem; color: rgba(245,245,247,0.62); font-size: 16px; line-height: 1.45; }
