@@ -329,7 +329,7 @@
       'html:has(#appai-nav-transition),body:has(#appai-nav-transition){overflow-y:scroll;}',
       '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
       '.appai-transition-inner{display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;}',
-      '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
+      '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 38%,#4b5563 50%,#111827 62%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
       '@media(max-width:640px){.appai-transition-title{font-size:28px;}}',
     ].join('');
     document.head.appendChild(style);
@@ -741,6 +741,13 @@
       loading.style.cssText = 'display:flex;align-items:center;justify-content:center;background:#f4f4f5;';
       loading.innerHTML = appaiLoadingInner();
       studioContainer.appendChild(loading);
+      // Don't leave customers staring at the boot title if the iframe handshake
+      // never ACKs (expired token, slow config). Reveal the studio after 8s.
+      window.setTimeout(function () {
+        if (studioContainer && studioContainer.querySelector('.ai-art-studio-embed__loading')) {
+          removeAppaiLoadingCover();
+        }
+      }, 8000);
     }
 
     function removeAppaiLoadingCover() {

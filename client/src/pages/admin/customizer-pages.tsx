@@ -2320,6 +2320,12 @@ export default function AdminCustomizerPages() {
                               </div>
                             </div>
                           )}
+                          {wizardSizes.length > 0 && wizardColors.length === 0 && (
+                            <p className="text-xs text-muted-foreground">
+                              This product has no colour options — only sizes. Placeholder / marketing
+                              images are chosen on the Page info step.
+                            </p>
+                          )}
                           {!wizardVariantsReady && (
                             <Button
                               type="button"

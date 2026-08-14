@@ -7519,11 +7519,14 @@ ${orientationExtra}
     }
 
     let variants: Array<{ id: string; title: string; price: string }> = [];
-    if (page.baseProductId && installation?.accessToken) {
+    if (page.baseProductId && installation) {
       try {
+        const tokenReady = await ensureValidOfflineAccessToken(installation);
+        const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+        if (!accessToken) throw new Error("No Shopify access token");
         const prodResult = await shopifyApiCall(
           shop,
-          installation.accessToken,
+          accessToken,
           `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
         );
         const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
@@ -7549,8 +7552,8 @@ ${orientationExtra}
           imageSrc: v.imageSrc ?? undefined,
         }));
         const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
-        if (productIdNum) {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum).catch(
+        if (productIdNum && prodResult.ok) {
+          await ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum).catch(
             () => {},
           );
         }
@@ -21346,7 +21349,7 @@ ${orientationExtra}
     }
     if (!page) return res.status(404).json({ error: "Customizer page not found" });
 
-    const installation = await storage.getShopifyInstallationByShop(shop);
+    let installation = await storage.getShopifyInstallationByShop(shop);
     const merchantForGate = await storage.getMerchantByShop(shop);
     const previewOk = verifyPreviewToken(req.query.appai_preview as string | undefined, shop, page.handle);
     // Saved-design reopen while page is disabled: allow config load for ATC, not fresh design.
@@ -21416,14 +21419,22 @@ ${orientationExtra}
     let productPublished: boolean | null = null;
     if (page.baseProductId) {
       try {
-        if (installation?.accessToken) {
+        let accessToken = installation?.accessToken || "";
+        if (installation) {
+          const tokenReady = await ensureValidOfflineAccessToken(installation);
+          if (tokenReady.ok) {
+            accessToken = tokenReady.accessToken;
+            installation = tokenReady.installation;
+          }
+        }
+        if (accessToken) {
           const prodResult = await shopifyApiCall(
             shop,
-            installation.accessToken,
+            accessToken,
             `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`
           );
-          const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
-          const productImages: any[] = prodResult.data?.product?.images ?? [];
+          const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
+          const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
           let baseVariants = selectBaseCatalogVariants(rawVariants);
           if (baseVariants.length === 0 && page.productTypeId) {
             const pt = await storage.getProductType(page.productTypeId);
@@ -21434,7 +21445,9 @@ ${orientationExtra}
               );
               if (fallback.length > 0) {
                 console.log(
-                  `[proxy/customizer-page] Product ${page.baseProductId} had ${rawVariants.length} Shopify variants but catalog empty; using DB fallback (${fallback.length})`,
+                  `[proxy/customizer-page] Product ${page.baseProductId} catalog empty` +
+                    `${prodResult.ok ? "" : ` (Shopify ${prodResult.error || "failed"})`}` +
+                    `; using DB fallback (${fallback.length})`,
                 );
                 baseVariants = fallback;
               }
@@ -21463,9 +21476,9 @@ ${orientationExtra}
 
           // Ensure product is published to Online Store so /cart/add.js works.
           // "unlisted" products still work with /cart/add.js when published to Online Store.
-          if (productIdNum) {
+          if (productIdNum && prodResult.ok) {
             try {
-              await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+              await ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum);
               productPublished = true;
               console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
             } catch (pubErr: any) {
@@ -21475,6 +21488,30 @@ ${orientationExtra}
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
+      }
+    }
+    if (variants.length === 0 && page.productTypeId) {
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (pt) {
+          const fallback = buildFallbackVariantsFromProductType(pt);
+          if (fallback.length > 0) {
+            variants = mapVariantsForCatalogResponse(fallback, true).map((v) => ({
+              id: String(v.id),
+              title: v.title || "",
+              price: v.price || "0.00",
+              option1: v.option1 ?? undefined,
+              option2: v.option2 ?? undefined,
+              option3: v.option3 ?? undefined,
+              imageSrc: v.imageSrc ?? undefined,
+            }));
+            console.log(
+              `[proxy/customizer-page] Using DB fallback variants for handle=${page.handle} (${variants.length})`,
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] DB variant fallback failed:`, e);
       }
     }
 
