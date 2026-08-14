@@ -1146,11 +1146,11 @@ export default function AdminCustomizerPages() {
 
   useEffect(() => {
     if (!selectedBlank) return;
-    const images = selectedBlank.baseMockupImages || {};
-    setFormPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
-    setFormGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
+    // Do not pre-select catalog images — merchant must pick primary + gallery on step 1.
+    setFormPrimaryPlaceholder("");
+    setFormGalleryPlaceholders(new Set());
     setFormCustomPlaceholder("");
-  }, [selectedBlank?.productTypeId, formProductId]);
+  }, [selectedBlank?.productTypeId]);
 
   useEffect(() => {
     if (!selectedBlank?.productTypeId) return;
