@@ -1,11 +1,10 @@
-import { useState } from "react";
-import { Link } from "wouter";
-import { useMutation } from "@tanstack/react-query";
-import { CreatorMarketingShell } from "@/components/creators/CreatorMarketingShell";
+import { useMemo, useState, type ReactNode } from "react";
+import { Link, useLocation } from "wouter";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -13,53 +12,42 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { SOCIAL_PLATFORMS } from "@shared/creatorMarketplace";
+import { SOCIAL_PLATFORMS, CREATOR_PAYOUT_METHODS } from "@shared/creatorMarketplace";
+import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
 import { Loader2 } from "lucide-react";
 
-type FormState = {
-  firstName: string;
-  lastName: string;
-  email: string;
-  socialPlatform: string;
-  socialUsername: string;
-  socialUrl: string;
-  followerCount: string;
-  niche: string;
-  audienceDescription: string;
-  hasShopifyStore: boolean;
-  shopifyStoreUrl: string;
-  interestedProducts: string;
-  preferredCategory: string;
-  whyParticipate: string;
-  expectedReach: string;
-  additionalInfo: string;
-};
-
-const empty: FormState = {
-  firstName: "",
-  lastName: "",
-  email: "",
-  socialPlatform: "instagram",
-  socialUsername: "",
-  socialUrl: "",
-  followerCount: "",
-  niche: "",
-  audienceDescription: "",
-  hasShopifyStore: false,
-  shopifyStoreUrl: "",
-  interestedProducts: "",
-  preferredCategory: "",
-  whyParticipate: "",
-  expectedReach: "",
-  additionalInfo: "",
-};
+type Track = "creator" | "shopify";
 
 export default function CreatorApplyPage() {
+  const [location] = useLocation();
+  const track: Track = useMemo(() => {
+    const query = location.includes("?") ? location.slice(location.indexOf("?")) : window.location.search;
+    return new URLSearchParams(query).get("track") === "shopify" ? "shopify" : "creator";
+  }, [location]);
+
+  const { data } = useQuery<{ content: LandingContent }>({
+    queryKey: ["/api/creators/landing"],
+  });
+  const copy = data?.content.copy ?? DEFAULT_LANDING_CONTENT.copy;
   const { toast } = useToast();
-  const [form, setForm] = useState<FormState>(empty);
   const [submittedId, setSubmittedId] = useState<string | null>(null);
+  const [terms, setTerms] = useState(false);
+  const [form, setForm] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    socialPlatform: "instagram",
+    socialUsername: "",
+    followerCount: "",
+    niche: "",
+    shopifyStoreUrl: "",
+    payoutMethod: "paypal",
+    payoutDetail: "",
+  });
+
+  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
+    setForm((f) => ({ ...f, [key]: value }));
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -67,8 +55,19 @@ export default function CreatorApplyPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...form,
+          track,
+          firstName: form.firstName,
+          lastName: form.lastName,
+          email: form.email,
+          socialPlatform: track === "creator" ? form.socialPlatform : "other",
+          socialUsername: track === "creator" ? form.socialUsername : form.shopifyStoreUrl,
           followerCount: form.followerCount ? Number(form.followerCount) : null,
+          niche: track === "creator" ? form.niche : "Shopify store owner",
+          hasShopifyStore: track === "shopify",
+          shopifyStoreUrl: track === "shopify" ? form.shopifyStoreUrl : null,
+          payoutMethod: track === "creator" ? form.payoutMethod : null,
+          payoutDetail: track === "creator" ? form.payoutDetail : null,
+          termsAccepted: terms,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -84,223 +83,192 @@ export default function CreatorApplyPage() {
     },
   });
 
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm((f) => ({ ...f, [key]: value }));
-
   if (submittedId) {
     return (
-      <CreatorMarketingShell ctaHref="/beta" ctaLabel="Back to beta">
-        <div className="container mx-auto max-w-lg px-4 py-24 text-center">
-          <h1 className="text-3xl font-bold">Thanks — you&apos;re in the queue</h1>
-          <p className="mt-4 text-muted-foreground">
-            We received your Creator Beta application. Our team will review it and follow up by
-            email. No automated messages are sent until we enable them.
-          </p>
-          <Button asChild className="mt-8">
-            <Link href="/beta">Return to beta overview</Link>
+      <ApplyShell>
+        <div className="mx-auto max-w-lg px-4 py-24 text-center">
+          <p className="luxe-kicker">{track === "shopify" ? copy.shopifyEyebrow : copy.applyEyebrow}</p>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight">{copy.thanksTitle}</h1>
+          <p className="mt-4 text-white/60">{copy.thanksLede}</p>
+          <Button asChild className="mt-8" variant="secondary">
+            <Link href="/beta">Back to landing</Link>
           </Button>
         </div>
-      </CreatorMarketingShell>
+      </ApplyShell>
     );
   }
 
+  const title = track === "shopify" ? copy.shopifyTitle : copy.applyTitle;
+  const lede = track === "shopify" ? copy.shopifyLede : copy.applyLede;
+  const termsText = track === "shopify" ? copy.shopifyTerms : copy.applyTerms;
+  const submitLabel = track === "shopify" ? copy.shopifySubmit : copy.applySubmit;
+
   return (
-    <CreatorMarketingShell>
-      <div className="container mx-auto max-w-2xl px-4 py-12">
-        <h1 className="text-3xl font-bold">Apply for the Creator Beta</h1>
-        <p className="mt-2 text-muted-foreground">
-          Tell us about your audience and how you&apos;d use AI-powered merch. Takes a few minutes.
+    <ApplyShell>
+      <div className="mx-auto max-w-xl px-4 py-12">
+        <p className="luxe-kicker">{track === "shopify" ? copy.shopifyEyebrow : copy.applyEyebrow}</p>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight md:text-4xl">{title}</h1>
+        <p className="mt-3 text-white/60">{lede}</p>
+        <p className="mt-2 text-sm text-white/40">
+          {track === "shopify" ? (
+            <Link href="/creators/apply" className="underline underline-offset-2">
+              Apply as a creator instead
+            </Link>
+          ) : (
+            <Link href="/creators/apply?track=shopify" className="underline underline-offset-2">
+              Already have a Shopify store?
+            </Link>
+          )}
         </p>
 
         <form
-          className="mt-8 space-y-6"
+          className="mt-8 space-y-5"
           onSubmit={(e) => {
             e.preventDefault();
             mutation.mutate();
           }}
         >
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="firstName">First name</Label>
+            <Field label="First name">
               <Input
-                id="firstName"
                 required
                 value={form.firstName}
                 onChange={(e) => set("firstName", e.target.value)}
                 data-testid="creator-apply-first-name"
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="lastName">Last name</Label>
-              <Input
-                id="lastName"
-                required
-                value={form.lastName}
-                onChange={(e) => set("lastName", e.target.value)}
-              />
-            </div>
+            </Field>
+            <Field label="Last name">
+              <Input required value={form.lastName} onChange={(e) => set("lastName", e.target.value)} />
+            </Field>
           </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
+          <Field label="Email">
             <Input
-              id="email"
               type="email"
               required
               value={form.email}
               onChange={(e) => set("email", e.target.value)}
               data-testid="creator-apply-email"
             />
-          </div>
+          </Field>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>Social platform</Label>
-              <Select value={form.socialPlatform} onValueChange={(v) => set("socialPlatform", v)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SOCIAL_PLATFORMS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="socialUsername">Social username</Label>
-              <Input
-                id="socialUsername"
-                required
-                value={form.socialUsername}
-                onChange={(e) => set("socialUsername", e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="socialUrl">Profile URL</Label>
-              <Input
-                id="socialUrl"
-                type="url"
-                placeholder="https://"
-                value={form.socialUrl}
-                onChange={(e) => set("socialUrl", e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="followerCount">Follower count</Label>
-              <Input
-                id="followerCount"
-                type="number"
-                min={0}
-                value={form.followerCount}
-                onChange={(e) => set("followerCount", e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="niche">Niche</Label>
-            <Input
-              id="niche"
-              required
-              placeholder="e.g. Pet parenting, streetwear, home décor"
-              value={form.niche}
-              onChange={(e) => set("niche", e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="audienceDescription">Audience description</Label>
-            <Textarea
-              id="audienceDescription"
-              rows={3}
-              value={form.audienceDescription}
-              onChange={(e) => set("audienceDescription", e.target.value)}
-            />
-          </div>
-
-          <div className="flex items-start gap-2 rounded-md border p-4">
-            <Checkbox
-              id="hasShopify"
-              checked={form.hasShopifyStore}
-              onCheckedChange={(c) => set("hasShopifyStore", !!c)}
-            />
-            <div className="space-y-2 flex-1">
-              <Label htmlFor="hasShopify" className="font-normal">
-                I already have a Shopify store
-              </Label>
-              {form.hasShopifyStore && (
+          {track === "creator" ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Platform">
+                  <Select value={form.socialPlatform} onValueChange={(v) => set("socialPlatform", v)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SOCIAL_PLATFORMS.map((p) => (
+                        <SelectItem key={p} value={p}>
+                          {p.charAt(0).toUpperCase() + p.slice(1)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Handle">
+                  <Input
+                    required
+                    placeholder="@yourname"
+                    value={form.socialUsername}
+                    onChange={(e) => set("socialUsername", e.target.value)}
+                  />
+                </Field>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Follower count">
+                  <Input
+                    type="number"
+                    min={0}
+                    value={form.followerCount}
+                    onChange={(e) => set("followerCount", e.target.value)}
+                  />
+                </Field>
+                <Field label="Niche">
+                  <Input
+                    required
+                    placeholder="Pets, streetwear, décor…"
+                    value={form.niche}
+                    onChange={(e) => set("niche", e.target.value)}
+                  />
+                </Field>
+              </div>
+              <Field label="How should we pay you when you earn?">
+                <Select value={form.payoutMethod} onValueChange={(v) => set("payoutMethod", v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CREATOR_PAYOUT_METHODS.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p === "paypal" ? "PayPal" : p === "bank" ? "Bank transfer" : "Stripe"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Payout details">
                 <Input
-                  placeholder="https://your-store.myshopify.com"
-                  value={form.shopifyStoreUrl}
-                  onChange={(e) => set("shopifyStoreUrl", e.target.value)}
                   required
+                  placeholder="PayPal email or account name"
+                  value={form.payoutDetail}
+                  onChange={(e) => set("payoutDetail", e.target.value)}
                 />
-              )}
-            </div>
-          </div>
+              </Field>
+            </>
+          ) : (
+            <Field label="Shopify store URL">
+              <Input
+                type="url"
+                required
+                placeholder="https://your-store.myshopify.com"
+                value={form.shopifyStoreUrl}
+                onChange={(e) => set("shopifyStoreUrl", e.target.value)}
+              />
+            </Field>
+          )}
 
-          <div className="space-y-2">
-            <Label htmlFor="interestedProducts">Products you&apos;re interested in</Label>
-            <Input
-              id="interestedProducts"
-              placeholder="Hoodies, posters, phone cases…"
-              value={form.interestedProducts}
-              onChange={(e) => set("interestedProducts", e.target.value)}
-            />
-          </div>
+          <label className="flex items-start gap-3 text-sm text-white/70">
+            <Checkbox checked={terms} onCheckedChange={(c) => setTerms(!!c)} className="mt-0.5" />
+            <span>{termsText}</span>
+          </label>
 
-          <div className="space-y-2">
-            <Label htmlFor="preferredCategory">Preferred product category</Label>
-            <Input
-              id="preferredCategory"
-              placeholder="Apparel, décor, accessories…"
-              value={form.preferredCategory}
-              onChange={(e) => set("preferredCategory", e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="whyParticipate">Why do you want to participate?</Label>
-            <Textarea
-              id="whyParticipate"
-              rows={3}
-              value={form.whyParticipate}
-              onChange={(e) => set("whyParticipate", e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="expectedReach">Expected audience reach</Label>
-            <Input
-              id="expectedReach"
-              placeholder="e.g. 50k Instagram, engaged community"
-              value={form.expectedReach}
-              onChange={(e) => set("expectedReach", e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="additionalInfo">Anything else?</Label>
-            <Textarea
-              id="additionalInfo"
-              rows={2}
-              value={form.additionalInfo}
-              onChange={(e) => set("additionalInfo", e.target.value)}
-            />
-          </div>
-
-          <Button type="submit" disabled={mutation.isPending} data-testid="creator-apply-submit">
+          <Button type="submit" disabled={mutation.isPending || !terms} data-testid="creator-apply-submit">
             {mutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Submit application
+            {submitLabel}
           </Button>
         </form>
       </div>
-    </CreatorMarketingShell>
+    </ApplyShell>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <Label className="text-white/70">{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+function ApplyShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="luxe-apply min-h-screen bg-[#07070b] text-[#f5f5f7]">
+      <style>{`.luxe-kicker{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:rgba(245,245,247,.55)}.luxe-apply input,.luxe-apply textarea,.luxe-apply button[role=combobox]{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.16);color:#fff}`}</style>
+      <header className="border-b border-white/10 px-4 py-4">
+        <div className="mx-auto flex max-w-xl items-center justify-between">
+          <Link href="/beta" className="font-semibold">
+            AI Art Studio
+          </Link>
+          <Link href="/beta" className="text-sm text-white/50 hover:text-white">
+            Back
+          </Link>
+        </div>
+      </header>
+      {children}
+    </div>
   );
 }

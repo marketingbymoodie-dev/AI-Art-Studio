@@ -19,6 +19,8 @@ import {
 } from "@shared/schema";
 import {
   CREATOR_APPLICATION_STATUSES,
+  CREATOR_APPLY_TRACKS,
+  CREATOR_PAYOUT_METHODS,
   CREATOR_STATUSES,
   DEFAULT_CREATOR_BETA_DAYS,
   DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER,
@@ -28,13 +30,17 @@ import {
   clampMonthlyGenerationAllowance,
   normalizeCreatorUsername,
   type CreatorApplicationStatus,
+  type CreatorApplyTrack,
+  type CreatorPayoutMethod,
 } from "@shared/creatorMarketplace";
 import { requirePlatformAdmin } from "../platformAdmin";
 import {
   getAiGenerationCostUsd,
   getCreatorPlatformShopDomain,
   getCreatorPlatformStorefrontToken,
+  getLandingContent,
   isCreatorMarketplaceEnabled,
+  saveLandingContent,
 } from "../creator-config";
 import {
   getCreatorStorefrontByUsername,
@@ -93,6 +99,36 @@ export function registerCreatorMarketplaceRoutes(
     });
   });
 
+  app.get("/api/creators/landing", async (_req, res) => {
+    try {
+      res.json({ content: await getLandingContent() });
+    } catch (e: any) {
+      console.error("[creators] landing read failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load landing" });
+    }
+  });
+
+  app.get("/api/platform/landing", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json({ content: await getLandingContent() });
+    } catch (e: any) {
+      console.error("[creators] admin landing read failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load landing" });
+    }
+  });
+
+  app.put("/api/platform/landing", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const content = await saveLandingContent(req.body?.content ?? req.body);
+      res.json({ content });
+    } catch (e: any) {
+      console.error("[creators] admin landing save failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to save landing" });
+    }
+  });
+
   /** Public storefront boot payload (path fallback + client refresh). */
   app.get("/api/creators/storefront/:username", async (req, res) => {
     if (!isCreatorMarketplaceEnabled()) {
@@ -124,25 +160,60 @@ export function registerCreatorMarketplaceRoutes(
       const firstName = String(body.firstName || "").trim();
       const lastName = String(body.lastName || "").trim();
       const email = String(body.email || "").trim().toLowerCase();
-      const socialPlatform = String(body.socialPlatform || "").trim().toLowerCase();
-      const socialUsername = String(body.socialUsername || "").trim();
-      const niche = String(body.niche || "").trim();
-      const hasShopifyStore = !!body.hasShopifyStore;
+      const trackRaw = String(body.track || body.applyTrack || "creator").trim().toLowerCase();
+      const applyTrack: CreatorApplyTrack = (CREATOR_APPLY_TRACKS as readonly string[]).includes(
+        trackRaw,
+      )
+        ? (trackRaw as CreatorApplyTrack)
+        : "creator";
+      const shopifyStoreUrl = String(body.shopifyStoreUrl || "").trim() || null;
+      const hasShopifyStore = applyTrack === "shopify" || !!body.hasShopifyStore;
+      const termsAccepted = body.termsAccepted === true || body.termsAccepted === "true";
 
-      if (!firstName || !lastName || !email || !socialPlatform || !socialUsername || !niche) {
+      if (!firstName || !lastName || !email) {
         return res.status(400).json({
-          error: "First name, last name, email, social platform, social username, and niche are required.",
+          error: "First name, last name, and email are required.",
         });
       }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         return res.status(400).json({ error: "Enter a valid email address." });
       }
+      if (!termsAccepted) {
+        return res.status(400).json({ error: "Please agree to the terms to apply." });
+      }
+
+      let socialPlatform = String(body.socialPlatform || "").trim().toLowerCase();
+      let socialUsername = String(body.socialUsername || "").trim();
+      let niche = String(body.niche || "").trim();
+
+      if (applyTrack === "shopify") {
+        if (!shopifyStoreUrl) {
+          return res.status(400).json({ error: "Shopify store URL is required." });
+        }
+        socialPlatform = socialPlatform || "other";
+        socialUsername = socialUsername || shopifyStoreUrl.replace(/^https?:\/\//, "").slice(0, 80);
+        niche = niche || "Shopify store owner";
+      } else {
+        if (!socialPlatform || !socialUsername || !niche) {
+          return res.status(400).json({
+            error: "Social platform, handle, and niche are required.",
+          });
+        }
+      }
       if (!(SOCIAL_PLATFORMS as readonly string[]).includes(socialPlatform)) {
         return res.status(400).json({ error: "Unsupported social platform." });
       }
-      if (hasShopifyStore && !String(body.shopifyStoreUrl || "").trim()) {
+      if (hasShopifyStore && !shopifyStoreUrl) {
         return res.status(400).json({ error: "Shopify store URL is required when you have a store." });
       }
+
+      const payoutRaw = String(body.payoutMethod || "").trim().toLowerCase();
+      const payoutMethod: CreatorPayoutMethod | null = (CREATOR_PAYOUT_METHODS as readonly string[]).includes(
+        payoutRaw,
+      )
+        ? (payoutRaw as CreatorPayoutMethod)
+        : null;
+      const payoutDetail = String(body.payoutDetail || "").trim() || null;
 
       const [row] = await db
         .insert(creatorApplications)
@@ -157,12 +228,16 @@ export function registerCreatorMarketplaceRoutes(
           niche,
           audienceDescription: String(body.audienceDescription || "").trim() || null,
           hasShopifyStore,
-          shopifyStoreUrl: String(body.shopifyStoreUrl || "").trim() || null,
+          shopifyStoreUrl,
           interestedProducts: String(body.interestedProducts || "").trim() || null,
           preferredCategory: String(body.preferredCategory || "").trim() || null,
           whyParticipate: String(body.whyParticipate || "").trim() || null,
           expectedReach: String(body.expectedReach || "").trim() || null,
           additionalInfo: String(body.additionalInfo || "").trim() || null,
+          applyTrack,
+          payoutMethod,
+          payoutDetail,
+          termsAcceptedAt: new Date(),
           status: "submitted",
         })
         .returning();

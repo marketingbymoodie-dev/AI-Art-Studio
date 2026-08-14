@@ -41,6 +41,7 @@ import {
   Activity,
   Calculator,
   Users,
+  Megaphone,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -69,6 +70,7 @@ const platformMenuItems = [
   { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
+  { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];

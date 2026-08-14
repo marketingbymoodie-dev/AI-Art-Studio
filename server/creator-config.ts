@@ -11,6 +11,12 @@ import {
   DEFAULT_CREATOR_TRANSACTION_FEE_PCT,
   PLATFORM_CONFIG_KEYS,
 } from "@shared/creatorMarketplace";
+import {
+  DEFAULT_LANDING_CONTENT,
+  mergeLandingContent,
+  parseLandingContentJson,
+  type LandingContent,
+} from "@shared/landingContent";
 
 export function isCreatorMarketplaceEnabled(): boolean {
   const v = (process.env.CREATOR_MARKETPLACE_ENABLED || "").trim().toLowerCase();
@@ -125,4 +131,36 @@ export async function setPlatformConfig(key: string, value: string): Promise<voi
   ) {
     cachedTxnFees = null;
   }
+  if (key === PLATFORM_CONFIG_KEYS.LANDING_CONTENT) {
+    cachedLanding = null;
+  }
+}
+
+let cachedLanding: { value: LandingContent; at: number } | null = null;
+const LANDING_CACHE_MS = 15_000;
+
+export async function getLandingContent(): Promise<LandingContent> {
+  const now = Date.now();
+  if (cachedLanding && now - cachedLanding.at < LANDING_CACHE_MS) {
+    return cachedLanding.value;
+  }
+  try {
+    const [row] = await db
+      .select()
+      .from(platformConfig)
+      .where(eq(platformConfig.key, PLATFORM_CONFIG_KEYS.LANDING_CONTENT))
+      .limit(1);
+    const value = parseLandingContentJson(row?.value);
+    cachedLanding = { value, at: now };
+    return value;
+  } catch {
+    return structuredClone(DEFAULT_LANDING_CONTENT);
+  }
+}
+
+export async function saveLandingContent(raw: unknown): Promise<LandingContent> {
+  const value = mergeLandingContent(raw);
+  await setPlatformConfig(PLATFORM_CONFIG_KEYS.LANDING_CONTENT, JSON.stringify(value));
+  cachedLanding = { value, at: Date.now() };
+  return value;
 }

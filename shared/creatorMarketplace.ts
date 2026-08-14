@@ -11,7 +11,14 @@ export const PLATFORM_CONFIG_KEYS = {
   CREATOR_TRANSACTION_FEE_PCT: "CREATOR_TRANSACTION_FEE_PCT",
   CREATOR_TRANSACTION_FEE_FIXED_CENTS: "CREATOR_TRANSACTION_FEE_FIXED_CENTS",
   CREATOR_STYLE_ASSIGNMENT_BACKFILL_AT: "CREATOR_STYLE_ASSIGNMENT_BACKFILL_AT",
+  LANDING_CONTENT: "LANDING_CONTENT",
 } as const;
+
+export const CREATOR_APPLY_TRACKS = ["creator", "shopify"] as const;
+export type CreatorApplyTrack = (typeof CREATOR_APPLY_TRACKS)[number];
+
+export const CREATOR_PAYOUT_METHODS = ["paypal", "bank", "stripe"] as const;
+export type CreatorPayoutMethod = (typeof CREATOR_PAYOUT_METHODS)[number];
 
 /** Default Shopify Payments-style fee (percent of charged amount). */
 export const DEFAULT_CREATOR_TRANSACTION_FEE_PCT = 2.9;

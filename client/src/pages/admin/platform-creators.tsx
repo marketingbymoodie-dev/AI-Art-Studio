@@ -50,6 +50,10 @@ type Application = {
   followerCount: number | null;
   whyParticipate: string | null;
   shopifyStoreUrl: string | null;
+  applyTrack?: string | null;
+  payoutMethod?: string | null;
+  payoutDetail?: string | null;
+  termsAcceptedAt?: string | null;
   createdAt: string;
 };
 
@@ -224,6 +228,11 @@ export default function PlatformCreatorsPage() {
       <div className="space-y-6 p-6">
         <div>
           <h1 className="text-2xl font-bold">Creator Marketplace</h1>
+          <p className="mt-1 text-sm">
+            <a href="/admin/platform/landing" className="underline underline-offset-2">
+              Edit public landing copy
+            </a>
+          </p>
           <p className="text-sm text-muted-foreground">
             Applications and beta creators. Feature flag:{" "}
             <Badge variant={config?.enabled ? "default" : "secondary"}>
@@ -386,7 +395,9 @@ export default function PlatformCreatorsPage() {
                     </TableCell>
                     <TableCell>{a.niche}</TableCell>
                     <TableCell>
-                      {a.hasShopifyStore ? "Shopify merchant" : "Creator"}
+                      {a.applyTrack === "shopify" || a.hasShopifyStore
+                        ? "Shopify merchant"
+                        : "Creator"}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{a.status}</Badge>
@@ -500,6 +511,17 @@ export default function PlatformCreatorsPage() {
                   <div className="mt-1">Niche: {detail.application.niche}</div>
                   {detail.application.shopifyStoreUrl ? (
                     <div className="mt-1">Store: {detail.application.shopifyStoreUrl}</div>
+                  ) : null}
+                  {detail.application.payoutMethod ? (
+                    <div className="mt-1">
+                      Payout: {detail.application.payoutMethod}
+                      {detail.application.payoutDetail ? ` · ${detail.application.payoutDetail}` : ""}
+                    </div>
+                  ) : null}
+                  {detail.application.termsAcceptedAt ? (
+                    <div className="mt-1 text-muted-foreground">
+                      Terms accepted {new Date(detail.application.termsAcceptedAt).toLocaleString()}
+                    </div>
                   ) : null}
                   {detail.application.whyParticipate ? (
                     <p className="mt-2 text-muted-foreground">{detail.application.whyParticipate}</p>

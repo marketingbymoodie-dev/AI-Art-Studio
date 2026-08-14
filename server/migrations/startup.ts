@@ -106,6 +106,10 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "credit_ledger",          column: "related_entity_id",          type: "TEXT" },
   { table: "credit_ledger",          column: "quota_bucket_key",           type: "TEXT" },
   { table: "shared_designs",         column: "owner_customer_id",          type: "VARCHAR" },
+  { table: "creator_applications",   column: "apply_track",                type: "TEXT NOT NULL DEFAULT 'creator'" },
+  { table: "creator_applications",   column: "payout_method",              type: "TEXT" },
+  { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },
+  { table: "creator_applications",   column: "terms_accepted_at",          type: "TIMESTAMP" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -1066,6 +1070,10 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "why_participate" text,
         "expected_reach" text,
         "additional_info" text,
+        "apply_track" text NOT NULL DEFAULT 'creator',
+        "payout_method" text,
+        "payout_detail" text,
+        "terms_accepted_at" timestamp,
         "status" text NOT NULL DEFAULT 'submitted',
         "assigned_username" text,
         "creator_id" varchar,
