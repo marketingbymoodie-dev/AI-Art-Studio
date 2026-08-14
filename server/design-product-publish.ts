@@ -17,7 +17,8 @@
  * design's selected size (and, if applicable, color) variants instead of one, and is
  * never deleted.
  */
-import { uploadImageToPrintify } from "./printify-mockups";
+import { uploadImageToPrintify, getBlueprintVariantPlaceholders } from "./printify-mockups";
+import { PRINTIFY_PANEL_POSITION_ALIASES } from "@shared/pulloverPocketPrintMerge";
 import { bakeFlatPrintFile, uploadPrintFileToPrintify, type FlatPlacement } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
@@ -98,6 +99,54 @@ export type CreatePersistentPrintifyProductResult =
  * merchant/customer studio's apply step — mockup-resolution today, print-res once
  * Phase 2 lands). Skips positions with no captured panel.
  */
+/**
+ * Printify rejects the whole product (422) for any placeholder position the
+ * variant doesn't support (e.g. zip hoodie has no `front_pocket`). When the
+ * live placeholder list is available, drop unsupported positions — but first
+ * remap a saved panel onto the name Printify actually uses via the alias table
+ * so pullover kangaroo pockets (front_pocket ↔ pocket ↔ kangaroo_pocket) keep
+ * printing. If the list can't be fetched, leave the placeholders untouched.
+ */
+async function filterPlaceholdersToSupported(
+  placeholders: PrintifyPlaceholder[],
+  blueprintId: number,
+  providerId: number,
+  variantId: number,
+  apiToken: string,
+): Promise<PrintifyPlaceholder[]> {
+  const discovered = await getBlueprintVariantPlaceholders(
+    blueprintId,
+    providerId,
+    variantId,
+    apiToken,
+  );
+  if (!discovered || discovered.length === 0) return placeholders;
+  const supported = new Set(discovered.map((p) => p.position));
+  const out: PrintifyPlaceholder[] = [];
+  const dropped: string[] = [];
+  for (const ph of placeholders) {
+    if (supported.has(ph.position)) {
+      out.push(ph);
+      continue;
+    }
+    const alias = (PRINTIFY_PANEL_POSITION_ALIASES[ph.position] ?? []).find(
+      (a) => supported.has(a),
+    );
+    if (alias) {
+      out.push({ ...ph, position: alias });
+      continue;
+    }
+    dropped.push(ph.position);
+  }
+  if (dropped.length > 0) {
+    console.warn(
+      `[design-product-publish] Dropping ${dropped.length} unsupported placeholder(s) ` +
+        `for variant ${variantId} (blueprint ${blueprintId}): ${dropped.join(", ")}`,
+    );
+  }
+  return out;
+}
+
 async function buildAopPlaceholders(
   job: GenerationJob,
   apiToken: string,
@@ -316,6 +365,24 @@ export async function createPersistentPrintifyProduct(
     built = await buildToteFoldedPlaceholders(job, apiToken);
   } else if (isAop) {
     built = await buildAopPlaceholders(job, apiToken);
+    if (!built.error && built.placeholders.length > 0) {
+      built = {
+        placeholders: await filterPlaceholdersToSupported(
+          built.placeholders,
+          blueprintId,
+          providerId,
+          resolvedVariants[0].printifyVariantId,
+          apiToken,
+        ),
+      };
+      if (built.placeholders.length === 0) {
+        return {
+          ok: false,
+          error:
+            "None of this design's print panels match placeholders this product supports. Re-open it in the studio and re-apply the artwork.",
+        };
+      }
+    }
   } else if (isFlatTier) {
     built = await buildFlatPlaceholders(job, productType, apiToken);
   } else {

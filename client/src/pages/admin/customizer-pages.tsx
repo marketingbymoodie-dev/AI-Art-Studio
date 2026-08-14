@@ -1649,7 +1649,23 @@ export default function AdminCustomizerPages() {
       if (aLive !== bLive) return aLive - bLive;
       return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
     });
-    return blanks;
+    // Repeated catalogue activation can leave several active productType rows for
+    // the same blueprint/title, which showed up as duplicate dropdown options.
+    // Collapse by product identity (synced product id, else blueprint+title),
+    // keeping the first — the sort above already puts a live/synced row first.
+    const seen = new Set<string>();
+    const deduped: typeof blanks = [];
+    for (const b of blanks) {
+      const key = b.productId
+        ? `id:${b.productId}`
+        : b.printifyBlueprintId != null
+          ? `bp:${b.printifyBlueprintId}:${b.title.trim().toLowerCase()}`
+          : `pt:${b.productTypeId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(b);
+    }
+    return deduped;
   }, [blanksData?.blanks, liveProductTypeIds]);
 
   const handleAlreadyUsed = useMemo(() => {
