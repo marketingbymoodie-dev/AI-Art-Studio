@@ -20839,17 +20839,33 @@ ${orientationExtra}
         const allColors = JSON.parse(pt.frameColors || "[]");
         const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
         const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
-        const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
-        const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
+        // selectedSizeIds can drift in separator format vs the sizes list /
+        // variantMap ids (e.g. "14x14" vs "14-14" on catalogue-activated pillows).
+        // A raw Set.has() then drops every variant, leaving the pricing step with
+        // no rows. Compare on a normalised id (only the dimension separator between
+        // digits, so apparel xl/2xl stay intact).
+        const normSel = (v: any) =>
+          String(v).toLowerCase().trim().replace(/(\d)\s*[x×]\s*(\d)/g, "$1-$2").replace(/\s+/g, "-");
+        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds.map(normSel)) : null;
+        const activeColorSet = savedColorIds.length ? new Set(savedColorIds.map(normSel)) : null;
+        const activeSizes = activeSizeSet
+          ? allSizes.filter((s: any) => activeSizeSet.has(normSel(s.id)))
+          : allSizes;
+        const activeColors = activeColorSet
+          ? allColors.filter((c: any) => activeColorSet.has(normSel(c.id)))
+          : allColors;
         const labels: Record<string, string> = {};
-        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds) : null;
-        const activeColorSet = savedColorIds.length ? new Set(savedColorIds) : null;
         for (const [key, entry] of Object.entries(storedVm)) {
           const [sizeId, colorId = "default"] = key.split(":");
-          if (activeSizeSet && !activeSizeSet.has(sizeId)) continue;
-          if (activeColorSet && !activeColorSet.has(colorId)) continue;
-          const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
-          const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
+          if (activeSizeSet && !activeSizeSet.has(normSel(sizeId))) continue;
+          if (activeColorSet && !activeColorSet.has(normSel(colorId))) continue;
+          const sizeName =
+            activeSizes.find((s: any) => normSel(s.id) === normSel(sizeId))?.name ??
+            allSizes.find((s: any) => normSel(s.id) === normSel(sizeId))?.name ??
+            sizeId;
+          const colorName =
+            activeColors.find((c: any) => normSel(c.id) === normSel(colorId))?.name ??
+            allColors.find((c: any) => normSel(c.id) === normSel(colorId))?.name;
           const vid = String((entry as any).printifyVariantId);
           labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
         }
