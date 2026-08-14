@@ -15726,7 +15726,8 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      if (!merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -15736,17 +15737,36 @@ ${orientationExtra}
         return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
-      if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+      if (!productType.printifyBlueprintId) {
         return res.status(400).json({ error: "Product type is not linked to Printify" });
+      }
+
+      let providerId = productType.printifyProviderId as number | null | undefined;
+      if (!providerId) {
+        const provRes = await fetchWithRetry(
+          `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers.json`,
+          { headers: { Authorization: `Bearer ${printifyToken}`, "Content-Type": "application/json" } },
+          2,
+          800,
+        );
+        if (provRes.ok) {
+          const provs = await provRes.json();
+          providerId = Array.isArray(provs) && provs.length
+            ? (provs[0].id ?? provs[0].print_provider_id)
+            : undefined;
+        }
+      }
+      if (!providerId) {
+        return res.status(400).json({ error: "Product type is not linked to a Printify provider" });
       }
 
       const existingImages = typeof productType.baseMockupImages === "string"
         ? JSON.parse(productType.baseMockupImages || "{}")
         : productType.baseMockupImages || {};
       const availablePlaceholderImages = await fetchPrintifyPlaceholderOptions(
-        merchant.printifyApiToken,
+        printifyToken,
         productType.printifyBlueprintId,
-        productType.printifyProviderId,
+        providerId,
       );
       let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
@@ -15777,7 +15797,10 @@ ${orientationExtra}
 
       // Update the product type with new images
       const updated = await storage.updateProductType(productTypeId, {
-        baseMockupImages: JSON.stringify(baseMockupImages)
+        baseMockupImages: JSON.stringify(baseMockupImages),
+        ...(!(productType as any).printifyProviderId && providerId
+          ? { printifyProviderId: providerId }
+          : {}),
       });
 
       res.json({ 

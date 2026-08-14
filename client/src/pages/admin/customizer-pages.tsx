@@ -302,6 +302,7 @@ export default function AdminCustomizerPages() {
   const [editCustomPlaceholder, setEditCustomPlaceholder] = useState("");
   const [uploadingPlaceholder, setUploadingPlaceholder] = useState(false);
   const placeholderUploadRef = useRef<HTMLInputElement>(null);
+  const placeholderHealAttemptedRef = useRef<number | null>(null);
 
   // Hub URL (fallback for disabled pages)
   const [hubUrl, setHubUrl] = useState("");
@@ -920,6 +921,18 @@ export default function AdminCustomizerPages() {
     },
   });
 
+  const refreshPlaceholderImagesMutation = useMutation({
+    mutationFn: async (productTypeId: number) => {
+      const res = await apiRequest("POST", `/api/admin/product-types/${productTypeId}/refresh-images`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Could not load catalog images");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+    },
+  });
+
   // Refresh costs → Product Sync (sole preferred path). Legacy clear-cache removed from UI.
 
   // Shipping rates query
@@ -1136,6 +1149,16 @@ export default function AdminCustomizerPages() {
     setFormGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setFormCustomPlaceholder("");
   }, [selectedBlank?.productTypeId, formProductId]);
+
+  useEffect(() => {
+    if (!selectedBlank?.productTypeId) return;
+    const available = buildAvailablePlaceholderImages(selectedBlank.baseMockupImages);
+    if (available.length > 0) return;
+    if (placeholderHealAttemptedRef.current === selectedBlank.productTypeId) return;
+    if (refreshPlaceholderImagesMutation.isPending) return;
+    placeholderHealAttemptedRef.current = selectedBlank.productTypeId;
+    refreshPlaceholderImagesMutation.mutate(selectedBlank.productTypeId);
+  }, [selectedBlank?.productTypeId, selectedBlank?.baseMockupImages]);
 
   useEffect(() => {
     if (!selectedBlank) {
@@ -2320,11 +2343,107 @@ export default function AdminCustomizerPages() {
                               </div>
                             </div>
                           )}
-                          {wizardSizes.length > 0 && wizardColors.length === 0 && (
-                            <p className="text-xs text-muted-foreground">
-                              This product has no colour options — only sizes. Placeholder / marketing
-                              images are chosen on the Page info step.
-                            </p>
+                          {selectedBlank && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-sm font-medium">Placeholder images</Label>
+                                <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
+                                  Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
+                                </span>
+                              </div>
+                              {(() => {
+                                const available = buildAvailablePlaceholderImages(
+                                  selectedBlank.baseMockupImages,
+                                  formCustomPlaceholder || undefined,
+                                );
+                                if (refreshPlaceholderImagesMutation.isPending && available.length === 0) {
+                                  return (
+                                    <p className="rounded-md border p-3 text-sm text-muted-foreground flex items-center gap-2">
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Loading catalog images…
+                                    </p>
+                                  );
+                                }
+                                if (available.length === 0) {
+                                  return (
+                                    <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                                      No catalog images yet. Upload one below, or they will appear after refresh.
+                                    </p>
+                                  );
+                                }
+                                return (
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2">
+                                    {available.map((img, index) => {
+                                      const isPrimary = formPrimaryPlaceholder === img.url;
+                                      const isGallery = formGalleryPlaceholders.has(img.url);
+                                      return (
+                                        <div
+                                          key={`${img.url}-${index}`}
+                                          className={`relative rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}
+                                        >
+                                          {isPrimary && (
+                                            <span className="absolute right-2 top-2 rounded bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground shadow">
+                                              Primary
+                                            </span>
+                                          )}
+                                          <button
+                                            type="button"
+                                            className="block w-full overflow-hidden rounded bg-muted"
+                                            onClick={() => setFormPrimaryPlaceholder(img.url)}
+                                          >
+                                            <img src={img.url} alt={img.label} className="h-24 w-full object-cover" />
+                                          </button>
+                                          <p className="truncate text-xs font-medium">{img.label}</p>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant={isPrimary ? "default" : "outline"}
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() => setFormPrimaryPlaceholder(img.url)}
+                                            >
+                                              Primary
+                                            </Button>
+                                            <label className="flex items-center gap-1 text-xs">
+                                              <input
+                                                type="checkbox"
+                                                checked={isGallery}
+                                                disabled={!isGallery && formGalleryPlaceholders.size >= MAX_GALLERY_PLACEHOLDERS}
+                                                onChange={() => toggleFormGalleryPlaceholder(img.url)}
+                                              />
+                                              Gallery
+                                            </label>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  type="file"
+                                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                                  className="hidden"
+                                  id="create-placeholder-upload-variants"
+                                  onChange={handleFormPlaceholderUpload}
+                                />
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => document.getElementById("create-placeholder-upload-variants")?.click()}
+                                  disabled={uploadingPlaceholder}
+                                >
+                                  {uploadingPlaceholder ? (
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                  ) : (
+                                    <Upload className="h-4 w-4 mr-2" />
+                                  )}
+                                  Upload Custom Image
+                                </Button>
+                              </div>
+                            </div>
                           )}
                           {!wizardVariantsReady && (
                             <Button
