@@ -1346,7 +1346,27 @@ export async function generatePrintifyMockup(
           `[Printify AOP] Augmented aopPositions with ${added.length} placeholder(s): ${added.join(", ")}`,
         );
       }
-      effectiveAopPositions = merged;
+      // Printify's discovered placeholder list is authoritative for the
+      // variant. Any position we send that isn't in it rejects the whole
+      // product with a 422 (e.g. zip hoodie has no `front_pocket`). Drop
+      // unsupported positions — alias resolution still maps client pocket /
+      // collar art onto whatever Printify actually names those slots, so
+      // pullover kangaroo pockets keep printing.
+      if (discovered && discovered.length > 0) {
+        const supported = new Set(discovered.map((p) => p.position));
+        const dropped = merged
+          .filter((p) => !supported.has(p.position))
+          .map((p) => p.position);
+        if (dropped.length > 0) {
+          console.warn(
+            `[Printify AOP] Dropping ${dropped.length} placeholder(s) not supported by ` +
+              `variant ${variantId} (blueprint ${blueprintId}): ${dropped.join(", ")}`,
+          );
+        }
+        effectiveAopPositions = merged.filter((p) => supported.has(p.position));
+      } else {
+        effectiveAopPositions = merged;
+      }
     }
 
     let effectivePrintPlacement = printPlacement ?? (doubleSided ? "both" : "front");
