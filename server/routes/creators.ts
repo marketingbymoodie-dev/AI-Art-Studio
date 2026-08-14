@@ -1346,9 +1346,15 @@ export function registerCreatorMarketplaceRoutes(
     async (req: any, res: Response) => {
       if (!requirePlatformAdmin(req, res)) return;
       try {
-        const { listAssignableCatalog } = await import("../creator-styles");
+        const {
+          getNormalizedPlatformShop,
+          getPlatformMerchantId,
+          listAssignableCatalog,
+        } = await import("../creator-styles");
         const styles = await listAssignableCatalog();
         res.json({
+          shop: getNormalizedPlatformShop(),
+          merchantId: await getPlatformMerchantId(),
           styles: styles.map((s) => ({
             id: s.id,
             name: s.name,

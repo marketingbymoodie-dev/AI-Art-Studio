@@ -12,12 +12,15 @@ import {
 import {
   creatorStyleAssignments,
   creators,
+  customizerPages,
   platformConfig,
+  productTypes,
   stylePresets,
   type StylePresetDB,
 } from "@shared/schema";
 import { db } from "./db";
 import { getCreatorPlatformShopDomain, setPlatformConfig } from "./creator-config";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
 import { storage } from "./storage";
 
 export type CreatorStyleRow = {
@@ -64,11 +67,40 @@ function toRow(style: StylePresetDB, asg: typeof creatorStyleAssignments.$inferS
 
 export { computeStyleVisibility, isAssignableCreatorScope };
 
+export function getNormalizedPlatformShop(): string | null {
+  const shop = normalizeMyshopifyShopDomain(getCreatorPlatformShopDomain());
+  return shop || null;
+}
+
 export async function getPlatformMerchantId(): Promise<string | null> {
-  const shop = getCreatorPlatformShopDomain();
+  const shop = getNormalizedPlatformShop();
   if (!shop) return null;
-  const merchant = await storage.getMerchantByShop(shop);
-  return merchant?.id ?? null;
+  const shopVariants = [shop, shop.replace(/\.myshopify\.com$/, "")].filter(
+    (s, i, arr) => !!s && arr.indexOf(s) === i,
+  );
+
+  for (const candidate of shopVariants) {
+    const byUser = await storage.getMerchantByShop(candidate);
+    if (byUser?.id) return byUser.id;
+    const inst = await storage.getShopifyInstallationByShop(candidate);
+    if (inst?.merchantId) return inst.merchantId;
+  }
+
+  const [page] = await db
+    .select({ productTypeId: customizerPages.productTypeId })
+    .from(customizerPages)
+    .where(inArray(customizerPages.shop, shopVariants))
+    .limit(1);
+  if (page?.productTypeId) {
+    const [pt] = await db
+      .select({ merchantId: productTypes.merchantId })
+      .from(productTypes)
+      .where(eq(productTypes.id, page.productTypeId))
+      .limit(1);
+    if (pt?.merchantId) return pt.merchantId;
+  }
+
+  return null;
 }
 
 /** Mark platform-shop catalog rows as global (eligible to assign). Idempotent. */

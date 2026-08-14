@@ -163,7 +163,13 @@ export default function PlatformCreatorDetailDialog({
     enabled: !!creatorId,
   });
 
-  const { data: styleCatalog } = useQuery<{
+  const {
+    data: styleCatalog,
+    isLoading: catalogLoading,
+    isError: catalogError,
+  } = useQuery<{
+    shop: string | null;
+    merchantId: string | null;
     styles: Array<{
       id: number;
       name: string;
@@ -750,12 +756,32 @@ export default function PlatformCreatorDetailDialog({
               <div className="space-y-2">
                 <Label>Catalog (not assigned)</Label>
                 {(() => {
+                  if (catalogLoading) {
+                    return <Loader2 className="h-4 w-4 animate-spin" />;
+                  }
+                  if (catalogError) {
+                    return (
+                      <p className="text-muted-foreground text-xs">
+                        Could not load the style catalog.
+                      </p>
+                    );
+                  }
+                  const catalog = styleCatalog?.styles || [];
                   const assignedIds = new Set(
                     (assignedStyles?.styles || []).map((s) => s.stylePresetId),
                   );
-                  const unassigned = (styleCatalog?.styles || []).filter(
-                    (s) => !assignedIds.has(s.id),
-                  );
+                  const unassigned = catalog.filter((s) => !assignedIds.has(s.id));
+                  if (catalog.length === 0) {
+                    return (
+                      <p className="text-muted-foreground text-xs">
+                        No assignable styles on the platform shop
+                        {styleCatalog?.shop ? ` (${styleCatalog.shop})` : ""}.
+                        {!styleCatalog?.merchantId
+                          ? " Platform merchant was not found."
+                          : " Seed or import styles on that shop, then refresh."}
+                      </p>
+                    );
+                  }
                   if (unassigned.length === 0) {
                     return (
                       <p className="text-muted-foreground text-xs">
