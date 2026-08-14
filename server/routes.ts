@@ -3919,8 +3919,23 @@ ${orientationExtra}
     const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
     const colorIdsToUse = selectedColorIds && selectedColorIds.length > 0 ? selectedColorIds : savedColorIds.length > 0 ? savedColorIds : allColors.map((c: any) => c.id);
 
-    const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
-    const colorsToUse = allColors.filter((c: any) => colorIdsToUse.includes(c.id));
+    // Size/colour ids can drift in separator format between where selections were
+    // saved and where the sizes list / variantMap were built — e.g. a catalogue-
+    // activated pillow whose selectedSizeIds are "14x14" while sizes/variantMap
+    // use "14-14". A plain `.includes()` then matches nothing and we build zero
+    // variants ("No variants to create"). Match on a normalised id instead. Only
+    // the dimension separator between digits is normalised, so apparel sizes that
+    // legitimately contain an "x" (xl, 2xl) are left untouched.
+    const normSelectionId = (v: any) =>
+      String(v).toLowerCase().trim().replace(/(\d)\s*[x×]\s*(\d)/g, "$1-$2").replace(/\s+/g, "-");
+    const sizeIdSet = new Set(sizeIdsToUse.map(normSelectionId));
+    const colorIdSet = new Set(colorIdsToUse.map(normSelectionId));
+    let sizesToUse = allSizes.filter((s: any) => sizeIdSet.has(normSelectionId(s.id)));
+    let colorsToUse = allColors.filter((c: any) => colorIdSet.has(normSelectionId(c.id)));
+    // Safety net: a non-empty selection that matched nothing means id drift, not an
+    // intentional empty selection — fall back to all rather than creating 0 variants.
+    if (sizesToUse.length === 0 && allSizes.length > 0) sizesToUse = allSizes;
+    if (colorsToUse.length === 0 && colorIdsToUse.length > 0 && allColors.length > 0) colorsToUse = allColors;
     const priceMap: Record<string, string> = variantPrices && typeof variantPrices === 'object' ? variantPrices : {};
 
     const shopifyVariants: any[] = [];
