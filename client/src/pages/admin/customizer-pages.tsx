@@ -337,6 +337,7 @@ export default function AdminCustomizerPages() {
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
+  const [placeholderStepAlert, setPlaceholderStepAlert] = useState<string | null>(null);
 
   // Edit-modal variant picker
   const [editSizes, setEditSizes] = useState<VariantOption[]>([]);
@@ -754,6 +755,7 @@ export default function AdminCustomizerPages() {
     setVariantPricesBoth({});
     setPriceErrors({});
     setCreatedPageResult(null);
+    setPlaceholderStepAlert(null);
   }
 
   function handleTitleChange(val: string) {
@@ -1502,6 +1504,20 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
+    const missingPrimary = !formPrimaryPlaceholder;
+    const missingGallery = formGalleryPlaceholders.size < 1;
+    if (selectedBlank && (missingPrimary || missingGallery)) {
+      const parts = [
+        missingPrimary ? "a primary image" : null,
+        missingGallery ? "at least one gallery image" : null,
+      ].filter(Boolean);
+      setPlaceholderStepAlert(`Choose ${parts.join(" and ")} before continuing.`);
+      document.getElementById("create-placeholder-images")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      return;
+    }
     // Always visit the print provider step — pricing depends on the chosen supplier's costs.
     setFormStep(2);
   }
@@ -1984,11 +2000,11 @@ export default function AdminCustomizerPages() {
                     </div>
 
                     {selectedBlank && (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <Label>Placeholder Images</Label>
+                      <div id="create-placeholder-images" className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label className="text-sm font-semibold">Placeholder images (required)</Label>
                           <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
-                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
+                            Choose 1 primary and at least 1 gallery image (up to {MAX_GALLERY_PLACEHOLDERS}).
                             Primary is your marketing hero — on the storefront the selected colour
                             blank leads when available; your Primary stays in the carousel.
                           </span>
@@ -2082,6 +2098,13 @@ export default function AdminCustomizerPages() {
 
                     </div>
 
+                    {selectedBlank && (
+                      <p className={`text-xs mt-2 shrink-0 ${formPrimaryPlaceholder && formGalleryPlaceholders.size > 0 ? "text-muted-foreground" : "text-amber-800"}`}>
+                        {formPrimaryPlaceholder && formGalleryPlaceholders.size > 0
+                          ? `Primary + ${formGalleryPlaceholders.size} gallery image${formGalleryPlaceholders.size === 1 ? "" : "s"} selected.`
+                          : "Scroll down and choose a primary image plus at least one gallery image."}
+                      </p>
+                    )}
                     <Button
                       className="w-full mt-3 shrink-0"
                       disabled={
@@ -2340,108 +2363,6 @@ export default function AdminCustomizerPages() {
                                     <span className="text-sm truncate">{color.name}</span>
                                   </label>
                                 ))}
-                              </div>
-                            </div>
-                          )}
-                          {selectedBlank && (
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between">
-                                <Label className="text-sm font-medium">Placeholder images</Label>
-                                <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
-                                  Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
-                                </span>
-                              </div>
-                              {(() => {
-                                const available = buildAvailablePlaceholderImages(
-                                  selectedBlank.baseMockupImages,
-                                  formCustomPlaceholder || undefined,
-                                );
-                                if (refreshPlaceholderImagesMutation.isPending && available.length === 0) {
-                                  return (
-                                    <p className="rounded-md border p-3 text-sm text-muted-foreground flex items-center gap-2">
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                      Loading catalog images…
-                                    </p>
-                                  );
-                                }
-                                if (available.length === 0) {
-                                  return (
-                                    <p className="rounded-md border p-3 text-sm text-muted-foreground">
-                                      No catalog images yet. Upload one below, or they will appear after refresh.
-                                    </p>
-                                  );
-                                }
-                                return (
-                                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2">
-                                    {available.map((img, index) => {
-                                      const isPrimary = formPrimaryPlaceholder === img.url;
-                                      const isGallery = formGalleryPlaceholders.has(img.url);
-                                      return (
-                                        <div
-                                          key={`${img.url}-${index}`}
-                                          className={`relative rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}
-                                        >
-                                          {isPrimary && (
-                                            <span className="absolute right-2 top-2 rounded bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground shadow">
-                                              Primary
-                                            </span>
-                                          )}
-                                          <button
-                                            type="button"
-                                            className="block w-full overflow-hidden rounded bg-muted"
-                                            onClick={() => setFormPrimaryPlaceholder(img.url)}
-                                          >
-                                            <img src={img.url} alt={img.label} className="h-24 w-full object-cover" />
-                                          </button>
-                                          <p className="truncate text-xs font-medium">{img.label}</p>
-                                          <div className="flex items-center justify-between gap-2">
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant={isPrimary ? "default" : "outline"}
-                                              className="h-7 px-2 text-xs"
-                                              onClick={() => setFormPrimaryPlaceholder(img.url)}
-                                            >
-                                              Primary
-                                            </Button>
-                                            <label className="flex items-center gap-1 text-xs">
-                                              <input
-                                                type="checkbox"
-                                                checked={isGallery}
-                                                disabled={!isGallery && formGalleryPlaceholders.size >= MAX_GALLERY_PLACEHOLDERS}
-                                                onChange={() => toggleFormGalleryPlaceholder(img.url)}
-                                              />
-                                              Gallery
-                                            </label>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                );
-                              })()}
-                              <div className="flex flex-wrap items-center gap-2">
-                                <input
-                                  type="file"
-                                  accept="image/png,image/jpeg,image/jpg,image/webp"
-                                  className="hidden"
-                                  id="create-placeholder-upload-variants"
-                                  onChange={handleFormPlaceholderUpload}
-                                />
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => document.getElementById("create-placeholder-upload-variants")?.click()}
-                                  disabled={uploadingPlaceholder}
-                                >
-                                  {uploadingPlaceholder ? (
-                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                  ) : (
-                                    <Upload className="h-4 w-4 mr-2" />
-                                  )}
-                                  Upload Custom Image
-                                </Button>
                               </div>
                             </div>
                           )}
@@ -3955,6 +3876,30 @@ export default function AdminCustomizerPages() {
         productTypeId={syncPricesTarget?.productTypeId ?? 0}
         customizerPageId={syncPricesTarget?.id}
       />
+
+      <AlertDialog open={!!placeholderStepAlert} onOpenChange={(v) => !v && setPlaceholderStepAlert(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Choose storefront images</AlertDialogTitle>
+            <AlertDialogDescription>
+              {placeholderStepAlert || "Choose a primary image and at least one gallery image before continuing."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction
+              onClick={() => {
+                setPlaceholderStepAlert(null);
+                document.getElementById("create-placeholder-images")?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                });
+              }}
+            >
+              Choose images
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Confirm delete dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>
