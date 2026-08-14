@@ -5830,9 +5830,71 @@ ${orientationExtra}
         sizeType === "dimensional" ? sortDimensionalSizesAscending(sizes) : sizes;
 
       // Parse base mockup images if available
-      const baseMockupImages = typeof productType.baseMockupImages === 'string'
+      let baseMockupImages = typeof productType.baseMockupImages === 'string'
         ? JSON.parse(productType.baseMockupImages)
         : productType.baseMockupImages || {};
+
+      // Self-heal empty base mockups. Catalogue-activated products (esp. AOP)
+      // can land with baseMockupImages `{}` — the storefront still shows a blank
+      // because it reads live Shopify variant images, but admin Preview Studio /
+      // Generator Tester have no Shopify variants, so the pre-artwork preview is
+      // empty. Harvest Printify catalog photos once and persist (also benefits
+      // merchant curation + storefront). Gate on `available` being absent so this
+      // runs at most once per product (an empty harvest still stores `available: []`).
+      // This is the admin/tester endpoint only — the storefront uses a separate
+      // route, so the storefront hot path never pays this cost.
+      try {
+        const alreadyHarvested = Array.isArray((baseMockupImages as any).available);
+        const healToken = resolveCatalogPrintifyToken(null);
+        if (!alreadyHarvested && healToken && productType.printifyBlueprintId) {
+          const healHeaders = {
+            Authorization: `Bearer ${healToken}`,
+            "Content-Type": "application/json",
+          };
+          let providerId = (productType as any).printifyProviderId as number | null | undefined;
+          if (!providerId) {
+            const provRes = await fetchWithRetry(
+              `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers.json`,
+              { headers: healHeaders },
+              2,
+              800,
+            );
+            if (provRes.ok) {
+              const provs = await provRes.json();
+              providerId = Array.isArray(provs) && provs.length
+                ? (provs[0].id ?? provs[0].print_provider_id)
+                : undefined;
+            }
+          }
+          if (providerId) {
+            const opts = await fetchPrintifyPlaceholderOptions(
+              healToken,
+              productType.printifyBlueprintId,
+              providerId,
+            );
+            let healed = buildBaseMockupImagesFromOptions(
+              opts,
+              (baseMockupImages as any).primary,
+              (baseMockupImages as any).gallery,
+              (baseMockupImages as any).custom,
+            );
+            healed = mergeCatalogSizeBlanksIfNeeded(productType.printifyBlueprintId, healed);
+            const patch: any = { baseMockupImages: JSON.stringify(healed) };
+            if (!(productType as any).printifyProviderId) patch.printifyProviderId = providerId;
+            await storage.updateProductType(id, patch);
+            baseMockupImages = healed;
+            console.log(
+              `[Designer API] Self-healed baseMockupImages for pt ${id}: ` +
+                `${opts.length} catalog image(s) via provider ${providerId}`,
+            );
+          }
+        }
+      } catch (healErr) {
+        console.warn(
+          `[Designer API] baseMockupImages self-heal skipped for pt ${id}:`,
+          (healErr as Error)?.message,
+        );
+      }
 
       // Parse variant map for size/color availability
       const variantMap = typeof productType.variantMap === 'string'
