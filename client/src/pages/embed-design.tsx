@@ -1346,6 +1346,11 @@ function isPrintifyOnDemandMockupLabel(label: string): boolean {
   return isPrintifyContextMockupLabel(label);
 }
 
+function isBackGalleryLabel(label: string | undefined): boolean {
+  const l = String(label || "").trim().toLowerCase();
+  return l === "back" || l.startsWith("back ");
+}
+
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
 function buildPostGenGalleryItems(
   catalogPreviewImages: string[],
@@ -7624,6 +7629,26 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return applied;
   }, []);
 
+  /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
+  const openAopPlacer = useCallback(() => {
+    if (generatedDesign?.imageUrl) {
+      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+    }
+    if (isBackGalleryLabel(postGenGalleryItems[selectedMockupIndex]?.label)) {
+      setHoodieAopPlacerState((prev) =>
+        prev
+          ? {
+              ...prev,
+              view: "back",
+              activeGroupId: "back-body",
+              enabled: { ...prev.enabled, "back-body": true },
+            }
+          : prev,
+      );
+    }
+    setShowPatternStep(true);
+  }, [generatedDesign?.imageUrl, postGenGalleryItems, selectedMockupIndex]);
+
   /** ATC "Apply Pattern to Continue" — flush placement; stay in the editor. */
   const handleApplyPatternToContinue = useCallback(() => {
     if (!generatedDesign?.imageUrl) return;
@@ -7646,8 +7671,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
     // Placer not open — open it so the customer can place, then apply.
-    setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-    setShowPatternStep(true);
+    openAopPlacer();
     toast({
       title: "Place your artwork",
       description: "Adjust placement, then click Apply Pattern to Continue again.",
@@ -7657,6 +7681,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     showPatternStep,
     productTypeConfig?.panelMappingTemplate,
     flushHoodieAopPlacer,
+    openAopPlacer,
     toast,
   ]);
 
@@ -13153,6 +13178,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       // active artwork, even if the saved state pointed at
                       // an older one — fresh generations should take over.
                       artworkUrl: aopPendingMotifUrl,
+                      // Edit Pattern from the Back gallery slide must open
+                      // on back-body, not the saved front-body session.
+                      ...(isBackGalleryLabel(selectedPostGenItem?.label)
+                        ? { view: "back" as const, activeGroupId: "back-body" }
+                        : {}),
                     }}
                     onChange={(s) => {
                       if (
@@ -13678,12 +13708,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => {
-                        if (generatedDesign?.imageUrl) {
-                          setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                        }
-                        setShowPatternStep(true);
-                      }}
+                      onClick={openAopPlacer}
                       className="shrink-0"
                       data-testid="button-edit-pattern"
                     >
