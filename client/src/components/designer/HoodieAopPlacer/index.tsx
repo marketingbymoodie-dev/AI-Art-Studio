@@ -1294,20 +1294,17 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
    * after changing view. Pick Sleeves again explicitly to edit sleeves.
    * Also leaves Printers Mockup so the first click is never a no-op.
    */
-  /** Back is inspection-only for leggings — edits always return to Front. */
+  /**
+   * Leggings Back is inspection-only — any edit returns to Front.
+   * Hoodies keep Back as a real edit surface for back-body (scale/drag
+   * must not jump to Front or rewrite front-body placement). Front-only
+   * parts (Hood / Sleeves / Place↔Pattern) still switch view themselves.
+   */
   const withFrontIfNeeded = useCallback(
     (prev: HoodieAopPlacerState): HoodieAopPlacerState => {
       if (prev.view === "front") return prev;
       const leggings = data && isLeggingsBlueprint(data.template.blueprintId);
-      if (!leggings) {
-        // Hoodies: still jump off Back when the customer starts editing.
-        return {
-          ...prev,
-          view: "front",
-          activeGroupId:
-            prev.activeGroupId === "back-body" ? "front-body" : prev.activeGroupId,
-        };
-      }
+      if (!leggings) return prev;
       return {
         ...prev,
         view: "front",
@@ -1383,8 +1380,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         setOverlayVisible((v) => !v);
         return;
       }
-      // Back view is inspection-only — any click returns to Front for editing.
-      if (state.view === "back") {
+      // Leggings Back is inspection-only — any click returns to Front.
+      // Zip/pullover Back stays put so back-body handles keep editing back.
+      if (
+        state.view === "back" &&
+        data &&
+        isLeggingsBlueprint(data.template.blueprintId)
+      ) {
         setState((prev) => (prev ? withFrontIfNeeded(prev) : prev));
         onEngageLiveEditorRef.current?.();
         return;
