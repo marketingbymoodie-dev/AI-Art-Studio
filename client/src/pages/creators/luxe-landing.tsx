@@ -20,7 +20,7 @@ export default function LuxeLandingPage() {
   const [view, setView] = useState<"splash" | "landing">("splash");
 
   return (
-    <div className="luxe-root min-h-screen text-[#f5f5f7]">
+    <div className="luxe-root min-h-svh text-[#f5f5f7]">
       <style>{LUXE_CSS}</style>
       {view === "splash" ? (
         <Splash content={content} onMore={() => setView("landing")} />
@@ -107,19 +107,19 @@ function Landing({
 
   const go = (next: number) => setIndex(Math.max(0, Math.min(cards.length - 1, next)));
 
-  return (
-    <section className="luxe-page px-6 py-14">
-      <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
-      <h1 className="luxe-h1 max-w-4xl">{content.copy.landingHeadline}</h1>
-      <p className="luxe-lede">{content.copy.landingLede}</p>
-      <div className="flex flex-wrap gap-3 mt-8 mb-2">
-        <button type="button" className="luxe-btn-white" onClick={() => onApply("creator")}>
-          {content.copy.ctaCreator}
-        </button>
-        <button type="button" className="luxe-btn-ghost" onClick={() => onApply("shopify")}>
-          {content.copy.ctaShopify}
-        </button>
-      </div>
+  const cta = (
+    <div className="luxe-cta">
+      <button type="button" className="luxe-btn-white" onClick={() => onApply("creator")}>
+        {content.copy.ctaCreator}
+      </button>
+      <button type="button" className="luxe-btn-ghost" onClick={() => onApply("shopify")}>
+        {content.copy.ctaShopify}
+      </button>
+    </div>
+  );
+
+  const flow = (
+    <div className="luxe-stage">
       <div
         className="luxe-flow"
         onPointerDown={(e) => {
@@ -143,7 +143,7 @@ function Landing({
                 key={card.id}
                 className="luxe-album"
                 style={{
-                  transform: `translateX(${offset * 42}%) translateZ(${-abs * 140}px) rotateY(${offset * -32}deg) scale(${1 - abs * 0.08})`,
+                  transform: `translateX(${offset * 38}%) translateZ(${-abs * 120}px) rotateY(${offset * -28}deg) scale(${1 - abs * 0.08})`,
                   opacity: abs > 2 ? 0 : 1 - abs * 0.18,
                   zIndex: 20 - abs,
                   pointerEvents: abs > 2 ? "none" : "auto",
@@ -164,7 +164,7 @@ function Landing({
           })}
         </div>
       </div>
-      <div className="flex justify-center gap-2 mt-2">
+      <div className="flex justify-center gap-2">
         {cards.map((card, i) => (
           <button
             key={card.id}
@@ -175,16 +175,45 @@ function Landing({
           />
         ))}
       </div>
-      <p className="text-center text-sm text-white/50 mt-3">
-        Drag, swipe, click a side card, or use arrow keys
-      </p>
+    </div>
+  );
+
+  return (
+    <section className="luxe-page luxe-landing">
+      <div className="luxe-landing-grid">
+        <div className="luxe-landing-copy">
+          <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
+          <StackedHeadline text={content.copy.landingHeadline} />
+          <p className="luxe-lede">{content.copy.landingLede}</p>
+          <div className="luxe-cta-desktop">{cta}</div>
+        </div>
+        <div className="luxe-landing-bottom">
+          {flow}
+          <div className="luxe-cta-mobile">{cta}</div>
+        </div>
+      </div>
       <LandingKeys onLeft={() => go(index - 1)} onRight={() => go(index + 1)} />
-      <p className="text-center text-xs text-white/35 mt-10">
+      <p className="luxe-portal">
         <Link href="/portal/login" className="underline underline-offset-2">
           Creator Portal
         </Link>
       </p>
     </section>
+  );
+}
+
+function StackedHeadline({ text }: { text: string }) {
+  const parts = text.split(/,\s*/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return <h1 className="luxe-h1">{text}</h1>;
+  return (
+    <h1 className="luxe-h1">
+      {parts.map((part, i) => (
+        <span key={i} className="block">
+          {part}
+          {i < parts.length - 1 ? "," : ""}
+        </span>
+      ))}
+    </h1>
   );
 }
 
@@ -208,14 +237,27 @@ const LUXE_CSS = `
       #07070b;
     font-family: Inter, system-ui, sans-serif;
   }
-  .luxe-page { max-width: 1120px; margin: 0 auto; }
-  .luxe-eyebrow { margin: 0 0 12px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(245,245,247,0.62); }
-  .luxe-h1 { margin: 0; font-size: clamp(34px, 6vw, 72px); line-height: 0.96; letter-spacing: -0.04em; font-weight: 800; }
-  .luxe-lede { margin: 18px 0 0; max-width: 40rem; color: rgba(245,245,247,0.62); font-size: 18px; line-height: 1.5; }
+  .luxe-page { max-width: 1180px; margin: 0 auto; }
+  .luxe-landing {
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 20px 24px 16px;
+    box-sizing: border-box;
+  }
+  .luxe-landing-grid { display: grid; gap: 20px; align-items: center; }
+  .luxe-cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .luxe-cta-mobile { display: none; }
+  .luxe-cta-desktop { display: block; margin-top: 22px; }
+  .luxe-eyebrow { margin: 0 0 10px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(245,245,247,0.62); }
+  .luxe-h1 { margin: 0; font-size: clamp(32px, 4.4vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
+  .luxe-lede { margin: 14px 0 0; max-width: 36rem; color: rgba(245,245,247,0.62); font-size: 16px; line-height: 1.45; }
   .luxe-caption { letter-spacing: 0.08em; text-transform: uppercase; color: rgba(245,245,247,0.62); font-size: 14px; }
+  .luxe-portal { text-align: center; font-size: 11px; color: rgba(255,255,255,0.35); margin: 10px 0 0; }
   .luxe-btn-white, .luxe-btn-ghost {
-    border-radius: 999px; padding: 14px 26px; cursor: pointer; letter-spacing: 0.06em;
-    text-transform: uppercase; font-size: 12px; font-weight: 700;
+    border-radius: 999px; padding: 12px 22px; cursor: pointer; letter-spacing: 0.06em;
+    text-transform: uppercase; font-size: 11px; font-weight: 700;
   }
   .luxe-btn-white { border: 0; background: #fff; color: #111; box-shadow: 0 0 28px rgba(190, 150, 255, 0.55); }
   .luxe-btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.55); }
@@ -235,18 +277,44 @@ const LUXE_CSS = `
     width: min(260px, 64vw); aspect-ratio: 1; border-radius: 18px; border: 1px solid rgba(255,255,255,0.1);
     background-size: cover; background-position: center; background-color: #14141c;
   }
-  .luxe-flow { perspective: 1400px; margin: 36px 0 16px; height: 420px; user-select: none; touch-action: pan-y; }
+  .luxe-stage { min-width: 0; }
+  .luxe-flow { perspective: 1200px; margin: 0 0 10px; height: min(360px, 52vh); user-select: none; touch-action: pan-y; }
   .luxe-deck { position: relative; height: 100%; transform-style: preserve-3d; }
   .luxe-album {
-    position: absolute; inset: 0; width: min(420px, 78vw); height: 400px; left: 50%;
-    margin-left: calc(min(420px, 78vw) / -2); border-radius: 22px;
+    position: absolute; inset: 0; width: min(360px, 34vw); height: min(340px, 48vh); left: 50%;
+    margin-left: calc(min(360px, 34vw) / -2); border-radius: 20px;
     background: linear-gradient(180deg, #16161f, #0b0b10); border: 1px solid rgba(255,255,255,0.16);
-    box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 22px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 16px;
     transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease; cursor: pointer;
   }
-  .luxe-album h2 { margin: 18px 0 8px; font-size: 28px; letter-spacing: -0.03em; }
-  .luxe-album p { margin: 0; color: rgba(245,245,247,0.62); line-height: 1.45; }
-  .luxe-thumb { height: 190px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); background-size: cover; background-position: center; }
+  .luxe-album h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: -0.03em; }
+  .luxe-album p { margin: 0; color: rgba(245,245,247,0.62); line-height: 1.4; font-size: 14px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .luxe-thumb { height: 46%; border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); background-size: cover; background-position: center; }
   .luxe-dot { width: 7px; height: 7px; border-radius: 99px; border: 0; padding: 0; background: rgba(255,255,255,0.22); cursor: pointer; }
   .luxe-dot.is-on { background: #fff; width: 22px; }
+  @media (min-width: 960px) {
+    .luxe-landing-grid { grid-template-columns: minmax(300px, 0.95fr) minmax(420px, 1.15fr); gap: 28px 36px; }
+  }
+  @media (max-width: 959px) {
+    .luxe-landing { padding: 16px 16px 12px; justify-content: flex-start; }
+    .luxe-landing-grid { flex: 1; grid-template-rows: auto 1fr; gap: 12px; }
+    .luxe-landing-copy { text-align: center; }
+    .luxe-h1 { font-size: clamp(28px, 8.2vw, 40px); }
+    .luxe-lede { display: none; }
+    .luxe-cta-desktop { display: none; }
+    .luxe-cta-mobile { display: block; margin-top: 12px; }
+    .luxe-cta { flex-direction: column; }
+    .luxe-cta button { width: 100%; }
+    .luxe-landing-bottom { display: flex; flex-direction: column; min-height: 0; }
+    .luxe-flow { height: min(280px, 42svh); }
+    .luxe-album {
+      width: min(300px, 78vw); height: min(260px, 40svh);
+      margin-left: calc(min(300px, 78vw) / -2); padding: 12px;
+    }
+    .luxe-album h2 { font-size: 18px; }
+    .luxe-album p { font-size: 13px; -webkit-line-clamp: 2; }
+    .luxe-thumb { height: 48%; }
+    .luxe-portal { display: none; }
+  }
 `;
