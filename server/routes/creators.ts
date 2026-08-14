@@ -68,6 +68,8 @@ import {
   updateCreatorPayoutStatus,
 } from "../creator-partner";
 import { isCreatorEmailsEnabled, queueCreatorEmail } from "../creator-emails";
+import { normalizeMyshopifyShopDomain } from "../shopDomain";
+import { storage } from "../storage";
 
 type AuthMw = any;
 
@@ -1351,10 +1353,16 @@ export function registerCreatorMarketplaceRoutes(
           getPlatformMerchantId,
           listAssignableCatalog,
         } = await import("../creator-styles");
-        const styles = await listAssignableCatalog();
+        const fallbackMerchantId = await sessionMerchantId(req);
+        const styles = await listAssignableCatalog({
+          fallbackMerchantId,
+        });
         res.json({
-          shop: getNormalizedPlatformShop(),
-          merchantId: await getPlatformMerchantId(),
+          shop:
+            getNormalizedPlatformShop() ||
+            normalizeMyshopifyShopDomain(String(req.shopDomain || "")) ||
+            null,
+          merchantId: (await getPlatformMerchantId()) || fallbackMerchantId,
           styles: styles.map((s) => ({
             id: s.id,
             name: s.name,
@@ -1402,6 +1410,7 @@ export function registerCreatorMarketplaceRoutes(
         const styles = await assignStylesToCreator({
           creatorId: req.params.id,
           stylePresetIds: ids,
+          fallbackMerchantId: await sessionMerchantId(req),
         });
         res.json({ styles });
       } catch (e: any) {
@@ -1462,4 +1471,14 @@ export function registerCreatorMarketplaceRoutes(
 function parseStylePresetIds(raw: unknown): number[] {
   const arr = Array.isArray(raw) ? raw : [];
   return [...new Set(arr.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0))];
+}
+
+async function sessionMerchantId(req: any): Promise<string | null> {
+  const sessionShop = normalizeMyshopifyShopDomain(String(req.shopDomain || ""));
+  const sessionMerchant =
+    (sessionShop ? await storage.getMerchantByShop(sessionShop) : undefined) ||
+    (req.user?.claims?.sub
+      ? await storage.getMerchantByUserId(String(req.user.claims.sub))
+      : undefined);
+  return sessionMerchant?.id ?? null;
 }

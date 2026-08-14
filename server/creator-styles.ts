@@ -189,19 +189,47 @@ export async function backfillExistingCreatorGlobalAssignments(): Promise<number
   return toInsert.length;
 }
 
-export async function listAssignableCatalog(): Promise<StylePresetDB[]> {
+export async function listAssignableCatalog(opts?: {
+  fallbackMerchantId?: string | null;
+}): Promise<StylePresetDB[]> {
   await ensurePlatformStylesMarkedGlobal();
-  const merchantId = await getPlatformMerchantId();
-  if (!merchantId) return [];
+  let merchantId = await getPlatformMerchantId();
+  if (!merchantId && opts?.fallbackMerchantId) {
+    merchantId = opts.fallbackMerchantId;
+    await db
+      .update(stylePresets)
+      .set({ creatorScope: "global" })
+      .where(
+        and(
+          eq(stylePresets.merchantId, merchantId),
+          eq(stylePresets.creatorScope, "merchant"),
+        ),
+      );
+  }
+
+  if (merchantId) {
+    const scoped = await db
+      .select()
+      .from(stylePresets)
+      .where(
+        and(
+          eq(stylePresets.merchantId, merchantId),
+          inArray(stylePresets.creatorScope, [...CREATOR_ASSIGNABLE_STYLE_SCOPES]),
+        ),
+      )
+      .orderBy(stylePresets.sortOrder, stylePresets.name);
+    if (scoped.length > 0) return scoped;
+    return db
+      .select()
+      .from(stylePresets)
+      .where(eq(stylePresets.merchantId, merchantId))
+      .orderBy(stylePresets.sortOrder, stylePresets.name);
+  }
+
   return db
     .select()
     .from(stylePresets)
-    .where(
-      and(
-        eq(stylePresets.merchantId, merchantId),
-        inArray(stylePresets.creatorScope, [...CREATOR_ASSIGNABLE_STYLE_SCOPES]),
-      ),
-    )
+    .where(inArray(stylePresets.creatorScope, [...CREATOR_ASSIGNABLE_STYLE_SCOPES]))
     .orderBy(stylePresets.sortOrder, stylePresets.name);
 }
 
@@ -249,8 +277,11 @@ export async function isStyleEntitledForGenerate(
 export async function assignStylesToCreator(params: {
   creatorId: string;
   stylePresetIds: number[];
+  fallbackMerchantId?: string | null;
 }): Promise<CreatorStyleRow[]> {
-  const catalog = await listAssignableCatalog();
+  const catalog = await listAssignableCatalog({
+    fallbackMerchantId: params.fallbackMerchantId,
+  });
   const allowed = new Set(catalog.map((s) => s.id));
   for (const id of params.stylePresetIds) {
     if (!allowed.has(id)) {

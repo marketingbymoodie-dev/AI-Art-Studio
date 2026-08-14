@@ -178,7 +178,11 @@ export default function PlatformCreatorDetailDialog({
       isActive: boolean;
     }>;
   }>({
-    queryKey: ["/api/platform/style-catalog"],
+    queryKey: ["/api/platform/style-catalog", "v2"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/platform/style-catalog");
+      return res.json();
+    },
     enabled: !!creatorId,
   });
 
@@ -754,82 +758,67 @@ export default function PlatformCreatorDetailDialog({
                 )}
               </div>
               <div className="space-y-2">
-                <Label>Catalog (not assigned)</Label>
-                {(() => {
-                  if (catalogLoading) {
-                    return <Loader2 className="h-4 w-4 animate-spin" />;
-                  }
-                  if (catalogError) {
-                    return (
-                      <p className="text-muted-foreground text-xs">
-                        Could not load the style catalog.
-                      </p>
-                    );
-                  }
-                  const catalog = styleCatalog?.styles || [];
-                  const assignedIds = new Set(
-                    (assignedStyles?.styles || []).map((s) => s.stylePresetId),
-                  );
-                  const unassigned = catalog.filter((s) => !assignedIds.has(s.id));
-                  if (catalog.length === 0) {
-                    return (
-                      <p className="text-muted-foreground text-xs">
-                        No assignable styles on the platform shop
-                        {styleCatalog?.shop ? ` (${styleCatalog.shop})` : ""}.
-                        {!styleCatalog?.merchantId
-                          ? " Platform merchant was not found."
-                          : " Seed or import styles on that shop, then refresh."}
-                      </p>
-                    );
-                  }
-                  if (unassigned.length === 0) {
-                    return (
-                      <p className="text-muted-foreground text-xs">
-                        Every catalog style already has an assignment row.
-                      </p>
-                    );
-                  }
-                  return (
-                    <>
-                      <div className="max-h-48 space-y-2 overflow-y-auto rounded border p-2">
-                        {unassigned.map((s) => {
-                          const checked = catalogPickIds.includes(s.id);
-                          return (
-                            <label
-                              key={s.id}
-                              className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 hover:bg-muted/40"
-                            >
-                              <Checkbox
-                                checked={checked}
-                                onCheckedChange={(v) => {
-                                  setCatalogPickIds((prev) =>
-                                    v ? [...prev, s.id] : prev.filter((id) => id !== s.id),
-                                  );
-                                }}
-                              />
-                              <span>
-                                <span className="font-medium">{s.name}</span>
-                                <span className="block text-xs text-muted-foreground">
-                                  {s.category} · {s.creatorScope}
-                                  {s.isActive ? "" : " · catalog inactive"}
-                                </span>
+                <Label>Catalog</Label>
+                {catalogLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : catalogError ? (
+                  <p className="text-muted-foreground text-xs">
+                    Could not load the style catalog.
+                  </p>
+                ) : (styleCatalog?.styles || []).length === 0 ? (
+                  <p className="text-muted-foreground text-xs">
+                    No styles found
+                    {styleCatalog?.shop ? ` for ${styleCatalog.shop}` : ""}.
+                    Open Styles on the platform shop and confirm presets exist, then
+                    refresh this tab.
+                  </p>
+                ) : (
+                  <>
+                    <div className="max-h-48 space-y-2 overflow-y-auto rounded border p-2">
+                      {(styleCatalog?.styles || []).map((s) => {
+                        const already = (assignedStyles?.styles || []).some(
+                          (a) => Number(a.stylePresetId) === Number(s.id),
+                        );
+                        const checked = catalogPickIds.includes(s.id);
+                        return (
+                          <label
+                            key={s.id}
+                            className={`flex items-start gap-2 rounded px-1 py-1 ${
+                              already ? "opacity-60" : "cursor-pointer hover:bg-muted/40"
+                            }`}
+                          >
+                            <Checkbox
+                              checked={already || checked}
+                              disabled={already}
+                              onCheckedChange={(v) => {
+                                setCatalogPickIds((prev) =>
+                                  v ? [...prev, s.id] : prev.filter((id) => id !== s.id),
+                                );
+                              }}
+                            />
+                            <span>
+                              <span className="font-medium">{s.name}</span>
+                              <span className="block text-xs text-muted-foreground">
+                                {s.category} · {s.creatorScope}
+                                {already ? " · assigned" : ""}
+                                {s.isActive ? "" : " · catalog inactive"}
                               </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                      <Button
-                        size="sm"
-                        disabled={
-                          catalogPickIds.length === 0 || assignStylesMutation.isPending
-                        }
-                        onClick={() => assignStylesMutation.mutate(catalogPickIds)}
-                      >
-                        Assign selected
-                      </Button>
-                    </>
-                  );
-                })()}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={
+                        catalogPickIds.length === 0 || assignStylesMutation.isPending
+                      }
+                      onClick={() => assignStylesMutation.mutate(catalogPickIds)}
+                    >
+                      Assign selected
+                    </Button>
+                  </>
+                )}
               </div>
             </TabsContent>
 
