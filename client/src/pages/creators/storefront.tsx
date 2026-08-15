@@ -8,12 +8,16 @@ import {
   ensureCreatorAnalyticsSession,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
+import {
+  creatorBrandingImageUrl,
+  creatorPublicName,
+} from "@shared/creatorMarketplace";
 
 export type CreatorBoot = {
   id: string;
   username: string;
   subdomain: string;
-  displayName: string;
+  publicName: string;
   niche: string | null;
   bio: string | null;
   profileImageUrl: string | null;
@@ -25,6 +29,17 @@ export type CreatorBoot = {
   storefrontUrlPath: string;
   paused: boolean;
 };
+
+function storeName(creator: CreatorBoot): string {
+  return (
+    creator.publicName ||
+    creatorPublicName({ username: creator.username, branding: creator.branding })
+  );
+}
+
+function homeBackgroundUrl(creator: CreatorBoot): string | null {
+  return creatorBrandingImageUrl(creator.branding, "backgroundImageUrl");
+}
 
 type StorefrontPage = {
   id: number;
@@ -74,15 +89,13 @@ function StoreShell({
   children: ReactNode;
 }) {
   const branding = creator.branding || {};
-  const headline =
-    (typeof branding.headline === "string" && branding.headline) ||
-    `${creator.displayName}'s AI Shop`;
+  const headline = storeName(creator);
   const accent =
     (typeof branding.accentColor === "string" && branding.accentColor) || undefined;
 
   return (
     <div className="min-h-screen bg-background text-foreground" style={accent ? { ["--primary" as string]: accent } : undefined}>
-      <header className="border-b">
+      <header className="border-b bg-background/90 backdrop-blur-sm">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4">
           <Link href={basePath || "/"} className="flex items-center gap-2 min-w-0">
             {creator.profileImageUrl ? (
@@ -123,7 +136,7 @@ function StoreShell({
       <main className="mx-auto max-w-5xl px-4 py-10">{children}</main>
       <footer className="border-t mt-16">
         <div className="mx-auto max-w-5xl px-4 py-6 text-center text-xs text-muted-foreground">
-          Powered by AI Art Studio · Personalized merch for {creator.displayName}
+          Powered by AI Art Studio · Personalized merch for {storeName(creator)}
         </div>
       </footer>
     </div>
@@ -142,43 +155,83 @@ function useCreatorPages(username: string) {
 
 function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
   const branding = creator.branding || {};
+  const name = storeName(creator);
+  const backgroundUrl = homeBackgroundUrl(creator);
   const description =
     (typeof branding.description === "string" && branding.description) ||
     creator.bio ||
-    `Generate one-of-a-kind designs and put them on premium products — curated by ${creator.displayName}.`;
+    `Generate one-of-a-kind designs and put them on premium products — curated by ${name}.`;
   const { data } = useCreatorPages(creator.username);
   const pages = data?.pages ?? [];
   const platformShop = data?.platformShopDomain ?? null;
 
+  const heroCopy = (
+    <>
+      {creator.profileImageUrl ? (
+        <img
+          src={creator.profileImageUrl}
+          alt=""
+          className={`mb-5 h-20 w-20 rounded-full object-cover ${
+            backgroundUrl ? "ring-2 ring-white/80" : "border"
+          }`}
+        />
+      ) : null}
+      <p
+        className={`text-sm font-medium uppercase tracking-wide ${
+          backgroundUrl ? "text-white/80" : "text-primary"
+        }`}
+      >
+        {creator.niche || "Creator store"}
+      </p>
+      <h1
+        className={`mt-2 text-4xl font-bold tracking-tight ${
+          backgroundUrl ? "text-white" : ""
+        }`}
+      >
+        {name}
+      </h1>
+      <p
+        className={`mt-4 text-lg ${
+          backgroundUrl ? "text-white/85" : "text-muted-foreground"
+        }`}
+      >
+        {description}
+      </p>
+      <div className="mt-6 flex flex-wrap gap-3">
+        {pages.length > 0 ? (
+          <Button asChild variant={backgroundUrl ? "secondary" : "default"}>
+            <Link href={`${basePath}/products`}>
+              {pages.length > 3 ? "Shop All Products" : "Shop Products"}
+            </Link>
+          </Button>
+        ) : null}
+        {creator.socialUrl ? (
+          <Button asChild variant="outline" className={backgroundUrl ? "bg-white/10 text-white border-white/40 hover:bg-white/20" : undefined}>
+            <a href={creator.socialUrl} target="_blank" rel="noopener noreferrer">
+              Follow on {creator.socialPlatform || "social"}
+              <ExternalLink className="ml-2 h-3.5 w-3.5" />
+            </a>
+          </Button>
+        ) : null}
+      </div>
+    </>
+  );
+
   return (
     <div className="space-y-10">
-      <section className="max-w-2xl">
-        <p className="text-sm font-medium uppercase tracking-wide text-primary">
-          {creator.niche || "Creator store"}
-        </p>
-        <h1 className="mt-2 text-4xl font-bold tracking-tight">
-          {(typeof branding.headline === "string" && branding.headline) ||
-            `${creator.displayName}'s AI Shop`}
-        </h1>
-        <p className="mt-4 text-lg text-muted-foreground">{description}</p>
-        <div className="mt-6 flex flex-wrap gap-3">
-          {pages.length > 0 ? (
-            <Button asChild>
-              <Link href={`${basePath}/products`}>
-                {pages.length > 3 ? "Shop All Products" : "Shop Products"}
-              </Link>
-            </Button>
-          ) : null}
-          {creator.socialUrl ? (
-            <Button asChild variant="outline">
-              <a href={creator.socialUrl} target="_blank" rel="noopener noreferrer">
-                Follow on {creator.socialPlatform || "social"}
-                <ExternalLink className="ml-2 h-3.5 w-3.5" />
-              </a>
-            </Button>
-          ) : null}
-        </div>
-      </section>
+      {backgroundUrl ? (
+        <section className="relative -mt-10 ml-[calc(50%-50vw)] w-screen overflow-hidden">
+          <img
+            src={backgroundUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="relative mx-auto max-w-2xl px-4 py-16 sm:py-20">{heroCopy}</div>
+        </section>
+      ) : (
+        <section className="max-w-2xl">{heroCopy}</section>
+      )}
       {pages.length > 0 ? (
         <section className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -264,7 +317,7 @@ function ProductsView({
       <div>
         <h1 className="text-2xl font-bold">Products</h1>
         <p className="text-muted-foreground">
-          Pick a product and generate a design curated by {creator.displayName}.
+          Pick a product and generate a design curated by {storeName(creator)}.
         </p>
       </div>
       {isLoading ? (
@@ -305,7 +358,7 @@ function ProductsView({
 function AboutView({ creator }: { creator: CreatorBoot }) {
   return (
     <div className="max-w-2xl space-y-4">
-      <h1 className="text-2xl font-bold">About {creator.displayName}</h1>
+      <h1 className="text-2xl font-bold">About {storeName(creator)}</h1>
       <p className="text-muted-foreground whitespace-pre-wrap">
         {creator.bio || "This creator is part of the AI Art Studio Creator Beta."}
       </p>
@@ -321,7 +374,7 @@ function AboutView({ creator }: { creator: CreatorBoot }) {
 function PausedView({ creator }: { creator: CreatorBoot }) {
   return (
     <div className="mx-auto max-w-lg py-24 text-center">
-      <h1 className="text-3xl font-bold">{creator.displayName}&apos;s shop is paused</h1>
+      <h1 className="text-3xl font-bold">{storeName(creator)}&apos;s shop is paused</h1>
       <p className="mt-4 text-muted-foreground">
         This storefront is temporarily unavailable. Check back soon.
       </p>
@@ -458,7 +511,7 @@ export function CreatorBootStorefrontPage() {
 
   useEffect(() => {
     document.title = creator
-      ? `${creator.displayName} · AI Art Studio`
+      ? `${storeName(creator)} · AI Art Studio`
       : "AI Art Studio";
   }, [creator]);
 

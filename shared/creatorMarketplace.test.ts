@@ -6,10 +6,14 @@ import {
   computeCreatorOrderPnl,
   computeCreatorRanks,
   computeTransactionFeeCents,
+  creatorPublicName,
   extractSubdomainFromHost,
   extractUsernameFromPath,
   isoWeekPeriodKey,
+  mergeCreatorBranding,
   normalizeCreatorUsername,
+  sanitizeCreatorBio,
+  sanitizeCreatorImageUrl,
   titleForRank,
 } from "./creatorMarketplace";
 
@@ -52,6 +56,59 @@ describe("host / path resolution", () => {
   it("parses /c/:username paths", () => {
     expect(extractUsernameFromPath("/c/max")).toBe("max");
     expect(extractUsernameFromPath("/c/skate-king/products")).toBe("skate-king");
+  });
+});
+
+describe("public storefront identity", () => {
+  it("uses shop handle, never the legal name", () => {
+    expect(
+      creatorPublicName({
+        username: "mad-clown-core",
+        branding: { headline: "Mad Clown Core" },
+      }),
+    ).toBe("Mad Clown Core");
+    expect(creatorPublicName({ username: "mad-clown-core", branding: {} })).toBe(
+      "mad-clown-core",
+    );
+    expect(creatorPublicName({ username: "mad-clown-core", branding: null })).toBe(
+      "mad-clown-core",
+    );
+  });
+
+  it("sanitizes profile image URLs", () => {
+    expect(sanitizeCreatorImageUrl("/objects/uploads/avatar.png")).toBe(
+      "/objects/uploads/avatar.png",
+    );
+    expect(sanitizeCreatorImageUrl("https://cdn.example.com/bg.jpg")).toBe(
+      "https://cdn.example.com/bg.jpg",
+    );
+    expect(sanitizeCreatorImageUrl("javascript:alert(1)")).toBeNull();
+    expect(sanitizeCreatorImageUrl("/objects/../secret")).toBeNull();
+    expect(sanitizeCreatorBio("  Hello world  ")).toBe("Hello world");
+    expect(sanitizeCreatorBio("   ")).toBeNull();
+  });
+
+  it("merges branding without leaking empty keys", () => {
+    const next = mergeCreatorBranding(
+      { headline: "Old", accentColor: "#111" },
+      {
+        shopName: "Mad Clown Core",
+        shopDescription: "streetwear",
+        backgroundImageUrl: "/objects/uploads/bg.png",
+      },
+    );
+    expect(next.headline).toBe("Mad Clown Core");
+    expect(next.description).toBe("streetwear");
+    expect(next.backgroundImageUrl).toBe("/objects/uploads/bg.png");
+    expect(next.accentColor).toBe("#111");
+
+    const cleared = mergeCreatorBranding(next, {
+      shopName: "",
+      backgroundImageUrl: "",
+    });
+    expect(cleared.headline).toBeUndefined();
+    expect(cleared.backgroundImageUrl).toBeUndefined();
+    expect(cleared.description).toBe("streetwear");
   });
 });
 

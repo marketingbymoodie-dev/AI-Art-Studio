@@ -42,7 +42,7 @@ Emails are **not** sent automatically yet.
 
 | Surface | Path |
 |---------|------|
-| Path preview (staging) | `/c/{username}` · `/c/{username}/products` · `/about` |
+| Path preview (staging) | `/c/{username}` · `/c/{username}/products` · `/about` — public copy uses shop handle, never legal name |
 | Subdomain (later) | `{username}.aiartstudio.app` — needs Railway wildcard + DNS |
 | Public boot API | `GET /api/creators/storefront/:username` |
 
@@ -151,8 +151,9 @@ Line attrs on pack cart: `_credit_pack_id`, `_appai_customer_id`, `_creator_id`,
 | Surface | Path |
 |---------|------|
 | Login | `/portal/login` — email OTP via Resend |
-| Dashboard | `/portal` — Today / Rank / Network / Performance / Styles |
+| Dashboard | `/portal` — Today / Rank / Network / Performance / Styles / Profile |
 | Auth API | `POST /api/creator/auth/request-otp`, `verify-otp`, `logout` · `GET /api/creator/me` |
+| Profile | `PATCH /api/creator/profile` — shop name, description, about, avatar, home background. Admin can edit the same fields on Configure. Public storefront uses the handle, never the legal name. |
 | Data API | `GET /api/creator/stats`, `/orders`, `/performance`, `/styles` · `PATCH /api/creator/styles/:id` (enabled only) |
 
 Sign-in statuses: `onboarding`, `active_beta`, `partner`, `paused`, `beta_completed`. Token: Bearer + httpOnly cookie `appai_creator_token`.

@@ -8,6 +8,7 @@ import { db } from "./db";
 import { creators, type Creator } from "@shared/schema";
 import {
   RESERVED_CREATOR_SUBDOMAINS,
+  creatorPublicName,
   extractSubdomainFromHost,
   extractUsernameFromPath,
   normalizeCreatorUsername,
@@ -156,7 +157,8 @@ export type CreatorStorefrontBoot = {
   id: string;
   username: string;
   subdomain: string;
-  displayName: string;
+  /** Shop handle shown to customers — never the legal / application name. */
+  publicName: string;
   niche: string | null;
   bio: string | null;
   profileImageUrl: string | null;
@@ -195,11 +197,12 @@ export function invalidateCreatorHostCache(username?: string): void {
 
 export function toStorefrontBoot(creator: Creator): CreatorStorefrontBoot {
   const paused = creator.status === "paused" || creator.status === "suspended";
+  const branding = (creator.branding as Record<string, unknown> | null) ?? null;
   return {
     id: creator.id,
     username: creator.username,
     subdomain: creator.subdomain,
-    displayName: creator.displayName,
+    publicName: creatorPublicName({ username: creator.username, branding }),
     niche: creator.niche,
     bio: creator.bio,
     profileImageUrl: creator.profileImageUrl,
@@ -207,7 +210,7 @@ export function toStorefrontBoot(creator: Creator): CreatorStorefrontBoot {
     socialUsername: creator.socialUsername,
     socialUrl: creator.socialUrl,
     status: creator.status,
-    branding: (creator.branding as Record<string, unknown> | null) ?? null,
+    branding,
     storefrontUrlPath: `/c/${creator.username}`,
     paused,
   };

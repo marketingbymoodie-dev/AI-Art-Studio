@@ -29,6 +29,8 @@ import {
   type CreatorPortalProfile,
 } from "@/lib/creator-portal-auth";
 import { Switch } from "@/components/ui/switch";
+import { CreatorPortalProfileForm } from "@/components/creators/CreatorPortalProfileForm";
+import { creatorPublicName } from "@shared/creatorMarketplace";
 import { Loader2 } from "lucide-react";
 
 type StatsPayload = {
@@ -285,7 +287,12 @@ export default function CreatorPortalDashboardPage() {
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-stone-500">Creator Portal</p>
-            <h1 className="truncate font-serif text-xl">{creator.displayName}</h1>
+            <h1 className="truncate font-serif text-xl">
+              {creatorPublicName({
+                username: creator.username,
+                branding: creator.branding,
+              })}
+            </h1>
             <p className="truncate text-sm text-stone-500">@{creator.username}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -323,6 +330,7 @@ export default function CreatorPortalDashboardPage() {
             <TabsTrigger value="network">Network</TabsTrigger>
             <TabsTrigger value="performance">Performance</TabsTrigger>
             <TabsTrigger value="styles">Styles</TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
           </TabsList>
 
           <TabsContent value="today" className="space-y-6">
@@ -592,6 +600,10 @@ export default function CreatorPortalDashboardPage() {
                 })}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="profile" className="rounded-xl border border-stone-200 bg-white p-5">
+            <CreatorPortalProfileForm creator={creator} />
           </TabsContent>
         </Tabs>
 

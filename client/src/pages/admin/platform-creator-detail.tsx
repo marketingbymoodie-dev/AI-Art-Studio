@@ -35,6 +35,7 @@ import {
   CREATOR_SHARE_BASES,
   CREATOR_STATUSES,
 } from "@shared/creatorMarketplace";
+import { CreatorProfileImageField } from "@/components/creators/CreatorProfileImageField";
 import { Loader2 } from "lucide-react";
 
 type AssignablePage = {
@@ -69,6 +70,9 @@ export default function PlatformCreatorDetailDialog({
   const [merchantShop, setMerchantShop] = useState("");
   const [shopName, setShopName] = useState("");
   const [shopDescription, setShopDescription] = useState("");
+  const [bio, setBio] = useState("");
+  const [profileImageUrl, setProfileImageUrl] = useState("");
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState("");
   const [shareBasis, setShareBasis] = useState("net_contribution");
   const [creatorPct, setCreatorPct] = useState("100");
   const [aasPct, setAasPct] = useState("0");
@@ -216,6 +220,11 @@ export default function PlatformCreatorDetailDialog({
     const b = c.branding || {};
     setShopName(typeof b.headline === "string" ? b.headline : "");
     setShopDescription(typeof b.description === "string" ? b.description : "");
+    setBio(typeof c.bio === "string" ? c.bio : "");
+    setProfileImageUrl(typeof c.profileImageUrl === "string" ? c.profileImageUrl : "");
+    setBackgroundImageUrl(
+      typeof b.backgroundImageUrl === "string" ? b.backgroundImageUrl : "",
+    );
     setSelectedPageIds((data.assigned || []).map((a) => a.customizerPageId));
   }, [data?.creator?.id, data?.assigned]);
 
@@ -235,6 +244,9 @@ export default function PlatformCreatorDetailDialog({
         shopDomain: merchantShop || null,
         shopName,
         shopDescription,
+        bio,
+        profileImageUrl: profileImageUrl || null,
+        backgroundImageUrl: backgroundImageUrl || null,
         shareBasis,
         revenueShareCreatorPct: Number(creatorPct),
         revenueShareAasPct: Number(aasPct),
@@ -397,9 +409,17 @@ export default function PlatformCreatorDetailDialog({
                   </a>
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Public pages show the shop name (handle), never the legal name, unless it is
+                typed into About.
+              </p>
               <div className="space-y-1">
-                <Label>Shop name</Label>
-                <Input value={shopName} onChange={(e) => setShopName(e.target.value)} />
+                <Label>Shop name (public handle)</Label>
+                <Input
+                  value={shopName}
+                  onChange={(e) => setShopName(e.target.value)}
+                  placeholder={c.username}
+                />
               </div>
               <div className="space-y-1">
                 <Label>Shop description</Label>
@@ -409,6 +429,29 @@ export default function PlatformCreatorDetailDialog({
                   onChange={(e) => setShopDescription(e.target.value)}
                 />
               </div>
+              <div className="space-y-1">
+                <Label>About</Label>
+                <Textarea
+                  rows={4}
+                  value={bio}
+                  onChange={(e) => setBio(e.target.value)}
+                  placeholder="Shown on the About page. Legal name only appears if typed here."
+                />
+              </div>
+              <CreatorProfileImageField
+                label="Profile avatar"
+                hint="Shown in the shop header and home page."
+                value={profileImageUrl}
+                onChange={setProfileImageUrl}
+                previewClassName="h-16 w-16 rounded-full object-cover border"
+              />
+              <CreatorProfileImageField
+                label="Home background"
+                hint="Wide image behind the shop name on the main page."
+                value={backgroundImageUrl}
+                onChange={setBackgroundImageUrl}
+                previewClassName="h-16 w-28 rounded-md object-cover border"
+              />
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label>Free gens / customer</Label>

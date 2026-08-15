@@ -9,11 +9,18 @@ import {
   creatorOrderLines,
   creatorOrders,
   creatorSessions,
+  creators,
   customizerPages,
   productTypes,
 } from "@shared/schema";
 import { db } from "../db";
 import { isCreatorMarketplaceEnabled } from "../creator-config";
+import { invalidateCreatorHostCache } from "../creator-host";
+import {
+  mergeCreatorBranding,
+  sanitizeCreatorBio,
+  sanitizeCreatorImageUrl,
+} from "@shared/creatorMarketplace";
 import {
   clearCreatorAuthCookie,
   clearCreatorOtp,
@@ -144,6 +151,47 @@ export function registerCreatorPortalRoutes(app: Express): void {
 
   app.get("/api/creator/me", requireCreator, async (req: CreatorAuthedRequest, res) => {
     res.json({ creator: publicCreatorProfile(req.creator!) });
+  });
+
+  app.patch("/api/creator/profile", requireCreator, async (req: CreatorAuthedRequest, res) => {
+    try {
+      const creator = req.creator!;
+      const body = req.body ?? {};
+      const patch: Partial<typeof creators.$inferInsert> = { updatedAt: new Date() };
+
+      if (body.bio !== undefined) {
+        patch.bio = sanitizeCreatorBio(body.bio);
+      }
+      if (body.profileImageUrl !== undefined) {
+        patch.profileImageUrl = sanitizeCreatorImageUrl(body.profileImageUrl);
+      }
+      if (
+        body.shopName !== undefined ||
+        body.shopDescription !== undefined ||
+        body.backgroundImageUrl !== undefined
+      ) {
+        patch.branding = mergeCreatorBranding(
+          creator.branding as Record<string, unknown> | null,
+          {
+            shopName: body.shopName,
+            shopDescription: body.shopDescription,
+            backgroundImageUrl: body.backgroundImageUrl,
+          },
+        );
+      }
+
+      const [updated] = await db
+        .update(creators)
+        .set(patch)
+        .where(eq(creators.id, creator.id))
+        .returning();
+
+      invalidateCreatorHostCache(updated.username);
+      res.json({ creator: publicCreatorProfile(updated) });
+    } catch (e: any) {
+      console.error("[creator portal] profile update failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to update profile" });
+    }
   });
 
   app.get("/api/creator/rank", requireCreator, async (req: CreatorAuthedRequest, res) => {

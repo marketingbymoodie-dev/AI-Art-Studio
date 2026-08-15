@@ -28,7 +28,10 @@ import {
   SOCIAL_PLATFORMS,
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
+  mergeCreatorBranding,
   normalizeCreatorUsername,
+  sanitizeCreatorBio,
+  sanitizeCreatorImageUrl,
   type CreatorApplicationStatus,
   type CreatorApplyTrack,
   type CreatorPayoutMethod,
@@ -1065,6 +1068,12 @@ export function registerCreatorMarketplaceRoutes(
           const dn = String(body.displayName || "").trim();
           if (dn) patch.displayName = dn.slice(0, 120);
         }
+        if (body.bio !== undefined) {
+          patch.bio = sanitizeCreatorBio(body.bio);
+        }
+        if (body.profileImageUrl !== undefined) {
+          patch.profileImageUrl = sanitizeCreatorImageUrl(body.profileImageUrl);
+        }
         if (body.overageCap != null) {
           patch.overageCap = Math.max(0, Math.round(Number(body.overageCap) || 0));
         }
@@ -1085,23 +1094,20 @@ export function registerCreatorMarketplaceRoutes(
         if (body.emailAutomationToggles && typeof body.emailAutomationToggles === "object") {
           patch.emailAutomationToggles = body.emailAutomationToggles as Record<string, boolean>;
         }
-        // Shop name / tagline live in branding JSON (storefront reads headline + description).
-        if (body.shopName !== undefined || body.shopDescription !== undefined) {
-          const prev =
-            creator.branding && typeof creator.branding === "object"
-              ? { ...(creator.branding as Record<string, unknown>) }
-              : {};
-          if (body.shopName !== undefined) {
-            const headline = String(body.shopName || "").trim().slice(0, 120);
-            if (headline) prev.headline = headline;
-            else delete prev.headline;
-          }
-          if (body.shopDescription !== undefined) {
-            const description = String(body.shopDescription || "").trim().slice(0, 500);
-            if (description) prev.description = description;
-            else delete prev.description;
-          }
-          patch.branding = prev;
+        // Shop name / tagline / home background live in branding JSON.
+        if (
+          body.shopName !== undefined ||
+          body.shopDescription !== undefined ||
+          body.backgroundImageUrl !== undefined
+        ) {
+          patch.branding = mergeCreatorBranding(
+            creator.branding as Record<string, unknown> | null,
+            {
+              shopName: body.shopName,
+              shopDescription: body.shopDescription,
+              backgroundImageUrl: body.backgroundImageUrl,
+            },
+          );
         }
 
         // Starting active_beta without end date → default beta window.

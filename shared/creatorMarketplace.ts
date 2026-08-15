@@ -419,3 +419,75 @@ export function extractUsernameFromPath(pathname: string): string | null {
   if (!m) return null;
   return normalizeCreatorUsername(m[1]!);
 }
+
+/** Public storefront name: shop handle, never the legal / application name. */
+export function creatorPublicName(opts: {
+  username: string;
+  branding?: Record<string, unknown> | null;
+}): string {
+  const headline =
+    opts.branding && typeof opts.branding.headline === "string"
+      ? opts.branding.headline.trim()
+      : "";
+  return headline || opts.username;
+}
+
+export function isSafeCreatorImageUrl(url: string): boolean {
+  if (!url) return true;
+  if (url.startsWith("/objects/")) return !url.includes("..");
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function sanitizeCreatorImageUrl(raw: unknown): string | null {
+  const url = String(raw ?? "").trim().slice(0, 2000);
+  if (!url) return null;
+  return isSafeCreatorImageUrl(url) ? url : null;
+}
+
+export function creatorBrandingImageUrl(
+  branding: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  if (!branding || typeof branding[key] !== "string") return null;
+  return sanitizeCreatorImageUrl(branding[key]);
+}
+
+export type CreatorProfileBrandingPatch = {
+  shopName?: string | null;
+  shopDescription?: string | null;
+  backgroundImageUrl?: string | null;
+};
+
+/** Merge shop-facing branding JSON (headline, description, background). */
+export function mergeCreatorBranding(
+  prev: Record<string, unknown> | null | undefined,
+  patch: CreatorProfileBrandingPatch,
+): Record<string, unknown> {
+  const next = prev && typeof prev === "object" ? { ...prev } : {};
+  if (patch.shopName !== undefined) {
+    const headline = String(patch.shopName || "").trim().slice(0, 120);
+    if (headline) next.headline = headline;
+    else delete next.headline;
+  }
+  if (patch.shopDescription !== undefined) {
+    const description = String(patch.shopDescription || "").trim().slice(0, 500);
+    if (description) next.description = description;
+    else delete next.description;
+  }
+  if (patch.backgroundImageUrl !== undefined) {
+    const url = sanitizeCreatorImageUrl(patch.backgroundImageUrl);
+    if (url) next.backgroundImageUrl = url;
+    else delete next.backgroundImageUrl;
+  }
+  return next;
+}
+
+export function sanitizeCreatorBio(raw: unknown): string | null {
+  const bio = String(raw ?? "").trim().slice(0, 2000);
+  return bio || null;
+}
