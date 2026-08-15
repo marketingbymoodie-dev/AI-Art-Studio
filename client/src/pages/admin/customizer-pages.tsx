@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
 import { condenseVariantPriceRows } from "@shared/condenseVariantPrices";
+import { dedupeCreatePageBlanks } from "@shared/productTypePicker";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
   return normalizeSelectionId(a) === normalizeSelectionId(b);
@@ -1777,32 +1778,30 @@ export default function AdminCustomizerPages() {
     return ids;
   }, [pages]);
 
-  const sortedCreateBlanks = useMemo(() => {
-    const blanks = [...(blanksData?.blanks ?? [])];
-    blanks.sort((a, b) => {
-      const aLive = liveProductTypeIds.has(a.productTypeId) ? 0 : 1;
-      const bLive = liveProductTypeIds.has(b.productTypeId) ? 0 : 1;
-      if (aLive !== bLive) return aLive - bLive;
-      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-    });
-    // Repeated catalogue activation can leave several active productType rows for
-    // the same blueprint/title, which showed up as duplicate dropdown options.
-    // Collapse by product identity (synced product id, else blueprint+title),
-    // keeping the first — the sort above already puts a live/synced row first.
-    const seen = new Set<string>();
-    const deduped: typeof blanks = [];
-    for (const b of blanks) {
-      const key = b.productId
-        ? `id:${b.productId}`
-        : b.printifyBlueprintId != null
-          ? `bp:${b.printifyBlueprintId}:${b.title.trim().toLowerCase()}`
-          : `pt:${b.productTypeId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(b);
+  /** Live pages on a duplicate productType still count for that Printify blueprint. */
+  const liveBlueprintIds = useMemo(() => {
+    const ids = new Set<number>();
+    const blanks = blanksData?.blanks ?? [];
+    for (const p of pages) {
+      if (p.status !== "active" || p.productTypeId == null) continue;
+      const blank = blanks.find((b) => b.productTypeId === p.productTypeId);
+      if (blank?.printifyBlueprintId != null) ids.add(blank.printifyBlueprintId);
     }
-    return deduped;
-  }, [blanksData?.blanks, liveProductTypeIds]);
+    return ids;
+  }, [pages, blanksData?.blanks]);
+
+  const sortedCreateBlanks = useMemo(
+    () => dedupeCreatePageBlanks(blanksData?.blanks ?? [], liveProductTypeIds),
+    [blanksData?.blanks, liveProductTypeIds],
+  );
+
+  const createPageBlueprintIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const b of sortedCreateBlanks) {
+      if (b.printifyBlueprintId != null) ids.add(b.printifyBlueprintId);
+    }
+    return ids;
+  }, [sortedCreateBlanks]);
 
   const handleAlreadyUsed = useMemo(() => {
     const h = formHandle.trim();
@@ -1975,28 +1974,28 @@ export default function AdminCustomizerPages() {
                           <SelectContent>
                             {sortedCreateBlanks.map((blank) => {
                               const val = blank.productId ? blank.productId : `pt:${blank.productTypeId}`;
-                              const isLive = liveProductTypeIds.has(blank.productTypeId);
+                              const isLive =
+                                liveProductTypeIds.has(blank.productTypeId) ||
+                                (blank.printifyBlueprintId != null &&
+                                  liveBlueprintIds.has(blank.printifyBlueprintId));
                               return (
-                                <SelectItem key={val} value={val}>
+                                <SelectItem key={`pt:${blank.productTypeId}`} value={val}>
                                   {blank.title}
-                                  {isLive ? " (Live)" : ""}
-                                  {/* A live page means the product already exists on
-                                      this store — never contradict it with "will be
-                                      created" even if Admin sync resolution is stale. */}
-                                  {blank.needsShopifySync && !isLive
-                                    ? " (not on this store yet — will be created)"
-                                    : ""}
+                                  {isLive
+                                    ? " (Live)"
+                                    : blank.needsShopifySync
+                                      ? " (not on this store yet — will be created)"
+                                      : " (will be created)"}
                                 </SelectItem>
                               );
                             })}
                             {(setupCatalogData?.entries ?? [])
                               .filter((entry) => {
-                                const blanks = blanksData?.blanks ?? [];
-                                return !blanks.some(
+                                if (createPageBlueprintIds.has(entry.blueprintId)) return false;
+                                return !sortedCreateBlanks.some(
                                   (b) =>
-                                    b.printifyBlueprintId === entry.blueprintId ||
-                                    (entry.existingProductType != null &&
-                                      b.productTypeId === entry.existingProductType.id),
+                                    entry.existingProductType != null &&
+                                    b.productTypeId === entry.existingProductType.id,
                                 );
                               })
                               .map((entry) => (
@@ -2024,12 +2023,16 @@ export default function AdminCustomizerPages() {
                           ). Use a unique page title and URL handle, or edit the existing page instead.
                         </p>
                       )}
-                      {selectedBlank?.needsShopifySync &&
-                      !(selectedBlank && liveProductTypeIds.has(selectedBlank.productTypeId)) ? (
+                      {selectedBlank &&
+                      !(
+                        liveProductTypeIds.has(selectedBlank.productTypeId) ||
+                        (selectedBlank.printifyBlueprintId != null &&
+                          liveBlueprintIds.has(selectedBlank.printifyBlueprintId))
+                      ) ? (
                         <p className="text-xs text-muted-foreground mt-1">
-                          This product is not on Shopify in this store yet — finishing Create Page will
-                          send it. Deleting a customizer page does not remove the Shopify product, so
-                          products that were already sent stay listed without “will be created”.
+                          {selectedBlank.needsShopifySync
+                            ? "This product is not on Shopify in this store yet — finishing Create Page will send it and publish the customizer page."
+                            : "This product is already on Shopify. Finishing Create Page will publish a new customizer page for it."}
                         </p>
                       ) : null}
                       {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
