@@ -546,6 +546,26 @@ describe("Mockup camera_label preference", () => {
     expect(person).not.toContain("front side");
   });
 
+  it("preferPersonViews surfaces zip-hoodie on-person-N-front cameras", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/life.png", label: "lifestyle" },
+      { url: "https://x.example/p1.png", label: "on-person-1-front" },
+      { url: "https://x.example/p2.png", label: "on-person-2-front" },
+    ];
+    const person = pickPreferredMockupViews(images, false, undefined, false, true).map(
+      (p) => p.label,
+    );
+    expect(person[0]).toBe("on-person-1-front");
+    expect(person).toContain("on-person-2-front");
+    expect(person).not.toContain("front");
+    expect(person).not.toContain("lifestyle");
+    expect(
+      shouldSupplementInlineMockups(images, true, false, true),
+    ).toBe(false);
+  });
+
   it("preferPersonViews waits until a person camera appears", () => {
     expect(
       shouldSupplementInlineMockups(

@@ -30,10 +30,21 @@ export function isContext1MockupLabel(label: string): boolean {
   return n === "context1" || /^context\s*1\b/.test(n);
 }
 
+/** On-model view token in zip-hoodie cameras like `on-person-1-front`. */
+function onPersonViewToken(n: string): "front" | "side" | "back" | null {
+  if (!/\bon\s*person\b/.test(n)) return null;
+  if (/\bfront\b/.test(n)) return "front";
+  if (/\bside\b/.test(n)) return "side";
+  if (/\bback\b/.test(n)) return "back";
+  return null;
+}
+
 /** Leggings-style on-model: Front Person / Side Person / Back Person. */
 export function isFrontPersonMockupLabel(label: string): boolean {
   const n = normalizeMockupCameraLabel(label);
-  return /\bfront\s*person\b/.test(n);
+  if (/\bfront\s*person\b/.test(n)) return true;
+  // Zip hoodie AOP: on-person-1-front / on-person-2-front
+  return onPersonViewToken(n) === "front";
 }
 
 export function isPersonMockupLabel(label: string): boolean {
@@ -41,7 +52,10 @@ export function isPersonMockupLabel(label: string): boolean {
   if (!n) return false;
   // Flatlay "front side" / "back side" are not on-model person cameras.
   if (/\b(front|back)\s*side\b/.test(n)) return false;
-  return /\b(front|side|back)\s*person\b/.test(n);
+  if (/\b(front|side|back)\s*person\b/.test(n)) return true;
+  // Zip hoodie AOP uses on-person-N-front instead of "Front Person".
+  // Tote "On Person" (no front/side/back) stays lifestyle-only.
+  return onPersonViewToken(n) != null;
 }
 
 /**
@@ -52,6 +66,10 @@ export function personMockupPreferenceRank(label: string): number {
   if (/\bfront\s*person\b/.test(n)) return 0;
   if (/\bside\s*person\b/.test(n)) return 1;
   if (/\bback\s*person\b/.test(n)) return 2;
+  const view = onPersonViewToken(n);
+  if (view === "front") return 0;
+  if (view === "side") return 1;
+  if (view === "back") return 2;
   return 40;
 }
 

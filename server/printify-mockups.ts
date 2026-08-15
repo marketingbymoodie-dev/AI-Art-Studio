@@ -731,7 +731,7 @@ function extractCameraLabel(
  * Lifestyle Shot (`preferContextViews`): also wait when we have multiple images
  * but none look like context/lifestyle yet.
  * AOP Printers Mockup (`preferPersonViews`): wait until a Front/Side/Back Person
- * camera appears.
+ * camera appears (or zip-hoodie `on-person-N-front` equivalents).
  */
 export function shouldSupplementInlineMockups(
   images: MockupImage[],
@@ -822,7 +822,8 @@ function selectPreferredViews(
     norm: normalizeMockupCameraLabel(img.label),
   }));
   // Lifestyle Shot: On Person first (tote), then Context 2 — not Context 1 flatlay.
-  // AOP Printers Mockup: Front Person → Side Person → Back Person.
+  // AOP Printers Mockup: Front Person → Side Person → Back Person
+  // (zip hoodie also matches on-person-N-front via isPersonMockupLabel).
   // Do not fall through to flat "front"/"back" from PREFERRED_LABELS.
   const preferredLabels = frontBackOnly
     ? AOP_FLAT_LAY_LABELS
