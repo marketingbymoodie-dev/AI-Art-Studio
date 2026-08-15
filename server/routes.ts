@@ -13857,7 +13857,7 @@ ${orientationExtra}
         actualProviderId,
         printifyToken,
       );
-      const variants = dual.variants;
+      const variants = Array.isArray(dual.variants) ? dual.variants : [];
       
       // Parse variants to extract sizes and colors (simplified version of import logic)
       const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
@@ -13964,12 +13964,21 @@ ${orientationExtra}
           }
         }
         
-        const colorName = extractPrintifyColorName(options, title);
+        let colorName = "";
+        try {
+          colorName = extractPrintifyColorName(options, title) || "";
+        } catch {
+          colorName = "";
+        }
         if (extractedSizeId) {
-          combinations.push({
-            sizeId: extractedSizeId,
-            colorId: colorName ? slugPrintifyColorId(colorName) : "",
-          });
+          try {
+            combinations.push({
+              sizeId: extractedSizeId,
+              colorId: colorName ? slugPrintifyColorId(colorName) : "",
+            });
+          } catch {
+            /* skip a bad combo — still return sizes/colours */
+          }
         }
 
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {

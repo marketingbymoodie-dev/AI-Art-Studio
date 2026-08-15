@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
+import { queryClient, apiRequest, apiFetch, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -1246,11 +1246,13 @@ export default function AdminCustomizerPages() {
     (async () => {
       setEditVariantsLoading(true);
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/admin/printify/blueprints/${editBlank.printifyBlueprintId}/variants?providerId=${editBlank.printifyProviderId}`,
-          { credentials: "include" },
         );
-        if (!res.ok) throw new Error("Failed to load variants");
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || body.message || "Failed to load variants");
+        }
         const data = await res.json();
         if (cancelled) return;
         const sizes: VariantOption[] = data.sizes || [];
@@ -1331,9 +1333,7 @@ export default function AdminCustomizerPages() {
   const { data: wizardProvidersData, isLoading: wizardProvidersLoading } = useQuery<WizardProvider[]>({
     queryKey: ["/api/admin/printify/blueprints", selectedBlank?.printifyBlueprintId, "providers"],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/printify/blueprints/${selectedBlank!.printifyBlueprintId}/providers`, {
-        credentials: "include",
-      });
+      const res = await apiFetch(`/api/admin/printify/blueprints/${selectedBlank!.printifyBlueprintId}/providers`);
       if (!res.ok) throw new Error("Failed to fetch print providers");
       return res.json();
     },
@@ -1379,11 +1379,13 @@ export default function AdminCustomizerPages() {
     setWizardSizeIds(new Set());
     setWizardColorIds(new Set());
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/admin/printify/blueprints/${blueprintId}/variants?providerId=${providerId}`,
-        { credentials: "include" },
       );
-      if (!res.ok) throw new Error("Failed to fetch variants");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || `Failed to fetch variants (${res.status})`);
+      }
       const data = await res.json();
       const sizes: VariantOption[] = data.sizes || [];
       const colors: VariantOption[] = data.colors || [];

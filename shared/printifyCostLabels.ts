@@ -3,6 +3,7 @@
  * Framed prints often differ by quote style / "X" vs "x" between Shopify and Printify.
  */
 export function normalizeVariantLabelForCostMatch(label: string): string {
+  if (label == null || typeof label !== "string") return "";
   return label
     .toLowerCase()
     .replace(/[""″‶‴''′‵]/g, "")
