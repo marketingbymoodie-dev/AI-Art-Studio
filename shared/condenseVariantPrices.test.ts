@@ -3,6 +3,7 @@ import {
   condenseVariantPriceRows,
   formatCondensedColorLabel,
   splitVariantTitle,
+  unifySameSizeSuggestedPrices,
 } from "./condenseVariantPrices";
 
 describe("splitVariantTitle", () => {
@@ -42,20 +43,43 @@ describe("condenseVariantPriceRows", () => {
     { id: "d", title: '18" x 12" / White' },
   ];
 
-  it("merges colours that share a price", () => {
+  it("merges colours that share a price or only differ by .95 rounding", () => {
+    const rows = condenseVariantPriceRows(frames, {
+      a: "54.95",
+      b: "54.95",
+      c: "66.95",
+      d: "67.95",
+    });
+    expect(rows.map((r) => r.label)).toEqual([
+      '14" x 11" / Black/White',
+      '18" x 12" / Black/White',
+    ]);
+    expect(rows[1]!.price).toBe("67.95");
+  });
+
+  it("keeps a colour split when its price is meaningfully different", () => {
     const rows = condenseVariantPriceRows(frames, {
       a: "54.95",
       b: "54.95",
       c: "62.95",
-      d: "63.95",
+      d: "79.95",
     });
     expect(rows.map((r) => r.label)).toEqual([
       '14" x 11" / Black/White',
       '18" x 12" / Black',
       '18" x 12" / White',
     ]);
-    expect(rows[0]!.variantIds).toEqual(["a", "b"]);
-    expect(rows[0]!.price).toBe("54.95");
+  });
+
+  it("unifies same-size suggested prices within $1", () => {
+    const out = unifySameSizeSuggestedPrices(frames, {
+      a: "54.95",
+      b: "54.95",
+      c: "66.95",
+      d: "67.95",
+    });
+    expect(out.c).toBe("67.95");
+    expect(out.d).toBe("67.95");
   });
 
   it("labels a full colour set as All Colours", () => {

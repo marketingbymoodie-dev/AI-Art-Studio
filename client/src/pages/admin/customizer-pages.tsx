@@ -29,7 +29,7 @@ import {
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
-import { condenseVariantPriceRows } from "@shared/condenseVariantPrices";
+import { condenseVariantPriceRows, unifySameSizeSuggestedPrices } from "@shared/condenseVariantPrices";
 import { dedupeCreatePageBlanks } from "@shared/productTypePicker";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
@@ -1091,7 +1091,7 @@ export default function AdminCustomizerPages() {
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
-    return result;
+    return unifySameSizeSuggestedPrices(selectedVariants, result);
   }, [costsAvailable, costsData, selectedVariants, markupPercent]);
 
   const recommendedPricesBoth = useMemo(() => {
@@ -1113,7 +1113,7 @@ export default function AdminCustomizerPages() {
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
-    return result;
+    return unifySameSizeSuggestedPrices(selectedVariants, result);
   }, [supportsBothSidePricing, costsData, selectedVariants, markupPercent]);
 
   const condensedPriceRows = useMemo(
