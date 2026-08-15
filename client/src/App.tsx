@@ -53,8 +53,12 @@ import DevStorefrontPreview from "@/pages/dev-storefront-preview";
 import DevHoodiePlacerPage from "@/pages/dev-hoodie-placer";
 
 function AppRouter() {
+  // Path-based /c/:username/* must use the main router. Boot HTML is also
+  // injected on those URLs, and the subdomain switch would treat /c/x/cart as home.
+  const pathBasedCreator =
+    typeof window !== "undefined" && window.location.pathname.startsWith("/c/");
   // Creator subdomain boot: server injected window.__CREATOR__ — isolate storefront SPA.
-  if (hasCreatorBootPayload()) {
+  if (hasCreatorBootPayload() && !pathBasedCreator) {
     return (
       <Switch>
         <Route path="/products" component={CreatorBootStorefrontPage} />

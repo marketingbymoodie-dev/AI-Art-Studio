@@ -117,7 +117,9 @@ export function serveStatic(app: Express) {
     const creatorBoot = req.creatorStorefront;
     if ((isStorefrontSpaPath(req.path) || creatorBoot) && storefrontIndexHtml) {
       let html = storefrontIndexHtml;
-      if (creatorBoot) {
+      // Path-based /c/:username uses the SPA router. Injecting boot there
+      // made /c/:username/cart render the creator home instead of the cart.
+      if (creatorBoot && !req.path.startsWith("/c/")) {
         html = injectCreatorBoot(html, creatorBoot);
       }
       res.status(200).set({ "Content-Type": "text/html; charset=UTF-8" }).end(html);

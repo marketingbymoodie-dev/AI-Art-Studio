@@ -36,8 +36,8 @@ export function BackToCreatorShop() {
 
   const label = shopName ? `Back to ${shopName}` : "Back to shop";
   return (
-    <Banner status="info" title={label}>
-      <Button to={returnUrl} kind="secondary">
+    <Banner status="info" title="Continue shopping">
+      <Button to={returnUrl} kind="primary">
         {label}
       </Button>
     </Banner>

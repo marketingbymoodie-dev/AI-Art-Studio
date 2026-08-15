@@ -552,7 +552,7 @@ function storefrontSection(
   const path = rest.startsWith("/") ? rest : `/${rest}`;
   if (path === "/products" || path.startsWith("/products/")) return "products";
   if (path === "/about" || path.startsWith("/about/")) return "about";
-  if (path === "/cart" || path.startsWith("/cart/")) return "cart";
+  if (path === "/cart" || path.startsWith("/cart/") || /\/cart\/?$/.test(path)) return "cart";
   if (path.startsWith("/customize/")) return "customize";
   return "home";
 }

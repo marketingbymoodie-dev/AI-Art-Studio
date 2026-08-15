@@ -226,11 +226,41 @@ export async function getCreatorCart(cartId: string): Promise<CreatorCartResult 
   return mapCreatorCart(data.cart);
 }
 
+export async function updateCreatorCartAttributes(params: {
+  cartId: string;
+  attributes: CartLineAttribute[];
+}): Promise<void> {
+  const attributes = (params.attributes || [])
+    .filter((a) => a.key && a.value != null)
+    .map((a) => ({
+      key: String(a.key).slice(0, 100),
+      value: String(a.value).slice(0, 255),
+    }));
+  if (!params.cartId || attributes.length === 0) return;
+  const data = await storefrontGraphql<{
+    cartAttributesUpdate: {
+      userErrors: Array<{ field?: string[]; message: string }>;
+    };
+  }>(
+    `mutation CreatorCartAttributesUpdate($cartId: ID!, $attributes: [AttributeInput!]!) {
+      cartAttributesUpdate(cartId: $cartId, attributes: $attributes) {
+        userErrors { field message }
+      }
+    }`,
+    { cartId: params.cartId, attributes },
+  );
+  const errs = data.cartAttributesUpdate?.userErrors || [];
+  if (errs.length) {
+    throw new Error(errs.map((e) => e.message).join("; "));
+  }
+}
+
 export async function addLinesToCreatorCart(params: {
   cartId: string;
   variantId: string;
   quantity?: number;
   attributes?: CartLineAttribute[];
+  cartAttributes?: CartLineAttribute[];
 }): Promise<CreatorCartResult> {
   const data = await storefrontGraphql<{
     cartLinesAdd: {
@@ -257,6 +287,19 @@ export async function addLinesToCreatorCart(params: {
   const mapped = mapCreatorCart(data.cartLinesAdd?.cart);
   if (!mapped) {
     throw new Error("Storefront cartLinesAdd did not return a cart");
+  }
+  if (params.cartAttributes?.length) {
+    try {
+      await updateCreatorCartAttributes({
+        cartId: mapped.cartId,
+        attributes: params.cartAttributes,
+      });
+    } catch (attrErr: any) {
+      console.warn(
+        "[creators] cartAttributesUpdate after lines add failed:",
+        attrErr?.message || attrErr,
+      );
+    }
   }
   return mapped;
 }

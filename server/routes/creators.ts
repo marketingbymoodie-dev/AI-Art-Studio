@@ -1216,6 +1216,7 @@ export function registerCreatorMarketplaceRoutes(
               variantId,
               quantity: Number(body.quantity) || 1,
               attributes,
+              cartAttributes: returnAttrs,
             });
           } catch (addErr: any) {
             console.warn(
