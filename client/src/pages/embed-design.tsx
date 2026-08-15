@@ -4495,7 +4495,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
 
-    const res = await safeFetch(`/apps/appai/customizer-page?handle=${encodeURIComponent(pageHandle)}`, {
+    // Use the storefront customizer-page API (works on the creator host AND the
+    // Shopify app proxy). The bare `/apps/appai/customizer-page` path is not a
+    // real route, so on the creator host it returned the SPA index.html and the
+    // JSON parse blew up ("Unexpected token '<'").
+    const switchPageUrl =
+      `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shopDomain)}` +
+      `&handle=${encodeURIComponent(pageHandle)}` +
+      (creatorUsernameParam ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}` : "") +
+      (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : "");
+    const res = await safeFetch(switchPageUrl, {
       credentials: "same-origin",
     }, 30000);
     if (!res.ok) {
@@ -4662,7 +4671,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setSelectedPreset("");
     setSelectedStyleOption("");
 
-    const res = await safeFetch(`/apps/appai/customizer-page?handle=${encodeURIComponent(pageHandle)}`, {
+    // Storefront customizer-page API — safe on creator host + Shopify proxy.
+    // (The bare `/apps/appai/customizer-page` path returned SPA HTML → JSON error.)
+    const switchPageUrl =
+      `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shopDomain)}` +
+      `&handle=${encodeURIComponent(pageHandle)}` +
+      (creatorUsernameParam ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}` : "") +
+      (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : "");
+    const res = await safeFetch(switchPageUrl, {
       credentials: "same-origin",
     }, 30000);
     if (!res.ok) {
@@ -9466,7 +9482,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setReuseBusyLabel("Opening product…");
         try {
           const pageRes = await safeFetch(
-            `/apps/appai/customizer-page?handle=${encodeURIComponent(handle)}`,
+            `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shopDomain)}` +
+              `&handle=${encodeURIComponent(handle)}` +
+              (creatorUsernameParam ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}` : "") +
+              (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : ""),
             { credentials: "same-origin" },
             30000,
           );
@@ -9620,7 +9639,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       try {
         const res = await safeFetch(
-          `/apps/appai/customizer-page?handle=${encodeURIComponent(page.handle)}`,
+          `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shopDomain)}` +
+            `&handle=${encodeURIComponent(page.handle)}` +
+            (creatorUsernameParam ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}` : "") +
+            (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : ""),
           { credentials: "same-origin" },
           30000,
         );
