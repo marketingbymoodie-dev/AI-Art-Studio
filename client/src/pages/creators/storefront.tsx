@@ -76,7 +76,16 @@ type CreatorCartPayload = {
   shopCartUrl?: string | null;
   cartId?: string;
   itemCount: number;
-  lines: Array<{ id: string; quantity: number; title: string; imageUrl: string | null }>;
+  lines: Array<{
+    id: string;
+    quantity: number;
+    title: string;
+    imageUrl: string | null;
+    mockupUrl?: string | null;
+    artworkUrl?: string | null;
+    jobId?: string | null;
+    printReady?: boolean;
+  }>;
 };
 
 function persistCreatorCart(username: string, json: CreatorCartPayload, fallbackCartId?: string) {
@@ -648,18 +657,51 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
       ) : (
         <ul className="space-y-3">
           {lines.map((line) => (
-            <li key={line.id} className="flex items-center gap-3 rounded-lg border p-3">
-              {line.imageUrl ? (
-                <img
-                  src={line.imageUrl}
-                  alt=""
-                  className="h-16 w-16 rounded-md object-cover bg-muted"
-                />
-              ) : (
-                <div className="h-16 w-16 rounded-md bg-muted" />
-              )}
+            <li key={line.id} className="flex items-start gap-3 rounded-lg border p-3">
+              <div className="flex shrink-0 gap-2">
+                <div className="w-16 text-center">
+                  {line.imageUrl ? (
+                    <img
+                      src={line.imageUrl}
+                      alt=""
+                      className="h-16 w-16 rounded-md object-cover bg-muted"
+                    />
+                  ) : (
+                    <div className="h-16 w-16 rounded-md bg-muted" />
+                  )}
+                  <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Preview
+                  </div>
+                </div>
+                <div className="w-16 text-center">
+                  {line.artworkUrl ? (
+                    <img
+                      src={line.artworkUrl}
+                      alt=""
+                      className="h-16 w-16 rounded-md object-contain bg-muted"
+                    />
+                  ) : (
+                    <div className="flex h-16 w-16 items-center justify-center rounded-md bg-muted text-[10px] text-muted-foreground">
+                      —
+                    </div>
+                  )}
+                  <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Print file
+                  </div>
+                </div>
+              </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{line.title}</div>
+                {line.jobId ? (
+                  <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                    Design {line.jobId.slice(0, 8)}
+                    {line.printReady === false ? " · print file missing" : ""}
+                  </div>
+                ) : (
+                  <div className="mt-0.5 text-[11px] text-destructive">
+                    No print job on this line
+                  </div>
+                )}
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <div className="inline-flex items-center rounded-md border">
                     <Button

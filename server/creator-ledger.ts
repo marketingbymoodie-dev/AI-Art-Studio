@@ -181,8 +181,8 @@ async function resolveJobIdFromLine(
   props: Record<string, string>,
   variantId: string | null,
 ): Promise<string | null> {
-  const fromProp = props._appai_job_id || null;
-  if (fromProp) return fromProp;
+  const fromProp = String(props._appai_job_id || "").trim().split("::")[0];
+  if (fromProp && !fromProp.includes(" · ")) return fromProp;
 
   if (variantId) {
     const numeric = String(variantId).replace("gid://shopify/ProductVariant/", "");
@@ -198,9 +198,11 @@ async function resolveJobIdFromLine(
         )
         .limit(1);
       if (pp?.designId) {
-        // designId may be readable label; prefer job if it looks like a job id.
-        const job = await storage.getGenerationJob(pp.designId).catch(() => null);
-        if (job) return job.id;
+        const jobId = String(pp.designId).split("::")[0];
+        if (jobId && !jobId.includes(" · ")) {
+          const job = await storage.getGenerationJob(jobId).catch(() => null);
+          if (job) return job.id;
+        }
       }
     } catch {
       /* ignore */

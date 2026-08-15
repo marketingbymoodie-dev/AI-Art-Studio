@@ -72,6 +72,7 @@ import {
   removeCreatorCartLines,
   updateCreatorCartLine,
 } from "../shopify-storefront";
+import { enrichCreatorCartPrintFiles } from "../creatorCartPrintFiles";
 import { repairCreatorCartShadowVariants } from "../repairCreatorCartShadows";
 import {
   creatorMerchandiseMissingMessage,
@@ -1315,13 +1316,14 @@ export function registerCreatorMarketplaceRoutes(
       if (!cart) {
         return res.status(404).json({ error: "Cart not found" });
       }
+      const enriched = await enrichCreatorCartPrintFiles(cart);
       res.json({
         success: true,
-        cartId: cart.cartId,
-        checkoutUrl: cart.checkoutUrl,
-        shopCartUrl: cart.shopCartUrl,
-        itemCount: cart.itemCount,
-        lines: cart.lines,
+        cartId: enriched.cartId,
+        checkoutUrl: enriched.checkoutUrl,
+        shopCartUrl: enriched.shopCartUrl,
+        itemCount: enriched.itemCount,
+        lines: enriched.lines,
       });
     } catch (e: any) {
       console.error("[creators] cart fetch failed:", e);
@@ -1371,13 +1373,14 @@ export function registerCreatorMarketplaceRoutes(
             cartId,
           })) || cart;
       }
+      const enriched = await enrichCreatorCartPrintFiles(cart);
       res.json({
         success: true,
-        cartId: cart.cartId,
-        checkoutUrl: cart.checkoutUrl,
-        shopCartUrl: cart.shopCartUrl,
-        itemCount: cart.itemCount,
-        lines: cart.lines,
+        cartId: enriched.cartId,
+        checkoutUrl: enriched.checkoutUrl,
+        shopCartUrl: enriched.shopCartUrl,
+        itemCount: enriched.itemCount,
+        lines: enriched.lines,
       });
     } catch (e: any) {
       console.error("[creators] prepare-checkout failed:", e);
@@ -1431,13 +1434,14 @@ export function registerCreatorMarketplaceRoutes(
             lineId,
             quantity: Number(body.quantity),
           });
+      const enriched = await enrichCreatorCartPrintFiles(cart);
       res.json({
         success: true,
-        cartId: cart.cartId,
-        checkoutUrl: cart.checkoutUrl,
-        shopCartUrl: cart.shopCartUrl,
-        itemCount: cart.itemCount,
-        lines: cart.lines,
+        cartId: enriched.cartId,
+        checkoutUrl: enriched.checkoutUrl,
+        shopCartUrl: enriched.shopCartUrl,
+        itemCount: enriched.itemCount,
+        lines: enriched.lines,
       });
     } catch (e: any) {
       console.error("[creators] cart line update failed:", e);

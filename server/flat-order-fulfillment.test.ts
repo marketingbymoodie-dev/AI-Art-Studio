@@ -2,33 +2,75 @@ import { describe, expect, it } from "vitest";
 import {
   pickFlatOrderArtworkUrl,
   pickFlatOrderSizeColor,
+  resolveGenerationJobIdForOrderLine,
   resolvePrintifyTarget,
+  usablePrintArtworkUrl,
 } from "./flat-order-fulfillment";
 import type { ProductType } from "@shared/schema";
 
 describe("pickFlatOrderArtworkUrl", () => {
-  it("prefers flatPlacer artwork over stale job URL", () => {
+  it("prefers the artwork stamped on that cart line", () => {
     expect(
       pickFlatOrderArtworkUrl({
         flatPlacerArtworkUrl: "https://cdn.example/new.png",
         jobDesignImageUrl: "https://cdn.example/old.png",
         lineArtworkUrl: "https://cdn.example/line.png",
       }),
-    ).toBe("https://cdn.example/new.png");
+    ).toBe("https://cdn.example/line.png");
   });
 
-  it("falls back to job then line", () => {
+  it("ignores truncated Shopify attributes and falls back to the job", () => {
+    const truncated = `https://cdn.example/${"x".repeat(240)}`;
+    expect(truncated.length).toBeGreaterThanOrEqual(255);
+    expect(usablePrintArtworkUrl(truncated)).toBe("");
     expect(
       pickFlatOrderArtworkUrl({
         jobDesignImageUrl: "https://cdn.example/job.png",
-        lineArtworkUrl: "https://cdn.example/line.png",
+        lineArtworkUrl: truncated,
       }),
     ).toBe("https://cdn.example/job.png");
+  });
+
+  it("falls back to placer then job", () => {
+    expect(
+      pickFlatOrderArtworkUrl({
+        flatPlacerArtworkUrl: "https://cdn.example/placer.png",
+        jobDesignImageUrl: "https://cdn.example/job.png",
+      }),
+    ).toBe("https://cdn.example/placer.png");
     expect(
       pickFlatOrderArtworkUrl({
         lineArtworkUrl: "https://cdn.example/line.png",
       }),
     ).toBe("https://cdn.example/line.png");
+  });
+});
+
+describe("resolveGenerationJobIdForOrderLine", () => {
+  it("uses the cart line job id over a shared shadow designId", () => {
+    expect(
+      resolveGenerationJobIdForOrderLine({
+        lineJobId: "job-a",
+        publishedDesignId: "job-b::deadbeef",
+        lineDesignId: "Apron · Style #ab12",
+      }),
+    ).toBe("job-a");
+  });
+
+  it("strips the checkout mockup hash from published designId", () => {
+    expect(
+      resolveGenerationJobIdForOrderLine({
+        publishedDesignId: "job-a::cafebabe",
+      }),
+    ).toBe("job-a");
+  });
+
+  it("ignores human-readable _design_id labels", () => {
+    expect(
+      resolveGenerationJobIdForOrderLine({
+        lineDesignId: "Apron · Style #ab12",
+      }),
+    ).toBeNull();
   });
 });
 

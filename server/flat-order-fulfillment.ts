@@ -13,9 +13,8 @@
  *     FLAT_ORDER_FULFILLMENT_ENABLED).
  *
  * DATA RESOLUTION PATH (verified against the codebase):
- *   line.variant_id
- *     → published_products.shopifyVariantId  → designId, baseVariantId, shop
- *       (fallback: line.properties `_appai_job_id` / `_design_id`)
+ *   line.properties `_appai_job_id`  → generation_jobs.id  (print source of truth)
+ *   published_products.designId may be `jobId::mockupHash` (checkout image key only)
  *   designId (== generation_jobs.id)
  *     → generation_jobs: designState.flatPlacerState (normalized placement),
  *       designImageUrl (print-ready artwork), productTypeId
@@ -229,9 +228,41 @@ function parseJson<T = any>(value: unknown, fallback: T): T {
   return fallback;
 }
 
+/** Shopify Storefront cart attributes truncate at 255 chars — those URLs cannot be fetched. */
+export function usablePrintArtworkUrl(url?: string | null): string {
+  const s = String(url || "").trim();
+  if (!s || s.startsWith("data:")) return "";
+  if (s.length >= 255) return "";
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("/")) return s;
+  return "";
+}
+
 /**
- * Prefer live placer artwork (updated on Apply) over generate-time job columns.
- * Exported for unit tests.
+ * Cart line `_appai_job_id` is the print source of truth. Shadow `designId` may be
+ * `jobId::mockupHash` (checkout image key) and must not be sent to getGenerationJob.
+ */
+export function resolveGenerationJobIdForOrderLine(args: {
+  lineJobId?: string | null;
+  publishedDesignId?: string | null;
+  lineDesignId?: string | null;
+}): string | null {
+  const lineJob = String(args.lineJobId || "").trim();
+  if (lineJob && !lineJob.includes(" · ")) return lineJob.split("::")[0] || null;
+
+  const published = String(args.publishedDesignId || "").trim();
+  if (published && !published.includes(" · ")) {
+    const jobId = published.split("::")[0];
+    if (jobId) return jobId;
+  }
+
+  const readable = String(args.lineDesignId || "").trim();
+  if (readable && !readable.includes(" · ") && !readable.includes(" ")) return readable;
+  return null;
+}
+
+/**
+ * Prefer the artwork stamped on that cart line (what the customer added).
+ * Fall back to the job / placer file when the line URL is missing or truncated.
  */
 export function pickFlatOrderArtworkUrl(args: {
   flatPlacerArtworkUrl?: string | null;
@@ -239,9 +270,9 @@ export function pickFlatOrderArtworkUrl(args: {
   lineArtworkUrl?: string | null;
 }): string {
   return (
-    (args.flatPlacerArtworkUrl && String(args.flatPlacerArtworkUrl)) ||
-    (args.jobDesignImageUrl && String(args.jobDesignImageUrl)) ||
-    (args.lineArtworkUrl && String(args.lineArtworkUrl)) ||
+    usablePrintArtworkUrl(args.lineArtworkUrl) ||
+    usablePrintArtworkUrl(args.flatPlacerArtworkUrl) ||
+    usablePrintArtworkUrl(args.jobDesignImageUrl) ||
     ""
   );
 }
@@ -347,22 +378,25 @@ export async function resolveDesignForOrderLine(
   let designId: string | null = null;
   let resolvedShop = shop;
   let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null = null;
+  let publishedDesignId: string | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
     if (pp) {
-      designId = pp.designId;
+      publishedDesignId = pp.designId;
       resolvedShop = pp.shop || shop;
     } else {
       const dp = await findDesignProductByVariant(shop, line.variantId);
       if (dp) {
-        designId = dp.jobId;
+        publishedDesignId = dp.jobId;
         designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId };
       }
     }
   }
-  if (!designId) {
-    designId = line.properties["_appai_job_id"] || line.properties["_design_id"] || null;
-  }
+  designId = resolveGenerationJobIdForOrderLine({
+    lineJobId: line.properties["_appai_job_id"],
+    publishedDesignId,
+    lineDesignId: line.properties["_design_id"],
+  });
   if (!designId) {
     return { ok: false, skip: true, reason: "no design id on line (normal product / mixed cart)" };
   }

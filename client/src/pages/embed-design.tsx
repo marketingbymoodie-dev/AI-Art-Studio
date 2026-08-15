@@ -6711,6 +6711,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
+      properties["Design"] = savedJobIdRef.current.slice(0, 8);
     }
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
@@ -8492,6 +8493,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
+      properties["Design"] = savedJobIdRef.current.slice(0, 8);
     }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) {

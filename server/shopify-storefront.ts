@@ -73,7 +73,9 @@ export type CreatorCartLine = {
   imageUrl: string | null;
   merchandiseId: string | null;
   mockupUrl: string | null;
+  artworkUrl: string | null;
   jobId: string | null;
+  printReady: boolean;
   baseVariantId: string | null;
   attributes: CartLineAttribute[];
 };
@@ -139,6 +141,8 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
   const lines: CreatorCartLine[] = nodes.map((node) => {
     const attrs = node.attributes || [];
     const mockup = attrs.find((a) => a.key === "_mockup_url")?.value || null;
+    const artwork = attrs.find((a) => a.key === "_artwork_url")?.value || null;
+    const jobId = attrs.find((a) => a.key === "_appai_job_id")?.value || null;
     const merch = node.merchandise;
     const title =
       merch?.product?.title ||
@@ -157,7 +161,9 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
       imageUrl,
       merchandiseId: merch?.id || null,
       mockupUrl: mockup,
-      jobId: attrs.find((a) => a.key === "_appai_job_id")?.value || null,
+      artworkUrl: artwork,
+      jobId,
+      printReady: !!(jobId && artwork && artwork.length < 255),
       baseVariantId: attrs.find((a) => a.key === "_base_variant_id")?.value || null,
       attributes: attrs.map((a) => ({ key: a.key, value: a.value })),
     };
