@@ -6830,11 +6830,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const readableDesignId = [productLabel, styleLabel].filter(Boolean).join(' · ') + (shortHash ? ` #${shortHash}` : '');
     const properties: Record<string, string> = {
       '_design_id': readableDesignId || rawId,
-      'Artwork': 'Custom AI Design',
     };
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
-      properties["Design"] = savedJobIdRef.current.slice(0, 8);
     }
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
@@ -6853,9 +6851,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
     }
-    if (selectedSize) properties['Size'] = selectedSize;
+    if (selectedSize) properties['_size'] = selectedSize;
     if (showFrameColorSelector && selectedFrameColor) {
-      properties['Color'] = selectedFrameColor;
+      properties['_color'] = selectedFrameColor;
     }
 
     const flatPlacerOn = !!(
@@ -8612,19 +8610,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const _readableDesignId = [_productLabel, _styleLabel].filter(Boolean).join(' · ') + (_shortHash ? ` #${_shortHash}` : '');
     const properties: Record<string, string> = {
       '_design_id': _readableDesignId || _rawId,
-      'Artwork': 'Custom AI Design',
     };
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
-      properties["Design"] = savedJobIdRef.current.slice(0, 8);
     }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
     }
-    if (selectedSize) properties['Size'] = selectedSize;
+    if (selectedSize) properties['_size'] = selectedSize;
     if (showFrameColorSelector && selectedFrameColor) {
-      properties['Color'] = selectedFrameColor;
+      properties['_color'] = selectedFrameColor;
     }
 
     // Resolve the unique design variant before adding to cart.

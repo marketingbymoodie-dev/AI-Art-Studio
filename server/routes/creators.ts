@@ -67,6 +67,7 @@ import {
   addLinesToCreatorCart,
   createCreatorCheckoutCart,
   getCreatorCart,
+  hideBuyerFacingCreatorCartProperties,
   isCreatorCartLineId,
   isCreatorStorefrontConfigured,
   removeCreatorCartLines,
@@ -1316,7 +1317,8 @@ export function registerCreatorMarketplaceRoutes(
       if (!cart) {
         return res.status(404).json({ error: "Cart not found" });
       }
-      const enriched = await enrichCreatorCartPrintFiles(cart);
+      const cleaned = await hideBuyerFacingCreatorCartProperties(cart);
+      const enriched = await enrichCreatorCartPrintFiles(cleaned);
       res.json({
         success: true,
         cartId: enriched.cartId,
@@ -1373,6 +1375,7 @@ export function registerCreatorMarketplaceRoutes(
             cartId,
           })) || cart;
       }
+      cart = await hideBuyerFacingCreatorCartProperties(cart);
       const enriched = await enrichCreatorCartPrintFiles(cart);
       res.json({
         success: true,

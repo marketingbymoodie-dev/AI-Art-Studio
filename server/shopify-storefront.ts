@@ -181,6 +181,32 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
   };
 }
 
+/** Shopify shows any line property that does not start with `_`. Keep print/return data hidden. */
+export function sanitizeBuyerHiddenLineAttributes(
+  attrs: CartLineAttribute[] | null | undefined,
+): CartLineAttribute[] {
+  const map = new Map<string, string>();
+  for (const a of attrs || []) {
+    if (!a?.key || a.value == null) continue;
+    let key = String(a.key);
+    if (key === "Size") key = "_size";
+    if (key === "Color") key = "_color";
+    if (
+      key === "Artwork" ||
+      key === "Design" ||
+      key === "creator_return_url" ||
+      key === "creator_shop_name"
+    ) {
+      continue;
+    }
+    if (!map.has(key)) map.set(key, String(a.value).slice(0, 255));
+  }
+  return [...map.entries()].map(([key, value]) => ({
+    key: key.slice(0, 100),
+    value,
+  }));
+}
+
 function lineInput(params: {
   variantId: string;
   quantity?: number;
@@ -188,9 +214,7 @@ function lineInput(params: {
 }) {
   const merchandiseId = toVariantGid(params.variantId);
   const quantity = Math.max(1, Math.min(99, params.quantity ?? 1));
-  const attributes = (params.attributes || [])
-    .filter((a) => a.key && a.value != null)
-    .map((a) => ({ key: String(a.key).slice(0, 100), value: String(a.value).slice(0, 255) }));
+  const attributes = sanitizeBuyerHiddenLineAttributes(params.attributes);
   return { merchandiseId, quantity, attributes };
 }
 
@@ -374,6 +398,64 @@ export async function updateCreatorCartLineMerchandise(params: {
       cartId: params.cartId,
       lines: [{ id: params.lineId, merchandiseId: toVariantGid(params.variantId) }],
     },
+  );
+  const errs = data.cartLinesUpdate?.userErrors || [];
+  if (errs.length) {
+    throw new Error(errs.map((e) => e.message).join("; "));
+  }
+  const mapped = mapCreatorCart(data.cartLinesUpdate?.cart);
+  if (!mapped) {
+    throw new Error("Storefront cartLinesUpdate did not return a cart");
+  }
+  return mapped;
+}
+
+function lineAttributesNeedBuyerHide(attrs: CartLineAttribute[]): boolean {
+  const next = sanitizeBuyerHiddenLineAttributes(attrs);
+  if (next.length !== (attrs || []).length) return true;
+  const nextKeys = new Set(next.map((a) => a.key));
+  return (attrs || []).some((a) => !nextKeys.has(a.key));
+}
+
+export async function hideBuyerFacingCreatorCartProperties(
+  cart: CreatorCartResult,
+): Promise<CreatorCartResult> {
+  const dirty = cart.lines.filter((l) => lineAttributesNeedBuyerHide(l.attributes));
+  if (dirty.length === 0) return cart;
+  return updateCreatorCartLineAttributes({
+    cartId: cart.cartId,
+    lines: dirty.map((l) => ({ lineId: l.id, attributes: l.attributes })),
+  });
+}
+
+export async function updateCreatorCartLineAttributes(params: {
+  cartId: string;
+  lines: Array<{ lineId: string; attributes: CartLineAttribute[] }>;
+}): Promise<CreatorCartResult> {
+  const lines = (params.lines || [])
+    .filter((l) => isCreatorCartLineId(l.lineId))
+    .map((l) => ({
+      id: l.lineId,
+      attributes: sanitizeBuyerHiddenLineAttributes(l.attributes),
+    }));
+  if (lines.length === 0) {
+    const cart = await getCreatorCart(params.cartId);
+    if (!cart) throw new Error("Cart not found");
+    return cart;
+  }
+  const data = await storefrontGraphql<{
+    cartLinesUpdate: {
+      cart: StorefrontCartNode | null;
+      userErrors: Array<{ field?: string[]; message: string }>;
+    };
+  }>(
+    `mutation CreatorCartLinesUpdate($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
+      cartLinesUpdate(cartId: $cartId, lines: $lines) {
+        cart { ${CART_FIELDS} }
+        userErrors { field message }
+      }
+    }`,
+    { cartId: params.cartId, lines },
   );
   const errs = data.cartLinesUpdate?.userErrors || [];
   if (errs.length) {

@@ -466,8 +466,8 @@ export async function resolveDesignForOrderLine(
       designProductColorId: designProductOverride?.colorId,
       designStateSize: designState?.selectedSize,
       designStateColor: designState?.selectedFrameColor,
-      lineSize: line.properties["Size"],
-      lineColor: line.properties["Color"],
+      lineSize: line.properties["_size"] || line.properties["Size"],
+      lineColor: line.properties["_color"] || line.properties["Color"],
       jobSize: job.size,
       jobColor: job.frameColor,
     });
@@ -510,8 +510,8 @@ export async function resolveDesignForOrderLine(
         designProductColorId: designProductOverride.colorId,
         designStateSize: designState?.selectedSize,
         designStateColor: designState?.selectedFrameColor,
-        lineSize: line.properties["Size"],
-        lineColor: line.properties["Color"],
+        lineSize: line.properties["_size"] || line.properties["Size"],
+        lineColor: line.properties["_color"] || line.properties["Color"],
         jobSize: job.size,
         jobColor: job.frameColor,
       });
@@ -562,8 +562,8 @@ export async function resolveDesignForOrderLine(
         designProductColorId: designProductOverride?.colorId,
         designStateSize: designState?.selectedSize,
         designStateColor: designState?.selectedFrameColor,
-        lineSize: line.properties["Size"],
-        lineColor: line.properties["Color"],
+        lineSize: line.properties["_size"] || line.properties["Size"],
+        lineColor: line.properties["_color"] || line.properties["Color"],
         jobSize: job.size,
         jobColor: job.frameColor,
       });
@@ -613,8 +613,8 @@ export async function resolveDesignForOrderLine(
     designProductColorId: designProductOverride?.colorId,
     designStateSize: designState?.selectedSize,
     designStateColor: designState?.selectedFrameColor,
-    lineSize: line.properties["Size"],
-    lineColor: line.properties["Color"],
+    lineSize: line.properties["_size"] || line.properties["Size"],
+    lineColor: line.properties["_color"] || line.properties["Color"],
     jobSize: job.size,
     jobColor: job.frameColor,
   });
