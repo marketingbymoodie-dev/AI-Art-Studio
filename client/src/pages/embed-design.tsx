@@ -1773,6 +1773,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [reusePages, setReusePages] = useState<ReusePageOption[]>([]);
   const [reusePagesLoading, setReusePagesLoading] = useState(false);
   const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
+  const [artworkChoiceDialog, setArtworkChoiceDialog] = useState<RecentCreatorDesign | null>(null);
   const [recentCreatorDesigns, setRecentCreatorDesigns] = useState<RecentCreatorDesign[]>([]);
   const [showCreatorArtworkModal, setShowCreatorArtworkModal] = useState(false);
   const [pendingDeleteCreatorDesign, setPendingDeleteCreatorDesign] = useState<RecentCreatorDesign | null>(null);
@@ -9638,6 +9639,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         prompt: originalPrompt,
       });
       if (originalPrompt) setPrompt(originalPrompt);
+      if (useAopCustomizer) {
+        setAopPendingMotifUrl(abs);
+        setAopPatternUrl(null);
+        setShowPatternStep(true);
+      } else if (usesFlatOnTheFlyPreview) {
+        setFlatPlacerEditOpen(true);
+      }
     },
     [
       productTypeConfig?.id,
@@ -9646,6 +9654,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       activeProductContext.pageHandle,
       productHandle,
       toast,
+      useAopCustomizer,
+      usesFlatOnTheFlyPreview,
     ],
   );
 
@@ -9684,7 +9694,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     [creatorUsernameRaw, creatorUsernameParam, storefrontCustomerId, toast],
   );
 
-  const handleRecentCreatorDesignPick = useCallback(
+  const handleRecentCreatorDesignPick = useCallback((design: RecentCreatorDesign) => {
+    setArtworkChoiceDialog(design);
+  }, []);
+
+  const applyChosenArtworkToProduct = useCallback(
     async (design: RecentCreatorDesign) => {
       const artworkUrl = toAbsoluteImageUrl(design.artworkUrl);
       const artAr = await loadImageAspectRatio(artworkUrl);
@@ -11843,7 +11857,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             <AlertDialogDescription>
               {reuseDialog
                 ? reuseDialog.applyHere
-                  ? `${reuseDialog.title} has a different aspect ratio than this artwork. Keep the current image (you can scale and place it), or attach it as a reference so you can pick a style and generate a new one (1 generation token).`
+                  ? `${reuseDialog.title} has a different aspect ratio than this artwork. Apply it anyway and scale it in the editor, or regenerate from this image for the new shape (1 generation token).`
                   : `${reuseDialog.title} has a different aspect ratio than your current artwork. Keep the current image, or attach it as a reference so you can pick a style and generate (1 generation token).`
                 : ""}
             </AlertDialogDescription>
@@ -11876,7 +11890,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 });
               }}
             >
-              Keep current
+              {reuseDialog?.applyHere ? "Apply to product" : "Keep current"}
             </Button>
             <Button
               type="button"
@@ -11917,9 +11931,78 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Working…
                 </>
+              ) : reuseDialog?.applyHere ? (
+                "Regenerate from"
               ) : (
                 "Use as reference"
               )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!artworkChoiceDialog}
+        onOpenChange={(open) => {
+          if (!open) setArtworkChoiceDialog(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-use-artwork-choice">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Use this artwork?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Apply it to this product as-is and adjust placement in the editor, or attach it as a
+              reference and generate a new version for this shape (1 generation token).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel disabled={reuseBusy} data-testid="button-artwork-choice-cancel">
+              Cancel
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={reuseBusy}
+              data-testid="button-artwork-choice-regenerate"
+              onClick={() => {
+                const d = artworkChoiceDialog;
+                if (!d || reuseBusy) return;
+                setArtworkChoiceDialog(null);
+                void applyArtworkToCurrentProduct({
+                  regenerate: true,
+                  designId: d.jobId,
+                  artworkUrl: d.artworkUrl,
+                  prompt: d.prompt,
+                }).catch((err: any) => {
+                  toast({
+                    title: "Could not reuse artwork",
+                    description: err?.message || "Please try again.",
+                    variant: "destructive",
+                  });
+                });
+              }}
+            >
+              {reuseBusy ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Working…
+                </>
+              ) : (
+                "Regenerate from"
+              )}
+            </Button>
+            <Button
+              type="button"
+              disabled={reuseBusy}
+              data-testid="button-artwork-choice-apply"
+              onClick={() => {
+                const d = artworkChoiceDialog;
+                if (!d || reuseBusy) return;
+                setArtworkChoiceDialog(null);
+                void applyChosenArtworkToProduct(d);
+              }}
+            >
+              Apply to product
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
