@@ -7,6 +7,7 @@ import {
   CREATOR_ASSIGNABLE_STYLE_SCOPES,
   PLATFORM_CONFIG_KEYS,
   computeStyleVisibility,
+  dedupeCreatorCatalogStyles,
   isAssignableCreatorScope,
 } from "@shared/creatorMarketplace";
 import {
@@ -59,7 +60,7 @@ function toRow(style: StylePresetDB, asg: typeof creatorStyleAssignments.$inferS
     baseImageUrl: style.baseImageUrl ?? null,
     promptPlaceholder: style.promptPlaceholder ?? null,
     descriptionOptional: !!style.descriptionOptional,
-    sortOrder: style.sortOrder ?? 0,
+    sortOrder: (asg as any).sortOrder ?? style.sortOrder ?? 0,
     isActive: !!style.isActive,
     enabled: !!asg.enabled,
     available: !!asg.available,
@@ -271,7 +272,7 @@ export async function listAssignableCatalog(opts?: {
       .from(stylePresets)
       .where(inArray(stylePresets.merchantId, merchantIds))
       .orderBy(stylePresets.sortOrder, stylePresets.name);
-    if (rows.length > 0) return rows;
+    if (rows.length > 0) return presentAssignableCatalog(rows);
     console.warn("[creator-styles] catalog empty for merchant ids", merchantIds);
   }
 
@@ -281,7 +282,7 @@ export async function listAssignableCatalog(opts?: {
     .from(stylePresets)
     .where(inArray(stylePresets.creatorScope, [...CREATOR_ASSIGNABLE_STYLE_SCOPES]))
     .orderBy(stylePresets.sortOrder, stylePresets.name);
-  if (scoped.length > 0) return scoped;
+  if (scoped.length > 0) return presentAssignableCatalog(scoped);
 
   // Operator must be able to assign whatever exists on Art Styles even if
   // merchant-id resolution still misses (Shopify user id vs merchants.id).
@@ -291,14 +292,20 @@ export async function listAssignableCatalog(opts?: {
     .orderBy(stylePresets.sortOrder, stylePresets.name);
   if (all.length > 0) {
     console.warn("[creator-styles] catalog fallback to all style_presets", all.length);
-    return all;
+    return presentAssignableCatalog(all);
   }
 
   const seeded = await seedPlatformDefaultStylesIfEmpty(opts);
   if (seeded.length > 0) {
     console.warn("[creator-styles] seeded default platform styles", seeded.length);
   }
-  return seeded;
+  return presentAssignableCatalog(seeded);
+}
+
+function presentAssignableCatalog(rows: StylePresetDB[]): StylePresetDB[] {
+  return dedupeCreatorCatalogStyles(
+    rows.filter((s) => ((s as any).creatorScope || "merchant") !== "custom"),
+  );
 }
 
 async function seedPlatformDefaultStylesIfEmpty(opts?: {
@@ -377,6 +384,14 @@ export async function isStyleEntitledForGenerate(
   return entitled.some((s) => s.stylePresetId === id);
 }
 
+async function nextAssignmentSortOrder(creatorId: string): Promise<number> {
+  const rows = await db
+    .select({ sortOrder: creatorStyleAssignments.sortOrder })
+    .from(creatorStyleAssignments)
+    .where(eq(creatorStyleAssignments.creatorId, creatorId));
+  return rows.reduce((max, r) => Math.max(max, r.sortOrder ?? 0), -1) + 1;
+}
+
 export async function assignStylesToCreator(params: {
   creatorId: string;
   stylePresetIds: number[];
@@ -388,8 +403,12 @@ export async function assignStylesToCreator(params: {
     fallbackMerchantIds: params.fallbackMerchantIds,
   });
   const allowed = new Set(catalog.map((s) => s.id));
+  const already = new Set(
+    (await listCreatorStyleAssignments(params.creatorId)).map((s) => s.stylePresetId),
+  );
+  let nextOrder = await nextAssignmentSortOrder(params.creatorId);
   for (const id of params.stylePresetIds) {
-    if (!allowed.has(id)) {
+    if (!allowed.has(id) && !already.has(id)) {
       throw new Error(`Style ${id} is not assignable on the creator platform`);
     }
     await db
@@ -399,11 +418,37 @@ export async function assignStylesToCreator(params: {
         stylePresetId: id,
         enabled: true,
         available: true,
+        sortOrder: nextOrder,
       })
       .onConflictDoUpdate({
         target: [creatorStyleAssignments.creatorId, creatorStyleAssignments.stylePresetId],
         set: { available: true, updatedAt: new Date() },
       });
+    nextOrder += 1;
+  }
+  return listCreatorStyleAssignments(params.creatorId);
+}
+
+export async function reorderCreatorStyles(params: {
+  creatorId: string;
+  stylePresetIds: number[];
+}): Promise<CreatorStyleRow[]> {
+  const current = await listCreatorStyleAssignments(params.creatorId);
+  const known = new Set(current.map((s) => s.stylePresetId));
+  const ordered = params.stylePresetIds.filter((id) => known.has(id));
+  for (const row of current) {
+    if (!ordered.includes(row.stylePresetId)) ordered.push(row.stylePresetId);
+  }
+  for (let i = 0; i < ordered.length; i++) {
+    await db
+      .update(creatorStyleAssignments)
+      .set({ sortOrder: i, updatedAt: new Date() })
+      .where(
+        and(
+          eq(creatorStyleAssignments.creatorId, params.creatorId),
+          eq(creatorStyleAssignments.stylePresetId, ordered[i]),
+        ),
+      );
   }
   return listCreatorStyleAssignments(params.creatorId);
 }
@@ -482,15 +527,42 @@ export async function duplicateStyleAndAssignExclusive(params: {
     })
     .returning();
 
+  if ((source as any).options != null || (source as any).baseImageUrls != null) {
+    await storage.updateStylePreset(clone.id, {
+      options: (source as any).options ?? null,
+      baseImageUrls: (source as any).baseImageUrls ?? null,
+    } as any);
+  }
+
   await db.insert(creatorStyleAssignments).values({
     creatorId: params.creatorId,
     stylePresetId: clone.id,
     enabled: true,
     available: true,
+    sortOrder: await nextAssignmentSortOrder(params.creatorId),
   });
 
   const list = await listCreatorStyleAssignments(params.creatorId);
   const row = list.find((s) => s.stylePresetId === clone.id);
   if (!row) throw new Error("Clone assigned but not readable");
   return row;
+}
+
+export async function getPlatformStyleById(id: number): Promise<StylePresetDB | null> {
+  const [row] = await db.select().from(stylePresets).where(eq(stylePresets.id, id)).limit(1);
+  if (!row) return null;
+  const merchantIds = await resolvePlatformStyleMerchantIds();
+  if (merchantIds.length > 0 && !merchantIds.includes(row.merchantId)) return null;
+  return row;
+}
+
+export async function updatePlatformStyle(
+  id: number,
+  updates: Partial<StylePresetDB>,
+): Promise<StylePresetDB> {
+  const existing = await getPlatformStyleById(id);
+  if (!existing) throw new Error("Style not found on the creator platform");
+  const updated = await storage.updateStylePreset(id, updates);
+  if (!updated) throw new Error("Style not found on the creator platform");
+  return updated;
 }

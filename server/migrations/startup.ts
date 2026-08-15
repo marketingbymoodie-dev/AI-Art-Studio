@@ -110,6 +110,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creator_applications",   column: "payout_method",              type: "TEXT" },
   { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },
   { table: "creator_applications",   column: "terms_accepted_at",          type: "TIMESTAMP" },
+  { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -1294,6 +1295,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "style_preset_id" integer NOT NULL,
         "enabled" boolean NOT NULL DEFAULT true,
         "available" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0,
         "created_at" timestamp DEFAULT NOW() NOT NULL,
         "updated_at" timestamp DEFAULT NOW() NOT NULL
       )

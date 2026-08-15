@@ -103,6 +103,33 @@ export function isAssignableCreatorScope(scope: string | null | undefined): bool
   return (CREATOR_ASSIGNABLE_STYLE_SCOPES as readonly string[]).includes(String(scope || ""));
 }
 
+/** Strip " (Graphics)" / " (custom)" so apparel + graphics twins collapse in the assign catalog. */
+export function canonicalCreatorStyleName(name: string | null | undefined): string {
+  return String(name || "")
+    .replace(/\s*\((?:graphics|custom)\)\s*$/i, "")
+    .trim()
+    .toLowerCase();
+}
+
+export function dedupeCreatorCatalogStyles<
+  T extends { id?: number | string; name: string; category?: string | null; creatorScope?: string | null },
+>(styles: T[]): T[] {
+  const rank = (s: T) => {
+    const isGraphicsTwin = /\(graphics\)\s*$/i.test(s.name) || s.category === "graphics";
+    if ((s.creatorScope || "") === "custom") return 0;
+    if (!isGraphicsTwin) return 1;
+    return 2;
+  };
+  const best = new Map<string, T>();
+  for (const s of styles) {
+    const key = canonicalCreatorStyleName(s.name);
+    if (!key) continue;
+    const prev = best.get(key);
+    if (!prev || rank(s) < rank(prev)) best.set(key, s);
+  }
+  return styles.filter((s) => best.get(canonicalCreatorStyleName(s.name)) === s);
+}
+
 /** Assignment-row visibility. No row means the style is not in any creator list. */
 export function computeStyleVisibility(input: {
   enabled: boolean;

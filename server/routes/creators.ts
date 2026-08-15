@@ -1497,6 +1497,82 @@ export function registerCreatorMarketplaceRoutes(
       }
     },
   );
+
+  app.post(
+    "/api/platform/creators/:id/styles/reorder",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const ids = parseStylePresetIds(req.body?.stylePresetIds);
+        if (ids.length === 0) {
+          return res.status(400).json({ error: "stylePresetIds is required." });
+        }
+        const { reorderCreatorStyles } = await import("../creator-styles");
+        const styles = await reorderCreatorStyles({
+          creatorId: req.params.id,
+          stylePresetIds: ids,
+        });
+        res.json({ styles });
+      } catch (e: any) {
+        console.error("[creators] reorder styles failed:", e);
+        res.status(400).json({ error: e?.message || "Failed to reorder styles" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/platform/styles/:id",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid style id" });
+      const { getPlatformStyleById } = await import("../creator-styles");
+      const style = await getPlatformStyleById(id);
+      if (!style) return res.status(404).json({ error: "Style not found" });
+      res.json(style);
+    },
+  );
+
+  app.patch(
+    "/api/platform/styles/:id",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid style id" });
+      try {
+        const { updatePlatformStyle } = await import("../creator-styles");
+        const {
+          name,
+          promptPrefix,
+          promptPrefixDark,
+          category,
+          baseImageUrl,
+          baseImageUrls,
+          promptPlaceholder,
+          descriptionOptional,
+          options,
+        } = req.body || {};
+        const style = await updatePlatformStyle(id, {
+          ...(name !== undefined ? { name } : {}),
+          ...(promptPrefix !== undefined ? { promptPrefix } : {}),
+          ...(promptPrefixDark !== undefined ? { promptPrefixDark: promptPrefixDark || null } : {}),
+          ...(category !== undefined ? { category } : {}),
+          ...(baseImageUrl !== undefined ? { baseImageUrl: baseImageUrl || null } : {}),
+          ...(promptPlaceholder !== undefined ? { promptPlaceholder: promptPlaceholder || null } : {}),
+          ...(descriptionOptional !== undefined ? { descriptionOptional: !!descriptionOptional } : {}),
+          ...(options !== undefined ? { options: options || null } : {}),
+          ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+        } as any);
+        res.json(style);
+      } catch (e: any) {
+        console.error("[creators] update platform style failed:", e);
+        res.status(400).json({ error: e?.message || "Failed to update style" });
+      }
+    },
+  );
 }
 
 function primaryMockupUrl(raw: unknown): string | null {

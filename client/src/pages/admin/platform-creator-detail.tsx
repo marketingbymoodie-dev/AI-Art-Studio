@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -36,7 +36,7 @@ import {
   CREATOR_STATUSES,
 } from "@shared/creatorMarketplace";
 import { CreatorProfileImageField } from "@/components/creators/CreatorProfileImageField";
-import { Loader2 } from "lucide-react";
+import { GripVertical, Loader2 } from "lucide-react";
 
 type AssignablePage = {
   id: string;
@@ -49,6 +49,7 @@ type AssignablePage = {
 type Props = {
   creatorId: string | null;
   platformShopDomain?: string | null;
+  initialTab?: string;
   onClose: () => void;
 };
 
@@ -59,6 +60,7 @@ function cents(n: number | null | undefined) {
 export default function PlatformCreatorDetailDialog({
   creatorId,
   platformShopDomain,
+  initialTab = "overview",
   onClose,
 }: Props) {
   const { toast } = useToast();
@@ -83,6 +85,11 @@ export default function PlatformCreatorDetailDialog({
   const [payoutMethod, setPayoutMethod] = useState("manual");
   const [payoutNote, setPayoutNote] = useState("");
   const [catalogPickIds, setCatalogPickIds] = useState<number[]>([]);
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const [assignedOrder, setAssignedOrder] = useState<number[]>([]);
+  const [draggingStyleId, setDraggingStyleId] = useState<number | null>(null);
+  const assignedOrderRef = useRef<number[]>([]);
+  assignedOrderRef.current = assignedOrder;
 
   const { data, isLoading } = useQuery<{
     creator: any;
@@ -182,7 +189,7 @@ export default function PlatformCreatorDetailDialog({
       isActive: boolean;
     }>;
   }>({
-    queryKey: ["/api/platform/style-catalog", "v3"],
+    queryKey: ["/api/platform/style-catalog", "v4"],
     queryFn: async () => {
       const res = await apiRequest("GET", "/api/platform/style-catalog");
       return res.json();
@@ -200,11 +207,20 @@ export default function PlatformCreatorDetailDialog({
       available: boolean;
       currentlyAvailable: boolean;
       isActive: boolean;
+      sortOrder?: number;
     }>;
   }>({
     queryKey: [`/api/platform/creators/${creatorId}/styles`],
     enabled: !!creatorId,
   });
+
+  useEffect(() => {
+    setActiveTab(initialTab || "overview");
+  }, [initialTab, creatorId]);
+
+  useEffect(() => {
+    setAssignedOrder((assignedStyles?.styles || []).map((s) => s.stylePresetId));
+  }, [assignedStyles]);
 
   useEffect(() => {
     const c = data?.creator;
@@ -234,6 +250,49 @@ export default function PlatformCreatorDetailDialog({
       prev.length > 0 ? prev : assignable.assigned.map((a) => a.customizerPageId),
     );
   }, [assignable?.assigned]);
+
+  const overviewSaved = useMemo(() => {
+    const c = data?.creator;
+    if (!c) return false;
+    const b = c.branding || {};
+    const saved = JSON.stringify({
+      freeGens: String(c.freeGensPerCustomer ?? 2),
+      monthlyAllowance: String(c.monthlyGenerationAllowance ?? 250),
+      creatorStatus: c.status || "onboarding",
+      merchantShop: c.shopDomain || "",
+      shopName: typeof b.headline === "string" ? b.headline : "",
+      shopDescription: typeof b.description === "string" ? b.description : "",
+      bio: typeof c.bio === "string" ? c.bio : "",
+      profileImageUrl: typeof c.profileImageUrl === "string" ? c.profileImageUrl : "",
+      backgroundImageUrl: typeof b.backgroundImageUrl === "string" ? b.backgroundImageUrl : "",
+      pageIds: (data.assigned || []).map((a) => a.customizerPageId).slice().sort(),
+    });
+    const current = JSON.stringify({
+      freeGens,
+      monthlyAllowance,
+      creatorStatus,
+      merchantShop,
+      shopName,
+      shopDescription,
+      bio,
+      profileImageUrl,
+      backgroundImageUrl,
+      pageIds: selectedPageIds.slice().sort(),
+    });
+    return saved === current;
+  }, [
+    data,
+    freeGens,
+    monthlyAllowance,
+    creatorStatus,
+    merchantShop,
+    shopName,
+    shopDescription,
+    bio,
+    profileImageUrl,
+    backgroundImageUrl,
+    selectedPageIds,
+  ]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -367,6 +426,20 @@ export default function PlatformCreatorDetailDialog({
       toast({ title: "Duplicate failed", description: err.message, variant: "destructive" }),
   });
 
+  const reorderStylesMutation = useMutation({
+    mutationFn: async (stylePresetIds: number[]) => {
+      const res = await apiRequest("POST", `/api/platform/creators/${creatorId}/styles/reorder`, {
+        stylePresetIds,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      refetchStyles();
+    },
+    onError: (err: Error) =>
+      toast({ title: "Reorder failed", description: err.message, variant: "destructive" }),
+  });
+
   const c = data?.creator;
   const summary = data?.payoutSummary || payoutsData?.summary;
 
@@ -389,7 +462,7 @@ export default function PlatformCreatorDetailDialog({
         {isLoading || !c ? (
           <Loader2 className="h-5 w-5 animate-spin" />
         ) : (
-          <Tabs defaultValue="overview" className="space-y-3">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
             <TabsList className="flex h-auto flex-wrap gap-1">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="partner">Partner / beta</TabsTrigger>
@@ -526,11 +599,14 @@ export default function PlatformCreatorDetailDialog({
                   </div>
                 )}
               </div>
-              <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+              <Button
+                onClick={() => saveMutation.mutate()}
+                disabled={saveMutation.isPending || overviewSaved}
+              >
                 {saveMutation.isPending ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : null}
-                Save overview
+                {overviewSaved ? "Saved" : "Save overview"}
               </Button>
             </TabsContent>
 
@@ -747,26 +823,63 @@ export default function PlatformCreatorDetailDialog({
               </p>
               <div className="space-y-2">
                 <Label>Assigned</Label>
+                <p className="text-muted-foreground text-xs">
+                  Drag to set storefront order — top row is first in the style dropdown.
+                </p>
                 {(assignedStyles?.styles || []).length === 0 ? (
                   <p className="text-muted-foreground text-xs">None yet — assign from the catalog below.</p>
                 ) : (
                   <div className="max-h-56 space-y-2 overflow-y-auto rounded border p-2">
-                    {(assignedStyles?.styles || []).map((s) => (
+                    {assignedOrder
+                      .map((id) => (assignedStyles?.styles || []).find((s) => s.stylePresetId === id))
+                      .filter((s): s is NonNullable<typeof s> => !!s)
+                      .map((s) => (
                       <div
                         key={s.stylePresetId}
+                        draggable
+                        onDragStart={() => setDraggingStyleId(s.stylePresetId)}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          if (draggingStyleId == null || draggingStyleId === s.stylePresetId) return;
+                          setAssignedOrder((prev) => {
+                            const from = prev.indexOf(draggingStyleId);
+                            const to = prev.indexOf(s.stylePresetId);
+                            if (from < 0 || to < 0 || from === to) return prev;
+                            const next = [...prev];
+                            const [moved] = next.splice(from, 1);
+                            next.splice(to, 0, moved);
+                            return next;
+                          });
+                        }}
+                        onDragEnd={() => {
+                          setDraggingStyleId(null);
+                          reorderStylesMutation.mutate(assignedOrderRef.current);
+                        }}
                         className={`flex items-start justify-between gap-2 rounded px-1 py-1 ${
                           s.currentlyAvailable ? "" : "opacity-60"
-                        }`}
+                        } ${draggingStyleId === s.stylePresetId ? "bg-muted" : ""}`}
                       >
-                        <div>
-                          <div className="font-medium">{s.name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {s.category} · {s.creatorScope}
-                            {s.currentlyAvailable ? "" : " · Currently Unavailable"}
-                            {s.enabled ? "" : " · creator off"}
+                        <div className="flex min-w-0 items-start gap-1">
+                          <GripVertical className="mt-0.5 h-4 w-4 shrink-0 cursor-grab text-muted-foreground" />
+                          <div>
+                            <div className="font-medium">{s.name}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {s.category} · {s.creatorScope}
+                              {s.currentlyAvailable ? "" : " · Currently Unavailable"}
+                              {s.enabled ? "" : " · creator off"}
+                            </div>
                           </div>
                         </div>
-                        <div className="flex shrink-0 gap-1">
+                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                          {s.creatorScope === "custom" ? (
+                            <Button size="sm" variant="outline" asChild>
+                              <a
+                                href={`/admin/styles?edit=${s.stylePresetId}&returnCreator=${encodeURIComponent(creatorId || "")}`}
+                              >
+                                Edit
+                              </a>
+                            </Button>
+                          ) : null}
                           {s.currentlyAvailable ? (
                             <Button
                               size="sm"

@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { apiRequest } from "@/lib/queryClient";
@@ -80,6 +81,14 @@ export default function PlatformCreatorsPage() {
   });
 
   const [creatorEditId, setCreatorEditId] = useState<string | null>(null);
+  const [search, setSearch] = useSearch();
+  const urlParams = new URLSearchParams(search);
+  const urlCreator = urlParams.get("creator");
+  const urlTab = urlParams.get("tab") || "overview";
+
+  useEffect(() => {
+    if (urlCreator) setCreatorEditId(urlCreator);
+  }, [urlCreator]);
 
   const { data: creatorsData } = useQuery<{
     creators: Array<{
@@ -487,7 +496,14 @@ export default function PlatformCreatorsPage() {
         <PlatformCreatorDetailDialog
           creatorId={creatorEditId}
           platformShopDomain={config?.platformShopDomain}
-          onClose={() => setCreatorEditId(null)}
+          initialTab={urlCreator && creatorEditId === urlCreator ? urlTab : "overview"}
+          onClose={() => {
+            setCreatorEditId(null);
+            const next = new URLSearchParams(search);
+            next.delete("creator");
+            next.delete("tab");
+            setSearch(next.toString());
+          }}
         />
 
         <Dialog open={!!selectedId} onOpenChange={(o) => !o && setSelectedId(null)}>

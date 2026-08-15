@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeStyleVisibility,
+  dedupeCreatorCatalogStyles,
   isAssignableCreatorScope,
 } from "@shared/creatorMarketplace";
 
@@ -61,5 +62,20 @@ describe("creator style visibility", () => {
     expect(isAssignableCreatorScope("custom")).toBe(true);
     expect(isAssignableCreatorScope("merchant")).toBe(false);
     expect(isAssignableCreatorScope(null)).toBe(false);
+  });
+
+  it("hides graphics twins when the apparel style already exists", () => {
+    const deduped = dedupeCreatorCatalogStyles([
+      { id: 1, name: "Illustrated Motif", category: "apparel", creatorScope: "global" },
+      { id: 2, name: "Illustrated Motif (Graphics)", category: "graphics", creatorScope: "global" },
+      { id: 3, name: "Centered Graphic", category: "apparel", creatorScope: "global" },
+      { id: 4, name: "Centered Graphic (Graphics)", category: "graphics", creatorScope: "global" },
+      { id: 5, name: "Photorealistic", category: "decor", creatorScope: "global" },
+    ]);
+    expect(deduped.map((s) => s.name)).toEqual([
+      "Illustrated Motif",
+      "Centered Graphic",
+      "Photorealistic",
+    ]);
   });
 });

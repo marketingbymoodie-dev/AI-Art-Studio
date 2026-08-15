@@ -1760,6 +1760,8 @@ export const creatorStyleAssignments = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     /** Operator offer. Retire/unassign sets false; do not delete the row. */
     available: boolean("available").notNull().default(true),
+    /** Creator storefront style dropdown order (0 = first). */
+    sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
