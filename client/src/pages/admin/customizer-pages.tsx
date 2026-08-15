@@ -397,8 +397,9 @@ export default function AdminCustomizerPages() {
   const [costsShippingCountry, setCostsShippingCountry] = useState("US");
   const [costsShippingTier, setCostsShippingTier] = useState("standard");
 
-  // Markup percentage for recommended retail pricing (default 60%)
-  const [markupPercent, setMarkupPercent] = useState(60);
+  // Markup percentage for recommended retail pricing (default 70%)
+  const [markupPercent, setMarkupPercent] = useState(70);
+  const [appliedSuggestedKey, setAppliedSuggestedKey] = useState("");
 
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
@@ -802,6 +803,8 @@ export default function AdminCustomizerPages() {
     setPriceErrors({});
     setCreatedPageResult(null);
     setPlaceholderStepAlert(null);
+    setMarkupPercent(70);
+    setAppliedSuggestedKey("");
   }
 
   function handleTitleChange(val: string) {
@@ -1140,39 +1143,36 @@ export default function AdminCustomizerPages() {
     });
   }
 
-  // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
+  const suggestedPriceKey = useMemo(() => {
+    const front = Object.entries(recommendedPrices)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, price]) => `${id}:${price}`)
+      .join("|");
+    const both = supportsBothSidePricing
+      ? Object.entries(recommendedPricesBoth)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([id, price]) => `${id}:${price}`)
+          .join("|")
+      : "";
+    return `${markupPercent}:${front}:${both}`;
+  }, [markupPercent, recommendedPrices, recommendedPricesBoth, supportsBothSidePricing]);
+
+  const suggestedPricesApplying =
+    formStep === 4 &&
+    !costsError &&
+    (costsLoading ||
+      (Object.keys(recommendedPrices).length > 0 && appliedSuggestedKey !== suggestedPriceKey));
+
+  // Markup (and first cost load) always writes suggested retail into the inputs.
   useEffect(() => {
     if (formStep !== 4) return;
     if (Object.keys(recommendedPrices).length === 0) return;
-    setVariantPrices((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [id, price] of Object.entries(recommendedPrices)) {
-        // Only fill in if the field is currently empty or zero
-        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
-          next[id] = price;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [recommendedPrices, formStep]);
-
-  useEffect(() => {
-    if (formStep !== 4 || !supportsBothSidePricing) return;
-    if (Object.keys(recommendedPricesBoth).length === 0) return;
-    setVariantPricesBoth((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [id, price] of Object.entries(recommendedPricesBoth)) {
-        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
-          next[id] = price;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [recommendedPricesBoth, formStep, supportsBothSidePricing]);
+    setVariantPrices({ ...recommendedPrices });
+    if (supportsBothSidePricing) {
+      setVariantPricesBoth({ ...recommendedPricesBoth });
+    }
+    setAppliedSuggestedKey(suggestedPriceKey);
+  }, [formStep, recommendedPrices, recommendedPricesBoth, supportsBothSidePricing, suggestedPriceKey]);
 
   // Prefill edit-modal variant checkboxes when opening a page
   useEffect(() => {
@@ -1597,6 +1597,7 @@ export default function AdminCustomizerPages() {
       setVariantPrices({});
       setVariantPricesBoth({});
       setPriceErrors({});
+      setAppliedSuggestedKey("");
       setFormStep(4);
       void refreshBlanksBestEffort();
     },
@@ -1756,6 +1757,13 @@ export default function AdminCustomizerPages() {
           ? `Wait until ${selectedBlankProviderLabel} has stock again (daily OOS report emails when it changes), or go back to Supplier and pick a different print provider.`
           : "Wait until Printify has stock again, or go back to Supplier and pick a different print provider.",
         variant: "destructive",
+      });
+      return;
+    }
+    if (suggestedPricesApplying) {
+      toast({
+        title: "Applying suggested prices",
+        description: "Wait a moment for the markup to finish updating retail prices.",
       });
       return;
     }
@@ -2935,27 +2943,18 @@ export default function AdminCustomizerPages() {
                           <span className="text-sm font-medium">%</span>
                         </div>
                       </div>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="h-10"
-                        onClick={() => {
-                          const next: Record<string, string> = {};
-                          for (const [id, price] of Object.entries(recommendedPrices)) {
-                            next[id] = price;
-                          }
-                          setVariantPrices(next);
-                          if (supportsBothSidePricing) {
-                            const nextBoth: Record<string, string> = {};
-                            for (const [id, price] of Object.entries(recommendedPricesBoth)) {
-                              nextBoth[id] = price;
-                            }
-                            setVariantPricesBoth(nextBoth);
-                          }
-                        }}
-                      >
-                        Apply All Suggested
-                      </Button>
+                      <p className="text-sm text-muted-foreground flex items-center gap-2 shrink-0">
+                        {suggestedPricesApplying ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Applying suggested prices…
+                          </>
+                        ) : Object.keys(recommendedPrices).length > 0 ? (
+                          "Suggested prices applied"
+                        ) : (
+                          "Suggested prices load with Printify costs"
+                        )}
+                      </p>
                     </div>
 
                     {!selectedBlank?.printifyBlueprintId && (
@@ -3224,10 +3223,12 @@ export default function AdminCustomizerPages() {
                       <Button
                         className="flex-1"
                         onClick={advanceToStep4}
-                        disabled={selectedBlankFullyOos || !costsAvailable || costsError}
+                        disabled={selectedBlankFullyOos || !costsAvailable || costsError || suggestedPricesApplying}
                         title={
                           selectedBlankFullyOos
                             ? "Cannot create a customizer page while this Printify supplier has no stock"
+                            : suggestedPricesApplying
+                              ? "Wait for suggested prices to finish applying"
                             : !costsAvailable || costsError
                               ? "Suggested prices from Printify are required before creating this page"
                               : undefined
