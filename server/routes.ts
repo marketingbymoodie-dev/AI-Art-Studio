@@ -14070,15 +14070,32 @@ ${orientationExtra}
         return res.status(403).json({ error: "Not authorized to modify this product" });
       }
 
-      // Validate variant count
+      // Count Printify-real combos from variantMap (sizes × colours overcounts
+      // when a colour is not sold in every size — e.g. 9×13=117 but only 91 exist).
+      let variantMap: Record<string, unknown> = {};
+      try {
+        variantMap = typeof productType.variantMap === "string"
+          ? JSON.parse(productType.variantMap || "{}")
+          : productType.variantMap || {};
+      } catch {
+        variantMap = {};
+      }
       const sizeCount = Array.isArray(selectedSizeIds) ? selectedSizeIds.length : 0;
       const colorCount = Array.isArray(selectedColorIds) ? selectedColorIds.length : 0;
-      const totalVariants = sizeCount * (colorCount || 1);
-      
-      if (totalVariants > 100) {
-        return res.status(400).json({ 
+      const cartesian = sizeCount * (colorCount || 1);
+      const mapCount = countActiveVariantMapKeys(variantMap, selectedSizeIds, selectedColorIds);
+      const reported = Number((req.body as { variantCount?: unknown })?.variantCount);
+      const totalVariants =
+        mapCount > 0
+          ? mapCount
+          : Number.isFinite(reported) && reported > 0
+            ? reported
+            : cartesian;
+
+      if (totalVariants > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({
           error: "Too many variants",
-          details: `Selected options would create ${totalVariants} variants. Maximum is 100.`
+          details: `Selected options would create ${totalVariants} variants. Maximum is ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`,
         });
       }
 

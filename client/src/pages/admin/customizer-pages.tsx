@@ -1434,6 +1434,8 @@ export default function AdminCustomizerPages() {
   selectedBlankRef.current = selectedBlank;
   const wizardProviderIdRef = useRef(wizardProviderId);
   wizardProviderIdRef.current = wizardProviderId;
+  const wizardComboSetRef = useRef(wizardComboSet);
+  wizardComboSetRef.current = wizardComboSet;
   const lastEnsureResultRef = useRef<EnsureWizardResult | null>(null);
 
   /**
@@ -1474,6 +1476,7 @@ export default function AdminCustomizerPages() {
         const res = await apiRequest("PATCH", `/api/admin/product-types/${productTypeId}/variants`, {
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
+          variantCount: countExistingVariantCombos(sizeIds, colorIds, wizardComboSetRef.current),
         });
         await res.json();
         const result: EnsureWizardResult = {
@@ -1495,6 +1498,7 @@ export default function AdminCustomizerPages() {
           providerId,
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
+          variantCount: countExistingVariantCombos(sizeIds, colorIds, wizardComboSetRef.current),
         });
         const data = await res.json();
         const importedId = Number(data?.id);
@@ -1516,6 +1520,7 @@ export default function AdminCustomizerPages() {
               await apiRequest("PATCH", `/api/admin/product-types/${payload.existingProductTypeId}/variants`, {
                 selectedSizeIds: sizeIds,
                 selectedColorIds: colorIds,
+                variantCount: countExistingVariantCombos(sizeIds, colorIds, wizardComboSetRef.current),
               });
               // Rename away any legacy " — Provider" suffix on the product type.
               const cleanName = stripProviderSuffix(String(payload.existingProductName || name)) || name;
