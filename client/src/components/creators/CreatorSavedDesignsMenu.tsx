@@ -9,6 +9,7 @@ type SavedDesign = {
   baseTitle?: string | null;
   pageHandle?: string | null;
   productTypeId?: string | number | null;
+  prompt?: string | null;
   designState?: Record<string, unknown> | null;
 };
 
@@ -268,74 +269,92 @@ export function CreatorSavedDesignsMenu({
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-72 rounded-lg border bg-background p-3 shadow-lg">
-          <div className="mb-2 text-sm font-semibold">
-            Saved Designs ({designs.length}/{galleryLimit})
+        <div className="absolute right-0 z-50 mt-2 w-[min(32rem,calc(100vw-1.5rem))] rounded-lg border bg-background p-4 shadow-lg">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold">
+              Saved Designs ({designs.length}/{galleryLimit})
+            </h3>
+            <button
+              type="button"
+              className="p-1 text-muted-foreground hover:text-foreground"
+              onClick={() => setOpen(false)}
+              aria-label="Close saved designs"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
           {designs.length >= galleryLimit - 4 && designs.length < galleryLimit ? (
-            <p className="mb-2 text-xs text-amber-800">
-              Almost at your {galleryLimit}-design limit. Delete ones you no longer need.
-            </p>
+            <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
+            </div>
           ) : null}
           {designs.length >= galleryLimit ? (
-            <p className="mb-2 text-xs text-red-700">
+            <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
               Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
-            </p>
+            </div>
           ) : null}
           {!customerId ? (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Sign in on a product page to see the designs you have saved in this shop.
             </p>
           ) : loading ? (
-            <p className="text-xs text-muted-foreground">Loading…</p>
+            <p className="text-sm text-muted-foreground">Loading…</p>
           ) : designs.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No saved designs yet.</p>
+            <p className="text-sm text-muted-foreground">No saved designs yet.</p>
           ) : (
-            <ul className="max-h-80 space-y-2 overflow-auto">
+            <div className="grid max-h-[360px] grid-cols-2 gap-3 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-3">
               {designs.map((d) => {
                 const page = resolveShopPage(d, pages);
                 const href = hrefFor(d, page);
                 const img = thumbUrl(d);
-                const body = (
+                const title = labelFor(d, page, pages);
+                const card = (
                   <>
-                    {img ? (
-                      <img src={img} alt="" className="h-12 w-12 rounded-md object-cover bg-muted" />
-                    ) : (
-                      <div className="h-12 w-12 rounded-md bg-muted" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate text-sm">
-                      {labelFor(d, page, pages)}
-                    </span>
+                    <div className="relative aspect-square bg-muted">
+                      {img ? (
+                        <img src={img} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
+                          No preview
+                        </div>
+                      )}
+                    </div>
+                    <div className="px-2 py-1.5">
+                      <p className="truncate text-xs font-medium">{title}</p>
+                      {d.prompt ? (
+                        <p className="truncate text-[10px] text-muted-foreground">{d.prompt}</p>
+                      ) : null}
+                    </div>
                   </>
                 );
                 return (
-                  <li key={d.id} className="flex items-center gap-1">
+                  <div key={d.id} className="group relative">
                     {href ? (
                       <a
                         href={href}
-                        className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 hover:bg-muted"
+                        className="block overflow-hidden rounded-md border border-border hover:border-primary"
                         onClick={() => setOpen(false)}
                       >
-                        {body}
+                        {card}
                       </a>
                     ) : (
-                      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 opacity-50">
-                        {body}
+                      <div className="overflow-hidden rounded-md border border-border opacity-50">
+                        {card}
                       </div>
                     )}
                     <button
                       type="button"
-                      className="shrink-0 rounded-full p-1 text-muted-foreground hover:bg-red-600 hover:text-white"
+                      className="absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-100 transition-opacity hover:bg-red-600 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
                       title="Delete design"
                       disabled={deletingId === d.id}
                       onClick={() => void deleteDesign(d)}
                     >
-                      <X className="h-3.5 w-3.5" />
+                      <X className="h-3 w-3" />
                     </button>
-                  </li>
+                  </div>
                 );
               })}
-            </ul>
+            </div>
           )}
         </div>
       ) : null}
