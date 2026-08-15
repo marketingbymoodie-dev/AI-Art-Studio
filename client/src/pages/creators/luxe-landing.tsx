@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
+import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
 
 const FALLBACK_ART = [
   "radial-gradient(circle at 40% 35%, #ff8a4a, transparent 34%), radial-gradient(circle at 70% 60%, #5b8cff, transparent 36%), #2a2030",
@@ -85,10 +86,11 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
         </div>
       </div>
       <p className="luxe-caption mt-5">{content.copy.splashCaption}</p>
-      <div className="mt-8">
+      <div className="mt-8 flex flex-col items-center gap-3">
         <button type="button" className="luxe-btn-white" onClick={onMore}>
           {content.copy.splashCta}
         </button>
+        <LastCreatorReturnButton variant="luxe" />
       </div>
     </section>
   );
@@ -194,6 +196,9 @@ function Landing({
           <div className="luxe-cta-desktop">
             <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
             {cta}
+            <div className="mt-3">
+              <LastCreatorReturnButton variant="luxe" />
+            </div>
           </div>
         </div>
         <div className="luxe-landing-bottom">

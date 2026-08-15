@@ -6,6 +6,7 @@ import {
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
+import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
@@ -1505,6 +1506,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const creatorUsernameParam = creatorUsernameRaw.toLowerCase();
   const creatorIdParam = (searchParams.get("creatorId") || "").trim();
   const isCreatorStorefront = isStorefront && !isMerchantStudio && !!(creatorUsernameParam || creatorIdParam);
+  useEffect(() => {
+    if (!isCreatorStorefront || !creatorUsernameParam) return;
+    writeLastCreatorVisit({
+      username: creatorUsernameParam,
+      shopName: creatorUsernameParam,
+      returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
+    });
+  }, [isCreatorStorefront, creatorUsernameParam]);
   const creatorSessionIdRef = useRef<string>(
     typeof window !== "undefined" ? getOrCreateCreatorSessionId() : "",
   );
@@ -2840,7 +2849,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           throw new Error(data?.error || data?.message || "Could not start checkout");
         }
         const target = window.top || window;
-        target.location.href = String(data.checkoutUrl);
+        target.location.href = creatorCheckoutRememberUrl({
+          checkoutUrl: String(data.checkoutUrl),
+          username: creatorUsernameParam,
+          shopName: creatorUsernameParam,
+          returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
+        });
       } catch (e: any) {
         toast({
           title: "Pack checkout failed",

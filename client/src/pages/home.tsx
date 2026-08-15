@@ -9,6 +9,7 @@ import { Palette, Image, ShoppingCart, Settings } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import { isShopifyEmbedded } from "@/lib/shopify";
 import LuxeLandingPage from "@/pages/creators/luxe-landing";
+import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
 import type { Customer } from "@shared/schema";
 
 export default function Home() {
@@ -77,6 +78,9 @@ export default function Home() {
         <div className="mb-8">
           <h2 className="text-2xl font-bold mb-2">Welcome back, {user?.firstName || "Artist"}!</h2>
           <p className="text-muted-foreground">Create stunning personalized AI artwork printed on premium products.</p>
+          <div className="mt-4">
+            <LastCreatorReturnButton />
+          </div>
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">

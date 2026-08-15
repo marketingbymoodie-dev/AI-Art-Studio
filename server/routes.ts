@@ -20,6 +20,7 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
@@ -1309,7 +1310,8 @@ function buildCustomizerBootHtml(): string {
 </script>
 <script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>
 <script src="/apps/appai/theme-asset/appai-saved-designs-nav.js" defer></script>
-<script src="/apps/appai/theme-asset/appai-customizer-tray.js" defer></script>`.trim();
+<script src="/apps/appai/theme-asset/appai-customizer-tray.js" defer></script>
+<script src="/apps/appai/theme-asset/appai-last-creator.js" defer></script>`.trim();
 }
 
 const customizerBootBackfillCache = new Set<string>();
@@ -21616,6 +21618,7 @@ ${orientationExtra}
     "appai-art-embed.css",
     "appai-saved-designs-nav.js",
     "appai-customizer-tray.js",
+    "appai-last-creator.js",
     "appai-customizer-embed.js",
     "appai-cart-guard.js",
     "appai-cart-images.js",
@@ -21640,6 +21643,8 @@ ${orientationExtra}
       return res.send(buf);
     });
   });
+
+  app.get("/api/proxy/remember-creator", proxyAuth, handleRememberCreatorProxy);
 
   /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
   app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {

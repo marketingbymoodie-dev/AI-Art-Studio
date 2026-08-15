@@ -8,7 +8,8 @@ import {
   ensureCreatorAnalyticsSession,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
-import { clearCreatorCart, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
+import { clearCreatorCart, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
+import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
 import { API_BASE } from "@/lib/urlBase";
 import {
   CREATOR_HEADING_FONTS_STYLESHEET,
@@ -712,7 +713,14 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
               path: `${basePath}/cart`,
               metadata: { itemCount },
             });
-            window.location.assign(checkoutUrl);
+            window.location.assign(
+              creatorCheckoutRememberUrl({
+                checkoutUrl,
+                username: creator.username,
+                shopName: storeName(creator),
+                returnUrl: currentCreatorReturnUrl(creator.username),
+              }),
+            );
           }}
         >
           Checkout{itemCount > 0 ? ` (${itemCount})` : ""}
@@ -762,6 +770,14 @@ function CreatorStoreRoutes({
   basePath: string;
 }) {
   const [location] = useLocation();
+
+  useEffect(() => {
+    writeLastCreatorVisit({
+      username: creator.username,
+      shopName: storeName(creator),
+      returnUrl: currentCreatorReturnUrl(creator.username),
+    });
+  }, [creator.username, creator.publicName]);
 
   useEffect(() => {
     if (creator.paused) return;
