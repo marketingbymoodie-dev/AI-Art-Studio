@@ -29,6 +29,7 @@ import {
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import { condenseVariantPriceRows } from "@shared/condenseVariantPrices";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
   return normalizeSelectionId(a) === normalizeSelectionId(b);
@@ -1105,6 +1106,33 @@ export default function AdminCustomizerPages() {
     }
     return result;
   }, [supportsBothSidePricing, costsData, selectedVariants, markupPercent]);
+
+  const condensedPriceRows = useMemo(
+    () =>
+      condenseVariantPriceRows(
+        selectedVariants,
+        variantPrices,
+        variantPricesBoth,
+        supportsBothSidePricing,
+      ),
+    [selectedVariants, variantPrices, variantPricesBoth, supportsBothSidePricing],
+  );
+
+  function setGroupRetailPrice(variantIds: string[], value: string) {
+    setVariantPrices((prev) => {
+      const next = { ...prev };
+      for (const id of variantIds) next[id] = value;
+      return next;
+    });
+  }
+
+  function setGroupRetailPriceBoth(variantIds: string[], value: string) {
+    setVariantPricesBoth((prev) => {
+      const next = { ...prev };
+      for (const id of variantIds) next[id] = value;
+      return next;
+    });
+  }
 
   // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
   useEffect(() => {
@@ -2974,7 +3002,9 @@ export default function AdminCustomizerPages() {
                           “from $front” and charges the front+back price when Print on Back is on.
                         </p>
                       )}
-                      {selectedVariants.map((v) => {
+                      {condensedPriceRows.map((row) => {
+                        const v = selectedVariants.find((x) => x.id === row.variantIds[0]);
+                        if (!v) return null;
                         const frontLabelToCost: Record<string, number> = {};
                         if (costsData?.printifyVariantLabels && costsData.costs) {
                           for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
@@ -3000,15 +3030,28 @@ export default function AdminCustomizerPages() {
                                 bothLabelToCost,
                               )
                             : undefined;
-                        const retailN = parseFloat(variantPrices[v.id] || "");
+                        const retailN = parseFloat(row.price || "");
                         const frontProfit =
                           Number.isFinite(retailN) && frontCogs != null
                             ? retailN - frontCogs / 100
                             : null;
+                        const suggestedFront = (() => {
+                          const vals = new Set(
+                            row.variantIds.map((id) => recommendedPrices[id]).filter(Boolean),
+                          );
+                          return vals.size === 1 ? Array.from(vals)[0] : undefined;
+                        })();
+                        const suggestedBoth = (() => {
+                          const vals = new Set(
+                            row.variantIds.map((id) => recommendedPricesBoth[id]).filter(Boolean),
+                          );
+                          return vals.size === 1 ? Array.from(vals)[0] : undefined;
+                        })();
+                        const rowError = row.variantIds.map((id) => priceErrors[id]).find(Boolean);
 
                         return (
-                        <div key={v.id} className="space-y-1.5">
-                          <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
+                        <div key={row.key} className="space-y-1.5">
+                          <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{row.label}</Label>
                           <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
                             <div className="space-y-1">
                               <div className="flex justify-between items-end gap-2">
@@ -3019,17 +3062,17 @@ export default function AdminCustomizerPages() {
                                   <div className="flex items-center gap-1">
                                     <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
                                   </div>
-                                ) : recommendedPrices[v.id] ? (
-                                  <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
+                                ) : suggestedFront ? (
+                                  <span className="text-[10px] text-muted-foreground">Suggested: ${suggestedFront}</span>
                                 ) : null}
                               </div>
                               <div className="relative">
                                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                                 <Input
-                                  className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                  className={`pl-7 ${rowError ? "border-destructive" : ""}`}
                                   placeholder="0.00"
-                                  value={variantPrices[v.id] ?? ""}
-                                  onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
+                                  value={row.price}
+                                  onChange={(e) => setGroupRetailPrice(row.variantIds, e.target.value)}
                                 />
                               </div>
                               <p className="text-[10px] text-muted-foreground">
@@ -3048,23 +3091,23 @@ export default function AdminCustomizerPages() {
                               <div className="space-y-1">
                                 <div className="flex justify-between items-end gap-2">
                                   <span className="text-[10px] text-muted-foreground">Front + back</span>
-                                  {recommendedPricesBoth[v.id] ? (
-                                    <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPricesBoth[v.id]}</span>
+                                  {suggestedBoth ? (
+                                    <span className="text-[10px] text-muted-foreground">Suggested: ${suggestedBoth}</span>
                                   ) : null}
                                 </div>
                                 <div className="relative">
                                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                                   <Input
-                                    className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                    className={`pl-7 ${rowError ? "border-destructive" : ""}`}
                                     placeholder="0.00"
-                                    value={variantPricesBoth[v.id] ?? ""}
-                                    onChange={(e) => setVariantPricesBoth({ ...variantPricesBoth, [v.id]: e.target.value })}
+                                    value={row.priceBoth}
+                                    onChange={(e) => setGroupRetailPriceBoth(row.variantIds, e.target.value)}
                                   />
                                 </div>
                                 <p className="text-[10px] text-muted-foreground">
                                   {bothCogs != null
                                     ? `COGS $${(bothCogs / 100).toFixed(2)}${(() => {
-                                        const bothRetail = parseFloat(variantPricesBoth[v.id] || "");
+                                        const bothRetail = parseFloat(row.priceBoth || "");
                                         if (!Number.isFinite(bothRetail)) return "";
                                         return ` · Profit $${(bothRetail - bothCogs / 100).toFixed(2)}`;
                                       })()}`
@@ -3073,8 +3116,8 @@ export default function AdminCustomizerPages() {
                               </div>
                             )}
                           </div>
-                          {priceErrors[v.id] && (
-                            <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
+                          {rowError && (
+                            <p className="text-[10px] text-destructive font-medium">{rowError}</p>
                           )}
                         </div>
                         );
@@ -3138,24 +3181,26 @@ export default function AdminCustomizerPages() {
                           {formatStyleConfigSummary(formStyleConfig, adminStyles)}
                         </span>
                       </div>
-                      {selectedVariants.length > 0 ? (
+                      {condensedPriceRows.length > 0 ? (
                         <div className="border-t pt-2 mt-1 space-y-1">
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                          <div className={selectedVariants.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
-                            {selectedVariants.map((v) => (
-                              <div key={v.id} className="flex justify-between gap-3">
-                                <span className="truncate">{v.title}</span>
+                          <div className={condensedPriceRows.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
+                            {condensedPriceRows.map((row) => (
+                              <div key={row.key} className="flex justify-between gap-3">
+                                <span className="truncate">{row.label}</span>
                                 <span className="font-medium shrink-0 text-right">
-                                  ${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}
-                                  {supportsBothSidePricing && variantPricesBoth[v.id]
-                                    ? ` / $${parseFloat(variantPricesBoth[v.id]).toFixed(2)} both`
+                                  ${parseFloat(row.price || "0").toFixed(2)}
+                                  {supportsBothSidePricing && row.priceBoth
+                                    ? ` / $${parseFloat(row.priceBoth).toFixed(2)} both`
                                     : ""}
                                 </span>
                               </div>
                             ))}
                           </div>
-                          {selectedVariants.length > 6 && (
-                            <p className="text-[10px] text-muted-foreground pt-1">{selectedVariants.length} variants total — scroll to view all</p>
+                          {condensedPriceRows.length > 6 && (
+                            <p className="text-[10px] text-muted-foreground pt-1">
+                              {condensedPriceRows.length} price groups ({selectedVariants.length} variants) — scroll to view all
+                            </p>
                           )}
                         </div>
                       ) : (
