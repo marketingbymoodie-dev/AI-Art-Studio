@@ -523,6 +523,34 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "coupons",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "coupons" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar NOT NULL,
+        "code" varchar(50) NOT NULL,
+        "credit_amount" integer NOT NULL,
+        "max_uses" integer,
+        "used_count" integer DEFAULT 0 NOT NULL,
+        "is_active" boolean DEFAULT true NOT NULL,
+        "expires_at" timestamp,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        CONSTRAINT "coupons_code_unique" UNIQUE("code")
+      )
+    `,
+  },
+  {
+    name: "coupon_redemptions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "coupon_redemptions" (
+        "id" serial PRIMARY KEY,
+        "coupon_id" integer NOT NULL,
+        "customer_id" varchar NOT NULL,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
     name: "design_sku_mappings",
     sql: `
       CREATE TABLE IF NOT EXISTS "design_sku_mappings" (
@@ -1344,6 +1372,21 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "customer_aliases_customer_idx",
     sql: `CREATE INDEX IF NOT EXISTS "customer_aliases_customer_idx"
       ON "customer_aliases" ("customer_id")`,
+  },
+  {
+    name: "coupons_code_unique",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "coupons_code_unique"
+      ON "coupons" ("code")`,
+  },
+  {
+    name: "coupons_merchant_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "coupons_merchant_idx"
+      ON "coupons" ("merchant_id")`,
+  },
+  {
+    name: "coupon_redemptions_coupon_customer_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "coupon_redemptions_coupon_customer_idx"
+      ON "coupon_redemptions" ("coupon_id", "customer_id")`,
   },
   {
     name: "credit_ledger_customer_created_idx",
