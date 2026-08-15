@@ -39,9 +39,21 @@ function normalizeSizeToken(raw: string): string {
   return n;
 }
 
+/** Bags / mugs / one-off SKUs — Printify often omits this axis from the variant title. */
+function isGenericSize(raw: string): boolean {
+  const n = raw.toLowerCase().replace(/[\s_-]+/g, "");
+  return n === "onesize" || n === "os" || n === "default" || n === "standard";
+}
+
 function isSizeToken(raw: string): boolean {
   const n = normalizeSizeToken(raw);
-  return APPAREL_SIZE_RE.test(n) || /^\d+x\d+/.test(n);
+  return APPAREL_SIZE_RE.test(n) || /^\d+x\d+/.test(n) || isGenericSize(raw);
+}
+
+function sizesMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (normalizeSizeToken(a) === normalizeSizeToken(b)) return true;
+  return isGenericSize(a) && isGenericSize(b);
 }
 
 function splitSizeColor(norm: string): { size: string; color: string } | null {
@@ -91,7 +103,14 @@ export function variantCostLabelsMatch(wizardTitle: string, printifyLabel: strin
   const sa = splitSizeColor(a);
   const sb = splitSizeColor(b);
   if (!sa || !sb) return false;
-  if (sa.size !== sb.size) return false;
+  // Weekender / tote: wizard "One Size / Black" vs Printify title "Black".
+  if (!sa.color && sb.color && colorsMatch(sa.size, sb.color) && isGenericSize(sb.size)) {
+    return true;
+  }
+  if (!sb.color && sa.color && colorsMatch(sb.size, sa.color) && isGenericSize(sa.size)) {
+    return true;
+  }
+  if (!sizesMatch(sa.size, sb.size)) return false;
   return colorsMatch(sa.color, sb.color);
 }
 

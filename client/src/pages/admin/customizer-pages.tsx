@@ -1178,12 +1178,15 @@ export default function AdminCustomizerPages() {
       supportsBothSidePricing,
     );
     if (!costsAvailable) return rows;
-    return rows.filter((row) =>
+    const matched = rows.filter((row) =>
       row.variantIds.some((id) => {
         const v = selectedVariants.find((x) => x.id === id);
         return v != null && resolveFrontCostCents(v) != null;
       }),
     );
+    // Bags / colour-only Printify titles can miss the first COGS pass — never
+    // hide every input or the pricing step goes blank (weekender bag).
+    return matched.length > 0 ? matched : rows;
   }, [selectedVariants, variantPrices, variantPricesBoth, supportsBothSidePricing, costsAvailable, costsData]);
 
   function setGroupRetailPrice(variantIds: string[], value: string) {

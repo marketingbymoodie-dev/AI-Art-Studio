@@ -21,6 +21,18 @@ describe("variantCostLabelsMatch", () => {
     expect(variantCostLabelsMatch("M / Solid Black", "M / Black")).toBe(true);
     expect(variantCostLabelsMatch("L / Heather Grey", "L / Heather Gray")).toBe(true);
   });
+
+  it("matches weekender-style One Size / colour to a colour-only Printify title", () => {
+    expect(variantCostLabelsMatch("One Size / Black", "Black")).toBe(true);
+    expect(variantCostLabelsMatch("One size / Navy", "Navy")).toBe(true);
+    expect(variantCostLabelsMatch("Black", "One Size / Black")).toBe(true);
+    expect(variantCostLabelsMatch("one_size / Black", "Black")).toBe(true);
+  });
+
+  it("does not treat a real apparel size as a colour-only Printify title", () => {
+    expect(variantCostLabelsMatch("S / Black", "Black")).toBe(false);
+    expect(variantCostLabelsMatch("4XL / Black", "Black")).toBe(false);
+  });
 });
 
 describe("resolveVariantCostCents", () => {
@@ -66,5 +78,16 @@ describe("resolveVariantCostCents", () => {
       },
     );
     expect(cost).toBe(1796);
+  });
+
+  it("resolves weekender One Size rows against colour-only PI labels", () => {
+    const cost = resolveVariantCostCents(
+      { id: "size:one_size:black", title: "One Size / Black" },
+      {
+        costs: { "4411": 2499 },
+        printifyVariantLabels: { "4411": "Black" },
+      },
+    );
+    expect(cost).toBe(2499);
   });
 });
