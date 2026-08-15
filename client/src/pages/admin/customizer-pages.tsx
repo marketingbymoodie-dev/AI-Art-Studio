@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -602,7 +602,34 @@ export default function AdminCustomizerPages() {
       setCreatedPageResult(data);
       setFormStep(6);
     },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: any) => {
+      const raw = err instanceof Error ? err.message : String(err ?? "");
+      const jsonStart = raw.indexOf("{");
+      if (jsonStart !== -1) {
+        try {
+          const parsed = JSON.parse(raw.slice(jsonStart)) as { error?: string; reinstallUrl?: string };
+          if (parsed.error === "REAUTH_REQUIRED") {
+            toast({
+              title: "Reconnect Shopify",
+              description: "Your store connection expired. Use Reconnect Shopify in the banner, then click Create Page again — this form is still here.",
+              variant: "destructive",
+            });
+            return;
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+      if (isSessionAuthError(err)) {
+        toast({
+          title: "Session expired",
+          description: "Refresh this admin page, then click Create Page again. Your pricing and images are still in this form.",
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({ title: "Couldn't create page", description: parseApiErrorMessage(err), variant: "destructive" });
+    },
   });
 
   const toggleMutation = useMutation({

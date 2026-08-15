@@ -2,19 +2,41 @@
  * API client for all /api/* requests.
  *
  * Auth strategy:
- *   In embedded Shopify Admin, the App Bridge v4 CDN script (app-bridge.js)
- *   monkey-patches window.fetch to automatically inject an OIDC session token
- *   in the Authorization header on every same-origin request.
- *   We do NOT need to do anything special — just call fetch() normally.
+ *   In embedded Shopify Admin, App Bridge v4 exposes `shopify.idToken()`.
+ *   Session JWTs expire in about a minute — a long Create Page wizard can
+ *   outlive a token that was only injected by the fetch monkey-patch.
+ *   We mint a fresh idToken on each request (and retry once on 401).
  *
  *   In non-embedded mode (customer storefront, dev), cookie-based auth is
  *   used via credentials: "include".
  */
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+async function getFreshShopifySessionToken(): Promise<string | null> {
+  const shopify = (window as { shopify?: { idToken?: () => Promise<string> } }).shopify;
+  if (!shopify?.idToken) return null;
+  try {
+    const token = await shopify.idToken();
+    return typeof token === "string" && token.trim() ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isSessionAuthError(raw: unknown): boolean {
+  const text =
+    typeof raw === "string"
+      ? raw
+      : raw instanceof Error
+        ? raw.message
+        : raw != null
+          ? String(raw)
+          : "";
+  return /401:|Unauthorized|invalid token|missing session token|REAUTH_REQUIRED/i.test(text);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// apiFetch — single fetch wrapper for all /api/* calls.
-// App Bridge v4 patches window.fetch, so Authorization is injected for us.
+// apiFetch — attach a fresh App Bridge session token when available.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function apiFetch(
@@ -26,7 +48,18 @@ export async function apiFetch(
     headers.set("Content-Type", "application/json");
   }
 
-  return fetch(input, { ...init, headers, credentials: "include" });
+  const token = await getFreshShopifySessionToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  let res = await fetch(input, { ...init, headers, credentials: "include" });
+  if (res.status === 401 && token) {
+    const retryToken = await getFreshShopifySessionToken();
+    if (retryToken) {
+      headers.set("Authorization", `Bearer ${retryToken}`);
+      res = await fetch(input, { ...init, headers, credentials: "include" });
+    }
+  }
+  return res;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
