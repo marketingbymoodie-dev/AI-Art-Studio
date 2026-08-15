@@ -669,7 +669,70 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
-  /** Latest completed artwork for this visitor — used to preview the design on every product card. */
+  /** Recent completed artwork for this visitor — optional reuse on any product. */
+  app.get("/api/creators/storefront/:username/recent-designs", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      const sessionId = String(req.query.sessionId || "").trim();
+      const customerId = String(req.query.customerId || "").trim();
+      if (!sessionId && !customerId) return res.json({ designs: [] });
+      const creatorId = await resolveCreatorId({
+        creatorUsername: req.params.username,
+        shop: getCreatorPlatformShopDomain(),
+        requirePlatformShop: false,
+      });
+      if (!creatorId) return res.status(404).json({ error: "Creator not found." });
+      const identity =
+        sessionId && customerId
+          ? or(
+              eq(generationJobs.creatorSessionId, sessionId),
+              eq(generationJobs.customerId, customerId),
+            )
+          : sessionId
+            ? eq(generationJobs.creatorSessionId, sessionId)
+            : eq(generationJobs.customerId, customerId);
+      const rows = await db
+        .select({
+          jobId: generationJobs.id,
+          artworkUrl: generationJobs.designImageUrl,
+          prompt: generationJobs.userPrompt,
+          fallbackPrompt: generationJobs.prompt,
+          productTypeId: generationJobs.productTypeId,
+          createdAt: generationJobs.createdAt,
+        })
+        .from(generationJobs)
+        .where(
+          and(
+            eq(generationJobs.creatorId, creatorId),
+            eq(generationJobs.status, "complete"),
+            identity,
+          ),
+        )
+        .orderBy(desc(generationJobs.createdAt))
+        .limit(16);
+      const seen = new Set<string>();
+      const designs = [];
+      for (const row of rows) {
+        const artworkUrl = String(row.artworkUrl || "").trim();
+        if (!artworkUrl || seen.has(artworkUrl)) continue;
+        seen.add(artworkUrl);
+        designs.push({
+          jobId: row.jobId,
+          artworkUrl,
+          prompt: String(row.prompt || row.fallbackPrompt || "").trim(),
+          productTypeId: row.productTypeId,
+          createdAt: row.createdAt,
+        });
+        if (designs.length >= 8) break;
+      }
+      res.json({ designs });
+    } catch (e: any) {
+      console.error("[creators] recent-designs failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load recent designs" });
+    }
+  });
+
+  /** Latest completed artwork for this visitor. */
   app.get("/api/creators/storefront/:username/latest-design", async (req, res) => {
     if (!marketplaceGate(res)) return;
     try {

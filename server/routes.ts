@@ -10668,12 +10668,29 @@ ${orientationExtra}
         anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
       });
       const balance = await storage.ensureCustomerBalance(customer.id);
+      const aliases = await storage.getCustomerAliases(customer.id).catch(() => []);
+      const emailAlias = aliases.find((a) => a.aliasType === "otp_email");
+      let email = emailAlias?.aliasValue || null;
+      if (!email) {
+        try {
+          const row = await pool.query(`SELECT email FROM customers WHERE id = $1`, [customer.id]);
+          email = row.rows[0]?.email || null;
+        } catch {
+          /* email column may be missing on older DBs */
+        }
+      }
+      const signedIn =
+        !!email ||
+        !!shopifyCustomerId ||
+        (typeof customer.userId === "string" && customer.userId.startsWith("email:"));
       return res.json({
         ok: true,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance.credits,
         freeGenerationsUsed: balance.freeGenerationsUsed,
+        email,
+        signedIn,
       });
     } catch (error: any) {
       console.error("[Storefront Identity] bootstrap error:", error);

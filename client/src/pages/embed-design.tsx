@@ -1285,6 +1285,45 @@ export interface EmbedDesignProps {
  * identity bootstrap ALSO writes `appai_customer_id` (and `appai_customer`
  * with `isLoggedIn: false`), so id presence alone does NOT mean signed in.
  */
+function readStoredCustomerRecord(): CustomerInfo | null {
+  for (const store of [localStorage, sessionStorage]) {
+    try {
+      const raw = store.getItem("appai_customer");
+      if (!raw) continue;
+      const c = JSON.parse(raw);
+      if (c && typeof c === "object") return c as CustomerInfo;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+function loadImageAspectRatio(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      resolve(
+        img.naturalWidth && img.naturalHeight
+          ? img.naturalWidth / img.naturalHeight
+          : null,
+      );
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+function persistCustomerRecord(next: CustomerInfo) {
+  const raw = JSON.stringify(next);
+  try {
+    localStorage.setItem("appai_customer", raw);
+  } catch {}
+  try {
+    sessionStorage.setItem("appai_customer", raw);
+  } catch {}
+}
+
 function hasStoredLoggedInIdentity(): boolean {
   // Must stay in sync with isSignedIn() in appai-customizer-tray.js.
   // ONLY appai_customer.isLoggedIn === true counts. Never fall back to
@@ -1292,14 +1331,8 @@ function hasStoredLoggedInIdentity(): boolean {
   // every visitor, and older app versions wrote it WITHOUT the
   // appai_customer record — that legacy state suppressed the sign-in panel
   // for anonymous visitors ("just opens a customizer page").
-  try {
-    const raw = localStorage.getItem('appai_customer');
-    if (raw) {
-      const c = JSON.parse(raw);
-      if (c && c.isLoggedIn === true) return true;
-    }
-  } catch {}
-  return false;
+  const c = readStoredCustomerRecord();
+  return c?.isLoggedIn === true;
 }
 
 /** Dedupe carousel/mockup URLs by origin+pathname (ignore query strings). */
@@ -1730,10 +1763,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     designId: string | null;
     artworkUrl: string;
     prompt: string;
+    applyHere?: boolean;
+  };
+  type RecentCreatorDesign = {
+    jobId: string;
+    artworkUrl: string;
+    prompt: string;
+    productTypeId?: string | null;
   };
   const [reusePages, setReusePages] = useState<ReusePageOption[]>([]);
   const [reusePagesLoading, setReusePagesLoading] = useState(false);
   const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
+  const [recentCreatorDesigns, setRecentCreatorDesigns] = useState<RecentCreatorDesign[]>([]);
   const [reuseBusy, setReuseBusy] = useState(false);
   const [reuseBusyLabel, setReuseBusyLabel] = useState("Preparing artwork…");
   const autoReuseGenerateDoneRef = useRef(false);
@@ -2080,12 +2121,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [isCreatorStorefront, creatorIdParam, creatorUsernameParam]);
 
   const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [customer, setCustomer] = useState<CustomerInfo | null>(() => {
-    try {
-      const saved = localStorage.getItem('appai_customer');
-      return saved ? JSON.parse(saved) : null;
-    } catch { return null; }
-  });
+  const [customer, setCustomer] = useState<CustomerInfo | null>(() => readStoredCustomerRecord());
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [freeLimitReached, setFreeLimitReached] = useState(false);
@@ -2124,10 +2160,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const googleAuthNonceRef = useRef<string | null>(null);
   const googleAuthPopupRef = useRef<Window | null>(null);
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
-    try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
+    try {
+      return (
+        localStorage.getItem("appai_customer_id") ||
+        sessionStorage.getItem("appai_customer_id") ||
+        readStoredCustomerRecord()?.id ||
+        null
+      );
+    } catch {
+      return readStoredCustomerRecord()?.id || null;
+    }
   });
   const [storefrontIdentityToken, setStorefrontIdentityToken] = useState<string | null>(() => {
-    try { return localStorage.getItem('appai_identity_token') || null; } catch { return null; }
+    try {
+      return (
+        localStorage.getItem("appai_identity_token") ||
+        sessionStorage.getItem("appai_identity_token") ||
+        null
+      );
+    } catch {
+      return null;
+    }
   });
 
   useEffect(() => {
@@ -2152,28 +2205,79 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setStorefrontCustomerId(data.customerId);
         setStorefrontIdentityToken(data.identityToken || null);
         setCustomer((prev) => {
+          const stored = readStoredCustomerRecord();
+          const email =
+            (typeof data.email === "string" && data.email) ||
+            prev?.email ||
+            stored?.email ||
+            undefined;
           const isKnownLoggedInCustomer =
+            data.signedIn === true ||
             prev?.isLoggedIn === true ||
-            !!prev?.email ||
+            stored?.isLoggedIn === true ||
+            !!email ||
             !!shopifyCustomerId;
           const next = {
-            ...(prev || { id: data.customerId, isLoggedIn: !!shopifyCustomerId }),
+            ...(prev || stored || { id: data.customerId, isLoggedIn: false }),
             id: data.customerId,
-            credits: data.credits ?? prev?.credits ?? 0,
-            freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed ?? 0,
+            email,
+            credits: data.credits ?? prev?.credits ?? stored?.credits ?? 0,
+            freeGenerationsUsed:
+              data.freeGenerationsUsed ??
+              prev?.freeGenerationsUsed ??
+              stored?.freeGenerationsUsed ??
+              0,
             isLoggedIn: isKnownLoggedInCustomer,
           };
           try {
             localStorage.setItem('appai_customer_id', data.customerId);
-            if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
-            localStorage.setItem('appai_customer', JSON.stringify(next));
+            sessionStorage.setItem('appai_customer_id', data.customerId);
+            if (data.identityToken) {
+              localStorage.setItem('appai_identity_token', data.identityToken);
+              sessionStorage.setItem('appai_identity_token', data.identityToken);
+            }
           } catch {}
+          persistCustomerRecord(next);
           return next;
         });
       })
       .catch((err) => console.warn('[EmbedDesign] identity bootstrap failed', err));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStorefront, isMerchantStudio, shopDomain, anonSessionId]);
+
+  useEffect(() => {
+    if (!isCreatorStorefront) return;
+    const username = creatorUsernameRaw || creatorUsernameParam;
+    if (!username) return;
+    const sessionId = creatorSessionIdRef.current || getOrCreateCreatorSessionId();
+    const qs = new URLSearchParams();
+    if (sessionId) qs.set("sessionId", sessionId);
+    if (storefrontCustomerId) qs.set("customerId", storefrontCustomerId);
+    safeFetch(
+      `${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/recent-designs?${qs}`,
+    )
+      .then((r) => (r.ok ? r.json() : { designs: [] }))
+      .then((data) => {
+        const rows = Array.isArray(data?.designs) ? data.designs : [];
+        setRecentCreatorDesigns(
+          rows
+            .map((d: any) => ({
+              jobId: String(d.jobId || ""),
+              artworkUrl: String(d.artworkUrl || ""),
+              prompt: String(d.prompt || ""),
+              productTypeId: d.productTypeId ? String(d.productTypeId) : null,
+            }))
+            .filter((d: RecentCreatorDesign) => d.artworkUrl),
+        );
+      })
+      .catch(() => {});
+  }, [
+    isCreatorStorefront,
+    creatorUsernameRaw,
+    creatorUsernameParam,
+    storefrontCustomerId,
+    generatedDesign?.imageUrl,
+  ]);
 
   // merchant-studio identity: resolve/create a dedicated "merchant" customer record via the
   // admin-authenticated session (App Bridge token / admin cookie), instead of the anonymous
@@ -2236,15 +2340,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setGalleryLimit(data.galleryLimit || 10);
     try {
       localStorage.setItem('appai_customer_id', newCustomerId);
-      if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
+      sessionStorage.setItem('appai_customer_id', newCustomerId);
+      if (data.identityToken) {
+        localStorage.setItem('appai_identity_token', data.identityToken);
+        sessionStorage.setItem('appai_identity_token', data.identityToken);
+      }
       if (loginEmail) localStorage.setItem('appai_otp_email', loginEmail);
-      localStorage.setItem('appai_customer', JSON.stringify({
+      persistCustomerRecord({
         email: loginEmail,
         id: newCustomerId,
         credits: data.credits ?? 0,
         freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
         isLoggedIn: true,
-      }));
+      });
     } catch {}
     setShowOtpLogin(false);
     setOtpStep('email');
@@ -2440,7 +2548,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     freeGenerationLimit,
   });
   const hasGenerationCapacity = artworksRemaining > 0;
-  const storefrontLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
+  const storefrontLoggedIn = customer?.isLoggedIn === true;
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -6708,14 +6816,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const updatedCust = {
           ...(customer || {
             id: storefrontCustomerId || 'anonymous',
-            isLoggedIn: !!storefrontCustomerId,
+            isLoggedIn: false,
           }),
           credits: nextPaidCredits,
           freeGenerationsUsed: nextFreeUsed,
-          isLoggedIn: customer?.isLoggedIn ?? !!storefrontCustomerId,
+          isLoggedIn: customer?.isLoggedIn === true,
         };
           setCustomer(updatedCust);
-          try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
+          persistCustomerRecord(updatedCust);
 
         if (remaining > 0) {
           const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
@@ -9437,6 +9545,135 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     ],
   );
 
+  const applyArtworkToCurrentProduct = useCallback(
+    async (opts: { designId?: string | null; artworkUrl: string; prompt?: string; regenerate?: boolean }) => {
+      const abs = toAbsoluteImageUrl(opts.artworkUrl);
+      const originalPrompt = (opts.prompt || "").trim();
+      if (opts.regenerate) {
+        const reusePromptText = originalPrompt
+          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
+          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+        reuseInAppBusyRef.current = true;
+        setReuseBusy(true);
+        setReuseBusyLabel("Preparing artwork…");
+        try {
+          const blob = await fetchReuseArtworkBlob(abs);
+          const file = new File([blob], "reuse-artwork.png", {
+            type: blob.type || "image/png",
+          });
+          const preview = URL.createObjectURL(blob);
+          const b64 = await blobToDataUrl(blob);
+          if (!b64) throw new Error("Could not read artwork for reference");
+          setReferenceImages([file]);
+          setReferencePreviews([preview]);
+          setPrompt(reusePromptText);
+          pendingReuseGenerateRef.current = {
+            prompt: reusePromptText,
+            referenceImagesBase64: [b64],
+          };
+          autoReuseHydratedRef.current = true;
+          autoReuseSeedingRef.current = true;
+          autoReuseGenerateDoneRef.current = false;
+          reuseRegeneratePendingToastRef.current = true;
+          toast({
+            title: "Regenerating for this product",
+            description: "Using 1 generation token to recreate the artwork for this shape.",
+          });
+          setReuseGenerateTick((n) => n + 1);
+          setReuseBusy(false);
+        } catch (err: any) {
+          setReuseBusy(false);
+          toast({
+            title: "Could not regenerate",
+            description: err?.message || "Please try again.",
+            variant: "destructive",
+          });
+        } finally {
+          reuseInAppBusyRef.current = false;
+        }
+        return;
+      }
+
+      let forkedJobId: string | null = null;
+      const targetProductTypeId = productTypeConfig?.id ? String(productTypeConfig.id) : "";
+      if (shopDomain && targetProductTypeId) {
+        try {
+          const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              shop: shopDomain,
+              artworkUrl: abs,
+              prompt: originalPrompt,
+              productTypeId: targetProductTypeId,
+              customerId: storefrontCustomerId || undefined,
+              pageHandle: activeProductContext.pageHandle || productHandle || undefined,
+            }),
+          });
+          if (forkRes.ok) {
+            const forked = await forkRes.json();
+            if (forked?.jobId) forkedJobId = String(forked.jobId);
+          }
+        } catch {
+          /* keep local reuse id */
+        }
+      }
+      savedJobIdRef.current = forkedJobId;
+      loadDesignAppliedRef.current = true;
+      setBridgeLoadDesignId(forkedJobId || "");
+      setGeneratedDesign({
+        id: forkedJobId || opts.designId || `reuse-${Date.now()}`,
+        imageUrl: abs,
+        prompt: originalPrompt,
+      });
+      if (originalPrompt) setPrompt(originalPrompt);
+    },
+    [
+      productTypeConfig?.id,
+      shopDomain,
+      storefrontCustomerId,
+      activeProductContext.pageHandle,
+      productHandle,
+      toast,
+    ],
+  );
+
+  const handleRecentCreatorDesignPick = useCallback(
+    async (design: RecentCreatorDesign) => {
+      const artworkUrl = toAbsoluteImageUrl(design.artworkUrl);
+      const artAr = await loadImageAspectRatio(artworkUrl);
+      const productAr = parseAspectRatioValue(currentDesignAspectRatio);
+      const mismatch =
+        artAr != null &&
+        productAr != null &&
+        Math.abs(artAr - productAr) / Math.max(artAr, productAr) > 0.2;
+      if (mismatch) {
+        setReuseDialog({
+          handle: activeProductContext.pageHandle || productHandle || "",
+          title: productTypeConfig?.name || "This product",
+          designId: design.jobId,
+          artworkUrl,
+          prompt: design.prompt,
+          applyHere: true,
+        });
+        return;
+      }
+      await applyArtworkToCurrentProduct({
+        designId: design.jobId,
+        artworkUrl,
+        prompt: design.prompt,
+      });
+    },
+    [
+      currentDesignAspectRatio,
+      parseAspectRatioValue,
+      activeProductContext.pageHandle,
+      productHandle,
+      productTypeConfig?.name,
+      applyArtworkToCurrentProduct,
+    ],
+  );
+
   const clearReuseUrlParams = useCallback(() => {
     try {
       const parentUrl = new URL(window.parent.location.href);
@@ -11588,7 +11825,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             <AlertDialogTitle>Different product shape</AlertDialogTitle>
             <AlertDialogDescription>
               {reuseDialog
-                ? `${reuseDialog.title} has a different aspect ratio than your current artwork. Open it as-is, or regenerate to fit (uses 1 credit).`
+                ? reuseDialog.applyHere
+                  ? `${reuseDialog.title} has a different aspect ratio than this artwork. Keep the current image (you can scale and place it), or generate a new one to fit — that uses 1 generation token.`
+                  : `${reuseDialog.title} has a different aspect ratio than your current artwork. Keep the current image, or generate a new one to fit (uses 1 generation token).`
                 : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -11605,6 +11844,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 if (!reuseDialog || reuseBusy) return;
                 const d = reuseDialog;
                 setReuseDialog(null);
+                if (d.applyHere) {
+                  void applyArtworkToCurrentProduct({
+                    designId: d.designId,
+                    artworkUrl: d.artworkUrl,
+                    prompt: d.prompt,
+                  });
+                  return;
+                }
                 void navigateToReuseProduct(d.handle, {
                   designId: d.designId,
                   artworkUrl: d.artworkUrl,
@@ -11612,7 +11859,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 });
               }}
             >
-              Open as-is
+              Keep current
             </Button>
             <Button
               type="button"
@@ -11624,12 +11871,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 setReuseBusy(true);
                 setReuseBusyLabel("Preparing artwork…");
                 setReuseDialog(null);
-                void navigateToReuseProduct(d.handle, {
-                  regenerate: true,
-                  designId: d.designId,
-                  artworkUrl: d.artworkUrl,
-                  prompt: d.prompt,
-                }).catch((err: any) => {
+                const run = d.applyHere
+                  ? applyArtworkToCurrentProduct({
+                      regenerate: true,
+                      designId: d.designId,
+                      artworkUrl: d.artworkUrl,
+                      prompt: d.prompt,
+                    })
+                  : navigateToReuseProduct(d.handle, {
+                      regenerate: true,
+                      designId: d.designId,
+                      artworkUrl: d.artworkUrl,
+                      prompt: d.prompt,
+                    });
+                void run.catch((err: any) => {
                   console.error("[ReuseArtwork] regenerate click failed:", err);
                   setReuseBusy(false);
                   toast({
@@ -11646,7 +11901,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   Working…
                 </>
               ) : (
-                "Regenerate to fit (1 credit)"
+                "Generate new (1 token)"
               )}
             </Button>
           </AlertDialogFooter>
@@ -11956,7 +12211,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           setStorefrontCustomerId(null);
                           setStorefrontIdentityToken(null);
                           setOtpEmail('');
-                          try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_identity_token'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
+                          try {
+                            localStorage.removeItem('appai_customer_id');
+                            localStorage.removeItem('appai_identity_token');
+                            localStorage.removeItem('appai_otp_email');
+                            localStorage.removeItem('appai_customer');
+                            sessionStorage.removeItem('appai_customer');
+                            sessionStorage.removeItem('appai_customer_id');
+                            sessionStorage.removeItem('appai_identity_token');
+                          } catch {}
                           setShowSavedDesigns(false);
                           setShowCouponInput(false);
                         }}
@@ -13089,6 +13352,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   </div>
                 );
               })()}
+
+              {isCreatorStorefront && recentCreatorDesigns.length > 0 ? (
+                <div className="space-y-1.5" data-testid="creator-recent-designs">
+                  <Label className="text-xs">Your artwork</Label>
+                  <p className="text-[11px] text-muted-foreground leading-tight">
+                    Use a design you already made, or generate a new one below.
+                  </p>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {recentCreatorDesigns.map((d) => {
+                      const selected =
+                        !!generatedDesign?.imageUrl &&
+                        toAbsoluteImageUrl(generatedDesign.imageUrl) ===
+                          toAbsoluteImageUrl(d.artworkUrl);
+                      return (
+                        <button
+                          key={d.jobId || d.artworkUrl}
+                          type="button"
+                          onClick={() => void handleRecentCreatorDesignPick(d)}
+                          className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-md border bg-muted ${
+                            selected ? "border-foreground ring-1 ring-foreground" : "border-border"
+                          }`}
+                          data-testid={`button-recent-design-${d.jobId}`}
+                        >
+                          <img
+                            src={d.artworkUrl}
+                            alt=""
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
 
               {/* Prompt Description */}
               {(() => {
