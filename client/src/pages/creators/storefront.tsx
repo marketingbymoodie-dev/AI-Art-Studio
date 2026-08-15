@@ -10,6 +10,7 @@ import {
 } from "@/lib/creator-analytics";
 import { clearCreatorCart, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { CreatorSavedDesignsMenu } from "@/components/creators/CreatorSavedDesignsMenu";
 import { API_BASE } from "@/lib/urlBase";
 import {
   CREATOR_HEADING_FONTS_STYLESHEET,
@@ -139,6 +140,7 @@ function designerHref(opts: {
   creator: CreatorBoot;
   productTypeId?: number | null;
   title?: string | null;
+  loadDesignId?: string | null;
 }): string {
   const params = new URLSearchParams();
   if (opts.platformShop) params.set("shop", opts.platformShop);
@@ -151,6 +153,7 @@ function designerHref(opts: {
   params.set("creatorUsername", opts.creator.username);
   params.set("creatorId", opts.creator.id);
   params.set("storefront", "true");
+  if (opts.loadDesignId) params.set("loadDesignId", opts.loadDesignId);
   return `/s/designer?${params.toString()}`;
 }
 
@@ -172,6 +175,8 @@ function StoreShell({
   const accent =
     (typeof branding.accentColor === "string" && branding.accentColor) || undefined;
   useCreatorHeadingStylesheet();
+  const { data: pagesData } = useCreatorPages(creator.username);
+  const platformShop = pagesData?.platformShopDomain ?? null;
 
   return (
     <div className="min-h-screen bg-background text-foreground" style={accent ? { ["--primary" as string]: accent } : undefined}>
@@ -212,6 +217,20 @@ function StoreShell({
             >
               About
             </Link>
+            <CreatorSavedDesignsMenu
+              username={creator.username}
+              platformShop={platformShop}
+              designerHrefFor={({ handle, productTypeId, title, loadDesignId }) =>
+                designerHref({
+                  handle,
+                  platformShop,
+                  creator,
+                  productTypeId,
+                  title,
+                  loadDesignId,
+                })
+              }
+            />
             <Link
               href={`${basePath}/cart`}
               className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"

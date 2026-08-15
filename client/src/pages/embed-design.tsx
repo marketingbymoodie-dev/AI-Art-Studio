@@ -1083,6 +1083,44 @@ async function fetchWithTimeoutSimple(
   }
 }
 
+/** Creator host uses /s/designer — never rewrite the parent to /pages/:handle (that 404s). */
+function isCreatorDesignerHost(): boolean {
+  if (typeof window === "undefined") return false;
+  const path = window.location.pathname || "";
+  return path.startsWith("/s/designer") || path.startsWith("/c/");
+}
+
+function applyCustomizerPageToUrl(
+  url: URL,
+  pageHandle: string,
+  extra: Record<string, string | null | undefined> = {},
+) {
+  if (isCreatorDesignerHost() || url.pathname.startsWith("/s/designer")) {
+    if (!url.pathname.startsWith("/s/designer")) url.pathname = "/s/designer";
+    url.searchParams.set("page", pageHandle);
+    url.searchParams.set("pageHandle", pageHandle);
+  } else {
+    url.pathname = `/pages/${pageHandle}`;
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+  }
+}
+
+function replaceCustomizerPageHistory(
+  pageHandle: string,
+  extra: Record<string, string | null | undefined> = {},
+) {
+  try {
+    const parentUrl = new URL(window.parent.location.href);
+    applyCustomizerPageToUrl(parentUrl, pageHandle, extra);
+    window.parent.history.replaceState({}, "", parentUrl.toString());
+  } catch {
+    /* parent may be inaccessible */
+  }
+}
+
 // Module-level singleton guard — prevents re-initialization if the module is
 // evaluated more than once or if React StrictMode double-mounts the component.
 let __embedInstanceActive = false;
@@ -4474,11 +4512,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Track whether we've already restored the loadDesignId so we don't do it twice
   const loadDesignAppliedRef = useRef(false);
 
+  const resolveSavedDesignPageHandle = useCallback(async (design: any): Promise<string> => {
+    const direct = design?.pageHandle ? String(design.pageHandle) : "";
+    if (direct) return direct;
+    const typeId = design?.productTypeId ? String(design.productTypeId) : "";
+    if (!typeId || !creatorUsernameParam) return "";
+    try {
+      const res = await safeFetch(
+        `${API_BASE}/api/creators/storefront/${encodeURIComponent(creatorUsernameParam)}/pages`,
+        { credentials: "same-origin" },
+        20000,
+      );
+      if (!res.ok) return "";
+      const data = await res.json();
+      const match = (Array.isArray(data?.pages) ? data.pages : []).find(
+        (p: any) => p?.handle && String(p.productTypeId || "") === typeId,
+      );
+      return match?.handle ? String(match.handle) : "";
+    } catch {
+      return "";
+    }
+  }, [creatorUsernameParam]);
+
   const switchToSavedDesignProduct = useCallback(async (design: any) => {
-    const pageHandle = design?.pageHandle ? String(design.pageHandle) : "";
+    const pageHandle = await resolveSavedDesignPageHandle(design);
     const designId = design?.id ? String(design.id) : "";
     if (!pageHandle || !designId) {
-      throw new Error("Saved design is missing its customizer page");
+      throw new Error("This saved design’s product is not available in this shop.");
     }
 
     setIsInAppProductSwitching(true);
@@ -4600,19 +4660,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     const mockupSrc = (design.mockupUrls && design.mockupUrls[0]) || "";
     const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : "";
-    try {
-      const parentUrl = new URL(window.parent.location.href);
-      parentUrl.pathname = `/pages/${pageHandle}`;
-      parentUrl.searchParams.set("loadDesignId", designId);
-      if (mockupAbsForUrl) parentUrl.searchParams.set("loadMockup", mockupAbsForUrl);
-      const loadingProductName = design.baseTitle || config.title || "saved design";
-      if (loadingProductName) parentUrl.searchParams.set("loadProductName", loadingProductName);
-      window.parent.history.replaceState({}, "", parentUrl.toString());
-    } catch {
-      // Parent history may be inaccessible in local/dev embeds.
-    }
+    const loadingProductName = design.baseTitle || config.title || "saved design";
+    replaceCustomizerPageHistory(pageHandle, {
+      loadDesignId: designId,
+      loadMockup: mockupAbsForUrl || null,
+      loadProductName: loadingProductName || null,
+    });
 
     const params = new URLSearchParams(window.location.search);
+    params.set("page", pageHandle);
+    params.set("pageHandle", pageHandle);
     params.set("productTypeId", config.productTypeId ? String(config.productTypeId) : "0");
     if (config.baseProductId) params.set("productId", String(config.baseProductId));
     if (config.baseProductHandle || pageHandle) params.set("productHandle", config.baseProductHandle || pageHandle);
@@ -4645,7 +4702,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     setBridgeLoadDesignId(designId);
     setLoadDesignNonce((n) => n + 1);
-  }, [applyDesignerConfig, shopDomain]);
+  }, [applyDesignerConfig, shopDomain, creatorUsernameParam, creatorIdParam, resolveSavedDesignPageHandle]);
 
   /** In-app customizer page switch (no full reload) — used by Reuse Artwork regenerate. */
   const switchToCustomizerPageByHandle = useCallback(async (pageHandle: string) => {
@@ -4772,22 +4829,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setFreshDesignAllowed(config.freshDesignAllowed);
     }
 
-    try {
-      const parentUrl = new URL(window.parent.location.href);
-      parentUrl.pathname = `/pages/${pageHandle}`;
-      parentUrl.searchParams.delete("loadDesignId");
-      parentUrl.searchParams.delete("loadMockup");
-      parentUrl.searchParams.delete("loadProductName");
-      parentUrl.searchParams.delete("reuseArtworkUrl");
-      parentUrl.searchParams.delete("reusePrompt");
-      parentUrl.searchParams.delete("reuseJobId");
-      parentUrl.searchParams.delete("autoReuseGenerate");
-      window.parent.history.replaceState({}, "", parentUrl.toString());
-    } catch {
-      /* parent may be inaccessible */
-    }
+    replaceCustomizerPageHistory(pageHandle, {
+      loadDesignId: null,
+      loadMockup: null,
+      loadProductName: null,
+      reuseArtworkUrl: null,
+      reusePrompt: null,
+      reuseJobId: null,
+      autoReuseGenerate: null,
+    });
 
     const params = new URLSearchParams(window.location.search);
+    params.set("page", pageHandle);
+    params.set("pageHandle", pageHandle);
     params.set("productTypeId", config.productTypeId ? String(config.productTypeId) : "0");
     if (config.baseProductId) params.set("productId", String(config.baseProductId));
     if (config.baseProductHandle || pageHandle) {
@@ -9563,8 +9617,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
 
-      const target = `/pages/${encodeURIComponent(handle)}`;
       const params = new URLSearchParams();
+      if (isCreatorDesignerHost()) {
+        if (shopDomain) params.set("shop", shopDomain);
+        params.set("page", handle);
+        params.set("pageHandle", handle);
+        if (creatorUsernameParam) params.set("creatorUsername", creatorUsernameParam);
+        if (creatorIdParam) params.set("creatorId", creatorIdParam);
+        params.set("storefront", "true");
+      }
       if (opts.regenerate) {
         writeReuseHandoff({
           jobId: opts.designId || null,
@@ -9588,6 +9649,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       }
       const qs = params.toString();
+      const target = isCreatorDesignerHost()
+        ? "/s/designer"
+        : `/pages/${encodeURIComponent(handle)}`;
       const url = qs ? `${target}?${qs}` : target;
       setReuseBusy(true);
       setReuseBusyLabel("Opening product page…");
@@ -9605,6 +9669,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       useAopCustomizer,
       usesFlatOnTheFlyPreview,
       clearLoadDesignIdFromUrl,
+      creatorUsernameParam,
+      creatorIdParam,
     ],
   );
 
@@ -12913,15 +12979,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                       (!!designPageHandle &&
                                         !!currentPageHandle &&
                                         designPageHandle !== currentPageHandle);
-                                    const needsNavigation = isDifferentProduct && !!d.pageHandle;
-                                    if (isDifferentProduct && !d.pageHandle) {
-                                      toast({
-                                        title: "Design product unavailable",
-                                        description: "This saved design belongs to a product that is no longer published.",
-                                        variant: "destructive",
-                                      });
-                                      return;
-                                    }
+                                    const needsNavigation = isDifferentProduct;
                                     if (needsNavigation) {
                                       void (async () => {
                                         try {
