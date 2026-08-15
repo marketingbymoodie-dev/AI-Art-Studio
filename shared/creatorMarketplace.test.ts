@@ -12,6 +12,8 @@ import {
   isoWeekPeriodKey,
   mergeCreatorBranding,
   normalizeCreatorUsername,
+  parseCreatorHeadingFontId,
+  resolveCreatorHeadingFont,
   sanitizeCreatorBio,
   sanitizeCreatorImageUrl,
   titleForRank,
@@ -109,6 +111,16 @@ describe("public storefront identity", () => {
     expect(cleared.headline).toBeUndefined();
     expect(cleared.backgroundImageUrl).toBeUndefined();
     expect(cleared.description).toBe("streetwear");
+  });
+
+  it("stores a heading font and clears default", () => {
+    const next = mergeCreatorBranding({ headline: "Mad Clown Core" }, { headingFont: "impact" });
+    expect(next.headingFont).toBe("impact");
+    expect(parseCreatorHeadingFontId("impact")).toBe("impact");
+    expect(resolveCreatorHeadingFont(next).cssFamily).toMatch(/Anton/);
+    const cleared = mergeCreatorBranding(next, { headingFont: "default" });
+    expect(cleared.headingFont).toBeUndefined();
+    expect(parseCreatorHeadingFontId("comic-sans")).toBe("default");
   });
 });
 

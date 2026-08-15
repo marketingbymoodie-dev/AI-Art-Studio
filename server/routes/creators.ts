@@ -1159,7 +1159,8 @@ export function registerCreatorMarketplaceRoutes(
         if (
           body.shopName !== undefined ||
           body.shopDescription !== undefined ||
-          body.backgroundImageUrl !== undefined
+          body.backgroundImageUrl !== undefined ||
+          body.headingFont !== undefined
         ) {
           patch.branding = mergeCreatorBranding(
             creator.branding as Record<string, unknown> | null,
@@ -1167,6 +1168,7 @@ export function registerCreatorMarketplaceRoutes(
               shopName: body.shopName,
               shopDescription: body.shopDescription,
               backgroundImageUrl: body.backgroundImageUrl,
+              headingFont: body.headingFont,
             },
           );
         }

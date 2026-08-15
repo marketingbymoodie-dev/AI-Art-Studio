@@ -32,9 +32,12 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import {
+  CREATOR_HEADING_FONTS,
+  CREATOR_HEADING_FONTS_STYLESHEET,
   CREATOR_SHARE_BASES,
   CREATOR_STATUSES,
   displayCreatorStyleName,
+  parseCreatorHeadingFontId,
 } from "@shared/creatorMarketplace";
 import { styleExampleImageUrl } from "@shared/customizerPageStyles";
 import { CreatorProfileImageField } from "@/components/creators/CreatorProfileImageField";
@@ -73,6 +76,7 @@ export default function PlatformCreatorDetailDialog({
   const [creatorStatus, setCreatorStatus] = useState("onboarding");
   const [merchantShop, setMerchantShop] = useState("");
   const [shopName, setShopName] = useState("");
+  const [headingFont, setHeadingFont] = useState("default");
   const [shopDescription, setShopDescription] = useState("");
   const [bio, setBio] = useState("");
   const [profileImageUrl, setProfileImageUrl] = useState("");
@@ -93,6 +97,16 @@ export default function PlatformCreatorDetailDialog({
   const [draggingStyleId, setDraggingStyleId] = useState<number | null>(null);
   const assignedOrderRef = useRef<number[]>([]);
   assignedOrderRef.current = assignedOrder;
+
+  useEffect(() => {
+    const id = "creator-heading-fonts";
+    if (document.getElementById(id)) return;
+    const link = document.createElement("link");
+    link.id = id;
+    link.rel = "stylesheet";
+    link.href = CREATOR_HEADING_FONTS_STYLESHEET;
+    document.head.appendChild(link);
+  }, []);
 
   const { data, isLoading } = useQuery<{
     creator: any;
@@ -240,6 +254,7 @@ export default function PlatformCreatorDetailDialog({
     setBetaEnd(c.betaEndAt ? String(c.betaEndAt).slice(0, 10) : "");
     const b = c.branding || {};
     setShopName(typeof b.headline === "string" ? b.headline : "");
+    setHeadingFont(parseCreatorHeadingFontId(b.headingFont));
     setShopDescription(typeof b.description === "string" ? b.description : "");
     setBio(typeof c.bio === "string" ? c.bio : "");
     setProfileImageUrl(typeof c.profileImageUrl === "string" ? c.profileImageUrl : "");
@@ -266,6 +281,7 @@ export default function PlatformCreatorDetailDialog({
       creatorStatus: c.status || "onboarding",
       merchantShop: c.shopDomain || "",
       shopName: typeof b.headline === "string" ? b.headline : "",
+      headingFont: parseCreatorHeadingFontId(b.headingFont),
       shopDescription: typeof b.description === "string" ? b.description : "",
       bio: typeof c.bio === "string" ? c.bio : "",
       profileImageUrl: typeof c.profileImageUrl === "string" ? c.profileImageUrl : "",
@@ -278,6 +294,7 @@ export default function PlatformCreatorDetailDialog({
       creatorStatus,
       merchantShop,
       shopName,
+      headingFont,
       shopDescription,
       bio,
       profileImageUrl,
@@ -292,6 +309,7 @@ export default function PlatformCreatorDetailDialog({
     creatorStatus,
     merchantShop,
     shopName,
+    headingFont,
     shopDescription,
     bio,
     profileImageUrl,
@@ -307,6 +325,7 @@ export default function PlatformCreatorDetailDialog({
         status: creatorStatus,
         shopDomain: merchantShop || null,
         shopName,
+        headingFont,
         shopDescription,
         bio,
         profileImageUrl: profileImageUrl || null,
@@ -501,6 +520,27 @@ export default function PlatformCreatorDetailDialog({
                   onChange={(e) => setShopName(e.target.value)}
                   placeholder={c.username}
                 />
+              </div>
+              <div className="space-y-1">
+                <Label>Shop name font</Label>
+                <Select value={headingFont} onValueChange={setHeadingFont}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CREATOR_HEADING_FONTS.map((font) => (
+                      <SelectItem key={font.id} value={font.id}>
+                        <span style={font.cssFamily ? { fontFamily: font.cssFamily } : undefined}>
+                          {font.label}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Used on the shop name in the header and home title. Impact uses a matching
+                  web font on phones that do not ship Impact.
+                </p>
               </div>
               <div className="space-y-1">
                 <Label>Shop description</Label>

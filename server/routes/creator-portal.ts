@@ -168,7 +168,8 @@ export function registerCreatorPortalRoutes(app: Express): void {
       if (
         body.shopName !== undefined ||
         body.shopDescription !== undefined ||
-        body.backgroundImageUrl !== undefined
+        body.backgroundImageUrl !== undefined ||
+        body.headingFont !== undefined
       ) {
         patch.branding = mergeCreatorBranding(
           creator.branding as Record<string, unknown> | null,
@@ -176,6 +177,7 @@ export function registerCreatorPortalRoutes(app: Express): void {
             shopName: body.shopName,
             shopDescription: body.shopDescription,
             backgroundImageUrl: body.backgroundImageUrl,
+            headingFont: body.headingFont,
           },
         );
       }

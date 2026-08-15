@@ -9,7 +9,19 @@ import {
   creatorPortalFetch,
   type CreatorPortalProfile,
 } from "@/lib/creator-portal-auth";
-import { creatorPublicName } from "@shared/creatorMarketplace";
+import {
+  CREATOR_HEADING_FONTS,
+  CREATOR_HEADING_FONTS_STYLESHEET,
+  creatorPublicName,
+  parseCreatorHeadingFontId,
+} from "@shared/creatorMarketplace";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 
 export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalProfile }) {
@@ -18,6 +30,7 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
   const [shopName, setShopName] = useState(
     typeof branding.headline === "string" ? branding.headline : "",
   );
+  const [headingFont, setHeadingFont] = useState(parseCreatorHeadingFontId(branding.headingFont));
   const [shopDescription, setShopDescription] = useState(
     typeof branding.description === "string" ? branding.description : "",
   );
@@ -29,8 +42,19 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    const id = "creator-heading-fonts";
+    if (document.getElementById(id)) return;
+    const link = document.createElement("link");
+    link.id = id;
+    link.rel = "stylesheet";
+    link.href = CREATOR_HEADING_FONTS_STYLESHEET;
+    document.head.appendChild(link);
+  }, []);
+
+  useEffect(() => {
     const b = creator.branding || {};
     setShopName(typeof b.headline === "string" ? b.headline : "");
+    setHeadingFont(parseCreatorHeadingFontId(b.headingFont));
     setShopDescription(typeof b.description === "string" ? b.description : "");
     setBio(creator.bio || "");
     setProfileImageUrl(creator.profileImageUrl || "");
@@ -45,6 +69,7 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
         method: "PATCH",
         body: JSON.stringify({
           shopName,
+          headingFont,
           shopDescription,
           bio,
           profileImageUrl: profileImageUrl || null,
@@ -89,6 +114,23 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
           onChange={(e) => setShopName(e.target.value)}
           placeholder={creator.username}
         />
+      </div>
+      <div className="space-y-1">
+        <Label>Shop name font</Label>
+        <Select value={headingFont} onValueChange={setHeadingFont}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CREATOR_HEADING_FONTS.map((font) => (
+              <SelectItem key={font.id} value={font.id}>
+                <span style={font.cssFamily ? { fontFamily: font.cssFamily } : undefined}>
+                  {font.label}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <Label>Shop description</Label>

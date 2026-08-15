@@ -11,8 +11,10 @@ import {
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
 import {
+  CREATOR_HEADING_FONTS_STYLESHEET,
   creatorBrandingImageUrl,
   creatorPublicName,
+  resolveCreatorHeadingFont,
 } from "@shared/creatorMarketplace";
 
 export type CreatorBoot = {
@@ -41,6 +43,18 @@ function storeName(creator: CreatorBoot): string {
 
 function homeBackgroundUrl(creator: CreatorBoot): string | null {
   return creatorBrandingImageUrl(creator.branding, "backgroundImageUrl");
+}
+
+function useCreatorHeadingStylesheet() {
+  useEffect(() => {
+    const id = "creator-heading-fonts";
+    if (document.getElementById(id)) return;
+    const link = document.createElement("link");
+    link.id = id;
+    link.rel = "stylesheet";
+    link.href = CREATOR_HEADING_FONTS_STYLESHEET;
+    document.head.appendChild(link);
+  }, []);
 }
 
 type StorefrontPage = {
@@ -95,8 +109,13 @@ function StoreShell({
 }) {
   const branding = creator.branding || {};
   const headline = storeName(creator);
+  const headingFont = resolveCreatorHeadingFont(branding);
+  const headingStyle = headingFont.cssFamily
+    ? { fontFamily: headingFont.cssFamily }
+    : undefined;
   const accent =
     (typeof branding.accentColor === "string" && branding.accentColor) || undefined;
+  useCreatorHeadingStylesheet();
 
   return (
     <div className="min-h-screen bg-background text-foreground" style={accent ? { ["--primary" as string]: accent } : undefined}>
@@ -113,7 +132,9 @@ function StoreShell({
               <Palette className="h-6 w-6 text-primary shrink-0" />
             )}
             <div className="min-w-0">
-              <div className="truncate font-semibold">{headline}</div>
+              <div className="truncate font-semibold" style={headingStyle}>
+                {headline}
+              </div>
               {creator.niche ? (
                 <div className="truncate text-xs text-muted-foreground">{creator.niche}</div>
               ) : null}
@@ -177,6 +198,10 @@ function useLatestCreatorArtwork(username: string) {
 function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
   const branding = creator.branding || {};
   const name = storeName(creator);
+  const headingFont = resolveCreatorHeadingFont(branding);
+  const headingStyle = headingFont.cssFamily
+    ? { fontFamily: headingFont.cssFamily }
+    : undefined;
   const backgroundUrl = homeBackgroundUrl(creator);
   const description =
     (typeof branding.description === "string" && branding.description) ||
@@ -217,6 +242,7 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         className={`mt-2 text-4xl font-bold tracking-tight ${
           backgroundUrl ? "text-white" : ""
         }`}
+        style={headingStyle}
       >
         {name}
       </h1>

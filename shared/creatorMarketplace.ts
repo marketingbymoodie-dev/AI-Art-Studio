@@ -489,10 +489,77 @@ export function creatorBrandingImageUrl(
   return sanitizeCreatorImageUrl(branding[key]);
 }
 
+export const CREATOR_HEADING_FONTS = [
+  { id: "default", label: "Default", cssFamily: "", googleFamily: null },
+  {
+    id: "impact",
+    label: "Impact",
+    cssFamily: 'Impact, Anton, "Arial Black", sans-serif',
+    googleFamily: "Anton",
+  },
+  {
+    id: "bebas",
+    label: "Bebas Neue",
+    cssFamily: '"Bebas Neue", Impact, sans-serif',
+    googleFamily: "Bebas Neue",
+  },
+  {
+    id: "marker",
+    label: "Permanent Marker",
+    cssFamily: '"Permanent Marker", cursive',
+    googleFamily: "Permanent Marker",
+  },
+  {
+    id: "oswald",
+    label: "Oswald",
+    cssFamily: "Oswald, sans-serif",
+    googleFamily: "Oswald",
+  },
+  {
+    id: "playfair",
+    label: "Playfair Display",
+    cssFamily: '"Playfair Display", Georgia, serif',
+    googleFamily: "Playfair Display",
+  },
+  {
+    id: "grotesk",
+    label: "Space Grotesk",
+    cssFamily: '"Space Grotesk", sans-serif',
+    googleFamily: "Space Grotesk",
+  },
+  {
+    id: "bangers",
+    label: "Bangers",
+    cssFamily: "Bangers, Impact, sans-serif",
+    googleFamily: "Bangers",
+  },
+] as const;
+
+export type CreatorHeadingFontId = (typeof CREATOR_HEADING_FONTS)[number]["id"];
+
+export function parseCreatorHeadingFontId(raw: unknown): CreatorHeadingFontId {
+  const id = String(raw || "").trim().toLowerCase();
+  return CREATOR_HEADING_FONTS.some((f) => f.id === id)
+    ? (id as CreatorHeadingFontId)
+    : "default";
+}
+
+export function resolveCreatorHeadingFont(
+  branding: Record<string, unknown> | null | undefined,
+): (typeof CREATOR_HEADING_FONTS)[number] {
+  const id = parseCreatorHeadingFontId(branding?.headingFont);
+  return CREATOR_HEADING_FONTS.find((f) => f.id === id) || CREATOR_HEADING_FONTS[0];
+}
+
+/** Combined stylesheet so admin previews and the storefront can load faces. */
+export const CREATOR_HEADING_FONTS_STYLESHEET =
+  "https://fonts.googleapis.com/css2?family=Anton&family=Bangers&family=Bebas+Neue&family=Oswald:wght@400;700&family=Permanent+Marker&family=Playfair+Display:wght@400;700&family=Space+Grotesk:wght@400;700&display=swap";
+
 export type CreatorProfileBrandingPatch = {
   shopName?: string | null;
   shopDescription?: string | null;
   backgroundImageUrl?: string | null;
+  headingFont?: string | null;
 };
 
 /** Merge shop-facing branding JSON (headline, description, background). */
@@ -515,6 +582,11 @@ export function mergeCreatorBranding(
     const url = sanitizeCreatorImageUrl(patch.backgroundImageUrl);
     if (url) next.backgroundImageUrl = url;
     else delete next.backgroundImageUrl;
+  }
+  if (patch.headingFont !== undefined) {
+    const id = parseCreatorHeadingFontId(patch.headingFont);
+    if (id === "default") delete next.headingFont;
+    else next.headingFont = id;
   }
   return next;
 }
