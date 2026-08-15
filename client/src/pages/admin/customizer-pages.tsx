@@ -383,6 +383,8 @@ export default function AdminCustomizerPages() {
   const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
   const [placeholderStepAlert, setPlaceholderStepAlert] = useState<string | null>(null);
+  const [variantLimitAlert, setVariantLimitAlert] = useState<string | null>(null);
+  const prevWizardVariantCountRef = useRef(0);
 
   // Edit-modal variant picker
   const [editSizes, setEditSizes] = useState<VariantOption[]>([]);
@@ -1319,11 +1321,26 @@ export default function AdminCustomizerPages() {
     return sizeCount * colorCount;
   }, [wizardSizeIds.size, wizardColorIds.size, wizardColors.length]);
 
+  const wizardVariantOverLimit = wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
   const wizardVariantCountValid =
     wizardVariantsReady &&
     wizardSizes.length > 0 &&
     wizardVariantCount > 0 &&
-    wizardVariantCount <= SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
+    !wizardVariantOverLimit;
+
+  useEffect(() => {
+    if (formStep !== 3) {
+      prevWizardVariantCountRef.current = wizardVariantCount;
+      return;
+    }
+    const prev = prevWizardVariantCountRef.current;
+    prevWizardVariantCountRef.current = wizardVariantCount;
+    if (!wizardVariantsReady || !wizardVariantOverLimit) return;
+    if (prev > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) return;
+    setVariantLimitAlert(
+      `You have ${wizardVariantCount} variants — Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Deselect unwanted sizes or colours to get under ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} before you can set pricing.`,
+    );
+  }, [formStep, wizardVariantCount, wizardVariantOverLimit, wizardVariantsReady]);
 
   async function loadWizardVariants(blueprintId: number, providerId: number) {
     setWizardVariantsLoading(true);
@@ -1762,12 +1779,15 @@ export default function AdminCustomizerPages() {
   /** Step 3 (variants) → Step 4 (pricing). Applies supplier + size/colour picks. */
   function advanceFromVariants() {
     if (!wizardVariantCountValid) {
+      if (wizardVariantOverLimit) {
+        setVariantLimitAlert(
+          `You have ${wizardVariantCount} variants — Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Deselect unwanted sizes or colours to get under ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} before you can set pricing.`,
+        );
+        return;
+      }
       toast({
         title: "Select variants",
-        description:
-          wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
-            ? `Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants. Deselect some sizes or colours.`
-            : "Wait for sizes/colours to load, then select at least one of each.",
+        description: "Wait for sizes/colours to load, then select at least one of each.",
         variant: "destructive",
       });
       return;
@@ -2459,12 +2479,45 @@ export default function AdminCustomizerPages() {
                 {/* ── STEP 3: Variants ── */}
                 {formStep === 3 && (
                   <div className="flex flex-col min-h-0 flex-1 pt-2">
-                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
+                    <div
+                      className={`shrink-0 sticky top-0 z-10 space-y-2 pb-3 ${
+                        wizardVariantOverLimit
+                          ? "rounded-md border border-destructive/40 bg-destructive/5 px-3 pt-2"
+                          : ""
+                      }`}
+                    >
                       <p className="text-sm text-muted-foreground">
                         Choose sizes and colours for{" "}
                         <strong>{wizardProviderLabel ?? "this supplier"}</strong>. Shopify allows up to{" "}
                         {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants.
                       </p>
+                      <div
+                        className={`flex items-center justify-between rounded-md border px-3 py-2 ${
+                          wizardVariantOverLimit
+                            ? "border-destructive/50 bg-background"
+                            : "bg-muted/40"
+                        }`}
+                      >
+                        <span className="text-sm font-medium">Total variants</span>
+                        <span
+                          className={`text-lg font-bold tabular-nums ${
+                            wizardVariantCountValid ? "text-green-600" : "text-destructive"
+                          }`}
+                        >
+                          {wizardVariantCount} / {SHOPIFY_MAX_VARIANTS_PER_PRODUCT}
+                        </span>
+                      </div>
+                      {wizardVariantOverLimit && (
+                        <p className="text-sm text-destructive flex items-start gap-2">
+                          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                          <span>
+                            Over Shopify’s {SHOPIFY_MAX_VARIANTS_PER_PRODUCT}-variant limit. Deselect
+                            unwanted sizes or colours to continue to pricing.
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                       {(prepareProviderMutation.isPending ||
                         (costsLoading && formStep === 3) ||
                         (costsAvailable && formStep === 3)) && (
@@ -2481,16 +2534,6 @@ export default function AdminCustomizerPages() {
                                 : null}
                         </p>
                       )}
-                      <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
-                        <span className="text-sm font-medium">Total variants</span>
-                        <span
-                          className={`text-lg font-bold ${
-                            wizardVariantCountValid ? "text-green-600" : "text-destructive"
-                          }`}
-                        >
-                          {wizardVariantCount}
-                        </span>
-                      </div>
                       {wizardVariantsLoading ? (
                         <div className="flex flex-col items-center justify-center py-10 gap-2">
                           <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -2617,26 +2660,41 @@ export default function AdminCustomizerPages() {
                         </>
                       )}
                     </div>
-                    <div className="flex gap-2 pt-2 shrink-0">
-                      <Button
-                        variant="outline"
-                        className="flex-1"
-                        onClick={() => setFormStep(2)}
-                        disabled={applySupplierAndVariantsMutation.isPending}
-                      >
-                        Back
-                      </Button>
-                      <Button
-                        className="flex-1"
-                        onClick={advanceFromVariants}
-                        disabled={!wizardVariantCountValid || applySupplierAndVariantsMutation.isPending}
-                      >
-                        {applySupplierAndVariantsMutation.isPending ? (
-                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Applying…</>
-                        ) : (
-                          <>Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" /></>
-                        )}
-                      </Button>
+                    <div className="shrink-0 space-y-2 pt-2">
+                      {wizardVariantOverLimit && (
+                        <p className="text-xs text-destructive">
+                          Deselect sizes or colours until you are at {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} or fewer.
+                        </p>
+                      )}
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          className="flex-1"
+                          onClick={() => setFormStep(2)}
+                          disabled={applySupplierAndVariantsMutation.isPending}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          className="flex-1"
+                          onClick={advanceFromVariants}
+                          disabled={
+                            applySupplierAndVariantsMutation.isPending ||
+                            (!wizardVariantCountValid && !wizardVariantOverLimit)
+                          }
+                          title={
+                            wizardVariantOverLimit
+                              ? `Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants. Deselect sizes or colours.`
+                              : undefined
+                          }
+                        >
+                          {applySupplierAndVariantsMutation.isPending ? (
+                            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Applying…</>
+                          ) : (
+                            <>Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" /></>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -4126,6 +4184,23 @@ export default function AdminCustomizerPages() {
         productTypeId={syncPricesTarget?.productTypeId ?? 0}
         customizerPageId={syncPricesTarget?.id}
       />
+
+      <AlertDialog open={!!variantLimitAlert} onOpenChange={(v) => !v && setVariantLimitAlert(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Too many variants</AlertDialogTitle>
+            <AlertDialogDescription>
+              {variantLimitAlert ||
+                `Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product. Deselect unwanted sizes or colours to continue.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setVariantLimitAlert(null)}>
+              Deselect variants
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!placeholderStepAlert} onOpenChange={(v) => !v && setPlaceholderStepAlert(null)}>
         <AlertDialogContent>
