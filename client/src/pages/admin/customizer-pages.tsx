@@ -31,6 +31,13 @@ import {
 import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
 import { condenseVariantPriceRows, unifySameSizeSuggestedPrices } from "@shared/condenseVariantPrices";
 import { dedupeCreatePageBlanks } from "@shared/productTypePicker";
+import { resolveVariantCostCents, variantCostLabelsMatch } from "@shared/printifyCostLabels";
+import {
+  comboSetFromPairs,
+  countExistingVariantCombos,
+  isAllowedVariantCombo,
+  type VariantComboPair,
+} from "@shared/variantCombinations";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
   return normalizeSelectionId(a) === normalizeSelectionId(b);
@@ -47,6 +54,7 @@ function buildVariantsFromAxes(
   colors: VariantOption[],
   sizeIds: string[],
   colorIds: string[],
+  comboSet?: Set<string> | null,
 ): BlankVariant[] {
   const sizeSet = sizeIds.length ? new Set(sizeIds.map(normalizeSelectionId)) : null;
   const colorSet = colorIds.length ? new Set(colorIds.map(normalizeSelectionId)) : null;
@@ -59,17 +67,34 @@ function buildVariantsFromAxes(
   const rows: BlankVariant[] = [];
   if (colorsToUse.length === 0) {
     for (const size of sizesToUse) {
+      if (!isAllowedVariantCombo(size.id, "", comboSet)) continue;
       rows.push({ id: `size:${size.id}`, title: size.name, price: "0.00" });
     }
-    return rows;
+    return rows.length > 0
+      ? rows
+      : sizesToUse.map((size) => ({ id: `size:${size.id}`, title: size.name, price: "0.00" }));
   }
   for (const size of sizesToUse) {
     for (const color of colorsToUse) {
+      if (!isAllowedVariantCombo(size.id, color.id, comboSet)) continue;
       rows.push({
         id: `size:${size.id}:${color.id}`,
         title: `${size.name} / ${color.name}`,
         price: "0.00",
       });
+    }
+  }
+  // Combo ids can drift from wizard slugs — keep cartesian so the Printify-label
+  // filter on the pricing step can still drop the real phantoms.
+  if (rows.length === 0 && comboSet && comboSet.size > 0) {
+    for (const size of sizesToUse) {
+      for (const color of colorsToUse) {
+        rows.push({
+          id: `size:${size.id}:${color.id}`,
+          title: `${size.name} / ${color.name}`,
+          price: "0.00",
+        });
+      }
     }
   }
   return rows;
@@ -79,10 +104,11 @@ function buildVariantsFromAxes(
 function trimSelectionToShopifyMax(
   sizeIds: string[],
   colorIds: string[],
+  comboSet?: Set<string> | null,
 ): { sizeIds: string[]; colorIds: string[]; count: number; capped: boolean } {
   let sizes = sizeIds.filter(Boolean);
   let colors = colorIds.filter(Boolean);
-  const countOf = () => sizes.length * (colors.length > 0 ? colors.length : 1);
+  const countOf = () => countExistingVariantCombos(sizes, colors, comboSet);
   if (sizes.length === 0) {
     return { sizeIds: sizes, colorIds: colors, count: 0, capped: false };
   }
@@ -97,7 +123,6 @@ function trimSelectionToShopifyMax(
   }
   return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: true };
 }
-import { resolveVariantCostCents } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -370,6 +395,7 @@ export default function AdminCustomizerPages() {
   const [wizardProviderId, setWizardProviderId] = useState<number | null>(null);
   const [wizardSizes, setWizardSizes] = useState<VariantOption[]>([]);
   const [wizardColors, setWizardColors] = useState<VariantOption[]>([]);
+  const [wizardCombinations, setWizardCombinations] = useState<VariantComboPair[]>([]);
   const [wizardSizeIds, setWizardSizeIds] = useState<Set<string>>(new Set());
   const [wizardColorIds, setWizardColorIds] = useState<Set<string>>(new Set());
   const [wizardVariantsLoading, setWizardVariantsLoading] = useState(false);
@@ -824,6 +850,7 @@ export default function AdminCustomizerPages() {
     setWizardProviderId(null);
     setWizardSizes([]);
     setWizardColors([]);
+    setWizardCombinations([]);
     setWizardSizeIds(new Set());
     setWizardColorIds(new Set());
     setWizardVariantsReady(false);
@@ -867,46 +894,10 @@ export default function AdminCustomizerPages() {
     return canonical === formProductId || formProductId === `pt:${b.productTypeId}`;
   });
 
-  /**
-   * Deduplicate variants by full label — keeps all distinct variants including
-   * products with meaningful material/color variants (e.g. Body Pillow: Polyester
-   * vs Microfiber). Phone cases with cosmetic color variants will show multiple rows
-   * but the auto-calculator fills them with the same price.
-   */
-  const selectedVariants: BlankVariant[] = useMemo(() => {
-    const fromWizard =
-      wizardSizeIds.size > 0
-        ? buildVariantsFromAxes(
-            wizardSizes.length ? wizardSizes : (selectedBlank?.sizes ?? []),
-            wizardColors.length ? wizardColors : (selectedBlank?.frameColors ?? []),
-            Array.from(wizardSizeIds),
-            Array.from(wizardColorIds),
-          )
-        : [];
-    // After Apply, pricing must follow the wizard picks even if /blanks is still
-    // refreshing (that refetch is slow and used to fail the whole Next click).
-    if (formStep >= 4 && fromWizard.length > 0) return fromWizard;
-    const raw = selectedBlank?.variants ?? [];
-    const seen = new Set<string>();
-    const deduped: BlankVariant[] = [];
-    for (const v of raw) {
-      if (!seen.has(v.title)) {
-        seen.add(v.title);
-        deduped.push(v);
-      }
-    }
-    if (deduped.length > 0) return deduped;
-    return fromWizard;
-  }, [
-    formStep,
-    selectedBlank?.variants,
-    selectedBlank?.sizes,
-    selectedBlank?.frameColors,
-    wizardSizes,
-    wizardColors,
-    wizardSizeIds,
-    wizardColorIds,
-  ]);
+  const wizardComboSet = useMemo(
+    () => comboSetFromPairs(wizardCombinations),
+    [wizardCombinations],
+  );
 
   // Printify costs query -- fetches production costs via temporary product probe
   const {
@@ -943,6 +934,58 @@ export default function AdminCustomizerPages() {
       (wizardProviderId == null || selectedBlank.printifyProviderId === wizardProviderId),
     retry: false,
   });
+
+  /**
+   * Deduplicate variants by full label — keeps all distinct variants including
+   * products with meaningful material/color variants (e.g. Body Pillow: Polyester
+   * vs Microfiber). Phone cases with cosmetic color variants will show multiple rows
+   * but the auto-calculator fills them with the same price.
+   */
+  const selectedVariants: BlankVariant[] = useMemo(() => {
+    const fromWizard =
+      wizardSizeIds.size > 0
+        ? buildVariantsFromAxes(
+            wizardSizes.length ? wizardSizes : (selectedBlank?.sizes ?? []),
+            wizardColors.length ? wizardColors : (selectedBlank?.frameColors ?? []),
+            Array.from(wizardSizeIds),
+            Array.from(wizardColorIds),
+            wizardComboSet,
+          )
+        : [];
+    const dropUnavailable = (rows: BlankVariant[]) => {
+      const labels = costsData?.printifyVariantLabels;
+      if (!labels || Object.keys(labels).length === 0) return rows;
+      const kept = rows.filter((v) =>
+        Object.values(labels).some((label) => variantCostLabelsMatch(v.title, label)),
+      );
+      return kept.length > 0 ? kept : rows;
+    };
+    // After Apply, pricing must follow the wizard picks even if /blanks is still
+    // refreshing (that refetch is slow and used to fail the whole Next click).
+    if (formStep >= 4 && fromWizard.length > 0) return dropUnavailable(fromWizard);
+    const raw = selectedBlank?.variants ?? [];
+    const seen = new Set<string>();
+    const deduped: BlankVariant[] = [];
+    for (const v of raw) {
+      if (!seen.has(v.title)) {
+        seen.add(v.title);
+        deduped.push(v);
+      }
+    }
+    if (deduped.length > 0) return dropUnavailable(deduped);
+    return dropUnavailable(fromWizard);
+  }, [
+    formStep,
+    selectedBlank?.variants,
+    selectedBlank?.sizes,
+    selectedBlank?.frameColors,
+    wizardSizes,
+    wizardColors,
+    wizardSizeIds,
+    wizardColorIds,
+    wizardComboSet,
+    costsData?.printifyVariantLabels,
+  ]);
 
   const costsErrorPayload = useMemo(() => {
     if (!costsFetchError) return null;
@@ -1127,16 +1170,21 @@ export default function AdminCustomizerPages() {
     return unifySameSizeSuggestedPrices(selectedVariants, result);
   }, [supportsBothSidePricing, costsData, selectedVariants, markupPercent]);
 
-  const condensedPriceRows = useMemo(
-    () =>
-      condenseVariantPriceRows(
-        selectedVariants,
-        variantPrices,
-        variantPricesBoth,
-        supportsBothSidePricing,
-      ),
-    [selectedVariants, variantPrices, variantPricesBoth, supportsBothSidePricing],
-  );
+  const condensedPriceRows = useMemo(() => {
+    const rows = condenseVariantPriceRows(
+      selectedVariants,
+      variantPrices,
+      variantPricesBoth,
+      supportsBothSidePricing,
+    );
+    if (!costsAvailable) return rows;
+    return rows.filter((row) =>
+      row.variantIds.some((id) => {
+        const v = selectedVariants.find((x) => x.id === id);
+        return v != null && resolveFrontCostCents(v) != null;
+      }),
+    );
+  }, [selectedVariants, variantPrices, variantPricesBoth, supportsBothSidePricing, costsAvailable, costsData]);
 
   function setGroupRetailPrice(variantIds: string[], value: string) {
     setVariantPrices((prev) => {
@@ -1296,12 +1344,10 @@ export default function AdminCustomizerPages() {
     wizardProvidersData?.find((p) => p.id === wizardProviderId)?.title ?? selectedBlankProviderLabel;
 
   const wizardVariantCount = useMemo(() => {
-    const sizeCount = wizardSizeIds.size;
-    if (sizeCount === 0) return 0;
-    const colorCount = wizardColors.length === 0 ? 1 : wizardColorIds.size;
-    if (wizardColors.length > 0 && colorCount === 0) return 0;
-    return sizeCount * colorCount;
-  }, [wizardSizeIds.size, wizardColorIds.size, wizardColors.length]);
+    if (wizardSizeIds.size === 0) return 0;
+    if (wizardColors.length > 0 && wizardColorIds.size === 0) return 0;
+    return countExistingVariantCombos(wizardSizeIds, wizardColorIds, wizardComboSet);
+  }, [wizardSizeIds, wizardColorIds, wizardColors.length, wizardComboSet]);
 
   const wizardVariantOverLimit = wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
   const wizardVariantCountValid =
@@ -1329,6 +1375,7 @@ export default function AdminCustomizerPages() {
     setWizardVariantsReady(false);
     setWizardSizes([]);
     setWizardColors([]);
+    setWizardCombinations([]);
     setWizardSizeIds(new Set());
     setWizardColorIds(new Set());
     try {
@@ -1340,9 +1387,11 @@ export default function AdminCustomizerPages() {
       const data = await res.json();
       const sizes: VariantOption[] = data.sizes || [];
       const colors: VariantOption[] = data.colors || [];
+      const combinations: VariantComboPair[] = Array.isArray(data.combinations) ? data.combinations : [];
       if (sizes.length === 0) throw new Error("Printify returned no sizes for this supplier");
       setWizardSizes(sizes);
       setWizardColors(colors);
+      setWizardCombinations(combinations);
       // Prefer current product picks when staying on the same supplier
       const sameProvider = providerId === selectedBlank?.printifyProviderId;
       const savedSizes = selectedBlank?.selectedSizeIds ?? [];
@@ -1355,7 +1404,7 @@ export default function AdminCustomizerPages() {
         sameProvider && savedColors.length > 0 && colors.length > 0
           ? colors.filter((c) => savedColors.some((id) => selectionIdEq(c.id, id))).map((c) => c.id)
           : colors.map((c) => c.id);
-      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors, comboSetFromPairs(combinations));
       setWizardSizeIds(new Set(trimmed.sizeIds));
       setWizardColorIds(new Set(trimmed.colorIds));
       setWizardVariantsReady(true);
@@ -1555,6 +1604,7 @@ export default function AdminCustomizerPages() {
       const trimmed = trimSelectionToShopifyMax(
         wizardSizes.map((s) => s.id),
         wizardColors.map((c) => c.id),
+        wizardComboSet,
       );
       return runEnsureWizardProvider({
         sizeIds: trimmed.sizeIds,

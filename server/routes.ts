@@ -13862,6 +13862,7 @@ ${orientationExtra}
       // Parse variants to extract sizes and colors (simplified version of import logic)
       const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
       const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
+      const combinations: { sizeId: string; colorId: string }[] = [];
       
       const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
       const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
@@ -13964,6 +13965,12 @@ ${orientationExtra}
         }
         
         const colorName = extractPrintifyColorName(options, title);
+        if (extractedSizeId) {
+          combinations.push({
+            sizeId: extractedSizeId,
+            colorId: colorName ? slugPrintifyColorId(colorName) : "",
+          });
+        }
 
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {
           const colorId = slugPrintifyColorId(colorName);
@@ -14023,7 +14030,8 @@ ${orientationExtra}
 
       res.json({
         sizes: Array.from(sizesMap.values()),
-        colors: Array.from(colorsMap.values())
+        colors: Array.from(colorsMap.values()),
+        combinations,
       });
     } catch (error) {
       console.error("Error fetching variant options:", error);
