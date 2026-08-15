@@ -8064,7 +8064,9 @@ ${orientationExtra}
 
       // Gallery limit check for logged-in customers (20 saved designs max; 30 for the
       // merchant's own design-studio identity — see getGalleryLimitForCustomer).
-      if (customerId) {
+      // Creator storefronts skip this hard block and evict oldest artworks after
+      // a successful generate (50 unique images per visitor).
+      if (!creatorCtx && customerId) {
         const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
         const savedCount = await db
           .select({ count: sql<number>`count(*)` })
@@ -8598,6 +8600,17 @@ ${orientationExtra}
           });
 
           if (workerCreatorCtx) {
+            void import("./creator-artwork-library")
+              .then(({ evictOldestCreatorArtworksIfNeeded }) =>
+                evictOldestCreatorArtworksIfNeeded({
+                  creatorId: workerCreatorCtx.id,
+                  sessionId: workerCreatorCtx.sessionId,
+                  customerId: workerCustomerId,
+                }),
+              )
+              .catch((e: any) =>
+                console.warn("[Storefront Generate] creator artwork eviction failed:", e?.message || e),
+              );
             // Creator dual quota: burn monthly allowance + per-creator free (or wallet credits).
             // Do not burn platform-shop merchant plan quota.
             // Pack-paid gens skip monthly allowance by default (CREATOR_PACK_GENS_BURN_ALLOWANCE opt-in).
@@ -20680,9 +20693,10 @@ ${orientationExtra}
     const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
     if (!dbPage) return res.status(404).json({ error: "Page not found" });
 
-    const { variantPrices, variantPricesBoth } = req.body as {
+    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
@@ -20748,17 +20762,25 @@ ${orientationExtra}
     // Expand printify: blank keys so embed lookups by Shopify variant id succeed.
     const ptId = matchedType?.id ?? (dbPage.productTypeId ? Number(dbPage.productTypeId) : null);
     let bothKeyCount = 0;
-    if (ptId && variantPricesBoth && typeof variantPricesBoth === "object") {
-      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
-        variantMap: matchedType?.variantMap,
-        shopifyVariantIds: matchedType?.shopifyVariantIds,
-        sizes: matchedType?.sizes,
-        frameColors: matchedType?.frameColors,
-      });
-      bothKeyCount = Object.keys(expandedBoth).length;
-      await storage.updateProductType(ptId, {
-        variantPricesBoth: JSON.stringify(expandedBoth),
-      } as any);
+    if (ptId) {
+      const ptUpdates: Record<string, unknown> = {};
+      if (variantPricesBoth && typeof variantPricesBoth === "object") {
+        const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+          variantMap: matchedType?.variantMap,
+          shopifyVariantIds: matchedType?.shopifyVariantIds,
+          sizes: matchedType?.sizes,
+          frameColors: matchedType?.frameColors,
+        });
+        bothKeyCount = Object.keys(expandedBoth).length;
+        ptUpdates.variantPricesBoth = JSON.stringify(expandedBoth);
+      }
+      const markupNum = Number(defaultMarkupPercent);
+      if (Number.isFinite(markupNum) && markupNum > 0) {
+        ptUpdates.defaultMarkupPercent = Math.round(markupNum);
+      }
+      if (Object.keys(ptUpdates).length > 0) {
+        await storage.updateProductType(ptId, ptUpdates as any);
+      }
     }
 
     return res.json({
@@ -20800,9 +20822,10 @@ ${orientationExtra}
       });
     }
 
-    const { variantPrices, variantPricesBoth } = req.body as {
+    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
@@ -20833,6 +20856,7 @@ ${orientationExtra}
     });
 
     let bothKeyCount = 0;
+    const ptUpdates: Record<string, unknown> = {};
     if (variantPricesBoth && typeof variantPricesBoth === "object") {
       const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
         variantMap: productType.variantMap,
@@ -20841,9 +20865,14 @@ ${orientationExtra}
         frameColors: productType.frameColors,
       });
       bothKeyCount = Object.keys(expandedBoth).length;
-      await storage.updateProductType(productTypeId, {
-        variantPricesBoth: JSON.stringify(expandedBoth),
-      } as any);
+      ptUpdates.variantPricesBoth = JSON.stringify(expandedBoth);
+    }
+    const markupNum = Number(defaultMarkupPercent);
+    if (Number.isFinite(markupNum) && markupNum > 0) {
+      ptUpdates.defaultMarkupPercent = Math.round(markupNum);
+    }
+    if (Object.keys(ptUpdates).length > 0) {
+      await storage.updateProductType(productTypeId, ptUpdates as any);
     }
 
     return res.json({

@@ -4,6 +4,15 @@
  */
 
 export const DEFAULT_MARKUP_PERCENT = 70;
+/** Pre-70 default still stored on older product types — treat as unset. */
+export const LEGACY_DEFAULT_MARKUP_PERCENT = 60;
+
+/** Use 70% when markup is missing or still the old 60% default. */
+export function resolveMarkupPercent(saved: number | null | undefined): number {
+  if (saved == null || !Number.isFinite(saved)) return DEFAULT_MARKUP_PERCENT;
+  if (saved === LEGACY_DEFAULT_MARKUP_PERCENT) return DEFAULT_MARKUP_PERCENT;
+  return saved;
+}
 
 export type PricingStrategy = "maintain_margin" | "maintain_price" | "notify_only";
 export type ProductHealth = "healthy" | "needs_review" | "attention_required";

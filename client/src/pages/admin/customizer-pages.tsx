@@ -38,7 +38,7 @@ import {
   isAllowedVariantCombo,
   type VariantComboPair,
 } from "@shared/variantCombinations";
-import { DEFAULT_MARKUP_PERCENT } from "@shared/productIntelligence";
+import { DEFAULT_MARKUP_PERCENT, resolveMarkupPercent } from "@shared/productIntelligence";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
   return normalizeSelectionId(a) === normalizeSelectionId(b);
@@ -571,7 +571,7 @@ export default function AdminCustomizerPages() {
     // or a stale blanks refetch would wipe a just-fetched catalog description.
     setEditDescription(plainTextFromHtml(editBlank.description));
     setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
-    setEditMarkupPercent(String((editBlank as any).defaultMarkupPercent ?? DEFAULT_MARKUP_PERCENT));
+    setEditMarkupPercent(String(resolveMarkupPercent((editBlank as any).defaultMarkupPercent)));
     setEditMinMarginPercent(
       (editBlank as any).minMarginPercent != null ? String((editBlank as any).minMarginPercent) : "",
     );

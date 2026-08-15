@@ -35,7 +35,7 @@ import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
 import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
-import { DEFAULT_MARKUP_PERCENT } from "@shared/productIntelligence";
+import { DEFAULT_MARKUP_PERCENT, resolveMarkupPercent } from "@shared/productIntelligence";
 
 interface VariantOption {
   id: string;
@@ -1266,7 +1266,7 @@ export default function AdminProducts() {
                         onClick={() => {
                           setPricingTarget(pt);
                           setPricingStrategyDraft((pt as any).pricingStrategy || "notify_only");
-                          setPricingMarkupDraft(String((pt as any).defaultMarkupPercent ?? DEFAULT_MARKUP_PERCENT));
+                          setPricingMarkupDraft(String(resolveMarkupPercent((pt as any).defaultMarkupPercent)));
                           setPricingMinMarginDraft(
                             (pt as any).minMarginPercent != null
                               ? String((pt as any).minMarginPercent)

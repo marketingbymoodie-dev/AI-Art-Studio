@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  coerceVariantPricesBothMap,
   expandVariantPricesBothMap,
+  minBothRetailDollarsFromMap,
   resolveBothRetailDollarsFromMap,
 } from "./variantPricesBoth";
+
+describe("coerceVariantPricesBothMap", () => {
+  it("parses JSON strings and ignores invalid payloads", () => {
+    expect(coerceVariantPricesBothMap('{"S:Black":"29.95"}')).toEqual({
+      "S:Black": "29.95",
+    });
+    expect(coerceVariantPricesBothMap("{")).toEqual({});
+    expect(coerceVariantPricesBothMap(null)).toEqual({});
+  });
+});
 
 describe("expandVariantPricesBothMap", () => {
   const ctx = {
@@ -55,5 +67,41 @@ describe("resolveBothRetailDollarsFromMap", () => {
         { sizeName: "XL", colorName: "Ash" },
       ),
     ).toBe(34.95);
+  });
+
+  it("matches Shopify GID variant ids", () => {
+    expect(
+      resolveBothRetailDollarsFromMap(
+        { "99887766": "29.95" },
+        { shopifyVariantId: "gid://shopify/ProductVariant/99887766" },
+      ),
+    ).toBe(29.95);
+  });
+
+  it("does not treat S as a substring of XS", () => {
+    expect(
+      resolveBothRetailDollarsFromMap(
+        { "XS:Black": "24.95", "2XL:Black": "26.95" },
+        { sizeName: "S", colorName: "Black" },
+      ),
+    ).toBeNull();
+  });
+
+  it("returns the cheapest both-tier price from the map", () => {
+    expect(
+      minBothRetailDollarsFromMap({
+        "S:Black": "32.95",
+        "3XL:Black": "40.95",
+      }),
+    ).toBe(32.95);
+  });
+
+  it("uses the only both-tier price when keys do not match", () => {
+    expect(
+      resolveBothRetailDollarsFromMap(
+        { "printify:4011": "29.95", "printify:4012": "29.95" },
+        { sizeName: "S", colorName: "Black", shopifyVariantId: "123" },
+      ),
+    ).toBe(29.95);
   });
 });

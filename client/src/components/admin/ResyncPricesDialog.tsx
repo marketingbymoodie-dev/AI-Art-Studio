@@ -15,8 +15,13 @@ import {
 import { DollarSign, Loader2, RefreshCw } from "lucide-react";
 import { resolveVariantCostCents } from "@shared/printifyCostLabels";
 import {
+  condenseVariantPriceRows,
+  unifySameSizeSuggestedPrices,
+} from "@shared/condenseVariantPrices";
+import {
   DEFAULT_MARKUP_PERCENT,
   isNonPositiveRetailPrice,
+  resolveMarkupPercent,
   roundUpTo95,
 } from "@shared/productIntelligence";
 
@@ -136,9 +141,7 @@ export default function ResyncPricesDialog({
 
   useEffect(() => {
     if (!open) return;
-    const m = productTypeRow?.defaultMarkupPercent;
-    if (m != null && Number.isFinite(m)) setMarkupPercent(m);
-    else setMarkupPercent(DEFAULT_MARKUP_PERCENT);
+    setMarkupPercent(resolveMarkupPercent(productTypeRow?.defaultMarkupPercent));
   }, [open, productTypeRow?.defaultMarkupPercent]);
 
   const existingBothPrices = useMemo(() => {
@@ -176,7 +179,7 @@ export default function ResyncPricesDialog({
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
-    return result;
+    return unifySameSizeSuggestedPrices(variants, result);
   }, [costsAvailable, costsData, variants, markupPercent]);
 
   const recommendedPricesBoth = useMemo(() => {
@@ -194,8 +197,50 @@ export default function ResyncPricesDialog({
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
-    return result;
+    return unifySameSizeSuggestedPrices(variants, result);
   }, [supportsBothSidePricing, costsData, variants, markupPercent]);
+
+  const condensedPriceRows = useMemo(() => {
+    const rows = condenseVariantPriceRows(
+      variants,
+      pricesMap,
+      pricesBothMap,
+      supportsBothSidePricing,
+    );
+    if (!costsAvailable) return rows;
+    const matched = rows.filter((row) =>
+      row.variantIds.some((id) => {
+        const v = variants.find((x) => x.id === id);
+        return (
+          v != null &&
+          lookupVariantCostCents(
+            v,
+            costsData?.costs,
+            costsData?.shopifyVariantCosts,
+            costsData?.costsByNormalizedLabel,
+            costsData?.printifyVariantLabels,
+          ) != null
+        );
+      }),
+    );
+    return matched.length > 0 ? matched : rows;
+  }, [variants, pricesMap, pricesBothMap, supportsBothSidePricing, costsAvailable, costsData]);
+
+  function setGroupRetailPrice(variantIds: string[], value: string) {
+    setPricesMap((prev) => {
+      const next = { ...prev };
+      for (const id of variantIds) next[id] = value;
+      return next;
+    });
+  }
+
+  function setGroupRetailPriceBoth(variantIds: string[], value: string) {
+    setPricesBothMap((prev) => {
+      const next = { ...prev };
+      for (const id of variantIds) next[id] = value;
+      return next;
+    });
+  }
 
   // Reset maps only when the dialog opens / product changes — NOT when
   // existingBothPrices arrives later (that used to wipe suggested front prices
@@ -204,7 +249,7 @@ export default function ResyncPricesDialog({
     if (!open) {
       setPricesMap({});
       setPricesBothMap({});
-      setMarkupPercent(60);
+      setMarkupPercent(DEFAULT_MARKUP_PERCENT);
       return;
     }
     const prefilled: Record<string, string> = {};
@@ -353,6 +398,7 @@ export default function ResyncPricesDialog({
       const res = await apiRequest("POST", endpoint, {
         variantPrices: prices,
         ...(pricesBoth ? { variantPricesBoth: pricesBoth } : {}),
+        defaultMarkupPercent: markupPercent,
       });
       const data = await res.json();
       if (data.success) {
@@ -519,57 +565,80 @@ export default function ResyncPricesDialog({
                 </p>
               ) : (
                 <div className="space-y-2 overflow-y-auto pr-1 min-h-0 flex-1">
-                  {variants.map((v) => (
-                    <div key={v.id} className="space-y-1">
-                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        {v.title}
-                      </Label>
-                      <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
-                        <div className="space-y-1">
-                          <div className="flex justify-between items-end gap-2">
-                            <span className="text-[10px] text-muted-foreground">
-                              {supportsBothSidePricing ? "Front only" : "Retail"}
-                            </span>
-                            {recommendedPrices[v.id] ? (
-                              <span className="text-[10px] text-muted-foreground">
-                                Suggested: ${recommendedPrices[v.id]}
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                            <Input
-                              className={`pl-7 text-sm h-9 ${isZeroOrEmptyPrice(pricesMap[v.id]) ? "border-red-500 focus-visible:ring-red-500" : ""}`}
-                              placeholder="enter price"
-                              value={pricesMap[v.id] ?? ""}
-                              onChange={(e) => setPricesMap({ ...pricesMap, [v.id]: e.target.value })}
-                            />
-                          </div>
-                        </div>
-                        {supportsBothSidePricing && (
+                  {condensedPriceRows.length > 6 && (
+                    <p className="text-[10px] text-muted-foreground">
+                      {condensedPriceRows.length} price groups ({variants.length} variants) — same-price colours share a row
+                    </p>
+                  )}
+                  {condensedPriceRows.map((row) => {
+                    const suggestedFront = (() => {
+                      const vals = new Set(
+                        row.variantIds.map((id) => recommendedPrices[id]).filter(Boolean),
+                      );
+                      return vals.size === 1 ? Array.from(vals)[0] : undefined;
+                    })();
+                    const suggestedBoth = (() => {
+                      const vals = new Set(
+                        row.variantIds.map((id) => recommendedPricesBoth[id]).filter(Boolean),
+                      );
+                      return vals.size === 1 ? Array.from(vals)[0] : undefined;
+                    })();
+                    const frontEmpty = row.variantIds.some((id) => isZeroOrEmptyPrice(pricesMap[id]));
+                    const bothEmpty =
+                      supportsBothSidePricing &&
+                      row.variantIds.some((id) => isZeroOrEmptyPrice(pricesBothMap[id]));
+                    return (
+                      <div key={row.key} className="space-y-1">
+                        <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          {row.label}
+                        </Label>
+                        <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
                           <div className="space-y-1">
                             <div className="flex justify-between items-end gap-2">
-                              <span className="text-[10px] text-muted-foreground">Front + back</span>
-                              {recommendedPricesBoth[v.id] ? (
+                              <span className="text-[10px] text-muted-foreground">
+                                {supportsBothSidePricing ? "Front only" : "Retail"}
+                              </span>
+                              {suggestedFront ? (
                                 <span className="text-[10px] text-muted-foreground">
-                                  Suggested: ${recommendedPricesBoth[v.id]}
+                                  Suggested: ${suggestedFront}
                                 </span>
                               ) : null}
                             </div>
                             <div className="relative">
                               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                               <Input
-                                className={`pl-7 text-sm h-9 ${isZeroOrEmptyPrice(pricesBothMap[v.id]) ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                                className={`pl-7 text-sm h-9 ${frontEmpty ? "border-red-500 focus-visible:ring-red-500" : ""}`}
                                 placeholder="enter price"
-                                value={pricesBothMap[v.id] ?? ""}
-                                onChange={(e) => setPricesBothMap({ ...pricesBothMap, [v.id]: e.target.value })}
+                                value={row.price}
+                                onChange={(e) => setGroupRetailPrice(row.variantIds, e.target.value)}
                               />
                             </div>
                           </div>
-                        )}
+                          {supportsBothSidePricing && (
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-end gap-2">
+                                <span className="text-[10px] text-muted-foreground">Front + back</span>
+                                {suggestedBoth ? (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    Suggested: ${suggestedBoth}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                                <Input
+                                  className={`pl-7 text-sm h-9 ${bothEmpty ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                                  placeholder="enter price"
+                                  value={row.priceBoth}
+                                  onChange={(e) => setGroupRetailPriceBoth(row.variantIds, e.target.value)}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </>

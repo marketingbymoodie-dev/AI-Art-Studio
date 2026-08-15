@@ -26,7 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
@@ -92,12 +92,20 @@ import {
   detectStylePromptMismatch,
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
-import { resolveBothRetailDollarsFromMap } from "@shared/variantPricesBoth";
+import {
+  coerceVariantPricesBothMap,
+  minBothRetailDollarsFromMap,
+  resolveBothRetailDollarsFromMap,
+} from "@shared/variantPricesBoth";
 import {
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_LIMIT,
   storefrontArtworksRemaining,
 } from "@shared/storefront-credits";
+import {
+  CREATOR_ARTWORK_LIMIT,
+  CREATOR_ARTWORK_STRIP_LIMIT,
+} from "@shared/creatorArtworkLibrary";
 import {
   canvasOrientationFromAspect,
   filterSizesByCanvasOrientation,
@@ -805,15 +813,6 @@ function clearReuseHandoff() {
       /* ignore */
     }
   }
-}
-
-async function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("Failed to read image"));
-    reader.readAsDataURL(blob);
-  });
 }
 
 async function fetchReuseArtworkBlob(imageUrl: string): Promise<Blob> {
@@ -1775,6 +1774,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [reusePagesLoading, setReusePagesLoading] = useState(false);
   const [reuseDialog, setReuseDialog] = useState<ReuseDialogState | null>(null);
   const [recentCreatorDesigns, setRecentCreatorDesigns] = useState<RecentCreatorDesign[]>([]);
+  const [showCreatorArtworkModal, setShowCreatorArtworkModal] = useState(false);
+  const [pendingDeleteCreatorDesign, setPendingDeleteCreatorDesign] = useState<RecentCreatorDesign | null>(null);
+  const [deletingCreatorDesignId, setDeletingCreatorDesignId] = useState<string | null>(null);
   const [reuseBusy, setReuseBusy] = useState(false);
   const [reuseBusyLabel, setReuseBusyLabel] = useState("Preparing artwork…");
   const autoReuseGenerateDoneRef = useRef(false);
@@ -1788,7 +1790,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     prompt: string;
     referenceImagesBase64: string[];
   } | null>(null);
-  const [reuseGenerateTick, setReuseGenerateTick] = useState(0);
+  /** Reuse/ref is staged — show Generate instead of auto-spending a credit. */
+  const [reuseAwaitingGenerate, setReuseAwaitingGenerate] = useState(false);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -2245,7 +2248,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStorefront, isMerchantStudio, shopDomain, anonSessionId]);
 
-  useEffect(() => {
+  const refreshRecentCreatorDesigns = useCallback(() => {
     if (!isCreatorStorefront) return;
     const username = creatorUsernameRaw || creatorUsernameParam;
     if (!username) return;
@@ -2276,8 +2279,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     creatorUsernameRaw,
     creatorUsernameParam,
     storefrontCustomerId,
-    generatedDesign?.imageUrl,
   ]);
+
+  useEffect(() => {
+    refreshRecentCreatorDesigns();
+  }, [refreshRecentCreatorDesigns, generatedDesign?.imageUrl]);
 
   // merchant-studio identity: resolve/create a dedicated "merchant" customer record via the
   // admin-authenticated session (App Bridge token / admin cookie), instead of the anonymous
@@ -3416,10 +3422,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
-      variantPricesBoth:
-        dc.variantPricesBoth && typeof dc.variantPricesBoth === "object"
-          ? dc.variantPricesBoth
-          : {},
+      variantPricesBoth: coerceVariantPricesBothMap(dc.variantPricesBoth),
       isAllOverPrint: dc.isAllOverPrint || false,
       useAopCustomizer: dc.useAopCustomizer,
       storefrontMockupMode: dc.storefrontMockupMode ?? null,
@@ -3855,10 +3858,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
-            variantPricesBoth:
-              designerConfig.variantPricesBoth && typeof designerConfig.variantPricesBoth === "object"
-                ? designerConfig.variantPricesBoth
-                : {},
+            variantPricesBoth: coerceVariantPricesBothMap(designerConfig.variantPricesBoth),
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             useAopCustomizer: designerConfig.useAopCustomizer,
             storefrontMockupMode: designerConfig.storefrontMockupMode ?? null,
@@ -4604,6 +4604,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setConfigLoading(true);
     setProductTypeError(null);
     setGeneratedDesign(null);
+    setReuseAwaitingGenerate(false);
     setDesignSource(null);
     setShowPatternStep(false);
     setAopPendingMotifUrl(null);
@@ -6776,6 +6777,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: imageUrl,
         prompt: prompt,
       });
+      setReuseAwaitingGenerate(false);
       if (isCreatorStorefront && imageUrl) {
         rememberCreatorLatestArtwork(imageUrl);
       }
@@ -7092,6 +7094,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     });
     // Reset input so same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = "";
+    // Adding a ref means the customer wants to generate — don't auto-fire,
+    // but swap ATC back to Generate so they can pick a style first.
+    if (generatedDesign) {
+      setReuseAwaitingGenerate(true);
+      loadDesignAppliedRef.current = false;
+      setBridgeLoadDesignId("");
+    }
   };
   const clearReferenceImage = (index?: number) => {
     if (index !== undefined) {
@@ -7141,8 +7150,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    // Pre-check: block generation immediately if gallery is full
-    if (savedDesigns.length >= galleryLimit) {
+    // Pre-check: block generation immediately if gallery is full.
+    // Creator storefronts evict the oldest artwork at 50 instead of blocking.
+    if (!isCreatorStorefront && savedDesigns.length >= galleryLimit) {
       setShowGalleryFullModal(true);
       // Scroll to top so the modal is visible on mobile (fixed positioning
       // inside an iframe doesn't work relative to the viewport)
@@ -9314,8 +9324,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             type: blob.type || "image/png",
           });
           const preview = URL.createObjectURL(blob);
-          const b64 = await blobToDataUrl(blob);
-          if (!b64) throw new Error("Could not read artwork for reference");
 
           setReuseBusyLabel("Switching product…");
           await switchToCustomizerPageByHandle(handle);
@@ -9323,21 +9331,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setReferenceImages([file]);
           setReferencePreviews([preview]);
           setPrompt(reusePromptText);
-          pendingReuseGenerateRef.current = {
-            prompt: reusePromptText,
-            referenceImagesBase64: [b64],
-          };
+          pendingReuseGenerateRef.current = null;
           autoReuseHydratedRef.current = true;
           autoReuseSeedingRef.current = true;
-          autoReuseGenerateDoneRef.current = false;
-          clearReuseHandoff();
-          setReuseBusyLabel("Starting regenerate…");
-          reuseRegeneratePendingToastRef.current = true;
-          toast({
-            title: "Regenerating for this product",
-            description: "Using 1 credit to recreate the artwork for the new shape.",
+          autoReuseGenerateDoneRef.current = true;
+          setGeneratedDesign({
+            id: opts.designId || `reuse-${Date.now()}`,
+            imageUrl: toAbsoluteImageUrl(opts.artworkUrl),
+            prompt: reusePromptText,
           });
-          setReuseGenerateTick((n) => n + 1);
+          setReuseAwaitingGenerate(true);
+          loadDesignAppliedRef.current = false;
+          setBridgeLoadDesignId("");
+          clearReuseHandoff();
+          toast({
+            title: "Reference image ready",
+            description: "Pick a style, then click Generate when you want a new image.",
+          });
           setReuseBusy(false);
           return;
         } catch (err: any) {
@@ -9562,24 +9572,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             type: blob.type || "image/png",
           });
           const preview = URL.createObjectURL(blob);
-          const b64 = await blobToDataUrl(blob);
-          if (!b64) throw new Error("Could not read artwork for reference");
           setReferenceImages([file]);
           setReferencePreviews([preview]);
           setPrompt(reusePromptText);
-          pendingReuseGenerateRef.current = {
-            prompt: reusePromptText,
-            referenceImagesBase64: [b64],
-          };
+          pendingReuseGenerateRef.current = null;
           autoReuseHydratedRef.current = true;
           autoReuseSeedingRef.current = true;
-          autoReuseGenerateDoneRef.current = false;
-          reuseRegeneratePendingToastRef.current = true;
-          toast({
-            title: "Regenerating for this product",
-            description: "Using 1 generation token to recreate the artwork for this shape.",
+          autoReuseGenerateDoneRef.current = true;
+          setGeneratedDesign({
+            id: opts.designId || `reuse-${Date.now()}`,
+            imageUrl: abs,
+            prompt: reusePromptText,
           });
-          setReuseGenerateTick((n) => n + 1);
+          setReuseAwaitingGenerate(true);
+          loadDesignAppliedRef.current = false;
+          setBridgeLoadDesignId("");
+          toast({
+            title: "Reference image ready",
+            description: "Pick a style, then click Generate when you want a new image.",
+          });
           setReuseBusy(false);
         } catch (err: any) {
           setReuseBusy(false);
@@ -9636,6 +9647,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       productHandle,
       toast,
     ],
+  );
+
+  const handleDeleteCreatorDesign = useCallback(
+    async (design: RecentCreatorDesign) => {
+      const username = creatorUsernameRaw || creatorUsernameParam;
+      if (!username || !design.jobId) return;
+      const sessionId = creatorSessionIdRef.current || getOrCreateCreatorSessionId();
+      const qs = new URLSearchParams();
+      if (sessionId) qs.set("sessionId", sessionId);
+      if (storefrontCustomerId) qs.set("customerId", storefrontCustomerId);
+      setDeletingCreatorDesignId(design.jobId);
+      try {
+        const r = await safeFetch(
+          `${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/recent-designs/${encodeURIComponent(design.jobId)}?${qs}`,
+          { method: "DELETE" },
+        );
+        if (!r.ok) {
+          const data = await r.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to delete artwork");
+        }
+        setRecentCreatorDesigns((prev) =>
+          prev.filter((d) => d.jobId !== design.jobId && toAbsoluteImageUrl(d.artworkUrl) !== toAbsoluteImageUrl(design.artworkUrl)),
+        );
+        setPendingDeleteCreatorDesign(null);
+      } catch (err: any) {
+        toast({
+          title: "Could not delete artwork",
+          description: err?.message || "Please try again.",
+          variant: "destructive",
+        });
+      } finally {
+        setDeletingCreatorDesignId(null);
+      }
+    },
+    [creatorUsernameRaw, creatorUsernameParam, storefrontCustomerId, toast],
   );
 
   const handleRecentCreatorDesignPick = useCallback(
@@ -9790,12 +9836,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           type: blob.type || "image/png",
         });
         const preview = URL.createObjectURL(blob);
-        const b64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(String(reader.result || ""));
-          reader.onerror = () => reject(new Error("Failed to read reused artwork"));
-          reader.readAsDataURL(blob);
-        });
         if (cancelled) return;
 
         const reusePromptText = originalPrompt
@@ -9805,13 +9845,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setReferenceImages([file]);
         setReferencePreviews([preview]);
         setPrompt(reusePromptText);
-        pendingReuseGenerateRef.current = {
+        pendingReuseGenerateRef.current = null;
+        setGeneratedDesign({
+          id: jobId || `reuse-${Date.now()}`,
+          imageUrl: toAbsoluteImageUrl(artworkUrl),
           prompt: reusePromptText,
-          referenceImagesBase64: b64 ? [b64] : [],
-        };
+        });
+        setReuseAwaitingGenerate(true);
+        loadDesignAppliedRef.current = false;
+        setBridgeLoadDesignId("");
         autoReuseHydratedRef.current = true;
+        autoReuseGenerateDoneRef.current = true;
         clearReuseHandoff();
         clearReuseUrlParams();
+        toast({
+          title: "Reference image ready",
+          description: "Pick a style, then click Generate when you want a new image.",
+        });
       } catch (err: any) {
         console.error("[ReuseArtwork] hydrate failed:", err);
         autoReuseSeedingRef.current = false;
@@ -9841,60 +9891,26 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     shopDomain,
   ]);
 
-  // Phase B: after refs are seeded, pick defaults and generate (1 credit).
+  // Phase B: after reuse refs are seeded, pick a default size only.
+  // Do not auto-generate — the customer picks a style and clicks Generate.
   useEffect(() => {
-    if (!autoReuseHydratedRef.current) return;
-    if (autoReuseGenerateDoneRef.current) return;
+    if (!reuseAwaitingGenerate && !autoReuseHydratedRef.current) return;
     if (configLoading || !productTypeConfig) return;
-    if (generateMutation.isPending || generatedDesign?.imageUrl) return;
-    const pending = pendingReuseGenerateRef.current;
-    if (!pending?.referenceImagesBase64?.length) return;
-
-    if (printSizes.length > 0 && !selectedSize) {
-      const first = printSizes[0];
-      if (first?.id) {
-        setSelectedSize(first.id);
-        if (frameOptionsRedundantWithSizes) {
-          const matched = resolveFrameColorForSize(first, frameColorObjects);
-          if (matched) setSelectedFrameColor(matched);
-        }
-      }
-      return;
+    if (printSizes.length === 0 || selectedSize) return;
+    const first = printSizes[0];
+    if (!first?.id) return;
+    setSelectedSize(first.id);
+    if (frameOptionsRedundantWithSizes) {
+      const matched = resolveFrameColorForSize(first, frameColorObjects);
+      if (matched) setSelectedFrameColor(matched);
     }
-
-    autoReuseGenerateDoneRef.current = true;
-    pendingReuseGenerateRef.current = null;
-    reuseRegeneratePendingToastRef.current = true;
-    toast({
-      title: "Regenerating for this product",
-      description: "Using 1 credit to recreate the artwork for the new shape.",
-    });
-    void handleGenerate({
-      skipStyleMismatchCheck: true,
-      overridePrompt: pending.prompt,
-      overrideReferenceImagesBase64: pending.referenceImagesBase64,
-    }).catch((err: any) => {
-      console.error("[ReuseArtwork] auto-generate failed:", err);
-      autoReuseGenerateDoneRef.current = false;
-      pendingReuseGenerateRef.current = pending;
-      reuseRegeneratePendingToastRef.current = false;
-      toast({
-        title: "Could not start regenerate",
-        description: err?.message || "Reference image is ready — pick style/size and Generate.",
-        variant: "destructive",
-      });
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    reuseGenerateTick,
-    referenceImages.length,
-    referencePreviews.length,
+    reuseAwaitingGenerate,
     selectedSize,
     printSizes,
     configLoading,
     productTypeConfig,
-    generateMutation.isPending,
-    generatedDesign?.imageUrl,
     frameOptionsRedundantWithSizes,
     frameColorObjects,
   ]);
@@ -11333,7 +11349,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setMockupsStale(false);
   }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
 
-  const bothPricesMap = productTypeConfig?.variantPricesBoth || {};
+  const bothPricesMap = coerceVariantPricesBothMap(productTypeConfig?.variantPricesBoth);
   const hasBothRetailPrices = Object.keys(bothPricesMap).length > 0;
   // Surcharge when BOTH sides are printed — from Print Side dropdown OR flat
   // PRINT ON FRONT + PRINT ON BACK toggles (saved designs often only set the latter).
@@ -11545,7 +11561,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     return (
       <div className={`flex-1 min-w-0 ${className}`}>
-        {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign ? (
+        {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign && !reuseAwaitingGenerate ? (
           addedToCart ? (
             <Button
               className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
@@ -11654,7 +11670,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               }
               handleGenerate();
             }}
-            disabled={!freshDesignAllowed || !!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
@@ -11685,6 +11701,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
                 onClick={() => {
                   setGeneratedDesign(null);
+                  setReuseAwaitingGenerate(false);
                   lastAopPanelUrlsRef.current = null;
                   setFlatPlacerState(null);
                   setFlatPlacerEditOpen(false);
@@ -11826,8 +11843,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             <AlertDialogDescription>
               {reuseDialog
                 ? reuseDialog.applyHere
-                  ? `${reuseDialog.title} has a different aspect ratio than this artwork. Keep the current image (you can scale and place it), or generate a new one to fit — that uses 1 generation token.`
-                  : `${reuseDialog.title} has a different aspect ratio than your current artwork. Keep the current image, or generate a new one to fit (uses 1 generation token).`
+                  ? `${reuseDialog.title} has a different aspect ratio than this artwork. Keep the current image (you can scale and place it), or attach it as a reference so you can pick a style and generate a new one (1 generation token).`
+                  : `${reuseDialog.title} has a different aspect ratio than your current artwork. Keep the current image, or attach it as a reference so you can pick a style and generate (1 generation token).`
                 : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -11901,9 +11918,128 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   Working…
                 </>
               ) : (
-                "Generate new (1 token)"
+                "Use as reference"
               )}
             </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={showCreatorArtworkModal} onOpenChange={setShowCreatorArtworkModal}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col" data-testid="dialog-creator-artworks">
+          <DialogHeader>
+            <DialogTitle>Your artwork</DialogTitle>
+            <DialogDescription>
+              {recentCreatorDesigns.length}/{CREATOR_ARTWORK_LIMIT} saved. Select one to use on this product, or delete artwork you no longer need.
+            </DialogDescription>
+          </DialogHeader>
+          {recentCreatorDesigns.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              No saved artwork yet. Generate a design to see it here.
+            </p>
+          ) : (
+            <div
+              data-appai-inner-scroll
+              className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[50vh] overflow-y-auto overscroll-contain pr-1"
+              onWheel={(e) => {
+                const el = e.currentTarget;
+                const atTop = el.scrollTop === 0;
+                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+                if (!(atTop && e.deltaY < 0) && !(atBottom && e.deltaY > 0)) {
+                  e.stopPropagation();
+                }
+              }}
+            >
+              {recentCreatorDesigns.map((d) => {
+                const selected =
+                  !!generatedDesign?.imageUrl &&
+                  toAbsoluteImageUrl(generatedDesign.imageUrl) ===
+                    toAbsoluteImageUrl(d.artworkUrl);
+                return (
+                  <div key={d.jobId || d.artworkUrl} className="relative group">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreatorArtworkModal(false);
+                        void handleRecentCreatorDesignPick(d);
+                      }}
+                      className={`w-full overflow-hidden rounded-md border bg-muted ${
+                        selected ? "border-foreground ring-1 ring-foreground" : "border-border hover:border-primary"
+                      }`}
+                      data-testid={`button-gallery-design-${d.jobId}`}
+                    >
+                      <div className="aspect-square">
+                        <img
+                          src={d.artworkUrl}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      {d.prompt ? (
+                        <p className="px-2 py-1.5 text-[10px] text-muted-foreground truncate text-left">
+                          {d.prompt}
+                        </p>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="absolute top-1 right-1 z-10 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-red-600"
+                      title="Delete artwork"
+                      data-testid={`button-delete-creator-design-${d.jobId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDeleteCreatorDesign(d);
+                      }}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={!!pendingDeleteCreatorDesign}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteCreatorDesign(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-delete-creator-artwork">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this artwork?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes it from Your artwork. You cannot undo this.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={!!deletingCreatorDesignId}
+              data-testid="button-delete-creator-artwork-cancel"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!!deletingCreatorDesignId}
+              data-testid="button-delete-creator-artwork-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                if (!pendingDeleteCreatorDesign) return;
+                void handleDeleteCreatorDesign(pendingDeleteCreatorDesign);
+              }}
+            >
+              {deletingCreatorDesignId ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Deleting…
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -12726,11 +12862,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
                     selected?.option2 ??
                     "";
-                  const bothPrice = resolveBothRetailDollars({
-                    sizeName,
-                    colorName,
-                    shopifyVariantId: selected?.id,
-                  });
+                  const bothPrice =
+                    resolveBothRetailDollars({
+                      sizeName,
+                      colorName,
+                      shopifyVariantId: selected?.id,
+                    }) ??
+                    (printPlacementUsesBoth
+                      ? minBothRetailDollarsFromMap(bothPricesMap)
+                      : null);
                   const headline = resolveStorefrontHeadlinePrice({
                     variants: shopifyVariants,
                     sizeSelected,
@@ -12755,7 +12895,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
                 <div className="hidden md:block flex-1 min-w-0">
-                  {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign ? (
+                  {(isShopify || isStorefront) && !isMerchantStudio && generatedDesign && !reuseAwaitingGenerate ? (
                     /* ── Add to Cart state ── */
                     addedToCart ? (
                       <Button
@@ -12869,7 +13009,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         handleGenerate();
                       }}
-                      disabled={!freshDesignAllowed || !!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -12901,6 +13041,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
                           onClick={() => {
                             setGeneratedDesign(null);
+                            setReuseAwaitingGenerate(false);
                             lastAopPanelUrlsRef.current = null;
                             setDesignSource(null);
                             setAddedToCart(false);
@@ -13355,12 +13496,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
               {isCreatorStorefront && recentCreatorDesigns.length > 0 ? (
                 <div className="space-y-1.5" data-testid="creator-recent-designs">
-                  <Label className="text-xs">Your artwork</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label className="text-xs">Your artwork</Label>
+                    <button
+                      type="button"
+                      className="text-[11px] font-medium text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0"
+                      onClick={() => setShowCreatorArtworkModal(true)}
+                      data-testid="button-see-more-artworks"
+                    >
+                      See more
+                    </button>
+                  </div>
                   <p className="text-[11px] text-muted-foreground leading-tight">
                     Use a design you already made, or generate a new one below.
                   </p>
                   <div className="flex gap-2 overflow-x-auto pb-1">
-                    {recentCreatorDesigns.map((d) => {
+                    {recentCreatorDesigns.slice(0, CREATOR_ARTWORK_STRIP_LIMIT).map((d) => {
                       const selected =
                         !!generatedDesign?.imageUrl &&
                         toAbsoluteImageUrl(generatedDesign.imageUrl) ===

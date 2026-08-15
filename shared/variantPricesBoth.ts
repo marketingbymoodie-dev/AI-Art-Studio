@@ -184,6 +184,42 @@ export function expandVariantPricesBothMap(
   return out;
 }
 
+/** Accept object or JSON-string both-tier maps from designer config. */
+export function coerceVariantPricesBothMap(raw: unknown): Record<string, string> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, string>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, string>;
+  }
+  return {};
+}
+
+function numericShopifyVariantId(raw: string): string {
+  const s = String(raw || "").trim();
+  const gid = s.match(/\/ProductVariant\/(\d+)/i);
+  return gid?.[1] || s;
+}
+
+function keyHasSizeToken(key: string, sizeName: string): boolean {
+  const sn = sizeName.trim().toLowerCase();
+  if (!sn) return false;
+  const kl = key.toLowerCase();
+  // Short labels like "S" must not match "XS" / "2XL" / "Ash".
+  if (sn.length <= 2) {
+    return kl.split(/[^a-z0-9]+/).filter(Boolean).includes(sn);
+  }
+  return kl.includes(sn);
+}
+
 /** Resolve a both-tier retail dollar amount from an (ideally expanded) price map. */
 export function resolveBothRetailDollarsFromMap(
   map: Record<string, string> | null | undefined,
@@ -199,10 +235,12 @@ export function resolveBothRetailDollarsFromMap(
   const sizeName = opts?.sizeName ?? "";
   const colorName = opts?.colorName ?? "";
   const vid = opts?.shopifyVariantId ? String(opts.shopifyVariantId) : "";
+  const vidNumeric = vid ? numericShopifyVariantId(vid) : "";
   const printifyId = opts?.printifyVariantId ? String(opts.printifyVariantId) : "";
 
   const candidates = [
     vid,
+    vidNumeric && vidNumeric !== vid ? vidNumeric : "",
     printifyId ? `printify:${printifyId}` : "",
     printifyId,
     colorName ? `${sizeName}:${colorName}` : "",
@@ -220,18 +258,41 @@ export function resolveBothRetailDollarsFromMap(
   }
 
   if (sizeName) {
-    const sn = sizeName.toLowerCase();
     const cn = colorName.toLowerCase();
     for (const [k, raw] of Object.entries(map)) {
       const kl = k.toLowerCase();
-      // Skip opaque printify-only keys in loose scan unless they somehow include the label.
-      if (kl.startsWith("printify:") && !kl.includes(sn)) continue;
-      if (!kl.includes(sn)) continue;
+      if (kl.startsWith("printify:") && !keyHasSizeToken(k, sizeName)) continue;
+      if (!keyHasSizeToken(k, sizeName)) continue;
       if (cn && !kl.includes(cn)) continue;
       const n = parseFloat(String(raw));
       if (Number.isFinite(n) && n > 0) return n;
     }
   }
 
-  return null;
+  // Last resort: one shared both-tier price across the map (common for S–XL).
+  const unique = new Set<string>();
+  let only: number | null = null;
+  for (const raw of Object.values(map)) {
+    const n = parseFloat(String(raw));
+    if (!Number.isFinite(n) || n <= 0) continue;
+    const key = n.toFixed(2);
+    unique.add(key);
+    only = n;
+    if (unique.size > 1) return null;
+  }
+  return only;
+}
+
+/** Cheapest both-tier retail in the map — used for “from $X” before a size is picked. */
+export function minBothRetailDollarsFromMap(
+  map: Record<string, string> | null | undefined,
+): number | null {
+  if (!map) return null;
+  let min: number | null = null;
+  for (const raw of Object.values(map)) {
+    const n = parseFloat(String(raw));
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (min == null || n < min) min = n;
+  }
+  return min;
 }

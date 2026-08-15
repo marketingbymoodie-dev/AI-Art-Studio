@@ -121,4 +121,30 @@ describe("resolveStorefrontHeadlinePrice", () => {
     });
     expect(headline).toEqual({ amount: 271.95, showFrom: false });
   });
+
+  it("shows the both-tier price when Print on Back is on", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [{ id: 1, price: "21.95" }],
+      sizeSelected: true,
+      matchedVariantId: "1",
+      bothPrice: 32.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline).toEqual({ amount: 32.95, showFrom: false });
+  });
+
+  it("shows from the cheapest both-tier price before a size is picked", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [
+        { id: 1, price: "21.95" },
+        { id: 2, price: "29.95" },
+      ],
+      sizeSelected: false,
+      bothPrice: 32.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline).toEqual({ amount: 32.95, showFrom: true });
+  });
 });

@@ -199,7 +199,7 @@ export function resolveStorefrontHeadlinePrice(args: {
 
   const both = args.bothPrice ?? null;
   if (args.printPlacementUsesBoth && both != null && both > 0) {
-    return { amount: both, showFrom: false };
+    return { amount: both, showFrom: !args.sizeSelected };
   }
 
   const cheapestN = parseShopifyVariantPrice(cheapest.price);
