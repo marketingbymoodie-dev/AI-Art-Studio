@@ -38,6 +38,7 @@ import {
   isAllowedVariantCombo,
   type VariantComboPair,
 } from "@shared/variantCombinations";
+import { DEFAULT_MARKUP_PERCENT } from "@shared/productIntelligence";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
   return normalizeSelectionId(a) === normalizeSelectionId(b);
@@ -363,9 +364,12 @@ export default function AdminCustomizerPages() {
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
+  const editTargetIdRef = useRef<string | null>(null);
+  editTargetIdRef.current = editTarget?.id ?? null;
   const [editDescription, setEditDescription] = useState("");
   const [editPricingStrategy, setEditPricingStrategy] = useState("notify_only");
-  const [editMarkupPercent, setEditMarkupPercent] = useState("60");
+  const [editMarkupPercent, setEditMarkupPercent] = useState(String(DEFAULT_MARKUP_PERCENT));
+  const [editDescriptionLoading, setEditDescriptionLoading] = useState(false);
   const [editMinMarginPercent, setEditMinMarginPercent] = useState("");
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
@@ -425,8 +429,8 @@ export default function AdminCustomizerPages() {
   const [costsShippingCountry, setCostsShippingCountry] = useState("US");
   const [costsShippingTier, setCostsShippingTier] = useState("standard");
 
-  // Markup percentage for recommended retail pricing (default 70%)
-  const [markupPercent, setMarkupPercent] = useState(70);
+  // Markup percentage for recommended retail pricing
+  const [markupPercent, setMarkupPercent] = useState(DEFAULT_MARKUP_PERCENT);
   const [appliedSuggestedKey, setAppliedSuggestedKey] = useState("");
 
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
@@ -556,42 +560,67 @@ export default function AdminCustomizerPages() {
   }, [editTarget, blanksData]);
 
   useEffect(() => {
-    if (!editTarget || !editBlank) return;
+    if (!editTarget) {
+      setEditDescription("");
+      setEditDescriptionLoading(false);
+      return;
+    }
+    if (!editBlank) return;
     const images = editBlank.baseMockupImages || {};
+    // Seed once per page/product — do not re-run when description arrives later
+    // or a stale blanks refetch would wipe a just-fetched catalog description.
     setEditDescription(plainTextFromHtml(editBlank.description));
     setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
-    setEditMarkupPercent(String((editBlank as any).defaultMarkupPercent ?? 60));
+    setEditMarkupPercent(String((editBlank as any).defaultMarkupPercent ?? DEFAULT_MARKUP_PERCENT));
     setEditMinMarginPercent(
       (editBlank as any).minMarginPercent != null ? String((editBlank as any).minMarginPercent) : "",
     );
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
-  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description]);
+  }, [editTarget?.id, editBlank?.productTypeId]);
 
   // Backfill Printify catalog copy when Create Page left description empty.
   useEffect(() => {
     if (!editTarget || !editBlank?.productTypeId) return;
-    if (String(editBlank.description || "").trim()) return;
+    if (String(editBlank.description || "").trim()) {
+      setEditDescriptionLoading(false);
+      return;
+    }
     if (!editBlank.printifyBlueprintId) return;
-    let cancelled = false;
+    const pageId = editTarget.id;
+    const productTypeId = editBlank.productTypeId;
+    setEditDescriptionLoading(true);
     (async () => {
       try {
         const res = await apiRequest(
           "POST",
-          `/api/admin/product-types/${editBlank.productTypeId}/refresh-description`,
+          `/api/admin/product-types/${productTypeId}/refresh-description`,
         );
         const data = await res.json();
-        if (cancelled || !data?.description) return;
+        if (!data?.description) return;
+        // Apply even if this effect remounted (Strict Mode). Only skip if the merchant
+        // opened a different page — otherwise first-open catalog copy never appears.
+        if (editTargetIdRef.current !== pageId) return;
         setEditDescription(plainTextFromHtml(data.description));
+        queryClient.setQueryData(["/api/appai/blanks"], (old: { blanks?: Blank[] } | undefined) => {
+          if (!old?.blanks) return old;
+          return {
+            ...old,
+            blanks: old.blanks.map((b) =>
+              b.productTypeId === productTypeId
+                ? { ...b, description: data.description }
+                : b,
+            ),
+          };
+        });
         queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       } catch {
         /* Printify may have no description — leave empty */
+      } finally {
+        if (editTargetIdRef.current === pageId) setEditDescriptionLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description, editBlank?.printifyBlueprintId]);
 
   useEffect(() => {
@@ -619,6 +648,7 @@ export default function AdminCustomizerPages() {
       productTypeId?: number;
       variantPrices: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
       baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
       styleConfig: CustomizerPageStyleConfig;
     }) => {
@@ -627,6 +657,7 @@ export default function AdminCustomizerPages() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       setCreatedPageResult(data);
       setFormStep(6);
     },
@@ -859,7 +890,7 @@ export default function AdminCustomizerPages() {
     setPriceErrors({});
     setCreatedPageResult(null);
     setPlaceholderStepAlert(null);
-    setMarkupPercent(70);
+    setMarkupPercent(DEFAULT_MARKUP_PERCENT);
     setAppliedSuggestedKey("");
   }
 
@@ -1916,6 +1947,7 @@ export default function AdminCustomizerPages() {
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
       ...(supportsBothSidePricing ? { variantPricesBoth } : {}),
+      defaultMarkupPercent: markupPercent,
       styleConfig: formStyleConfig,
       baseMockupImages: curated,
     });
@@ -3859,10 +3891,12 @@ export default function AdminCustomizerPages() {
                   value={editDescription}
                   onChange={(e) => setEditDescription(e.target.value)}
                   rows={5}
-                  placeholder="Describe this custom product..."
+                  placeholder={editDescriptionLoading ? "Loading catalog description…" : "Describe this custom product..."}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Saved locally and synced to the linked Shopify product description.
+                  {editDescriptionLoading && !editDescription.trim()
+                    ? "Pulling the Printify catalog description…"
+                    : "Saved locally and synced to the linked Shopify product description."}
                 </p>
               </div>
 

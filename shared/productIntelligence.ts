@@ -3,7 +3,7 @@
  * Single source for markup + .95 rounding used by Resync, Product Sync, and future calculators.
  */
 
-export const DEFAULT_MARKUP_PERCENT = 60;
+export const DEFAULT_MARKUP_PERCENT = 70;
 
 export type PricingStrategy = "maintain_margin" | "maintain_price" | "notify_only";
 export type ProductHealth = "healthy" | "needs_review" | "attention_required";

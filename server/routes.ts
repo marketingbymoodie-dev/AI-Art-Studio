@@ -19667,7 +19667,7 @@ ${orientationExtra}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, defaultMarkupPercent: incomingMarkupPercent, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
@@ -19676,6 +19676,7 @@ ${orientationExtra}
       variantPrices?: Record<string, string>;
       /** Front+back retail prices keyed like variantPrices — not written to Shopify base variants. */
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
       styleConfig?: unknown;
     };
@@ -20014,6 +20015,38 @@ ${orientationExtra}
     );
     const resolvedProductTypeId: number | null =
       matchedType?.id ?? incomingProductTypeId ?? ptForSync?.id ?? null;
+
+    // Persist wizard markup and backfill Printify catalog copy for every create path
+    // (including products already on Shopify, which skip the earlier productTypeId-only backfill).
+    if (resolvedProductTypeId) {
+      const ptForMeta = await storage.getProductType(resolvedProductTypeId);
+      const ptUpdates: Record<string, unknown> = {};
+      const markupNum = parseInt(String(incomingMarkupPercent), 10);
+      if (Number.isFinite(markupNum) && markupNum >= 0) {
+        ptUpdates.defaultMarkupPercent = markupNum;
+      }
+      if (ptForMeta && !String(ptForMeta.description || "").trim() && ptForMeta.printifyBlueprintId) {
+        const token = resolveCatalogPrintifyToken(merchant);
+        if (token) {
+          const fetched = await fetchPrintifyBlueprintDescriptionHtml(
+            token,
+            Number(ptForMeta.printifyBlueprintId),
+          );
+          if (fetched) {
+            ptUpdates.description = fetched;
+            if (ptForSync) ptForSync.description = fetched;
+            if (matchedType) (matchedType as any).description = fetched;
+          }
+        }
+      }
+      if (Object.keys(ptUpdates).length > 0) {
+        try {
+          await storage.updateProductType(resolvedProductTypeId, ptUpdates as any);
+        } catch (e: any) {
+          console.warn("[customizer-pages] markup/description persist failed:", e?.message ?? e);
+        }
+      }
+    }
 
     // Persist front+back retail map on the product type (Shopify base variants stay front-only).
     if (

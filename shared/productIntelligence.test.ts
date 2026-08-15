@@ -22,6 +22,8 @@ describe("roundUpTo95 / suggestedRetailCents", () => {
   it("applies 60% markup and refuses non-positive COGS", () => {
     // 1000¢ = $10 → $16.00 → ceil-0.05 → $15.95 (same as ResyncPricesDialog)
     expect(suggestedRetailCents(1000, 60)).toBe(1595);
+    // Default markup is 70%: $10 → $17.00 → $16.95
+    expect(suggestedRetailCents(1000)).toBe(1695);
     expect(suggestedRetailCents(0, 60)).toBeNull();
     expect(suggestedRetailCents(null, 60)).toBeNull();
     expect(suggestedRetailCents(-5, 60)).toBeNull();
