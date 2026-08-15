@@ -21301,7 +21301,7 @@ ${orientationExtra}
     try {
       // Step 1: Get all publications (sales channels)
       const pubQuery = JSON.stringify({
-        query: `{ publications(first: 20) { edges { node { id name } } } }`,
+        query: `{ publications(first: 50) { edges { node { id name } } } }`,
       });
       const pubRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: pubQuery });
       if (!pubRes.ok) {
@@ -21315,13 +21315,19 @@ ${orientationExtra}
       }
 
       const publications = pubData?.data?.publications?.edges ?? [];
-      const onlineStore = publications.find((e: any) => /online store/i.test(e.node.name));
-      const otherChannels = publications.filter((e: any) => !/online store/i.test(e.node.name));
+      const { partitionPublications } = await import("./shopify-publications");
+      const { checkout, pos } = partitionPublications(
+        publications.map((e: any) => e.node).filter((n: any) => n?.id),
+      );
 
-      console.log(`[ensurePublished] Found ${publications.length} channels. Online Store: ${onlineStore ? 'yes' : 'no'}, Others: ${otherChannels.map((e: any) => e.node.name).join(', ')}`);
+      console.log(
+        `[ensurePublished] Found ${publications.length} channels. Checkout: ${checkout.map((c) => c.name).join(", ") || "none"}, POS: ${pos.map((c) => c.name).join(", ") || "none"}`,
+      );
 
-      // Step 2: Publish to Online Store only
-      if (onlineStore) {
+      // Step 2: Publish to Online Store AND Storefront API / custom-app channels.
+      // Creator checkout uses a custom-app token; unpublishing that channel
+      // makes cartCreate return "merchandise does not exist".
+      if (checkout.length > 0) {
         const publishMutation = JSON.stringify({
           query: `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
             publishablePublish(id: $id, input: $input) {
@@ -21331,7 +21337,7 @@ ${orientationExtra}
           }`,
           variables: {
             id: productGid,
-            input: [{ publicationId: onlineStore.node.id }],
+            input: checkout.map((c) => ({ publicationId: c.id })),
           },
         });
         const publishRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: publishMutation });
@@ -21341,15 +21347,15 @@ ${orientationExtra}
           if (userErrors.length > 0 && !userErrors.some((e: any) => /already/i.test(e.message))) {
             console.warn(`[ensurePublished] Publish userErrors:`, JSON.stringify(userErrors));
           } else {
-            console.log(`[ensurePublished] Published product ${productId} to Online Store`);
+            console.log(`[ensurePublished] Published product ${productId} to ${checkout.map((c) => c.name).join(", ")}`);
           }
         }
       } else {
-        console.warn(`[ensurePublished] No Online Store publication found`);
+        console.warn(`[ensurePublished] No checkout publications found`);
       }
 
-      // Step 3: Unpublish from all OTHER channels (Point of Sale, etc.)
-      for (const channel of otherChannels) {
+      // Step 3: Unpublish from Point of Sale only (keep Headless / custom app).
+      for (const channel of pos) {
         try {
           const unpublishMutation = JSON.stringify({
             query: `mutation publishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
@@ -21360,7 +21366,7 @@ ${orientationExtra}
             }`,
             variables: {
               id: productGid,
-              input: [{ publicationId: channel.node.id }],
+              input: [{ publicationId: channel.id }],
             },
           });
           const unpubRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: unpublishMutation });
@@ -21368,13 +21374,13 @@ ${orientationExtra}
             const unpubData = await unpubRes.json() as any;
             const ue = unpubData?.data?.publishableUnpublish?.userErrors ?? [];
             if (ue.length > 0) {
-              console.warn(`[ensurePublished] Unpublish from ${channel.node.name} errors:`, JSON.stringify(ue));
+              console.warn(`[ensurePublished] Unpublish from ${channel.name} errors:`, JSON.stringify(ue));
             } else {
-              console.log(`[ensurePublished] Unpublished product ${productId} from ${channel.node.name}`);
+              console.log(`[ensurePublished] Unpublished product ${productId} from ${channel.name}`);
             }
           }
         } catch (unpubErr: any) {
-          console.warn(`[ensurePublished] Failed to unpublish from ${channel.node.name}: ${unpubErr.message}`);
+          console.warn(`[ensurePublished] Failed to unpublish from ${channel.name}: ${unpubErr.message}`);
         }
       }
 

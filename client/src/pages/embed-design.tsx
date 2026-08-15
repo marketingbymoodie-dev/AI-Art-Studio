@@ -8405,7 +8405,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             "Custom mockup is still preparing. Wait for the preview to finish, then try again.",
           );
         }
-        if (!finalVariantId || finalVariantId === normalizedVariant) {
+        if (!finalVariantId || normalizeVariantId(finalVariantId) === normalizedVariant) {
           throw new Error(
             "Could not prepare a custom checkout image for this design. Please try Add to cart again.",
           );

@@ -822,14 +822,23 @@ function selectPreferredViews(
     norm: normalizeMockupCameraLabel(img.label),
   }));
   // Lifestyle Shot: On Person first (tote), then Context 2 — not Context 1 flatlay.
-  // AOP Printers Mockup: Front Person → Side Person → Back Person
-  // (zip hoodie also matches on-person-N-front via isPersonMockupLabel).
-  // Do not fall through to flat "front"/"back" from PREFERRED_LABELS.
+  // AOP Printers Mockup: Front Person / Side Person / Back Person, or zip-hoodie
+  // on-person-N-front. Do not fall through to flat "front"/"back".
+  if (preferPersonViews) {
+    const personOnly = annotated
+      .filter((img) => isPersonMockupLabel(img.label))
+      .sort(
+        (a, b) =>
+          personMockupPreferenceRank(a.label) - personMockupPreferenceRank(b.label),
+      );
+    return personOnly
+      .slice(0, 3)
+      .map((img) => ({ url: img.url, label: img.label }));
+  }
+
   const preferredLabels = frontBackOnly
     ? AOP_FLAT_LAY_LABELS
-    : preferPersonViews
-      ? (["front person", "side person", "back person"] as const)
-      : preferContextViews
+    : preferContextViews
         ? ([
             "on person",
             "lifestyle",

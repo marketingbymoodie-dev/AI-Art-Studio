@@ -55,6 +55,11 @@ import {
 } from "../creator-host";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
 import {
+  creatorMerchandiseMissingMessage,
+  ensureVariantPublishedForStorefrontApi,
+  isMerchandiseMissingError,
+} from "../shopify-publications";
+import {
   isCreatorEventType,
   recordCreatorEvent,
   resolveCreatorId,
@@ -997,11 +1002,59 @@ export function registerCreatorMarketplaceRoutes(
         attributes.push({ key, value: String(value) });
       }
 
-      const cart = await createCreatorCheckoutCart({
-        variantId,
-        quantity: Number(body.quantity) || 1,
-        attributes,
-      });
+      const { normalizeMyshopifyShopDomain } = await import("../shopDomain");
+      const platformShop = normalizeMyshopifyShopDomain(getCreatorPlatformShopDomain());
+      const installation = platformShop
+        ? await storage.getShopifyInstallationByShop(platformShop)
+        : undefined;
+      if (installation?.accessToken && platformShop) {
+        try {
+          await ensureVariantPublishedForStorefrontApi(
+            platformShop,
+            installation.accessToken,
+            variantId,
+          );
+        } catch (pubErr: any) {
+          console.warn(
+            "[creators] checkout publish-before-cart failed:",
+            pubErr?.message || pubErr,
+          );
+        }
+      }
+
+      let cart: Awaited<ReturnType<typeof createCreatorCheckoutCart>>;
+      try {
+        cart = await createCreatorCheckoutCart({
+          variantId,
+          quantity: Number(body.quantity) || 1,
+          attributes,
+        });
+      } catch (cartErr: any) {
+        const msg = String(cartErr?.message || "");
+        if (installation?.accessToken && platformShop && isMerchandiseMissingError(msg)) {
+          try {
+            await ensureVariantPublishedForStorefrontApi(
+              platformShop,
+              installation.accessToken,
+              variantId,
+            );
+            cart = await createCreatorCheckoutCart({
+              variantId,
+              quantity: Number(body.quantity) || 1,
+              attributes,
+            });
+          } catch (retryErr: any) {
+            const retryMsg = String(retryErr?.message || "");
+            throw new Error(
+              isMerchandiseMissingError(retryMsg)
+                ? creatorMerchandiseMissingMessage()
+                : retryMsg,
+            );
+          }
+        } else {
+          throw cartErr;
+        }
+      }
 
       const sessionId = body.creatorSessionId ? String(body.creatorSessionId) : null;
       void recordCreatorEvent({
@@ -1027,7 +1080,10 @@ export function registerCreatorMarketplaceRoutes(
       });
     } catch (e: any) {
       console.error("[creators] cart checkout failed:", e);
-      res.status(500).json({ error: e?.message || "Failed to create checkout cart" });
+      const raw = String(e?.message || "Failed to create checkout cart");
+      res.status(500).json({
+        error: isMerchandiseMissingError(raw) ? creatorMerchandiseMissingMessage() : raw,
+      });
     }
   });
 
