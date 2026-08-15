@@ -6283,6 +6283,8 @@ ${orientationExtra}
         options: s.options || (hardcoded as any)?.options,
         baseImageUrl:
           s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+        baseImageUrls:
+          s.baseImageUrls || (hardcoded as any)?.baseImageUrls || undefined,
         descriptionOptional: !!s.descriptionOptional,
       };
     });
@@ -6299,6 +6301,7 @@ ${orientationExtra}
       promptPlaceholder: (s as any).promptPlaceholder,
       options: (s as any).options,
       baseImageUrl: (s as any).baseImageUrl || undefined,
+      baseImageUrls: (s as any).baseImageUrls || undefined,
       descriptionOptional: !!(s as any).descriptionOptional,
     }));
   }
@@ -7605,6 +7608,8 @@ ${orientationExtra}
               promptPrefix: s.promptPrefix,
               category: s.category,
               baseImageUrl: s.baseImageUrl,
+              baseImageUrls: s.baseImageUrls,
+              options: s.options,
               promptPlaceholder: s.promptPlaceholder,
               descriptionOptional: s.descriptionOptional,
             })),

@@ -36,6 +36,7 @@ import {
   CREATOR_STATUSES,
   displayCreatorStyleName,
 } from "@shared/creatorMarketplace";
+import { styleExampleImageUrl } from "@shared/customizerPageStyles";
 import { CreatorProfileImageField } from "@/components/creators/CreatorProfileImageField";
 import { GripVertical, Loader2 } from "lucide-react";
 
@@ -81,6 +82,7 @@ export default function PlatformCreatorDetailDialog({
   const [aasPct, setAasPct] = useState("0");
   const [betaEnd, setBetaEnd] = useState("");
   const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
+  const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [noteBody, setNoteBody] = useState("");
   const [payoutDollars, setPayoutDollars] = useState("");
   const [payoutMethod, setPayoutMethod] = useState("manual");
@@ -209,6 +211,8 @@ export default function PlatformCreatorDetailDialog({
       currentlyAvailable: boolean;
       isActive: boolean;
       sortOrder?: number;
+      baseImageUrl?: string | null;
+      baseImageUrls?: string[] | null;
     }>;
   }>({
     queryKey: [`/api/platform/creators/${creatorId}/styles`],
@@ -266,7 +270,7 @@ export default function PlatformCreatorDetailDialog({
       bio: typeof c.bio === "string" ? c.bio : "",
       profileImageUrl: typeof c.profileImageUrl === "string" ? c.profileImageUrl : "",
       backgroundImageUrl: typeof b.backgroundImageUrl === "string" ? b.backgroundImageUrl : "",
-      pageIds: (data.assigned || []).map((a) => a.customizerPageId).slice().sort(),
+      pageIds: (data.assigned || []).map((a) => a.customizerPageId),
     });
     const current = JSON.stringify({
       freeGens,
@@ -278,7 +282,7 @@ export default function PlatformCreatorDetailDialog({
       bio,
       profileImageUrl,
       backgroundImageUrl,
-      pageIds: selectedPageIds.slice().sort(),
+      pageIds: selectedPageIds,
     });
     return saved === current;
   }, [
@@ -319,6 +323,9 @@ export default function PlatformCreatorDetailDialog({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/platform/creators"] });
       qc.invalidateQueries({ queryKey: [`/api/platform/creators/${creatorId}`] });
+      qc.invalidateQueries({
+        queryKey: [`/api/platform/creators/${creatorId}/assignable-pages`],
+      });
       toast({ title: "Creator saved" });
     },
     onError: (err: Error) =>
@@ -564,6 +571,10 @@ export default function PlatformCreatorDetailDialog({
               </div>
               <div className="space-y-2">
                 <Label>Assign customizer pages</Label>
+                <p className="text-muted-foreground text-xs">
+                  Drag assigned pages — top is first on the creator products page. Save
+                  overview to keep the order.
+                </p>
                 {!assignable ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (assignable.pages || []).length === 0 ? (
@@ -572,19 +583,62 @@ export default function PlatformCreatorDetailDialog({
                     {platformShopDomain ? ` (${platformShopDomain})` : ""}.
                   </p>
                 ) : (
-                  <div className="max-h-48 space-y-2 overflow-y-auto rounded border p-2">
-                    {(assignable.pages || []).map((p) => {
-                      const checked = selectedPageIds.includes(p.id);
-                      return (
+                  <div className="max-h-72 space-y-3 overflow-y-auto rounded border p-2">
+                    {selectedPageIds
+                      .map((id) => (assignable.pages || []).find((p) => p.id === id))
+                      .filter((p): p is AssignablePage => !!p)
+                      .map((p) => (
+                        <div
+                          key={p.id}
+                          draggable
+                          onDragStart={() => setDraggingPageId(p.id)}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            if (!draggingPageId || draggingPageId === p.id) return;
+                            setSelectedPageIds((prev) => {
+                              const from = prev.indexOf(draggingPageId);
+                              const to = prev.indexOf(p.id);
+                              if (from < 0 || to < 0 || from === to) return prev;
+                              const next = [...prev];
+                              const [moved] = next.splice(from, 1);
+                              next.splice(to, 0, moved);
+                              return next;
+                            });
+                          }}
+                          onDragEnd={() => setDraggingPageId(null)}
+                          className={`flex cursor-grab items-start gap-2 rounded px-1 py-1 hover:bg-muted/40 ${
+                            draggingPageId === p.id ? "bg-muted" : ""
+                          }`}
+                        >
+                          <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                          <Checkbox
+                            checked
+                            onCheckedChange={() => {
+                              setSelectedPageIds((prev) => prev.filter((id) => id !== p.id));
+                            }}
+                          />
+                          <span>
+                            <span className="font-medium">{p.title}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              {p.shop} · /{p.handle}
+                            </span>
+                          </span>
+                        </div>
+                      ))}
+                    {(assignable.pages || [])
+                      .filter((p) => !selectedPageIds.includes(p.id))
+                      .map((p) => (
                         <label
                           key={p.id}
                           className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 hover:bg-muted/40"
                         >
+                          <span className="mt-0.5 h-4 w-4 shrink-0" />
                           <Checkbox
-                            checked={checked}
+                            checked={false}
                             onCheckedChange={(v) => {
+                              if (!v) return;
                               setSelectedPageIds((prev) =>
-                                v ? [...prev, p.id] : prev.filter((id) => id !== p.id),
+                                prev.includes(p.id) ? prev : [...prev, p.id],
                               );
                             }}
                           />
@@ -595,8 +649,7 @@ export default function PlatformCreatorDetailDialog({
                             </span>
                           </span>
                         </label>
-                      );
-                    })}
+                      ))}
                   </div>
                 )}
               </div>
@@ -868,6 +921,9 @@ export default function PlatformCreatorDetailDialog({
                               {s.category} · {s.creatorScope}
                               {s.currentlyAvailable ? "" : " · Currently Unavailable"}
                               {s.enabled ? "" : " · creator off"}
+                              {s.creatorScope === "custom" && !styleExampleImageUrl(s)
+                                ? " · no example image"
+                                : ""}
                             </div>
                           </div>
                         </div>

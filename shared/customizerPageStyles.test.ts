@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterStylePresetsForPage,
   parseCustomizerPageStyleConfig,
+  styleExampleImageUrl,
   stylesForCustomizerPagePicker,
 } from "./customizerPageStyles";
 import {
@@ -61,5 +62,30 @@ describe("stylesForCustomizerPagePicker", () => {
   it("lists every category for apparel / AOP custom selections", () => {
     expect(stylesForCustomizerPagePicker(presets, "apparel")).toEqual(presets);
     expect(stylesForCustomizerPagePicker(presets, "all-over-print")).toEqual(presets);
+  });
+});
+
+describe("styleExampleImageUrl", () => {
+  it("prefers the first style reference image", () => {
+    expect(
+      styleExampleImageUrl({
+        baseImageUrl: "https://legacy.example/one.jpg",
+        baseImageUrls: ["https://cdn.example/a.jpg", "https://cdn.example/b.jpg"],
+      }),
+    ).toBe("https://cdn.example/a.jpg");
+  });
+
+  it("falls back to a sub-style image when the style has none", () => {
+    expect(
+      styleExampleImageUrl({
+        options: {
+          choices: [{ baseImageUrl: "https://cdn.example/king.jpg" }],
+        },
+      }),
+    ).toBe("https://cdn.example/king.jpg");
+  });
+
+  it("returns null when no pictorial example exists", () => {
+    expect(styleExampleImageUrl({})).toBeNull();
   });
 });

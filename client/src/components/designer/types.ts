@@ -31,6 +31,7 @@ export interface StylePreset {
   category?: "all" | "decor" | "apparel" | "graphics";
   promptPlaceholder?: string;
   baseImageUrl?: string;
+  baseImageUrls?: string[];
   descriptionOptional?: boolean;
   options?: {
     label: string;

@@ -34,6 +34,8 @@ export type CreatorStyleRow = {
   promptPrefix: string;
   promptPrefixDark: string | null;
   baseImageUrl: string | null;
+  baseImageUrls: string[] | null;
+  options: unknown;
   promptPlaceholder: string | null;
   descriptionOptional: boolean;
   sortOrder: number;
@@ -58,6 +60,10 @@ function toRow(style: StylePresetDB, asg: typeof creatorStyleAssignments.$inferS
     promptPrefix: style.promptPrefix,
     promptPrefixDark: style.promptPrefixDark ?? null,
     baseImageUrl: style.baseImageUrl ?? null,
+    baseImageUrls: Array.isArray((style as any).baseImageUrls)
+      ? (style as any).baseImageUrls
+      : null,
+    options: (style as any).options ?? null,
     promptPlaceholder: style.promptPlaceholder ?? null,
     descriptionOptional: !!style.descriptionOptional,
     sortOrder: (asg as any).sortOrder ?? style.sortOrder ?? 0,

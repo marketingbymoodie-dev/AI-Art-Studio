@@ -375,6 +375,18 @@ export default function AdminStyles() {
   };
 
   const handleSaveStyle = () => {
+    const isCustomStyle =
+      !!returnCreator || (editingStyle as any)?.creatorScope === "custom";
+    if (isCustomStyle && styleBaseImageUrls.length === 0) {
+      toast({
+        title: "Add an example image",
+        description:
+          "Shoppers use the eye icon to preview this style. Upload at least one image.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const options: StyleOptions | null =
       subStylesEnabled && subStyleChoices.length > 0
         ? {
@@ -756,11 +768,15 @@ export default function AdminStyles() {
                 />
               </div>
 
-              {/* Base Reference Images — up to 5 */}
+              {/* Style example / AI reference images — up to 5 */}
               <div className="space-y-2">
                 <Label>
-                  Base Reference Images{" "}
-                  <span className="text-muted-foreground font-normal">(optional, up to {MAX_BASE_IMAGES})</span>
+                  Style example images{" "}
+                  <span className="text-muted-foreground font-normal">
+                    {(!!returnCreator || (editingStyle as any)?.creatorScope === "custom")
+                      ? `(required, up to ${MAX_BASE_IMAGES})`
+                      : `(optional, up to ${MAX_BASE_IMAGES})`}
+                  </span>
                 </Label>
                 {/* Thumbnail grid */}
                 {styleBaseImageUrls.length > 0 && (
@@ -799,7 +815,9 @@ export default function AdminStyles() {
                   </div>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  AI uses these as visual references alongside the customer's prompt. Add up to {MAX_BASE_IMAGES} images.
+                  The first image is what shoppers see when they tap the eye icon next to
+                  this style. AI also uses these as visual references. Add up to{" "}
+                  {MAX_BASE_IMAGES} images.
                 </p>
               </div>
 

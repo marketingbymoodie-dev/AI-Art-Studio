@@ -149,3 +149,37 @@ export function customizerPageCategoryOptions(
 ): CustomizerPageStyleCategory[] {
   return CUSTOMIZER_PAGE_CATEGORY_OPTIONS.filter((c) => c !== suggested);
 }
+
+function firstImageUrl(urls: unknown): string | null {
+  if (!Array.isArray(urls)) return null;
+  for (const u of urls) {
+    if (typeof u === "string" && u.trim()) return u.trim();
+  }
+  return null;
+}
+
+/** First pictorial example for the storefront style eye preview. */
+export function styleExampleImageUrl(style: {
+  baseImageUrl?: string | null;
+  baseImageUrls?: string[] | null;
+  options?: {
+    choices?: Array<{
+      baseImageUrl?: string | null;
+      baseImageUrls?: string[] | null;
+    }>;
+  } | null;
+}): string | null {
+  const fromList = firstImageUrl(style.baseImageUrls);
+  if (fromList) return fromList;
+  if (typeof style.baseImageUrl === "string" && style.baseImageUrl.trim()) {
+    return style.baseImageUrl.trim();
+  }
+  for (const choice of style.options?.choices || []) {
+    const fromChoice = firstImageUrl(choice.baseImageUrls);
+    if (fromChoice) return fromChoice;
+    if (typeof choice.baseImageUrl === "string" && choice.baseImageUrl.trim()) {
+      return choice.baseImageUrl.trim();
+    }
+  }
+  return null;
+}

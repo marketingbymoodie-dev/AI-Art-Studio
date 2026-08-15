@@ -1011,7 +1011,8 @@ export function registerCreatorMarketplaceRoutes(
         const assigned = await db
           .select()
           .from(creatorCustomizerPages)
-          .where(eq(creatorCustomizerPages.creatorId, creator.id));
+          .where(eq(creatorCustomizerPages.creatorId, creator.id))
+          .orderBy(asc(creatorCustomizerPages.sortOrder));
 
         res.json({
           platformShopDomain: platformShop,
