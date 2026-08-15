@@ -53,6 +53,7 @@ import {
   saveLandingContent,
 } from "../creator-config";
 import {
+  creatorReturnCheckoutAttributes,
   getCreatorStorefrontByUsername,
   healApplicationStatusesFromCreators,
   invalidateCreatorHostCache,
@@ -1101,6 +1102,7 @@ export function registerCreatorMarketplaceRoutes(
         creatorUsername: String(body.creatorUsername || ""),
         customerId: String(body.customerId || ""),
         creatorSessionId: body.creatorSessionId ? String(body.creatorSessionId) : null,
+        returnUrl: body.creatorReturnUrl ? String(body.creatorReturnUrl) : null,
       });
       res.json({
         success: true,
@@ -1165,9 +1167,14 @@ export function registerCreatorMarketplaceRoutes(
         ? body.properties
         : {}) as Record<string, string>;
 
+      const returnAttrs = creatorReturnCheckoutAttributes(
+        creator,
+        body.creatorReturnUrl ? String(body.creatorReturnUrl) : null,
+      );
       const attributes: Array<{ key: string; value: string }> = [
         { key: "_creator_id", value: creator.id },
         { key: "_creator_username", value: creator.username },
+        ...returnAttrs,
       ];
       if (body.creatorSessionId) {
         attributes.push({ key: "_creator_session", value: String(body.creatorSessionId) });
@@ -1218,6 +1225,7 @@ export function registerCreatorMarketplaceRoutes(
           variantId,
           quantity: Number(body.quantity) || 1,
           attributes,
+          cartAttributes: returnAttrs,
         });
       };
 

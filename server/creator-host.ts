@@ -14,10 +14,12 @@ import {
   CREATOR_HANDLE_TAKEN_MESSAGE,
   RESERVED_CREATOR_SUBDOMAINS,
   creatorPublicName,
+  creatorStorefrontHomeUrl,
   extractSubdomainFromHost,
   extractUsernameFromPath,
   findConflictingHandle,
   normalizeCreatorUsername,
+  sanitizeCreatorReturnUrl,
   parseCreatorSocials,
   sanitizeCreatorShopName,
   shopNameToHandle,
@@ -505,4 +507,28 @@ export async function healApplicationStatusesFromCreators(): Promise<void> {
       })
       .where(inArray(creatorApplications.id, bucket.ids));
   }
+}
+
+function appOrigins(): string[] {
+  return [process.env.PUBLIC_APP_URL, process.env.APP_URL]
+    .map((v) => String(v || "").trim().replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
+/** Line + cart attributes so checkout can send the shopper back to this creator. */
+export function creatorReturnCheckoutAttributes(
+  creator: Creator,
+  rawReturnUrl?: string | null,
+): Array<{ key: string; value: string }> {
+  const origin = appOrigins()[0] || "https://aiartstudio.app";
+  const fallback = creatorStorefrontHomeUrl({ username: creator.username, origin });
+  const returnUrl = sanitizeCreatorReturnUrl(rawReturnUrl, fallback, appOrigins());
+  const shopName = creatorPublicName({
+    username: creator.username,
+    branding: (creator.branding as Record<string, unknown> | null) ?? null,
+  });
+  return [
+    { key: "_creator_return_url", value: returnUrl.slice(0, 255) },
+    { key: "_creator_shop_name", value: shopName.slice(0, 120) },
+  ];
 }

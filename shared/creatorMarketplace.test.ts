@@ -10,7 +10,10 @@ import {
   creatorPublicName,
   extractSubdomainFromHost,
   extractUsernameFromPath,
+  creatorStorefrontHomeUrl,
   findConflictingHandle,
+  isSafeCreatorReturnUrl,
+  sanitizeCreatorReturnUrl,
   isoWeekPeriodKey,
   isNumberedHandleVariant,
   mergeCreatorBranding,
@@ -59,6 +62,38 @@ describe("shop name → handle", () => {
     expect(findConflictingHandle("Mad Clown Core", ["mad-clown-core"])).toBe("mad-clown-core");
     expect(findConflictingHandle("mad-clown-core-2", ["mad-clown-core"])).toBe("mad-clown-core");
     expect(findConflictingHandle("Mad Clown Studio", ["mad-clown-core"])).toBeNull();
+  });
+});
+
+describe("creator return URL", () => {
+  it("allows app hosts and rejects strangers", () => {
+    expect(isSafeCreatorReturnUrl("https://aiartstudio.app/c/max")).toBe(true);
+    expect(isSafeCreatorReturnUrl("https://max.aiartstudio.app/")).toBe(true);
+    expect(isSafeCreatorReturnUrl("https://evil.com/c/max")).toBe(false);
+    expect(isSafeCreatorReturnUrl("javascript:alert(1)")).toBe(false);
+  });
+
+  it("prefers the live subdomain when the shopper is already on it", () => {
+    expect(
+      creatorStorefrontHomeUrl({
+        username: "max",
+        origin: "https://max.aiartstudio.app",
+        hostname: "max.aiartstudio.app",
+      }),
+    ).toBe("https://max.aiartstudio.app/");
+    expect(
+      creatorStorefrontHomeUrl({
+        username: "max",
+        origin: "https://aiartstudio.app",
+        hostname: "aiartstudio.app",
+      }),
+    ).toBe("https://aiartstudio.app/c/max");
+  });
+
+  it("falls back when the client sends a bad URL", () => {
+    expect(
+      sanitizeCreatorReturnUrl("https://phish.test", "https://aiartstudio.app/c/max"),
+    ).toBe("https://aiartstudio.app/c/max");
   });
 });
 

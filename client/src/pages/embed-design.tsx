@@ -5,7 +5,7 @@ import {
   rememberCreatorLatestArtwork,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
-import { creatorCartPath, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
+import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
@@ -2821,6 +2821,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             creatorUsername: creatorUsernameParam,
             customerId,
             creatorSessionId: creatorSessionIdRef.current || undefined,
+            creatorReturnUrl: currentCreatorReturnUrl(creatorUsernameParam),
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -8449,6 +8450,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             creatorUsername: creatorUsernameParam || undefined,
             creatorId: creatorIdParam || undefined,
             creatorSessionId: creatorSessionIdRef.current || undefined,
+            creatorReturnUrl: currentCreatorReturnUrl(creatorUsernameParam),
             cartId: existingCart?.cartId || undefined,
             variantId: finalVariantId,
             quantity: 1,

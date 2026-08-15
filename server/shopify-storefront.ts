@@ -176,6 +176,7 @@ export async function createCreatorCheckoutCart(params: {
   variantId: string;
   quantity?: number;
   attributes?: CartLineAttribute[];
+  cartAttributes?: CartLineAttribute[];
 }): Promise<CreatorCartResult> {
   const data = await storefrontGraphql<{
     cartCreate: {
@@ -192,6 +193,12 @@ export async function createCreatorCheckoutCart(params: {
     {
       input: {
         lines: [lineInput(params)],
+        attributes: (params.cartAttributes || [])
+          .filter((a) => a.key && a.value != null)
+          .map((a) => ({
+            key: String(a.key).slice(0, 100),
+            value: String(a.value).slice(0, 255),
+          })),
       },
     },
   );

@@ -1,4 +1,17 @@
+import { creatorStorefrontHomeUrl } from "@shared/creatorMarketplace";
+
 const STORAGE_KEY = "appai_creator_cart";
+
+export function currentCreatorReturnUrl(username: string): string {
+  if (typeof window === "undefined") {
+    return creatorStorefrontHomeUrl({ username });
+  }
+  return creatorStorefrontHomeUrl({
+    username,
+    origin: window.location.origin,
+    hostname: window.location.hostname,
+  });
+}
 
 export type CreatorCartSnapshot = {
   cartId: string;

@@ -697,6 +697,65 @@ export function creatorPublicName(opts: {
   return headline || opts.username;
 }
 
+/** Allow only our app hosts so checkout “Back to shop” cannot open an arbitrary URL. */
+export function isSafeCreatorReturnUrl(
+  raw: string,
+  allowedOrigins: Iterable<string> = [],
+): boolean {
+  try {
+    const parsed = new URL(String(raw || "").trim());
+    const host = parsed.hostname.toLowerCase();
+    const local = host === "localhost" || host === "127.0.0.1";
+    if (parsed.protocol === "https:") {
+      /* ok */
+    } else if (parsed.protocol === "http:" && local) {
+      /* ok */
+    } else {
+      return false;
+    }
+    if (host === "aiartstudio.app" || host.endsWith(".aiartstudio.app")) return true;
+    if (local) return true;
+    if (host.endsWith(".up.railway.app")) return true;
+    for (const origin of allowedOrigins) {
+      try {
+        if (new URL(String(origin)).hostname.toLowerCase() === host) return true;
+      } catch {
+        /* skip */
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function creatorStorefrontHomeUrl(opts: {
+  username: string;
+  origin?: string;
+  hostname?: string;
+}): string {
+  const handle = normalizeCreatorUsername(opts.username) || "";
+  const origin = String(opts.origin || "https://aiartstudio.app").replace(/\/$/, "");
+  const hostname = String(opts.hostname || "").toLowerCase();
+  if (hostname.endsWith(".aiartstudio.app")) {
+    const sub = hostname.slice(0, -".aiartstudio.app".length);
+    if (sub && !sub.includes(".") && (!handle || sub === handle)) {
+      return `${origin}/`;
+    }
+  }
+  return handle ? `${origin}/c/${handle}` : origin;
+}
+
+export function sanitizeCreatorReturnUrl(
+  raw: unknown,
+  fallback: string,
+  allowedOrigins: Iterable<string> = [],
+): string {
+  const url = String(raw ?? "").trim().slice(0, 255);
+  if (url && isSafeCreatorReturnUrl(url, allowedOrigins)) return url;
+  return String(fallback || "").trim().slice(0, 255);
+}
+
 export function isSafeCreatorImageUrl(url: string): boolean {
   if (!url) return true;
   if (url.startsWith("/objects/")) return !url.includes("..");

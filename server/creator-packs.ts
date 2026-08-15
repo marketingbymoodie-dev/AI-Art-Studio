@@ -17,7 +17,7 @@ import {
 } from "./creator-config";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "./shopify-storefront";
 import { clawbackStudioCredits, grantStudioCredits } from "./studio-credits";
-import { lookupCreatorByUsername } from "./creator-host";
+import { creatorReturnCheckoutAttributes, lookupCreatorByUsername } from "./creator-host";
 import { normalizeShopifyOrderLine } from "./flat-order-fulfillment";
 import { storage } from "./storage";
 
@@ -264,6 +264,7 @@ export async function createCreatorPackCheckout(params: {
   creatorUsername: string;
   customerId: string;
   creatorSessionId?: string | null;
+  returnUrl?: string | null;
 }): Promise<{ checkoutUrl: string; cartId: string; pack: CreditPackDefinition }> {
   if (!isCreatorMarketplaceEnabled()) {
     throw new Error("Creator Marketplace is not enabled");
@@ -287,6 +288,7 @@ export async function createCreatorPackCheckout(params: {
   const matched = variants.find((v) => v.packId === pack.packId);
   if (!matched?.variantId) throw new Error("Pack variant is not available");
 
+  const returnAttrs = creatorReturnCheckoutAttributes(creator, params.returnUrl);
   const cart = await createCreatorCheckoutCart({
     variantId: matched.variantId,
     quantity: 1,
@@ -296,10 +298,12 @@ export async function createCreatorPackCheckout(params: {
       { key: "_credit_pack_id", value: pack.packId },
       { key: "_appai_customer_id", value: params.customerId },
       { key: "_appai_pack_credits", value: String(pack.credits) },
+      ...returnAttrs,
       ...(params.creatorSessionId
         ? [{ key: "_creator_session", value: String(params.creatorSessionId) }]
         : []),
     ],
+    cartAttributes: returnAttrs,
   });
 
   return { checkoutUrl: cart.checkoutUrl, cartId: cart.cartId, pack };
