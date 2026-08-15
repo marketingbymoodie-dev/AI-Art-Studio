@@ -10543,8 +10543,12 @@ ${orientationExtra}
           designState: d.designState || null,
           prompt: (d as any).userPrompt || d.prompt,
           stylePreset: d.stylePreset,
-          size: d.size,
-          frameColor: d.frameColor,
+          size:
+            d.size ||
+            (ds && typeof ds.selectedSize === "string" ? ds.selectedSize : null),
+          frameColor:
+            d.frameColor ||
+            (ds && typeof ds.selectedFrameColor === "string" ? ds.selectedFrameColor : null),
           productTypeId: ptId,
           pageHandle: resolvedHandle,
           baseTitle:

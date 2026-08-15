@@ -2741,6 +2741,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const selectedSizeRef = useRef(selectedSize);
   selectedFrameColorRef.current = selectedFrameColor;
   selectedSizeRef.current = selectedSize;
+  /** Saved-design colour must win over the product's first/base colour. */
+  const pendingRestoreColorRef = useRef<string | null>(null);
+  const restoringSavedDesignRef = useRef(false);
   const onTesterDesignStatusRef = useRef<
     ((status: TesterDesignStatus) => void) | undefined
   >(undefined);
@@ -3518,8 +3521,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setSizeChartLoading(false);
     }
     if (dc.frameColors?.length > 0) {
-      setSelectedFrameColor(dc.frameColors[0].id);
-    } else {
+      const pending = pendingRestoreColorRef.current;
+      const restored = pending
+        ? resolveFrameColorId(pending, dc.frameColors)
+        : null;
+      if (restored) {
+        setSelectedFrameColor(restored);
+        pendingRestoreColorRef.current = null;
+        restoringSavedDesignRef.current = false;
+      } else if (!restoringSavedDesignRef.current) {
+        setSelectedFrameColor(dc.frameColors[0].id);
+      }
+    } else if (!restoringSavedDesignRef.current) {
       setSelectedFrameColor("");
     }
     setProductTypeError(null);
@@ -3956,12 +3969,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }
           if (designerConfig.frameColors?.length > 0) {
             const vm = designerConfig.variantMap || {};
-            // Pick first color that has ANY variant mapping (across all sizes).
-            // This avoids defaulting to grey just because defaultSize+color has no entry.
-            const firstAvailable = designerConfig.frameColors.find((c: { id: string }) =>
-              hasVariantMappingForColor(vm, c.id),
-            );
-            setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
+            const pending = pendingRestoreColorRef.current;
+            const restored = pending
+              ? resolveFrameColorId(pending, designerConfig.frameColors)
+              : null;
+            if (restored) {
+              setSelectedFrameColor(restored);
+              pendingRestoreColorRef.current = null;
+              restoringSavedDesignRef.current = false;
+            } else if (!restoringSavedDesignRef.current) {
+              // Pick first color that has ANY variant mapping (across all sizes).
+              // This avoids defaulting to grey just because defaultSize+color has no entry.
+              const firstAvailable = designerConfig.frameColors.find((c: { id: string }) =>
+                hasVariantMappingForColor(vm, c.id),
+              );
+              setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
+            }
           }
           setProductTypeError(null);
           // Replace sticky iframe displayName from a previous product
@@ -4218,9 +4241,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const sizeOk = !printSizes.length || printSizes.some((s) => s.id === ds.selectedSize);
         if (sizeOk) setSelectedSize(ds.selectedSize);
       }
-      if (ds.selectedFrameColor) {
-        const resolved = resolveFrameColorId(ds.selectedFrameColor, frameColorObjects);
-        if (resolved) setSelectedFrameColor(resolved);
+      const storedColor =
+        (typeof ds.selectedFrameColor === "string" && ds.selectedFrameColor.trim()) ||
+        (typeof topLevel.frameColor === "string" && topLevel.frameColor.trim()) ||
+        "";
+      if (storedColor) {
+        pendingRestoreColorRef.current = storedColor;
+        const resolved = resolveFrameColorId(storedColor, frameColorObjects);
+        if (resolved) {
+          setSelectedFrameColor(resolved);
+          pendingRestoreColorRef.current = null;
+          restoringSavedDesignRef.current = false;
+        }
       }
       if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
       if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
@@ -4373,8 +4405,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (sizeOk) setSelectedSize(topLevel.size);
       }
       if (topLevel.frameColor) {
+        pendingRestoreColorRef.current = topLevel.frameColor;
         const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
-        if (resolved) setSelectedFrameColor(resolved);
+        if (resolved) {
+          setSelectedFrameColor(resolved);
+          pendingRestoreColorRef.current = null;
+          restoringSavedDesignRef.current = false;
+        }
       }
       if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     }
@@ -4385,9 +4422,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
       if (sizeOk) setSelectedSize(topLevel.size);
     }
-    if (!ds?.selectedFrameColor && topLevel.frameColor) {
+    if (!pendingRestoreColorRef.current && topLevel.frameColor) {
+      pendingRestoreColorRef.current = topLevel.frameColor;
       const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
-      if (resolved) setSelectedFrameColor(resolved);
+      if (resolved) {
+        setSelectedFrameColor(resolved);
+        pendingRestoreColorRef.current = null;
+        restoringSavedDesignRef.current = false;
+      }
+    }
+    if (!pendingRestoreColorRef.current && !topLevel.frameColor && !ds?.selectedFrameColor) {
+      restoringSavedDesignRef.current = false;
     }
     if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
@@ -4571,6 +4616,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     setIsInAppProductSwitching(true);
     setConfigLoading(true);
+    restoringSavedDesignRef.current = true;
     setProductTypeError(null);
     setGeneratedDesign(null);
     setDesignSource(null);
@@ -4916,6 +4962,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     loadDesignAppliedRef.current = false;
     if (effectiveLoadDesignId) {
+      restoringSavedDesignRef.current = true;
       // Clear current design state to prevent "takeover" while loading a new saved design
       setGeneratedDesign(null);
       setDesignSource(null);
@@ -4969,10 +5016,54 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setBridgeLoadDesignId("");
   }, []);
 
+  const applyProductDefaultSizeColor = useCallback(() => {
+    const firstSize = printSizes[0]?.id || "";
+    if (firstSize) setSelectedSize(firstSize);
+    const colors = productTypeConfig?.frameColors || [];
+    if (colors.length === 0) {
+      setSelectedFrameColor("");
+      return;
+    }
+    const vm = productTypeConfig?.variantMap;
+    const firstColor =
+      (vm && colors.find((c) => hasVariantMappingForColor(vm, c.id))) || colors[0];
+    setSelectedFrameColor(firstColor?.id || "");
+  }, [printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
+
+  /** After ATC / Start Fresh: drop sticky loadDesignId so the grey skeleton cannot loop. */
+  const resetStudioAfterPurchase = useCallback(() => {
+    if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
+    setGeneratedDesign(null);
+    setDesignSource(null);
+    loadDesignAppliedRef.current = true;
+    pendingRestoreColorRef.current = null;
+    restoringSavedDesignRef.current = false;
+    setBridgeLoadDesignId("");
+    clearLoadDesignIdFromUrl();
+    setReferenceImages([]);
+    setReferencePreviews([]);
+    setReuseRegenerateBasePrompt(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setSelectedPreset("");
+    setSelectedStyleOption("");
+    applyProductDefaultSizeColor();
+    try {
+      sessionStorage.removeItem(designSessionStorageKey(shopDomain, productHandle, productTypeId));
+    } catch {
+      /* ignore */
+    }
+  }, [
+    applyProductDefaultSizeColor,
+    clearLoadDesignIdFromUrl,
+    shopDomain,
+    productHandle,
+    productTypeId,
+  ]);
+
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
     if (!effectiveLoadDesignId || loadDesignAppliedRef.current) return;
-    if (configLoading) return;
+    if (configLoading || !productTypeConfig) return;
     if (!savedDesigns.length) return; // wait until list is loaded
     console.log('[LoadDesign] savedDesigns IDs:', savedDesigns.map(x => x.id), 'looking for:', effectiveLoadDesignId);
     const d = savedDesigns.find(x => x.id === effectiveLoadDesignId);
@@ -5001,13 +5092,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId]);
+  }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId, productTypeConfig]);
 
   // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
   // fetch the job status directly from the server
   useEffect(() => {
     if (!effectiveLoadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
-    if (configLoading) return;
+    if (configLoading || !productTypeConfig) return;
     // Only run fallback after a short delay to give savedDesigns time to populate
     const timer = setTimeout(() => {
       if (loadDesignAppliedRef.current) return; // already restored from list
@@ -5040,7 +5131,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }, 2000);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId]);
+  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId, productTypeConfig]);
+
+  useEffect(() => {
+    const pending = pendingRestoreColorRef.current;
+    if (!pending || frameColorObjects.length === 0) return;
+    const resolved = resolveFrameColorId(pending, frameColorObjects);
+    if (!resolved) return;
+    setSelectedFrameColor(resolved);
+    pendingRestoreColorRef.current = null;
+    restoringSavedDesignRef.current = false;
+  }, [frameColorObjects]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -6227,12 +6328,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     const colors = productTypeConfig?.frameColors || [];
     if (!productTypeConfig?.variantMap || colors.length === 0) return;
+    if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) return;
     if (hasVariantMappingForColor(productTypeConfig.variantMap, selectedFrameColor)) return;
     const fallback = colors.find((c) =>
       hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
     );
     if (fallback) setSelectedFrameColor(fallback.id);
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
+
+  useEffect(() => {
+    if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) return;
+    const jobId = savedJobIdRef.current;
+    if (!jobId || !shopDomain || !selectedFrameColor || !generatedDesign?.imageUrl) return;
+    const t = window.setTimeout(() => {
+      void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          shop: shopDomain,
+          designState: {
+            selectedSize: selectedSizeRef.current || selectedSize || null,
+            selectedFrameColor: selectedFrameColorRef.current || selectedFrameColor,
+          },
+        }),
+      }).catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(t);
+  }, [selectedFrameColor, selectedSize, shopDomain, generatedDesign?.imageUrl]);
 
   // When frame color changes, swap mockups from the per-color cache or auto-refetch
   useEffect(() => {
@@ -8637,21 +8760,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setIsAddingToCart(false);
         setTimeout(() => {
           setAddedToCart(false);
-          // Stay in the editor (mesh AOP or flat placer) so the artwork isn't
-          // wiped from the customizer — the customer clicks Start Fresh to reset.
-          if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
-          setGeneratedDesign(null);
-          setDesignSource(null);
-          loadDesignAppliedRef.current = false;
-          setBridgeLoadDesignId("");
-          setReferenceImages([]);
-          setReferencePreviews([]);
-          setReuseRegenerateBasePrompt(null);
-          if (fileInputRef.current) fileInputRef.current.value = "";
-          setSelectedPreset("");
-          setSelectedStyleOption("");
-          setSelectedSize("");
-          setSelectedFrameColor("");
+          resetStudioAfterPurchase();
         }, 2500);
         return;
       } catch (e: any) {
@@ -8705,36 +8814,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // without needing to click "Start Fresh Design" again.
           setTimeout(() => {
             setAddedToCart(false);
-            // Keep the design in the editor (mesh AOP or flat placer) so ATC
-            // doesn't blank out the artwork the customer just placed.
-            if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
-            setGeneratedDesign(null);
-            setDesignSource(null);
-            loadDesignAppliedRef.current = false;
-            setBridgeLoadDesignId('');
-            setReferenceImages([]);
-            setReferencePreviews([]);
-            if (fileInputRef.current) fileInputRef.current.value = '';
-            setSelectedPreset('');
-            setSelectedStyleOption('');
-            setSelectedSize('');
-            setSelectedFrameColor('');
-            try {
-              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-              sessionStorage.removeItem(stateKey);
-            } catch (_) { /* sessionStorage may be unavailable */ }
-            const url = new URL(window.location.href);
-            url.searchParams.delete('loadDesignId');
-            window.history.replaceState({}, '', url.toString());
-            // Also clear loadDesignId from the PARENT page URL.
-            // parentLoadDesignId reads window.parent.location.search directly, so if the
-            // parent URL still has loadDesignId after the reset, effectiveLoadDesignId stays
-            // set and isLoadingSaved becomes true → infinite shimmer.
-            try {
-              const parentUrl = new URL(window.parent.location.href);
-              parentUrl.searchParams.delete('loadDesignId');
-              window.parent.history.replaceState({}, '', parentUrl.toString());
-            } catch (_) { /* cross-origin guard */ }
+            resetStudioAfterPurchase();
           }, 2500);
         } else {
           setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
@@ -9904,6 +9984,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               productTypeId: targetProductTypeId,
               customerId: storefrontCustomerId || undefined,
               pageHandle: activeProductContext.pageHandle || productHandle || undefined,
+              size: selectedSize || undefined,
+              frameColor: selectedFrameColor || undefined,
             }),
           });
           if (forkRes.ok) {
@@ -12059,27 +12141,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   setFlatRenderFailed(false);
                   setDesignSource(null);
                   setAddedToCart(false);
-                  loadDesignAppliedRef.current = false;
+                  loadDesignAppliedRef.current = true;
+                  pendingRestoreColorRef.current = null;
+                  restoringSavedDesignRef.current = false;
                   setBridgeLoadDesignId('');
                   setReferenceImages([]);
                   setReferencePreviews([]);
                   if (fileInputRef.current) fileInputRef.current.value = '';
                   setSelectedPreset('');
                   setSelectedStyleOption('');
-                  setSelectedSize('');
-                  setSelectedFrameColor('');
+                  applyProductDefaultSizeColor();
                   try {
                     const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                     sessionStorage.removeItem(stateKey);
                   } catch (_) {}
-                  const url = new URL(window.location.href);
-                  url.searchParams.delete('loadDesignId');
-                  window.history.replaceState({}, '', url.toString());
-                  try {
-                    const parentUrl = new URL(window.parent.location.href);
-                    parentUrl.searchParams.delete('loadDesignId');
-                    window.parent.history.replaceState({}, '', parentUrl.toString());
-                  } catch (_) {}
+                  clearLoadDesignIdFromUrl();
                 }}
               >
                 <Plus className="w-3 h-3" />
@@ -13452,27 +13528,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             lastAopPanelUrlsRef.current = null;
                             setDesignSource(null);
                             setAddedToCart(false);
-                            loadDesignAppliedRef.current = false;
+                            loadDesignAppliedRef.current = true;
+                            pendingRestoreColorRef.current = null;
+                            restoringSavedDesignRef.current = false;
                             setBridgeLoadDesignId('');
                             setReferenceImages([]);
                             setReferencePreviews([]);
                             if (fileInputRef.current) fileInputRef.current.value = '';
                             setSelectedPreset('');
                             setSelectedStyleOption('');
-                            setSelectedSize('');
-                            setSelectedFrameColor('');
+                            applyProductDefaultSizeColor();
                             try {
                               const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                               sessionStorage.removeItem(stateKey);
                             } catch (_) {}
-                            const url = new URL(window.location.href);
-                            url.searchParams.delete('loadDesignId');
-                            window.history.replaceState({}, '', url.toString());
-                            try {
-                              const parentUrl = new URL(window.parent.location.href);
-                              parentUrl.searchParams.delete('loadDesignId');
-                              window.parent.history.replaceState({}, '', parentUrl.toString());
-                            } catch (_) {}
+                            clearLoadDesignIdFromUrl();
                           }}
                         >
                           <Plus className="w-3 h-3" />
