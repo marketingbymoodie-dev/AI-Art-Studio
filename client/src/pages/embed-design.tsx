@@ -1790,6 +1790,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const autoReuseSeedingRef = useRef(false);
   /** True while in-app Reuse regenerate is switching products (skip deep-link Phase A). */
   const reuseInAppBusyRef = useRef(false);
+  /** Apply-to-product should land in the placement editor, not the closed mockup. */
+  const openPlacementEditorOnApplyRef = useRef(false);
   /** Set when Reuse→Regenerate starts a paid generate — toast on success. */
   const reuseRegeneratePendingToastRef = useRef(false);
   const pendingReuseGenerateRef = useRef<{
@@ -4113,8 +4115,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     savedJobIdRef.current = designId;
     // Keep flat placer open in the admin tester so dashed print guides + trim
     // warnings stay visible after opening a saved design (merchant QA).
-    // Elsewhere close it so the customer lands on mockups immediately.
-    setFlatPlacerEditOpen(Boolean(isAdminTester && usesFlatOnTheFlyPreview));
+    // Apply-to-product also wants the editor; other loads land on mockups.
+    const openAppliedEditor = openPlacementEditorOnApplyRef.current;
+    openPlacementEditorOnApplyRef.current = false;
+    if (openAppliedEditor && useAopCustomizer) {
+      setAopPendingMotifUrl(absUrl);
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      setShowPatternStep(true);
+      setFlatPlacerEditOpen(false);
+    } else {
+      setFlatPlacerEditOpen(Boolean((isAdminTester || openAppliedEditor) && usesFlatOnTheFlyPreview));
+    }
     if (isAdminTester && designId) {
       const designPt = String(topLevel.productTypeId || "").trim();
       const currentPt = String(productTypeId || "").trim();
@@ -9460,8 +9471,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             }
           }
           savedJobIdRef.current = forkedJobId;
-          loadDesignAppliedRef.current = true;
-          setBridgeLoadDesignId(forkedJobId || "");
+          loadDesignAppliedRef.current = false;
+          clearLoadDesignIdFromUrl();
+          openPlacementEditorOnApplyRef.current = true;
+          setReuseAwaitingGenerate(false);
           setGeneratedDesign({
             id: forkedJobId || `reuse-${Date.now()}`,
             imageUrl: abs,
@@ -9469,6 +9482,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           });
           setReuseRegenerateBasePrompt(null);
           if (opts.prompt) setPrompt(opts.prompt);
+          if (useAopCustomizer) {
+            setAopPendingMotifUrl(abs);
+            setAopPatternUrl(null);
+            setShowPatternStep(true);
+          } else if (usesFlatOnTheFlyPreview) {
+            setFlatPlacerEditOpen(true);
+          }
           clearReuseHandoff();
           setReuseBusy(false);
           return;
@@ -9514,7 +9534,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         window.location.href = url;
       }
     },
-    [switchToCustomizerPageByHandle, toast, shopDomain, storefrontCustomerId],
+    [
+      switchToCustomizerPageByHandle,
+      toast,
+      shopDomain,
+      storefrontCustomerId,
+      useAopCustomizer,
+      usesFlatOnTheFlyPreview,
+      clearLoadDesignIdFromUrl,
+    ],
   );
 
   const resolveTargetAspectRatio = useCallback((config: any): string => {
@@ -9680,8 +9708,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
       savedJobIdRef.current = forkedJobId;
-      loadDesignAppliedRef.current = true;
-      setBridgeLoadDesignId(forkedJobId || "");
+      loadDesignAppliedRef.current = false;
+      clearLoadDesignIdFromUrl();
+      openPlacementEditorOnApplyRef.current = true;
+      setReuseAwaitingGenerate(false);
       setGeneratedDesign({
         id: forkedJobId || opts.designId || `reuse-${Date.now()}`,
         imageUrl: abs,
@@ -9689,6 +9719,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       });
       setReuseRegenerateBasePrompt(null);
       if (originalPrompt) setPrompt(originalPrompt);
+      if (!selectedSize && printSizes[0]?.id) {
+        setSelectedSize(printSizes[0].id);
+      }
       if (useAopCustomizer) {
         setAopPendingMotifUrl(abs);
         setAopPatternUrl(null);
@@ -9706,6 +9739,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       toast,
       useAopCustomizer,
       usesFlatOnTheFlyPreview,
+      selectedSize,
+      printSizes,
+      clearLoadDesignIdFromUrl,
     ],
   );
 
