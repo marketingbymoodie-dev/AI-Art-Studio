@@ -1462,7 +1462,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const isMerchantStudio = runtimeMode === 'merchant-studio';
   const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
   /** Creator Marketplace host: dual quota + Storefront API cart (not theme /cart/add.js). */
-  const creatorUsernameParam = (searchParams.get("creatorUsername") || "").trim().toLowerCase();
+  const creatorUsernameRaw = (searchParams.get("creatorUsername") || "").trim();
+  const creatorUsernameParam = creatorUsernameRaw.toLowerCase();
   const creatorIdParam = (searchParams.get("creatorId") || "").trim();
   const isCreatorStorefront = isStorefront && !isMerchantStudio && !!(creatorUsernameParam || creatorIdParam);
   const creatorSessionIdRef = useRef<string>(
@@ -3049,6 +3050,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Filter styles based on designerType and per-page styleConfig
   const filteredStylePresets = useMemo(() => {
     const deduped = dedupeStylePresets(stylePresets);
+    if (isCreatorStorefront) return deduped;
     if (pageStyleConfig) {
       return filterStylePresetsForPage(
         deduped,
@@ -3059,7 +3061,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const selectable = selectableCategoriesForDesignerType(productTypeConfig?.designerType);
     if (selectable === "all") return deduped;
     return deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
-  }, [stylePresets, productTypeConfig, pageStyleConfig]);
+  }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
 
   const activeStyleHasOrientationChoices = useMemo(() => {
     const active = filteredStylePresets.find((p) => p.id === selectedPreset);
@@ -3575,10 +3577,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           if (pageRes.ok) {
             const pageCfg = await pageRes.json();
             if (pageCfg?.designerConfig) {
-              if (Array.isArray(pageCfg.stylePresets) && pageCfg.stylePresets.length > 0) {
+              if (Array.isArray(pageCfg.stylePresets) && (pageCfg.stylePresets.length > 0 || isCreatorStorefront)) {
                 setStylePresets(pageCfg.stylePresets);
               }
-              if (pageCfg.styleConfig !== undefined) {
+              if (isCreatorStorefront) {
+                setPageStyleConfig(null);
+              } else if (pageCfg.styleConfig !== undefined) {
                 setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
               }
               if (Array.isArray(pageCfg.variants) && pageCfg.variants.length > 0) {
@@ -11933,9 +11937,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
-                {isCreatorStorefront && creatorUsernameParam ? (
+                {isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam) ? (
                   <a
-                    href={`/c/${encodeURIComponent(creatorUsernameParam)}/products`}
+                    href={`/c/${encodeURIComponent(creatorUsernameRaw || creatorUsernameParam)}/products`}
                     className="mb-2 inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
                   >
                     <ChevronLeft className="w-4 h-4" />

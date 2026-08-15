@@ -7588,16 +7588,25 @@ ${orientationExtra}
       stylePresets = hardcodedStylePresetsForDesigner();
     }
 
+    let creatorStorefrontStyles = false;
     if (rawCreatorUsername || rawCreatorId) {
       try {
         const { assertPublicCreatorApiContext } = await import("./creator-host");
         const { resolveCreatorStorefrontStyles } = await import("./creator-styles");
-        const asserted = await assertPublicCreatorApiContext({
+        let asserted = await assertPublicCreatorApiContext({
           shop,
           creatorId: rawCreatorId || null,
           creatorUsername: rawCreatorUsername || null,
           requirePlatformShop: true,
         });
+        if (!asserted.ok) {
+          asserted = await assertPublicCreatorApiContext({
+            shop,
+            creatorId: rawCreatorId || null,
+            creatorUsername: rawCreatorUsername || null,
+            requirePlatformShop: false,
+          });
+        }
         if (asserted.ok) {
           const entitled = await resolveCreatorStorefrontStyles(asserted.creator.id);
           const { displayCreatorStyleName } = await import("@shared/creatorMarketplace");
@@ -7614,23 +7623,31 @@ ${orientationExtra}
               descriptionOptional: s.descriptionOptional,
             })),
           );
+          creatorStorefrontStyles = true;
         } else {
-          stylePresets = [];
+          console.warn(
+            "[storefront/customizer-page] creator styles skipped:",
+            asserted.error,
+          );
         }
       } catch (e) {
         console.warn("[storefront/customizer-page] creator styles failed:", e);
-        stylePresets = [];
       }
     }
 
     const pageStyleConfig =
       parseCustomizerPageStyleConfig(page.styleConfig) ??
       defaultStyleConfigForDesignerType(designerConfig?.designerType);
-    stylePresets = filterStylePresetsForPage(
-      stylePresets,
-      pageStyleConfig,
-      designerConfig?.designerType,
-    ).map((s) => ({
+    // Creator assignment is the catalog — do not drop styles because the
+    // customizer page was saved as Apparel-only / selected merchant IDs.
+    if (!creatorStorefrontStyles) {
+      stylePresets = filterStylePresetsForPage(
+        stylePresets,
+        pageStyleConfig,
+        designerConfig?.designerType,
+      );
+    }
+    stylePresets = stylePresets.map((s) => ({
       ...s,
       promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
     }));

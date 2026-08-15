@@ -14,11 +14,16 @@ export function rememberCreatorLatestArtwork(url: string | null | undefined) {
   } catch {
     /* ignore */
   }
+  try {
+    localStorage.setItem(LATEST_ARTWORK_KEY, v);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function readCreatorLatestArtwork(): string | null {
   try {
-    return sessionStorage.getItem(LATEST_ARTWORK_KEY);
+    return sessionStorage.getItem(LATEST_ARTWORK_KEY) || localStorage.getItem(LATEST_ARTWORK_KEY);
   } catch {
     return null;
   }

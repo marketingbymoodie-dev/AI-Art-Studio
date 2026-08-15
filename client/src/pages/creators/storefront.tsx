@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, Route, Switch, useParams, useLocation } from "wouter";
+import { Link, useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -464,11 +464,27 @@ function PausedView({ creator }: { creator: CreatorBoot }) {
   );
 }
 
-function CustomizeRedirect({ creator }: { creator: CreatorBoot }) {
-  const params = useParams<{ handle?: string }>();
+function storefrontSection(
+  location: string,
+  basePath: string,
+): "products" | "about" | "customize" | "home" {
+  const rest = (basePath ? location.slice(basePath.length) : location) || "/";
+  const path = rest.startsWith("/") ? rest : `/${rest}`;
+  if (path === "/products" || path.startsWith("/products/")) return "products";
+  if (path === "/about" || path.startsWith("/about/")) return "about";
+  if (path.startsWith("/customize/")) return "customize";
+  return "home";
+}
+
+function CustomizeRedirect({
+  creator,
+  handle,
+}: {
+  creator: CreatorBoot;
+  handle: string;
+}) {
   const { data } = useCreatorPages(creator.username);
   const platformShop = data?.platformShopDomain ?? null;
-  const handle = params.handle || "";
   const page = (data?.pages || []).find((p) => p.handle === handle);
 
   useEffect(() => {
@@ -531,22 +547,23 @@ function CreatorStoreRoutes({
     );
   }
 
+  const section = storefrontSection(location, basePath);
+  const customizeHandle =
+    section === "customize"
+      ? decodeURIComponent(location.split("/customize/")[1]?.split("/")[0] || "")
+      : "";
+
   return (
     <StoreShell creator={creator} basePath={basePath}>
-      <Switch>
-        <Route path={`${basePath}/products`}>
-          <ProductsView creator={creator} basePath={basePath} />
-        </Route>
-        <Route path={`${basePath}/about`}>
-          <AboutView creator={creator} />
-        </Route>
-        <Route path={`${basePath}/customize/:handle`}>
-          <CustomizeRedirect creator={creator} />
-        </Route>
-        <Route>
-          <HomeView creator={creator} basePath={basePath} />
-        </Route>
-      </Switch>
+      {section === "products" ? (
+        <ProductsView creator={creator} basePath={basePath} />
+      ) : section === "about" ? (
+        <AboutView creator={creator} />
+      ) : section === "customize" ? (
+        <CustomizeRedirect creator={creator} handle={customizeHandle} />
+      ) : (
+        <HomeView creator={creator} basePath={basePath} />
+      )}
     </StoreShell>
   );
 }
