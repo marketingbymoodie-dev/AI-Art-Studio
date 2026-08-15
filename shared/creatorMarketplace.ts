@@ -414,6 +414,74 @@ export function normalizeCreatorUsername(raw: string): string | null {
   return u;
 }
 
+/** Public shop name as shown on the storefront (not the legal / application name). */
+export function sanitizeCreatorShopName(raw: unknown): string | null {
+  const name = String(raw ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
+  return name || null;
+}
+
+/**
+ * Turn a shop name into the URL handle / subdomain.
+ * "Mad Clown Core" → mad-clown-core. Never appends digits.
+ */
+export function shopNameToHandle(raw: string): string | null {
+  const spaced = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-");
+  return normalizeCreatorUsername(spaced);
+}
+
+export const CREATOR_HANDLE_HOLDING_APPLICATION_STATUSES = [
+  "submitted",
+  "under_review",
+  "accepted",
+  "waitlisted",
+] as const;
+
+export const CREATOR_HANDLE_INVALID_MESSAGE =
+  "Shop name must become a 2–32 character URL (letters, numbers, hyphens). Reserved words like www or admin cannot be used.";
+
+export const CREATOR_HANDLE_TAKEN_MESSAGE =
+  "That shop name is already taken. Choose a different name — we will not add numbers to make it unique.";
+
+export const CREATOR_HANDLE_NUMBERED_VARIANT_MESSAGE =
+  "That name is the same as an existing shop with numbers added. Choose a different shop name.";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** True when candidate is exactly base, or base plus optional hyphen + digits (max2, max-2). */
+export function isNumberedHandleVariant(candidate: string, base: string): boolean {
+  if (!candidate || !base) return false;
+  if (candidate === base) return true;
+  return new RegExp(`^${escapeRegExp(base)}-?\\d+$`).test(candidate);
+}
+
+/**
+ * If `candidate` collides with a taken handle — exact or numbered suffix — return the taken handle.
+ * Used so we never mint max2 when max is taken.
+ */
+export function findConflictingHandle(
+  candidate: string,
+  takenHandles: Iterable<string>,
+): string | null {
+  const handle = shopNameToHandle(candidate);
+  if (!handle) return null;
+  const taken = new Set<string>();
+  for (const raw of takenHandles) {
+    const t = shopNameToHandle(raw);
+    if (t) taken.add(t);
+  }
+  for (const t of taken) {
+    if (isNumberedHandleVariant(handle, t) || isNumberedHandleVariant(t, handle)) {
+      return t;
+    }
+  }
+  return null;
+}
+
 export function clampFreeGensPerCustomer(n: number): number {
   if (!Number.isFinite(n)) return DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER;
   return Math.min(10, Math.max(0, Math.floor(n)));

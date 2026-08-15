@@ -5,13 +5,20 @@
 import { eq, or } from "drizzle-orm";
 import type { Request } from "express";
 import { db } from "./db";
-import { creators, type Creator } from "@shared/schema";
+import { creatorApplications, creators, type Creator } from "@shared/schema";
 import {
+  CREATOR_HANDLE_HOLDING_APPLICATION_STATUSES,
+  CREATOR_HANDLE_INVALID_MESSAGE,
+  CREATOR_HANDLE_NUMBERED_VARIANT_MESSAGE,
+  CREATOR_HANDLE_TAKEN_MESSAGE,
   RESERVED_CREATOR_SUBDOMAINS,
   creatorPublicName,
   extractSubdomainFromHost,
   extractUsernameFromPath,
+  findConflictingHandle,
   normalizeCreatorUsername,
+  sanitizeCreatorShopName,
+  shopNameToHandle,
 } from "@shared/creatorMarketplace";
 import {
   getCreatorPlatformShopDomain,
@@ -247,4 +254,84 @@ export async function getCreatorStorefrontByUsername(
   const creator = await lookupCreatorByUsername(username);
   if (!creator || !STOREFRONT_VISIBLE_STATUSES.has(creator.status)) return null;
   return toStorefrontBoot(creator);
+}
+
+export type CreatorHandleAvailability =
+  | { ok: true; handle: string; shopName: string }
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      code: "CREATOR_HANDLE_INVALID" | "CREATOR_HANDLE_TAKEN" | "CREATOR_HANDLE_NUMBERED_VARIANT";
+      handle: string | null;
+      takenHandle?: string;
+    };
+
+/**
+ * Shop-name → unique URL handle. Never appends digits; numbered variants of a
+ * taken name are treated as the same shop.
+ */
+export async function resolveCreatorHandleAvailability(opts: {
+  rawName: string;
+  excludeApplicationId?: string | null;
+  excludeCreatorId?: string | null;
+}): Promise<CreatorHandleAvailability> {
+  const shopName = sanitizeCreatorShopName(opts.rawName);
+  const handle = shopName ? shopNameToHandle(shopName) : null;
+  if (!shopName || !handle) {
+    return {
+      ok: false,
+      status: 400,
+      error: CREATOR_HANDLE_INVALID_MESSAGE,
+      code: "CREATOR_HANDLE_INVALID",
+      handle,
+    };
+  }
+
+  const [creatorRows, applicationRows] = await Promise.all([
+    db
+      .select({
+        id: creators.id,
+        username: creators.username,
+        subdomain: creators.subdomain,
+      })
+      .from(creators),
+    db
+      .select({
+        id: creatorApplications.id,
+        assignedUsername: creatorApplications.assignedUsername,
+        shopName: creatorApplications.shopName,
+        status: creatorApplications.status,
+      })
+      .from(creatorApplications),
+  ]);
+
+  const taken: string[] = [];
+  for (const row of creatorRows) {
+    if (opts.excludeCreatorId && row.id === opts.excludeCreatorId) continue;
+    if (row.username) taken.push(row.username);
+    if (row.subdomain) taken.push(row.subdomain);
+  }
+  const holding = new Set<string>(CREATOR_HANDLE_HOLDING_APPLICATION_STATUSES);
+  for (const row of applicationRows) {
+    if (opts.excludeApplicationId && row.id === opts.excludeApplicationId) continue;
+    if (!holding.has(row.status)) continue;
+    if (row.assignedUsername) taken.push(row.assignedUsername);
+    if (row.shopName) taken.push(row.shopName);
+  }
+
+  const conflict = findConflictingHandle(handle, taken);
+  if (conflict) {
+    const numbered = conflict !== handle;
+    return {
+      ok: false,
+      status: 409,
+      error: numbered ? CREATOR_HANDLE_NUMBERED_VARIANT_MESSAGE : CREATOR_HANDLE_TAKEN_MESSAGE,
+      code: numbered ? "CREATOR_HANDLE_NUMBERED_VARIANT" : "CREATOR_HANDLE_TAKEN",
+      handle,
+      takenHandle: conflict,
+    };
+  }
+
+  return { ok: true, handle, shopName };
 }

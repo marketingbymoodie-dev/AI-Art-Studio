@@ -514,12 +514,15 @@ export default function PlatformCreatorDetailDialog({
                 typed into About.
               </p>
               <div className="space-y-1">
-                <Label>Shop name (public handle)</Label>
+                <Label>Shop name (shown on the storefront)</Label>
                 <Input
                   value={shopName}
                   onChange={(e) => setShopName(e.target.value)}
                   placeholder={c.username}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Display name only. The URL stays /c/{c.username} and {c.username}.aiartstudio.app.
+                </p>
               </div>
               <div className="space-y-1">
                 <Label>Shop name font</Label>

@@ -34,6 +34,7 @@ import {
   normalizeCreatorUsername,
   sanitizeCreatorBio,
   sanitizeCreatorImageUrl,
+  sanitizeCreatorShopName,
   type CreatorApplicationStatus,
   type CreatorApplyTrack,
   type CreatorPayoutMethod,
@@ -51,6 +52,7 @@ import {
   getCreatorStorefrontByUsername,
   invalidateCreatorHostCache,
   lookupCreatorByUsername,
+  resolveCreatorHandleAvailability,
   sanitizeCreatorForAdmin,
 } from "../creator-host";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
@@ -156,6 +158,43 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  app.get("/api/creators/shop-name-available", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `shop-name:${clientIpFromReq(req)}`,
+      limit: 40,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Too many checks. Try again shortly." });
+    }
+    try {
+      const result = await resolveCreatorHandleAvailability({
+        rawName: String(req.query.name || ""),
+        excludeApplicationId: String(req.query.applicationId || "").trim() || null,
+        excludeCreatorId: String(req.query.creatorId || "").trim() || null,
+      });
+      if (!result.ok) {
+        return res.status(200).json({
+          available: false,
+          handle: result.handle,
+          takenHandle: result.takenHandle ?? null,
+          error: result.error,
+          code: result.code,
+        });
+      }
+      res.json({
+        available: true,
+        handle: result.handle,
+        shopName: result.shopName,
+      });
+    } catch (e: any) {
+      console.error("[creators] shop-name check failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to check shop name" });
+    }
+  });
+
   app.post("/api/creators/apply", async (req, res) => {
     if (!marketplaceGate(res)) return;
     const rl = checkCreatorRateLimit({
@@ -182,9 +221,15 @@ export function registerCreatorMarketplaceRoutes(
       const hasShopifyStore = applyTrack === "shopify" || !!body.hasShopifyStore;
       const termsAccepted = body.termsAccepted === true || body.termsAccepted === "true";
 
+      const shopName = sanitizeCreatorShopName(body.shopName);
       if (!firstName || !lastName || !email) {
         return res.status(400).json({
           error: "First name, last name, and email are required.",
+        });
+      }
+      if (!shopName) {
+        return res.status(400).json({
+          error: "Shop name is required. This becomes your public store URL — not your personal name, unless that is your store name.",
         });
       }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -227,6 +272,16 @@ export function registerCreatorMarketplaceRoutes(
         : null;
       const payoutDetail = String(body.payoutDetail || "").trim() || null;
 
+      const handleCheck = await resolveCreatorHandleAvailability({ rawName: shopName });
+      if (!handleCheck.ok) {
+        return res.status(handleCheck.status).json({
+          error: handleCheck.error,
+          code: handleCheck.code,
+          handle: handleCheck.handle,
+          takenHandle: handleCheck.takenHandle ?? null,
+        });
+      }
+
       const [row] = await db
         .insert(creatorApplications)
         .values({
@@ -250,6 +305,8 @@ export function registerCreatorMarketplaceRoutes(
           payoutMethod,
           payoutDetail,
           termsAcceptedAt: new Date(),
+          shopName: handleCheck.shopName,
+          assignedUsername: handleCheck.handle,
           status: "submitted",
         })
         .returning();
@@ -281,6 +338,8 @@ export function registerCreatorMarketplaceRoutes(
               ilike(creatorApplications.firstName, like),
               ilike(creatorApplications.lastName, like),
               ilike(creatorApplications.socialUsername, like),
+              ilike(creatorApplications.shopName, like),
+              ilike(creatorApplications.assignedUsername, like),
               ilike(creatorApplications.niche, like),
             )!,
           );
@@ -339,12 +398,37 @@ export function registerCreatorMarketplaceRoutes(
         if (body.adminNotes !== undefined) {
           patch.adminNotes = String(body.adminNotes || "");
         }
-        if (body.assignedUsername !== undefined) {
-          const u = normalizeCreatorUsername(String(body.assignedUsername || ""));
-          if (body.assignedUsername && !u) {
-            return res.status(400).json({ error: "Invalid or reserved username." });
+        if (body.shopName !== undefined) {
+          const nextShop = sanitizeCreatorShopName(body.shopName);
+          patch.shopName = nextShop;
+        }
+        if (body.assignedUsername !== undefined || body.shopName !== undefined) {
+          const rawHandle = String(
+            body.assignedUsername ?? body.shopName ?? existing.shopName ?? "",
+          );
+          if (rawHandle.trim()) {
+            const handleCheck = await resolveCreatorHandleAvailability({
+              rawName: rawHandle,
+              excludeApplicationId: existing.id,
+              excludeCreatorId: existing.creatorId,
+            });
+            if (!handleCheck.ok) {
+              return res.status(handleCheck.status).json({
+                error: handleCheck.error,
+                code: handleCheck.code,
+                handle: handleCheck.handle,
+                takenHandle: handleCheck.takenHandle ?? null,
+              });
+            }
+            patch.assignedUsername = handleCheck.handle;
+            if (body.shopName !== undefined) {
+              patch.shopName = handleCheck.shopName;
+            } else if (!existing.shopName) {
+              patch.shopName = handleCheck.shopName;
+            }
+          } else if (body.assignedUsername !== undefined) {
+            patch.assignedUsername = null;
           }
-          patch.assignedUsername = u;
         }
         if (body.status !== undefined) {
           const status = String(body.status) as CreatorApplicationStatus;
@@ -416,24 +500,31 @@ export function registerCreatorMarketplaceRoutes(
           return res.status(400).json({ error: "Creator already created for this application." });
         }
 
-        const suggested =
-          normalizeCreatorUsername(String(req.body?.username || appRow.assignedUsername || "")) ||
-          normalizeCreatorUsername(appRow.socialUsername) ||
-          normalizeCreatorUsername(`${appRow.firstName}${appRow.lastName}`);
-        if (!suggested) {
-          return res.status(400).json({
-            error: "Assign a valid creator username before starting onboarding.",
+        const suggestedRaw = String(
+          req.body?.username ||
+            req.body?.shopName ||
+            appRow.assignedUsername ||
+            appRow.shopName ||
+            "",
+        );
+        const handleCheck = await resolveCreatorHandleAvailability({
+          rawName: suggestedRaw,
+          excludeApplicationId: appRow.id,
+          excludeCreatorId: appRow.creatorId,
+        });
+        if (!handleCheck.ok) {
+          return res.status(handleCheck.status).json({
+            error:
+              handleCheck.code === "CREATOR_HANDLE_INVALID"
+                ? "Assign a unique shop name before starting onboarding. The URL uses the shop name, not the personal name."
+                : handleCheck.error,
+            code: handleCheck.code,
+            handle: handleCheck.handle,
+            takenHandle: handleCheck.takenHandle ?? null,
           });
         }
-
-        const [dup] = await db
-          .select({ id: creators.id })
-          .from(creators)
-          .where(or(eq(creators.username, suggested), eq(creators.subdomain, suggested)))
-          .limit(1);
-        if (dup) {
-          return res.status(409).json({ error: `Username "${suggested}" is already taken.` });
-        }
+        const suggested = handleCheck.handle;
+        const publicShopName = sanitizeCreatorShopName(appRow.shopName) || handleCheck.shopName;
 
         const creatorType = appRow.hasShopifyStore ? "shopify_merchant" : "creator";
         const displayName = `${appRow.firstName} ${appRow.lastName}`.trim();
@@ -444,6 +535,7 @@ export function registerCreatorMarketplaceRoutes(
             username: suggested,
             subdomain: suggested,
             displayName,
+            branding: mergeCreatorBranding(null, { shopName: publicShopName }),
             email: appRow.email,
             firstName: appRow.firstName,
             lastName: appRow.lastName,
@@ -468,6 +560,7 @@ export function registerCreatorMarketplaceRoutes(
           .set({
             status: "accepted",
             assignedUsername: suggested,
+            shopName: publicShopName,
             creatorId: creator.id,
             reviewedAt: new Date(),
             reviewedBy: req.shopDomain || "admin",

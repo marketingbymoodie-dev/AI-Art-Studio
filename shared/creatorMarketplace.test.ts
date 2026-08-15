@@ -9,9 +9,13 @@ import {
   creatorPublicName,
   extractSubdomainFromHost,
   extractUsernameFromPath,
+  findConflictingHandle,
   isoWeekPeriodKey,
+  isNumberedHandleVariant,
   mergeCreatorBranding,
   normalizeCreatorUsername,
+  sanitizeCreatorShopName,
+  shopNameToHandle,
   parseCreatorHeadingFontId,
   resolveCreatorHeadingFont,
   sanitizeCreatorBio,
@@ -32,6 +36,23 @@ describe("normalizeCreatorUsername", () => {
     expect(normalizeCreatorUsername("")).toBeNull();
     // Leading/trailing hyphens are stripped → valid "bad"
     expect(normalizeCreatorUsername("-bad-")).toBe("bad");
+  });
+});
+
+describe("shop name → handle", () => {
+  it("slugs the shop name, not a personal name", () => {
+    expect(shopNameToHandle("Mad Clown Core")).toBe("mad-clown-core");
+    expect(shopNameToHandle("Max's Pets")).toBe("maxs-pets");
+    expect(sanitizeCreatorShopName("  Mad   Clown Core  ")).toBe("Mad Clown Core");
+  });
+
+  it("flags exact and numbered-suffix duplicates", () => {
+    expect(isNumberedHandleVariant("max-2", "max")).toBe(true);
+    expect(isNumberedHandleVariant("max2", "max")).toBe(true);
+    expect(isNumberedHandleVariant("max-studio", "max")).toBe(false);
+    expect(findConflictingHandle("Mad Clown Core", ["mad-clown-core"])).toBe("mad-clown-core");
+    expect(findConflictingHandle("mad-clown-core-2", ["mad-clown-core"])).toBe("mad-clown-core");
+    expect(findConflictingHandle("Mad Clown Studio", ["mad-clown-core"])).toBeNull();
   });
 });
 

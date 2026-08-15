@@ -1,6 +1,7 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { shopNameToHandle } from "@shared/creatorMarketplace";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,6 +38,7 @@ export default function CreatorApplyPage() {
     firstName: "",
     lastName: "",
     email: "",
+    shopName: "",
     socialPlatform: "instagram",
     socialUsername: "",
     followerCount: "",
@@ -44,6 +46,31 @@ export default function CreatorApplyPage() {
     shopifyStoreUrl: "",
     payoutMethod: "paypal",
     payoutDetail: "",
+  });
+  const [shopNameQuery, setShopNameQuery] = useState("");
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setShopNameQuery(form.shopName.trim()), 350);
+    return () => window.clearTimeout(t);
+  }, [form.shopName]);
+
+  const shopHandle = shopNameToHandle(form.shopName);
+  const { data: shopAvail } = useQuery<{
+    available: boolean;
+    handle?: string | null;
+    error?: string;
+    code?: string;
+  }>({
+    queryKey: ["/api/creators/shop-name-available", shopNameQuery],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/creators/shop-name-available?name=${encodeURIComponent(shopNameQuery)}`,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && !data.error) throw new Error("Could not check shop name");
+      return data;
+    },
+    enabled: shopNameQuery.length >= 2,
   });
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
@@ -59,6 +86,7 @@ export default function CreatorApplyPage() {
           firstName: form.firstName,
           lastName: form.lastName,
           email: form.email,
+          shopName: form.shopName,
           socialPlatform: track === "creator" ? form.socialPlatform : "other",
           socialUsername: track === "creator" ? form.socialUsername : form.shopifyStoreUrl,
           followerCount: form.followerCount ? Number(form.followerCount) : null,
@@ -150,6 +178,36 @@ export default function CreatorApplyPage() {
               data-testid="creator-apply-email"
             />
           </Field>
+          <Field label="Shop name">
+            <Input
+              required
+              placeholder="Mad Clown Core"
+              value={form.shopName}
+              onChange={(e) => set("shopName", e.target.value)}
+              data-testid="creator-apply-shop-name"
+            />
+            <p className="text-xs text-white/40">
+              Your public store name — not your personal name, unless that is the store name.
+              This becomes your URL
+              {shopHandle ? (
+                <>
+                  : <span className="text-white/70">{shopHandle}.aiartstudio.app</span>
+                </>
+              ) : (
+                "."
+              )}
+            </p>
+            {form.shopName.trim() && !shopHandle ? (
+              <p className="text-xs text-red-300">
+                Use 2–32 letters, numbers, or spaces. Reserved words like www or admin cannot be
+                used.
+              </p>
+            ) : shopAvail && shopAvail.available === false ? (
+              <p className="text-xs text-red-300" data-testid="creator-apply-shop-taken">
+                {shopAvail.error || "That shop name is already taken."}
+              </p>
+            ) : null}
+          </Field>
 
           {track === "creator" ? (
             <>
@@ -235,7 +293,16 @@ export default function CreatorApplyPage() {
             <span>{termsText}</span>
           </label>
 
-          <Button type="submit" disabled={mutation.isPending || !terms} data-testid="creator-apply-submit">
+          <Button
+            type="submit"
+            disabled={
+              mutation.isPending ||
+              !terms ||
+              shopAvail?.available === false ||
+              (!!form.shopName.trim() && !shopHandle)
+            }
+            data-testid="creator-apply-submit"
+          >
             {mutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             {submitLabel}
           </Button>

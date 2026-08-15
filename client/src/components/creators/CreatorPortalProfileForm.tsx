@@ -108,12 +108,15 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
       </div>
 
       <div className="space-y-1">
-        <Label>Shop name (handle)</Label>
+        <Label>Shop name</Label>
         <Input
           value={shopName}
           onChange={(e) => setShopName(e.target.value)}
           placeholder={creator.username}
         />
+        <p className="text-xs text-stone-500">
+          Shown to customers. Your URL stays /c/{creator.username}.
+        </p>
       </div>
       <div className="space-y-1">
         <Label>Shop name font</Label>

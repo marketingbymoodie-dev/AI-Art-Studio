@@ -110,6 +110,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creator_applications",   column: "payout_method",              type: "TEXT" },
   { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },
   { table: "creator_applications",   column: "terms_accepted_at",          type: "TIMESTAMP" },
+  { table: "creator_applications",   column: "shop_name",                  type: "TEXT" },
   { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
@@ -1075,6 +1076,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "payout_method" text,
         "payout_detail" text,
         "terms_accepted_at" timestamp,
+        "shop_name" text,
         "status" text NOT NULL DEFAULT 'submitted',
         "assigned_username" text,
         "creator_id" varchar,

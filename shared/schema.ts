@@ -1492,6 +1492,8 @@ export const creatorApplications = pgTable(
     payoutMethod: text("payout_method"),
     payoutDetail: text("payout_detail"),
     termsAcceptedAt: timestamp("terms_accepted_at"),
+    /** Requested public shop name — source of the URL handle, not the legal name. */
+    shopName: text("shop_name"),
     status: text("status").notNull().default("submitted"),
     assignedUsername: text("assigned_username"),
     creatorId: varchar("creator_id"),

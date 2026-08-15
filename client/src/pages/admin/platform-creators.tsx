@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { CREATOR_APPLICATION_STATUSES } from "@shared/creatorMarketplace";
+import { CREATOR_APPLICATION_STATUSES, shopNameToHandle } from "@shared/creatorMarketplace";
 import { Loader2 } from "lucide-react";
 import PlatformCreatorDetailDialog from "./platform-creator-detail";
 
@@ -46,6 +46,7 @@ type Application = {
   hasShopifyStore: boolean;
   status: string;
   assignedUsername: string | null;
+  shopName?: string | null;
   creatorId: string | null;
   adminNotes: string | null;
   followerCount: number | null;
@@ -66,6 +67,7 @@ export default function PlatformCreatorsPage() {
   const [boardPeriod, setBoardPeriod] = useState("monthly");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
+  const [shopNameCheck, setShopNameCheck] = useState("");
   const [notes, setNotes] = useState("");
 
   const { data: config } = useQuery<{
@@ -160,6 +162,29 @@ export default function PlatformCreatorsPage() {
     queryKey: [`/api/platform/creators/applications/${selectedId}`],
     enabled: !!selectedId,
   });
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setShopNameCheck(username.trim()), 350);
+    return () => window.clearTimeout(t);
+  }, [username]);
+
+  const previewHandle = shopNameToHandle(username);
+  const { data: shopAvail } = useQuery<{
+    available: boolean;
+    handle?: string | null;
+    error?: string;
+    takenHandle?: string | null;
+  }>({
+    queryKey: ["/api/creators/shop-name-available", shopNameCheck, selectedId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ name: shopNameCheck });
+      if (selectedId) params.set("applicationId", selectedId);
+      const res = await fetch(`/api/creators/shop-name-available?${params}`);
+      return res.json();
+    },
+    enabled: !!selectedId && shopNameCheck.length >= 2,
+  });
+  const shopNameBlocked = shopAvail?.available === false;
 
   const patchMutation = useMutation({
     mutationFn: async (body: Record<string, unknown>) => {
@@ -392,15 +417,19 @@ export default function PlatformCreatorsPage() {
                     className="cursor-pointer"
                     onClick={() => {
                       setSelectedId(a.id);
-                      setUsername(a.assignedUsername || a.socialUsername || "");
+                      setUsername(a.assignedUsername || a.shopName || "");
                     }}
                     data-testid={`creator-app-row-${a.id}`}
                   >
                     <TableCell>
                       <div className="font-medium">
-                        {a.firstName} {a.lastName}
+                        {a.shopName || `${a.firstName} ${a.lastName}`}
                       </div>
-                      <div className="text-xs text-muted-foreground">{a.email}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {a.shopName
+                          ? `${a.firstName} ${a.lastName} · ${a.email}`
+                          : a.email}
+                      </div>
                     </TableCell>
                     <TableCell>{a.niche}</TableCell>
                     <TableCell>
@@ -525,6 +554,11 @@ export default function PlatformCreatorsPage() {
                       : ""}
                   </div>
                   <div className="mt-1">Niche: {detail.application.niche}</div>
+                  {detail.application.shopName ? (
+                    <div className="mt-1">
+                      Requested shop: <span className="font-medium">{detail.application.shopName}</span>
+                    </div>
+                  ) : null}
                   {detail.application.shopifyStoreUrl ? (
                     <div className="mt-1">Store: {detail.application.shopifyStoreUrl}</div>
                   ) : null}
@@ -545,16 +579,38 @@ export default function PlatformCreatorsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Assigned username</Label>
-                  <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+                  <Label>Shop name (URL handle)</Label>
+                  <Input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="Mad Clown Core"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Public store name — not their personal name unless that is the store name.
+                    Becomes{" "}
+                    <span className="font-medium">
+                      {previewHandle || "…"}.aiartstudio.app
+                    </span>
+                    . If taken, they must pick a different name — we will not add numbers.
+                  </p>
+                  {shopNameBlocked ? (
+                    <p className="text-xs text-destructive">{shopAvail?.error}</p>
+                  ) : previewHandle ? (
+                    <p className="text-xs text-muted-foreground">Handle available: {previewHandle}</p>
+                  ) : null}
                   <Button
                     size="sm"
                     variant="outline"
+                    disabled={patchMutation.isPending || shopNameBlocked || !previewHandle}
                     onClick={() =>
-                      patchMutation.mutate({ assignedUsername: username, status: "under_review" })
+                      patchMutation.mutate({
+                        assignedUsername: username,
+                        shopName: username,
+                        status: "under_review",
+                      })
                     }
                   >
-                    Save username + mark under review
+                    Save shop name + mark under review
                   </Button>
                 </div>
 
@@ -576,7 +632,12 @@ export default function PlatformCreatorsPage() {
                   <Button
                     size="sm"
                     onClick={() => onboardMutation.mutate()}
-                    disabled={onboardMutation.isPending || !!detail.application.creatorId}
+                    disabled={
+                      onboardMutation.isPending ||
+                      !!detail.application.creatorId ||
+                      shopNameBlocked ||
+                      !previewHandle
+                    }
                   >
                     {onboardMutation.isPending ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
