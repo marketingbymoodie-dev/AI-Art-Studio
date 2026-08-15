@@ -22,6 +22,7 @@ import {
   FinePositionNudgeInline,
   mockupDeltaFromScreenNudge,
 } from "@/components/designer/placementNudge";
+import { mergeSavedCustomerEnabled } from "./mergeSavedCustomerEnabled";
 import {
   SLEEVES_PART_ID,
   LEGS_PART_ID,
@@ -541,21 +542,6 @@ function syncLegPlacementsForMirror(
     "right-leg": pair,
     "left-leg": { front: { ...canonical }, back: { ...canonical } },
   };
-}
-
-/**
- * Merge persisted enabled flags without resurrecting stale sleeve/trim defaults
- * from older saved designs or admin template `enabled: true`.
- */
-function mergeSavedCustomerEnabled(
-  base: Record<string, boolean>,
-  saved: Record<string, boolean> | undefined,
-): Record<string, boolean> {
-  const merged = { ...base, ...(saved ?? {}) };
-  merged["left-sleeve"] = false;
-  merged["right-sleeve"] = false;
-  merged["trim"] = false;
-  return merged;
 }
 
 function stripGroupPanelKeys(
@@ -1128,6 +1114,30 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     // initialState is intentionally only consumed on first seed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+
+  // Saved-design race: placer can seed before `hoodieAopPlacerState` arrives.
+  // Re-apply sleeve flags when the parent later restores them.
+  const lastHydratedSleeveOnRef = useRef(false);
+  useEffect(() => {
+    const savedEn = initialState?.enabled;
+    const wantOn = !!(
+      savedEn &&
+      (savedEn["left-sleeve"] === true ||
+        savedEn["right-sleeve"] === true ||
+        savedEn.sleeves === true)
+    );
+    if (wantOn === lastHydratedSleeveOnRef.current) return;
+    lastHydratedSleeveOnRef.current = wantOn;
+    if (!wantOn) return;
+    setState((prev) => {
+      if (!prev) return prev;
+      if (prev.enabled["left-sleeve"] && prev.enabled["right-sleeve"]) return prev;
+      return {
+        ...prev,
+        enabled: { ...prev.enabled, "left-sleeve": true, "right-sleeve": true },
+      };
+    });
+  }, [initialState?.enabled]);
 
   // Notify parent of state changes.
   useEffect(() => {

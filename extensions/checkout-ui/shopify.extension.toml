@@ -20,6 +20,10 @@ handle = "appai-checkout-design-preview"
     target = "purchase.checkout.header.render-after"
 
   [[extensions.targeting]]
+    module = "./src/back-to-shop-actions.jsx"
+    target = "purchase.checkout.actions.render-before"
+
+  [[extensions.targeting]]
     module = "./src/back-to-shop-thankyou.jsx"
     target = "purchase.thank-you.header.render-after"
 

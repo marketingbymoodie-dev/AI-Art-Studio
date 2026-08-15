@@ -151,6 +151,7 @@ import {
 } from "@shared/storefront-auth";
 import { buildCentralAppUrl } from "@/lib/storefrontAuth";
 import {
+  isAopPlacerGalleryReachable,
   isFlatPlacerGalleryReachable,
   stepPostGenGalleryIndex,
 } from "@/lib/postGenGalleryNav";
@@ -2702,6 +2703,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // whose sequence is no longer current aborts before writing, so a slow earlier
   // upload can never overwrite the panels from a newer apply (last-apply-wins).
   const aopPanelPersistSeqRef = useRef(0);
+  const aopPanelPersistPromiseRef = useRef<Promise<void> | null>(null);
+  const showPatternStepRef = useRef(false);
+  showPatternStepRef.current = showPatternStep;
   // Last status reported to the admin tester host (see TesterDesignStatus).
   const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
   const emitTesterDesignStatus = useCallback(
@@ -6408,6 +6412,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (opts?.cartSafeOnly && !isHttpsMockupUrl(abs)) return "";
       return abs;
     };
+    const aopFront = useAopCustomizer
+      ? aopBaseMockupsRef.current.find((img) => img.label === "front")?.url ||
+        aopBaseMockupsRef.current[0]?.url
+      : "";
+    const fromAopFront = pick(aopFront);
+    if (fromAopFront) return fromAopFront;
     const frontImage = printifyMockupImages.find(img => img.label === 'front');
     const fromFront = pick(frontImage?.url);
     if (fromFront) return fromFront;
@@ -6420,7 +6430,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (u) return u;
     }
     return '';
-  }, [printifyMockups, printifyMockupImages]);
+  }, [printifyMockups, printifyMockupImages, useAopCustomizer]);
 
   /** Admin Generator Tester: persist the on-screen design to the merchant's My Designs library. */
   const saveDesignToMyLibrary = useCallback(async () => {
@@ -8221,6 +8231,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (aopNeedsFlush) {
       try {
         await flushHoodieAopPlacer({ force: true });
+        if (aopPanelPersistPromiseRef.current) {
+          await aopPanelPersistPromiseRef.current;
+        }
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         return;
@@ -8490,6 +8503,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setIsAddingToCart(false);
         setTimeout(() => {
           setAddedToCart(false);
+          // Stay in the mesh editor so sleeve/part toggles are not wiped by remount.
+          if (showPatternStepRef.current) return;
           setGeneratedDesign(null);
           setDesignSource(null);
           loadDesignAppliedRef.current = false;
@@ -8555,6 +8570,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // without needing to click "Start Fresh Design" again.
           setTimeout(() => {
             setAddedToCart(false);
+            if (showPatternStepRef.current) return;
             setGeneratedDesign(null);
             setDesignSource(null);
             loadDesignAppliedRef.current = false;
@@ -8771,7 +8787,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           legsSynced: result.state.legsSynced,
           legsMirrored: result.state.legsMirrored,
         });
-        void (async () => {
+        aopPanelPersistPromiseRef.current = (async () => {
           try {
             const panelsForSave = fullPrintPanels ?? result.renderPrintPanels();
             if (!panelsForSave?.length || isStale()) return;
@@ -10876,6 +10892,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
     );
   }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
+
+  // Mesh AOP: catalog + local Front/Back still paint as Front View. Snap those
+  // hidden stops back to the live editor so arrows are Front View ↔ Person.
+  useEffect(() => {
+    if (!showPatternStep || !productTypeConfig?.panelMappingTemplate) return;
+    if (postGenGalleryItems.length <= 1) return;
+    const item = postGenGalleryItems[selectedMockupIndex];
+    if (!item || isAopPlacerGalleryReachable(item)) return;
+    setSelectedMockupIndex(0);
+  }, [
+    showPatternStep,
+    productTypeConfig?.panelMappingTemplate,
+    selectedMockupIndex,
+    postGenGalleryItems,
+  ]);
 
   // Framed decor + catalog blanks + tapestry + phone cases + folded/flat totes share on-demand Printify.
   const canRequestLifestyleShot = !!(
@@ -13882,7 +13913,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     // from the fresh motif. Keeping the saved customer state
                     // mid-edit is handled by `hoodieAopPlacerState` flowing
                     // back in via initialState below.
-                    key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
+                    key={`hap-${productTypeConfig?.id ?? 0}-${aopPendingMotifUrl}`}
                     ref={hoodieAopPlacerRef}
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
@@ -13955,7 +13986,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               i,
                               -1,
                               postGenGalleryItems,
-                              true,
+                              "aop",
                             );
                             const item = postGenGalleryItems[next];
                             stickAopPersonGalleryRef.current = !!(
@@ -13981,7 +14012,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               i,
                               1,
                               postGenGalleryItems,
-                              true,
+                              "aop",
                             );
                             const item = postGenGalleryItems[next];
                             stickAopPersonGalleryRef.current = !!(
@@ -13997,6 +14028,57 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         <ChevronRight className="w-5 h-5" />
                       </button>
                     </>
+                  )}
+                  {showsPrintifyMockupPreview &&
+                    generatedDesign?.imageUrl &&
+                    postGenGalleryItems.length > 1 && (
+                    <div
+                      className="flex justify-center gap-3 mt-1 lg:pr-80"
+                      data-testid="hoodie-placer-gallery-dots"
+                    >
+                      {postGenGalleryItems.map((item, idx) => {
+                        if (!isAopPlacerGalleryReachable(item)) return null;
+                        return (
+                          <button
+                            key={`${item.kind}-${idx}`}
+                            type="button"
+                            onClick={() => {
+                              lastManualGalleryNavRef.current = Date.now();
+                              stickAopPersonGalleryRef.current = !!(
+                                item.kind === "mockup" &&
+                                isPrintifyOnDemandMockupLabel(item.label)
+                              );
+                              setSelectedMockupIndex(idx);
+                            }}
+                            aria-label={
+                              item.kind === "artwork" ? "Front View" : item.label
+                            }
+                            className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                              selectedMockupIndex === idx
+                                ? "opacity-100"
+                                : "opacity-40 hover:opacity-70"
+                            }`}
+                          >
+                            <span
+                              className={`rounded-full transition-all duration-200 ${
+                                selectedMockupIndex === idx
+                                  ? "w-4 h-2 bg-foreground"
+                                  : "w-2 h-2 bg-foreground/60"
+                              }`}
+                            />
+                            <span
+                              className={`text-[10px] leading-tight font-medium ${
+                                selectedMockupIndex === idx
+                                  ? "text-foreground"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
+                              {item.kind === "artwork" ? "Front View" : item.label}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               ) : (

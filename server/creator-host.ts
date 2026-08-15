@@ -530,5 +530,9 @@ export function creatorReturnCheckoutAttributes(
   return [
     { key: "_creator_return_url", value: returnUrl.slice(0, 255) },
     { key: "_creator_shop_name", value: shopName.slice(0, 120) },
+    // Checkout UI `useAttributeValues` often omits underscore keys. Public
+    // aliases keep “Back to shop” visible under the native header.
+    { key: "creator_return_url", value: returnUrl.slice(0, 255) },
+    { key: "creator_shop_name", value: shopName.slice(0, 120) },
   ];
 }

@@ -5,9 +5,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
-import { Palette, Image, ShoppingCart, Settings, Sparkles } from "lucide-react";
+import { Palette, Image, ShoppingCart, Settings } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import { isShopifyEmbedded } from "@/lib/shopify";
+import LuxeLandingPage from "@/pages/creators/luxe-landing";
 import type { Customer } from "@shared/schema";
 
 export default function Home() {
@@ -44,7 +45,7 @@ export default function Home() {
   }
 
   if (!isAuthenticated) {
-    return <LandingPage />;
+    return <LuxeLandingPage />;
   }
 
   return (
@@ -112,72 +113,6 @@ export default function Home() {
               </CardContent>
             </Card>
           </Link>
-        </div>
-      </main>
-    </div>
-  );
-}
-
-function LandingPage() {
-  return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <Palette className="h-6 w-6 text-primary" />
-            <h1 className="text-xl font-semibold">AI Art Studio</h1>
-          </div>
-          <Button onClick={() => window.location.href = "/"} data-testid="button-login">
-            Sign In
-          </Button>
-        </div>
-      </header>
-
-      <main className="container mx-auto px-4 py-16">
-        <div className="max-w-3xl mx-auto text-center">
-          <h1 className="text-4xl font-bold mb-6">
-            Create Stunning Personalized AI Artwork Printed on Premium Products
-          </h1>
-          <p className="text-xl text-muted-foreground mb-8">
-            Transform your ideas into stunning artwork. Simply describe what you want, 
-            choose a style, and our AI will generate beautiful designs ready for printing on premium products.
-          </p>
-          <Button size="lg" onClick={() => window.location.href = "/"} data-testid="button-get-started">
-            Get Started Free
-          </Button>
-          <p className="text-sm text-muted-foreground mt-4">
-            Start designing free
-          </p>
-        </div>
-
-        <div className="grid gap-8 md:grid-cols-3 mt-16">
-          <div className="text-center">
-            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Sparkles className="h-8 w-8 text-primary" />
-            </div>
-            <h3 className="font-semibold mb-2">AI-Powered Creation</h3>
-            <p className="text-sm text-muted-foreground">
-              Describe your vision and watch it come to life with cutting-edge AI technology.
-            </p>
-          </div>
-          <div className="text-center">
-            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Image className="h-8 w-8 text-primary" />
-            </div>
-            <h3 className="font-semibold mb-2">Premium Quality Prints</h3>
-            <p className="text-sm text-muted-foreground">
-              Museum-quality prints on premium paper with beautiful frames.
-            </p>
-          </div>
-          <div className="text-center">
-            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
-              <ShoppingCart className="h-8 w-8 text-primary" />
-            </div>
-            <h3 className="font-semibold mb-2">Easy Ordering</h3>
-            <p className="text-sm text-muted-foreground">
-              Choose your size and frame, then get it delivered to your door.
-            </p>
-          </div>
         </div>
       </main>
     </div>

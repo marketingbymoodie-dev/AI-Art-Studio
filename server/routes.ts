@@ -9899,6 +9899,38 @@ ${orientationExtra}
             console.warn(`[ShadowProduct] Failed to update reused shadow price:`, priceErr?.message || priceErr);
           }
         }
+        // Placement edits reuse the same designId — replace the variant image
+        // so cart/checkout thumbnails match the latest mockup.
+        if (existing.shopifyProductId && existing.shopifyVariantId) {
+          try {
+            const imgRes = await fetch(
+              `${apiBase}/products/${existing.shopifyProductId}/images.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  image: {
+                    src: mockupUrl,
+                    variant_ids: [Number(existing.shopifyVariantId)],
+                  },
+                }),
+              },
+            );
+            if (!imgRes.ok) {
+              const t = await imgRes.text();
+              console.warn(
+                `[ShadowProduct] Failed to refresh reused shadow image:`,
+                imgRes.status,
+                t.substring(0, 200),
+              );
+            }
+          } catch (imgErr: any) {
+            console.warn(
+              `[ShadowProduct] Failed to refresh reused shadow image:`,
+              imgErr?.message || imgErr,
+            );
+          }
+        }
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
 

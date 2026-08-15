@@ -30,6 +30,7 @@ import {
   Image,
   Text,
   Badge,
+  Button,
 } from '@shopify/ui-extensions-react/checkout';
 
 /**
@@ -56,6 +57,12 @@ function AppAIDesignPreview() {
 
   const mockupUrl = pickPreviewImageUrl(attrs);
   const designId  = getAttr(attrs, '_design_id') || getAttr(attrs, 'design_id');
+  const creatorReturn =
+    getAttr(attrs, 'creator_return_url') || getAttr(attrs, '_creator_return_url');
+  const creatorShop =
+    getAttr(attrs, 'creator_shop_name') ||
+    getAttr(attrs, '_creator_shop_name') ||
+    getAttr(attrs, '_creator_username');
 
   // Nothing to render if there's no usable preview URL
   if (!mockupUrl) {
@@ -117,6 +124,11 @@ function AppAIDesignPreview() {
             </Text>
           )}
           <Badge tone="success">Personalized</Badge>
+          {creatorReturn && String(creatorReturn).indexOf("https://") === 0 ? (
+            <Button to={String(creatorReturn)} kind="plain" external>
+              {creatorShop ? `Back to ${creatorShop}` : "Back to shop"}
+            </Button>
+          ) : null}
         </BlockStack>
       </InlineLayout>
     </BlockStack>

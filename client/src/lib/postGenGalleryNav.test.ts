@@ -91,6 +91,25 @@ describe("stepPostGenGalleryIndex", () => {
     ];
     expect(stepPostGenGalleryIndex(1, 1, itemsClosed, false)).toBe(2);
   });
+
+  it("mesh AOP: Front View skips Front/Back and catalog to Front Person", () => {
+    const hoodie: PostGenGalleryNavItem[] = [
+      { kind: "artwork", label: "Artwork" },
+      { kind: "mockup", url: "https://x.example/front.png", label: "Front" },
+      { kind: "mockup", url: "https://x.example/back.png", label: "Back" },
+      { kind: "mockup", url: "https://x.example/fp.png", label: "Front Person" },
+      { kind: "mockup", url: "https://x.example/sp.png", label: "Side Person" },
+      { kind: "catalog", url: "https://x.example/p.png", label: "Primary" },
+      { kind: "catalog", url: "https://x.example/v2.png", label: "View 2" },
+      { kind: "catalog", url: "https://x.example/v3.png", label: "View 3" },
+    ];
+    expect(stepPostGenGalleryIndex(0, 1, hoodie, "aop")).toBe(3);
+    expect(stepPostGenGalleryIndex(3, 1, hoodie, "aop")).toBe(4);
+    expect(stepPostGenGalleryIndex(4, 1, hoodie, "aop")).toBe(0);
+    expect(stepPostGenGalleryIndex(0, -1, hoodie, "aop")).toBe(4);
+    // Catalog still looks like Front View on mesh AOP — one click to Person.
+    expect(stepPostGenGalleryIndex(5, 1, hoodie, "aop")).toBe(3);
+  });
 });
 
 describe("isFlatPlacerGalleryReachable", () => {
