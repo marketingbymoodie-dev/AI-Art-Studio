@@ -39,7 +39,7 @@
         var(--bg);
     }
     .stage.is-on { display: block; }
-    .page { max-width: 1120px; margin: 0 auto; padding: 48px 24px 72px; }
+    .page { max-width: min(1680px, 96vw); margin: 0 auto; padding: 36px 32px 56px; }
     .eyebrow { margin: 0 0 12px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); }
     h1 { margin: 0; font-size: clamp(34px, 6vw, 72px); line-height: 0.96; letter-spacing: -0.04em; font-weight: 800; }
     .lede { margin: 18px 0 0; max-width: 40rem; color: var(--muted); font-size: 18px; line-height: 1.5; }
@@ -87,19 +87,23 @@
     }
     .caption { margin: 0; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-size: 14px; }
 
-    .coverflow-wrap { perspective: 1400px; margin: 36px 0 16px; height: 420px; user-select: none; touch-action: pan-y; }
+    .coverflow-wrap { perspective: 1400px; margin: 36px 0 16px; height: min(540px, 72vh); user-select: none; touch-action: pan-y; }
     .deck { position: relative; height: 100%; transform-style: preserve-3d; }
     .album {
-      position: absolute; inset: 0; width: min(420px, 78vw); height: 400px; left: 50%;
-      margin-left: calc(min(420px, 78vw) / -2); border-radius: 22px;
+      position: absolute; top: 50%; left: 50%; width: min(580px, 44vw); height: auto;
+      border-radius: 22px;
       background: linear-gradient(180deg, #16161f, #0b0b10);
       border: 1px solid rgba(255,255,255,0.16);
-      box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 22px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 16px 16px 18px;
       transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease; cursor: pointer;
     }
-    .album h2 { margin: 18px 0 8px; font-size: 28px; letter-spacing: -0.03em; outline: none; }
+    .album h2 { margin: 14px 0 6px; font-size: 24px; letter-spacing: -0.03em; outline: none; }
     .album p { margin: 0; color: var(--muted); line-height: 1.45; outline: none; }
-    .thumb { height: 190px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); background-size: cover; background-position: center; }
+    .thumb {
+      width: 100%; aspect-ratio: 16 / 9; border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.1); background-color: #0a0a10;
+      background-size: contain; background-repeat: no-repeat; background-position: center;
+    }
     .dots { display: flex; justify-content: center; gap: 8px; }
     .dot { width: 7px; height: 7px; border-radius: 99px; border: 0; padding: 0; background: rgba(255,255,255,0.22); cursor: pointer; }
     .dot.is-on { background: #fff; width: 22px; }
@@ -652,11 +656,18 @@
         if (document.activeElement !== p) p.textContent = card.body;
         h.contentEditable = editOn ? "true" : "false";
         p.contentEditable = editOn ? "true" : "false";
-        el.querySelector(".thumb").style.background = card.image ? `center/cover url("${card.image}")` : card.art;
+        const thumb = el.querySelector(".thumb");
+        if (card.image) {
+          thumb.style.backgroundImage = `url("${card.image}")`;
+          thumb.style.background = "";
+        } else {
+          thumb.style.backgroundImage = "";
+          thumb.style.background = card.art;
+        }
         const offset = i - cardIndex;
         const abs = Math.abs(offset);
-        el.style.transform = `translateX(${offset * 42}%) translateZ(${-abs * 140}px) rotateY(${offset * -32}deg) scale(${1 - abs * 0.08})`;
-        el.style.opacity = abs > 2 ? "0" : String(1 - abs * 0.18);
+        el.style.transform = `translate(-50%, -50%) translateX(${offset * 52}%) translateZ(${-abs * 160}px) rotateY(${offset * -22}deg) scale(${1 - abs * 0.06})`;
+        el.style.opacity = abs > 2 ? "0" : String(1 - abs * 0.16);
         el.style.zIndex = String(20 - abs);
         el.style.pointerEvents = abs > 2 ? "none" : "auto";
       });
@@ -665,17 +676,22 @@
 
     const flow = document.getElementById("flow");
     let startX = null;
+    let tapIndex = null;
     flow.addEventListener("pointerdown", (e) => {
       if (editOn && e.target.closest("h2,p")) return;
       startX = e.clientX;
+      const album = e.target.closest(".album");
+      tapIndex = album ? [...deck.children].indexOf(album) : null;
       flow.setPointerCapture(e.pointerId);
     });
     flow.addEventListener("pointerup", (e) => {
       if (startX == null) return;
       const dx = e.clientX - startX;
       if (dx > 40) cardIndex = Math.max(0, cardIndex - 1);
-      if (dx < -40) cardIndex = Math.min(state.cards.length - 1, cardIndex + 1);
+      else if (dx < -40) cardIndex = Math.min(state.cards.length - 1, cardIndex + 1);
+      else if (tapIndex != null && tapIndex >= 0) cardIndex = tapIndex;
       startX = null;
+      tapIndex = null;
       layoutCards();
     });
     window.addEventListener("keydown", (e) => {

@@ -107,6 +107,17 @@ function Landing({
 
   const go = (next: number) => setIndex(Math.max(0, Math.min(cards.length - 1, next)));
 
+  const stepFromPointer = (el: HTMLDivElement, clientX: number, start: number) => {
+    const dx = clientX - start;
+    if (dx > 40) return go(index - 1);
+    if (dx < -40) return go(index + 1);
+    const rect = el.getBoundingClientRect();
+    const mid = rect.left + rect.width / 2;
+    const dead = rect.width * 0.16;
+    if (clientX < mid - dead) go(index - 1);
+    else if (clientX > mid + dead) go(index + 1);
+  };
+
   const cta = (
     <div className="luxe-cta">
       <button type="button" className="luxe-btn-white" onClick={() => onApply("creator")}>
@@ -128,9 +139,7 @@ function Landing({
         }}
         onPointerUp={(e) => {
           if (startX.current == null) return;
-          const dx = e.clientX - startX.current;
-          if (dx > 40) go(index - 1);
-          if (dx < -40) go(index + 1);
+          stepFromPointer(e.currentTarget as HTMLDivElement, e.clientX, startX.current);
           startX.current = null;
         }}
       >
@@ -143,12 +152,10 @@ function Landing({
                 key={card.id}
                 className="luxe-album"
                 style={{
-                  transform: `translateX(${offset * 38}%) translateZ(${-abs * 120}px) rotateY(${offset * -28}deg) scale(${1 - abs * 0.08})`,
+                  transform: `translate(-50%, -50%) translateX(${offset * 36}%) translateZ(${-abs * 140}px) rotateY(${offset * -26}deg) scale(${1 - abs * 0.08})`,
                   opacity: abs > 2 ? 0 : 1 - abs * 0.18,
                   zIndex: 20 - abs,
-                  pointerEvents: abs > 2 ? "none" : "auto",
                 }}
-                onClick={() => go(i)}
               >
                 <div
                   className="luxe-thumb"
@@ -242,23 +249,24 @@ const LUXE_CSS = `
       #07070b;
     font-family: Inter, system-ui, sans-serif;
   }
-  .luxe-page { max-width: 1180px; margin: 0 auto; }
+  .luxe-page { max-width: min(1440px, 94vw); margin: 0 auto; }
   .luxe-landing {
     min-height: 100svh;
     display: flex;
     flex-direction: column;
     justify-content: center;
-    padding: 20px 24px 16px;
+    padding: 24px 28px 18px;
     box-sizing: border-box;
   }
   .luxe-landing-grid { display: grid; gap: 20px; align-items: center; }
+  .luxe-landing-copy { position: relative; z-index: 2; }
   .luxe-cta { display: flex; flex-wrap: wrap; gap: 12px; }
   .luxe-cta-mobile { display: none; }
   .luxe-cta-desktop { display: block; margin-top: 22px; }
   .luxe-cta-desktop .luxe-eyebrow,
   .luxe-cta-mobile .luxe-eyebrow { margin-bottom: 12px; }
   .luxe-eyebrow { margin: 0 0 10px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(245,245,247,0.62); }
-  .luxe-h1 { margin: 0; font-size: clamp(32px, 4.4vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
+  .luxe-h1 { margin: 0; font-size: clamp(32px, 4.2vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
   .luxe-lede { margin: 14px 0 0; max-width: 36rem; color: rgba(245,245,247,0.62); font-size: 16px; line-height: 1.45; }
   .luxe-caption { letter-spacing: 0.08em; text-transform: uppercase; color: rgba(245,245,247,0.62); font-size: 14px; }
   .luxe-portal { text-align: center; font-size: 11px; color: rgba(255,255,255,0.35); margin: 10px 0 0; }
@@ -284,24 +292,32 @@ const LUXE_CSS = `
     width: min(260px, 64vw); aspect-ratio: 1; border-radius: 18px; border: 1px solid rgba(255,255,255,0.1);
     background-size: cover; background-position: center; background-color: #14141c;
   }
-  .luxe-stage { min-width: 0; }
-  .luxe-flow { perspective: 1200px; margin: 0 0 10px; height: min(360px, 52vh); user-select: none; touch-action: pan-y; }
-  .luxe-deck { position: relative; height: 100%; transform-style: preserve-3d; }
+  .luxe-stage { min-width: 0; overflow: hidden; }
+  .luxe-flow { perspective: 1200px; margin: 0 0 10px; height: min(420px, 58vh); user-select: none; touch-action: pan-y; cursor: pointer; }
+  .luxe-deck { position: relative; height: 100%; transform-style: preserve-3d; pointer-events: none; }
   .luxe-album {
-    position: absolute; inset: 0; width: min(360px, 34vw); height: min(340px, 48vh); left: 50%;
-    margin-left: calc(min(360px, 34vw) / -2); border-radius: 20px;
+    position: absolute; top: 50%; left: 50%; width: min(400px, 28vw); height: auto;
+    border-radius: 20px;
     background: linear-gradient(180deg, #16161f, #0b0b10); border: 1px solid rgba(255,255,255,0.16);
-    box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 16px;
-    transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease; cursor: pointer;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 14px;
+    transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease;
   }
   .luxe-album h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: -0.03em; }
   .luxe-album p { margin: 0; color: rgba(245,245,247,0.62); line-height: 1.4; font-size: 14px;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-  .luxe-thumb { height: 46%; border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); background-size: cover; background-position: center; }
+  .luxe-thumb {
+    width: 100%; aspect-ratio: 16 / 9; border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.1); background-color: #0a0a10;
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+  }
   .luxe-dot { width: 7px; height: 7px; border-radius: 99px; border: 0; padding: 0; background: rgba(255,255,255,0.22); cursor: pointer; }
   .luxe-dot.is-on { background: #fff; width: 22px; }
   @media (min-width: 960px) {
-    .luxe-landing-grid { grid-template-columns: minmax(300px, 0.95fr) minmax(420px, 1.15fr); gap: 28px 36px; }
+    .luxe-landing-grid { grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.05fr); gap: 28px 32px; }
+  }
+  @media (min-width: 1400px) {
+    .luxe-album { width: min(440px, 26vw); }
+    .luxe-flow { height: min(460px, 60vh); }
   }
   @media (max-width: 959px) {
     .luxe-landing { padding: 16px 16px 12px; justify-content: flex-start; }
@@ -314,14 +330,10 @@ const LUXE_CSS = `
     .luxe-cta { flex-direction: column; }
     .luxe-cta button { width: 100%; }
     .luxe-landing-bottom { display: flex; flex-direction: column; min-height: 0; }
-    .luxe-flow { height: min(280px, 42svh); }
-    .luxe-album {
-      width: min(300px, 78vw); height: min(260px, 40svh);
-      margin-left: calc(min(300px, 78vw) / -2); padding: 12px;
-    }
+    .luxe-flow { height: min(320px, 46svh); }
+    .luxe-album { width: min(300px, 78vw); padding: 12px; }
     .luxe-album h2 { font-size: 18px; }
     .luxe-album p { font-size: 13px; -webkit-line-clamp: 2; }
-    .luxe-thumb { height: 48%; }
     .luxe-portal { display: none; }
   }
 `;
