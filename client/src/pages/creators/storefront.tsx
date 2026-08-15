@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ExternalLink, Palette, ShoppingCart } from "lucide-react";
+import { ExternalLink, Minus, Palette, Plus, ShoppingCart, Trash2 } from "lucide-react";
 import {
   ensureCreatorAnalyticsSession,
   trackCreatorEvent,
@@ -67,6 +67,51 @@ function useCreatorHeadingStylesheet() {
     link.href = CREATOR_HEADING_FONTS_STYLESHEET;
     document.head.appendChild(link);
   }, []);
+}
+
+type CreatorCartPayload = {
+  checkoutUrl: string;
+  cartId?: string;
+  itemCount: number;
+  lines: Array<{ id: string; quantity: number; title: string; imageUrl: string | null }>;
+};
+
+function persistCreatorCart(username: string, json: CreatorCartPayload, fallbackCartId?: string) {
+  const cartId = String(json.cartId || fallbackCartId || "");
+  const itemCount = Number(json.itemCount) || 0;
+  if (!cartId || itemCount < 1) {
+    clearCreatorCart();
+    return;
+  }
+  writeCreatorCart({
+    cartId,
+    checkoutUrl: String(json.checkoutUrl || ""),
+    itemCount,
+    username,
+  });
+}
+
+function useCreatorCartQuery(username: string) {
+  const snap = readCreatorCart(username);
+  return useQuery<CreatorCartPayload>({
+    queryKey: ["/api/creators/cart", username, snap?.cartId || ""],
+    enabled: !!snap?.cartId,
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        creatorUsername: username,
+        cartId: snap!.cartId,
+      });
+      const res = await fetch(`${API_BASE}/api/creators/cart?${params.toString()}`);
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        clearCreatorCart();
+        throw new Error("Cart expired");
+      }
+      if (!res.ok) throw new Error(json?.error || "Could not load cart");
+      persistCreatorCart(username, json, snap!.cartId);
+      return json;
+    },
+  });
 }
 
 type StorefrontPage = {
@@ -172,9 +217,7 @@ function StoreShell({
             >
               <ShoppingCart className="h-4 w-4" />
               Cart
-              {readCreatorCart(creator.username)?.itemCount
-                ? ` (${readCreatorCart(creator.username)?.itemCount})`
-                : ""}
+              <CartCount username={creator.username} />
             </Link>
           </nav>
         </div>
@@ -514,35 +557,45 @@ function storefrontSection(
   return "home";
 }
 
+function CartCount({ username }: { username: string }) {
+  const { data } = useCreatorCartQuery(username);
+  const count = data?.itemCount ?? readCreatorCart(username)?.itemCount ?? 0;
+  return count > 0 ? <span> ({count})</span> : null;
+}
+
 function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
+  const qc = useQueryClient();
   const snap = readCreatorCart(creator.username);
-  const { data, isLoading, error } = useQuery<{
-    checkoutUrl: string;
-    itemCount: number;
-    lines: Array<{ id: string; quantity: number; title: string; imageUrl: string | null }>;
-  }>({
-    queryKey: ["/api/creators/cart", creator.username, snap?.cartId],
-    enabled: !!snap?.cartId,
-    queryFn: async () => {
-      const params = new URLSearchParams({
-        creatorUsername: creator.username,
-        cartId: snap!.cartId,
+  const { data, isLoading, error } = useCreatorCartQuery(creator.username);
+  const [pendingLineId, setPendingLineId] = useState<string | null>(null);
+
+  const updateLine = useMutation({
+    mutationFn: async (body: { lineId: string; quantity?: number; remove?: boolean }) => {
+      if (!snap?.cartId) throw new Error("Cart expired");
+      const res = await fetch(`${API_BASE}/api/creators/cart/lines`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creatorUsername: creator.username,
+          cartId: snap.cartId,
+          lineId: body.lineId,
+          quantity: body.quantity,
+          remove: body.remove === true,
+        }),
       });
-      const res = await fetch(`${API_BASE}/api/creators/cart?${params.toString()}`);
       const json = await res.json().catch(() => ({}));
-      if (res.status === 404) {
-        clearCreatorCart();
-        throw new Error("Cart expired");
-      }
-      if (!res.ok) throw new Error(json?.error || "Could not load cart");
-      writeCreatorCart({
-        cartId: String(json.cartId || snap!.cartId),
-        checkoutUrl: String(json.checkoutUrl || snap!.checkoutUrl || ""),
-        itemCount: Number(json.itemCount) || 0,
-        username: creator.username,
-      });
-      return json;
+      if (!res.ok) throw new Error(json?.error || "Could not update cart");
+      return json as CreatorCartPayload;
     },
+    onMutate: (body) => setPendingLineId(body.lineId),
+    onSuccess: (json) => {
+      persistCreatorCart(creator.username, json, snap?.cartId);
+      qc.setQueryData(["/api/creators/cart", creator.username, snap?.cartId || ""], json);
+      if ((Number(json.itemCount) || 0) < 1) {
+        qc.setQueryData(["/api/creators/cart", creator.username, ""], json);
+      }
+    },
+    onSettled: () => setPendingLineId(null),
   });
 
   const lines = data?.lines || [];
@@ -583,12 +636,66 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
               )}
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{line.title}</div>
-                <div className="text-sm text-muted-foreground">Qty {line.quantity}</div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center rounded-md border">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      disabled={pendingLineId === line.id}
+                      aria-label={line.quantity <= 1 ? "Remove item" : "Decrease quantity"}
+                      onClick={() =>
+                        updateLine.mutate({
+                          lineId: line.id,
+                          quantity: line.quantity - 1,
+                          remove: line.quantity <= 1,
+                        })
+                      }
+                    >
+                      <Minus className="h-3.5 w-3.5" />
+                    </Button>
+                    <span className="min-w-[1.5rem] text-center text-sm tabular-nums">
+                      {line.quantity}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      disabled={pendingLineId === line.id || line.quantity >= 99}
+                      aria-label="Increase quantity"
+                      onClick={() =>
+                        updateLine.mutate({ lineId: line.id, quantity: line.quantity + 1 })
+                      }
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-muted-foreground"
+                    disabled={pendingLineId === line.id}
+                    onClick={() => updateLine.mutate({ lineId: line.id, remove: true })}
+                  >
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    Remove
+                  </Button>
+                </div>
               </div>
             </li>
           ))}
         </ul>
       )}
+      {updateLine.isError ? (
+        <p className="text-sm text-destructive">
+          {updateLine.error instanceof Error
+            ? updateLine.error.message
+            : "Could not update the cart."}
+        </p>
+      ) : null}
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button asChild variant="outline" className="flex-1">
           <Link href={`${basePath}/products`}>Continue shopping</Link>

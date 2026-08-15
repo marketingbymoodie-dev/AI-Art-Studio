@@ -67,7 +67,10 @@ import {
   addLinesToCreatorCart,
   createCreatorCheckoutCart,
   getCreatorCart,
+  isCreatorCartLineId,
   isCreatorStorefrontConfigured,
+  removeCreatorCartLines,
+  updateCreatorCartLine,
 } from "../shopify-storefront";
 import {
   creatorMerchandiseMissingMessage,
@@ -1319,6 +1322,65 @@ export function registerCreatorMarketplaceRoutes(
     } catch (e: any) {
       console.error("[creators] cart fetch failed:", e);
       res.status(500).json({ error: e?.message || "Failed to load cart" });
+    }
+  });
+
+  app.patch("/api/creators/cart/lines", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `cart-lines:${clientIpFromReq(req)}`,
+      limit: 120,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Too many cart updates. Try again later." });
+    }
+    try {
+      if (!isCreatorStorefrontConfigured()) {
+        return res.status(503).json({
+          error: "CREATOR_STOREFRONT_NOT_CONFIGURED",
+          message:
+            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_STOREFRONT_API_TOKEN on Railway staging.",
+        });
+      }
+      const body = req.body ?? {};
+      const username = normalizeCreatorUsername(String(body.creatorUsername || ""));
+      const cartId = String(body.cartId || "").trim();
+      const lineId = String(body.lineId || "").trim();
+      if (!username || !cartId || !lineId) {
+        return res.status(400).json({ error: "creatorUsername, cartId, and lineId are required." });
+      }
+      if (!isCreatorCartLineId(lineId)) {
+        return res.status(400).json({ error: "Invalid cart line." });
+      }
+      const { assertPublicCreatorApiContext } = await import("../creator-host");
+      const asserted = await assertPublicCreatorApiContext({
+        shop: getCreatorPlatformShopDomain(),
+        creatorUsername: username,
+        requirePlatformShop: true,
+      });
+      if (!asserted.ok) {
+        return res.status(asserted.status).json({ error: asserted.error });
+      }
+      const remove = body.remove === true || body.quantity === 0 || body.quantity === "0";
+      const cart = remove
+        ? await removeCreatorCartLines({ cartId, lineIds: [lineId] })
+        : await updateCreatorCartLine({
+            cartId,
+            lineId,
+            quantity: Number(body.quantity),
+          });
+      res.json({
+        success: true,
+        cartId: cart.cartId,
+        checkoutUrl: cart.checkoutUrl,
+        itemCount: cart.itemCount,
+        lines: cart.lines,
+      });
+    } catch (e: any) {
+      console.error("[creators] cart line update failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to update cart" });
     }
   });
 

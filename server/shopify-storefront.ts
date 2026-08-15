@@ -260,3 +260,78 @@ export async function addLinesToCreatorCart(params: {
   }
   return mapped;
 }
+
+export function isCreatorCartLineId(lineId: string): boolean {
+  return String(lineId || "").startsWith("gid://shopify/CartLine/");
+}
+
+export async function updateCreatorCartLine(params: {
+  cartId: string;
+  lineId: string;
+  quantity: number;
+}): Promise<CreatorCartResult> {
+  const n = Math.floor(Number(params.quantity));
+  const quantity = Number.isFinite(n) ? Math.max(0, Math.min(99, n)) : 0;
+  if (quantity <= 0) {
+    return removeCreatorCartLines({ cartId: params.cartId, lineIds: [params.lineId] });
+  }
+  const data = await storefrontGraphql<{
+    cartLinesUpdate: {
+      cart: StorefrontCartNode | null;
+      userErrors: Array<{ field?: string[]; message: string }>;
+    };
+  }>(
+    `mutation CreatorCartLinesUpdate($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
+      cartLinesUpdate(cartId: $cartId, lines: $lines) {
+        cart { ${CART_FIELDS} }
+        userErrors { field message }
+      }
+    }`,
+    {
+      cartId: params.cartId,
+      lines: [{ id: params.lineId, quantity }],
+    },
+  );
+  const errs = data.cartLinesUpdate?.userErrors || [];
+  if (errs.length) {
+    throw new Error(errs.map((e) => e.message).join("; "));
+  }
+  const mapped = mapCreatorCart(data.cartLinesUpdate?.cart);
+  if (!mapped) {
+    throw new Error("Storefront cartLinesUpdate did not return a cart");
+  }
+  return mapped;
+}
+
+export async function removeCreatorCartLines(params: {
+  cartId: string;
+  lineIds: string[];
+}): Promise<CreatorCartResult> {
+  const lineIds = params.lineIds.filter((id) => isCreatorCartLineId(id));
+  if (lineIds.length === 0) {
+    throw new Error("A valid cart line is required.");
+  }
+  const data = await storefrontGraphql<{
+    cartLinesRemove: {
+      cart: StorefrontCartNode | null;
+      userErrors: Array<{ field?: string[]; message: string }>;
+    };
+  }>(
+    `mutation CreatorCartLinesRemove($cartId: ID!, $lineIds: [ID!]!) {
+      cartLinesRemove(cartId: $cartId, lineIds: $lineIds) {
+        cart { ${CART_FIELDS} }
+        userErrors { field message }
+      }
+    }`,
+    { cartId: params.cartId, lineIds },
+  );
+  const errs = data.cartLinesRemove?.userErrors || [];
+  if (errs.length) {
+    throw new Error(errs.map((e) => e.message).join("; "));
+  }
+  const mapped = mapCreatorCart(data.cartLinesRemove?.cart);
+  if (!mapped) {
+    throw new Error("Storefront cartLinesRemove did not return a cart");
+  }
+  return mapped;
+}
