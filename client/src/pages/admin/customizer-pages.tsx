@@ -28,7 +28,50 @@ import {
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
-import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+
+function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
+  return normalizeSelectionId(a) === normalizeSelectionId(b);
+}
+
+/** Prefer stored product ids when the wizard used a different separator (`14x14` vs `14-x-14`). */
+function remapPickedIds(picked: string[], stored: VariantOption[] | undefined): string[] {
+  if (!stored?.length) return picked;
+  return picked.map((id) => stored.find((opt) => selectionIdEq(opt.id, id))?.id ?? id);
+}
+
+function buildVariantsFromAxes(
+  sizes: VariantOption[],
+  colors: VariantOption[],
+  sizeIds: string[],
+  colorIds: string[],
+): BlankVariant[] {
+  const sizeSet = sizeIds.length ? new Set(sizeIds.map(normalizeSelectionId)) : null;
+  const colorSet = colorIds.length ? new Set(colorIds.map(normalizeSelectionId)) : null;
+  let sizesToUse = sizeSet ? sizes.filter((s) => sizeSet.has(normalizeSelectionId(s.id))) : sizes;
+  let colorsToUse = colorSet && colors.length > 0
+    ? colors.filter((c) => colorSet.has(normalizeSelectionId(c.id)))
+    : colors;
+  if (sizesToUse.length === 0 && sizes.length > 0) sizesToUse = sizes;
+  if (colorsToUse.length === 0 && colorIds.length > 0 && colors.length > 0) colorsToUse = colors;
+  const rows: BlankVariant[] = [];
+  if (colorsToUse.length === 0) {
+    for (const size of sizesToUse) {
+      rows.push({ id: `size:${size.id}`, title: size.name, price: "0.00" });
+    }
+    return rows;
+  }
+  for (const size of sizesToUse) {
+    for (const color of colorsToUse) {
+      rows.push({
+        id: `size:${size.id}:${color.id}`,
+        title: `${size.name} / ${color.name}`,
+        price: "0.00",
+      });
+    }
+  }
+  return rows;
+}
 
 /** Prefer all sizes, drop colours from the end until ≤ Shopify max (UI / prep helper). */
 function trimSelectionToShopifyMax(
@@ -805,8 +848,26 @@ export default function AdminCustomizerPages() {
         deduped.push(v);
       }
     }
-    return deduped;
-  }, [selectedBlank?.variants]);
+    if (deduped.length > 0) return deduped;
+    // Wizard size ids (`14x14`) can miss catalogue variantMap keys (`14-x-14`),
+    // leaving blanks.variants empty after Apply. Build rows from the axes the
+    // merchant just picked so pricing never goes blank.
+    const sizes = wizardSizes.length ? wizardSizes : (selectedBlank?.sizes ?? []);
+    const colors = wizardColors.length ? wizardColors : (selectedBlank?.frameColors ?? []);
+    const sizeIds = wizardSizeIds.size ? Array.from(wizardSizeIds) : (selectedBlank?.selectedSizeIds ?? []);
+    const colorIds = wizardColorIds.size ? Array.from(wizardColorIds) : (selectedBlank?.selectedColorIds ?? []);
+    return buildVariantsFromAxes(sizes, colors, sizeIds, colorIds);
+  }, [
+    selectedBlank?.variants,
+    selectedBlank?.sizes,
+    selectedBlank?.frameColors,
+    selectedBlank?.selectedSizeIds,
+    selectedBlank?.selectedColorIds,
+    wizardSizes,
+    wizardColors,
+    wizardSizeIds,
+    wizardColorIds,
+  ]);
 
   // Printify costs query -- fetches production costs via temporary product probe
   const {
@@ -1230,11 +1291,11 @@ export default function AdminCustomizerPages() {
       const savedColors = selectedBlank?.selectedColorIds ?? [];
       let nextSizes =
         sameProvider && savedSizes.length > 0
-          ? savedSizes.filter((id) => sizes.some((s) => s.id === id))
+          ? sizes.filter((s) => savedSizes.some((id) => selectionIdEq(s.id, id))).map((s) => s.id)
           : sizes.map((s) => s.id);
       let nextColors =
         sameProvider && savedColors.length > 0 && colors.length > 0
-          ? savedColors.filter((id) => colors.some((c) => c.id === id))
+          ? colors.filter((c) => savedColors.some((id) => selectionIdEq(c.id, id))).map((c) => c.id)
           : colors.map((c) => c.id);
       const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
       setWizardSizeIds(new Set(trimmed.sizeIds));
@@ -1266,8 +1327,8 @@ export default function AdminCustomizerPages() {
         throw new Error("Choose a print provider before continuing.");
       }
       const sameProvider = wizardProviderId === selectedBlank.printifyProviderId;
-      const sizeIds = args.sizeIds;
-      const colorIds = args.colorIds;
+      const sizeIds = remapPickedIds(args.sizeIds, selectedBlank.sizes);
+      const colorIds = remapPickedIds(args.colorIds, selectedBlank.frameColors);
 
       if (sameProvider && selectedBlank.productTypeId) {
         const cleanName = stripProviderSuffix(selectedBlank.title);
@@ -1504,14 +1565,22 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
+    const availablePlaceholderCount = selectedBlank
+      ? buildAvailablePlaceholderImages(selectedBlank.baseMockupImages, formCustomPlaceholder || undefined).length
+      : 0;
     const missingPrimary = !formPrimaryPlaceholder;
-    const missingGallery = formGalleryPlaceholders.size < 1;
+    const requireGallery = availablePlaceholderCount > 1;
+    const missingGallery = requireGallery && formGalleryPlaceholders.size < 1;
     if (selectedBlank && (missingPrimary || missingGallery)) {
       const parts = [
         missingPrimary ? "a primary image" : null,
         missingGallery ? "at least one gallery image" : null,
       ].filter(Boolean);
-      setPlaceholderStepAlert(`Choose ${parts.join(" and ")} before continuing.`);
+      setPlaceholderStepAlert(
+        availablePlaceholderCount <= 1
+          ? "Choose a primary image before continuing."
+          : `Choose ${parts.join(" and ")} before continuing.`,
+      );
       document.getElementById("create-placeholder-images")?.scrollIntoView({
         behavior: "smooth",
         block: "start",
@@ -2004,8 +2073,11 @@ export default function AdminCustomizerPages() {
                         <div className="flex items-center justify-between gap-3">
                           <Label className="text-sm font-semibold">Placeholder images (required)</Label>
                           <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
-                            Choose 1 primary and at least 1 gallery image (up to {MAX_GALLERY_PLACEHOLDERS}).
-                            Primary is your marketing hero — on the storefront the selected colour
+                            Choose 1 primary
+                            {buildAvailablePlaceholderImages(selectedBlank.baseMockupImages, formCustomPlaceholder || undefined).length > 1
+                              ? ` and at least 1 gallery image (up to ${MAX_GALLERY_PLACEHOLDERS})`
+                              : " image"}
+                            . Primary is your marketing hero — on the storefront the selected colour
                             blank leads when available; your Primary stays in the carousel.
                           </span>
                         </div>
@@ -2098,13 +2170,25 @@ export default function AdminCustomizerPages() {
 
                     </div>
 
-                    {selectedBlank && (
-                      <p className={`text-xs mt-2 shrink-0 ${formPrimaryPlaceholder && formGalleryPlaceholders.size > 0 ? "text-muted-foreground" : "text-amber-800"}`}>
-                        {formPrimaryPlaceholder && formGalleryPlaceholders.size > 0
-                          ? `Primary + ${formGalleryPlaceholders.size} gallery image${formGalleryPlaceholders.size === 1 ? "" : "s"} selected.`
-                          : "Scroll down and choose a primary image plus at least one gallery image."}
+                    {selectedBlank && (() => {
+                      const availableCount = buildAvailablePlaceholderImages(
+                        selectedBlank.baseMockupImages,
+                        formCustomPlaceholder || undefined,
+                      ).length;
+                      const galleryOk = availableCount <= 1 || formGalleryPlaceholders.size > 0;
+                      const ready = !!formPrimaryPlaceholder && galleryOk;
+                      return (
+                      <p className={`text-xs mt-2 shrink-0 ${ready ? "text-muted-foreground" : "text-amber-800"}`}>
+                        {ready
+                          ? formGalleryPlaceholders.size > 0
+                            ? `Primary + ${formGalleryPlaceholders.size} gallery image${formGalleryPlaceholders.size === 1 ? "" : "s"} selected.`
+                            : "Primary image selected."
+                          : availableCount <= 1
+                            ? "Scroll down and choose a primary image."
+                            : "Scroll down and choose a primary image plus at least one gallery image."}
                       </p>
-                    )}
+                      );
+                    })()}
                     <Button
                       className="w-full mt-3 shrink-0"
                       disabled={
@@ -2880,10 +2964,10 @@ export default function AdminCustomizerPages() {
                       </p>
                     )}
 
-                    <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0" style={{maxHeight: '240px'}}>
-                      <p className="text-xs font-semibold shimmer-text">
-                        Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
-                      </p>
+                    <p className="text-xs font-semibold shimmer-text shrink-0">
+                      Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
+                    </p>
+                    <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0">
                       {supportsBothSidePricing && (
                         <p className="text-xs text-muted-foreground">
                           This product can print front-only or front+back. Set both retail prices — the storefront shows
@@ -2995,6 +3079,12 @@ export default function AdminCustomizerPages() {
                         </div>
                         );
                       })}
+                      {selectedVariants.length === 0 && (
+                        <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3">
+                          No variants to price. Go back to Variants and select at least one size
+                          {wizardColors.length > 0 ? " and colour" : ""}.
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex gap-2 pt-2 shrink-0">

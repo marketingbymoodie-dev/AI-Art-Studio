@@ -32,6 +32,7 @@ import {
 import {
   hasExactVariantMapping,
   normalizeApparelSizeId,
+  normalizeSelectionId,
   resolveVariantFromMap,
   variantMapKey,
   countActiveVariantMapKeys,
@@ -3926,12 +3927,10 @@ ${orientationExtra}
     // variants ("No variants to create"). Match on a normalised id instead. Only
     // the dimension separator between digits is normalised, so apparel sizes that
     // legitimately contain an "x" (xl, 2xl) are left untouched.
-    const normSelectionId = (v: any) =>
-      String(v).toLowerCase().trim().replace(/(\d)\s*[x×]\s*(\d)/g, "$1-$2").replace(/\s+/g, "-");
-    const sizeIdSet = new Set(sizeIdsToUse.map(normSelectionId));
-    const colorIdSet = new Set(colorIdsToUse.map(normSelectionId));
-    let sizesToUse = allSizes.filter((s: any) => sizeIdSet.has(normSelectionId(s.id)));
-    let colorsToUse = allColors.filter((c: any) => colorIdSet.has(normSelectionId(c.id)));
+    const sizeIdSet = new Set(sizeIdsToUse.map(normalizeSelectionId));
+    const colorIdSet = new Set(colorIdsToUse.map(normalizeSelectionId));
+    let sizesToUse = allSizes.filter((s: any) => sizeIdSet.has(normalizeSelectionId(s.id)));
+    let colorsToUse = allColors.filter((c: any) => colorIdSet.has(normalizeSelectionId(c.id)));
     // Safety net: a non-empty selection that matched nothing means id drift, not an
     // intentional empty selection — fall back to all rather than creating 0 variants.
     if (sizesToUse.length === 0 && allSizes.length > 0) sizesToUse = allSizes;
@@ -20938,34 +20937,54 @@ ${orientationExtra}
         const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
         const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
         // selectedSizeIds can drift in separator format vs the sizes list /
-        // variantMap ids (e.g. "14x14" vs "14-14" on catalogue-activated pillows).
-        // A raw Set.has() then drops every variant, leaving the pricing step with
-        // no rows. Compare on a normalised id (only the dimension separator between
-        // digits, so apparel xl/2xl stay intact).
-        const normSel = (v: any) =>
-          String(v).toLowerCase().trim().replace(/(\d)\s*[x×]\s*(\d)/g, "$1-$2").replace(/\s+/g, "-");
-        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds.map(normSel)) : null;
-        const activeColorSet = savedColorIds.length ? new Set(savedColorIds.map(normSel)) : null;
-        const activeSizes = activeSizeSet
-          ? allSizes.filter((s: any) => activeSizeSet.has(normSel(s.id)))
+        // variantMap ids (e.g. wizard `14x14` vs catalogue `14-x-14` / `14-14`).
+        // A raw Set.has() then drops every variant, leaving the pricing step empty.
+        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds.map(normalizeSelectionId)) : null;
+        const activeColorSet = savedColorIds.length ? new Set(savedColorIds.map(normalizeSelectionId)) : null;
+        let activeSizes = activeSizeSet
+          ? allSizes.filter((s: any) => activeSizeSet.has(normalizeSelectionId(s.id)))
           : allSizes;
-        const activeColors = activeColorSet
-          ? allColors.filter((c: any) => activeColorSet.has(normSel(c.id)))
+        let activeColors = activeColorSet
+          ? allColors.filter((c: any) => activeColorSet.has(normalizeSelectionId(c.id)))
           : allColors;
+        if (activeSizes.length === 0 && allSizes.length > 0) activeSizes = allSizes;
+        if (activeColors.length === 0 && savedColorIds.length > 0 && allColors.length > 0) activeColors = allColors;
         const labels: Record<string, string> = {};
-        for (const [key, entry] of Object.entries(storedVm)) {
-          const [sizeId, colorId = "default"] = key.split(":");
-          if (activeSizeSet && !activeSizeSet.has(normSel(sizeId))) continue;
-          if (activeColorSet && !activeColorSet.has(normSel(colorId))) continue;
-          const sizeName =
-            activeSizes.find((s: any) => normSel(s.id) === normSel(sizeId))?.name ??
-            allSizes.find((s: any) => normSel(s.id) === normSel(sizeId))?.name ??
-            sizeId;
-          const colorName =
-            activeColors.find((c: any) => normSel(c.id) === normSel(colorId))?.name ??
-            allColors.find((c: any) => normSel(c.id) === normSel(colorId))?.name;
-          const vid = String((entry as any).printifyVariantId);
-          labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+        const addFromMap = (filterSizes: boolean, filterColors: boolean) => {
+          for (const [key, entry] of Object.entries(storedVm)) {
+            const [sizeId, colorId = "default"] = key.split(":");
+            if (filterSizes && activeSizeSet && !activeSizeSet.has(normalizeSelectionId(sizeId))) continue;
+            if (filterColors && activeColorSet && !activeColorSet.has(normalizeSelectionId(colorId))) continue;
+            const sizeName =
+              activeSizes.find((s: any) => normalizeSelectionId(s.id) === normalizeSelectionId(sizeId))?.name ??
+              allSizes.find((s: any) => normalizeSelectionId(s.id) === normalizeSelectionId(sizeId))?.name ??
+              sizeId;
+            const colorName =
+              activeColors.find((c: any) => normalizeSelectionId(c.id) === normalizeSelectionId(colorId))?.name ??
+              allColors.find((c: any) => normalizeSelectionId(c.id) === normalizeSelectionId(colorId))?.name;
+            const vid = String((entry as any).printifyVariantId);
+            labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+          }
+        };
+        addFromMap(true, true);
+        // Safety net: a non-empty selection that matched nothing is id drift, not
+        // an intentional empty catalogue — show every mapped variant so pricing
+        // never renders a blank step.
+        if (Object.keys(labels).length === 0 && Object.keys(storedVm).length > 0) {
+          addFromMap(false, false);
+        }
+        if (Object.keys(labels).length === 0) {
+          const sizes = activeSizes.length ? activeSizes : allSizes;
+          const colors = activeColors.length ? activeColors : allColors;
+          if (colors.length === 0) {
+            for (const s of sizes) labels[`size:${s.id}`] = s.name;
+          } else {
+            for (const s of sizes) {
+              for (const c of colors) {
+                labels[`size:${s.id}:${c.id}`] = `${s.name} / ${c.name}`;
+              }
+            }
+          }
         }
         return labels;
       }

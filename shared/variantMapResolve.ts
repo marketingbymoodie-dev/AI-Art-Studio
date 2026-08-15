@@ -16,6 +16,19 @@ function normalizeSizeId(id: string | undefined | null): string {
   return normalizeApparelSizeId(id);
 }
 
+/**
+ * Compare size/colour picks across import vs wizard id formats.
+ * Catalogue activation slugs pillows as `14-x-14`; the Create Page wizard
+ * extracts `14x14`; older rows use `14-14`. All three must match.
+ * Apparel ids like `xl` / `2xl` are left intact (digits must sit on both
+ * sides of the x).
+ */
+export function normalizeSelectionId(id: string | undefined | null): string {
+  if (!id) return "";
+  if (id === "default") return "default";
+  return normalizeApparelSizeId(String(id)).replace(/(\d+)[_-]*[x×][_-]*(\d+)/g, "$1-$2");
+}
+
 /** Canonical apparel size slug — keeps variantMap keys consistent across import paths. */
 export function normalizeApparelSizeId(id: string): string {
   let s = id.toLowerCase().trim().replace(/\s+/g, "_");
