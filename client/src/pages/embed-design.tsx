@@ -7,6 +7,7 @@ import {
 } from "@/lib/creator-analytics";
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { shadowDesignIdForCart } from "@shared/shadowDesignId";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
@@ -8558,7 +8559,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             shop: shopDomain,
             ...(productId ? { productId } : {}), // server will look it up from variantId if missing
             variantId: normalizedVariant,
-            designId: shadowDesignId || properties['_design_id'],
+            designId: shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
             mockupUrl: mockupFullUrl,
             productTypeId: productTypeConfig?.id ?? productTypeId,
             sizeId: selectedSize,

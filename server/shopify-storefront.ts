@@ -71,6 +71,10 @@ export type CreatorCartLine = {
   quantity: number;
   title: string;
   imageUrl: string | null;
+  merchandiseId: string | null;
+  mockupUrl: string | null;
+  jobId: string | null;
+  baseVariantId: string | null;
 };
 
 export type CreatorCartResult = {
@@ -142,6 +146,10 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
       quantity: node.quantity,
       title,
       imageUrl,
+      merchandiseId: merch?.id || null,
+      mockupUrl: mockup,
+      jobId: attrs.find((a) => a.key === "_appai_job_id")?.value || null,
+      baseVariantId: attrs.find((a) => a.key === "_base_variant_id")?.value || null,
     };
   });
   const itemCount =
@@ -306,6 +314,39 @@ export async function addLinesToCreatorCart(params: {
 
 export function isCreatorCartLineId(lineId: string): boolean {
   return String(lineId || "").startsWith("gid://shopify/CartLine/");
+}
+
+export async function updateCreatorCartLineMerchandise(params: {
+  cartId: string;
+  lineId: string;
+  variantId: string;
+}): Promise<CreatorCartResult> {
+  const data = await storefrontGraphql<{
+    cartLinesUpdate: {
+      cart: StorefrontCartNode | null;
+      userErrors: Array<{ field?: string[]; message: string }>;
+    };
+  }>(
+    `mutation CreatorCartLinesUpdate($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
+      cartLinesUpdate(cartId: $cartId, lines: $lines) {
+        cart { ${CART_FIELDS} }
+        userErrors { field message }
+      }
+    }`,
+    {
+      cartId: params.cartId,
+      lines: [{ id: params.lineId, merchandiseId: toVariantGid(params.variantId) }],
+    },
+  );
+  const errs = data.cartLinesUpdate?.userErrors || [];
+  if (errs.length) {
+    throw new Error(errs.map((e) => e.message).join("; "));
+  }
+  const mapped = mapCreatorCart(data.cartLinesUpdate?.cart);
+  if (!mapped) {
+    throw new Error("Storefront cartLinesUpdate did not return a cart");
+  }
+  return mapped;
 }
 
 export async function updateCreatorCartLine(params: {

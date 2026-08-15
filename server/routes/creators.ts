@@ -72,6 +72,7 @@ import {
   removeCreatorCartLines,
   updateCreatorCartLine,
 } from "../shopify-storefront";
+import { repairCreatorCartShadowVariants } from "../repairCreatorCartShadows";
 import {
   creatorMerchandiseMissingMessage,
   ensureVariantPublishedForStorefrontApi,
@@ -1323,6 +1324,61 @@ export function registerCreatorMarketplaceRoutes(
     } catch (e: any) {
       console.error("[creators] cart fetch failed:", e);
       res.status(500).json({ error: e?.message || "Failed to load cart" });
+    }
+  });
+
+  /** Swap shared shadow variants so Shopify checkout shows each line's mockup. */
+  app.post("/api/creators/cart/prepare-checkout", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      if (!isCreatorStorefrontConfigured()) {
+        return res.status(503).json({
+          error: "CREATOR_STOREFRONT_NOT_CONFIGURED",
+          message:
+            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_STOREFRONT_API_TOKEN on Railway staging.",
+        });
+      }
+      const username = normalizeCreatorUsername(String(req.body?.creatorUsername || ""));
+      const cartId = String(req.body?.cartId || "").trim();
+      if (!username || !cartId) {
+        return res.status(400).json({ error: "creatorUsername and cartId are required." });
+      }
+      const { assertPublicCreatorApiContext } = await import("../creator-host");
+      const asserted = await assertPublicCreatorApiContext({
+        shop: getCreatorPlatformShopDomain(),
+        creatorUsername: username,
+        requirePlatformShop: true,
+      });
+      if (!asserted.ok) {
+        return res.status(asserted.status).json({ error: asserted.error });
+      }
+      const { normalizeMyshopifyShopDomain } = await import("../shopDomain");
+      const platformShop = normalizeMyshopifyShopDomain(getCreatorPlatformShopDomain());
+      const installation = platformShop
+        ? await storage.getShopifyInstallationByShop(platformShop)
+        : undefined;
+      let cart = await getCreatorCart(cartId);
+      if (!cart) {
+        return res.status(404).json({ error: "Cart not found" });
+      }
+      if (installation?.accessToken && platformShop) {
+        cart =
+          (await repairCreatorCartShadowVariants({
+            shop: platformShop,
+            accessToken: installation.accessToken,
+            cartId,
+          })) || cart;
+      }
+      res.json({
+        success: true,
+        cartId: cart.cartId,
+        checkoutUrl: cart.checkoutUrl,
+        itemCount: cart.itemCount,
+        lines: cart.lines,
+      });
+    } catch (e: any) {
+      console.error("[creators] prepare-checkout failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to prepare checkout" });
     }
   });
 

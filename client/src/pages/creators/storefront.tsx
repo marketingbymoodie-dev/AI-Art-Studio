@@ -588,6 +588,8 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
   const snap = readCreatorCart(creator.username);
   const { data, isLoading, error } = useCreatorCartQuery(creator.username);
   const [pendingLineId, setPendingLineId] = useState<string | null>(null);
+  const [preparingCheckout, setPreparingCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const updateLine = useMutation({
     mutationFn: async (body: { lineId: string; quantity?: number; remove?: boolean }) => {
@@ -716,33 +718,60 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
             : "Could not update the cart."}
         </p>
       ) : null}
+      {checkoutError ? (
+        <p className="text-sm text-destructive">{checkoutError}</p>
+      ) : null}
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button asChild variant="outline" className="flex-1">
           <Link href={`${basePath}/products`}>Continue shopping</Link>
         </Button>
         <Button
           className="flex-1"
-          disabled={!checkoutUrl || itemCount < 1}
+          disabled={!checkoutUrl || itemCount < 1 || preparingCheckout}
           onClick={() => {
-            if (!checkoutUrl) return;
-            trackCreatorEvent({
-              creatorId: creator.id,
-              creatorUsername: creator.username,
-              eventType: "checkout_started",
-              path: `${basePath}/cart`,
-              metadata: { itemCount },
-            });
-            window.location.assign(
-              creatorCheckoutRememberUrl({
-                checkoutUrl,
-                username: creator.username,
-                shopName: storeName(creator),
-                returnUrl: currentCreatorReturnUrl(creator.username),
-              }),
-            );
+            if (!checkoutUrl || !snap?.cartId) return;
+            setCheckoutError(null);
+            setPreparingCheckout(true);
+            void (async () => {
+              let nextCheckoutUrl = checkoutUrl;
+              try {
+                const res = await fetch(`${API_BASE}/api/creators/cart/prepare-checkout`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    creatorUsername: creator.username,
+                    cartId: snap.cartId,
+                  }),
+                });
+                const json = await res.json().catch(() => ({}));
+                if (res.ok && json?.checkoutUrl) {
+                  nextCheckoutUrl = String(json.checkoutUrl);
+                  persistCreatorCart(creator.username, json, snap.cartId);
+                }
+              } catch {
+                /* fall through to existing checkout URL */
+              }
+              trackCreatorEvent({
+                creatorId: creator.id,
+                creatorUsername: creator.username,
+                eventType: "checkout_started",
+                path: `${basePath}/cart`,
+                metadata: { itemCount },
+              });
+              window.location.assign(
+                creatorCheckoutRememberUrl({
+                  checkoutUrl: nextCheckoutUrl,
+                  username: creator.username,
+                  shopName: storeName(creator),
+                  returnUrl: currentCreatorReturnUrl(creator.username),
+                }),
+              );
+            })().finally(() => setPreparingCheckout(false));
           }}
         >
-          Checkout{itemCount > 0 ? ` (${itemCount})` : ""}
+          {preparingCheckout
+            ? "Preparing checkout…"
+            : `Checkout${itemCount > 0 ? ` (${itemCount})` : ""}`}
         </Button>
       </div>
     </div>
