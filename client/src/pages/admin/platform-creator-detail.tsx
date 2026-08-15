@@ -182,7 +182,7 @@ export default function PlatformCreatorDetailDialog({
       isActive: boolean;
     }>;
   }>({
-    queryKey: ["/api/platform/style-catalog", "v2"],
+    queryKey: ["/api/platform/style-catalog", "v3"],
     queryFn: async () => {
       const res = await apiRequest("GET", "/api/platform/style-catalog");
       return res.json();
@@ -811,9 +811,11 @@ export default function PlatformCreatorDetailDialog({
                 ) : (styleCatalog?.styles || []).length === 0 ? (
                   <p className="text-muted-foreground text-xs">
                     No styles found
-                    {styleCatalog?.shop ? ` for ${styleCatalog.shop}` : ""}.
-                    Open Styles on the platform shop and confirm presets exist, then
-                    refresh this tab.
+                    {styleCatalog?.shop ? ` for ${styleCatalog.shop}` : ""}.{" "}
+                    <a href="/admin/styles" className="underline underline-offset-2">
+                      Open Art Styles
+                    </a>{" "}
+                    and add presets, then refresh this tab.
                   </p>
                 ) : (
                   <>

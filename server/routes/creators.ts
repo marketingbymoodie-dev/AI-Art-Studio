@@ -16,6 +16,7 @@ import {
   creatorOrders,
   creators,
   customizerPages,
+  productTypes,
 } from "@shared/schema";
 import {
   CREATOR_APPLICATION_STATUSES,
@@ -617,6 +618,26 @@ export function registerCreatorMarketplaceRoutes(
         .from(customizerPages)
         .where(inArray(customizerPages.id, pageIds));
       const byId = new Map(pages.map((p) => [p.id, p]));
+      const typeIds = [
+        ...new Set(
+          pages
+            .map((p) => p.productTypeId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        ),
+      ];
+      const types =
+        typeIds.length === 0
+          ? []
+          : await db
+              .select({
+                id: productTypes.id,
+                baseMockupImages: productTypes.baseMockupImages,
+              })
+              .from(productTypes)
+              .where(inArray(productTypes.id, typeIds));
+      const imageByType = new Map(
+        types.map((t) => [t.id, primaryMockupUrl(t.baseMockupImages)]),
+      );
 
       const out = links
         .map((link) => {
@@ -631,6 +652,7 @@ export function registerCreatorMarketplaceRoutes(
             baseProductTitle: page.baseProductTitle,
             baseProductPrice: page.baseProductPrice,
             productTypeId: page.productTypeId,
+            imageUrl: page.productTypeId ? imageByType.get(page.productTypeId) || null : null,
             sortOrder: link.sortOrder,
           };
         })
@@ -1359,16 +1381,17 @@ export function registerCreatorMarketplaceRoutes(
           getPlatformMerchantId,
           listAssignableCatalog,
         } = await import("../creator-styles");
-        const fallbackMerchantId = await sessionMerchantId(req);
+        const fallbackMerchantIds = await sessionMerchantIds(req);
         const styles = await listAssignableCatalog({
-          fallbackMerchantId,
+          fallbackMerchantId: fallbackMerchantIds[0] ?? null,
+          fallbackMerchantIds,
         });
         res.json({
           shop:
             getNormalizedPlatformShop() ||
             normalizeMyshopifyShopDomain(String(req.shopDomain || "")) ||
             null,
-          merchantId: (await getPlatformMerchantId()) || fallbackMerchantId,
+          merchantId: (await getPlatformMerchantId()) || fallbackMerchantIds[0] || null,
           styles: styles.map((s) => ({
             id: s.id,
             name: s.name,
@@ -1413,10 +1436,12 @@ export function registerCreatorMarketplaceRoutes(
           return res.status(400).json({ error: "stylePresetIds is required." });
         }
         const { assignStylesToCreator } = await import("../creator-styles");
+        const fallbackMerchantIds = await sessionMerchantIds(req);
         const styles = await assignStylesToCreator({
           creatorId: req.params.id,
           stylePresetIds: ids,
-          fallbackMerchantId: await sessionMerchantId(req),
+          fallbackMerchantId: fallbackMerchantIds[0] ?? null,
+          fallbackMerchantIds,
         });
         res.json({ styles });
       } catch (e: any) {
@@ -1474,17 +1499,40 @@ export function registerCreatorMarketplaceRoutes(
   );
 }
 
+function primaryMockupUrl(raw: unknown): string | null {
+  try {
+    const imgs = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!imgs || typeof imgs !== "object") return null;
+    const row = imgs as Record<string, unknown>;
+    const gallery = Array.isArray(row.gallery) ? row.gallery : [];
+    const primary = row.primary || row.front || gallery[0];
+    return typeof primary === "string" && primary.trim() ? primary.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseStylePresetIds(raw: unknown): number[] {
   const arr = Array.isArray(raw) ? raw : [];
   return [...new Set(arr.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0))];
 }
 
-async function sessionMerchantId(req: any): Promise<string | null> {
+async function sessionMerchantIds(req: any): Promise<string[]> {
+  const ids: string[] = [];
+  const add = (id?: string | null) => {
+    const v = String(id || "").trim();
+    if (v && !ids.includes(v)) ids.push(v);
+  };
   const sessionShop = normalizeMyshopifyShopDomain(String(req.shopDomain || ""));
-  const sessionMerchant =
-    (sessionShop ? await storage.getMerchantByShop(sessionShop) : undefined) ||
-    (req.user?.claims?.sub
-      ? await storage.getMerchantByUserId(String(req.user.claims.sub))
-      : undefined);
-  return sessionMerchant?.id ?? null;
+  if (sessionShop) {
+    const byShop = await storage.getMerchantByShop(sessionShop);
+    add(byShop?.id);
+    add(byShop?.userId);
+  }
+  if (req.user?.claims?.sub) {
+    const byUser = await storage.getMerchantByUserId(String(req.user.claims.sub));
+    add(byUser?.id);
+    add(byUser?.userId);
+  }
+  return ids;
 }

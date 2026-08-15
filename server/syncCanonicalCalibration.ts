@@ -79,6 +79,9 @@ export async function syncProductTypeFromPlatformCatalogAop(
   },
 ): Promise<{ synced: boolean; productType?: Awaited<ReturnType<typeof storage.getProductType>> }> {
   if (!productType.printifyBlueprintId) return { synced: false };
+  if (productType.isAllOverPrint && productType.panelMappingTemplate) {
+    return { synced: false };
+  }
 
   const catalogEntry = await getPlatformCatalogEntry(productType.printifyBlueprintId);
   if (catalogEntry?.kind !== "aop") return { synced: false };

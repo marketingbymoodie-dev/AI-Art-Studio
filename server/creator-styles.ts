@@ -2,7 +2,7 @@
  * Creator platform style assignment — curated per creator.
  * Merchant /api/admin/styles create path is untouched.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import {
   CREATOR_ASSIGNABLE_STYLE_SCOPES,
   PLATFORM_CONFIG_KEYS,
@@ -13,6 +13,7 @@ import {
   creatorStyleAssignments,
   creators,
   customizerPages,
+  merchants,
   platformConfig,
   productTypes,
   stylePresets,
@@ -86,6 +87,7 @@ function addMerchantId(ids: string[], id?: string | null) {
 /** Every merchant id that might own platform-shop styles (user row vs install row). */
 export async function resolvePlatformStyleMerchantIds(
   fallbackMerchantId?: string | null,
+  extraMerchantIds?: string[] | null,
 ): Promise<string[]> {
   const ids: string[] = [];
   const shop = getNormalizedPlatformShop();
@@ -99,11 +101,26 @@ export async function resolvePlatformStyleMerchantIds(
     addMerchantId(ids, inst?.merchantId);
   }
 
+  if (shop) {
+    const handle = shop.replace(/\.myshopify\.com$/, "");
+    const shopMerchants = await db
+      .select({ id: merchants.id })
+      .from(merchants)
+      .where(
+        or(
+          eq(merchants.userId, `shopify:merchant:${shop}`),
+          eq(merchants.userId, `shopify:merchant:${handle}`),
+        ),
+      );
+    for (const row of shopMerchants) addMerchantId(ids, row.id);
+  }
+
   addMerchantId(ids, fallbackMerchantId);
   if (fallbackMerchantId) {
     const fallback = await storage.getMerchant(fallbackMerchantId);
     addMerchantId(ids, fallback?.userId);
   }
+  for (const extra of extraMerchantIds || []) addMerchantId(ids, extra);
 
   if (variants.length > 0) {
     const [page] = await db
@@ -232,8 +249,12 @@ export async function backfillExistingCreatorGlobalAssignments(): Promise<number
 
 export async function listAssignableCatalog(opts?: {
   fallbackMerchantId?: string | null;
+  fallbackMerchantIds?: string[] | null;
 }): Promise<StylePresetDB[]> {
-  const merchantIds = await resolvePlatformStyleMerchantIds(opts?.fallbackMerchantId);
+  const merchantIds = await resolvePlatformStyleMerchantIds(
+    opts?.fallbackMerchantId,
+    opts?.fallbackMerchantIds,
+  );
   if (merchantIds.length > 0) {
     await db
       .update(stylePresets)
@@ -254,11 +275,23 @@ export async function listAssignableCatalog(opts?: {
   }
 
   await ensurePlatformStylesMarkedGlobal();
-  return db
+  const scoped = await db
     .select()
     .from(stylePresets)
     .where(inArray(stylePresets.creatorScope, [...CREATOR_ASSIGNABLE_STYLE_SCOPES]))
     .orderBy(stylePresets.sortOrder, stylePresets.name);
+  if (scoped.length > 0) return scoped;
+
+  // Operator must be able to assign whatever exists on Art Styles even if
+  // merchant-id resolution still misses (Shopify user id vs merchants.id).
+  const all = await db
+    .select()
+    .from(stylePresets)
+    .orderBy(stylePresets.sortOrder, stylePresets.name);
+  if (all.length > 0) {
+    console.warn("[creator-styles] catalog fallback to all style_presets", all.length);
+  }
+  return all;
 }
 
 let backfillOnce: Promise<number> | null = null;
@@ -306,9 +339,11 @@ export async function assignStylesToCreator(params: {
   creatorId: string;
   stylePresetIds: number[];
   fallbackMerchantId?: string | null;
+  fallbackMerchantIds?: string[] | null;
 }): Promise<CreatorStyleRow[]> {
   const catalog = await listAssignableCatalog({
     fallbackMerchantId: params.fallbackMerchantId,
+    fallbackMerchantIds: params.fallbackMerchantIds,
   });
   const allowed = new Set(catalog.map((s) => s.id));
   for (const id of params.stylePresetIds) {

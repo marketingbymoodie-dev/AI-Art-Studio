@@ -595,6 +595,8 @@ export function ProductMockup({
             style={{ pointerEvents: "none", opacity: 0.92 }}
             draggable={false}
             data-testid="img-blank"
+            fetchPriority="high"
+            decoding="async"
             onError={onBlankError}
           />
         );
@@ -609,6 +611,8 @@ export function ProductMockup({
           style={{ pointerEvents: "none", opacity: 0.92, transform: blankScale, transformOrigin: "center center" }}
           draggable={false}
           data-testid="img-blank"
+          fetchPriority="high"
+          decoding="async"
           onError={onBlankError}
         />
       );

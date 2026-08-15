@@ -7496,29 +7496,29 @@ ${orientationExtra}
     const rawCreatorUsername = String(req.query.creatorUsername || "").trim();
     const rawCreatorId = String(req.query.creatorId || "").trim();
 
-    let designerConfig = null;
-    if (page.productTypeId) {
+    const designerPromise = (async () => {
+      if (!page.productTypeId) return null;
       try {
         const pt = await storage.getProductType(page.productTypeId);
-        if (pt) {
-          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
-            allowUnpublishedHarvest: true,
-          });
-          const sizeChart = ptForDesigner!.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
-            : null;
-          designerConfig = buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, sizeChart);
-        }
+        if (!pt) return null;
+        const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+          allowUnpublishedHarvest: true,
+        });
+        // Size chart is loaded client-side; waiting here added up to 2.5s before
+        // the first placeholder could render.
+        return buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, null);
       } catch (e) {
         console.warn(
           `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
           e,
         );
+        return null;
       }
-    }
+    })();
 
-    let variants: Array<{ id: string; title: string; price: string }> = [];
-    if (page.baseProductId && installation) {
+    const variantsPromise = (async () => {
+      const empty: Array<{ id: string; title: string; price: string }> = [];
+      if (!page.baseProductId || !installation) return empty;
       try {
         const tokenReady = await ensureValidOfflineAccessToken(installation);
         const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
@@ -7541,7 +7541,7 @@ ${orientationExtra}
             if (fallback.length > 0) baseVariants = fallback;
           }
         }
-        variants = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
+        const mapped = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
           id: String(v.id),
           title: v.title || "",
           price: v.price || "0.00",
@@ -7552,14 +7552,18 @@ ${orientationExtra}
         }));
         const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
         if (productIdNum && prodResult.ok) {
-          await ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum).catch(
+          void ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum).catch(
             () => {},
           );
         }
+        return mapped;
       } catch (e) {
         console.warn(`[storefront/customizer-page] variants failed:`, e);
+        return empty;
       }
-    }
+    })();
+
+    const [designerConfig, variants] = await Promise.all([designerPromise, variantsPromise]);
 
     let stylePresets: any[] = [];
     try {

@@ -50,6 +50,7 @@ type StorefrontPage = {
   baseProductTitle: string | null;
   baseProductPrice: string | null;
   productTypeId: number | null;
+  imageUrl: string | null;
   sortOrder: number;
 };
 
@@ -164,6 +165,14 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
   const { data } = useCreatorPages(creator.username);
   const pages = data?.pages ?? [];
   const platformShop = data?.platformShopDomain ?? null;
+
+  useEffect(() => {
+    for (const p of pages.slice(0, 4)) {
+      if (!p.imageUrl) continue;
+      const img = new Image();
+      img.src = p.imageUrl;
+    }
+  }, [pages]);
 
   const heroCopy = (
     <>
@@ -284,8 +293,16 @@ function ProductCard({
   return (
     <a
       href={href}
-      className="block rounded-lg border p-5 transition-colors hover:border-foreground/40 hover:bg-muted/20"
+      className="block overflow-hidden rounded-lg border transition-colors hover:border-foreground/40 hover:bg-muted/20"
     >
+      {page.imageUrl ? (
+        <img
+          src={page.imageUrl}
+          alt=""
+          className="aspect-square w-full object-cover bg-muted"
+        />
+      ) : null}
+      <div className="p-5">
       <div className="font-semibold">{page.title}</div>
       {page.baseProductTitle ? (
         <div className="mt-1 text-sm text-muted-foreground">{page.baseProductTitle}</div>
@@ -297,6 +314,7 @@ function ProductCard({
         <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{page.description}</p>
       ) : null}
       <div className="mt-4 text-sm font-medium text-primary">Customize →</div>
+      </div>
     </a>
   );
 }
@@ -311,6 +329,14 @@ function ProductsView({
   const { data, isLoading } = useCreatorPages(creator.username);
   const pages = data?.pages ?? [];
   const platformShop = data?.platformShopDomain ?? null;
+
+  useEffect(() => {
+    for (const p of pages.slice(0, 6)) {
+      if (!p.imageUrl) continue;
+      const img = new Image();
+      img.src = p.imageUrl;
+    }
+  }, [pages]);
 
   return (
     <div className="space-y-6">

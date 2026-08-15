@@ -11913,6 +11913,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
+                {isCreatorStorefront && creatorUsernameParam ? (
+                  <a
+                    href={`/c/${encodeURIComponent(creatorUsernameParam)}`}
+                    className="mb-2 inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    Back to shop
+                  </a>
+                ) : null}
                 {isLoggedIn ? (
                   <div className="flex flex-wrap gap-2" data-testid="user-actions">
                     {/* Combined account button: shows email on hover, click signs out */}
