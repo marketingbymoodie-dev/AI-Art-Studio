@@ -46,4 +46,13 @@ describe("isPlatformAdminRequest", () => {
     delete process.env.PLATFORM_ADMIN_SHOP_DOMAINS;
     expect(isPlatformAdminRequest({ shopDomain: "appai-2.myshopify.com" })).toBe(false);
   });
+
+  it("allows the built-in AI Art Studio demo shop as owner", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.OWNER_SHOP_DOMAIN;
+    delete process.env.PLATFORM_ADMIN_SHOP_DOMAINS;
+    expect(isPlatformAdminRequest({ shopDomain: "aiartstudio-gizsmzs2.myshopify.com" })).toBe(true);
+    expect(isPlatformAdminRequest({ shopDomain: "aiartstudio-gizsmzs2" })).toBe(true);
+    expect(isPlatformAdminRequest({ shopDomain: "other.myshopify.com" })).toBe(false);
+  });
 });

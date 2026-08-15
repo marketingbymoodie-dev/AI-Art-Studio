@@ -52,6 +52,7 @@ import {
   type PricingCatalogueSnapshot,
   findCataloguePlan,
 } from "@shared/customizerPlans";
+import { isOwnerShopDomain } from "./platformAdmin";
 
 /** Merchant My Designs save/library — Starter and above only (not trial / inactive). */
 export function canSaveMerchantDesigns(
@@ -72,11 +73,9 @@ export function isOwnerQuotaBypassEnabled(): boolean {
   return v !== "false" && v !== "0" && v !== "off" && v !== "no";
 }
 
-/** True when shopDomain matches OWNER_SHOP_DOMAIN (ignores OWNER_BYPASS_QUOTA). */
+/** True when shopDomain matches an owner shop (env + built-in demo). */
 export function shopMatchesOwnerDomain(shopDomain?: string | null): boolean {
-  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-  if (!ownerShop || !shopDomain) return false;
-  return shopDomain.toLowerCase().replace(/^https?:\/\//, "") === ownerShop;
+  return isOwnerShopDomain(shopDomain);
 }
 
 /**
