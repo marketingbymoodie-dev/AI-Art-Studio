@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applicationStatusForCreatorStatus,
   canCreatorAccessPortal,
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
@@ -187,6 +188,17 @@ describe("public storefront identity", () => {
     const cleared = mergeCreatorBranding(next, { headingFont: "default" });
     expect(cleared.headingFont).toBeUndefined();
     expect(parseCreatorHeadingFontId("comic-sans")).toBe("default");
+  });
+});
+
+describe("application status from creator", () => {
+  it("promotes waitlisted/review applications once the creator is live", () => {
+    expect(applicationStatusForCreatorStatus("active_beta")).toBe("accepted");
+    expect(applicationStatusForCreatorStatus("onboarding")).toBe("accepted");
+    expect(applicationStatusForCreatorStatus("partner")).toBe("accepted");
+    expect(applicationStatusForCreatorStatus("paused")).toBe("accepted");
+    expect(applicationStatusForCreatorStatus("waitlisted")).toBe("waitlisted");
+    expect(applicationStatusForCreatorStatus("rejected")).toBe("rejected");
   });
 });
 

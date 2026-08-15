@@ -28,6 +28,7 @@ import {
   DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER,
   DEFAULT_CREATOR_MONTHLY_GENERATION_ALLOWANCE,
   SOCIAL_PLATFORMS,
+  applicationStatusForCreatorStatus,
   CREATOR_SOCIAL_HANDLE_INVALID_MESSAGE,
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
@@ -53,11 +54,13 @@ import {
 } from "../creator-config";
 import {
   getCreatorStorefrontByUsername,
+  healApplicationStatusesFromCreators,
   invalidateCreatorHostCache,
   lookupCreatorByUsername,
   renameCreatorHandle,
   resolveCreatorHandleAvailability,
   sanitizeCreatorForAdmin,
+  syncLinkedApplicationFromCreator,
 } from "../creator-host";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
 import {
@@ -86,6 +89,11 @@ import {
 import { isCreatorEmailsEnabled, queueCreatorEmail } from "../creator-emails";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
 import { storage } from "../storage";
+import {
+  CREATOR_ARTWORK_LIMIT,
+  listCreatorArtworks,
+  unlinkCreatorArtwork,
+} from "../creator-artwork-library";
 
 type AuthMw = any;
 
@@ -340,6 +348,9 @@ export function registerCreatorMarketplaceRoutes(
     async (req: any, res: Response) => {
       if (!requirePlatformAdmin(req, res)) return;
       try {
+        await healApplicationStatusesFromCreators().catch((e) =>
+          console.error("[creators] application status heal failed:", e),
+        );
         const status = String(req.query.status || "").trim();
         const q = String(req.query.q || "").trim();
         const conditions = [];
@@ -450,6 +461,19 @@ export function registerCreatorMarketplaceRoutes(
           const status = String(body.status) as CreatorApplicationStatus;
           if (!(CREATOR_APPLICATION_STATUSES as readonly string[]).includes(status)) {
             return res.status(400).json({ error: "Invalid status." });
+          }
+          if (existing.creatorId && status !== "accepted") {
+            const [linked] = await db
+              .select({ id: creators.id, status: creators.status })
+              .from(creators)
+              .where(eq(creators.id, existing.creatorId))
+              .limit(1);
+            if (linked && applicationStatusForCreatorStatus(linked.status) === "accepted") {
+              return res.status(400).json({
+                error:
+                  "This applicant is already onboarded. Application status stays accepted — change the creator from Manage.",
+              });
+            }
           }
           patch.status = status;
           patch.reviewedAt = new Date();
@@ -618,6 +642,7 @@ export function registerCreatorMarketplaceRoutes(
           .returning();
 
         invalidateCreatorHostCache(suggested);
+        await syncLinkedApplicationFromCreator(creator);
         void queueCreatorEmail({
           creatorId: creator.id,
           templateKey: "application_accepted",
@@ -821,60 +846,63 @@ export function registerCreatorMarketplaceRoutes(
     try {
       const sessionId = String(req.query.sessionId || "").trim();
       const customerId = String(req.query.customerId || "").trim();
-      if (!sessionId && !customerId) return res.json({ designs: [] });
+      if (!sessionId && !customerId) {
+        return res.json({ designs: [], count: 0, limit: CREATOR_ARTWORK_LIMIT });
+      }
       const creatorId = await resolveCreatorId({
         creatorUsername: req.params.username,
         shop: getCreatorPlatformShopDomain(),
         requirePlatformShop: false,
       });
       if (!creatorId) return res.status(404).json({ error: "Creator not found." });
-      const identity =
-        sessionId && customerId
-          ? or(
-              eq(generationJobs.creatorSessionId, sessionId),
-              eq(generationJobs.customerId, customerId),
-            )
-          : sessionId
-            ? eq(generationJobs.creatorSessionId, sessionId)
-            : eq(generationJobs.customerId, customerId);
-      const rows = await db
-        .select({
-          jobId: generationJobs.id,
-          artworkUrl: generationJobs.designImageUrl,
-          prompt: generationJobs.userPrompt,
-          fallbackPrompt: generationJobs.prompt,
-          productTypeId: generationJobs.productTypeId,
-          createdAt: generationJobs.createdAt,
-        })
-        .from(generationJobs)
-        .where(
-          and(
-            eq(generationJobs.creatorId, creatorId),
-            eq(generationJobs.status, "complete"),
-            identity,
-          ),
-        )
-        .orderBy(desc(generationJobs.createdAt))
-        .limit(16);
-      const seen = new Set<string>();
-      const designs = [];
-      for (const row of rows) {
-        const artworkUrl = String(row.artworkUrl || "").trim();
-        if (!artworkUrl || seen.has(artworkUrl)) continue;
-        seen.add(artworkUrl);
-        designs.push({
-          jobId: row.jobId,
-          artworkUrl,
-          prompt: String(row.prompt || row.fallbackPrompt || "").trim(),
-          productTypeId: row.productTypeId,
-          createdAt: row.createdAt,
-        });
-        if (designs.length >= 8) break;
-      }
-      res.json({ designs });
+      const designs = await listCreatorArtworks(
+        { creatorId, sessionId, customerId },
+        CREATOR_ARTWORK_LIMIT,
+      );
+      res.json({
+        designs,
+        count: designs.length,
+        limit: CREATOR_ARTWORK_LIMIT,
+      });
     } catch (e: any) {
       console.error("[creators] recent-designs failed:", e);
       res.status(500).json({ error: e?.message || "Failed to load recent designs" });
+    }
+  });
+
+  /** Unlink a visitor artwork so it no longer appears in Your Artwork. */
+  app.delete("/api/creators/storefront/:username/recent-designs/:jobId", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    const rl = checkCreatorRateLimit({
+      key: `recent-design-delete:${clientIpFromReq(req)}`,
+      limit: 60,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Rate limited." });
+    }
+    try {
+      const sessionId = String(req.query.sessionId || req.body?.sessionId || "").trim();
+      const customerId = String(req.query.customerId || req.body?.customerId || "").trim();
+      if (!sessionId && !customerId) {
+        return res.status(400).json({ error: "sessionId or customerId is required." });
+      }
+      const creatorId = await resolveCreatorId({
+        creatorUsername: req.params.username,
+        shop: getCreatorPlatformShopDomain(),
+        requirePlatformShop: false,
+      });
+      if (!creatorId) return res.status(404).json({ error: "Creator not found." });
+      const result = await unlinkCreatorArtwork(
+        { creatorId, sessionId, customerId },
+        String(req.params.jobId || ""),
+      );
+      if (!result.ok) return res.status(result.status).json({ error: result.error });
+      res.json({ deleted: true });
+    } catch (e: any) {
+      console.error("[creators] recent-designs delete failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to delete design" });
     }
   });
 
@@ -1494,6 +1522,7 @@ export function registerCreatorMarketplaceRoutes(
           .returning();
 
         invalidateCreatorHostCache(updated.username);
+        await syncLinkedApplicationFromCreator(updated);
         res.json({ creator: sanitizeCreatorForAdmin(updated) });
       } catch (e: any) {
         console.error("[creators] patch creator failed:", e);
@@ -1563,6 +1592,7 @@ export function registerCreatorMarketplaceRoutes(
           action,
           extendDays: req.body?.extendDays != null ? Number(req.body.extendDays) : undefined,
         });
+        await syncLinkedApplicationFromCreator(updated);
         res.json({ creator: sanitizeCreatorForAdmin(updated) });
       } catch (e: any) {
         console.error("[creators] action failed:", e);

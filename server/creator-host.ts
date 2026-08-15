@@ -2,11 +2,12 @@
  * Resolve creator storefronts from Host subdomain or /c/:username path.
  * Also exposes public API validation for generate / analytics / cart (Phase 10).
  */
-import { eq, or } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
 import type { Request } from "express";
 import { db } from "./db";
 import { creatorApplications, creators, type Creator } from "@shared/schema";
 import {
+  applicationStatusForCreatorStatus,
   CREATOR_HANDLE_HOLDING_APPLICATION_STATUSES,
   CREATOR_HANDLE_INVALID_MESSAGE,
   CREATOR_HANDLE_NUMBERED_VARIANT_MESSAGE,
@@ -376,4 +377,132 @@ export async function renameCreatorHandle(opts: {
 
   invalidateCreatorHostCache(opts.currentUsername);
   invalidateCreatorHostCache(next);
+}
+
+/**
+ * Keep the application queue in sync with a live creator.
+ * Waitlisted / under-review rows for the same handle flip to accepted and get linked.
+ */
+export async function syncLinkedApplicationFromCreator(creator: {
+  id: string;
+  applicationId?: string | null;
+  username?: string | null;
+  subdomain?: string | null;
+  status: string;
+}): Promise<void> {
+  const nextStatus = applicationStatusForCreatorStatus(creator.status);
+  if (!nextStatus) return;
+
+  const handle =
+    normalizeCreatorUsername(creator.username || "") ||
+    normalizeCreatorUsername(creator.subdomain || "");
+
+  const rows = await db
+    .select({
+      id: creatorApplications.id,
+      status: creatorApplications.status,
+      creatorId: creatorApplications.creatorId,
+      assignedUsername: creatorApplications.assignedUsername,
+      shopName: creatorApplications.shopName,
+    })
+    .from(creatorApplications);
+
+  const ids: string[] = [];
+  for (const row of rows) {
+    const directlyLinked =
+      row.creatorId === creator.id ||
+      (!!creator.applicationId && row.id === creator.applicationId);
+    const sameHandle =
+      !!handle &&
+      (shopNameToHandle(row.assignedUsername || "") === handle ||
+        shopNameToHandle(row.shopName || "") === handle);
+    if (!directlyLinked && !sameHandle) continue;
+    if (row.status === "rejected" && !directlyLinked) continue;
+    if (row.status === nextStatus && row.creatorId === creator.id) continue;
+    ids.push(row.id);
+  }
+
+  if (ids.length === 0) return;
+
+  await db
+    .update(creatorApplications)
+    .set({
+      status: nextStatus,
+      creatorId: creator.id,
+      ...(handle ? { assignedUsername: handle } : {}),
+      updatedAt: new Date(),
+    })
+    .where(inArray(creatorApplications.id, ids));
+}
+
+/** Heal every live creator's application row (used when the admin queue loads). */
+export async function healApplicationStatusesFromCreators(): Promise<void> {
+  const [creatorRows, appRows] = await Promise.all([
+    db
+      .select({
+        id: creators.id,
+        applicationId: creators.applicationId,
+        username: creators.username,
+        subdomain: creators.subdomain,
+        status: creators.status,
+      })
+      .from(creators),
+    db
+      .select({
+        id: creatorApplications.id,
+        status: creatorApplications.status,
+        creatorId: creatorApplications.creatorId,
+        assignedUsername: creatorApplications.assignedUsername,
+        shopName: creatorApplications.shopName,
+      })
+      .from(creatorApplications),
+  ]);
+
+  const live = creatorRows.filter(
+    (row) => applicationStatusForCreatorStatus(row.status) === "accepted",
+  );
+  if (live.length === 0 || appRows.length === 0) return;
+
+  const byId = new Map(live.map((c) => [c.id, c]));
+  const byAppId = new Map<string, (typeof live)[0]>();
+  const byHandle = new Map<string, (typeof live)[0]>();
+  for (const c of live) {
+    if (c.applicationId) byAppId.set(c.applicationId, c);
+    const handle =
+      normalizeCreatorUsername(c.username || "") ||
+      normalizeCreatorUsername(c.subdomain || "");
+    if (handle) byHandle.set(handle, c);
+  }
+
+  const idsByCreator = new Map<string, { handle: string | null; ids: string[] }>();
+  for (const row of appRows) {
+    const creator =
+      (row.creatorId ? byId.get(row.creatorId) : undefined) ||
+      byAppId.get(row.id) ||
+      byHandle.get(shopNameToHandle(row.assignedUsername || "") || "") ||
+      byHandle.get(shopNameToHandle(row.shopName || "") || "");
+    if (!creator) continue;
+    const directlyLinked = row.creatorId === creator.id || creator.applicationId === row.id;
+    if (row.status === "rejected" && !directlyLinked) continue;
+    if (row.status === "accepted" && row.creatorId === creator.id) continue;
+    const handle =
+      normalizeCreatorUsername(creator.username || "") ||
+      normalizeCreatorUsername(creator.subdomain || "");
+    const bucket = idsByCreator.get(creator.id) || { handle, ids: [] };
+    bucket.ids.push(row.id);
+    idsByCreator.set(creator.id, bucket);
+  }
+
+  for (const [creatorId, bucket] of idsByCreator) {
+    if (bucket.ids.length === 0) continue;
+    await db
+      .update(creatorApplications)
+      .set({
+        status: "accepted",
+        creatorId,
+        ...(bucket.handle ? { assignedUsername: bucket.handle } : {}),
+        updatedAt: new Date(),
+      })
+      .where(inArray(creatorApplications.id, bucket.ids));
+  }
 }

@@ -67,6 +67,32 @@ export const CREATOR_APPLICATION_STATUSES = [
 ] as const;
 export type CreatorApplicationStatus = (typeof CREATOR_APPLICATION_STATUSES)[number];
 
+/** Creator statuses that mean the application was accepted and should not stay waitlisted. */
+export const CREATOR_STATUSES_THAT_ACCEPT_APPLICATION = [
+  "accepted",
+  "onboarding",
+  "active_beta",
+  "beta_completed",
+  "partner",
+  "paused",
+  "suspended",
+  "archived",
+] as const;
+
+/** Map a live creator status back onto the application queue. */
+export function applicationStatusForCreatorStatus(
+  status: string | null | undefined,
+): CreatorApplicationStatus | null {
+  const s = String(status || "");
+  if ((CREATOR_STATUSES_THAT_ACCEPT_APPLICATION as readonly string[]).includes(s)) {
+    return "accepted";
+  }
+  if (s === "rejected") return "rejected";
+  if (s === "waitlisted") return "waitlisted";
+  if (s === "under_review" || s === "application") return "under_review";
+  return null;
+}
+
 export const CREATOR_TYPES = ["creator", "shopify_merchant"] as const;
 export type CreatorType = (typeof CREATOR_TYPES)[number];
 
