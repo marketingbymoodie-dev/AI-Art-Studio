@@ -153,6 +153,7 @@ import { buildCentralAppUrl } from "@/lib/storefrontAuth";
 import {
   isAopPlacerGalleryReachable,
   isFlatPlacerGalleryReachable,
+  snapUnreachablePlacerGalleryIndex,
   stepPostGenGalleryIndex,
 } from "@/lib/postGenGalleryNav";
 import {
@@ -2706,6 +2707,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const aopPanelPersistPromiseRef = useRef<Promise<void> | null>(null);
   const showPatternStepRef = useRef(false);
   showPatternStepRef.current = showPatternStep;
+  // Flat placer (apron / tee / phone etc.) open — keep the design after ATC so
+  // the artwork does not vanish from the editor (matches mesh AOP behaviour).
+  const flatPlacerEditOpenRef = useRef(false);
+  flatPlacerEditOpenRef.current = flatPlacerEditOpen;
   // Last status reported to the admin tester host (see TesterDesignStatus).
   const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
   const emitTesterDesignStatus = useCallback(
@@ -6940,7 +6945,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Generate sets transform — don't treat that as a merchant zoom edit.
       suppressMockupStaleRef.current = true;
       if (usesFlatOnTheFlyPreview) {
-        // Apparel chest prints default to 85% (slider max 100%). Decor/phone keep zoomDefault.
+        // Apparel chest prints default to 85% (slider max 150%). Decor/phone keep zoomDefault.
         const seedScale = flatDefaultPlacementScale({
           edgeWrapMode: flatEdgeWrapMode,
           decorMode: flatDecorMode,
@@ -8503,8 +8508,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setIsAddingToCart(false);
         setTimeout(() => {
           setAddedToCart(false);
-          // Stay in the mesh editor so sleeve/part toggles are not wiped by remount.
-          if (showPatternStepRef.current) return;
+          // Stay in the editor (mesh AOP or flat placer) so the artwork isn't
+          // wiped from the customizer — the customer clicks Start Fresh to reset.
+          if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
           setGeneratedDesign(null);
           setDesignSource(null);
           loadDesignAppliedRef.current = false;
@@ -8570,7 +8576,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           // without needing to click "Start Fresh Design" again.
           setTimeout(() => {
             setAddedToCart(false);
-            if (showPatternStepRef.current) return;
+            // Keep the design in the editor (mesh AOP or flat placer) so ATC
+            // doesn't blank out the artwork the customer just placed.
+            if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
             setGeneratedDesign(null);
             setDesignSource(null);
             loadDesignAppliedRef.current = false;
@@ -9088,7 +9096,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
         return next;
       });
-      setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
+      // While the live editor is open, stay on Artwork. Jumping to Front (1)
+      // is skipped as a duplicate canvas and used to wrap onto the last catalog
+      // closeup (View 4) after generate / apply.
+      setSelectedMockupIndex((prev) =>
+        flatPlacerEditOpen ? prev : prev === 0 ? 1 : prev,
+      );
       setMockupFailed(false);
       setMockupError(null);
       setMockupsStale(false);
@@ -9168,6 +9181,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatDecorMode,
     isPhoneCaseProduct,
     frameColorsArePhoneModels,
+    flatPlacerEditOpen,
   ]);
 
   const handleFlatPlacerViewChange = useCallback(() => {
@@ -10884,12 +10898,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [flatEdgeWrapMode, flatPlacerActive]);
 
   // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
+  // Snap hidden Front back to Artwork — stepping backward wraps onto View N closeups.
   useEffect(() => {
     if (!flatPlacerActive || postGenGalleryItems.length <= 1) return;
     const item = postGenGalleryItems[selectedMockupIndex];
     if (!item || isFlatPlacerGalleryReachable(item)) return;
     setSelectedMockupIndex((i) =>
-      stepPostGenGalleryIndex(i, -1, postGenGalleryItems, true),
+      snapUnreachablePlacerGalleryIndex(i, postGenGalleryItems, true),
     );
   }, [flatPlacerActive, selectedMockupIndex, postGenGalleryItems]);
 
@@ -11256,9 +11271,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!flatPlacerEligible) return;
     currentMockupColorRef.current = "";
     lastFlatGalleryMockupKeyRef.current = "";
-    // Stay on a mockup slide (Front) while the new blank rasters — jumping to
-    // index 0 flashed raw Artwork between colour changes on crew tees.
-    setSelectedMockupIndex((prev) => (prev >= 1 ? 1 : prev));
+    // Land on the live editor (Artwork). Jumping to Front (1) while the placer
+    // is open is skipped as a duplicate and used to wrap onto the last catalog
+    // closeup after a colour/size mockup change.
+    setSelectedMockupIndex(0);
     if (generatedDesign?.imageUrl) {
       setFlatMockupRefreshing(true);
     }
@@ -11440,7 +11456,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }
           return next;
         });
-        setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
+        setSelectedMockupIndex((prev) =>
+          flatPlacerActive ? 0 : prev === 0 ? 1 : prev,
+        );
         setMockupsStale(false);
         setLifestyleShotError(null);
         currentMockupColorRef.current = flatMockupBlankIdentity;
@@ -11473,6 +11491,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     catalogSizeAspectRatio,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
+    flatPlacerActive,
   ]);
 
   // Flat tier: colour/size swap is local — never gate ATC on Printify refresh.

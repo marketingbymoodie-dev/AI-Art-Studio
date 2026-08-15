@@ -62,8 +62,9 @@ import type {
  *     When linked, scale matches and offsetX is mirrored (offsetY shared).
  *   - Back defaults OFF, and the Back toggle only appears when the manifest
  *     (and the selected colour's blank) actually has a back view.
- *   - Placement scale is capped at 1.0 (Printify clamps placement scale), so
- *     the UI never implies more coverage than the print file provides.
+ *   - Placement scale is capped at 150% for apparel (decor/phone higher).
+ *     The print file is baked at that scale; Printify then receives it at
+ *     `{scale:1}` so its own clamp does not shrink coverage.
  *   - Phone cases (`edgeWrapMode`): optional `backgroundColor` fills the blue
  *     dashed print canvas under cutout artwork.
  */
@@ -547,7 +548,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     [scaleMax],
   );
 
-  // Heal legacy seeds that stored >100% for apparel (old 135% Printify zoom).
+  // Clamp stored scales to the current slider max (apparel 150%, decor/phone higher).
   useEffect(() => {
     setState((prev) => {
       if (!prev) return prev;

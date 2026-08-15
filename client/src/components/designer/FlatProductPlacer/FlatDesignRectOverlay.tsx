@@ -12,6 +12,7 @@ import {
   flatArtBox,
   flatArtContentFractionsCached,
   flatVisibleRectPx,
+  FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
   type ArtContentFractions,
   type Rect,
@@ -74,7 +75,7 @@ export default function FlatDesignRectOverlay({
   placementRect = null,
   mockupWidth,
   mockupHeight,
-  scaleMax = 1,
+  scaleMax = FLAT_SCALE_MAX,
   showInnerGuide = true,
   showOuterGuide,
   onChange,
@@ -415,7 +416,7 @@ export default function FlatDesignRectOverlay({
               onPointerDown={(e) => startDrag(e, "scale")}
               style={{ ...cornerStyle(c), touchAction: "none" }}
               className="rounded-sm border-2 border-primary/40 bg-primary shadow-md hover:scale-110"
-              title="Drag corner to resize (aspect locked, max 100%)"
+              title={`Drag corner to resize (aspect locked, max ${Math.round(scaleMax * 100)}%)`}
             />
           ))}
           <button

@@ -55,6 +55,25 @@ export function isAopPlacerGalleryReachable(item: PostGenGalleryNavItem): boolea
 }
 
 /**
+ * When apply / blank rebuild lands on a hidden Front raster, snap to the live
+ * editor — do not step backward (that wraps onto the last catalog closeup).
+ */
+export function snapUnreachablePlacerGalleryIndex(
+  current: number,
+  items: PostGenGalleryNavItem[],
+  placerMode: PostGenGalleryPlacerMode,
+): number {
+  const skip = normalizePlacerMode(placerMode);
+  if (!skip || items.length === 0) {
+    return current < 0 ? 0 : current;
+  }
+  const item = items[current];
+  if (item && isPlacerGalleryReachable(item, skip)) return current;
+  const artworkIdx = items.findIndex((it) => it.kind === "artwork");
+  return artworkIdx >= 0 ? artworkIdx : 0;
+}
+
+/**
  * Step the post-gen carousel. When a placer is open, skip slides that match
  * the live canvas so Printers/Context (and flat catalog) stay one click away.
  */

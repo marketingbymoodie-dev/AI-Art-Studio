@@ -41,8 +41,8 @@ export type Rect = { x: number; y: number; width: number; height: number };
 
 /** Lowest allowed placement scale. */
 export const FLAT_SCALE_MIN = 0.2;
-/** Default cap — Printify placement API clamps at 1; baked print files allow more. */
-export const FLAT_SCALE_MAX = 1.0;
+/** Apparel cap — baked print files honor this; Printify's own placement API still clamps at 1. */
+export const FLAT_SCALE_MAX = 1.5;
 /** Phone edge-wrap — zoom in to cover side strip + bleed. */
 export const FLAT_SCALE_MAX_EDGE_WRAP = 2.0;
 /** Framed / decor — zoom in to crop built-in borders past the mat opening. */
@@ -51,9 +51,9 @@ export const FLAT_SCALE_MAX_DECOR = 2.5;
 export const FLAT_SCALE_MAX_FABRIC = 2.0;
 /**
  * Standard flat DTG apparel (tees etc.): start under 100% so chest art fits
- * inside the dashed print guide. Apparel seed used to inherit the old 135%
- * Printify-mockup zoom, which always overflowed (and couldn't be re-selected
- * because the slider max is 100%).
+ * inside the dashed print guide. Slider max is 150% so AOP / tall blanks can
+ * cover top and bottom. Apparel seed used to inherit the old 135%
+ * Printify-mockup zoom, which always overflowed.
  */
 export const FLAT_APPAREL_DEFAULT_SCALE = 0.85;
 
