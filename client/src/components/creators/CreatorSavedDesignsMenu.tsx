@@ -9,6 +9,7 @@ type SavedDesign = {
   baseTitle?: string | null;
   pageHandle?: string | null;
   productTypeId?: string | number | null;
+  designState?: Record<string, unknown> | null;
 };
 
 type ShopPage = {
@@ -37,6 +38,115 @@ function readLoggedInCustomerId(): string | null {
 function thumbUrl(d: SavedDesign): string {
   const mockup = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
   return String(mockup || d.artworkUrl || "");
+}
+
+function urlPath(u: unknown): string {
+  const raw = typeof u === "string" ? u.trim() : "";
+  if (!raw) return "";
+  try {
+    return new URL(raw, "https://local.invalid").pathname.replace(/\/+$/, "").toLowerCase();
+  } catch {
+    return raw.split("?")[0].replace(/\/+$/, "").toLowerCase();
+  }
+}
+
+function urlsMatch(a: unknown, b: unknown): boolean {
+  const pa = urlPath(a);
+  const pb = urlPath(b);
+  return !!pa && pa === pb;
+}
+
+function isHoodiePage(p: ShopPage): boolean {
+  return /hoodie/i.test(`${p.title} ${p.handle}`);
+}
+
+function designStateHandle(d: SavedDesign): string {
+  const ds = d.designState;
+  return ds && typeof ds.pageHandle === "string" ? ds.pageHandle.trim() : "";
+}
+
+/** Resolve this shop's customizer page — never a leftover source-product type name. */
+function resolveShopPage(d: SavedDesign, pages: ShopPage[]): ShopPage | null {
+  if (pages.length === 0) return null;
+
+  const handles = [d.pageHandle, designStateHandle(d)]
+    .map((h) => (h ? String(h).trim() : ""))
+    .filter(Boolean);
+  for (const handle of handles) {
+    const match = pages.find((p) => p.handle === handle);
+    if (match) return match;
+  }
+  if (d.designState && typeof d.designState === "object") {
+    const nested: string[] = [];
+    const walk = (value: unknown) => {
+      if (typeof value === "string") {
+        const handle = value.trim();
+        if (handle && pages.some((p) => p.handle === handle)) nested.push(handle);
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const child of Object.values(value as Record<string, unknown>)) walk(child);
+      }
+    };
+    walk(d.designState);
+    if (nested[0]) {
+      const match = pages.find((p) => p.handle === nested[0]);
+      if (match) return match;
+    }
+  }
+
+  const typeId = d.productTypeId != null ? Number(d.productTypeId) : NaN;
+  if (Number.isFinite(typeId) && typeId > 0) {
+    const typeMatches = pages.filter((p) => p.productTypeId === typeId);
+    if (typeMatches.length === 1) return typeMatches[0];
+  }
+
+  const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
+  const flatMockups =
+    ds && ds.flatMockups && typeof ds.flatMockups === "object"
+      ? (ds.flatMockups as Record<string, unknown>)
+      : null;
+  const hoodieMockups =
+    ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
+      ? (ds.hoodieAopMockups as Record<string, unknown>)
+      : null;
+  const thumb = thumbUrl(d);
+  const hoodiePages = pages.filter(isHoodiePage);
+  const otherPages = pages.filter((p) => !isHoodiePage(p));
+  const flatish = otherPages.filter((p) =>
+    /apron|tote|bag|pillow|mug|case/i.test(`${p.title} ${p.handle}`),
+  );
+
+  const thumbIsFlat = !!(
+    thumb &&
+    (urlsMatch(thumb, flatMockups?.front) || urlsMatch(thumb, flatMockups?.back))
+  );
+  const thumbIsHoodie = !!(
+    thumb &&
+    (urlsMatch(thumb, hoodieMockups?.front) || urlsMatch(thumb, hoodieMockups?.back))
+  );
+  const hasFlat = !!(ds && ds.flatPlacerState && typeof ds.flatPlacerState === "object");
+  const hasHoodie = !!(
+    ds &&
+    ds.hoodieAopPlacerState &&
+    typeof ds.hoodieAopPlacerState === "object"
+  );
+
+  if (thumbIsFlat || (hasFlat && !hasHoodie)) {
+    if (flatish.length === 1) return flatish[0];
+    if (otherPages.length === 1) return otherPages[0];
+  }
+  if (thumbIsHoodie || (hasHoodie && !hasFlat)) {
+    if (hoodiePages.length === 1) return hoodiePages[0];
+  }
+
+  return null;
+}
+
+function labelFor(d: SavedDesign, page: ShopPage | null, pages: ShopPage[]): string {
+  if (page?.title) return page.title;
+  if (d.baseTitle && pages.some((p) => p.title === d.baseTitle)) return d.baseTitle;
+  return "Saved design";
 }
 
 export function CreatorSavedDesignsMenu({
@@ -104,17 +214,18 @@ export function CreatorSavedDesignsMenu({
     };
   }, [open, username, platformShop, customerId]);
 
-  function hrefFor(d: SavedDesign): string | null {
-    const typeId = d.productTypeId != null ? Number(d.productTypeId) : null;
-    const handle =
-      (d.pageHandle && String(d.pageHandle)) ||
-      pages.find((p) => typeId && p.productTypeId === typeId)?.handle ||
-      "";
-    if (!handle) return null;
+  function hrefFor(d: SavedDesign, page: ShopPage | null): string | null {
+    if (!page?.handle) return null;
+    const typeId =
+      page.productTypeId != null && page.productTypeId > 0
+        ? page.productTypeId
+        : d.productTypeId != null
+          ? Number(d.productTypeId)
+          : null;
     return designerHrefFor({
-      handle,
+      handle: page.handle,
       productTypeId: typeId,
-      title: d.baseTitle,
+      title: page.title,
       loadDesignId: d.id,
     });
   }
@@ -147,7 +258,8 @@ export function CreatorSavedDesignsMenu({
           ) : (
             <ul className="max-h-80 space-y-2 overflow-auto">
               {designs.map((d) => {
-                const href = hrefFor(d);
+                const page = resolveShopPage(d, pages);
+                const href = hrefFor(d, page);
                 const img = thumbUrl(d);
                 const body = (
                   <>
@@ -157,7 +269,7 @@ export function CreatorSavedDesignsMenu({
                       <div className="h-12 w-12 rounded-md bg-muted" />
                     )}
                     <span className="min-w-0 truncate text-sm">
-                      {d.baseTitle || "Saved design"}
+                      {labelFor(d, page, pages)}
                     </span>
                   </>
                 );

@@ -10389,6 +10389,7 @@ ${orientationExtra}
       ] as string[];
       const ptMap: Record<string, string> = {};   // productTypeId → name
       const handleMap: Record<string, string> = {}; // productTypeId → page handle
+      const titleByHandle: Record<string, string> = {};
       if (ptIds.length > 0) {
         const numericIds = ptIds.map(Number).filter(n => !isNaN(n));
         if (numericIds.length > 0) {
@@ -10399,7 +10400,11 @@ ${orientationExtra}
 
           // Look up customizer page handles by productTypeId + shop
           const pages = await db
-            .select({ productTypeId: customizerPages.productTypeId, handle: customizerPages.handle })
+            .select({
+              productTypeId: customizerPages.productTypeId,
+              handle: customizerPages.handle,
+              title: customizerPages.title,
+            })
             .from(customizerPages)
             .where(
               and(
@@ -10408,7 +10413,49 @@ ${orientationExtra}
                 inArray(customizerPages.productTypeId, numericIds)
               )
             );
-          for (const p of pages) if (p.productTypeId) handleMap[String(p.productTypeId)] = p.handle;
+          const typeCounts: Record<string, number> = {};
+          for (const p of pages) {
+            if (!p.productTypeId) continue;
+            const key = String(p.productTypeId);
+            typeCounts[key] = (typeCounts[key] || 0) + 1;
+          }
+          // Only infer a handle from productTypeId when exactly one live page
+          // uses that type. Shared types (hoodie name on an apron page) would
+          // otherwise stamp the wrong product onto Saved Designs.
+          for (const p of pages) {
+            if (p.handle && p.title) titleByHandle[p.handle] = p.title;
+            if (!p.productTypeId) continue;
+            const key = String(p.productTypeId);
+            if (typeCounts[key] === 1) handleMap[key] = p.handle;
+          }
+        }
+      }
+      const extraHandles = [
+        ...new Set(
+          rows
+            .map((r) => {
+              const ds =
+                r.designState && typeof r.designState === "object" && !Array.isArray(r.designState)
+                  ? (r.designState as Record<string, unknown>)
+                  : null;
+              return ds && typeof ds.pageHandle === "string" ? ds.pageHandle.trim() : "";
+            })
+            .filter((h) => h && !titleByHandle[h]),
+        ),
+      ];
+      if (extraHandles.length > 0) {
+        const extraPages = await db
+          .select({ handle: customizerPages.handle, title: customizerPages.title })
+          .from(customizerPages)
+          .where(
+            and(
+              eq(customizerPages.shop, shop),
+              eq(customizerPages.status, "active"),
+              inArray(customizerPages.handle, extraHandles),
+            ),
+          );
+        for (const p of extraPages) {
+          if (p.handle && p.title) titleByHandle[p.handle] = p.title;
         }
       }
 
@@ -10454,6 +10501,7 @@ ${orientationExtra}
             ds && typeof ds.pageHandle === "string" && ds.pageHandle.trim()
               ? ds.pageHandle.trim()
               : null;
+          const resolvedHandle = stateHandle || (ptId ? (handleMap[ptId] || null) : null);
           return {
           id: d.id,
           artworkUrl:
@@ -10469,8 +10517,10 @@ ${orientationExtra}
           size: d.size,
           frameColor: d.frameColor,
           productTypeId: ptId,
-          baseTitle: ptId ? (ptMap[ptId] || null) : null,
-          pageHandle: stateHandle || (ptId ? (handleMap[ptId] || null) : null),
+          pageHandle: resolvedHandle,
+          baseTitle:
+            (resolvedHandle && titleByHandle[resolvedHandle]) ||
+            (ptId ? ptMap[ptId] || null : null),
           customerId: d.customerId,
           createdAt: d.createdAt,
         };

@@ -9054,6 +9054,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const jobId = savedJobIdRef.current;
       const baseVariantForShadow = baseVariantForShadowRef.current;
       try {
+        const currentHandle = activeProductContext.pageHandle || undefined;
+        const currentTypeId = productTypeId || undefined;
+        if (currentHandle || currentTypeId) {
+          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop: shopDomain,
+              productTypeId: currentTypeId,
+              pageHandle: currentHandle,
+              designState: {
+                productTypeId: currentTypeId,
+                pageHandle: currentHandle,
+              },
+            }),
+          }).catch(() => {});
+        }
         await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -9093,7 +9111,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         console.error("[FlatMockups] save-mockups failed:", e);
       }
     },
-    [isStorefront, shopDomain, storefrontCustomerId, productId, startShadowVariantPoll],
+    [
+      isStorefront,
+      shopDomain,
+      storefrontCustomerId,
+      productId,
+      startShadowVariantPoll,
+      activeProductContext.pageHandle,
+      productTypeId,
+    ],
   );
 
   /**
@@ -9215,7 +9241,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 selectedSize: selectedSizeRef.current || selectedSize || null,
                 selectedFrameColor: phoneColor ?? null,
                 artworkUrl: artworkUrl || null,
+                productTypeId: productTypeId || undefined,
+                pageHandle: activeProductContext.pageHandle || undefined,
               },
+              productTypeId: productTypeId || undefined,
+              pageHandle: activeProductContext.pageHandle || undefined,
             }),
           });
 
