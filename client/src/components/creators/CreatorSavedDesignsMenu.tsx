@@ -239,17 +239,20 @@ export function CreatorSavedDesignsMenu({
   }
 
   function hrefFor(d: SavedDesign, page: ShopPage | null): string | null {
-    if (!page?.handle) return null;
+    // Leftover jobs from a product not in this shop still open — reuse the
+    // artwork on the first assigned product (same as in-place load in the customizer).
+    const target = page || pages[0] || null;
+    if (!target?.handle) return null;
     const typeId =
-      page.productTypeId != null && page.productTypeId > 0
-        ? page.productTypeId
+      target.productTypeId != null && target.productTypeId > 0
+        ? target.productTypeId
         : d.productTypeId != null
           ? Number(d.productTypeId)
           : null;
     return designerHrefFor({
-      handle: page.handle,
+      handle: target.handle,
       productTypeId: typeId,
-      title: page.title,
+      title: target.title,
       loadDesignId: d.id,
     });
   }
