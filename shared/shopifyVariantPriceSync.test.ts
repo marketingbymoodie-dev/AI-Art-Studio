@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildPrintifyToShopifyVariantIdMap, pickLowestPricedShopifyVariant } from "./shopifyVariantPriceSync";
+import {
+  buildPrintifyToShopifyVariantIdMap,
+  pickLowestPricedShopifyVariant,
+  resolveStorefrontHeadlinePrice,
+} from "./shopifyVariantPriceSync";
 
 describe("buildPrintifyToShopifyVariantIdMap", () => {
   it("maps printify ids via size:color name keys on shopifyVariantIds", () => {
@@ -90,5 +94,31 @@ describe("pickLowestPricedShopifyVariant", () => {
       { id: 2, title: "Small", price: "21.95" },
     ]);
     expect(cheapest?.id).toBe(2);
+  });
+});
+
+describe("resolveStorefrontHeadlinePrice", () => {
+  const comforter = [
+    { id: 1, price: "271.95" },
+    { id: 2, price: "229.95" },
+    { id: 3, price: "201.95" },
+  ];
+
+  it("shows from the cheapest size when none is selected", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: comforter,
+      sizeSelected: false,
+      matchedVariantId: "1",
+    });
+    expect(headline).toEqual({ amount: 201.95, showFrom: true });
+  });
+
+  it("shows the selected size price without from", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: comforter,
+      sizeSelected: true,
+      matchedVariantId: "1",
+    });
+    expect(headline).toEqual({ amount: 271.95, showFrom: false });
   });
 });

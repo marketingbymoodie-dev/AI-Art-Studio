@@ -177,3 +177,42 @@ export function pickLowestPricedShopifyVariant<T extends { price?: string | numb
   }
   return best ?? variants[0];
 }
+
+export function resolveStorefrontHeadlinePrice(args: {
+  variants: Array<{ id?: string | number; price?: string | number | null }>;
+  sizeSelected: boolean;
+  matchedVariantId?: string | null;
+  bothPrice?: number | null;
+  hasBothRetailPrices?: boolean;
+  printPlacementUsesBoth?: boolean;
+}): { amount: number; showFrom: boolean } | null {
+  const cheapest = pickLowestPricedShopifyVariant(args.variants);
+  if (!cheapest) return null;
+
+  const matched =
+    args.sizeSelected && args.matchedVariantId
+      ? args.variants.find((v) => String(v.id) === String(args.matchedVariantId))
+      : undefined;
+  const variant = args.sizeSelected ? matched ?? cheapest : cheapest;
+  const front = parseShopifyVariantPrice(variant.price);
+  if (front <= 0) return null;
+
+  const both = args.bothPrice ?? null;
+  if (args.printPlacementUsesBoth && both != null && both > 0) {
+    return { amount: both, showFrom: false };
+  }
+
+  const cheapestN = parseShopifyVariantPrice(cheapest.price);
+  const hasHigherSize = args.variants.some((v) => {
+    const n = parseShopifyVariantPrice(v.price);
+    return n > cheapestN + 0.005;
+  });
+  const showFromSize = !args.sizeSelected && hasHigherSize;
+  const showFromBoth = !!(
+    args.hasBothRetailPrices &&
+    !args.printPlacementUsesBoth &&
+    both != null &&
+    both > front
+  );
+  return { amount: front, showFrom: showFromSize || showFromBoth };
+}

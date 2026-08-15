@@ -152,6 +152,7 @@ import {
 } from "@shared/printifyMockupLabels";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
+import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
@@ -668,6 +669,16 @@ function matchVariantBySizeColor(
   frameColorId?: string,
 ): string | null {
   return matchShopifyVariantBySizeColor(catalog, sizeName, frameName, hasColors, frameColorId);
+}
+
+function sortSizesByRetailPrice<T extends { id: string }>(
+  sizes: T[],
+  prices: Record<string, number> | undefined,
+): T[] {
+  if (!prices || Object.keys(prices).length === 0) return sizes;
+  return [...sizes].sort(
+    (a, b) => (prices[a.id] ?? Number.POSITIVE_INFINITY) - (prices[b.id] ?? Number.POSITIVE_INFINITY),
+  );
 }
 
 function mapServerVariantsToCatalog(
@@ -11164,6 +11175,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // This drives the price display and the overrideVariantId used for add-to-cart.
   useEffect(() => {
     if (!isStorefront || shopifyVariants.length === 0) return;
+    if (!selectedSize) {
+      setShopifyVariantId(null);
+      setOverrideVariantId(null);
+      return;
+    }
 
     const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
@@ -12424,32 +12440,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   {displayName || productTypeConfig?.name || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
-                  const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
-                  const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
-                  if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
-                  const frontPrice = parseFloat(selected.price);
+                  const sizeSelected = Boolean(selectedSize);
+                  const activeId = sizeSelected
+                    ? shopifyVariantId || shopifyVariants[0]?.id || ""
+                    : "";
+                  const selected = sizeSelected
+                    ? shopifyVariants.find((v) => v.id === activeId) || shopifyVariants[0]
+                    : undefined;
                   const sizeName =
                     printSizes.find((s) => s.id === selectedSize)?.name ??
-                    selected.option1 ??
+                    selected?.option1 ??
                     "";
                   const colorName =
                     frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
-                    selected.option2 ??
+                    selected?.option2 ??
                     "";
                   const bothPrice = resolveBothRetailDollars({
                     sizeName,
                     colorName,
-                    shopifyVariantId: selected.id,
+                    shopifyVariantId: selected?.id,
                   });
-                  const showFrom =
-                    hasBothRetailPrices &&
-                    !printPlacementUsesBoth &&
-                    bothPrice != null &&
-                    bothPrice > frontPrice;
-                  const display = printPlacementUsesBoth && bothPrice != null ? bothPrice : frontPrice;
+                  const headline = resolveStorefrontHeadlinePrice({
+                    variants: shopifyVariants,
+                    sizeSelected,
+                    matchedVariantId: selected?.id ?? shopifyVariantId,
+                    bothPrice,
+                    hasBothRetailPrices,
+                    printPlacementUsesBoth,
+                  });
+                  if (!headline) return null;
                   return (
                     <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                      {showFrom ? `from $${frontPrice.toFixed(2)}` : `$${display.toFixed(2)}`}
+                      {headline.showFrom
+                        ? `from $${headline.amount.toFixed(2)}`
+                        : `$${headline.amount.toFixed(2)}`}
                     </p>
                   );
                 })()}
@@ -12819,7 +12843,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   printSizes.length > 0 && (
                     <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                       <SizeSelector
-                        sizes={orientationFilteredSizes}
+                        sizes={sortSizesByRetailPrice(orientationFilteredSizes, buildPriceMap())}
                         selectedSize={selectedSize}
                         label={isPhoneCaseProduct ? "Model" : "Size"}
                         onSizeChange={(sizeId) => {
@@ -12877,7 +12901,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   printSizes.length > 0 && (
                   <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                     <SizeSelector
-                      sizes={orientationFilteredSizes}
+                      sizes={sortSizesByRetailPrice(orientationFilteredSizes, buildPriceMap())}
                       selectedSize={selectedSize}
                       label={isPhoneCaseProduct ? "Model" : "Size"}
                       onSizeChange={(sizeId) => {

@@ -16,6 +16,7 @@ import {
   merchants,
   platformConfig,
   productTypes,
+  STYLE_PRESETS,
   stylePresets,
   type StylePresetDB,
 } from "@shared/schema";
@@ -290,8 +291,49 @@ export async function listAssignableCatalog(opts?: {
     .orderBy(stylePresets.sortOrder, stylePresets.name);
   if (all.length > 0) {
     console.warn("[creator-styles] catalog fallback to all style_presets", all.length);
+    return all;
   }
-  return all;
+
+  const seeded = await seedPlatformDefaultStylesIfEmpty(opts);
+  if (seeded.length > 0) {
+    console.warn("[creator-styles] seeded default platform styles", seeded.length);
+  }
+  return seeded;
+}
+
+async function seedPlatformDefaultStylesIfEmpty(opts?: {
+  fallbackMerchantId?: string | null;
+  fallbackMerchantIds?: string[] | null;
+}): Promise<StylePresetDB[]> {
+  const merchantId =
+    (await getPlatformMerchantId()) ||
+    opts?.fallbackMerchantId ||
+    opts?.fallbackMerchantIds?.[0] ||
+    null;
+  if (!merchantId) return [];
+
+  const existing = await storage.getStylePresetsByMerchant(merchantId);
+  if (existing.length > 0) return existing;
+
+  const created: StylePresetDB[] = [];
+  for (let i = 0; i < STYLE_PRESETS.length; i++) {
+    const style = STYLE_PRESETS[i];
+    if (style.id === "none") continue;
+    const row = await storage.createStylePreset({
+      merchantId,
+      name: style.name,
+      promptPrefix: style.promptPrefix || "",
+      category: style.category || "all",
+      isActive: true,
+      sortOrder: i,
+      creatorScope: "global",
+      promptPlaceholder: (style as any).promptPlaceholder || null,
+      descriptionOptional: !!(style as any).descriptionOptional,
+      baseImageUrl: (style as any).baseImageUrl || null,
+    } as any);
+    created.push(row);
+  }
+  return created;
 }
 
 let backfillOnce: Promise<number> | null = null;
