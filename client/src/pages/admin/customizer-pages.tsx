@@ -728,6 +728,7 @@ export default function AdminCustomizerPages() {
         next.delete(url);
       } else if (next.size < MAX_GALLERY_PLACEHOLDERS) {
         next.add(url);
+        if (!formPrimaryPlaceholder) setFormPrimaryPlaceholder(url);
       }
       return next;
     });
@@ -1238,13 +1239,11 @@ export default function AdminCustomizerPages() {
     if (!handleTouched) setFormHandle(slugify(simplified));
   }, [selectedBlank?.title, titleTouched]);
 
-  useEffect(() => {
-    if (!selectedBlank) return;
-    // Do not pre-select catalog images — merchant must pick primary + gallery on step 1.
+  function resetPlaceholderPicks() {
     setFormPrimaryPlaceholder("");
     setFormGalleryPlaceholders(new Set());
     setFormCustomPlaceholder("");
-  }, [selectedBlank?.productTypeId]);
+  }
 
   useEffect(() => {
     if (!selectedBlank?.productTypeId) return;
@@ -1682,7 +1681,12 @@ export default function AdminCustomizerPages() {
     const availablePlaceholderCount = selectedBlank
       ? buildAvailablePlaceholderImages(selectedBlank.baseMockupImages, formCustomPlaceholder || undefined).length
       : 0;
-    const missingPrimary = !formPrimaryPlaceholder;
+    let primary = formPrimaryPlaceholder;
+    if (!primary && formGalleryPlaceholders.size > 0) {
+      primary = Array.from(formGalleryPlaceholders)[0] || "";
+      if (primary) setFormPrimaryPlaceholder(primary);
+    }
+    const missingPrimary = !primary;
     const requireGallery = availablePlaceholderCount > 1;
     const missingGallery = requireGallery && formGalleryPlaceholders.size < 1;
     if (selectedBlank && (missingPrimary || missingGallery)) {
@@ -2041,9 +2045,11 @@ export default function AdminCustomizerPages() {
                             if (val.startsWith("bp:")) {
                               const bpId = parseInt(val.slice(3), 10);
                               if (Number.isFinite(bpId)) ensureCatalogProductMutation.mutate(bpId);
+                              resetPlaceholderPicks();
                               return;
                             }
                             setFormProductId(val);
+                            resetPlaceholderPicks();
                           }}
                         >
                           <SelectTrigger className="mt-1">
