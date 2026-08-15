@@ -643,6 +643,16 @@ function resolveGenerationAspectRatio(
     if (fromFlat) return normalizeStandardApparelAspectRatio(fromFlat);
     return normalizeStandardApparelAspectRatio(aspectRatioStr);
   }
+  // Flat-calibrated AOP (apron / tote etc.): single-placement print on a tall
+  // panel driven by the FlatProductPlacer. Import stores a near-square product AR
+  // (often 1:1), so square art never reaches the top/bottom of the apron without
+  // manual upscaling. Generate at the harvested print-area AR instead. Mesh AOP
+  // (hoodies) has no flatCalibration and phone cases are not AOP, so both are
+  // left untouched by this branch.
+  if (opts.isAllOverPrint) {
+    const fromFlat = aspectRatioFromFlatCalibration(opts.flatCalibration);
+    if (fromFlat) return fromFlat;
+  }
   return aspectRatioStr;
 }
 
