@@ -1256,3 +1256,55 @@ export async function submitFlatTestOrder(args: {
 
   return { ...result, designId };
 }
+
+export function creatorCartLinesToOrderLines(
+  lines: Array<{
+    id: string;
+    quantity: number;
+    merchandiseId?: string | null;
+    attributes?: Array<{ key: string; value: string }>;
+  }>,
+): NormalizedOrderLine[] {
+  return lines.map((line) => {
+    const properties: Record<string, string> = {};
+    for (const a of line.attributes || []) {
+      if (a?.key) properties[a.key] = String(a.value ?? "");
+    }
+    const numeric = String(line.merchandiseId || "").replace(/\D/g, "");
+    return {
+      lineId: line.id,
+      variantId: numeric || null,
+      quantity: line.quantity,
+      properties,
+    };
+  });
+}
+
+/** Draft Printify order from a live creator cart — uses each line's placement snapshot. */
+export async function submitCreatorCartTestOrder(args: {
+  cartId: string;
+  shop: string;
+  lines: Array<{
+    id: string;
+    quantity: number;
+    merchandiseId?: string | null;
+    attributes?: Array<{ key: string; value: string }>;
+  }>;
+}): Promise<SubmitFlatOrderResult> {
+  const lines = creatorCartLinesToOrderLines(args.lines);
+  if (lines.length === 0) {
+    throw new Error("Cart is empty.");
+  }
+  const idempotencyKey = `cart-test-order:${args.cartId}:${Date.now()}`;
+  return submitFlatOrderToPrintify({
+    shopifyOrder: {
+      id: idempotencyKey,
+      shop_domain: args.shop,
+    },
+    lines,
+    sendToProduction: false,
+    isTest: true,
+    addressTo: resolveTestShipToAddress(),
+    idempotencyKey,
+  });
+}

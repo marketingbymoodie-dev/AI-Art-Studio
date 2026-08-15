@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -105,6 +105,7 @@ export default function PlatformCreatorDetailDialog({
   const [activeTab, setActiveTab] = useState(initialTab);
   const [assignedOrder, setAssignedOrder] = useState<number[]>([]);
   const [draggingStyleId, setDraggingStyleId] = useState<number | null>(null);
+  const [cartTestId, setCartTestId] = useState("");
   const assignedOrderRef = useRef<number[]>([]);
   assignedOrderRef.current = assignedOrder;
 
@@ -436,6 +437,42 @@ export default function PlatformCreatorDetailDialog({
       toast({ title: "Action failed", description: err.message, variant: "destructive" }),
   });
 
+  const cartTestMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/admin/creators/cart/test-printify-order", {
+        creatorUsername: data?.creator?.username,
+        cartId: cartTestId.trim(),
+      });
+      return res.json() as Promise<{
+        printifyOrderId?: string;
+        printifyOrderUrl?: string;
+        message?: string;
+      }>;
+    },
+    onSuccess: (json) => {
+      const url = json?.printifyOrderUrl;
+      toast({
+        title: "Printify draft created",
+        description:
+          json?.message ||
+          (json?.printifyOrderId
+            ? `Draft ${json.printifyOrderId} — not sent to production.`
+            : "Draft created. Open Printify to compare each line’s print file."),
+        action: url ? (
+          <a href={url} target="_blank" rel="noopener noreferrer" className="underline text-xs">
+            Open
+          </a>
+        ) : undefined,
+      });
+    },
+    onError: (err: Error) =>
+      toast({
+        title: "Cart test failed",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      }),
+  });
+
   const payoutMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/platform/creators/${creatorId}/payouts`, {
@@ -576,6 +613,35 @@ export default function PlatformCreatorDetailDialog({
                     Preview shop
                   </a>
                 </Button>
+                <Button size="sm" variant="ghost" asChild>
+                  <a href={`/c/${c.username}/cart?printifyTest=1`} target="_blank" rel="noreferrer">
+                    Open cart test helper
+                  </a>
+                </Button>
+              </div>
+              <div className="space-y-2 rounded-md border p-3">
+                <Label>Test Printify cart</Label>
+                <p className="text-xs text-muted-foreground">
+                  Paste the cart ID from{" "}
+                  <span className="font-mono">/c/{c.username}/cart?printifyTest=1</span>. Creates a
+                  draft from every line’s placement — never sent to production.
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    value={cartTestId}
+                    onChange={(e) => setCartTestId(e.target.value)}
+                    placeholder="gid://shopify/Cart/…"
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={!cartTestId.trim() || cartTestMutation.isPending}
+                    onClick={() => cartTestMutation.mutate()}
+                  >
+                    {cartTestMutation.isPending ? "Sending…" : "Send draft"}
+                  </Button>
+                </div>
               </div>
               <p className="text-xs text-muted-foreground">
                 Public pages show the shop name (handle), never the legal name, unless it is

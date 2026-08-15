@@ -12,6 +12,7 @@ import { clearCreatorCart, currentCreatorReturnUrl, readCreatorCart, writeCreato
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
 import { CreatorSavedDesignsMenu } from "@/components/creators/CreatorSavedDesignsMenu";
 import { API_BASE } from "@/lib/urlBase";
+import { apiFetch, parseApiErrorMessage } from "@/lib/queryClient";
 import {
   CREATOR_HEADING_FONTS_STYLESHEET,
   creatorBrandingImageUrl,
@@ -21,6 +22,7 @@ import {
   resolveCreatorHeadingFont,
   socialPlatformLabel,
 } from "@shared/creatorMarketplace";
+import { displayRetailPrice, hasPositiveRetailPrice } from "@shared/shopifyVariantPriceSync";
 
 export type CreatorBoot = {
   id: string;
@@ -269,6 +271,10 @@ function useCreatorPages(username: string) {
   }>({
     queryKey: [`/api/creators/storefront/${username}/pages`],
     enabled: !!username,
+    select: (data) => ({
+      ...data,
+      pages: (data.pages ?? []).filter((p) => hasPositiveRetailPrice(p.baseProductPrice)),
+    }),
   });
 }
 
@@ -425,6 +431,7 @@ function ProductCard({
   page: StorefrontPage;
   href: string;
 }) {
+  const fromPrice = displayRetailPrice(page.baseProductPrice);
   return (
     <a
       href={href}
@@ -444,8 +451,8 @@ function ProductCard({
       {page.baseProductTitle ? (
         <div className="mt-1 text-sm text-muted-foreground">{page.baseProductTitle}</div>
       ) : null}
-      {page.baseProductPrice ? (
-        <div className="mt-2 text-sm font-medium">From {page.baseProductPrice}</div>
+      {fromPrice ? (
+        <div className="mt-2 text-sm font-medium">From {fromPrice}</div>
       ) : null}
       {page.description ? (
         <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{page.description}</p>
@@ -593,6 +600,11 @@ function CartCount({ username }: { username: string }) {
   return count > 0 ? <span> ({count})</span> : null;
 }
 
+function isPrintifyCartTestEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("printifyTest") === "1";
+}
+
 function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
   const qc = useQueryClient();
   const snap = readCreatorCart(creator.username);
@@ -600,6 +612,9 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
   const [pendingLineId, setPendingLineId] = useState<string | null>(null);
   const [preparingCheckout, setPreparingCheckout] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [printifyTestEnabled] = useState(isPrintifyCartTestEnabled);
+  const [printifyTestMessage, setPrintifyTestMessage] = useState<string | null>(null);
+  const [printifyTestUrl, setPrintifyTestUrl] = useState<string | null>(null);
 
   const updateLine = useMutation({
     mutationFn: async (body: { lineId: string; quantity?: number; remove?: boolean }) => {
@@ -628,6 +643,47 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
       }
     },
     onSettled: () => setPendingLineId(null),
+  });
+
+  const printifyTest = useMutation({
+    mutationFn: async () => {
+      if (!snap?.cartId) throw new Error("Cart expired");
+      const res = await apiFetch("/api/admin/creators/cart/test-printify-order", {
+        method: "POST",
+        body: JSON.stringify({
+          creatorUsername: creator.username,
+          cartId: snap.cartId,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          throw new Error(
+            "Open Shopify Admin → Creators → this shop → Test Printify cart, and paste the cart ID shown here. This page is not signed into Admin.",
+          );
+        }
+        throw new Error(parseApiErrorMessage(json?.error || json?.message || JSON.stringify(json)));
+      }
+      return json as {
+        printifyOrderId?: string;
+        printifyOrderUrl?: string;
+        message?: string;
+        skippedReasons?: string[];
+      };
+    },
+    onSuccess: (json) => {
+      setPrintifyTestUrl(json.printifyOrderUrl || null);
+      setPrintifyTestMessage(
+        json.message ||
+          (json.printifyOrderId
+            ? `Draft ${json.printifyOrderId} created in Printify.`
+            : "Draft created in Printify."),
+      );
+    },
+    onError: (err) => {
+      setPrintifyTestUrl(null);
+      setPrintifyTestMessage(err instanceof Error ? err.message : "Could not create draft.");
+    },
   });
 
   const lines = data?.lines || [];
@@ -781,6 +837,59 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
             : `Checkout${itemCount > 0 ? ` (${itemCount})` : ""}`}
         </Button>
       </div>
+      {printifyTestEnabled && snap?.cartId ? (
+        <div className="space-y-2 rounded-lg border border-dashed p-3 text-sm">
+          <div className="font-medium">Printify cart test</div>
+          <p className="text-muted-foreground">
+            Creates a <span className="font-medium">draft</span> from every line’s placement.
+            Never sent to production. On staging, paste this cart ID in Admin if the button
+            is unauthorized.
+          </p>
+          <div className="break-all rounded-md bg-muted px-2 py-1 font-mono text-xs">
+            {snap.cartId}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={itemCount < 1 || printifyTest.isPending}
+              onClick={() => {
+                setPrintifyTestMessage(null);
+                setPrintifyTestUrl(null);
+                printifyTest.mutate();
+              }}
+            >
+              {printifyTest.isPending ? "Sending draft…" : "Send cart to Printify draft"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard.writeText(snap.cartId);
+              }}
+            >
+              Copy cart ID
+            </Button>
+          </div>
+          {printifyTestMessage ? (
+            <p className="text-sm">
+              {printifyTestMessage}{" "}
+              {printifyTestUrl ? (
+                <a
+                  href={printifyTestUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  Open in Printify
+                </a>
+              ) : null}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

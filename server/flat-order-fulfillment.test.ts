@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  creatorCartLinesToOrderLines,
   pickFlatOrderArtworkUrl,
   pickFlatOrderSizeColor,
   resolveGenerationJobIdForOrderLine,
@@ -130,5 +131,36 @@ describe("resolvePrintifyTarget phone size-only", () => {
     } as unknown as ProductType;
 
     expect(resolvePrintifyTarget(productType, "iphone_13", "12_pro")).toBeNull();
+  });
+});
+
+describe("creatorCartLinesToOrderLines", () => {
+  it("maps cart attributes including per-line placement onto order properties", () => {
+    const lines = creatorCartLinesToOrderLines([
+      {
+        id: "gid://shopify/CartLine/1",
+        quantity: 2,
+        merchandiseId: "gid://shopify/ProductVariant/12345",
+        attributes: [
+          { key: "_appai_job_id", value: "job-a" },
+          { key: "_flat_pl", value: '{"f":{"s":1.2,"x":0.1,"y":0.2}}' },
+          { key: "_size", value: "one_size" },
+          { key: "_color", value: "black" },
+        ],
+      },
+    ]);
+    expect(lines).toEqual([
+      {
+        lineId: "gid://shopify/CartLine/1",
+        variantId: "12345",
+        quantity: 2,
+        properties: {
+          _appai_job_id: "job-a",
+          _flat_pl: '{"f":{"s":1.2,"x":0.1,"y":0.2}}',
+          _size: "one_size",
+          _color: "black",
+        },
+      },
+    ]);
   });
 });
