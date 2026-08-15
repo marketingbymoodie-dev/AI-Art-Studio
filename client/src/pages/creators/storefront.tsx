@@ -73,6 +73,7 @@ function useCreatorHeadingStylesheet() {
 
 type CreatorCartPayload = {
   checkoutUrl: string;
+  shopCartUrl?: string | null;
   cartId?: string;
   itemCount: number;
   lines: Array<{ id: string; quantity: number; title: string; imageUrl: string | null }>;
@@ -629,7 +630,8 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
       <div>
         <h1 className="text-2xl font-semibold">Your cart</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Add more products from the shop, then checkout when you’re ready.
+          This cart is for this creator shop. The AI Art Studio store cart is a
+          separate bag — checkout from here to pay.
         </p>
       </div>
       {!snap?.cartId ? (

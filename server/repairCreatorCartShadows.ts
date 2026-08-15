@@ -5,7 +5,7 @@ import { db } from "./db";
 import { storage } from "./storage";
 import {
   getCreatorCart,
-  updateCreatorCartLineMerchandise,
+  replaceCreatorCartLine,
   type CreatorCartResult,
 } from "./shopify-storefront";
 import { ensureVariantPublishedForStorefrontApi } from "./shopify-publications";
@@ -201,8 +201,8 @@ export async function repairCreatorCartShadowVariants(opts: {
     }
     if (!baseVariantId) continue;
 
-    const designId = shadowDesignIdForCart(line.jobId || line.id, mockup);
-    const nextVariantId = await resolveShadowVariant({
+    let designId = shadowDesignIdForCart(line.jobId || line.id, mockup);
+    let nextVariantId = await resolveShadowVariant({
       shop: opts.shop,
       accessToken: opts.accessToken,
       baseVariantId,
@@ -211,18 +211,28 @@ export async function repairCreatorCartShadowVariants(opts: {
     });
     if (!nextVariantId) continue;
 
-    const current = numericId(line.merchandiseId);
-    const alreadyUsedBy = seenVariant.get(nextVariantId);
+    const alreadyUsedBy = seenVariant.get(numericId(nextVariantId));
     if (alreadyUsedBy && alreadyUsedBy !== mockup) {
-      continue;
+      designId = shadowDesignIdForCart(line.id, mockup);
+      nextVariantId = await resolveShadowVariant({
+        shop: opts.shop,
+        accessToken: opts.accessToken,
+        baseVariantId,
+        designId,
+        mockupUrl: mockup,
+      });
+      if (!nextVariantId) continue;
     }
-    seenVariant.set(nextVariantId, mockup);
+    seenVariant.set(numericId(nextVariantId), mockup);
 
+    const current = numericId(line.merchandiseId);
     if (current && current === numericId(nextVariantId)) continue;
-    cart = await updateCreatorCartLineMerchandise({
+    cart = await replaceCreatorCartLine({
       cartId: cart.cartId,
       lineId: line.id,
       variantId: nextVariantId,
+      quantity: line.quantity,
+      attributes: line.attributes,
     });
   }
 

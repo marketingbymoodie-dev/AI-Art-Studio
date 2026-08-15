@@ -1273,6 +1273,7 @@ export function registerCreatorMarketplaceRoutes(
         success: true,
         cartId: cart.cartId,
         checkoutUrl: cart.checkoutUrl,
+        shopCartUrl: cart.shopCartUrl,
         itemCount: cart.itemCount,
         lines: cart.lines,
         platformShopDomain: getCreatorPlatformShopDomain(),
@@ -1318,6 +1319,7 @@ export function registerCreatorMarketplaceRoutes(
         success: true,
         cartId: cart.cartId,
         checkoutUrl: cart.checkoutUrl,
+        shopCartUrl: cart.shopCartUrl,
         itemCount: cart.itemCount,
         lines: cart.lines,
       });
@@ -1373,6 +1375,7 @@ export function registerCreatorMarketplaceRoutes(
         success: true,
         cartId: cart.cartId,
         checkoutUrl: cart.checkoutUrl,
+        shopCartUrl: cart.shopCartUrl,
         itemCount: cart.itemCount,
         lines: cart.lines,
       });
@@ -1432,6 +1435,7 @@ export function registerCreatorMarketplaceRoutes(
         success: true,
         cartId: cart.cartId,
         checkoutUrl: cart.checkoutUrl,
+        shopCartUrl: cart.shopCartUrl,
         itemCount: cart.itemCount,
         lines: cart.lines,
       });

@@ -75,14 +75,23 @@ export type CreatorCartLine = {
   mockupUrl: string | null;
   jobId: string | null;
   baseVariantId: string | null;
+  attributes: CartLineAttribute[];
 };
 
 export type CreatorCartResult = {
   cartId: string;
   checkoutUrl: string;
+  shopCartUrl: string | null;
   itemCount: number;
   lines: CreatorCartLine[];
 };
+
+export function storefrontCartStoreUrl(shop: string, cartGid: string): string | null {
+  const token = decodeURIComponent(String(cartGid || "")).split("/Cart/")[1]?.trim();
+  const host = String(shop || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  if (!token || !host) return null;
+  return `https://${host}/cart/c/${token}`;
+}
 
 type StorefrontCartNode = {
   id: string;
@@ -150,6 +159,7 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
       mockupUrl: mockup,
       jobId: attrs.find((a) => a.key === "_appai_job_id")?.value || null,
       baseVariantId: attrs.find((a) => a.key === "_base_variant_id")?.value || null,
+      attributes: attrs.map((a) => ({ key: a.key, value: a.value })),
     };
   });
   const itemCount =
@@ -159,6 +169,7 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
   return {
     cartId: cart.id,
     checkoutUrl: cart.checkoutUrl,
+    shopCartUrl: storefrontCartStoreUrl(getCreatorPlatformShopDomain(), cart.id),
     itemCount,
     lines,
   };
@@ -310,6 +321,26 @@ export async function addLinesToCreatorCart(params: {
     }
   }
   return mapped;
+}
+
+/** Storefront carts often cannot change a line's variant in place — add the new SKU, then drop the old line. */
+export async function replaceCreatorCartLine(params: {
+  cartId: string;
+  lineId: string;
+  variantId: string;
+  quantity?: number;
+  attributes?: CartLineAttribute[];
+}): Promise<CreatorCartResult> {
+  const added = await addLinesToCreatorCart({
+    cartId: params.cartId,
+    variantId: params.variantId,
+    quantity: params.quantity,
+    attributes: params.attributes,
+  });
+  return removeCreatorCartLines({
+    cartId: added.cartId,
+    lineIds: [params.lineId],
+  });
 }
 
 export function isCreatorCartLineId(lineId: string): boolean {
