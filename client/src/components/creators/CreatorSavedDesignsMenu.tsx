@@ -134,7 +134,7 @@ export function CreatorSavedDesignsMenu({
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open ? (
-        <div className="absolute right-0 z-40 mt-2 w-72 rounded-lg border bg-background p-3 shadow-lg">
+        <div className="absolute right-0 z-50 mt-2 w-72 rounded-lg border bg-background p-3 shadow-lg">
           <div className="mb-2 text-sm font-semibold">Saved Designs</div>
           {!customerId ? (
             <p className="text-xs text-muted-foreground">

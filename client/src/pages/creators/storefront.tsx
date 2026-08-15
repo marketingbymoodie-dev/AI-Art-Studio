@@ -180,7 +180,7 @@ function StoreShell({
 
   return (
     <div className="min-h-screen bg-background text-foreground" style={accent ? { ["--primary" as string]: accent } : undefined}>
-      <header className="border-b bg-background/90 backdrop-blur-sm">
+      <header className="relative z-50 border-b bg-background/90 backdrop-blur-sm">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4">
           <Link href={basePath || "/"} className="flex items-center gap-2 min-w-0">
             {creator.profileImageUrl ? (
