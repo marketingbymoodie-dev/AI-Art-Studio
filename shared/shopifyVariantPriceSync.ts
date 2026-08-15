@@ -154,3 +154,26 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
 
   return out;
 }
+
+export function parseShopifyVariantPrice(price: string | number | null | undefined): number {
+  const n = parseFloat(String(price ?? ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Shopify lists variants in option order (often largest size first). "From" must use the cheapest. */
+export function pickLowestPricedShopifyVariant<T extends { price?: string | number | null }>(
+  variants: T[] | null | undefined,
+): T | undefined {
+  if (!Array.isArray(variants) || variants.length === 0) return undefined;
+  let best: T | undefined;
+  let bestN = Infinity;
+  for (const v of variants) {
+    const n = parseShopifyVariantPrice(v?.price);
+    if (n <= 0) continue;
+    if (n < bestN) {
+      bestN = n;
+      best = v;
+    }
+  }
+  return best ?? variants[0];
+}

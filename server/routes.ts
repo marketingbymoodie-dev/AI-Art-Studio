@@ -59,7 +59,7 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
-import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceSync";
+import { buildPrintifyToShopifyVariantIdMap, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
@@ -3878,25 +3878,25 @@ ${orientationExtra}
     shop: string;
     shopifyProductId: string;
     shopifyHandle: string;
-    firstVariantId: string | number;
+    cheapestVariantId: string | number;
   }): Promise<void> {
     const pages = await storage.listCustomizerPagesByProductTypeId(args.productTypeId);
     for (const page of pages) {
       if (page.shop !== args.shop) continue;
       if (
         String(page.baseProductId) === String(args.shopifyProductId) &&
-        String(page.baseVariantId) === String(args.firstVariantId) &&
+        String(page.baseVariantId) === String(args.cheapestVariantId) &&
         (page as any).baseProductHandle === args.shopifyHandle
       ) {
         continue;
       }
       await storage.updateCustomizerPage(page.id, {
         baseProductId: String(args.shopifyProductId),
-        baseVariantId: String(args.firstVariantId),
+        baseVariantId: String(args.cheapestVariantId),
         baseProductHandle: args.shopifyHandle,
       });
       console.log(
-        `[customizer-pages] synced page ${page.handle} → product ${args.shopifyProductId} variant ${args.firstVariantId}`,
+        `[customizer-pages] synced page ${page.handle} → product ${args.shopifyProductId} variant ${args.cheapestVariantId}`,
       );
     }
   }
@@ -4057,14 +4057,15 @@ ${orientationExtra}
       lastPushedToShopify: new Date(),
     });
 
-    const firstVariantId = createdVariants[0]?.id;
-    if (firstVariantId) {
+    const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+    const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
+    if (cheapestVariantId) {
       await syncCustomizerPagesForShopifyProduct({
         productTypeId: productType.id,
         shop,
         shopifyProductId: newShopifyProductId,
         shopifyHandle,
-        firstVariantId,
+        cheapestVariantId,
       });
     }
 
@@ -4706,14 +4707,15 @@ ${orientationExtra}
             lastPushedToShopify: new Date(),
           });
 
-          const firstVariantId = createdVariants[0]?.id;
-          if (firstVariantId) {
+          const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+          const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
+          if (cheapestVariantId) {
             await syncCustomizerPagesForShopifyProduct({
               productTypeId,
               shop: shopDomain,
               shopifyProductId: String(shopifyProductId),
               shopifyHandle,
-              firstVariantId,
+              cheapestVariantId,
             });
           }
 
@@ -4958,14 +4960,15 @@ ${orientationExtra}
         lastPushedToShopify: new Date(),
       });
 
-      const firstVariantId = createdVariants[0]?.id;
-      if (firstVariantId) {
+      const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+      const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
+      if (cheapestVariantId) {
         await syncCustomizerPagesForShopifyProduct({
           productTypeId,
           shop: shopDomain,
           shopifyProductId: String(shopifyProductId),
           shopifyHandle,
-          firstVariantId,
+          cheapestVariantId,
         });
       }
 
@@ -19530,6 +19533,56 @@ ${orientationExtra}
       console.warn("[backfill] Some backfill tasks rejected unexpectedly");
     }
 
+    // Cached "from" price used the first Shopify variant (option order), not the
+    // cheapest. Re-point existing pages at the lowest-priced variant of the same product.
+    const productIdsToHeal = [...new Set(pages.map((p) => p.baseProductId).filter(Boolean))];
+    const cheapestByProduct = new Map<string, { id: string; title: string; price: string }>();
+    await Promise.all(
+      productIdsToHeal.map(async (productId) => {
+        try {
+          const productIdNum = parseInt(String(productId).replace(/\D/g, ""), 10);
+          if (!productIdNum) return;
+          const productRes = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${productIdNum}.json?fields=id,variants`,
+          );
+          const cheapest = pickLowestPricedShopifyVariant(productRes.data?.product?.variants);
+          if (!cheapest) return;
+          cheapestByProduct.set(String(productId), {
+            id: String(cheapest.id),
+            title: cheapest.title || "Default Title",
+            price: cheapest.price || "0.00",
+          });
+        } catch (e: any) {
+          console.warn(`[from-price] Could not load variants for product ${productId}:`, e?.message ?? e);
+        }
+      }),
+    );
+    for (const p of pages) {
+      if (!p.baseProductId) continue;
+      const cheapest = cheapestByProduct.get(String(p.baseProductId));
+      if (!cheapest) continue;
+      const cached = parseShopifyVariantPrice(p.baseProductPrice);
+      const live = parseShopifyVariantPrice(cheapest.price);
+      if (String(p.baseVariantId) === cheapest.id && Math.abs(cached - live) < 0.005) continue;
+      if (live <= 0) continue;
+      try {
+        await storage.updateCustomizerPage(p.id, {
+          baseVariantId: cheapest.id,
+          baseVariantTitle: cheapest.title,
+          baseProductPrice: cheapest.price,
+        });
+        Object.assign(p, {
+          baseVariantId: cheapest.id,
+          baseVariantTitle: cheapest.title,
+          baseProductPrice: cheapest.price,
+        });
+      } catch (e: any) {
+        console.warn(`[from-price] Could not update page ${p.id}:`, e?.message ?? e);
+      }
+    }
+
     // Refresh each active page's body_html to the latest boot loader so existing
     // pages pick up the self-bootstrapping <script> that mounts the studio even
     // on themes where the "AI Art Studio" app embed is turned off. Fire-and-forget;
@@ -19809,7 +19862,8 @@ ${orientationExtra}
     }
 
     // Resolve variant + product info via Admin API.
-    // New flow: merchant selects a product → fetch product and use its first variant.
+    // New flow: merchant selects a product → use the cheapest variant for "from" price
+    // (Shopify lists option order, often largest/most expensive first).
     // Legacy flow: merchant sends baseVariantId directly → look up variant then product.
     let variant: any;
     let productTitle: string;
@@ -19871,9 +19925,9 @@ ${orientationExtra}
             return res.status(400).json({ error: `Newly created product ${resolvedBaseProductId} not found. Please try again.` });
           }
           const product = newProdResult.data.product;
-          const firstVariant = product.variants?.[0];
-          if (!firstVariant) return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
-          variant = firstVariant;
+          const cheapest = pickLowestPricedShopifyVariant(product.variants);
+          if (!cheapest) return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
+          variant = cheapest;
           productTitle = product.title ?? "";
           productHandle = product.handle ?? "";
         } else {
@@ -19881,11 +19935,11 @@ ${orientationExtra}
         }
       } else {
         const product = prodResult.data.product;
-        const firstVariant = product.variants?.[0];
-        if (!firstVariant) {
+        const cheapest = pickLowestPricedShopifyVariant(product.variants);
+        if (!cheapest) {
           return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
         }
-        variant = firstVariant;
+        variant = cheapest;
         productTitle = product.title ?? "";
         productHandle = product.handle ?? "";
       }
@@ -20075,6 +20129,16 @@ ${orientationExtra}
           if (String(variantNum) === String(variant.id)) {
             variant = { ...variant, price: formatted };
           }
+        }
+        const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
+        if (productIdNum) {
+          const priced = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${productIdNum}.json?fields=id,title,handle,variants`,
+          );
+          const cheapestAfter = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+          if (cheapestAfter) variant = cheapestAfter;
         }
       }
     }
@@ -20584,12 +20648,28 @@ ${orientationExtra}
       baseProductId: dbPage.baseProductId,
       productType: matchedType,
       variantPrices,
-      onBaseVariantUpdated: async (formatted, variantNum) => {
-        if (String(variantNum) === String(dbPage.baseVariantId)) {
-          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
-        }
-      },
     });
+
+    try {
+      const productIdNum = parseInt(String(dbPage.baseProductId).replace(/\D/g, ""), 10);
+      if (productIdNum) {
+        const priced = await shopifyApiCall(
+          shop,
+          installation.accessToken!,
+          `products/${productIdNum}.json?fields=id,variants`,
+        );
+        const cheapest = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+        if (cheapest && parseShopifyVariantPrice(cheapest.price) > 0) {
+          await storage.updateCustomizerPage(dbPage.id, {
+            baseVariantId: String(cheapest.id),
+            baseVariantTitle: cheapest.title || dbPage.baseVariantTitle,
+            baseProductPrice: String(cheapest.price),
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[from-price] Could not re-point page ${dbPage.id} after sync:`, e?.message ?? e);
+    }
 
     // Persist front+back retail on the product type for storefront “from $X” + ATC surcharge.
     // Expand printify: blank keys so embed lookups by Shopify variant id succeed.

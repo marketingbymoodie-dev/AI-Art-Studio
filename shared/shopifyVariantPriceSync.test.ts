@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPrintifyToShopifyVariantIdMap } from "./shopifyVariantPriceSync";
+import { buildPrintifyToShopifyVariantIdMap, pickLowestPricedShopifyVariant } from "./shopifyVariantPriceSync";
 
 describe("buildPrintifyToShopifyVariantIdMap", () => {
   it("maps printify ids via size:color name keys on shopifyVariantIds", () => {
@@ -70,5 +70,25 @@ describe("buildPrintifyToShopifyVariantIdMap", () => {
       ],
     });
     expect(map["77"]).toBe(7001);
+  });
+});
+
+describe("pickLowestPricedShopifyVariant", () => {
+  it("picks the cheapest size, not Shopify's first variant", () => {
+    const cheapest = pickLowestPricedShopifyVariant([
+      { id: 1, title: `104" x 88"`, price: "254.95" },
+      { id: 2, title: `88" x 88"`, price: "198.95" },
+      { id: 3, title: `68" x 88"`, price: "164.95" },
+    ]);
+    expect(cheapest?.id).toBe(3);
+    expect(cheapest?.price).toBe("164.95");
+  });
+
+  it("skips zero or invalid prices", () => {
+    const cheapest = pickLowestPricedShopifyVariant([
+      { id: 1, title: "Large", price: "0.00" },
+      { id: 2, title: "Small", price: "21.95" },
+    ]);
+    expect(cheapest?.id).toBe(2);
   });
 });
