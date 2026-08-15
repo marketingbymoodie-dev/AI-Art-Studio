@@ -119,6 +119,8 @@ export type FlatProductPlacerHandle = {
   hasPendingChanges: () => boolean;
   /** Live trim status for enabled faces (dashed-guide overflow). */
   getTrimStatus: () => FlatTrimStatus;
+  /** Live placer state for cart-line print snapshots. */
+  getState: () => FlatProductPlacerState | null;
 };
 
 export type FlatProductPlacerProps = {
@@ -413,6 +415,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   // ---------- Customer state ----------
   const [state, setState] = useState<FlatProductPlacerState | null>(null);
+  const stateRef = useRef<FlatProductPlacerState | null>(null);
+  stateRef.current = state;
   const lastAppliedSignatureRef = useRef<string | null>(null);
   const lastAppliedColorRef = useRef<string | null>(null);
   const prevGeometryKeyRef = useRef<string | null>(null);
@@ -751,7 +755,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   useImperativeHandle(
     ref,
-    () => ({ applyIfNeeded, hasPendingChanges, getTrimStatus: computeTrimStatus }),
+    () => ({
+      applyIfNeeded,
+      hasPendingChanges,
+      getTrimStatus: computeTrimStatus,
+      getState: () => stateRef.current,
+    }),
     [applyIfNeeded, hasPendingChanges, computeTrimStatus],
   );
 

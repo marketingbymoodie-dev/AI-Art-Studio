@@ -8,6 +8,12 @@ import {
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
 import { shadowDesignIdForCart } from "@shared/shadowDesignId";
+import {
+  LINE_FLAT_PLACEMENT_KEY,
+  LINE_TOTE_PLACEMENT_KEY,
+  encodeFlatLinePlacement,
+  encodeToteLinePlacement,
+} from "@shared/linePlacementSnapshot";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
@@ -6855,6 +6861,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (showFrameColorSelector && selectedFrameColor) {
       properties['_color'] = selectedFrameColor;
     }
+    const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
+    const flatSnap = encodeFlatLinePlacement(liveFlat);
+    if (flatSnap) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnap;
+    if (toteFoldedLayout) {
+      const toteSnap = encodeToteLinePlacement({
+        scale: transform.scale,
+        x: transform.x,
+        y: transform.y,
+      });
+      if (toteSnap) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnap;
+    }
 
     const flatPlacerOn = !!(
       usesFlatOnTheFlyPreview &&
@@ -6897,7 +6914,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -8621,6 +8638,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (selectedSize) properties['_size'] = selectedSize;
     if (showFrameColorSelector && selectedFrameColor) {
       properties['_color'] = selectedFrameColor;
+    }
+    const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
+    const flatSnapAtc = encodeFlatLinePlacement(liveFlatAtc);
+    if (flatSnapAtc) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnapAtc;
+    if (toteFoldedLayout) {
+      const toteSnapAtc = encodeToteLinePlacement({
+        scale: transform.scale,
+        x: transform.x,
+        y: transform.y,
+      });
+      if (toteSnapAtc) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnapAtc;
     }
 
     // Resolve the unique design variant before adding to cart.

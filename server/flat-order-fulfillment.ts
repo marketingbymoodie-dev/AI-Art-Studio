@@ -14,6 +14,7 @@
  *
  * DATA RESOLUTION PATH (verified against the codebase):
  *   line.properties `_appai_job_id`  → generation_jobs.id  (print source of truth)
+ *   line.properties `_flat_pl` / `_tote_pl` → placement at add-to-cart (wins over job)
  *   published_products.designId may be `jobId::mockupHash` (checkout image key only)
  *   designId (== generation_jobs.id)
  *     → generation_jobs: designState.flatPlacerState (normalized placement),
@@ -63,6 +64,12 @@ import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
 import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
 import type { ToteFoldedPlacement } from "@shared/toteFoldedLayout";
+import {
+  LINE_FLAT_PLACEMENT_KEY,
+  LINE_TOTE_PLACEMENT_KEY,
+  decodeFlatLinePlacement,
+  decodeToteLinePlacement,
+} from "@shared/linePlacementSnapshot";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -453,10 +460,11 @@ export async function resolveDesignForOrderLine(
       return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
     }
 
+    const lineTote = decodeToteLinePlacement(line.properties[LINE_TOTE_PLACEMENT_KEY]);
     const dsScale = Number(designState?.scale ?? 100);
     const dsX = Number(designState?.x ?? 50);
     const dsY = Number(designState?.y ?? 50);
-    const placement: ToteFoldedPlacement = {
+    const placement: ToteFoldedPlacement = lineTote ?? {
       scale: Math.max(0.05, Math.min(4, dsScale / 100)),
       offsetX: (dsX - 50) / 50,
       offsetY: (dsY - 50) / 50,
@@ -591,10 +599,12 @@ export async function resolveDesignForOrderLine(
   }
 
   // Placement + enabled flags (front defaults on, back defaults off — mirrors the placer).
+  // Cart-line snapshot wins so two ATCs from the same job keep independent placements.
+  const lineFlat = decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
   const placements: Partial<Record<ViewName, FlatPlacement>> = {};
   const enabled: Record<ViewName, boolean> = { front: true, back: false };
   for (const v of VIEWS) {
-    const p = flatPlacerState?.placements?.[v];
+    const p = lineFlat?.placements[v] ?? flatPlacerState?.placements?.[v];
     placements[v] = p && typeof p === "object"
       ? {
           scale: Number(p.scale ?? 1),
@@ -603,7 +613,9 @@ export async function resolveDesignForOrderLine(
           rotationDeg: Number((p as { rotationDeg?: number }).rotationDeg ?? 0) || 0,
         }
       : { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 };
-    if (flatPlacerState?.enabled && typeof flatPlacerState.enabled[v] === "boolean") {
+    if (lineFlat) {
+      enabled[v] = lineFlat.enabled[v];
+    } else if (flatPlacerState?.enabled && typeof flatPlacerState.enabled[v] === "boolean") {
       enabled[v] = flatPlacerState.enabled[v]!;
     }
   }
@@ -619,7 +631,7 @@ export async function resolveDesignForOrderLine(
     jobColor: job.frameColor,
   });
 
-  const rawBg = flatPlacerState?.backgroundColor;
+  const rawBg = lineFlat?.backgroundColor ?? flatPlacerState?.backgroundColor;
   const backgroundColor =
     typeof rawBg === "string" && /^#[0-9a-fA-F]{6}$/.test(rawBg.trim())
       ? rawBg.trim()
