@@ -3,11 +3,13 @@ import { Link, useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ExternalLink, Palette } from "lucide-react";
+import { ExternalLink, Palette, ShoppingCart } from "lucide-react";
 import {
   ensureCreatorAnalyticsSession,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
+import { clearCreatorCart, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
+import { API_BASE } from "@/lib/urlBase";
 import {
   CREATOR_HEADING_FONTS_STYLESHEET,
   creatorBrandingImageUrl,
@@ -163,6 +165,16 @@ function StoreShell({
               className="text-muted-foreground hover:text-foreground"
             >
               About
+            </Link>
+            <Link
+              href={`${basePath}/cart`}
+              className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+            >
+              <ShoppingCart className="h-4 w-4" />
+              Cart
+              {readCreatorCart(creator.username)?.itemCount
+                ? ` (${readCreatorCart(creator.username)?.itemCount})`
+                : ""}
             </Link>
           </nav>
         </div>
@@ -492,13 +504,115 @@ function PausedView({ creator }: { creator: CreatorBoot }) {
 function storefrontSection(
   location: string,
   basePath: string,
-): "products" | "about" | "customize" | "home" {
+): "products" | "about" | "customize" | "cart" | "home" {
   const rest = (basePath ? location.slice(basePath.length) : location) || "/";
   const path = rest.startsWith("/") ? rest : `/${rest}`;
   if (path === "/products" || path.startsWith("/products/")) return "products";
   if (path === "/about" || path.startsWith("/about/")) return "about";
+  if (path === "/cart" || path.startsWith("/cart/")) return "cart";
   if (path.startsWith("/customize/")) return "customize";
   return "home";
+}
+
+function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
+  const snap = readCreatorCart(creator.username);
+  const { data, isLoading, error } = useQuery<{
+    checkoutUrl: string;
+    itemCount: number;
+    lines: Array<{ id: string; quantity: number; title: string; imageUrl: string | null }>;
+  }>({
+    queryKey: ["/api/creators/cart", creator.username, snap?.cartId],
+    enabled: !!snap?.cartId,
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        creatorUsername: creator.username,
+        cartId: snap!.cartId,
+      });
+      const res = await fetch(`${API_BASE}/api/creators/cart?${params.toString()}`);
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        clearCreatorCart();
+        throw new Error("Cart expired");
+      }
+      if (!res.ok) throw new Error(json?.error || "Could not load cart");
+      writeCreatorCart({
+        cartId: String(json.cartId || snap!.cartId),
+        checkoutUrl: String(json.checkoutUrl || snap!.checkoutUrl || ""),
+        itemCount: Number(json.itemCount) || 0,
+        username: creator.username,
+      });
+      return json;
+    },
+  });
+
+  const lines = data?.lines || [];
+  const checkoutUrl = data?.checkoutUrl || snap?.checkoutUrl || "";
+  const itemCount = data?.itemCount ?? snap?.itemCount ?? 0;
+
+  return (
+    <div className="mx-auto max-w-xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">Your cart</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Add more products from the shop, then checkout when you’re ready.
+        </p>
+      </div>
+      {!snap?.cartId ? (
+        <p className="text-muted-foreground">Your cart is empty.</p>
+      ) : isLoading ? (
+        <div className="space-y-3">
+          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </div>
+      ) : error ? (
+        <p className="text-muted-foreground">Your cart is empty or expired.</p>
+      ) : lines.length === 0 ? (
+        <p className="text-muted-foreground">Your cart is empty.</p>
+      ) : (
+        <ul className="space-y-3">
+          {lines.map((line) => (
+            <li key={line.id} className="flex items-center gap-3 rounded-lg border p-3">
+              {line.imageUrl ? (
+                <img
+                  src={line.imageUrl}
+                  alt=""
+                  className="h-16 w-16 rounded-md object-cover bg-muted"
+                />
+              ) : (
+                <div className="h-16 w-16 rounded-md bg-muted" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">{line.title}</div>
+                <div className="text-sm text-muted-foreground">Qty {line.quantity}</div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Button asChild variant="outline" className="flex-1">
+          <Link href={`${basePath}/products`}>Continue shopping</Link>
+        </Button>
+        <Button
+          className="flex-1"
+          disabled={!checkoutUrl || itemCount < 1}
+          onClick={() => {
+            if (!checkoutUrl) return;
+            trackCreatorEvent({
+              creatorId: creator.id,
+              creatorUsername: creator.username,
+              eventType: "checkout_started",
+              path: `${basePath}/cart`,
+              metadata: { itemCount },
+            });
+            window.location.assign(checkoutUrl);
+          }}
+        >
+          Checkout{itemCount > 0 ? ` (${itemCount})` : ""}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function CustomizeRedirect({
@@ -584,6 +698,8 @@ function CreatorStoreRoutes({
         <ProductsView creator={creator} basePath={basePath} />
       ) : section === "about" ? (
         <AboutView creator={creator} />
+      ) : section === "cart" ? (
+        <CartView creator={creator} basePath={basePath} />
       ) : section === "customize" ? (
         <CustomizeRedirect creator={creator} handle={customizeHandle} />
       ) : (

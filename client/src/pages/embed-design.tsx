@@ -5,6 +5,7 @@ import {
   rememberCreatorLatestArtwork,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
+import { creatorCartPath, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
@@ -8440,6 +8441,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             "Could not prepare a custom checkout image for this design. Please try Add to cart again.",
           );
         }
+        const existingCart = readCreatorCart(creatorUsernameParam);
         const cartRes = await safeFetch(`${API_BASE}/api/creators/cart/checkout`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -8447,6 +8449,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             creatorUsername: creatorUsernameParam || undefined,
             creatorId: creatorIdParam || undefined,
             creatorSessionId: creatorSessionIdRef.current || undefined,
+            cartId: existingCart?.cartId || undefined,
             variantId: finalVariantId,
             quantity: 1,
             properties: {
@@ -8456,19 +8459,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }),
         });
         const cartData = await cartRes.json().catch(() => ({}));
-        if (!cartRes.ok || !cartData?.checkoutUrl) {
-          throw new Error(cartData?.error || cartData?.message || "Could not start checkout");
+        if (!cartRes.ok || !cartData?.cartId) {
+          throw new Error(cartData?.error || cartData?.message || "Could not add to cart");
         }
-        setAddedToCart(true);
-        toast({
-          title: "Checkout ready",
-          description: "Redirecting to secure Shopify checkout…",
+        writeCreatorCart({
+          cartId: String(cartData.cartId),
+          checkoutUrl: String(cartData.checkoutUrl || existingCart?.checkoutUrl || ""),
+          itemCount: Number(cartData.itemCount) || (existingCart?.itemCount || 0) + 1,
+          username: creatorUsernameParam,
         });
-        window.location.assign(String(cartData.checkoutUrl));
+        setAddedToCart(true);
+        const itemCount = Number(cartData.itemCount) || 1;
+        toast({
+          title: itemCount > 1 ? `Added to cart (${itemCount} items)` : "Added to cart",
+          description: "Keep designing another product, or open the cart when you’re ready to checkout.",
+        });
+        setIsAddingToCart(false);
+        setTimeout(() => {
+          setAddedToCart(false);
+          setGeneratedDesign(null);
+          setDesignSource(null);
+          loadDesignAppliedRef.current = false;
+          setBridgeLoadDesignId("");
+          setReferenceImages([]);
+          setReferencePreviews([]);
+          setReuseRegenerateBasePrompt(null);
+          if (fileInputRef.current) fileInputRef.current.value = "";
+          setSelectedPreset("");
+          setSelectedStyleOption("");
+          setSelectedSize("");
+          setSelectedFrameColor("");
+        }, 2500);
         return;
       } catch (e: any) {
         console.error("[Design Studio] Creator Storefront cart failed:", e);
-        setVariantError(e?.message || "Could not start checkout. Please try again.");
+        setVariantError(e?.message || "Could not add to cart. Please try again.");
         setIsAddingToCart(false);
         return;
       }
@@ -11603,7 +11628,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           addedToCart ? (
             <Button
               className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-              onClick={() => { window.parent.location.href = '/cart'; }}
+              onClick={() => {
+                if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
+                  window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
+                  return;
+                }
+                window.parent.location.href = "/cart";
+              }}
               data-testid={withSuffix("button-view-cart")}
             >
               <CheckCircle className="w-5 h-5 mr-2" />
@@ -12437,13 +12468,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
                 {isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam) ? (
-                  <a
-                    href={`/c/${encodeURIComponent(creatorUsernameRaw || creatorUsernameParam)}/products`}
-                    className="mb-2 inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    Back to shop
-                  </a>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <a
+                      href={`/c/${encodeURIComponent(creatorUsernameRaw || creatorUsernameParam)}/products`}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      Back to shop
+                    </a>
+                    <a
+                      href={creatorCartPath(creatorUsernameRaw || creatorUsernameParam)}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      <ShoppingCart className="w-4 h-4" />
+                      Cart
+                      {readCreatorCart(creatorUsernameParam)?.itemCount
+                        ? ` (${readCreatorCart(creatorUsernameParam)?.itemCount})`
+                        : ""}
+                    </a>
+                  </div>
                 ) : null}
                 {isLoggedIn ? (
                   <div className="flex flex-wrap gap-2" data-testid="user-actions">
@@ -13008,7 +13051,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     addedToCart ? (
                       <Button
                         className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-                        onClick={() => { window.parent.location.href = '/cart'; }}
+                        onClick={() => {
+                          if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
+                            window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
+                            return;
+                          }
+                          window.parent.location.href = "/cart";
+                        }}
                         data-testid="button-view-cart"
                       >
                         <CheckCircle className="w-5 h-5 mr-2" />

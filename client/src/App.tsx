@@ -59,6 +59,7 @@ function AppRouter() {
       <Switch>
         <Route path="/products" component={CreatorBootStorefrontPage} />
         <Route path="/about" component={CreatorBootStorefrontPage} />
+        <Route path="/cart" component={CreatorBootStorefrontPage} />
         <Route path="/customize/:handle" component={CreatorBootStorefrontPage} />
         <Route path="/" component={CreatorBootStorefrontPage} />
         <Route component={CreatorBootStorefrontPage} />
@@ -97,6 +98,7 @@ function AppRouter() {
       <Route path="/shopify-beta" component={LuxeLandingPage} />
       <Route path="/c/:username/products" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username/about" component={CreatorPathStorefrontPage} />
+      <Route path="/c/:username/cart" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username/customize/:handle" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username" component={CreatorPathStorefrontPage} />
 

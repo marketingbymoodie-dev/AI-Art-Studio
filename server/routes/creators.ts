@@ -62,7 +62,12 @@ import {
   sanitizeCreatorForAdmin,
   syncLinkedApplicationFromCreator,
 } from "../creator-host";
-import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "../shopify-storefront";
+import {
+  addLinesToCreatorCart,
+  createCreatorCheckoutCart,
+  getCreatorCart,
+  isCreatorStorefrontConfigured,
+} from "../shopify-storefront";
 import {
   creatorMerchandiseMissingMessage,
   ensureVariantPublishedForStorefrontApi,
@@ -1114,8 +1119,9 @@ export function registerCreatorMarketplaceRoutes(
   });
 
   /**
-   * Create a Storefront API cart on the platform shop and return checkoutUrl.
-   * Client resolves shadow variant first, then posts here (creator host adapter).
+   * Add a line to the creator's Storefront API cart (or create one).
+   * Returns checkoutUrl but does not require the client to redirect — shoppers
+   * can keep designing and add more products first.
    */
   app.post("/api/creators/cart/checkout", async (req, res) => {
     if (!marketplaceGate(res)) return;
@@ -1191,13 +1197,33 @@ export function registerCreatorMarketplaceRoutes(
         }
       }
 
-      let cart: Awaited<ReturnType<typeof createCreatorCheckoutCart>>;
-      try {
-        cart = await createCreatorCheckoutCart({
+      const existingCartId = String(body.cartId || "").trim();
+      const addOrCreate = async () => {
+        if (existingCartId) {
+          try {
+            return await addLinesToCreatorCart({
+              cartId: existingCartId,
+              variantId,
+              quantity: Number(body.quantity) || 1,
+              attributes,
+            });
+          } catch (addErr: any) {
+            console.warn(
+              "[creators] cartLinesAdd failed, creating a new cart:",
+              addErr?.message || addErr,
+            );
+          }
+        }
+        return createCreatorCheckoutCart({
           variantId,
           quantity: Number(body.quantity) || 1,
           attributes,
         });
+      };
+
+      let cart: Awaited<ReturnType<typeof createCreatorCheckoutCart>>;
+      try {
+        cart = await addOrCreate();
       } catch (cartErr: any) {
         const msg = String(cartErr?.message || "");
         if (installation?.accessToken && platformShop && isMerchandiseMissingError(msg)) {
@@ -1207,11 +1233,7 @@ export function registerCreatorMarketplaceRoutes(
               installation.accessToken,
               variantId,
             );
-            cart = await createCreatorCheckoutCart({
-              variantId,
-              quantity: Number(body.quantity) || 1,
-              attributes,
-            });
+            cart = await addOrCreate();
           } catch (retryErr: any) {
             const retryMsg = String(retryErr?.message || "");
             throw new Error(
@@ -1231,20 +1253,15 @@ export function registerCreatorMarketplaceRoutes(
         sessionId,
         eventType: "atc",
         generationJobId: props._appai_job_id || null,
-        metadata: { variantId, cartId: cart.cartId },
-      }).catch(() => {});
-      void recordCreatorEvent({
-        creatorId: creator.id,
-        sessionId,
-        eventType: "checkout_started",
-        generationJobId: props._appai_job_id || null,
-        metadata: { cartId: cart.cartId },
+        metadata: { variantId, cartId: cart.cartId, itemCount: cart.itemCount },
       }).catch(() => {});
 
       res.json({
         success: true,
         cartId: cart.cartId,
         checkoutUrl: cart.checkoutUrl,
+        itemCount: cart.itemCount,
+        lines: cart.lines,
         platformShopDomain: getCreatorPlatformShopDomain(),
       });
     } catch (e: any) {
@@ -1253,6 +1270,47 @@ export function registerCreatorMarketplaceRoutes(
       res.status(500).json({
         error: isMerchandiseMissingError(raw) ? creatorMerchandiseMissingMessage() : raw,
       });
+    }
+  });
+
+  app.get("/api/creators/cart", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      if (!isCreatorStorefrontConfigured()) {
+        return res.status(503).json({
+          error: "CREATOR_STOREFRONT_NOT_CONFIGURED",
+          message:
+            "Set CREATOR_PLATFORM_SHOP_DOMAIN and CREATOR_STOREFRONT_API_TOKEN on Railway staging.",
+        });
+      }
+      const username = normalizeCreatorUsername(String(req.query.creatorUsername || ""));
+      const cartId = String(req.query.cartId || "").trim();
+      if (!username || !cartId) {
+        return res.status(400).json({ error: "creatorUsername and cartId are required." });
+      }
+      const { assertPublicCreatorApiContext } = await import("../creator-host");
+      const asserted = await assertPublicCreatorApiContext({
+        shop: getCreatorPlatformShopDomain(),
+        creatorUsername: username,
+        requirePlatformShop: true,
+      });
+      if (!asserted.ok) {
+        return res.status(asserted.status).json({ error: asserted.error });
+      }
+      const cart = await getCreatorCart(cartId);
+      if (!cart) {
+        return res.status(404).json({ error: "Cart not found" });
+      }
+      res.json({
+        success: true,
+        cartId: cart.cartId,
+        checkoutUrl: cart.checkoutUrl,
+        itemCount: cart.itemCount,
+        lines: cart.lines,
+      });
+    } catch (e: any) {
+      console.error("[creators] cart fetch failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load cart" });
     }
   });
 

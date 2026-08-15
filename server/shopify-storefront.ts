@@ -66,10 +66,108 @@ function toVariantGid(variantId: string): string {
 
 export type CartLineAttribute = { key: string; value: string };
 
+export type CreatorCartLine = {
+  id: string;
+  quantity: number;
+  title: string;
+  imageUrl: string | null;
+};
+
 export type CreatorCartResult = {
   cartId: string;
   checkoutUrl: string;
+  itemCount: number;
+  lines: CreatorCartLine[];
 };
+
+type StorefrontCartNode = {
+  id: string;
+  checkoutUrl: string;
+  totalQuantity?: number | null;
+  lines?: {
+    nodes?: Array<{
+      id: string;
+      quantity: number;
+      attributes?: Array<{ key: string; value: string }>;
+      merchandise?: {
+        id?: string;
+        title?: string;
+        image?: { url?: string } | null;
+        product?: { title?: string; featuredImage?: { url?: string } | null };
+      } | null;
+    }>;
+  } | null;
+};
+
+const CART_FIELDS = `
+  id
+  checkoutUrl
+  totalQuantity
+  lines(first: 50) {
+    nodes {
+      id
+      quantity
+      attributes { key value }
+      merchandise {
+        ... on ProductVariant {
+          id
+          title
+          image { url }
+          product { title featuredImage { url } }
+        }
+      }
+    }
+  }
+`;
+
+function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCartResult | null {
+  if (!cart?.id || !cart.checkoutUrl) return null;
+  const nodes = cart.lines?.nodes || [];
+  const lines: CreatorCartLine[] = nodes.map((node) => {
+    const attrs = node.attributes || [];
+    const mockup = attrs.find((a) => a.key === "_mockup_url")?.value || null;
+    const merch = node.merchandise;
+    const title =
+      merch?.product?.title ||
+      merch?.title ||
+      attrs.find((a) => a.key === "Artwork")?.value ||
+      "Custom design";
+    const imageUrl =
+      mockup ||
+      merch?.image?.url ||
+      merch?.product?.featuredImage?.url ||
+      null;
+    return {
+      id: node.id,
+      quantity: node.quantity,
+      title,
+      imageUrl,
+    };
+  });
+  const itemCount =
+    typeof cart.totalQuantity === "number"
+      ? cart.totalQuantity
+      : lines.reduce((sum, line) => sum + (line.quantity || 0), 0);
+  return {
+    cartId: cart.id,
+    checkoutUrl: cart.checkoutUrl,
+    itemCount,
+    lines,
+  };
+}
+
+function lineInput(params: {
+  variantId: string;
+  quantity?: number;
+  attributes?: CartLineAttribute[];
+}) {
+  const merchandiseId = toVariantGid(params.variantId);
+  const quantity = Math.max(1, Math.min(99, params.quantity ?? 1));
+  const attributes = (params.attributes || [])
+    .filter((a) => a.key && a.value != null)
+    .map((a) => ({ key: String(a.key).slice(0, 100), value: String(a.value).slice(0, 255) }));
+  return { merchandiseId, quantity, attributes };
+}
 
 /**
  * Create a cart with one line (shadow or base variant) and return checkout URL.
@@ -79,33 +177,21 @@ export async function createCreatorCheckoutCart(params: {
   quantity?: number;
   attributes?: CartLineAttribute[];
 }): Promise<CreatorCartResult> {
-  const merchandiseId = toVariantGid(params.variantId);
-  const quantity = Math.max(1, Math.min(99, params.quantity ?? 1));
-  const attributes = (params.attributes || [])
-    .filter((a) => a.key && a.value != null)
-    .map((a) => ({ key: String(a.key).slice(0, 100), value: String(a.value).slice(0, 255) }));
-
   const data = await storefrontGraphql<{
     cartCreate: {
-      cart: { id: string; checkoutUrl: string } | null;
+      cart: StorefrontCartNode | null;
       userErrors: Array<{ field?: string[]; message: string }>;
     };
   }>(
     `mutation CreatorCartCreate($input: CartInput!) {
       cartCreate(input: $input) {
-        cart { id checkoutUrl }
+        cart { ${CART_FIELDS} }
         userErrors { field message }
       }
     }`,
     {
       input: {
-        lines: [
-          {
-            merchandiseId,
-            quantity,
-            attributes,
-          },
-        ],
+        lines: [lineInput(params)],
       },
     },
   );
@@ -114,9 +200,56 @@ export async function createCreatorCheckoutCart(params: {
   if (errs.length) {
     throw new Error(errs.map((e) => e.message).join("; "));
   }
-  const cart = data.cartCreate?.cart;
-  if (!cart?.id || !cart.checkoutUrl) {
+  const mapped = mapCreatorCart(data.cartCreate?.cart);
+  if (!mapped) {
     throw new Error("Storefront cartCreate did not return a checkout URL");
   }
-  return { cartId: cart.id, checkoutUrl: cart.checkoutUrl };
+  return mapped;
+}
+
+export async function getCreatorCart(cartId: string): Promise<CreatorCartResult | null> {
+  const id = String(cartId || "").trim();
+  if (!id) return null;
+  const data = await storefrontGraphql<{ cart: StorefrontCartNode | null }>(
+    `query CreatorCart($id: ID!) {
+      cart(id: $id) { ${CART_FIELDS} }
+    }`,
+    { id },
+  );
+  return mapCreatorCart(data.cart);
+}
+
+export async function addLinesToCreatorCart(params: {
+  cartId: string;
+  variantId: string;
+  quantity?: number;
+  attributes?: CartLineAttribute[];
+}): Promise<CreatorCartResult> {
+  const data = await storefrontGraphql<{
+    cartLinesAdd: {
+      cart: StorefrontCartNode | null;
+      userErrors: Array<{ field?: string[]; message: string }>;
+    };
+  }>(
+    `mutation CreatorCartLinesAdd($cartId: ID!, $lines: [CartLineInput!]!) {
+      cartLinesAdd(cartId: $cartId, lines: $lines) {
+        cart { ${CART_FIELDS} }
+        userErrors { field message }
+      }
+    }`,
+    {
+      cartId: params.cartId,
+      lines: [lineInput(params)],
+    },
+  );
+
+  const errs = data.cartLinesAdd?.userErrors || [];
+  if (errs.length) {
+    throw new Error(errs.map((e) => e.message).join("; "));
+  }
+  const mapped = mapCreatorCart(data.cartLinesAdd?.cart);
+  if (!mapped) {
+    throw new Error("Storefront cartLinesAdd did not return a cart");
+  }
+  return mapped;
 }
