@@ -1595,6 +1595,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Ref for the pre-shadow product poll timer — declared early so the mount cleanup can reference it.
   const preShadowPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preShadowJobIdRef = useRef<string | null>(null);
 
   // Merge anonymous session into customer account when customer is logged in.
   // Fire once on mount; backend is idempotent so re-merging is safe.
@@ -4591,6 +4592,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setMockupLoading(false);
     setMockupFailed(false);
     setVariantError(null);
+    preShadowJobIdRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
@@ -4760,6 +4762,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setMockupLoading(false);
     setMockupFailed(false);
     setVariantError(null);
+    preShadowJobIdRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
@@ -5188,6 +5191,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // initialDelay: ms before first poll (5000 for new designs, 0 for loaded saved designs)
   const startShadowVariantPoll = useCallback((jobId: string | null, shop: string, initialDelay = 0) => {
     if (!jobId || !shop) return;
+    preShadowJobIdRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
@@ -5204,6 +5208,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const data = await r.json();
           if (data.ready && data.shadowVariantId) {
             console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId, 'product:', data.shadowProductId);
+            preShadowJobIdRef.current = jobId;
             setPreShadowVariantId(data.shadowVariantId);
             setPreShadowProductId(data.shadowProductId || null);
             return;
@@ -7100,6 +7105,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
+      preShadowJobIdRef.current = null;
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
 
@@ -8517,8 +8523,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
 
+    const shadowDesignId = String(savedJobIdRef.current || generatedDesign.id || "").trim();
+    const preShadowMatchesJob =
+      !!preShadowVariantId &&
+      !!shadowDesignId &&
+      preShadowJobIdRef.current === shadowDesignId &&
+      !bothPriceOverride;
+
     let finalVariantId = normalizedVariant;
-    if (preShadowVariantId && !bothPriceOverride) {
+    // Creator checkout thumbnails come from the shadow product image, not
+    // `_mockup_url`. Always re-resolve so a second design cannot reuse the
+    // previous job's variant (cart page would look right, checkout would not).
+    if (preShadowMatchesJob && !isCreatorStorefront) {
       // Instant — shadow product was pre-created in the background
       finalVariantId = preShadowVariantId;
       console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
@@ -8542,7 +8558,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             shop: shopDomain,
             ...(productId ? { productId } : {}), // server will look it up from variantId if missing
             variantId: normalizedVariant,
-            designId: properties['_design_id'],
+            designId: shadowDesignId || properties['_design_id'],
             mockupUrl: mockupFullUrl,
             productTypeId: productTypeConfig?.id ?? productTypeId,
             sizeId: selectedSize,
@@ -14300,6 +14316,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   setMockupError(null);
                   setMockupFailed(false);
                   setMockupsStale(false);
+                  preShadowJobIdRef.current = null;
                   setPreShadowVariantId(null);
                   setPreShadowProductId(null);
                   if (preShadowPollRef.current) {

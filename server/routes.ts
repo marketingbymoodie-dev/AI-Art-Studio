@@ -9065,10 +9065,36 @@ ${orientationExtra}
         // Fire-and-forget: don't await, respond to client immediately
         (async () => {
           try {
+            const refreshShadowImage = async (productId: string, variantId: string) => {
+              try {
+                const imgRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    image: {
+                      src: primaryMockupUrl,
+                      variant_ids: [Number(variantId)],
+                    },
+                  }),
+                });
+                if (!imgRes.ok) {
+                  const t = await imgRes.text();
+                  console.warn(
+                    `[PreShadow] Failed to refresh shadow image:`,
+                    imgRes.status,
+                    t.substring(0, 200),
+                  );
+                }
+              } catch (imgErr: any) {
+                console.warn(`[PreShadow] Failed to refresh shadow image:`, imgErr?.message || imgErr);
+              }
+            };
+
             // Check if shadow product already exists for this job
             const freshJob = await storage.getGenerationJob(jobId);
             if (freshJob?.shadowVariantId && freshJob?.shadowProductId) {
               console.log(`[PreShadow] jobId=${jobId} already has shadow product ${freshJob.shadowProductId}`);
+              await refreshShadowImage(freshJob.shadowProductId, freshJob.shadowVariantId);
               return;
             }
 
@@ -9083,6 +9109,9 @@ ${orientationExtra}
                 shadowVariantId: existing.shopifyVariantId,
                 shadowExpiresAt: existing.expiresAt,
               } as any);
+              if (existing.shopifyProductId && existing.shopifyVariantId) {
+                await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
+              }
               return;
             }
 
