@@ -97,7 +97,7 @@ function trimSelectionToShopifyMax(
   }
   return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: true };
 }
-import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
+import { resolveVariantCostCents } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -1056,38 +1056,41 @@ export default function AdminCustomizerPages() {
     return Math.ceil(num) - 0.05;
   }
 
-  /** Blank variant ids from /api/appai/blanks use `printify:{id}`; costs keys are raw Printify ids. */
-  function resolveBlankVariantCostCents(
-    v: BlankVariant,
-    costs: {
-      costs?: Record<string, number>;
-      shopifyVariantCosts?: Record<string, number>;
-      printifyVariantLabels?: Record<string, string>;
-      costsByNormalizedLabel?: Record<string, number>;
-    },
-    labelToCost: Record<string, number>,
+  /** Front-only COGS. Wizard rows are `size:…` ids — match by title, never reuse front+back maps. */
+  function resolveFrontCostCents(v: BlankVariant): number | undefined {
+    if (!costsData) return undefined;
+    return resolveVariantCostCents(v, {
+      costs: costsData.costs,
+      shopifyVariantCosts: costsData.shopifyVariantCosts,
+      costsByNormalizedLabel: costsData.costsByNormalizedLabel,
+      printifyVariantLabels: costsData.printifyVariantLabels,
+    });
+  }
+
+  /** Front+back COGS. Must use the both-tier maps only — do not fall back to front. */
+  function resolveBothCostCents(v: BlankVariant): number | undefined {
+    if (!costsData) return undefined;
+    return resolveVariantCostCents(v, {
+      costs: costsData.costsBoth,
+      shopifyVariantCosts: costsData.shopifyVariantCostsBoth,
+      costsByNormalizedLabel: costsData.costsBothByNormalizedLabel,
+      printifyVariantLabels: costsData.printifyVariantLabels,
+    });
+  }
+
+  function groupCostCents(
+    variantIds: string[],
+    resolve: (v: BlankVariant) => number | undefined,
   ): number | undefined {
-    let costCents: number | undefined = costs.shopifyVariantCosts?.[v.id];
-    if (costCents == null && v.id.startsWith("printify:")) {
-      costCents = costs.costs?.[v.id.slice("printify:".length)];
+    let max: number | undefined;
+    for (const id of variantIds) {
+      const row = selectedVariants.find((x) => x.id === id);
+      if (!row) continue;
+      const cents = resolve(row);
+      if (cents == null) continue;
+      max = max == null ? cents : Math.max(max, cents);
     }
-    if (costCents == null) costCents = costs.costs?.[v.id];
-    if (costCents == null && v.title && costs.costsByNormalizedLabel) {
-      costCents = costs.costsByNormalizedLabel[normalizeVariantLabelForCostMatch(v.title)];
-    }
-    if (costCents == null && v.title) {
-      const normTitle = normalizeVariantLabelForCostMatch(v.title);
-      costCents = labelToCost[normTitle];
-      if (costCents == null) {
-        for (const [label, cost] of Object.entries(labelToCost)) {
-          if (normTitle.includes(label) || label.includes(normTitle)) {
-            costCents = cost;
-            break;
-          }
-        }
-      }
-    }
-    return costCents;
+    return max;
   }
 
   const costsAvailable =
@@ -1103,19 +1106,8 @@ export default function AdminCustomizerPages() {
   const recommendedPrices = useMemo(() => {
     if (!costsAvailable || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
-    // Build a normalised-label → cost-in-cents lookup from Printify variant labels
-    // e.g. { "14x14" → 850, "18x18" → 950, ... }
-    const labelToCost: Record<string, number> = {};
-    if (costsData.printifyVariantLabels && costsData.costs) {
-      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-        const costCents = costsData.costs[printifyVid];
-        if (costCents != null) {
-          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
-        }
-      }
-    }
     for (const v of selectedVariants) {
-      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
+      const costCents = resolveFrontCostCents(v);
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
@@ -1126,18 +1118,8 @@ export default function AdminCustomizerPages() {
   const recommendedPricesBoth = useMemo(() => {
     if (!supportsBothSidePricing || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
-    const labelToCost: Record<string, number> = {};
-    if (costsData.printifyVariantLabels && costsData.costsBoth) {
-      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-        const costCents = costsData.costsBoth[printifyVid];
-        if (costCents != null) {
-          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
-        }
-      }
-    }
-    const bothCostsData = { ...costsData, costs: costsData.costsBoth || {} };
     for (const v of selectedVariants) {
-      const costCents = resolveBlankVariantCostCents(v, bothCostsData, labelToCost);
+      const costCents = resolveBothCostCents(v);
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
@@ -2815,23 +2797,9 @@ export default function AdminCustomizerPages() {
                                       {supportsBothSidePricing && <span className="text-right text-emerald-700">Prem. both</span>}
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                      const labelToCost: Record<string, number> = {};
-                                      if (costsData.printifyVariantLabels && costsData.costs) {
-                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                                          const c = costsData.costs[printifyVid];
-                                          if (c != null) labelToCost[label.toLowerCase().trim()] = c;
-                                        }
-                                      }
-                                      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
-                                      const labelToBoth: Record<string, number> = {};
-                                      if (costsData.printifyVariantLabels && costsData.costsBoth) {
-                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                                          const c = costsData.costsBoth[printifyVid];
-                                          if (c != null) labelToBoth[label.toLowerCase().trim()] = c;
-                                        }
-                                      }
+                                      const costCents = resolveFrontCostCents(v);
                                       const bothCents = supportsBothSidePricing
-                                        ? resolveBlankVariantCostCents(v, { ...costsData, costs: costsData.costsBoth || {} }, labelToBoth)
+                                        ? resolveBothCostCents(v)
                                         : null;
                                       return (
                                         <div key={v.id} className={`grid gap-2 px-3 py-2 border-t ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
@@ -3176,31 +3144,10 @@ export default function AdminCustomizerPages() {
                       {condensedPriceRows.map((row) => {
                         const v = selectedVariants.find((x) => x.id === row.variantIds[0]);
                         if (!v) return null;
-                        const frontLabelToCost: Record<string, number> = {};
-                        if (costsData?.printifyVariantLabels && costsData.costs) {
-                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                            const c = costsData.costs[printifyVid];
-                            if (c != null) frontLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
-                          }
-                        }
-                        const bothLabelToCost: Record<string, number> = {};
-                        if (supportsBothSidePricing && costsData?.printifyVariantLabels && costsData.costsBoth) {
-                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                            const c = costsData.costsBoth[printifyVid];
-                            if (c != null) bothLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
-                          }
-                        }
-                        const frontCogs = costsData
-                          ? resolveBlankVariantCostCents(v, costsData, frontLabelToCost)
+                        const frontCogs = groupCostCents(row.variantIds, resolveFrontCostCents);
+                        const bothCogs = supportsBothSidePricing
+                          ? groupCostCents(row.variantIds, resolveBothCostCents)
                           : undefined;
-                        const bothCogs =
-                          supportsBothSidePricing && costsData
-                            ? resolveBlankVariantCostCents(
-                                v,
-                                { ...costsData, costs: costsData.costsBoth || {} },
-                                bothLabelToCost,
-                              )
-                            : undefined;
                         const retailN = parseFloat(row.price || "");
                         const frontProfit =
                           Number.isFinite(retailN) && frontCogs != null

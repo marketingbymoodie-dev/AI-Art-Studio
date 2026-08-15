@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DollarSign, Loader2, RefreshCw } from "lucide-react";
-import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
+import { resolveVariantCostCents } from "@shared/printifyCostLabels";
 import {
   DEFAULT_MARKUP_PERCENT,
   isNonPositiveRetailPrice,
@@ -47,56 +47,19 @@ function isZeroOrEmptyPrice(value: string | undefined | null): boolean {
   return isNonPositiveRetailPrice(value);
 }
 
-function resolveVariantCostCents(
+function lookupVariantCostCents(
   v: BlankVariant,
   costs: Record<string, number> | undefined,
   shopifyCosts: Record<string, number> | undefined,
   byLabel: Record<string, number> | undefined,
   printifyVariantLabels: Record<string, string> | undefined,
 ): number | undefined {
-  let costCents: number | undefined = shopifyCosts?.[v.id];
-  if (costCents == null && v.id.startsWith("printify:")) {
-    const pid = v.id.slice("printify:".length);
-    costCents = costs?.[pid] ?? costs?.[String(Number(pid))];
-  }
-  if (costCents == null) costCents = costs?.[v.id];
-  if (costCents == null && v.title && byLabel) {
-    const normTitle = normalizeVariantLabelForCostMatch(v.title);
-    costCents = byLabel[normTitle];
-    // Slash colorways (baseball tees): try without spaces around "/"
-    if (costCents == null) {
-      const compact = normTitle.replace(/\s*\/\s*/g, "/");
-      for (const [label, cost] of Object.entries(byLabel)) {
-        if (label.replace(/\s*\/\s*/g, "/") === compact) {
-          costCents = cost;
-          break;
-        }
-      }
-    }
-  }
-  if (costCents == null && v.title && printifyVariantLabels && costs) {
-    const labelToCost: Record<string, number> = {};
-    for (const [printifyVid, label] of Object.entries(printifyVariantLabels)) {
-      const c = costs[printifyVid] ?? costs[String(Number(printifyVid))];
-      if (c != null) labelToCost[normalizeVariantLabelForCostMatch(label)] = c;
-    }
-    const normTitle = normalizeVariantLabelForCostMatch(v.title);
-    costCents = labelToCost[normTitle];
-    if (costCents == null) {
-      const compactTitle = normTitle.replace(/\s*\/\s*/g, "/");
-      for (const [label, cost] of Object.entries(labelToCost)) {
-        if (
-          normTitle.includes(label) ||
-          label.includes(normTitle) ||
-          label.replace(/\s*\/\s*/g, "/") === compactTitle
-        ) {
-          costCents = cost;
-          break;
-        }
-      }
-    }
-  }
-  return costCents;
+  return resolveVariantCostCents(v, {
+    costs,
+    shopifyVariantCosts: shopifyCosts,
+    costsByNormalizedLabel: byLabel,
+    printifyVariantLabels,
+  });
 }
 
 export type ResyncPricesDialogProps = {
@@ -202,7 +165,7 @@ export default function ResyncPricesDialog({
     if (!costsAvailable || variants.length === 0 || !costsData) return {};
     const result: Record<string, string> = {};
     for (const v of variants) {
-      const costCents = resolveVariantCostCents(
+      const costCents = lookupVariantCostCents(
         v,
         costsData.costs,
         costsData.shopifyVariantCosts,
@@ -220,7 +183,7 @@ export default function ResyncPricesDialog({
     if (!supportsBothSidePricing || variants.length === 0 || !costsData) return {};
     const result: Record<string, string> = {};
     for (const v of variants) {
-      const costCents = resolveVariantCostCents(
+      const costCents = lookupVariantCostCents(
         v,
         costsData.costsBoth,
         costsData.shopifyVariantCostsBoth,
