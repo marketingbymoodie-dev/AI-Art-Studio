@@ -93,6 +93,10 @@ import {
   resolveSuggestedStylePresets,
 } from "@shared/stylePromptCompatibility";
 import {
+  buildReuseRegeneratePrompt,
+  composeReuseRegenerateUserPrompt,
+} from "@shared/reuseArtworkPrompt";
+import {
   coerceVariantPricesBothMap,
   minBothRetailDollarsFromMap,
   resolveBothRetailDollarsFromMap,
@@ -739,13 +743,6 @@ function designSessionStorageKey(
       ? String(productTypeId)
       : "unknown";
   return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
-}
-
-function buildReuseRegeneratePrompt(originalPrompt?: string): string {
-  const idea = (originalPrompt || "").trim();
-  const base =
-    "Recreate this artwork as a SINGLE centered motif. Keep one subject only — do not repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the new aspect ratio; leave empty space instead.";
-  return idea ? `${base} Original idea: ${idea}` : base;
 }
 
 /** Cross-product Reuse Artwork handoff (survives full page nav as fallback). */
@@ -1800,6 +1797,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   } | null>(null);
   /** Reuse/ref is staged — show Generate instead of auto-spending a credit. */
   const [reuseAwaitingGenerate, setReuseAwaitingGenerate] = useState(false);
+  const [reuseRegenerateBasePrompt, setReuseRegenerateBasePrompt] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -4613,6 +4611,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setProductTypeError(null);
     setGeneratedDesign(null);
     setReuseAwaitingGenerate(false);
+    setReuseRegenerateBasePrompt(null);
     setDesignSource(null);
     setShowPatternStep(false);
     setAopPendingMotifUrl(null);
@@ -6782,11 +6781,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
       const designId = data.designId || data.design?.id || crypto.randomUUID();
       setAddedToCart(false);
+      const composedPrompt = composeReuseRegenerateUserPrompt(reuseRegenerateBasePrompt, prompt);
       setGeneratedDesign({
         id: designId,
         imageUrl: imageUrl,
-        prompt: prompt,
+        prompt: composedPrompt || prompt,
       });
+      if (reuseRegenerateBasePrompt) {
+        setPrompt(composedPrompt);
+        setReuseRegenerateBasePrompt(null);
+      }
       setReuseAwaitingGenerate(false);
       if (isCreatorStorefront && imageUrl) {
         rememberCreatorLatestArtwork(imageUrl);
@@ -7147,10 +7151,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (options?.overridePresetId) {
       setSelectedPreset(options.overridePresetId);
     }
-    const effectivePrompt = options?.overridePrompt ?? prompt;
+    const typedPrompt = options?.overridePrompt ?? prompt;
     if (options?.overridePrompt != null) {
       setPrompt(options.overridePrompt);
     }
+    const effectivePrompt = composeReuseRegenerateUserPrompt(
+      reuseRegenerateBasePrompt,
+      typedPrompt,
+    );
 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (!effectivePrompt.trim() && !activePresetForCheck?.descriptionOptional) return;
@@ -7196,9 +7204,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
     }
 
-    if (!options?.skipStyleMismatchCheck && activePreset && effectivePrompt.trim()) {
+    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim()) {
       const mismatch = detectStylePromptMismatch(
-        effectivePrompt,
+        typedPrompt,
         activePreset.promptSuffix,
         activePreset.name,
       );
@@ -7240,8 +7248,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
     }
 
-    fullPrompt +=
-      ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+    if (!reuseRegenerateBasePrompt) {
+      fullPrompt +=
+        ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+    }
 
     // Convert all reference images to base64
     const referenceImagesBase64: string[] = [];
@@ -9338,7 +9348,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
           setReferenceImages([file]);
           setReferencePreviews([preview]);
-          setPrompt(reusePromptText);
+          setReuseRegenerateBasePrompt(reusePromptText);
+          setPrompt("");
           pendingReuseGenerateRef.current = null;
           autoReuseHydratedRef.current = true;
           autoReuseSeedingRef.current = true;
@@ -9429,6 +9440,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             imageUrl: abs,
             prompt: opts.prompt || "",
           });
+          setReuseRegenerateBasePrompt(null);
           if (opts.prompt) setPrompt(opts.prompt);
           clearReuseHandoff();
           setReuseBusy(false);
@@ -9582,7 +9594,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           const preview = URL.createObjectURL(blob);
           setReferenceImages([file]);
           setReferencePreviews([preview]);
-          setPrompt(reusePromptText);
+          setReuseRegenerateBasePrompt(reusePromptText);
+          setPrompt("");
           pendingReuseGenerateRef.current = null;
           autoReuseHydratedRef.current = true;
           autoReuseSeedingRef.current = true;
@@ -9647,6 +9660,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: abs,
         prompt: originalPrompt,
       });
+      setReuseRegenerateBasePrompt(null);
       if (originalPrompt) setPrompt(originalPrompt);
       if (useAopCustomizer) {
         setAopPendingMotifUrl(abs);
@@ -9865,7 +9879,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
         setReferenceImages([file]);
         setReferencePreviews([preview]);
-        setPrompt(reusePromptText);
+        setReuseRegenerateBasePrompt(reusePromptText);
+        setPrompt("");
         pendingReuseGenerateRef.current = null;
         setGeneratedDesign(null);
         setFlatPlacerEditOpen(false);
@@ -11693,7 +11708,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               }
               handleGenerate();
             }}
-            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
@@ -11725,6 +11740,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 onClick={() => {
                   setGeneratedDesign(null);
                   setReuseAwaitingGenerate(false);
+                  setReuseRegenerateBasePrompt(null);
                   lastAopPanelUrlsRef.current = null;
                   setFlatPlacerState(null);
                   setFlatPlacerEditOpen(false);
@@ -13101,7 +13117,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         handleGenerate();
                       }}
-                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -13134,6 +13150,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           onClick={() => {
                             setGeneratedDesign(null);
                             setReuseAwaitingGenerate(false);
+                            setReuseRegenerateBasePrompt(null);
                             lastAopPanelUrlsRef.current = null;
                             setDesignSource(null);
                             setAddedToCart(false);
@@ -13638,14 +13655,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
                 <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
                   Describe your artwork
-                  {_descOptional && (
+                  {reuseRegenerateBasePrompt ? (
+                    <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
+                      (optional changes)
+                    </span>
+                  ) : _descOptional ? (
                     <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional)</span>
-                  )}
+                  ) : null}
                 </Label>
+                {reuseRegenerateBasePrompt ? (
+                  <p
+                    data-testid="text-regenerate-base-prompt"
+                    className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground"
+                  >
+                    {reuseRegenerateBasePrompt}
+                  </p>
+                ) : null}
                 <Textarea
                   id="prompt"
                   data-testid="input-prompt"
                   placeholder={(() => {
+                    if (reuseRegenerateBasePrompt) {
+                      return "Optional: add changes, e.g. change the colours from red to green";
+                    }
                     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
                     if (activePreset?.descriptionOptional) {
                       return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
