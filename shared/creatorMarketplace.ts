@@ -663,14 +663,15 @@ export function extractSubdomainFromHost(hostHeader: string | undefined): string
   const host = hostHeader.split(":")[0]?.toLowerCase() || "";
   if (!host || host === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return null;
 
-  if (host.endsWith(".aiartstudio.app")) {
-    const sub = host.slice(0, -".aiartstudio.app".length);
+  // Staging first — otherwise max.staging.aiartstudio.app is read as "max.staging".
+  if (host.endsWith(".staging.aiartstudio.app")) {
+    const sub = host.slice(0, -".staging.aiartstudio.app".length);
     if (!sub || sub.includes(".")) return null;
     return sub;
   }
 
-  if (host.endsWith(".staging.aiartstudio.app")) {
-    const sub = host.slice(0, -".staging.aiartstudio.app".length);
+  if (host.endsWith(".aiartstudio.app")) {
+    const sub = host.slice(0, -".aiartstudio.app".length);
     if (!sub || sub.includes(".")) return null;
     return sub;
   }
@@ -737,6 +738,12 @@ export function creatorStorefrontHomeUrl(opts: {
   const handle = normalizeCreatorUsername(opts.username) || "";
   const origin = String(opts.origin || "https://aiartstudio.app").replace(/\/$/, "");
   const hostname = String(opts.hostname || "").toLowerCase();
+  if (hostname.endsWith(".staging.aiartstudio.app")) {
+    const sub = hostname.slice(0, -".staging.aiartstudio.app".length);
+    if (sub && !sub.includes(".") && (!handle || sub === handle)) {
+      return `${origin}/`;
+    }
+  }
   if (hostname.endsWith(".aiartstudio.app")) {
     const sub = hostname.slice(0, -".aiartstudio.app".length);
     if (sub && !sub.includes(".") && (!handle || sub === handle)) {

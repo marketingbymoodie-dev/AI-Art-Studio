@@ -88,6 +88,13 @@ describe("creator return URL", () => {
         hostname: "aiartstudio.app",
       }),
     ).toBe("https://aiartstudio.app/c/max");
+    expect(
+      creatorStorefrontHomeUrl({
+        username: "max",
+        origin: "https://max.staging.aiartstudio.app",
+        hostname: "max.staging.aiartstudio.app",
+      }),
+    ).toBe("https://max.staging.aiartstudio.app/");
   });
 
   it("falls back when the client sends a bad URL", () => {
@@ -153,7 +160,9 @@ describe("quota clamps", () => {
 describe("host / path resolution", () => {
   it("parses creator subdomains", () => {
     expect(extractSubdomainFromHost("max.aiartstudio.app")).toBe("max");
+    expect(extractSubdomainFromHost("max.staging.aiartstudio.app")).toBe("max");
     expect(extractSubdomainFromHost("aiartstudio.app")).toBeNull();
+    expect(extractSubdomainFromHost("staging.aiartstudio.app")).toBe("staging");
     expect(extractSubdomainFromHost("ai-art-studio-staging.up.railway.app")).toBeNull();
   });
 
