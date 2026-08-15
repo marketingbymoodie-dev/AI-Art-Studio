@@ -111,6 +111,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },
   { table: "creator_applications",   column: "terms_accepted_at",          type: "TIMESTAMP" },
   { table: "creator_applications",   column: "shop_name",                  type: "TEXT" },
+  { table: "creator_applications",   column: "socials",                    type: "JSONB" },
+  { table: "creators",               column: "socials",                    type: "JSONB" },
   { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
@@ -1046,6 +1048,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "social_platform" text,
         "social_username" text,
         "social_url" text,
+        "socials" jsonb,
         "follower_count" integer,
         "niche" text,
         "audience_description" text,
@@ -1090,6 +1093,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "social_platform" text NOT NULL,
         "social_username" text NOT NULL,
         "social_url" text,
+        "socials" jsonb,
         "follower_count" integer,
         "niche" text NOT NULL,
         "audience_description" text,

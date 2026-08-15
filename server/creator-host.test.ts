@@ -34,6 +34,29 @@ describe("creator-host Phase 10 helpers", () => {
     } as any);
     expect(boot.publicName).toBe("Mad Clown Core");
     expect((boot as any).displayName).toBeUndefined();
+    expect(boot.socials).toEqual([]);
+  });
+
+  it("toStorefrontBoot normalizes a legacy double-@ handle into socials", () => {
+    const boot = toStorefrontBoot({
+      id: "c1",
+      username: "mad-clown-core",
+      subdomain: "mad-clown-core",
+      displayName: "Craig Moodie",
+      socialPlatform: "instagram",
+      socialUsername: "@@bigmeltingpod",
+      socialUrl: null,
+      socials: null,
+      status: "active_beta",
+      branding: { headline: "Mad Clown Core" },
+    } as any);
+    expect(boot.socials).toEqual([
+      {
+        platform: "instagram",
+        username: "bigmeltingpod",
+        url: "https://www.instagram.com/bigmeltingpod",
+      },
+    ]);
   });
 
   it("isCreatorPlatformShop compares normalized domains", () => {

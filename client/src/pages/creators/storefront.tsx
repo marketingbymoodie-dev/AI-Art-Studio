@@ -12,7 +12,10 @@ import {
   CREATOR_HEADING_FONTS_STYLESHEET,
   creatorBrandingImageUrl,
   creatorPublicName,
+  formatSocialHandle,
+  parseCreatorSocials,
   resolveCreatorHeadingFont,
+  socialPlatformLabel,
 } from "@shared/creatorMarketplace";
 
 export type CreatorBoot = {
@@ -26,6 +29,7 @@ export type CreatorBoot = {
   socialPlatform: string | null;
   socialUsername: string | null;
   socialUrl: string | null;
+  socials?: Array<{ platform: string; username: string; url?: string | null }>;
   status: string;
   branding: Record<string, unknown> | null;
   storefrontUrlPath: string;
@@ -41,6 +45,14 @@ function storeName(creator: CreatorBoot): string {
 
 function homeBackgroundUrl(creator: CreatorBoot): string | null {
   return creatorBrandingImageUrl(creator.branding, "backgroundImageUrl");
+}
+
+function creatorSocials(creator: CreatorBoot) {
+  return parseCreatorSocials(creator.socials, {
+    platform: creator.socialPlatform,
+    username: creator.socialUsername,
+    url: creator.socialUrl,
+  });
 }
 
 function useCreatorHeadingStylesheet() {
@@ -241,14 +253,25 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
             </Link>
           </Button>
         ) : null}
-        {creator.socialUrl ? (
-          <Button asChild variant="outline" className={backgroundUrl ? "bg-white/10 text-white border-white/40 hover:bg-white/20" : undefined}>
-            <a href={creator.socialUrl} target="_blank" rel="noopener noreferrer">
-              Follow on {creator.socialPlatform || "social"}
-              <ExternalLink className="ml-2 h-3.5 w-3.5" />
-            </a>
-          </Button>
-        ) : null}
+        {creatorSocials(creator).map((s) =>
+          s.url ? (
+            <Button
+              key={`${s.platform}:${s.username}`}
+              asChild
+              variant="outline"
+              className={
+                backgroundUrl
+                  ? "bg-white/10 text-white border-white/40 hover:bg-white/20"
+                  : undefined
+              }
+            >
+              <a href={s.url} target="_blank" rel="noopener noreferrer">
+                Follow on {socialPlatformLabel(s.platform)}
+                <ExternalLink className="ml-2 h-3.5 w-3.5" />
+              </a>
+            </Button>
+          ) : null,
+        )}
       </div>
     </>
   );
@@ -434,10 +457,22 @@ function AboutView({ creator }: { creator: CreatorBoot }) {
       <p className="text-muted-foreground whitespace-pre-wrap">
         {creator.bio || "This creator is part of the AI Art Studio Creator Beta."}
       </p>
-      {creator.socialUsername ? (
-        <p className="text-sm">
-          {creator.socialPlatform}: @{creator.socialUsername}
-        </p>
+      {creatorSocials(creator).length > 0 ? (
+        <ul className="space-y-1 text-sm">
+          {creatorSocials(creator).map((s) => (
+            <li key={`${s.platform}:${s.username}`}>
+              {s.url ? (
+                <a href={s.url} target="_blank" rel="noopener noreferrer" className="underline">
+                  {socialPlatformLabel(s.platform)} {formatSocialHandle(s.username)}
+                </a>
+              ) : (
+                <span>
+                  {socialPlatformLabel(s.platform)} {formatSocialHandle(s.username)}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );

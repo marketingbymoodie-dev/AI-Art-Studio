@@ -20,6 +20,7 @@ import {
   mergeCreatorBranding,
   sanitizeCreatorBio,
   sanitizeCreatorImageUrl,
+  sanitizeCreatorSocials,
 } from "@shared/creatorMarketplace";
 import {
   clearCreatorAuthCookie,
@@ -164,6 +165,19 @@ export function registerCreatorPortalRoutes(app: Express): void {
       }
       if (body.profileImageUrl !== undefined) {
         patch.profileImageUrl = sanitizeCreatorImageUrl(body.profileImageUrl);
+      }
+      if (body.socials !== undefined) {
+        const socials = sanitizeCreatorSocials(body.socials);
+        patch.socials = socials;
+        if (socials[0]) {
+          patch.socialPlatform = socials[0].platform;
+          patch.socialUsername = socials[0].username;
+          patch.socialUrl = socials[0].url;
+        } else {
+          patch.socialPlatform = null;
+          patch.socialUsername = null;
+          patch.socialUrl = null;
+        }
       }
       if (
         body.shopName !== undefined ||

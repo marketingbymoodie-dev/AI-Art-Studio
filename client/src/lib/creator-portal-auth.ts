@@ -10,6 +10,9 @@ export type CreatorPortalProfile = {
   profileImageUrl: string | null;
   bio: string | null;
   branding: Record<string, unknown> | null;
+  socialPlatform?: string | null;
+  socialUsername?: string | null;
+  socials?: Array<{ platform: string; username: string; url?: string | null }>;
   freeGensPerCustomer: number;
   monthlyGenerationAllowance: number;
   monthlyGenerationsUsed: number;

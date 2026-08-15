@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { shopNameToHandle } from "@shared/creatorMarketplace";
+import {
+  CREATOR_PAYOUT_METHODS,
+  normalizeSocialHandle,
+  shopNameToHandle,
+} from "@shared/creatorMarketplace";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,7 +18,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { SOCIAL_PLATFORMS, CREATOR_PAYOUT_METHODS } from "@shared/creatorMarketplace";
+import {
+  CreatorSocialsFields,
+  emptySocialDraft,
+  type SocialDraft,
+} from "@/components/creators/CreatorSocialsFields";
 import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
 import { Loader2 } from "lucide-react";
 
@@ -39,8 +47,6 @@ export default function CreatorApplyPage() {
     lastName: "",
     email: "",
     shopName: "",
-    socialPlatform: "instagram",
-    socialUsername: "",
     followerCount: "",
     niche: "",
     shopifyStoreUrl: "",
@@ -48,6 +54,7 @@ export default function CreatorApplyPage() {
     payoutDetail: "",
   });
   const [shopNameQuery, setShopNameQuery] = useState("");
+  const [socials, setSocials] = useState<SocialDraft[]>([emptySocialDraft()]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setShopNameQuery(form.shopName.trim()), 350);
@@ -87,8 +94,10 @@ export default function CreatorApplyPage() {
           lastName: form.lastName,
           email: form.email,
           shopName: form.shopName,
-          socialPlatform: track === "creator" ? form.socialPlatform : "other",
-          socialUsername: track === "creator" ? form.socialUsername : form.shopifyStoreUrl,
+          socials: track === "creator" ? socials : [],
+          socialPlatform: track === "creator" ? socials[0]?.platform : "other",
+          socialUsername:
+            track === "creator" ? socials[0]?.username : form.shopifyStoreUrl,
           followerCount: form.followerCount ? Number(form.followerCount) : null,
           niche: track === "creator" ? form.niche : "Shopify store owner",
           hasShopifyStore: track === "shopify",
@@ -126,6 +135,9 @@ export default function CreatorApplyPage() {
     );
   }
 
+  const primarySocial = socials[0];
+  const primaryHandleValid =
+    track !== "creator" || !!normalizeSocialHandle(primarySocial?.username);
   const title = track === "shopify" ? copy.shopifyTitle : copy.applyTitle;
   const lede = track === "shopify" ? copy.shopifyLede : copy.applyLede;
   const termsText = track === "shopify" ? copy.shopifyTerms : copy.applyTerms;
@@ -211,30 +223,12 @@ export default function CreatorApplyPage() {
 
           {track === "creator" ? (
             <>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Platform">
-                  <Select value={form.socialPlatform} onValueChange={(v) => set("socialPlatform", v)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SOCIAL_PLATFORMS.map((p) => (
-                        <SelectItem key={p} value={p}>
-                          {p.charAt(0).toUpperCase() + p.slice(1)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Handle">
-                  <Input
-                    required
-                    placeholder="@yourname"
-                    value={form.socialUsername}
-                    onChange={(e) => set("socialUsername", e.target.value)}
-                  />
-                </Field>
-              </div>
+              <CreatorSocialsFields
+                requiredFirst
+                value={socials}
+                onChange={setSocials}
+                hint="Shown on your public shop. Don’t include @ — extra @ symbols are removed."
+              />
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Follower count">
                   <Input
@@ -299,7 +293,8 @@ export default function CreatorApplyPage() {
               mutation.isPending ||
               !terms ||
               shopAvail?.available === false ||
-              (!!form.shopName.trim() && !shopHandle)
+              (!!form.shopName.trim() && !shopHandle) ||
+              !primaryHandleValid
             }
             data-testid="creator-apply-submit"
           >

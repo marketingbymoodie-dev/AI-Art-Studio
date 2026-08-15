@@ -17,9 +17,14 @@ import {
   sanitizeCreatorShopName,
   shopNameToHandle,
   parseCreatorHeadingFontId,
+  parseCreatorSocials,
   resolveCreatorHeadingFont,
   sanitizeCreatorBio,
   sanitizeCreatorImageUrl,
+  formatSocialHandle,
+  normalizeSocialHandle,
+  socialProfileUrl,
+  stripLeadingAtSigns,
   titleForRank,
 } from "./creatorMarketplace";
 
@@ -53,6 +58,46 @@ describe("shop name → handle", () => {
     expect(findConflictingHandle("Mad Clown Core", ["mad-clown-core"])).toBe("mad-clown-core");
     expect(findConflictingHandle("mad-clown-core-2", ["mad-clown-core"])).toBe("mad-clown-core");
     expect(findConflictingHandle("Mad Clown Studio", ["mad-clown-core"])).toBeNull();
+  });
+});
+
+describe("social handles", () => {
+  it("strips every leading @ and rejects leftover @", () => {
+    expect(stripLeadingAtSigns("@@bigmeltingpod")).toBe("bigmeltingpod");
+    expect(normalizeSocialHandle("@@bigmeltingpod")).toBe("bigmeltingpod");
+    expect(normalizeSocialHandle("@bigmeltingpod")).toBe("bigmeltingpod");
+    expect(normalizeSocialHandle("bigmeltingpod")).toBe("bigmeltingpod");
+    expect(normalizeSocialHandle("name@extra")).toBeNull();
+    expect(formatSocialHandle("@@bigmeltingpod")).toBe("@bigmeltingpod");
+  });
+
+  it("extracts the handle from a profile URL", () => {
+    expect(normalizeSocialHandle("https://instagram.com/@bigmeltingpod")).toBe("bigmeltingpod");
+    expect(normalizeSocialHandle("https://www.tiktok.com/@bigmeltingpod")).toBe("bigmeltingpod");
+    expect(socialProfileUrl("instagram", "@@bigmeltingpod")).toBe(
+      "https://www.instagram.com/bigmeltingpod",
+    );
+  });
+
+  it("keeps at most four unique socials and falls back to the legacy handle", () => {
+    expect(
+      parseCreatorSocials(null, { platform: "instagram", username: "@@bigmeltingpod" }),
+    ).toEqual([
+      {
+        platform: "instagram",
+        username: "bigmeltingpod",
+        url: "https://www.instagram.com/bigmeltingpod",
+      },
+    ]);
+    const many = parseCreatorSocials([
+      { platform: "instagram", username: "@one" },
+      { platform: "tiktok", username: "two" },
+      { platform: "youtube", username: "three" },
+      { platform: "x", username: "four" },
+      { platform: "twitch", username: "five" },
+    ]);
+    expect(many).toHaveLength(4);
+    expect(many.map((s) => s.username)).toEqual(["one", "two", "three", "four"]);
   });
 });
 

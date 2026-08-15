@@ -31,7 +31,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { CREATOR_APPLICATION_STATUSES, shopNameToHandle } from "@shared/creatorMarketplace";
+import {
+  CREATOR_APPLICATION_STATUSES,
+  formatSocialHandle,
+  parseCreatorSocials,
+  shopNameToHandle,
+  socialPlatformLabel,
+} from "@shared/creatorMarketplace";
 import { Loader2 } from "lucide-react";
 import PlatformCreatorDetailDialog from "./platform-creator-detail";
 
@@ -42,6 +48,7 @@ type Application = {
   email: string;
   socialPlatform: string;
   socialUsername: string;
+  socials?: Array<{ platform: string; username: string; url?: string | null }>;
   niche: string;
   hasShopifyStore: boolean;
   status: string;
@@ -547,10 +554,17 @@ export default function PlatformCreatorsPage() {
                     {detail.application.firstName} {detail.application.lastName}
                   </div>
                   <div className="text-muted-foreground">{detail.application.email}</div>
-                  <div className="mt-1">
-                    {detail.application.socialPlatform}/@{detail.application.socialUsername}
+                  <div className="mt-1 space-y-0.5">
+                    {parseCreatorSocials(detail.application.socials, {
+                      platform: detail.application.socialPlatform,
+                      username: detail.application.socialUsername,
+                    }).map((s) => (
+                      <div key={`${s.platform}:${s.username}`}>
+                        {socialPlatformLabel(s.platform)} {formatSocialHandle(s.username)}
+                      </div>
+                    ))}
                     {detail.application.followerCount != null
-                      ? ` · ${detail.application.followerCount.toLocaleString()} followers`
+                      ? `${detail.application.followerCount.toLocaleString()} followers`
                       : ""}
                   </div>
                   <div className="mt-1">Niche: {detail.application.niche}</div>
@@ -591,7 +605,8 @@ export default function PlatformCreatorsPage() {
                     <span className="font-medium">
                       {previewHandle || "…"}.aiartstudio.app
                     </span>
-                    . If taken, they must pick a different name — we will not add numbers.
+                    . If this applicant is already onboarded, saving here also updates the live
+                    URL. If taken, they must pick a different name — we will not add numbers.
                   </p>
                   {shopNameBlocked ? (
                     <p className="text-xs text-destructive">{shopAvail?.error}</p>
@@ -606,45 +621,70 @@ export default function PlatformCreatorsPage() {
                       patchMutation.mutate({
                         assignedUsername: username,
                         shopName: username,
-                        status: "under_review",
+                        ...(detail.application.creatorId ? {} : { status: "under_review" }),
                       })
                     }
                   >
-                    Save shop name + mark under review
+                    {detail.application.creatorId
+                      ? "Save shop name + update live URL"
+                      : "Save shop name + mark under review"}
                   </Button>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => patchMutation.mutate({ status: "waitlisted" })}
-                  >
-                    Waitlist
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => patchMutation.mutate({ status: "rejected" })}
-                  >
-                    Reject
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => onboardMutation.mutate()}
-                    disabled={
-                      onboardMutation.isPending ||
-                      !!detail.application.creatorId ||
-                      shopNameBlocked ||
-                      !previewHandle
-                    }
-                  >
-                    {onboardMutation.isPending ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {detail.application.creatorId ? (
+                  <div className="space-y-2 rounded-md border bg-muted/40 px-3 py-2">
+                    <p className="text-xs text-muted-foreground">
+                      This applicant is already onboarded. Change the URL handle in creator
+                      settings — Accept stays off so we don&apos;t create a second shop.
+                    </p>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const id = detail.application.creatorId;
+                        setSelectedId(null);
+                        if (id) setCreatorEditId(id);
+                      }}
+                    >
+                      Open creator settings
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => patchMutation.mutate({ status: "waitlisted" })}
+                    >
+                      Waitlist
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => patchMutation.mutate({ status: "rejected" })}
+                    >
+                      Reject
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => onboardMutation.mutate()}
+                      disabled={
+                        onboardMutation.isPending || shopNameBlocked || !previewHandle
+                      }
+                    >
+                      {onboardMutation.isPending ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : null}
+                      Accept & start onboarding
+                    </Button>
+                    {shopNameBlocked ? (
+                      <p className="basis-full text-xs text-destructive">{shopAvail?.error}</p>
+                    ) : !previewHandle ? (
+                      <p className="basis-full text-xs text-destructive">
+                        Enter a valid shop name before accepting.
+                      </p>
                     ) : null}
-                    Accept & start onboarding
-                  </Button>
-                </div>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <Label>Internal note</Label>

@@ -17,6 +17,7 @@ import {
   extractUsernameFromPath,
   findConflictingHandle,
   normalizeCreatorUsername,
+  parseCreatorSocials,
   sanitizeCreatorShopName,
   shopNameToHandle,
 } from "@shared/creatorMarketplace";
@@ -172,6 +173,7 @@ export type CreatorStorefrontBoot = {
   socialPlatform: string | null;
   socialUsername: string | null;
   socialUrl: string | null;
+  socials: Array<{ platform: string; username: string; url: string | null }>;
   status: string;
   branding: Record<string, unknown> | null;
   storefrontUrlPath: string;
@@ -216,6 +218,11 @@ export function toStorefrontBoot(creator: Creator): CreatorStorefrontBoot {
     socialPlatform: creator.socialPlatform,
     socialUsername: creator.socialUsername,
     socialUrl: creator.socialUrl,
+    socials: parseCreatorSocials(creator.socials, {
+      platform: creator.socialPlatform,
+      username: creator.socialUsername,
+      url: creator.socialUrl,
+    }),
     status: creator.status,
     branding,
     storefrontUrlPath: `/c/${creator.username}`,
@@ -334,4 +341,39 @@ export async function resolveCreatorHandleAvailability(opts: {
   }
 
   return { ok: true, handle, shopName };
+}
+
+/** Rename a live creator URL handle + subdomain and keep the linked application in sync. */
+export async function renameCreatorHandle(opts: {
+  creatorId: string;
+  currentUsername: string;
+  nextHandle: string;
+  applicationId?: string | null;
+}): Promise<void> {
+  const next = normalizeCreatorUsername(opts.nextHandle);
+  if (!next || next === opts.currentUsername) return;
+
+  await db
+    .update(creators)
+    .set({
+      username: next,
+      subdomain: next,
+      updatedAt: new Date(),
+    })
+    .where(eq(creators.id, opts.creatorId));
+
+  if (opts.applicationId) {
+    await db
+      .update(creatorApplications)
+      .set({ assignedUsername: next, updatedAt: new Date() })
+      .where(eq(creatorApplications.id, opts.applicationId));
+  } else {
+    await db
+      .update(creatorApplications)
+      .set({ assignedUsername: next, updatedAt: new Date() })
+      .where(eq(creatorApplications.creatorId, opts.creatorId));
+  }
+
+  invalidateCreatorHostCache(opts.currentUsername);
+  invalidateCreatorHostCache(next);
 }

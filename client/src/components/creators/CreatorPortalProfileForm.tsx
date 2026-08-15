@@ -14,7 +14,13 @@ import {
   CREATOR_HEADING_FONTS_STYLESHEET,
   creatorPublicName,
   parseCreatorHeadingFontId,
+  parseCreatorSocials,
 } from "@shared/creatorMarketplace";
+import {
+  CreatorSocialsFields,
+  emptySocialDraft,
+  type SocialDraft,
+} from "@/components/creators/CreatorSocialsFields";
 import {
   Select,
   SelectContent,
@@ -40,6 +46,15 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
     typeof branding.backgroundImageUrl === "string" ? branding.backgroundImageUrl : "",
   );
   const [message, setMessage] = useState<string | null>(null);
+  const [socials, setSocials] = useState<SocialDraft[]>(() => {
+    const parsed = parseCreatorSocials(creator.socials, {
+      platform: creator.socialPlatform,
+      username: creator.socialUsername,
+    });
+    return parsed.length > 0
+      ? parsed.map((s) => ({ platform: s.platform, username: s.username }))
+      : [emptySocialDraft()];
+  });
 
   useEffect(() => {
     const id = "creator-heading-fonts";
@@ -61,6 +76,15 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
     setBackgroundImageUrl(
       typeof b.backgroundImageUrl === "string" ? b.backgroundImageUrl : "",
     );
+    const parsed = parseCreatorSocials(creator.socials, {
+      platform: creator.socialPlatform,
+      username: creator.socialUsername,
+    });
+    setSocials(
+      parsed.length > 0
+        ? parsed.map((s) => ({ platform: s.platform, username: s.username }))
+        : [emptySocialDraft()],
+    );
   }, [creator]);
 
   const save = useMutation({
@@ -74,6 +98,7 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
           bio,
           profileImageUrl: profileImageUrl || null,
           backgroundImageUrl: backgroundImageUrl || null,
+          socials,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -115,9 +140,11 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
           placeholder={creator.username}
         />
         <p className="text-xs text-stone-500">
-          Shown to customers. Your URL stays /c/{creator.username}.
+          Shown to customers. Your URL stays /c/{creator.username}. Ask AppAI if you
+          need the URL or subdomain changed.
         </p>
       </div>
+      <CreatorSocialsFields value={socials} onChange={setSocials} />
       <div className="space-y-1">
         <Label>Shop name font</Label>
         <Select value={headingFont} onValueChange={setHeadingFont}>

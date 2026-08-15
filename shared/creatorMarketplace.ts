@@ -366,6 +366,145 @@ export const SOCIAL_PLATFORMS = [
 ] as const;
 export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number];
 
+export const MAX_CREATOR_SOCIALS = 4;
+
+export type CreatorSocialLink = {
+  platform: SocialPlatform;
+  username: string;
+  url: string | null;
+};
+
+export const CREATOR_SOCIAL_HANDLE_INVALID_MESSAGE =
+  "Enter a social handle without @ — letters, numbers, periods, underscores, or hyphens only.";
+
+/** Strip leading @ / whitespace while the user is typing (`@@name` → `name`). */
+export function stripLeadingAtSigns(raw: unknown): string {
+  return String(raw ?? "").replace(/^[\s@]+/, "");
+}
+
+export function isSocialPlatform(raw: unknown): raw is SocialPlatform {
+  return (SOCIAL_PLATFORMS as readonly string[]).includes(String(raw || "").trim().toLowerCase());
+}
+
+export function socialPlatformLabel(platform: string | null | undefined): string {
+  const p = String(platform || "").trim().toLowerCase();
+  if (p === "x") return "X";
+  if (!p) return "Social";
+  return p.charAt(0).toUpperCase() + p.slice(1);
+}
+
+/**
+ * Normalize a social handle. Strips every leading @, and if the value is a
+ * profile URL, keeps only the last path segment.
+ */
+export function normalizeSocialHandle(raw: unknown): string | null {
+  let s = stripLeadingAtSigns(raw);
+  if (!s) return null;
+
+  if (/^https?:\/\//i.test(s) || /^[a-z0-9.-]+\.[a-z]{2,}\//i.test(s) || s.includes("/")) {
+    try {
+      const url = /^https?:\/\//i.test(s) ? new URL(s) : new URL(`https://${s.replace(/^\/+/, "")}`);
+      const parts = url.pathname.split("/").filter(Boolean);
+      const skip = new Set(["c", "user", "users", "channel", "u"]);
+      let last = parts[parts.length - 1] || "";
+      if (skip.has(last.toLowerCase()) && parts.length > 1) {
+        last = parts[parts.length - 2] || last;
+      }
+      s = stripLeadingAtSigns(last);
+    } catch {
+      const parts = s.split("/").filter(Boolean);
+      s = stripLeadingAtSigns(parts[parts.length - 1] || s);
+    }
+  }
+
+  s = s.replace(/^@+/, "").trim();
+  if (!s || s.includes("@")) return null;
+  if (s.length > 64) return null;
+  if (!/^[a-zA-Z0-9._-]+$/.test(s)) return null;
+  return s;
+}
+
+export function socialProfileUrl(
+  platform: string | null | undefined,
+  username: string | null | undefined,
+): string | null {
+  const handle = normalizeSocialHandle(username);
+  if (!handle) return null;
+  switch (String(platform || "").trim().toLowerCase()) {
+    case "instagram":
+      return `https://www.instagram.com/${handle}`;
+    case "tiktok":
+      return `https://www.tiktok.com/@${handle}`;
+    case "youtube":
+      return `https://www.youtube.com/@${handle}`;
+    case "x":
+      return `https://x.com/${handle}`;
+    case "facebook":
+      return `https://www.facebook.com/${handle}`;
+    case "twitch":
+      return `https://www.twitch.tv/${handle}`;
+    default:
+      return null;
+  }
+}
+
+export function formatSocialHandle(username: string | null | undefined): string {
+  const handle = normalizeSocialHandle(username);
+  return handle ? `@${handle}` : "";
+}
+
+function pushCreatorSocial(
+  out: CreatorSocialLink[],
+  seen: Set<string>,
+  platformRaw: unknown,
+  usernameRaw: unknown,
+  urlRaw?: unknown,
+): void {
+  if (out.length >= MAX_CREATOR_SOCIALS) return;
+  const platform = String(platformRaw || "").trim().toLowerCase();
+  if (!isSocialPlatform(platform)) return;
+  const username = normalizeSocialHandle(usernameRaw);
+  if (!username) return;
+  const key = `${platform}:${username.toLowerCase()}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  const explicit =
+    typeof urlRaw === "string" && /^https:\/\//i.test(urlRaw.trim()) ? urlRaw.trim().slice(0, 500) : null;
+  out.push({
+    platform,
+    username,
+    url: explicit || socialProfileUrl(platform, username),
+  });
+}
+
+/** Parse up to 4 socials from JSON, falling back to the legacy single handle. */
+export function parseCreatorSocials(
+  raw: unknown,
+  fallback?: {
+    platform?: string | null;
+    username?: string | null;
+    url?: string | null;
+  },
+): CreatorSocialLink[] {
+  const out: CreatorSocialLink[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      pushCreatorSocial(out, seen, rec.platform, rec.username ?? rec.handle, rec.url);
+    }
+  }
+  if (out.length === 0 && fallback) {
+    pushCreatorSocial(out, seen, fallback.platform, fallback.username, fallback.url);
+  }
+  return out;
+}
+
+export function sanitizeCreatorSocials(raw: unknown): CreatorSocialLink[] {
+  return parseCreatorSocials(raw);
+}
+
 /** Reserved subdomains that must never map to a creator. */
 export const RESERVED_CREATOR_SUBDOMAINS = new Set([
   "www",

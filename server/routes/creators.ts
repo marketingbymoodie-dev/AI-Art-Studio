@@ -28,13 +28,16 @@ import {
   DEFAULT_CREATOR_FREE_GENS_PER_CUSTOMER,
   DEFAULT_CREATOR_MONTHLY_GENERATION_ALLOWANCE,
   SOCIAL_PLATFORMS,
+  CREATOR_SOCIAL_HANDLE_INVALID_MESSAGE,
   clampFreeGensPerCustomer,
   clampMonthlyGenerationAllowance,
   mergeCreatorBranding,
   normalizeCreatorUsername,
+  parseCreatorSocials,
   sanitizeCreatorBio,
   sanitizeCreatorImageUrl,
   sanitizeCreatorShopName,
+  sanitizeCreatorSocials,
   type CreatorApplicationStatus,
   type CreatorApplyTrack,
   type CreatorPayoutMethod,
@@ -52,6 +55,7 @@ import {
   getCreatorStorefrontByUsername,
   invalidateCreatorHostCache,
   lookupCreatorByUsername,
+  renameCreatorHandle,
   resolveCreatorHandleAvailability,
   sanitizeCreatorForAdmin,
 } from "../creator-host";
@@ -242,6 +246,12 @@ export function registerCreatorMarketplaceRoutes(
       let socialPlatform = String(body.socialPlatform || "").trim().toLowerCase();
       let socialUsername = String(body.socialUsername || "").trim();
       let niche = String(body.niche || "").trim();
+      const socials = parseCreatorSocials(
+        body.socials,
+        applyTrack === "creator"
+          ? { platform: socialPlatform, username: socialUsername, url: body.socialUrl }
+          : undefined,
+      );
 
       if (applyTrack === "shopify") {
         if (!shopifyStoreUrl) {
@@ -251,11 +261,16 @@ export function registerCreatorMarketplaceRoutes(
         socialUsername = socialUsername || shopifyStoreUrl.replace(/^https?:\/\//, "").slice(0, 80);
         niche = niche || "Shopify store owner";
       } else {
-        if (!socialPlatform || !socialUsername || !niche) {
+        const primary = socials[0];
+        if (!primary || !niche) {
           return res.status(400).json({
-            error: "Social platform, handle, and niche are required.",
+            error: !primary
+              ? CREATOR_SOCIAL_HANDLE_INVALID_MESSAGE
+              : "Social platform, handle, and niche are required.",
           });
         }
+        socialPlatform = primary.platform;
+        socialUsername = primary.username;
       }
       if (!(SOCIAL_PLATFORMS as readonly string[]).includes(socialPlatform)) {
         return res.status(400).json({ error: "Unsupported social platform." });
@@ -290,7 +305,8 @@ export function registerCreatorMarketplaceRoutes(
           email,
           socialPlatform,
           socialUsername,
-          socialUrl: String(body.socialUrl || "").trim() || null,
+          socialUrl: socials[0]?.url || String(body.socialUrl || "").trim() || null,
+          socials: applyTrack === "creator" ? socials : [],
           followerCount: parseFollowerCount(body.followerCount),
           niche,
           audienceDescription: String(body.audienceDescription || "").trim() || null,
@@ -440,11 +456,38 @@ export function registerCreatorMarketplaceRoutes(
           patch.reviewedBy = req.shopDomain || req.user?.claims?.sub || "admin";
         }
 
+        if (body.socials !== undefined) {
+          const socials = sanitizeCreatorSocials(body.socials);
+          patch.socials = socials;
+          if (socials[0]) {
+            patch.socialPlatform = socials[0].platform;
+            patch.socialUsername = socials[0].username;
+            patch.socialUrl = socials[0].url;
+          }
+        }
+
         const [updated] = await db
           .update(creatorApplications)
           .set(patch)
           .where(eq(creatorApplications.id, existing.id))
           .returning();
+
+        const nextHandle = typeof patch.assignedUsername === "string" ? patch.assignedUsername : null;
+        if (existing.creatorId && nextHandle) {
+          const [linked] = await db
+            .select({ id: creators.id, username: creators.username })
+            .from(creators)
+            .where(eq(creators.id, existing.creatorId))
+            .limit(1);
+          if (linked && linked.username !== nextHandle) {
+            await renameCreatorHandle({
+              creatorId: linked.id,
+              currentUsername: linked.username,
+              nextHandle,
+              applicationId: existing.id,
+            });
+          }
+        }
 
         res.json({ application: updated });
       } catch (e: any) {
@@ -542,6 +585,11 @@ export function registerCreatorMarketplaceRoutes(
             socialPlatform: appRow.socialPlatform,
             socialUsername: appRow.socialUsername,
             socialUrl: appRow.socialUrl,
+            socials: parseCreatorSocials(appRow.socials, {
+              platform: appRow.socialPlatform,
+              username: appRow.socialUsername,
+              url: appRow.socialUrl,
+            }),
             followerCount: appRow.followerCount,
             niche: appRow.niche,
             audienceDescription: appRow.audienceDescription,
@@ -1336,6 +1384,45 @@ export function registerCreatorMarketplaceRoutes(
         }
         if (body.onboardingStatus != null) {
           patch.onboardingStatus = String(body.onboardingStatus);
+        }
+        if (body.username !== undefined || body.urlHandle !== undefined) {
+          const rawHandle = String(body.username ?? body.urlHandle ?? "");
+          const handleCheck = await resolveCreatorHandleAvailability({
+            rawName: rawHandle,
+            excludeCreatorId: creator.id,
+            excludeApplicationId: creator.applicationId,
+          });
+          if (!handleCheck.ok) {
+            return res.status(handleCheck.status).json({
+              error: handleCheck.error,
+              code: handleCheck.code,
+              handle: handleCheck.handle,
+              takenHandle: handleCheck.takenHandle ?? null,
+            });
+          }
+          if (handleCheck.handle !== creator.username) {
+            await renameCreatorHandle({
+              creatorId: creator.id,
+              currentUsername: creator.username,
+              nextHandle: handleCheck.handle,
+              applicationId: creator.applicationId,
+            });
+            patch.username = handleCheck.handle;
+            patch.subdomain = handleCheck.handle;
+          }
+        }
+        if (body.socials !== undefined) {
+          const socials = sanitizeCreatorSocials(body.socials);
+          patch.socials = socials;
+          if (socials[0]) {
+            patch.socialPlatform = socials[0].platform;
+            patch.socialUsername = socials[0].username;
+            patch.socialUrl = socials[0].url;
+          } else {
+            patch.socialPlatform = null;
+            patch.socialUsername = null;
+            patch.socialUrl = null;
+          }
         }
         if (body.displayName != null) {
           const dn = String(body.displayName || "").trim();

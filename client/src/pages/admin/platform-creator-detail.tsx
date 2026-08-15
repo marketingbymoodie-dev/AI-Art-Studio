@@ -38,7 +38,14 @@ import {
   CREATOR_STATUSES,
   displayCreatorStyleName,
   parseCreatorHeadingFontId,
+  parseCreatorSocials,
+  shopNameToHandle,
 } from "@shared/creatorMarketplace";
+import {
+  CreatorSocialsFields,
+  emptySocialDraft,
+  type SocialDraft,
+} from "@/components/creators/CreatorSocialsFields";
 import { styleExampleImageUrl } from "@shared/customizerPageStyles";
 import { CreatorProfileImageField } from "@/components/creators/CreatorProfileImageField";
 import { GripVertical, Loader2 } from "lucide-react";
@@ -76,6 +83,9 @@ export default function PlatformCreatorDetailDialog({
   const [creatorStatus, setCreatorStatus] = useState("onboarding");
   const [merchantShop, setMerchantShop] = useState("");
   const [shopName, setShopName] = useState("");
+  const [urlHandle, setUrlHandle] = useState("");
+  const [urlHandleCheck, setUrlHandleCheck] = useState("");
+  const [socials, setSocials] = useState<SocialDraft[]>([emptySocialDraft()]);
   const [headingFont, setHeadingFont] = useState("default");
   const [shopDescription, setShopDescription] = useState("");
   const [bio, setBio] = useState("");
@@ -254,6 +264,17 @@ export default function PlatformCreatorDetailDialog({
     setBetaEnd(c.betaEndAt ? String(c.betaEndAt).slice(0, 10) : "");
     const b = c.branding || {};
     setShopName(typeof b.headline === "string" ? b.headline : "");
+    setUrlHandle(c.username || "");
+    const parsedSocials = parseCreatorSocials(c.socials, {
+      platform: c.socialPlatform,
+      username: c.socialUsername,
+      url: c.socialUrl,
+    });
+    setSocials(
+      parsedSocials.length > 0
+        ? parsedSocials.map((s) => ({ platform: s.platform, username: s.username }))
+        : [emptySocialDraft()],
+    );
     setHeadingFont(parseCreatorHeadingFontId(b.headingFont));
     setShopDescription(typeof b.description === "string" ? b.description : "");
     setBio(typeof c.bio === "string" ? c.bio : "");
@@ -271,6 +292,39 @@ export default function PlatformCreatorDetailDialog({
     );
   }, [assignable?.assigned]);
 
+  useEffect(() => {
+    const t = window.setTimeout(() => setUrlHandleCheck(urlHandle.trim()), 350);
+    return () => window.clearTimeout(t);
+  }, [urlHandle]);
+
+  const previewHandle = shopNameToHandle(urlHandle);
+  const { data: handleAvail } = useQuery<{
+    available: boolean;
+    handle?: string | null;
+    error?: string;
+  }>({
+    queryKey: [
+      "/api/creators/shop-name-available",
+      urlHandleCheck,
+      creatorId,
+      data?.creator?.applicationId,
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams({ name: urlHandleCheck });
+      if (creatorId) params.set("creatorId", creatorId);
+      if (data?.creator?.applicationId) {
+        params.set("applicationId", String(data.creator.applicationId));
+      }
+      const res = await fetch(`/api/creators/shop-name-available?${params}`);
+      return res.json();
+    },
+    enabled: !!creatorId && urlHandleCheck.length >= 2,
+  });
+  const handleBlocked =
+    !!urlHandle.trim() &&
+    previewHandle !== (data?.creator?.username || "") &&
+    (handleAvail?.available === false || !previewHandle);
+
   const overviewSaved = useMemo(() => {
     const c = data?.creator;
     if (!c) return false;
@@ -281,6 +335,12 @@ export default function PlatformCreatorDetailDialog({
       creatorStatus: c.status || "onboarding",
       merchantShop: c.shopDomain || "",
       shopName: typeof b.headline === "string" ? b.headline : "",
+      urlHandle: c.username || "",
+      socials: parseCreatorSocials(c.socials, {
+        platform: c.socialPlatform,
+        username: c.socialUsername,
+        url: c.socialUrl,
+      }).map((s) => `${s.platform}:${s.username}`),
       headingFont: parseCreatorHeadingFontId(b.headingFont),
       shopDescription: typeof b.description === "string" ? b.description : "",
       bio: typeof c.bio === "string" ? c.bio : "",
@@ -294,6 +354,10 @@ export default function PlatformCreatorDetailDialog({
       creatorStatus,
       merchantShop,
       shopName,
+      urlHandle,
+      socials: socials
+        .filter((s) => s.username.trim())
+        .map((s) => `${s.platform}:${s.username.trim()}`),
       headingFont,
       shopDescription,
       bio,
@@ -309,6 +373,8 @@ export default function PlatformCreatorDetailDialog({
     creatorStatus,
     merchantShop,
     shopName,
+    urlHandle,
+    socials,
     headingFont,
     shopDescription,
     bio,
@@ -324,6 +390,8 @@ export default function PlatformCreatorDetailDialog({
         monthlyGenerationAllowance: Number(monthlyAllowance),
         status: creatorStatus,
         shopDomain: merchantShop || null,
+        username: urlHandle,
+        socials,
         shopName,
         headingFont,
         shopDescription,
@@ -521,9 +589,34 @@ export default function PlatformCreatorDetailDialog({
                   placeholder={c.username}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Display name only. The URL stays /c/{c.username} and {c.username}.aiartstudio.app.
+                  Public title only. The URL / subdomain is the field below.
                 </p>
               </div>
+              <div className="space-y-1">
+                <Label>URL handle / subdomain</Label>
+                <Input
+                  value={urlHandle}
+                  onChange={(e) => setUrlHandle(e.target.value)}
+                  placeholder={c.username}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Becomes{" "}
+                  <span className="font-medium">
+                    /c/{previewHandle || c.username} and{" "}
+                    {previewHandle || c.username}.aiartstudio.app
+                  </span>
+                  . The previous URL stops working after you save.
+                </p>
+                {handleBlocked ? (
+                  <p className="text-xs text-destructive">
+                    {handleAvail?.error ||
+                      "Use 2–32 letters, numbers, or hyphens. Reserved words like www cannot be used."}
+                  </p>
+                ) : previewHandle && previewHandle !== c.username ? (
+                  <p className="text-xs text-muted-foreground">Handle available: {previewHandle}</p>
+                ) : null}
+              </div>
+              <CreatorSocialsFields value={socials} onChange={setSocials} />
               <div className="space-y-1">
                 <Label>Shop name font</Label>
                 <Select value={headingFont} onValueChange={setHeadingFont}>
@@ -698,7 +791,7 @@ export default function PlatformCreatorDetailDialog({
               </div>
               <Button
                 onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending || overviewSaved}
+                disabled={saveMutation.isPending || overviewSaved || handleBlocked}
               >
                 {saveMutation.isPending ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
