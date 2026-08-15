@@ -841,6 +841,18 @@ export default function AdminCustomizerPages() {
    * but the auto-calculator fills them with the same price.
    */
   const selectedVariants: BlankVariant[] = useMemo(() => {
+    const fromWizard =
+      wizardSizeIds.size > 0
+        ? buildVariantsFromAxes(
+            wizardSizes.length ? wizardSizes : (selectedBlank?.sizes ?? []),
+            wizardColors.length ? wizardColors : (selectedBlank?.frameColors ?? []),
+            Array.from(wizardSizeIds),
+            Array.from(wizardColorIds),
+          )
+        : [];
+    // After Apply, pricing must follow the wizard picks even if /blanks is still
+    // refreshing (that refetch is slow and used to fail the whole Next click).
+    if (formStep >= 4 && fromWizard.length > 0) return fromWizard;
     const raw = selectedBlank?.variants ?? [];
     const seen = new Set<string>();
     const deduped: BlankVariant[] = [];
@@ -851,20 +863,12 @@ export default function AdminCustomizerPages() {
       }
     }
     if (deduped.length > 0) return deduped;
-    // Wizard size ids (`14x14`) can miss catalogue variantMap keys (`14-x-14`),
-    // leaving blanks.variants empty after Apply. Build rows from the axes the
-    // merchant just picked so pricing never goes blank.
-    const sizes = wizardSizes.length ? wizardSizes : (selectedBlank?.sizes ?? []);
-    const colors = wizardColors.length ? wizardColors : (selectedBlank?.frameColors ?? []);
-    const sizeIds = wizardSizeIds.size ? Array.from(wizardSizeIds) : (selectedBlank?.selectedSizeIds ?? []);
-    const colorIds = wizardColorIds.size ? Array.from(wizardColorIds) : (selectedBlank?.selectedColorIds ?? []);
-    return buildVariantsFromAxes(sizes, colors, sizeIds, colorIds);
+    return fromWizard;
   }, [
+    formStep,
     selectedBlank?.variants,
     selectedBlank?.sizes,
     selectedBlank?.frameColors,
-    selectedBlank?.selectedSizeIds,
-    selectedBlank?.selectedColorIds,
     wizardSizes,
     wizardColors,
     wizardSizeIds,
@@ -1342,6 +1346,20 @@ export default function AdminCustomizerPages() {
     }
   }
 
+  type EnsureWizardResult = {
+    productId: string;
+    productTypeId: number;
+    providerId: number;
+    alreadyImported: boolean;
+    existingProductName?: string;
+  };
+
+  const selectedBlankRef = useRef(selectedBlank);
+  selectedBlankRef.current = selectedBlank;
+  const wizardProviderIdRef = useRef(wizardProviderId);
+  wizardProviderIdRef.current = wizardProviderId;
+  const lastEnsureResultRef = useRef<EnsureWizardResult | null>(null);
+
   /**
    * Switch product type onto the chosen Printify supplier (clean title — no " — Provider" in H1).
    * Used for silent prep during Variants + final apply.
@@ -1351,51 +1369,67 @@ export default function AdminCustomizerPages() {
       sizeIds: string[];
       colorIds: string[];
       quiet?: boolean;
-    }): Promise<{ productId: string; alreadyImported: boolean; existingProductName?: string }> => {
-      if (!selectedBlank?.printifyBlueprintId || wizardProviderId == null) {
+    }): Promise<EnsureWizardResult> => {
+      const blank = selectedBlankRef.current;
+      const providerId = wizardProviderIdRef.current;
+      const last = lastEnsureResultRef.current;
+      const blueprintId = blank?.printifyBlueprintId;
+      if (!blueprintId || providerId == null) {
         throw new Error("Choose a print provider before continuing.");
       }
-      const sameProvider = wizardProviderId === selectedBlank.printifyProviderId;
-      const sizeIds = remapPickedIds(args.sizeIds, selectedBlank.sizes);
-      const colorIds = remapPickedIds(args.colorIds, selectedBlank.frameColors);
+      const productTypeId = blank?.productTypeId ?? last?.productTypeId;
+      const sameProvider =
+        providerId === blank?.printifyProviderId ||
+        (last != null && last.providerId === providerId && last.productTypeId === productTypeId);
+      const sizeIds = remapPickedIds(args.sizeIds, blank?.sizes);
+      const colorIds = remapPickedIds(args.colorIds, blank?.frameColors);
 
-      if (sameProvider && selectedBlank.productTypeId) {
-        const cleanName = stripProviderSuffix(selectedBlank.title);
-        if (cleanName && cleanName !== selectedBlank.title) {
+      if (sameProvider && productTypeId) {
+        const cleanName = stripProviderSuffix(blank?.title || "");
+        if (blank?.title && cleanName && cleanName !== blank.title) {
           try {
-            await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}`, {
+            await apiRequest("PATCH", `/api/admin/product-types/${productTypeId}`, {
               name: cleanName,
             });
           } catch {
             // non-fatal — variants still save
           }
         }
-        const res = await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}/variants`, {
+        const res = await apiRequest("PATCH", `/api/admin/product-types/${productTypeId}/variants`, {
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
         });
         await res.json();
-        return {
-          productId: selectedBlank.productId ? selectedBlank.productId : `pt:${selectedBlank.productTypeId}`,
+        const result: EnsureWizardResult = {
+          productId: blank?.productId ? blank.productId : `pt:${productTypeId}`,
+          productTypeId,
+          providerId,
           alreadyImported: false,
         };
+        lastEnsureResultRef.current = result;
+        return result;
       }
 
       // Never append supplier to the product name — that leaked into storefront H1s.
-      const name = stripProviderSuffix(selectedBlank.title) || selectedBlank.title;
+      const name = stripProviderSuffix(blank?.title || "") || blank?.title || "Customizer product";
       try {
         const res = await apiRequest("POST", "/api/admin/printify/import", {
-          blueprintId: selectedBlank.printifyBlueprintId,
+          blueprintId,
           name,
-          providerId: wizardProviderId,
+          providerId,
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
         });
         const data = await res.json();
-        return {
-          productId: data?.shopifyProductId ? String(data.shopifyProductId) : `pt:${data?.id}`,
+        const importedId = Number(data?.id);
+        const result: EnsureWizardResult = {
+          productId: data?.shopifyProductId ? String(data.shopifyProductId) : `pt:${importedId}`,
+          productTypeId: importedId,
+          providerId,
           alreadyImported: false,
         };
+        lastEnsureResultRef.current = result;
+        return result;
       } catch (err: any) {
         const text = err instanceof Error ? err.message : String(err);
         const jsonStart = text.indexOf("{");
@@ -1418,11 +1452,15 @@ export default function AdminCustomizerPages() {
                   // non-fatal
                 }
               }
-              return {
+              const result: EnsureWizardResult = {
                 productId: `pt:${payload.existingProductTypeId}`,
+                productTypeId: Number(payload.existingProductTypeId),
+                providerId,
                 alreadyImported: true,
                 existingProductName: cleanName,
               };
+              lastEnsureResultRef.current = result;
+              return result;
             }
           } catch {
             // fall through
@@ -1431,8 +1469,58 @@ export default function AdminCustomizerPages() {
         throw err;
       }
     },
-    [selectedBlank, wizardProviderId],
+    [],
   );
+
+  const ensureQueueRef = useRef(Promise.resolve());
+
+  const runEnsureWizardProvider = useCallback(
+    (args: { sizeIds: string[]; colorIds: string[]; quiet?: boolean }) => {
+      const run = ensureQueueRef.current.then(
+        () => ensureWizardProviderWithRetry(args),
+        () => ensureWizardProviderWithRetry(args),
+      );
+      ensureQueueRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    },
+    [ensureWizardProvider],
+  );
+
+  async function ensureWizardProviderWithRetry(args: {
+    sizeIds: string[];
+    colorIds: string[];
+    quiet?: boolean;
+  }) {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await ensureWizardProvider(args);
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const transient = /failed to respond|502|503|504|ECONNRESET|network|timeout/i.test(msg);
+        if (!transient || attempt === 1) throw err;
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    }
+    throw lastErr;
+  }
+
+  async function refreshBlanksBestEffort() {
+    try {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await Promise.race([
+        queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] }),
+        new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+      ]);
+    } catch (err) {
+      console.warn("[create-page] blanks refresh failed (continuing):", err);
+    }
+  }
 
   /** Silent supplier prep as soon as Variants loads — unlocks costs prefetch while merchant picks sizes. */
   const prepareProviderMutation = useMutation({
@@ -1443,19 +1531,17 @@ export default function AdminCustomizerPages() {
         wizardSizes.map((s) => s.id),
         wizardColors.map((c) => c.id),
       );
-      return ensureWizardProvider({
+      return runEnsureWizardProvider({
         sizeIds: trimmed.sizeIds,
         colorIds: trimmed.colorIds,
         quiet: true,
       });
     },
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+    onSuccess: (result) => {
       setFormProductId(result.productId);
-      // Kick costs fetch (enabled once blanks show matching provider).
-      void queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+      void refreshBlanksBestEffort().then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+      });
     },
     onError: (err: Error) => {
       // Quiet — merchant can still finish Variants; final Next will retry.
@@ -1487,6 +1573,7 @@ export default function AdminCustomizerPages() {
 
   useEffect(() => {
     preparedProviderKeyRef.current = null;
+    lastEnsureResultRef.current = null;
   }, [wizardProviderId]);
 
   /** Apply final size/colour picks, then Pricing (costs often already warm from background prep). */
@@ -1495,15 +1582,12 @@ export default function AdminCustomizerPages() {
       if (!wizardVariantCountValid) {
         throw new Error("Select sizes/colours within Shopify’s 100-variant limit.");
       }
-      return ensureWizardProvider({
+      return runEnsureWizardProvider({
         sizeIds: Array.from(wizardSizeIds),
         colorIds: Array.from(wizardColorIds),
       });
     },
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
       setFormProductId(result.productId);
       if (result.alreadyImported) {
         toast({
@@ -1515,6 +1599,7 @@ export default function AdminCustomizerPages() {
       setVariantPricesBoth({});
       setPriceErrors({});
       setFormStep(4);
+      void refreshBlanksBestEffort();
     },
     onError: (err: any) => {
       toast({
@@ -1652,13 +1737,6 @@ export default function AdminCustomizerPages() {
             ? `Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants. Deselect some sizes or colours.`
             : "Wait for sizes/colours to load, then select at least one of each.",
         variant: "destructive",
-      });
-      return;
-    }
-    if (prepareProviderMutation.isPending) {
-      toast({
-        title: "Almost ready",
-        description: "Finishing supplier setup so pricing can stay warm — try Next again in a moment.",
       });
       return;
     }
