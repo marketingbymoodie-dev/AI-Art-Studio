@@ -7597,10 +7597,11 @@ ${orientationExtra}
         });
         if (asserted.ok) {
           const entitled = await resolveCreatorStorefrontStyles(asserted.creator.id);
+          const { displayCreatorStyleName } = await import("@shared/creatorMarketplace");
           stylePresets = mapDbStylesForDesigner(
             entitled.map((s) => ({
               id: s.stylePresetId,
-              name: s.name,
+              name: displayCreatorStyleName(s.name),
               promptPrefix: s.promptPrefix,
               category: s.category,
               baseImageUrl: s.baseImageUrl,

@@ -103,6 +103,11 @@ export function isAssignableCreatorScope(scope: string | null | undefined): bool
   return (CREATOR_ASSIGNABLE_STYLE_SCOPES as readonly string[]).includes(String(scope || ""));
 }
 
+/** Customer-facing label — hide the internal Graphics twin suffix. Keep "(custom)". */
+export function displayCreatorStyleName(name: string | null | undefined): string {
+  return String(name || "").replace(/\s*\(graphics\)\s*$/i, "").trim();
+}
+
 /** Strip " (Graphics)" / " (custom)" so apparel + graphics twins collapse in the assign catalog. */
 export function canonicalCreatorStyleName(name: string | null | undefined): string {
   return String(name || "")

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   ensureCreatorAnalyticsSession,
   getOrCreateCreatorSessionId,
+  rememberCreatorLatestArtwork,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
 import { useMutation } from "@tanstack/react-query";
@@ -6663,6 +6664,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         imageUrl: imageUrl,
         prompt: prompt,
       });
+      if (isCreatorStorefront && imageUrl) {
+        rememberCreatorLatestArtwork(imageUrl);
+      }
       if (reuseRegeneratePendingToastRef.current) {
         reuseRegeneratePendingToastRef.current = false;
         toast({
@@ -11931,7 +11935,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               <div className="relative">
                 {isCreatorStorefront && creatorUsernameParam ? (
                   <a
-                    href={`/c/${encodeURIComponent(creatorUsernameParam)}`}
+                    href={`/c/${encodeURIComponent(creatorUsernameParam)}/products`}
                     className="mb-2 inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
                   >
                     <ChevronLeft className="w-4 h-4" />

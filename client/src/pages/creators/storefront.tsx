@@ -6,6 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink, Palette } from "lucide-react";
 import {
   ensureCreatorAnalyticsSession,
+  getOrCreateCreatorSessionId,
+  readCreatorLatestArtwork,
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
 import {
@@ -65,6 +67,7 @@ function designerHref(opts: {
   creator: CreatorBoot;
   productTypeId?: number | null;
   title?: string | null;
+  artworkUrl?: string | null;
 }): string {
   const params = new URLSearchParams();
   if (opts.platformShop) params.set("shop", opts.platformShop);
@@ -77,6 +80,7 @@ function designerHref(opts: {
   params.set("creatorUsername", opts.creator.username);
   params.set("creatorId", opts.creator.id);
   params.set("storefront", "true");
+  if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
   return `/s/designer?${params.toString()}`;
 }
 
@@ -154,6 +158,22 @@ function useCreatorPages(username: string) {
   });
 }
 
+function useLatestCreatorArtwork(username: string) {
+  const sessionId = typeof window !== "undefined" ? getOrCreateCreatorSessionId() : "";
+  const local = typeof window !== "undefined" ? readCreatorLatestArtwork() : null;
+  const { data } = useQuery<{ artworkUrl: string | null }>({
+    queryKey: [`/api/creators/storefront/${username}/latest-design`, sessionId],
+    queryFn: async () => {
+      const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+      const res = await fetch(`/api/creators/storefront/${username}/latest-design${qs}`);
+      if (!res.ok) return { artworkUrl: local };
+      return res.json();
+    },
+    enabled: !!username && !!sessionId,
+  });
+  return data?.artworkUrl || local || null;
+}
+
 function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: string }) {
   const branding = creator.branding || {};
   const name = storeName(creator);
@@ -165,6 +185,7 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
   const { data } = useCreatorPages(creator.username);
   const pages = data?.pages ?? [];
   const platformShop = data?.platformShopDomain ?? null;
+  const latestArtworkUrl = useLatestCreatorArtwork(creator.username);
 
   useEffect(() => {
     for (const p of pages.slice(0, 4)) {
@@ -248,6 +269,7 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
               <ProductCard
                 key={p.id}
                 page={p}
+                artworkUrl={latestArtworkUrl}
                 href={
                   platformShop
                     ? designerHref({
@@ -256,6 +278,7 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
                         creator,
                         productTypeId: p.productTypeId,
                         title: p.title,
+                        artworkUrl: latestArtworkUrl,
                       })
                     : `${basePath}/customize/${p.handle}`
                 }
@@ -286,21 +309,34 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
 function ProductCard({
   page,
   href,
+  artworkUrl,
 }: {
   page: StorefrontPage;
   href: string;
+  artworkUrl?: string | null;
 }) {
   return (
     <a
       href={href}
       className="block overflow-hidden rounded-lg border transition-colors hover:border-foreground/40 hover:bg-muted/20"
     >
-      {page.imageUrl ? (
-        <img
-          src={page.imageUrl}
-          alt=""
-          className="aspect-square w-full object-cover bg-muted"
-        />
+      {page.imageUrl || artworkUrl ? (
+        <div className="relative aspect-square w-full bg-muted overflow-hidden">
+          {page.imageUrl ? (
+            <img
+              src={page.imageUrl}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : null}
+          {artworkUrl ? (
+            <img
+              src={artworkUrl}
+              alt=""
+              className="absolute left-1/2 top-[40%] w-[46%] -translate-x-1/2 -translate-y-1/2 object-contain drop-shadow-md"
+            />
+          ) : null}
+        </div>
       ) : null}
       <div className="p-5">
       <div className="font-semibold">{page.title}</div>
@@ -329,6 +365,8 @@ function ProductsView({
   const { data, isLoading } = useCreatorPages(creator.username);
   const pages = data?.pages ?? [];
   const platformShop = data?.platformShopDomain ?? null;
+  const latestArtworkUrl = useLatestCreatorArtwork(creator.username);
+  const backgroundUrl = homeBackgroundUrl(creator);
 
   useEffect(() => {
     for (const p of pages.slice(0, 6)) {
@@ -338,14 +376,30 @@ function ProductsView({
     }
   }, [pages]);
 
+  const heading = (
+    <>
+      <h1 className={`text-2xl font-bold ${backgroundUrl ? "text-white" : ""}`}>Products</h1>
+      <p className={backgroundUrl ? "text-white/80" : "text-muted-foreground"}>
+        Pick a product and generate a design curated by {storeName(creator)}.
+      </p>
+    </>
+  );
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Products</h1>
-        <p className="text-muted-foreground">
-          Pick a product and generate a design curated by {storeName(creator)}.
-        </p>
-      </div>
+      {backgroundUrl ? (
+        <section className="relative -mt-10 ml-[calc(50%-50vw)] w-screen overflow-hidden">
+          <img
+            src={backgroundUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="relative mx-auto max-w-5xl px-4 py-12">{heading}</div>
+        </section>
+      ) : (
+        <div>{heading}</div>
+      )}
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2">
           <Skeleton className="h-32 w-full" />
@@ -359,6 +413,7 @@ function ProductsView({
             <ProductCard
               key={p.id}
               page={p}
+              artworkUrl={latestArtworkUrl}
               href={
                 platformShop
                   ? designerHref({
@@ -367,6 +422,7 @@ function ProductsView({
                       creator,
                       productTypeId: p.productTypeId,
                       title: p.title,
+                      artworkUrl: latestArtworkUrl,
                     })
                   : `${basePath}/customize/${p.handle}`
               }

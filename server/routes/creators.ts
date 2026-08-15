@@ -16,6 +16,7 @@ import {
   creatorOrders,
   creators,
   customizerPages,
+  generationJobs,
   productTypes,
 } from "@shared/schema";
 import {
@@ -665,6 +666,43 @@ export function registerCreatorMarketplaceRoutes(
     } catch (e: any) {
       console.error("[creators] storefront pages failed:", e);
       res.status(500).json({ error: e?.message || "Failed to load pages" });
+    }
+  });
+
+  /** Latest completed artwork for this visitor — used to preview the design on every product card. */
+  app.get("/api/creators/storefront/:username/latest-design", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      const sessionId = String(req.query.sessionId || "").trim();
+      if (!sessionId) return res.json({ artworkUrl: null });
+      const creatorId = await resolveCreatorId({
+        creatorUsername: req.params.username,
+        shop: getCreatorPlatformShopDomain(),
+        requirePlatformShop: false,
+      });
+      if (!creatorId) return res.status(404).json({ error: "Creator not found." });
+      const [job] = await db
+        .select({
+          artworkUrl: generationJobs.designImageUrl,
+          jobId: generationJobs.id,
+        })
+        .from(generationJobs)
+        .where(
+          and(
+            eq(generationJobs.creatorId, creatorId),
+            eq(generationJobs.creatorSessionId, sessionId),
+            eq(generationJobs.status, "complete"),
+          ),
+        )
+        .orderBy(desc(generationJobs.createdAt))
+        .limit(1);
+      res.json({
+        artworkUrl: job?.artworkUrl || null,
+        jobId: job?.jobId || null,
+      });
+    } catch (e: any) {
+      console.error("[creators] latest-design failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load latest design" });
     }
   });
 

@@ -34,6 +34,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   CREATOR_SHARE_BASES,
   CREATOR_STATUSES,
+  displayCreatorStyleName,
 } from "@shared/creatorMarketplace";
 import { CreatorProfileImageField } from "@/components/creators/CreatorProfileImageField";
 import { GripVertical, Loader2 } from "lucide-react";
@@ -862,7 +863,7 @@ export default function PlatformCreatorDetailDialog({
                         <div className="flex min-w-0 items-start gap-1">
                           <GripVertical className="mt-0.5 h-4 w-4 shrink-0 cursor-grab text-muted-foreground" />
                           <div>
-                            <div className="font-medium">{s.name}</div>
+                            <div className="font-medium">{displayCreatorStyleName(s.name)}</div>
                             <div className="text-xs text-muted-foreground">
                               {s.category} · {s.creatorScope}
                               {s.currentlyAvailable ? "" : " · Currently Unavailable"}
@@ -955,7 +956,7 @@ export default function PlatformCreatorDetailDialog({
                               }}
                             />
                             <span>
-                              <span className="font-medium">{s.name}</span>
+                              <span className="font-medium">{displayCreatorStyleName(s.name)}</span>
                               <span className="block text-xs text-muted-foreground">
                                 {s.category} · {s.creatorScope}
                                 {already ? " · assigned" : ""}

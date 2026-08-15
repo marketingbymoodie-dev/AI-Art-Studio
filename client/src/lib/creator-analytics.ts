@@ -4,6 +4,25 @@
 import type { CreatorEventType } from "@shared/creatorMarketplace";
 
 const SESSION_KEY = "appai_creator_session";
+const LATEST_ARTWORK_KEY = "appai_creator_latest_artwork";
+
+export function rememberCreatorLatestArtwork(url: string | null | undefined) {
+  const v = String(url || "").trim();
+  if (!v) return;
+  try {
+    sessionStorage.setItem(LATEST_ARTWORK_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readCreatorLatestArtwork(): string | null {
+  try {
+    return sessionStorage.getItem(LATEST_ARTWORK_KEY);
+  } catch {
+    return null;
+  }
+}
 
 export function getOrCreateCreatorSessionId(): string {
   try {

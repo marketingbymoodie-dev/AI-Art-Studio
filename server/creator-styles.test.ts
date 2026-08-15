@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeStyleVisibility,
   dedupeCreatorCatalogStyles,
+  displayCreatorStyleName,
   isAssignableCreatorScope,
 } from "@shared/creatorMarketplace";
 
@@ -77,5 +78,10 @@ describe("creator style visibility", () => {
       "Centered Graphic",
       "Photorealistic",
     ]);
+  });
+
+  it("hides the Graphics suffix on customer-facing labels", () => {
+    expect(displayCreatorStyleName("Illustrated Motif (Graphics)")).toBe("Illustrated Motif");
+    expect(displayCreatorStyleName("Pet Portraits (custom)")).toBe("Pet Portraits (custom)");
   });
 });

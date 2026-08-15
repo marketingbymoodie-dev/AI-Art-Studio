@@ -7,6 +7,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { StylePreset } from "./types";
+import { displayCreatorStyleName } from "@shared/creatorMarketplace";
 
 interface StyleSelectorProps {
   stylePresets: StylePreset[];
@@ -31,7 +32,7 @@ export function StyleSelector({
         <SelectContent>
           {stylePresets.map((style) => (
             <SelectItem key={style.id} value={style.id}>
-              {style.name}
+              {displayCreatorStyleName(style.name)}
             </SelectItem>
           ))}
         </SelectContent>
