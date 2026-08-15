@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPrintifyToShopifyVariantIdMap,
+  displayRetailPrice,
+  hasPositiveRetailPrice,
+  minPositiveRetailPrice,
   pickLowestPricedShopifyVariant,
   resolveStorefrontHeadlinePrice,
 } from "./shopifyVariantPriceSync";
@@ -94,6 +97,27 @@ describe("pickLowestPricedShopifyVariant", () => {
       { id: 2, title: "Small", price: "21.95" },
     ]);
     expect(cheapest?.id).toBe(2);
+  });
+});
+
+describe("displayRetailPrice / hasPositiveRetailPrice", () => {
+  it("never treats zero or blank as a display price", () => {
+    expect(displayRetailPrice("0.00")).toBeNull();
+    expect(displayRetailPrice("$0.00")).toBeNull();
+    expect(displayRetailPrice("")).toBeNull();
+    expect(displayRetailPrice(null)).toBeNull();
+    expect(hasPositiveRetailPrice("0.00")).toBe(false);
+  });
+
+  it("formats a real retail amount", () => {
+    expect(displayRetailPrice("29.95")).toBe("29.95");
+    expect(displayRetailPrice("$18.9")).toBe("18.90");
+    expect(hasPositiveRetailPrice("29.95")).toBe(true);
+  });
+
+  it("picks the cheapest positive wizard price", () => {
+    expect(minPositiveRetailPrice({ a: "0.00", b: "32.95", c: "29.95" })).toBe(29.95);
+    expect(minPositiveRetailPrice({ a: "0", b: "" })).toBeNull();
   });
 });
 

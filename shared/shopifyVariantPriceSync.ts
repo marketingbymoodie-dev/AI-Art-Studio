@@ -156,8 +156,43 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
 }
 
 export function parseShopifyVariantPrice(price: string | number | null | undefined): number {
-  const n = parseFloat(String(price ?? ""));
+  const n = parseFloat(String(price ?? "").replace(/[^0-9.+-]/g, ""));
   return Number.isFinite(n) ? n : 0;
+}
+
+/** True only when the cached/Shopify price is a real retail amount. */
+export function hasPositiveRetailPrice(price: string | number | null | undefined): boolean {
+  return parseShopifyVariantPrice(price) > 0;
+}
+
+/**
+ * Customer-facing amount (e.g. "29.95"), or null when missing/zero.
+ * Never returns "0.00" — catalogs must not advertise a free product.
+ */
+export function displayRetailPrice(price: string | number | null | undefined): string | null {
+  const n = parseShopifyVariantPrice(price);
+  return n > 0 ? n.toFixed(2) : null;
+}
+
+/** Cheapest positive price from a wizard/Shopify map, or null if none. */
+export function minPositiveRetailPrice(
+  prices:
+    | Array<string | number | null | undefined>
+    | Record<string, string | number | null | undefined>
+    | null
+    | undefined,
+): number | null {
+  const values = Array.isArray(prices)
+    ? prices
+    : prices && typeof prices === "object"
+      ? Object.values(prices)
+      : [];
+  let min = Infinity;
+  for (const p of values) {
+    const n = parseShopifyVariantPrice(p);
+    if (n > 0 && n < min) min = n;
+  }
+  return Number.isFinite(min) ? min : null;
 }
 
 /** Shopify lists variants in option order (often largest size first). "From" must use the cheapest. */
