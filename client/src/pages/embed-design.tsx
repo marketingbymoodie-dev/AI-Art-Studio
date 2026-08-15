@@ -741,6 +741,13 @@ function designSessionStorageKey(
   return `aiart:design:${shop || "local"}:${productHandle || "unknown"}:pt${pt}`;
 }
 
+function buildReuseRegeneratePrompt(originalPrompt?: string): string {
+  const idea = (originalPrompt || "").trim();
+  const base =
+    "Recreate this artwork as a SINGLE centered motif. Keep one subject only — do not repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the new aspect ratio; leave empty space instead.";
+  return idea ? `${base} Original idea: ${idea}` : base;
+}
+
 /** Cross-product Reuse Artwork handoff (survives full page nav as fallback). */
 const REUSE_HANDOFF_KEY = "appai_reuse_handoff";
 
@@ -5835,6 +5842,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Fetch Printify mockups for shared designs once product config is loaded.
   // For AOP products: show Pattern Customizer instead of auto-fetching mockups (same as post-generation).
   useEffect(() => {
+    if (reuseAwaitingGenerate) return;
     if (
       isSharedDesign &&
       generatedDesign?.imageUrl &&
@@ -5865,12 +5873,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
       }
     }
-  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState]);
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
   useEffect(() => {
     if (
+      reuseAwaitingGenerate ||
       !isStorefront ||
       !generatedDesign?.imageUrl ||
       !productTypeConfig?.hasPrintifyMockups ||
@@ -5904,7 +5913,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       transform.x,
       transform.y
     );
-  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState]);
+  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
 
   /**
    * Admin tester (Printify zoom products): persist scale/position/size for the
@@ -9304,9 +9313,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // Full-page nav was dropping sessionStorage/URL handoff so Body Pillow landed blank.
       if (opts.regenerate && opts.artworkUrl) {
         const originalPrompt = (opts.prompt || "").trim();
-        const reusePromptText = originalPrompt
-          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
-          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+        const reusePromptText = buildReuseRegeneratePrompt(originalPrompt);
 
         writeReuseHandoff({
           jobId: opts.designId || null,
@@ -9336,18 +9343,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           autoReuseHydratedRef.current = true;
           autoReuseSeedingRef.current = true;
           autoReuseGenerateDoneRef.current = true;
-          setGeneratedDesign({
-            id: opts.designId || `reuse-${Date.now()}`,
-            imageUrl: toAbsoluteImageUrl(opts.artworkUrl),
-            prompt: reusePromptText,
-          });
+          setGeneratedDesign(null);
+          setFlatPlacerEditOpen(false);
+          setFlatPlacerState(null);
+          setShowPatternStep(false);
+          setAopPendingMotifUrl(null);
+          setPrintifyMockups([]);
+          setPrintifyMockupImages([]);
           setReuseAwaitingGenerate(true);
           loadDesignAppliedRef.current = false;
           setBridgeLoadDesignId("");
           clearReuseHandoff();
           toast({
             title: "Reference image ready",
-            description: "Pick a style, then click Generate when you want a new image.",
+            description: "The product preview stays empty until you generate a new image. Pick a style, then click Generate.",
           });
           setReuseBusy(false);
           return;
@@ -9561,9 +9570,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const abs = toAbsoluteImageUrl(opts.artworkUrl);
       const originalPrompt = (opts.prompt || "").trim();
       if (opts.regenerate) {
-        const reusePromptText = originalPrompt
-          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
-          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+        const reusePromptText = buildReuseRegeneratePrompt(originalPrompt);
         reuseInAppBusyRef.current = true;
         setReuseBusy(true);
         setReuseBusyLabel("Preparing artwork…");
@@ -9580,17 +9587,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           autoReuseHydratedRef.current = true;
           autoReuseSeedingRef.current = true;
           autoReuseGenerateDoneRef.current = true;
-          setGeneratedDesign({
-            id: opts.designId || `reuse-${Date.now()}`,
-            imageUrl: abs,
-            prompt: reusePromptText,
-          });
+          setGeneratedDesign(null);
+          setFlatPlacerEditOpen(false);
+          setFlatPlacerState(null);
+          setShowPatternStep(false);
+          setAopPendingMotifUrl(null);
+          setPrintifyMockups([]);
+          setPrintifyMockupImages([]);
           setReuseAwaitingGenerate(true);
           loadDesignAppliedRef.current = false;
           setBridgeLoadDesignId("");
           toast({
             title: "Reference image ready",
-            description: "Pick a style, then click Generate when you want a new image.",
+            description: "The product preview stays empty until you generate a new image. Pick a style, then click Generate.",
           });
           setReuseBusy(false);
         } catch (err: any) {
@@ -9852,19 +9861,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const preview = URL.createObjectURL(blob);
         if (cancelled) return;
 
-        const reusePromptText = originalPrompt
-          ? `Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: ${originalPrompt}`
-          : "Recreate this artwork as closely as possible for the new product aspect ratio";
+        const reusePromptText = buildReuseRegeneratePrompt(originalPrompt);
 
         setReferenceImages([file]);
         setReferencePreviews([preview]);
         setPrompt(reusePromptText);
         pendingReuseGenerateRef.current = null;
-        setGeneratedDesign({
-          id: jobId || `reuse-${Date.now()}`,
-          imageUrl: toAbsoluteImageUrl(artworkUrl),
-          prompt: reusePromptText,
-        });
+        setGeneratedDesign(null);
+        setFlatPlacerEditOpen(false);
+        setFlatPlacerState(null);
+        setShowPatternStep(false);
+        setAopPendingMotifUrl(null);
+        setPrintifyMockups([]);
+        setPrintifyMockupImages([]);
         setReuseAwaitingGenerate(true);
         loadDesignAppliedRef.current = false;
         setBridgeLoadDesignId("");
@@ -9874,7 +9883,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         clearReuseUrlParams();
         toast({
           title: "Reference image ready",
-          description: "Pick a style, then click Generate when you want a new image.",
+          description: "The product preview stays empty until you generate a new image. Pick a style, then click Generate.",
         });
       } catch (err: any) {
         console.error("[ReuseArtwork] hydrate failed:", err);

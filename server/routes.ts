@@ -721,10 +721,25 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
 6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+8. COMPOSITION FORMAT: Match the requested aspect ratio. Keep ONE centered subject. Do NOT repeat, duplicate, tile, or make a triptych to fill extra space — leave #FF00FF around the subject instead.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+10. NO REPEATS: Never draw the same subject more than once.
 ${APPAREL_CHROMA_MATTING_LINE}
 `;
+}
+
+function singleCustomerReferenceInstruction(opts: {
+  stylePreset?: string | null;
+  userPrompt?: string;
+}): string {
+  const isTextStyle = opts.stylePreset && ["opinionated", "quotes"].includes(opts.stylePreset);
+  if (isTextStyle) {
+    return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
+  }
+  if ((opts.userPrompt || "").toLowerCase().includes("recreate this artwork")) {
+    return `The reference image is the customer's existing artwork. Recreate it as ONE single centered subject. Do NOT repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the canvas — leave empty space (or the required background color) instead.`;
+  }
+  return `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design as a SINGLE centered subject. Do NOT repeat, duplicate, tile, or make a triptych.`;
 }
 
 /**
@@ -2788,10 +2803,10 @@ ${orientationExtra}
         if (effectiveStyleBaseUrl && customerImageUrl) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
         } else if (customerImageUrl) {
-          const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
-          refInstruction = isTextStyle
-            ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
-            : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+          refInstruction = singleCustomerReferenceInstruction({
+            stylePreset,
+            userPrompt: userDescAdmin,
+          });
         } else {
           refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
         }
@@ -3404,6 +3419,7 @@ console.log("[shopify/session] installation ok", {
 
       const embedBillingReqId = `shopify-gen-${Date.now().toString(36)}`;
       let stylePromptPrefix = "";
+      let stylePromptPrefixDark: string | null = null;
       let styleName = "";
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
@@ -3417,6 +3433,7 @@ console.log("[shopify/session] installation ok", {
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
+          stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3506,31 +3523,6 @@ console.log("[shopify/session] installation ok", {
         fullPrompt = prompt;
       }
 
-      // Build shape-specific safe zone instructions
-      const printShape = productType?.printShape || "rectangle";
-      const bleedMargin = productType?.bleedMarginPercent || 5;
-      const safeZonePercent = 100 - (bleedMargin * 2);
-      
-      let shapeInstructions = "";
-      if (printShape === "circle") {
-        shapeInstructions = `
-CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
-- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
-- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
-- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
-- Design with radial/circular composition in mind`;
-      } else if (printShape === "square") {
-        shapeInstructions = `
-SQUARE PRINT AREA: This design is for a square product.
-- Center important elements within the inner ${safeZonePercent}% of the canvas
-- Keep a ${bleedMargin}% margin from all edges for bleed`;
-      } else {
-        shapeInstructions = `
-RECTANGULAR PRINT AREA:
-- Keep important elements within the inner ${safeZonePercent}% of the canvas
-- Maintain a ${bleedMargin}% margin from edges for bleed`;
-      }
-
       // Determine aspect ratio and orientation
       if (
         (embedIsApparelEarly && !embedIsAllOverPrintEarly) ||
@@ -3555,28 +3547,79 @@ RECTANGULAR PRINT AREA:
         }
       }
 
-      const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
-      const aspectRatioValue = arW / arH;
-      let orientationDescription: string;
-      if (aspectRatioValue > 1.05) {
-        orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
-      } else if (aspectRatioValue < 0.95) {
-        orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
-      } else {
-        orientationDescription = `SQUARE`;
-      }
-      
       const cylindricalWrap = useCylindricalWrapPrompt({
         designerType: productType?.designerType,
         isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
       });
-      const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
-      const orientationExtra = buildOrientationCompositionExtra(
-        aspectRatioValue,
-        productType?.designerType,
-      );
-      
-      const sizingRequirements = `
+
+      let sizingRequirements: string;
+      if (embedIsApparelEarly && embedIsAllOverPrintEarly) {
+        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
+        sizingRequirements = usePatternAop
+          ? buildAopPatternSizingRequirements(userDescEmbed)
+          : buildAopSizingRequirements(userDescEmbed);
+      } else if (embedIsApparelEarly) {
+        let colorTier: ColorTier = "light";
+        if (frameColor && productType) {
+          const frameColors = JSON.parse(productType.frameColors || "[]");
+          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+          if (selectedColor?.hex) {
+            colorTier = getColorTier(selectedColor.hex);
+          }
+        }
+        const isDarkTier = colorTier === "dark";
+        if (embedStyleCategory === "apparel" && isDarkTier && stylePreset) {
+          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
+          if (darkTierPrompt) {
+            fullPrompt = userDescEmbed ? `${userDescEmbed}, ${darkTierPrompt}` : darkTierPrompt;
+          }
+        }
+        sizingRequirements = buildApparelChromaSizingRequirements(
+          apparelMotifDesignColors(userDescEmbed, isDarkTier),
+        );
+      } else {
+        const printShape = productType?.printShape || "rectangle";
+        const bleedMargin = productType?.bleedMarginPercent || 5;
+        const safeZonePercent = 100 - (bleedMargin * 2);
+
+        let shapeInstructions = "";
+        if (printShape === "circle") {
+          shapeInstructions = `
+CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
+- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
+- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
+- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
+- Design with radial/circular composition in mind`;
+        } else if (printShape === "square") {
+          shapeInstructions = `
+SQUARE PRINT AREA: This design is for a square product.
+- Center important elements within the inner ${safeZonePercent}% of the canvas
+- Keep a ${bleedMargin}% margin from all edges for bleed`;
+        } else {
+          shapeInstructions = `
+RECTANGULAR PRINT AREA:
+- Keep important elements within the inner ${safeZonePercent}% of the canvas
+- Maintain a ${bleedMargin}% margin from edges for bleed`;
+        }
+
+        const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
+        const aspectRatioValue = arW / arH;
+        let orientationDescription: string;
+        if (aspectRatioValue > 1.05) {
+          orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
+        } else if (aspectRatioValue < 0.95) {
+          orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
+        } else {
+          orientationDescription = `SQUARE`;
+        }
+
+        const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+        const orientationExtra = buildOrientationCompositionExtra(
+          aspectRatioValue,
+          productType?.designerType,
+        );
+
+        sizingRequirements = `
 
 === CRITICAL CANVAS REQUIREMENTS (MUST FOLLOW) ===
 CANVAS: ${orientationDescription} format
@@ -3591,12 +3634,10 @@ ${orientationExtra}
 3. The subject must NOT appear floating - complete the background behind and around it
 4. This is for high-quality printing - create finished artwork that bleeds to all edges
 `;
+      }
 
-      // Build final prompt: CONSTRAINTS FIRST, then style, then user description
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      const constraintsFirst = sizingRequirements;
-      const styleAndContent = fullPrompt;
-      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
@@ -3648,10 +3689,10 @@ ${orientationExtra}
         } else if (embedCustomerImageUrls.length > 1) {
           refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
         } else if (embedCustomerImageUrl) {
-          const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
-          refInstruction = isTextStyle
-            ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE element integrated INTO the typographic composition. Do NOT duplicate the subject.`
-            : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+          refInstruction = singleCustomerReferenceInstruction({
+            stylePreset,
+            userPrompt: userDescEmbed,
+          });
         } else {
           refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
         }
@@ -8497,10 +8538,10 @@ ${orientationExtra}
             } else if (sfCustomerImageUrls.length > 1) {
               refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
             } else if (sfCustomerImageUrl) {
-              const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
-              refInstruction = isTextStyle
-                ? `Using the provided reference image, incorporate its subject as a SINGLE element integrated INTO the typographic composition. Do NOT duplicate.`
-                : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+              refInstruction = singleCustomerReferenceInstruction({
+                stylePreset,
+                userPrompt: userDescSf,
+              });
             } else {
               refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
             }
