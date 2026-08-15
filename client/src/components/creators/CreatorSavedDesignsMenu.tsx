@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Images } from "lucide-react";
+import { ChevronDown, Images, X } from "lucide-react";
 import { API_BASE } from "@/lib/urlBase";
 
 type SavedDesign = {
@@ -167,6 +167,8 @@ export function CreatorSavedDesignsMenu({
   const [loading, setLoading] = useState(false);
   const [designs, setDesigns] = useState<SavedDesign[]>([]);
   const [pages, setPages] = useState<ShopPage[]>([]);
+  const [galleryLimit, setGalleryLimit] = useState(20);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const customerId = readLoggedInCustomerId();
 
@@ -198,6 +200,9 @@ export function CreatorSavedDesignsMenu({
       .then(([designData, pageData]) => {
         if (cancelled) return;
         setDesigns(Array.isArray(designData?.designs) ? designData.designs : []);
+        if (typeof designData?.limit === "number" && designData.limit > 0) {
+          setGalleryLimit(designData.limit);
+        }
         setPages(Array.isArray(pageData?.pages) ? pageData.pages : []);
       })
       .catch(() => {
@@ -213,6 +218,24 @@ export function CreatorSavedDesignsMenu({
       cancelled = true;
     };
   }, [open, username, platformShop, customerId]);
+
+  async function deleteDesign(d: SavedDesign) {
+    if (!customerId || !d.id || deletingId) return;
+    if (!confirm("Delete this saved design?")) return;
+    setDeletingId(d.id);
+    try {
+      const params = new URLSearchParams();
+      if (platformShop) params.set("shop", platformShop);
+      params.set("customerId", customerId);
+      const r = await fetch(
+        `${API_BASE}/api/storefront/customizer/my-designs/${encodeURIComponent(d.id)}?${params}`,
+        { method: "DELETE" },
+      );
+      if (r.ok) setDesigns((prev) => prev.filter((x) => x.id !== d.id));
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   function hrefFor(d: SavedDesign, page: ShopPage | null): string | null {
     if (!page?.handle) return null;
@@ -241,12 +264,24 @@ export function CreatorSavedDesignsMenu({
       >
         <Images className="h-4 w-4" />
         Saved Designs
-        {designs.length > 0 ? ` (${designs.length})` : ""}
+        {designs.length > 0 ? ` (${designs.length}/${galleryLimit})` : ""}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open ? (
         <div className="absolute right-0 z-50 mt-2 w-72 rounded-lg border bg-background p-3 shadow-lg">
-          <div className="mb-2 text-sm font-semibold">Saved Designs</div>
+          <div className="mb-2 text-sm font-semibold">
+            Saved Designs ({designs.length}/{galleryLimit})
+          </div>
+          {designs.length >= galleryLimit - 4 && designs.length < galleryLimit ? (
+            <p className="mb-2 text-xs text-amber-800">
+              Almost at your {galleryLimit}-design limit. Delete ones you no longer need.
+            </p>
+          ) : null}
+          {designs.length >= galleryLimit ? (
+            <p className="mb-2 text-xs text-red-700">
+              Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
+            </p>
+          ) : null}
           {!customerId ? (
             <p className="text-xs text-muted-foreground">
               Sign in on a product page to see the designs you have saved in this shop.
@@ -268,26 +303,35 @@ export function CreatorSavedDesignsMenu({
                     ) : (
                       <div className="h-12 w-12 rounded-md bg-muted" />
                     )}
-                    <span className="min-w-0 truncate text-sm">
+                    <span className="min-w-0 flex-1 truncate text-sm">
                       {labelFor(d, page, pages)}
                     </span>
                   </>
                 );
                 return (
-                  <li key={d.id}>
+                  <li key={d.id} className="flex items-center gap-1">
                     {href ? (
                       <a
                         href={href}
-                        className="flex items-center gap-2 rounded-md p-1 hover:bg-muted"
+                        className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 hover:bg-muted"
                         onClick={() => setOpen(false)}
                       >
                         {body}
                       </a>
                     ) : (
-                      <div className="flex items-center gap-2 rounded-md p-1 opacity-50">
+                      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 opacity-50">
                         {body}
                       </div>
                     )}
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-full p-1 text-muted-foreground hover:bg-red-600 hover:text-white"
+                      title="Delete design"
+                      disabled={deletingId === d.id}
+                      onClick={() => void deleteDesign(d)}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
                   </li>
                 );
               })}

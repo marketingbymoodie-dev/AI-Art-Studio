@@ -4514,9 +4514,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const resolveSavedDesignPageHandle = useCallback(async (design: any): Promise<string> => {
     const direct = design?.pageHandle ? String(design.pageHandle) : "";
-    if (direct) return direct;
     const typeId = design?.productTypeId ? String(design.productTypeId) : "";
-    if (!typeId || !creatorUsernameParam) return "";
+    if (!creatorUsernameParam) return direct;
     try {
       const res = await safeFetch(
         `${API_BASE}/api/creators/storefront/${encodeURIComponent(creatorUsernameParam)}/pages`,
@@ -4525,14 +4524,41 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       );
       if (!res.ok) return "";
       const data = await res.json();
-      const match = (Array.isArray(data?.pages) ? data.pages : []).find(
-        (p: any) => p?.handle && String(p.productTypeId || "") === typeId,
+      const pages = Array.isArray(data?.pages) ? data.pages : [];
+      if (direct && pages.some((p: any) => p?.handle === direct)) return direct;
+      const typeMatches = pages.filter(
+        (p: any) => p?.handle && typeId && String(p.productTypeId || "") === typeId,
       );
-      return match?.handle ? String(match.handle) : "";
+      return typeMatches.length === 1 ? String(typeMatches[0].handle) : "";
     } catch {
       return "";
     }
   }, [creatorUsernameParam]);
+
+  const loadSavedDesignInPlace = useCallback((design: any) => {
+    const clickedId = design?.id ? String(design.id) : "";
+    if (!clickedId) return;
+    loadDesignAppliedRef.current = false;
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.searchParams.set("loadDesignId", clickedId);
+      const mockupSrc =
+        design.mockupUrls && design.mockupUrls.length > 0 ? design.mockupUrls[0] : "";
+      if (mockupSrc) {
+        parentUrl.searchParams.set("loadMockup", toAbsoluteImageUrl(mockupSrc));
+      } else {
+        parentUrl.searchParams.delete("loadMockup");
+      }
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      // cross-origin guard — fall back to iframe-only
+    }
+    const params = new URLSearchParams(window.location.search);
+    params.set("loadDesignId", clickedId);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params}`);
+    setBridgeLoadDesignId(clickedId);
+    setLoadDesignNonce((n) => n + 1);
+  }, []);
 
   const switchToSavedDesignProduct = useCallback(async (design: any) => {
     const pageHandle = await resolveSavedDesignPageHandle(design);
@@ -10437,11 +10463,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
 
       if (type === "AI_ART_STUDIO_SWITCH_SAVED_DESIGN" && event.data.design) {
-        void switchToSavedDesignProduct(event.data.design).catch((error) => {
-          console.error('[SavedDesigns] Parent-requested in-app switch failed:', error);
-          setConfigLoading(false);
-          setIsInAppProductSwitching(false);
-        });
+        void (async () => {
+          try {
+            const pageHandle = await resolveSavedDesignPageHandle(event.data.design);
+            if (!pageHandle) {
+              loadSavedDesignInPlace(event.data.design);
+              return;
+            }
+            await switchToSavedDesignProduct(event.data.design);
+          } catch (error) {
+            console.error('[SavedDesigns] Parent-requested in-app switch failed:', error);
+            setConfigLoading(false);
+            setIsInAppProductSwitching(false);
+            loadSavedDesignInPlace(event.data.design);
+          }
+        })();
       }
 
       // Live scroll-mode switch from the parent embed script (appai-art-embed.js),
@@ -10530,7 +10566,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, productTypeId, shopifyVariants]);
+  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -11056,7 +11092,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   ]);
 
   // Framed decor + catalog blanks + tapestry + phone cases + folded/flat totes share on-demand Printify.
+  // Apron AOP has no Printify lifestyle/context cameras — hide the button.
+  const looksLikeApron = /apron/i.test(
+    `${productTypeConfig?.name || ""} ${activeProductContext.pageHandle || ""} ${productTitle} ${displayName}`,
+  );
   const canRequestLifestyleShot = !!(
+    !looksLikeApron &&
     (flatDecorMode ||
       isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
       flatFabricWeave ||
@@ -13013,46 +13054,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                     if (needsNavigation) {
                                       void (async () => {
                                         try {
+                                          const pageHandle = await resolveSavedDesignPageHandle(d);
+                                          if (!pageHandle) {
+                                            // Leftover job from a product not in this shop —
+                                            // reuse the artwork on the page they are already on.
+                                            loadSavedDesignInPlace(d);
+                                            return;
+                                          }
                                           await switchToSavedDesignProduct(d);
                                         } catch (error: any) {
                                           console.error('[SavedDesigns] Cross-product in-app switch failed:', error);
                                           setConfigLoading(false);
                                           setIsInAppProductSwitching(false);
-                                          toast({
-                                            title: "Could not switch product",
-                                            description: error?.message || "Please refresh and try again.",
-                                            variant: "destructive",
-                                          });
+                                          loadSavedDesignInPlace(d);
                                         }
                                       })();
                                     } else {
-                                      // Same product → load IN-PLACE. Bridge id is the source of
-                                      // truth (must win over sticky parent ?loadDesignId=).
-                                      loadDesignAppliedRef.current = false;
-                                      try {
-                                        const parentUrl = new URL(window.parent.location.href);
-                                        parentUrl.searchParams.set('loadDesignId', clickedId);
-                                        const mockupSrc =
-                                          d.mockupUrls && d.mockupUrls.length > 0
-                                            ? d.mockupUrls[0]
-                                            : "";
-                                        if (mockupSrc) {
-                                          parentUrl.searchParams.set(
-                                            "loadMockup",
-                                            toAbsoluteImageUrl(mockupSrc),
-                                          );
-                                        } else {
-                                          parentUrl.searchParams.delete("loadMockup");
-                                        }
-                                        window.parent.history.replaceState({}, '', parentUrl.toString());
-                                      } catch {
-                                        // cross-origin guard — fall back to iframe-only
-                                      }
-                                      const params = new URLSearchParams(window.location.search);
-                                      params.set('loadDesignId', clickedId);
-                                      window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                      setBridgeLoadDesignId(clickedId);
-                                      setLoadDesignNonce((n) => n + 1);
+                                      loadSavedDesignInPlace(d);
                                     }
                                   }}
                                 >
