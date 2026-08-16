@@ -11981,13 +11981,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
-    const matchedId = matchVariantBySizeColor(
+    let matchedId = matchVariantBySizeColor(
       shopifyVariants,
       sizeName,
       frameName,
       showFrameColorSelector,
       selectedFrameColor || undefined,
     );
+    // Same size-title fallback as buildPriceMap so the headline / ATC variant
+    // stay in sync when option matching misses (e.g. "3XL / Dark Heather").
+    if (!matchedId && sizeName) {
+      const sn = sizeName.toLowerCase();
+      const fallback = shopifyVariants.find((v) => {
+        const t = (v.title || "").toLowerCase();
+        return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
+      });
+      if (fallback) matchedId = String(fallback.id);
+    }
 
     if (matchedId) {
       setShopifyVariantId(matchedId);
@@ -13435,11 +13445,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
                   const sizeSelected = Boolean(selectedSize);
+                  const priceMap = buildPriceMap();
+                  const mappedCents =
+                    sizeSelected && selectedSize ? priceMap[selectedSize] : undefined;
+                  // Size dropdown and headline must show the same number.
+                  if (sizeSelected && mappedCents && mappedCents > 0) {
+                    return (
+                      <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
+                        {`$${(mappedCents / 100).toFixed(2)}`}
+                      </p>
+                    );
+                  }
                   const activeId = sizeSelected
                     ? shopifyVariantId || shopifyVariants[0]?.id || ""
                     : "";
                   const selected = sizeSelected
-                    ? shopifyVariants.find((v) => v.id === activeId) || shopifyVariants[0]
+                    ? shopifyVariants.find((v) => String(v.id) === String(activeId)) ||
+                      shopifyVariants[0]
                     : undefined;
                   const sizeName =
                     printSizes.find((s) => s.id === selectedSize)?.name ??

@@ -250,8 +250,11 @@ export function resolveStorefrontHeadlinePrice(args: {
     const n = parseShopifyVariantPrice(v.price);
     return n > cheapestN + 0.005;
   });
+  // "from" is only for no size yet: cheapest front, or a hint that back-print costs more.
+  // Once a size is picked, show that size's front price with no prefix.
   const showFromSize = !args.sizeSelected && hasHigherSize;
   const showFromBoth = !!(
+    !args.sizeSelected &&
     args.hasBothRetailPrices &&
     !args.printPlacementUsesBoth &&
     both != null &&
