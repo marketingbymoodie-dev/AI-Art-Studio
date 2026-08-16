@@ -196,6 +196,12 @@ describe("public storefront identity", () => {
     expect(creatorPublicName({ username: "mad-clown-core", branding: null })).toBe(
       "mad-clown-core",
     );
+    expect(
+      creatorPublicName({
+        username: "bigmeltingpod",
+        branding: JSON.stringify({ headline: "Mad Clown Core" }),
+      }),
+    ).toBe("Mad Clown Core");
   });
 
   it("sanitizes profile image URLs", () => {

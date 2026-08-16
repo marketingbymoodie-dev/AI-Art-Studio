@@ -1596,7 +1596,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!isCreatorStorefront || !creatorUsernameParam) return;
     writeLastCreatorVisit({
       username: creatorUsernameParam,
-      shopName: creatorUsernameParam,
       returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
     });
     let cancelled = false;

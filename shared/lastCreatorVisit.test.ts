@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   creatorCheckoutRememberUrl,
+  isHandleLikeShopName,
   isSafeShopifyCheckoutNext,
   parseLastCreatorVisit,
   serializeLastCreatorVisit,
@@ -18,6 +19,12 @@ describe("lastCreatorVisit", () => {
     expect(parsed?.username).toBe("madclowncore");
     expect(parsed?.shopName).toBe("Mad Clown Core");
     expect(parsed?.returnUrl).toContain("/c/madclowncore");
+  });
+
+  it("treats a handle-only label as not a public shop name", () => {
+    expect(isHandleLikeShopName("bigmeltingpod", "bigmeltingpod")).toBe(true);
+    expect(isHandleLikeShopName("mad-clown-core", "madclowncore")).toBe(true);
+    expect(isHandleLikeShopName("Mad Clown Core", "madclowncore")).toBe(false);
   });
 
   it("rejects a stranger return URL", () => {
