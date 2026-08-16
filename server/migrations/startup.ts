@@ -36,6 +36,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "generation_jobs",       column: "billing_mode",                type: "TEXT" },
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
   { table: "customizer_pages",      column: "style_config",                type: "JSONB" },
+  { table: "customizer_pages",      column: "zero_price_alert_sent_at",    type: "TIMESTAMP" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
   { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
@@ -49,12 +50,15 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customers",              column: "email",                       type: "TEXT" },
   { table: "customers",              column: "otp_code",                    type: "TEXT" },
   { table: "customers",              column: "otp_expires_at",              type: "TIMESTAMP" },
+  { table: "creators",               column: "otp_code",                    type: "TEXT" },
+  { table: "creators",               column: "otp_expires_at",              type: "TIMESTAMP" },
   { table: "generation_jobs",       column: "mockup_urls",                 type: "JSON" },
   { table: "generation_jobs",       column: "design_state",                type: "JSON" },
   { table: 'generation_jobs',       column: 'user_prompt',                 type: 'TEXT' },
   { table: 'style_presets',         column: 'prompt_placeholder',          type: 'TEXT' },
   { table: 'style_presets',         column: 'options',                     type: 'JSONB' },
   { table: 'style_presets',         column: 'description_optional',        type: 'BOOLEAN NOT NULL DEFAULT FALSE' },
+  { table: "style_presets",         column: "creator_scope",               type: "TEXT NOT NULL DEFAULT 'merchant'" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -72,6 +76,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "storefront_mockup_mode", type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "fulfillment_layout",       type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "platform_catalog_blueprints", column: "fabric_weave_texture",     type: "BOOLEAN" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
@@ -103,6 +108,15 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "credit_ledger",          column: "related_entity_id",          type: "TEXT" },
   { table: "credit_ledger",          column: "quota_bucket_key",           type: "TEXT" },
   { table: "shared_designs",         column: "owner_customer_id",          type: "VARCHAR" },
+  { table: "creator_applications",   column: "apply_track",                type: "TEXT NOT NULL DEFAULT 'creator'" },
+  { table: "creator_applications",   column: "payout_method",              type: "TEXT" },
+  { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },
+  { table: "creator_applications",   column: "terms_accepted_at",          type: "TIMESTAMP" },
+  { table: "creator_applications",   column: "shop_name",                  type: "TEXT" },
+  { table: "creator_applications",   column: "socials",                    type: "JSONB" },
+  { table: "creators",               column: "socials",                    type: "JSONB" },
+  { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "creators",                  column: "previous_username",       type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -262,6 +276,13 @@ const DATA_MIGRATIONS: string[] = [
   `INSERT INTO platform_config ("key", "value", "updated_at")
    VALUES ('AI_GENERATION_COST_USD', '0.05', NOW())
    ON CONFLICT ("key") DO NOTHING`,
+  // Creator Marketplace: default Shopify Payments-style txn fee (2.9% + 30¢).
+  `INSERT INTO platform_config ("key", "value", "updated_at")
+   VALUES ('CREATOR_TRANSACTION_FEE_PCT', '2.9', NOW())
+   ON CONFLICT ("key") DO NOTHING`,
+  `INSERT INTO platform_config ("key", "value", "updated_at")
+   VALUES ('CREATOR_TRANSACTION_FEE_FIXED_CENTS', '30', NOW())
+   ON CONFLICT ("key") DO NOTHING`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
@@ -417,6 +438,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "base_image_url" text,
         "prompt_placeholder" text,
         "description_optional" boolean NOT NULL DEFAULT false,
+        "creator_scope" text NOT NULL DEFAULT 'merchant',
         "created_at" timestamp DEFAULT now() NOT NULL,
         "updated_at" timestamp DEFAULT now() NOT NULL
       )
@@ -501,6 +523,34 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "price_in_cents" integer,
         "order_id" integer,
         "description" text,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "coupons",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "coupons" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar NOT NULL,
+        "code" varchar(50) NOT NULL,
+        "credit_amount" integer NOT NULL,
+        "max_uses" integer,
+        "used_count" integer DEFAULT 0 NOT NULL,
+        "is_active" boolean DEFAULT true NOT NULL,
+        "expires_at" timestamp,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        CONSTRAINT "coupons_code_unique" UNIQUE("code")
+      )
+    `,
+  },
+  {
+    name: "coupon_redemptions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "coupon_redemptions" (
+        "id" serial PRIMARY KEY,
+        "coupon_id" integer NOT NULL,
+        "customer_id" varchar NOT NULL,
         "created_at" timestamp DEFAULT now() NOT NULL
       )
     `,
@@ -993,6 +1043,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       CREATE TABLE IF NOT EXISTS "creators" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
         "username" text NOT NULL,
+        "previous_username" text,
         "subdomain" text NOT NULL,
         "display_name" text NOT NULL,
         "email" text NOT NULL,
@@ -1001,6 +1052,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "social_platform" text,
         "social_username" text,
         "social_url" text,
+        "socials" jsonb,
         "follower_count" integer,
         "niche" text,
         "audience_description" text,
@@ -1027,6 +1079,8 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "agreement_end_at" timestamp,
         "email_automation_toggles" jsonb,
         "application_id" varchar,
+        "otp_code" text,
+        "otp_expires_at" timestamp,
         "created_at" timestamp DEFAULT NOW() NOT NULL,
         "updated_at" timestamp DEFAULT NOW() NOT NULL
       )
@@ -1043,6 +1097,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "social_platform" text NOT NULL,
         "social_username" text NOT NULL,
         "social_url" text,
+        "socials" jsonb,
         "follower_count" integer,
         "niche" text NOT NULL,
         "audience_description" text,
@@ -1053,6 +1108,11 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "why_participate" text,
         "expected_reach" text,
         "additional_info" text,
+        "apply_track" text NOT NULL DEFAULT 'creator',
+        "payout_method" text,
+        "payout_detail" text,
+        "terms_accepted_at" timestamp,
+        "shop_name" text,
         "status" text NOT NULL DEFAULT 'submitted',
         "assigned_username" text,
         "creator_id" varchar,
@@ -1245,6 +1305,41 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "creator_pack_purchases",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_pack_purchases" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "customer_id" text NOT NULL,
+        "session_id" varchar,
+        "shopify_order_id" text NOT NULL,
+        "shopify_line_id" text NOT NULL,
+        "pack_id" text NOT NULL,
+        "credits" integer NOT NULL,
+        "price_cents" integer NOT NULL DEFAULT 0,
+        "credits_clawed" integer NOT NULL DEFAULT 0,
+        "status" text NOT NULL DEFAULT 'paid',
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "creator_style_assignments",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_style_assignments" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "style_preset_id" integer NOT NULL,
+        "enabled" boolean NOT NULL DEFAULT true,
+        "available" boolean NOT NULL DEFAULT true,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_notes",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_notes" (
@@ -1273,6 +1368,65 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "support_tickets",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "support_tickets" (
+        "id" serial PRIMARY KEY,
+        "source" text NOT NULL,
+        "category" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'open',
+        "subject" text NOT NULL,
+        "body" text NOT NULL,
+        "reporter_email" text NOT NULL,
+        "reporter_name" text,
+        "creator_id" varchar,
+        "merchant_id" varchar,
+        "shop_domain" text,
+        "page_url" text,
+        "user_agent" text,
+        "generation_job_id" varchar,
+        "generation_snapshot" jsonb,
+        "attachment_urls" jsonb,
+        "last_reply_role" text,
+        "last_reply_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        "resolved_at" timestamp
+      )
+    `,
+  },
+  {
+    name: "support_ticket_replies",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "support_ticket_replies" (
+        "id" serial PRIMARY KEY,
+        "ticket_id" integer NOT NULL,
+        "author_role" text NOT NULL,
+        "author_name" text,
+        "body" text NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "help_articles",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "help_articles" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "title" text NOT NULL,
+        "slug" text NOT NULL,
+        "summary" text,
+        "body" text NOT NULL,
+        "audience" text NOT NULL DEFAULT 'both',
+        "category" text NOT NULL DEFAULT 'other',
+        "published" boolean NOT NULL DEFAULT false,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -1285,6 +1439,21 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "customer_aliases_customer_idx",
     sql: `CREATE INDEX IF NOT EXISTS "customer_aliases_customer_idx"
       ON "customer_aliases" ("customer_id")`,
+  },
+  {
+    name: "coupons_code_unique",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "coupons_code_unique"
+      ON "coupons" ("code")`,
+  },
+  {
+    name: "coupons_merchant_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "coupons_merchant_idx"
+      ON "coupons" ("merchant_id")`,
+  },
+  {
+    name: "coupon_redemptions_coupon_customer_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "coupon_redemptions_coupon_customer_idx"
+      ON "coupon_redemptions" ("coupon_id", "customer_id")`,
   },
   {
     name: "credit_ledger_customer_created_idx",
@@ -1508,6 +1677,66 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_rank_snapshots_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_rank_snapshots_uidx"
       ON "creator_rank_snapshots" ("period_type", "period_key", "metric_key", "creator_id")`,
+  },
+  {
+    name: "creator_pack_purchases_line_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_pack_purchases_line_uidx"
+      ON "creator_pack_purchases" ("shopify_order_id", "shopify_line_id")`,
+  },
+  {
+    name: "creator_style_assignments_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_style_assignments_uidx"
+      ON "creator_style_assignments" ("creator_id", "style_preset_id")`,
+  },
+  {
+    name: "creator_style_assignments_style_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_style_assignments_style_idx"
+      ON "creator_style_assignments" ("style_preset_id")`,
+  },
+  {
+    name: "creator_pack_purchases_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "creator_pack_purchases_creator_idx"
+      ON "creator_pack_purchases" ("creator_id", "created_at")`,
+  },
+  {
+    name: "support_tickets_source_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_source_idx"
+      ON "support_tickets" ("source", "status")`,
+  },
+  {
+    name: "support_tickets_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_creator_idx"
+      ON "support_tickets" ("creator_id")`,
+  },
+  {
+    name: "support_tickets_merchant_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_merchant_idx"
+      ON "support_tickets" ("merchant_id")`,
+  },
+  {
+    name: "support_tickets_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_shop_idx"
+      ON "support_tickets" ("shop_domain")`,
+  },
+  {
+    name: "support_tickets_updated_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_updated_idx"
+      ON "support_tickets" ("updated_at")`,
+  },
+  {
+    name: "support_ticket_replies_ticket_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_ticket_replies_ticket_idx"
+      ON "support_ticket_replies" ("ticket_id", "created_at")`,
+  },
+  {
+    name: "help_articles_slug_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "help_articles_slug_uidx"
+      ON "help_articles" ("slug")`,
+  },
+  {
+    name: "help_articles_audience_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "help_articles_audience_idx"
+      ON "help_articles" ("audience", "published")`,
   },
 ];
 

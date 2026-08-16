@@ -512,6 +512,8 @@ export const stylePresets = pgTable("style_presets", {
   baseImageUrl: text("base_image_url"),
   promptPlaceholder: text("prompt_placeholder"),
   descriptionOptional: boolean("description_optional").notNull().default(false),
+  /** merchant = Shopify app row; global/custom = creator-platform catalog eligibility. */
+  creatorScope: text("creator_scope").notNull().default("merchant"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -837,6 +839,8 @@ export const customizerPages = pgTable("customizer_pages", {
   baseProductTitle: text("base_product_title"),    // cached display title
   baseVariantTitle: text("base_variant_title"),    // cached variant title (size/color)
   baseProductPrice: text("base_product_price"),    // cached price string
+  /** Set when we emailed that this page was hidden for a $0 / missing retail price. */
+  zeroPriceAlertSentAt: timestamp("zero_price_alert_sent_at"),
   baseProductHandle: text("base_product_handle"),  // Shopify product handle for embed iframe
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
@@ -1384,6 +1388,8 @@ export const platformCatalogBlueprints = pgTable("platform_catalog_blueprints", 
   fulfillmentLayout: text("fulfillment_layout"),
   /** When true, allow flat catalog tag/harvest despite (AOP) in the Printify title */
   forceFlatHarvest: boolean("force_flat_harvest").notNull().default(false),
+  /** Procedural woven-fabric texture on flat mockups. Null = blueprint default (tapestry 1649 on). */
+  fabricWeaveTexture: boolean("fabric_weave_texture"),
   notes: text("notes"),
   taggedAt: timestamp("tagged_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1416,6 +1422,7 @@ export const creators = pgTable(
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     username: text("username").notNull(),
+    previousUsername: text("previous_username"),
     subdomain: text("subdomain").notNull(),
     displayName: text("display_name").notNull(),
     email: text("email").notNull(),
@@ -1424,6 +1431,7 @@ export const creators = pgTable(
     socialPlatform: text("social_platform"),
     socialUsername: text("social_username"),
     socialUrl: text("social_url"),
+    socials: jsonb("socials").$type<Array<{ platform: string; username: string; url?: string | null }>>(),
     followerCount: integer("follower_count"),
     niche: text("niche"),
     audienceDescription: text("audience_description"),
@@ -1450,6 +1458,9 @@ export const creators = pgTable(
     agreementEndAt: timestamp("agreement_end_at"),
     emailAutomationToggles: jsonb("email_automation_toggles").$type<Record<string, boolean>>(),
     applicationId: varchar("application_id"),
+    /** Creator Portal OTP (Phase 6) — cleared after verify. */
+    otpCode: text("otp_code"),
+    otpExpiresAt: timestamp("otp_expires_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -1473,6 +1484,7 @@ export const creatorApplications = pgTable(
     socialPlatform: text("social_platform").notNull(),
     socialUsername: text("social_username").notNull(),
     socialUrl: text("social_url"),
+    socials: jsonb("socials").$type<Array<{ platform: string; username: string; url?: string | null }>>(),
     followerCount: integer("follower_count"),
     niche: text("niche").notNull(),
     audienceDescription: text("audience_description"),
@@ -1483,6 +1495,12 @@ export const creatorApplications = pgTable(
     whyParticipate: text("why_participate"),
     expectedReach: text("expected_reach"),
     additionalInfo: text("additional_info"),
+    applyTrack: text("apply_track").notNull().default("creator"),
+    payoutMethod: text("payout_method"),
+    payoutDetail: text("payout_detail"),
+    termsAcceptedAt: timestamp("terms_accepted_at"),
+    /** Requested public shop name — source of the URL handle, not the legal name. */
+    shopName: text("shop_name"),
     status: text("status").notNull().default("submitted"),
     assignedUsername: text("assigned_username"),
     creatorId: varchar("creator_id"),
@@ -1712,6 +1730,56 @@ export const creatorPayouts = pgTable(
   (table) => [index("creator_payouts_creator_idx").on(table.creatorId)],
 );
 
+/** Creator Marketplace Phase 8 — customer generation pack purchases (platform shop). */
+export const creatorPackPurchases = pgTable(
+  "creator_pack_purchases",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    customerId: text("customer_id").notNull(),
+    sessionId: varchar("session_id"),
+    shopifyOrderId: text("shopify_order_id").notNull(),
+    shopifyLineId: text("shopify_line_id").notNull(),
+    packId: text("pack_id").notNull(),
+    credits: integer("credits").notNull(),
+    priceCents: integer("price_cents").notNull().default(0),
+    creditsClawed: integer("credits_clawed").notNull().default(0),
+    status: text("status").notNull().default("paid"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_pack_purchases_line_uidx").on(
+      table.shopifyOrderId,
+      table.shopifyLineId,
+    ),
+    index("creator_pack_purchases_creator_idx").on(table.creatorId, table.createdAt),
+    index("creator_pack_purchases_customer_idx").on(table.customerId),
+  ],
+);
+
+/** Operator-curated style visibility per creator (globals and customs). */
+export const creatorStyleAssignments = pgTable(
+  "creator_style_assignments",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    stylePresetId: integer("style_preset_id").notNull(),
+    /** Creator on/off. */
+    enabled: boolean("enabled").notNull().default(true),
+    /** Operator offer. Retire/unassign sets false; do not delete the row. */
+    available: boolean("available").notNull().default(true),
+    /** Creator storefront style dropdown order (0 = first). */
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_style_assignments_uidx").on(table.creatorId, table.stylePresetId),
+    index("creator_style_assignments_style_idx").on(table.stylePresetId),
+  ],
+);
+
 export const creatorNotes = pgTable(
   "creator_notes",
   {
@@ -1743,3 +1811,79 @@ export const creatorEmailLog = pgTable(
   },
   (table) => [index("creator_email_log_creator_idx").on(table.creatorId)],
 );
+
+export const supportTickets = pgTable(
+  "support_tickets",
+  {
+    id: serial("id").primaryKey(),
+    source: text("source").notNull(),
+    category: text("category").notNull(),
+    status: text("status").notNull().default("open"),
+    subject: text("subject").notNull(),
+    body: text("body").notNull(),
+    reporterEmail: text("reporter_email").notNull(),
+    reporterName: text("reporter_name"),
+    creatorId: varchar("creator_id"),
+    merchantId: varchar("merchant_id"),
+    shopDomain: text("shop_domain"),
+    pageUrl: text("page_url"),
+    userAgent: text("user_agent"),
+    generationJobId: varchar("generation_job_id"),
+    generationSnapshot: jsonb("generation_snapshot"),
+    attachmentUrls: jsonb("attachment_urls").$type<string[]>(),
+    lastReplyRole: text("last_reply_role"),
+    lastReplyAt: timestamp("last_reply_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    resolvedAt: timestamp("resolved_at"),
+  },
+  (table) => [
+    index("support_tickets_source_idx").on(table.source, table.status),
+    index("support_tickets_creator_idx").on(table.creatorId),
+    index("support_tickets_merchant_idx").on(table.merchantId),
+    index("support_tickets_shop_idx").on(table.shopDomain),
+    index("support_tickets_updated_idx").on(table.updatedAt),
+  ],
+);
+
+export type SupportTicketRow = typeof supportTickets.$inferSelect;
+export type InsertSupportTicketRow = typeof supportTickets.$inferInsert;
+
+export const supportTicketReplies = pgTable(
+  "support_ticket_replies",
+  {
+    id: serial("id").primaryKey(),
+    ticketId: integer("ticket_id").notNull(),
+    authorRole: text("author_role").notNull(),
+    authorName: text("author_name"),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("support_ticket_replies_ticket_idx").on(table.ticketId, table.createdAt)],
+);
+
+export type SupportTicketReplyRow = typeof supportTicketReplies.$inferSelect;
+
+export const helpArticles = pgTable(
+  "help_articles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    title: text("title").notNull(),
+    slug: text("slug").notNull(),
+    summary: text("summary"),
+    body: text("body").notNull(),
+    audience: text("audience").notNull().default("both"),
+    category: text("category").notNull().default("other"),
+    published: boolean("published").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("help_articles_slug_uidx").on(table.slug),
+    index("help_articles_audience_idx").on(table.audience, table.published),
+  ],
+);
+
+export type HelpArticleRow = typeof helpArticles.$inferSelect;
+export type InsertHelpArticleRow = typeof helpArticles.$inferInsert;

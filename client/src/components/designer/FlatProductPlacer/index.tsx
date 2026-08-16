@@ -62,8 +62,9 @@ import type {
  *     When linked, scale matches and offsetX is mirrored (offsetY shared).
  *   - Back defaults OFF, and the Back toggle only appears when the manifest
  *     (and the selected colour's blank) actually has a back view.
- *   - Placement scale is capped at 1.0 (Printify clamps placement scale), so
- *     the UI never implies more coverage than the print file provides.
+ *   - Placement scale is capped at 150% for apparel (decor/phone higher).
+ *     The print file is baked at that scale; Printify then receives it at
+ *     `{scale:1}` so its own clamp does not shrink coverage.
  *   - Phone cases (`edgeWrapMode`): optional `backgroundColor` fills the blue
  *     dashed print canvas under cutout artwork.
  */
@@ -118,6 +119,8 @@ export type FlatProductPlacerHandle = {
   hasPendingChanges: () => boolean;
   /** Live trim status for enabled faces (dashed-guide overflow). */
   getTrimStatus: () => FlatTrimStatus;
+  /** Live placer state for cart-line print snapshots. */
+  getState: () => FlatProductPlacerState | null;
 };
 
 export type FlatProductPlacerProps = {
@@ -181,6 +184,8 @@ export type FlatProductPlacerProps = {
    * column (prompt box). Zoom sits at the bottom of this card.
    */
   viewerHeightPx?: number | null;
+  /** Recolor a shared default blank to the selected garment colour. */
+  garmentColorHex?: string | null;
 };
 
 type LoadedAssets = {
@@ -286,6 +291,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
       viewerHeightPx = null,
+      garmentColorHex = null,
     },
     ref,
   ) {
@@ -412,6 +418,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   // ---------- Customer state ----------
   const [state, setState] = useState<FlatProductPlacerState | null>(null);
+  const stateRef = useRef<FlatProductPlacerState | null>(null);
+  stateRef.current = state;
   const lastAppliedSignatureRef = useRef<string | null>(null);
   const lastAppliedColorRef = useRef<string | null>(null);
   const prevGeometryKeyRef = useRef<string | null>(null);
@@ -443,7 +451,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableViews, artworkSourceUrl, defaultPlacement, edgeWrapMode]);
 
-  // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
+  // Print Side dropdown writes flatPlacerState.enabled; parent passes that through.
   const parentEnabledFront = initialState?.enabled?.front;
   const parentEnabledBack = initialState?.enabled?.back;
   useEffect(() => {
@@ -547,7 +555,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     [scaleMax],
   );
 
-  // Heal legacy seeds that stored >100% for apparel (old 135% Printify zoom).
+  // Clamp stored scales to the current slider max (apparel 150%, decor/phone higher).
   useEffect(() => {
     setState((prev) => {
       if (!prev) return prev;
@@ -599,6 +607,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
+          garmentColorHex,
         });
         return true;
       } catch (e) {
@@ -620,6 +629,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       calibOpts,
       clampPlacementScale,
       defaultPlacement,
+      garmentColorHex,
     ],
   );
 
@@ -750,7 +760,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   useImperativeHandle(
     ref,
-    () => ({ applyIfNeeded, hasPendingChanges, getTrimStatus: computeTrimStatus }),
+    () => ({
+      applyIfNeeded,
+      hasPendingChanges,
+      getTrimStatus: computeTrimStatus,
+      getState: () => stateRef.current,
+    }),
     [applyIfNeeded, hasPendingChanges, computeTrimStatus],
   );
 

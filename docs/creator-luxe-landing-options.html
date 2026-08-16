@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Art Studio — Landing prototype</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #07070b;
+      --ink: #f5f5f7;
+      --muted: rgba(245, 245, 247, 0.62);
+      --line: rgba(255, 255, 255, 0.12);
+      --glow: rgba(168, 140, 255, 0.45);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #050508; color: var(--ink); font-family: Inter, system-ui, sans-serif; }
+    button, input, select, textarea { font: inherit; }
+    .chrome {
+      position: sticky; top: 0; z-index: 50;
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: rgba(5, 5, 8, 0.86); backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--line);
+    }
+    .chrome p { margin: 0; color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .tabs, .chrome-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .tab, .ghost-sm {
+      border: 1px solid var(--line); background: transparent; color: var(--ink);
+      border-radius: 999px; padding: 8px 14px; cursor: pointer;
+    }
+    .tab[aria-selected="true"], .ghost-sm.is-on { background: #fff; color: #111; box-shadow: 0 0 24px var(--glow); }
+    .stage {
+      min-height: calc(100vh - 68px); display: none;
+      background:
+        radial-gradient(ellipse at 50% 0%, rgba(90, 70, 180, 0.22), transparent 52%),
+        radial-gradient(ellipse at 80% 80%, rgba(20, 80, 120, 0.18), transparent 45%),
+        var(--bg);
+    }
+    .stage.is-on { display: block; }
+    .page { max-width: min(1680px, 96vw); margin: 0 auto; padding: 36px 32px 56px; }
+    .eyebrow { margin: 0 0 12px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); }
+    h1 { margin: 0; font-size: clamp(34px, 6vw, 72px); line-height: 0.96; letter-spacing: -0.04em; font-weight: 800; }
+    .lede { margin: 18px 0 0; max-width: 40rem; color: var(--muted); font-size: 18px; line-height: 1.5; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0 8px; }
+    .btn {
+      border: 0; border-radius: 999px; padding: 14px 26px; cursor: pointer;
+      letter-spacing: 0.06em; text-transform: uppercase; font-size: 12px; font-weight: 700;
+    }
+    .btn-white { background: #fff; color: #111; box-shadow: 0 0 28px rgba(190, 150, 255, 0.55); }
+    .btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.55); }
+
+    .splash { text-align: center; padding-top: 6vh; }
+    .splash h1, .splash .lede { margin-left: auto; margin-right: auto; }
+    .window {
+      width: min(860px, 94vw); margin: 32px auto 18px; border-radius: 28px;
+      border: 1px solid rgba(255,255,255,0.12); background: #0c0c12;
+      box-shadow: 0 0 80px rgba(90, 140, 255, 0.2); overflow: hidden;
+    }
+    .scene-track { display: flex; transition: transform 700ms cubic-bezier(.2,.8,.2,1); }
+    .scene {
+      min-width: 100%; display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 20px;
+      align-items: center; padding: 28px 28px 24px; min-height: 360px;
+    }
+    @media (max-width: 720px) { .scene { grid-template-columns: 1fr; min-height: 520px; } }
+    .bubble {
+      position: relative; text-align: left; background: #16161f; border: 1px solid var(--line);
+      border-radius: 22px; padding: 18px 20px 20px; min-height: 160px;
+    }
+    .bubble:after {
+      content: ""; position: absolute; right: -10px; top: 48px;
+      border: 10px solid transparent; border-left-color: #16161f;
+    }
+    .bubble .who { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+    .prompt { font-size: 22px; line-height: 1.35; letter-spacing: -0.02em; min-height: 4.2em; }
+    .caret { display: inline-block; width: 2px; height: 1em; background: #fff; margin-left: 2px; vertical-align: -2px; animation: blink 1s step-end infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .product-stage { display: grid; place-items: center; }
+    .blank {
+      width: min(260px, 64vw); aspect-ratio: 1; border-radius: 18px; position: relative;
+      background: #14141c; border: 1px solid rgba(255,255,255,0.1); overflow: hidden;
+    }
+    .art-layer {
+      position: absolute; inset: 0; background-size: cover; background-position: center;
+      opacity: 0; transform: scale(0.96); transition: opacity 80ms linear, transform 240ms ease;
+    }
+    .caption { margin: 0; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-size: 14px; }
+
+    .coverflow-wrap { perspective: 1400px; margin: 36px 0 16px; height: min(540px, 72vh); user-select: none; touch-action: pan-y; }
+    .deck { position: relative; height: 100%; transform-style: preserve-3d; }
+    .album {
+      position: absolute; top: 50%; left: 50%; width: min(580px, 44vw); height: auto;
+      border-radius: 22px;
+      background: linear-gradient(180deg, #16161f, #0b0b10);
+      border: 1px solid rgba(255,255,255,0.16);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 16px 16px 18px;
+      transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease; cursor: pointer;
+    }
+    .album h2 { margin: 14px 0 6px; font-size: 24px; letter-spacing: -0.03em; outline: none; }
+    .album p { margin: 0; color: var(--muted); line-height: 1.45; outline: none; }
+    .thumb {
+      width: 100%; aspect-ratio: 16 / 9; border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.1); background-color: #0a0a10;
+      background-size: contain; background-repeat: no-repeat; background-position: center;
+    }
+    .dots { display: flex; justify-content: center; gap: 8px; }
+    .dot { width: 7px; height: 7px; border-radius: 99px; border: 0; padding: 0; background: rgba(255,255,255,0.22); cursor: pointer; }
+    .dot.is-on { background: #fff; width: 22px; }
+    .hint { text-align: center; color: var(--muted); font-size: 13px; margin-top: 10px; }
+
+    .form { max-width: 560px; display: grid; gap: 16px; margin-top: 28px; }
+    .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+    .form input, .form select, .form textarea {
+      width: 100%; border-radius: 14px; border: 1px solid var(--line);
+      background: rgba(255,255,255,0.04); color: #fff; padding: 12px 14px;
+    }
+    .pair { display: grid; gap: 12px; }
+    @media (min-width: 640px) { .pair { grid-template-columns: 1fr 1fr; } }
+    .legal { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .thanks { padding-top: 12vh; text-align: center; }
+
+    body.editing [data-copy],
+    body.editing .album h2,
+    body.editing .album p {
+      outline: 1px dashed rgba(255, 210, 80, 0.7);
+      outline-offset: 4px;
+      cursor: text;
+    }
+
+    .editor {
+      display: none; border-top: 1px solid var(--line); background: #0b0b10; padding: 16px 20px 22px;
+      max-height: 46vh; overflow: auto;
+    }
+    .editor.is-on { display: block; }
+    .editor-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .editor h3 { margin: 0; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+    .editor-grid { display: none; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .editor-grid.is-on { display: grid; }
+    .editor label { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
+    .editor input, .editor textarea {
+      border: 1px solid var(--line); background: #14141c; color: #fff; border-radius: 10px; padding: 8px 10px;
+    }
+    .media-list { display: none; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+    .media-list.is-on { display: grid; }
+    .media-card {
+      border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: #12121a; display: grid; gap: 8px;
+    }
+    .media-card img, .media-card .ph {
+      width: 100%; height: 140px; object-fit: cover; border-radius: 10px; background: #1a1a22;
+    }
+    .file-btn { display: inline-block; }
+    .file-btn input { display: none; }
+    .file-btn span, .tiny {
+      display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px;
+      font-size: 11px; cursor: pointer; color: var(--ink);
+    }
+    .note { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <p>Prototype · click Edit to reword and drop in mockups</p>
+    <div class="tabs" role="tablist">
+      <button class="tab" data-tab="splash" aria-selected="true">1. Splash</button>
+      <button class="tab" data-tab="coverflow" aria-selected="false">2. Landing</button>
+      <button class="tab" data-tab="apply" aria-selected="false">3. Creator apply</button>
+      <button class="tab" data-tab="shopify" aria-selected="false">4. Shopify owner</button>
+    </div>
+    <div class="chrome-actions">
+      <button class="ghost-sm" id="toggle-editor" type="button">Edit</button>
+      <button class="ghost-sm" id="reset-state" type="button">Reset</button>
+    </div>
+  </div>
+
+  <div class="editor" id="editor">
+    <div class="editor-head">
+      <h3>Play with copy and media — saved in this browser</h3>
+      <div class="tabs">
+        <button class="tab" data-panel="text" aria-selected="true">Page text</button>
+        <button class="tab" data-panel="scenes" aria-selected="false">Reveal slides</button>
+        <button class="tab" data-panel="cards" aria-selected="false">Info cards</button>
+      </div>
+    </div>
+    <p class="note">Or click any yellow-dashed line on the page and type. Reveal slides need a prompt plus a product mockup with art already on it.</p>
+    <div class="editor-grid is-on" id="text-fields" data-panel-body="text"></div>
+    <div class="media-list" id="scene-fields" data-panel-body="scenes"></div>
+    <div class="media-list" id="card-fields" data-panel-body="cards"></div>
+  </div>
+
+  <section class="stage is-on" id="splash">
+    <div class="page splash">
+      <p class="eyebrow" data-copy="splashEyebrow"></p>
+      <h1 data-copy="splashTitle"></h1>
+      <div class="window" aria-label="Prompt to print preview">
+        <div class="scene-track" id="scene-track"></div>
+      </div>
+      <p class="caption" data-copy="splashCaption"></p>
+      <div class="btn-row" style="justify-content:center">
+        <button class="btn btn-white" data-go="coverflow" data-copy="splashCta"></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="stage" id="coverflow">
+    <div class="page">
+      <p class="eyebrow" data-copy="landingEyebrow"></p>
+      <h1 data-copy="landingHeadline"></h1>
+      <p class="lede" data-copy="landingLede"></p>
+      <div class="btn-row">
+        <button class="btn btn-white" data-go="apply" data-copy="ctaCreator"></button>
+        <button class="btn btn-ghost" data-go="shopify" data-copy="ctaShopify"></button>
+      </div>
+      <div class="coverflow-wrap" id="flow">
+        <div class="deck" id="deck"></div>
+      </div>
+      <div class="dots" id="dots"></div>
+      <p class="hint">Drag, swipe, click a side card, or use arrow keys. In Edit, click the card text and reword it.</p>
+    </div>
+  </section>
+
+  <section class="stage" id="apply">
+    <div class="page">
+      <p class="eyebrow" data-copy="applyEyebrow"></p>
+      <h1 data-copy="applyTitle"></h1>
+      <p class="lede" data-copy="applyLede"></p>
+      <form class="form" id="creator-form">
+        <div class="pair">
+          <label>First name <input name="firstName" required /></label>
+          <label>Last name <input name="lastName" required /></label>
+        </div>
+        <label>Email <input name="email" type="email" required /></label>
+        <div class="pair">
+          <label>Platform
+            <select name="platform">
+              <option>Instagram</option>
+              <option>TikTok</option>
+              <option>YouTube</option>
+              <option>Other</option>
+            </select>
+          </label>
+          <label>Handle <input name="handle" placeholder="@yourname" required /></label>
+        </div>
+        <div class="pair">
+          <label>Follower count <input name="followers" type="number" min="0" required /></label>
+          <label>Niche <input name="niche" placeholder="Pets, streetwear, décor…" required /></label>
+        </div>
+        <label>How should we pay you when you earn?
+          <select name="payout">
+            <option value="paypal">PayPal</option>
+            <option value="bank">Bank transfer</option>
+            <option value="stripe">Stripe</option>
+          </select>
+        </label>
+        <label>Payout details <input name="payoutDetail" placeholder="PayPal email or account name" required /></label>
+        <label class="legal">
+          <input type="checkbox" name="terms" required />
+          <span data-copy="applyTerms"></span>
+        </label>
+        <button class="btn btn-white" type="submit" data-copy="applySubmit"></button>
+      </form>
+    </div>
+  </section>
+
+  <section class="stage" id="shopify">
+    <div class="page">
+      <p class="eyebrow" data-copy="shopifyEyebrow"></p>
+      <h1 data-copy="shopifyTitle"></h1>
+      <p class="lede" data-copy="shopifyLede"></p>
+      <form class="form" id="shopify-form">
+        <label>Email <input name="email" type="email" required /></label>
+        <label>Shopify store URL <input name="store" type="url" placeholder="https://your-store.myshopify.com" required /></label>
+        <label class="legal">
+          <input type="checkbox" name="terms" required />
+          <span data-copy="shopifyTerms"></span>
+        </label>
+        <button class="btn btn-white" type="submit" data-copy="shopifySubmit"></button>
+      </form>
+    </div>
+  </section>
+
+  <section class="stage" id="thanks">
+    <div class="page thanks">
+      <p class="eyebrow">Application received</p>
+      <h1 data-copy="thanksTitle"></h1>
+      <p class="lede" data-copy="thanksLede"></p>
+      <div class="btn-row" style="justify-content:center">
+        <button class="btn btn-ghost" data-go="coverflow">Back to landing</button>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const COPY_FIELDS = [
+      ["splashEyebrow", "Splash eyebrow"],
+      ["splashTitle", "Splash title"],
+      ["splashCaption", "Text under viewing window"],
+      ["splashCta", "Splash button"],
+      ["landingEyebrow", "Landing eyebrow"],
+      ["landingHeadline", "Landing headline"],
+      ["landingLede", "Landing supporting line"],
+      ["ctaCreator", "Creator apply button"],
+      ["ctaShopify", "Shopify owner button"],
+      ["applyEyebrow", "Creator form eyebrow"],
+      ["applyTitle", "Creator form title"],
+      ["applyLede", "Creator form intro"],
+      ["applyTerms", "Creator terms"],
+      ["applySubmit", "Creator submit"],
+      ["shopifyEyebrow", "Shopify form eyebrow"],
+      ["shopifyTitle", "Shopify form title"],
+      ["shopifyLede", "Shopify form intro"],
+      ["shopifyTerms", "Shopify terms"],
+      ["shopifySubmit", "Shopify submit"],
+      ["thanksTitle", "Thanks title"],
+      ["thanksLede", "Thanks body"],
+    ];
+
+    const DEFAULT_STATE = {
+      copy: {
+        splashEyebrow: "AI Art Studio",
+        splashTitle: "AI Art Studio",
+        splashCaption: "From Prompt to Print...",
+        splashCta: "Show me more",
+        landingEyebrow: "Two ways in",
+        landingHeadline: "You Promote it, Your Audience Prompts it, We Print it.",
+        landingLede: "Creators get a hosted beta storefront. Shopify owners install the full customizer on their own shop. Same engine. Different door.",
+        ctaCreator: "Apply for the Beta Creator Storefront",
+        ctaShopify: "Already an Existing Shopify Store Owner?",
+        applyEyebrow: "Creator beta",
+        applyTitle: "Apply for the beta storefront",
+        applyLede: "30 days. $0 upfront. You keep 100% of profit after fulfilment. Strong performance can unlock a larger storefront and an ongoing rev-share.",
+        applyTerms: "I agree to the beta terms: 30 days, no upfront fee, fulfilment costs come out first, and a later rev-share storefront is by invitation only.",
+        applySubmit: "Submit application",
+        shopifyEyebrow: "Shopify merchants",
+        shopifyTitle: "Install the full customizer",
+        shopifyLede: "You already have a store. This path is the AI Art Studio app — full controls on your own Shopify catalogue, not a hosted creator shop.",
+        shopifyTerms: "I agree to the merchant beta terms and confirm I own this Shopify store.",
+        shopifySubmit: "Request merchant access",
+        thanksTitle: "You're in the queue.",
+        thanksLede: "We'll review the short form and email you. No charge to apply.",
+      },
+      scenes: [
+        { id: "s1", prompt: "A watercolor portrait of my rescue dog in a floral crown", image: "", art: "radial-gradient(circle at 40% 35%, #ff8a4a, transparent 34%), radial-gradient(circle at 70% 60%, #5b8cff, transparent 36%), #2a2030" },
+        { id: "s2", prompt: "Neon kanji streetwear mark, midnight navy, chrome edge", image: "", art: "linear-gradient(135deg, #1b3dff, #d946ef 55%, #111)" },
+        { id: "s3", prompt: "Art deco moon over the desert, gold foil on ivory", image: "", art: "radial-gradient(circle at 50% 30%, #f3d27a, transparent 28%), linear-gradient(#2a2018, #0e0c0a)" },
+        { id: "s4", prompt: "Soft cosmic nebula for a phone case, deep violet", image: "", art: "radial-gradient(circle at 30% 40%, #7c3aed, transparent 32%), radial-gradient(circle at 70% 70%, #22d3ee, transparent 30%), #120818" },
+      ],
+      cards: [
+        { id: "c1", title: "You promote it", body: "Share one link from Instagram, TikTok, or YouTube — or put the customizer on products you already sell.", image: "", art: "radial-gradient(circle at 70% 30%, #ff7a4d, transparent 40%), #1c1c28" },
+        { id: "c2", title: "Your audience prompts it", body: "They type. Art appears on a live mockup. No design file, no back-and-forth.", image: "", art: "linear-gradient(135deg, #14202a, #2a2038)" },
+        { id: "c3", title: "We print it", body: "Fulfilment is handled. You keep the product profit after print and shipping costs.", image: "", art: "radial-gradient(circle at 40% 40%, #2ee6c8 0 18%, transparent 19%), #141820" },
+        { id: "c4", title: "Creator beta", body: "No Shopify store? We host yourname.aiartstudio.app for 30 days, $0 upfront, 100% of profit after fulfilment.", image: "", art: "repeating-linear-gradient(90deg, #2a2038 0 33%, #1a2438 33% 66%, #203028 66% 100%)" },
+        { id: "c5", title: "Grow the deal", body: "Perform in beta and you may be invited to a larger platform storefront with an ongoing rev-share.", image: "", art: "radial-gradient(circle at 60% 40%, #d946ef 0 16%, transparent 17%), #161018" },
+      ],
+    };
+
+    const db = {
+      open() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open("appai-landing-proto", 1);
+          req.onupgradeneeded = () => req.result.createObjectStore("kv");
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      },
+      async get() {
+        try {
+          const idb = await this.open();
+          return await new Promise((resolve) => {
+            const r = idb.transaction("kv").objectStore("kv").get("state");
+            r.onsuccess = () => resolve(r.result || null);
+            r.onerror = () => resolve(null);
+          });
+        } catch {
+          return null;
+        }
+      },
+      async set(value) {
+        const idb = await this.open();
+        return new Promise((resolve, reject) => {
+          const r = idb.transaction("kv", "readwrite").objectStore("kv").put(value, "state");
+          r.onsuccess = () => resolve();
+          r.onerror = () => reject(r.error);
+        });
+      },
+      async clear() {
+        const idb = await this.open();
+        idb.transaction("kv", "readwrite").objectStore("kv").delete("state");
+      },
+    };
+
+    let state = structuredClone(DEFAULT_STATE);
+    let editOn = false;
+    let cardIndex = 0;
+    let sceneIndex = 0;
+    let typingTimer = null;
+    let holdTimer = null;
+
+    function mergeSaved(saved) {
+      if (!saved) return;
+      state.copy = { ...DEFAULT_STATE.copy, ...(saved.copy || {}) };
+      if (Array.isArray(saved.scenes) && saved.scenes.length) state.scenes = saved.scenes;
+      if (Array.isArray(saved.cards) && saved.cards.length) state.cards = saved.cards;
+    }
+
+    async function persist() {
+      try { await db.set(state); } catch (err) { console.warn(err); }
+    }
+
+    function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const max = 900;
+          const scale = Math.min(1, max / Math.max(img.width, img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          resolve(canvas.toDataURL("image/jpeg", 0.74));
+        };
+        img.onerror = () => reject(new Error("Could not read image"));
+        img.src = url;
+      });
+    }
+
+    function paintCopy() {
+      document.querySelectorAll("[data-copy]").forEach((el) => {
+        if (document.activeElement === el) return;
+        el.textContent = state.copy[el.dataset.copy] || "";
+        el.contentEditable = editOn ? "true" : "false";
+      });
+    }
+
+    function bindCopyEdits() {
+      document.querySelectorAll("[data-copy]").forEach((el) => {
+        el.addEventListener("input", () => {
+          state.copy[el.dataset.copy] = el.innerText;
+          const field = document.querySelector(`#text-fields [data-key="${el.dataset.copy}"]`);
+          if (field) field.value = state.copy[el.dataset.copy];
+          persist();
+        });
+      });
+    }
+
+    function renderTextFields() {
+      const box = document.getElementById("text-fields");
+      box.innerHTML = "";
+      COPY_FIELDS.forEach(([key, label]) => {
+        const wrap = document.createElement("label");
+        const long = /headline|lede|terms|body|line|intro|window/i.test(label) || (state.copy[key] || "").length > 42;
+        wrap.innerHTML = `${label}${long ? `<textarea data-key="${key}" rows="3"></textarea>` : `<input data-key="${key}" />`}`;
+        wrap.querySelector("[data-key]").value = state.copy[key] || "";
+        wrap.querySelector("[data-key]").addEventListener("input", (e) => {
+          state.copy[key] = e.target.value;
+          paintCopy();
+          persist();
+        });
+        box.appendChild(wrap);
+      });
+    }
+
+    function mediaCard({ title, promptValue, onPrompt, image, onImage, onRemove, extra }) {
+      const el = document.createElement("article");
+      el.className = "media-card";
+      el.innerHTML = `
+        ${image ? `<img alt="" src="${image}" />` : `<div class="ph"></div>`}
+        <strong>${title}</strong>
+        <label>Prompt / text<textarea rows="3"></textarea></label>
+        <div>
+          <label class="file-btn"><input type="file" accept="image/*" /><span>Upload product mockup</span></label>
+          <button class="tiny" type="button" data-remove>Remove</button>
+        </div>
+        ${extra || ""}`;
+      const ta = el.querySelector("textarea");
+      ta.value = promptValue;
+      ta.addEventListener("input", () => onPrompt(ta.value));
+      el.querySelector("input[type=file]").addEventListener("change", async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        onImage(await compressImage(file));
+      });
+      el.querySelector("[data-remove]").addEventListener("click", onRemove);
+      return el;
+    }
+
+    function renderSceneFields() {
+      const box = document.getElementById("scene-fields");
+      box.innerHTML = "";
+      state.scenes.forEach((scene, i) => {
+        box.appendChild(mediaCard({
+          title: `Slide ${i + 1}`,
+          promptValue: scene.prompt,
+          image: scene.image,
+          onPrompt: (v) => { scene.prompt = v; persist(); rebuildScenes(); },
+          onImage: (v) => { scene.image = v; persist(); renderSceneFields(); rebuildScenes(); },
+          onRemove: () => {
+            if (state.scenes.length < 2) return;
+            state.scenes.splice(i, 1);
+            persist(); renderSceneFields(); rebuildScenes();
+          },
+        }));
+      });
+      const add = document.createElement("button");
+      add.className = "tiny";
+      add.textContent = "Add reveal slide";
+      add.addEventListener("click", () => {
+        state.scenes.push({ id: "s" + Date.now(), prompt: "Describe the design…", image: "", art: "#1a1a22" });
+        persist(); renderSceneFields(); rebuildScenes();
+      });
+      box.appendChild(add);
+    }
+
+    function renderCardFields() {
+      const box = document.getElementById("card-fields");
+      box.innerHTML = "";
+      state.cards.forEach((card, i) => {
+        const el = mediaCard({
+          title: `Card ${i + 1}`,
+          promptValue: card.body,
+          image: card.image,
+          onPrompt: (v) => { card.body = v; persist(); layoutCards(); },
+          onImage: (v) => { card.image = v; persist(); renderCardFields(); layoutCards(); },
+          onRemove: () => {
+            if (state.cards.length < 2) return;
+            state.cards.splice(i, 1);
+            cardIndex = Math.min(cardIndex, state.cards.length - 1);
+            persist(); renderCardFields(); rebuildCards();
+          },
+          extra: `<label>Title<input data-title /></label>`,
+        });
+        const title = el.querySelector("[data-title]");
+        title.value = card.title;
+        title.addEventListener("input", () => { card.title = title.value; persist(); layoutCards(); });
+        box.appendChild(el);
+      });
+      const add = document.createElement("button");
+      add.className = "tiny";
+      add.textContent = "Add info card";
+      add.addEventListener("click", () => {
+        state.cards.push({ id: "c" + Date.now(), title: "New card", body: "Write this in your own words.", image: "", art: "#1a1a22" });
+        persist(); renderCardFields(); rebuildCards();
+      });
+      box.appendChild(add);
+    }
+
+    const track = document.getElementById("scene-track");
+
+    function rebuildScenes() {
+      track.innerHTML = "";
+      state.scenes.forEach((scene) => {
+        const el = document.createElement("div");
+        el.className = "scene";
+        const bg = scene.image ? `url("${scene.image}")` : scene.art;
+        el.innerHTML = `
+          <div class="bubble">
+            <div class="who">Prompt</div>
+            <div class="prompt"><span class="typed"></span><span class="caret"></span></div>
+          </div>
+          <div class="product-stage">
+            <div class="blank">
+              <div class="art-layer" style="background-image:${scene.image ? `url('${scene.image}')` : "none"};background:${scene.image ? "transparent" : bg}"></div>
+            </div>
+          </div>`;
+        track.appendChild(el);
+      });
+      sceneIndex = Math.min(sceneIndex, state.scenes.length - 1);
+      if (!editOn) runScene();
+      else showSceneStill();
+    }
+
+    function showSceneStill() {
+      clearInterval(typingTimer);
+      clearTimeout(holdTimer);
+      state.scenes.forEach((scene, i) => {
+        const node = track.children[i];
+        if (!node) return;
+        node.querySelector(".typed").textContent = scene.prompt;
+        const art = node.querySelector(".art-layer");
+        art.style.opacity = "1";
+        art.style.transform = "scale(1)";
+      });
+      track.style.transform = `translateX(-${sceneIndex * 100}%)`;
+    }
+
+    function runScene() {
+      if (!state.scenes.length) return;
+      clearInterval(typingTimer);
+      clearTimeout(holdTimer);
+      const scene = state.scenes[sceneIndex];
+      const node = track.children[sceneIndex];
+      if (!node) return;
+      const typed = node.querySelector(".typed");
+      const art = node.querySelector(".art-layer");
+      track.style.transform = `translateX(-${sceneIndex * 100}%)`;
+      typed.textContent = "";
+      art.style.opacity = "0";
+      art.style.transform = "scale(0.96)";
+      let charIndex = 0;
+      typingTimer = setInterval(() => {
+        charIndex += 1;
+        typed.textContent = scene.prompt.slice(0, charIndex);
+        const progress = charIndex / Math.max(scene.prompt.length, 1);
+        art.style.opacity = String(Math.min(1, progress * 1.15));
+        art.style.transform = `scale(${0.96 + progress * 0.04})`;
+        if (charIndex >= scene.prompt.length) {
+          clearInterval(typingTimer);
+          holdTimer = setTimeout(() => {
+            sceneIndex = (sceneIndex + 1) % state.scenes.length;
+            runScene();
+          }, 1600);
+        }
+      }, 38);
+    }
+
+    const deck = document.getElementById("deck");
+    const dots = document.getElementById("dots");
+
+    function rebuildCards() {
+      deck.innerHTML = "";
+      dots.innerHTML = "";
+      state.cards.forEach((card, i) => {
+        const el = document.createElement("article");
+        el.className = "album";
+        el.innerHTML = `<div class="thumb"></div><h2></h2><p></p>`;
+        el.addEventListener("click", (e) => {
+          if (e.target.closest("h2,p") && editOn) return;
+          cardIndex = i;
+          layoutCards();
+        });
+        el.querySelector("h2").addEventListener("input", () => {
+          card.title = el.querySelector("h2").innerText;
+          persist();
+        });
+        el.querySelector("p").addEventListener("input", () => {
+          card.body = el.querySelector("p").innerText;
+          persist();
+        });
+        deck.appendChild(el);
+        const dot = document.createElement("button");
+        dot.className = "dot";
+        dot.addEventListener("click", () => { cardIndex = i; layoutCards(); });
+        dots.appendChild(dot);
+      });
+      layoutCards();
+    }
+
+    function layoutCards() {
+      [...deck.children].forEach((el, i) => {
+        const card = state.cards[i];
+        const h = el.querySelector("h2");
+        const p = el.querySelector("p");
+        if (document.activeElement !== h) h.textContent = card.title;
+        if (document.activeElement !== p) p.textContent = card.body;
+        h.contentEditable = editOn ? "true" : "false";
+        p.contentEditable = editOn ? "true" : "false";
+        const thumb = el.querySelector(".thumb");
+        if (card.image) {
+          thumb.style.backgroundImage = `url("${card.image}")`;
+          thumb.style.background = "";
+        } else {
+          thumb.style.backgroundImage = "";
+          thumb.style.background = card.art;
+        }
+        const offset = i - cardIndex;
+        const abs = Math.abs(offset);
+        el.style.transform = `translate(-50%, -50%) translateX(${offset * 52}%) translateZ(${-abs * 160}px) rotateY(${offset * -22}deg) scale(${1 - abs * 0.06})`;
+        el.style.opacity = abs > 2 ? "0" : String(1 - abs * 0.16);
+        el.style.zIndex = String(20 - abs);
+        el.style.pointerEvents = abs > 2 ? "none" : "auto";
+      });
+      [...dots.children].forEach((dot, i) => dot.classList.toggle("is-on", i === cardIndex));
+    }
+
+    const flow = document.getElementById("flow");
+    let startX = null;
+    let tapIndex = null;
+    flow.addEventListener("pointerdown", (e) => {
+      if (editOn && e.target.closest("h2,p")) return;
+      startX = e.clientX;
+      const album = e.target.closest(".album");
+      tapIndex = album ? [...deck.children].indexOf(album) : null;
+      flow.setPointerCapture(e.pointerId);
+    });
+    flow.addEventListener("pointerup", (e) => {
+      if (startX == null) return;
+      const dx = e.clientX - startX;
+      if (dx > 40) cardIndex = Math.max(0, cardIndex - 1);
+      else if (dx < -40) cardIndex = Math.min(state.cards.length - 1, cardIndex + 1);
+      else if (tapIndex != null && tapIndex >= 0) cardIndex = tapIndex;
+      startX = null;
+      tapIndex = null;
+      layoutCards();
+    });
+    window.addEventListener("keydown", (e) => {
+      if (editOn && document.activeElement && document.activeElement.isContentEditable) return;
+      if (e.key === "ArrowLeft") cardIndex = Math.max(0, cardIndex - 1);
+      if (e.key === "ArrowRight") cardIndex = Math.min(state.cards.length - 1, cardIndex + 1);
+      layoutCards();
+    });
+
+    function show(id) {
+      document.querySelectorAll(".stage").forEach((s) => s.classList.toggle("is-on", s.id === id));
+      document.querySelectorAll(".chrome .tab[data-tab]").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === id)));
+    }
+    document.querySelectorAll(".chrome .tab[data-tab]").forEach((t) => t.addEventListener("click", () => show(t.dataset.tab)));
+    document.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => show(b.dataset.go)));
+    document.getElementById("creator-form").addEventListener("submit", (e) => { e.preventDefault(); show("thanks"); });
+    document.getElementById("shopify-form").addEventListener("submit", (e) => { e.preventDefault(); show("thanks"); });
+
+    document.querySelectorAll(".editor .tab[data-panel]").forEach((t) => {
+      t.addEventListener("click", () => {
+        document.querySelectorAll(".editor .tab[data-panel]").forEach((x) => x.setAttribute("aria-selected", String(x === t)));
+        document.querySelectorAll("[data-panel-body]").forEach((p) => p.classList.toggle("is-on", p.dataset.panelBody === t.dataset.panel));
+      });
+    });
+
+    function setEdit(on) {
+      editOn = on;
+      document.body.classList.toggle("editing", on);
+      document.getElementById("editor").classList.toggle("is-on", on);
+      document.getElementById("toggle-editor").classList.toggle("is-on", on);
+      paintCopy();
+      layoutCards();
+      if (on) showSceneStill();
+      else runScene();
+    }
+    document.getElementById("toggle-editor").addEventListener("click", () => setEdit(!editOn));
+    document.getElementById("reset-state").addEventListener("click", async () => {
+      if (!confirm("Reset all copy, prompts, and uploaded mockups?")) return;
+      await db.clear();
+      state = structuredClone(DEFAULT_STATE);
+      renderTextFields(); renderSceneFields(); renderCardFields();
+      paintCopy(); rebuildScenes(); rebuildCards();
+    });
+
+    bindCopyEdits();
+
+    (async () => {
+      mergeSaved(await db.get());
+      renderTextFields();
+      renderSceneFields();
+      renderCardFields();
+      paintCopy();
+      rebuildScenes();
+      rebuildCards();
+    })();
+  </script>
+</body>
+</html>

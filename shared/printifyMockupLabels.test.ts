@@ -17,6 +17,8 @@ describe("isContextLikeMockupLabel", () => {
     expect(isContextLikeMockupLabel("Context 2")).toBe(true);
     expect(isContextLikeMockupLabel("context2")).toBe(true);
     expect(isContextLikeMockupLabel("Lifestyle Room")).toBe(true);
+    expect(isContextLikeMockupLabel("Lifestyle Woman")).toBe(true);
+    expect(isContextLikeMockupLabel("Lifestyle Man")).toBe(true);
     expect(isContextLikeMockupLabel("bedroom")).toBe(true);
     expect(isContextLikeMockupLabel("wall")).toBe(true);
   });
@@ -68,6 +70,19 @@ describe("person mockup labels", () => {
     );
     expect(personMockupPreferenceRank("Side Person")).toBeLessThan(
       personMockupPreferenceRank("Back Person"),
+    );
+  });
+
+  it("treats zip-hoodie on-person-N-front as person, not tote On Person", () => {
+    expect(isPersonMockupLabel("on-person-1-front")).toBe(true);
+    expect(isPersonMockupLabel("on-person-2-front")).toBe(true);
+    expect(isFrontPersonMockupLabel("on-person-1-front")).toBe(true);
+    expect(isPersonMockupLabel("on-person-1-back")).toBe(true);
+    expect(isPersonMockupLabel("On Person")).toBe(false);
+    expect(isPersonMockupLabel("on-person")).toBe(false);
+    expect(isOnPersonMockupLabel("On Person")).toBe(true);
+    expect(personMockupPreferenceRank("on-person-1-front")).toBe(
+      personMockupPreferenceRank("Front Person"),
     );
   });
 });

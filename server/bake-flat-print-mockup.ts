@@ -12,6 +12,10 @@ import {
   resolveFlatPrintFileDims,
   type FlatCalibrationManifest,
 } from "./flat-calibration";
+import {
+  looksLikeApronProduct,
+  placementForPrintMatch,
+} from "./flat-order-fulfillment";
 
 type ViewName = "front" | "back";
 
@@ -46,6 +50,8 @@ export type BakeFlatPrintForMockupArgs = {
   productTypeId: number;
   productType: {
     id: number;
+    name?: string | null;
+    designerType?: string | null;
     flatCalibration?: unknown;
   };
   artworkUrl: string;
@@ -103,7 +109,10 @@ export async function bakeFlatPrintForMockup(
     return { ok: false, error: "artworkUrl must be https, /objects/, or data:" };
   }
 
-  const placement = normalizePlacement(args.placement);
+  const placement = placementForPrintMatch(
+    normalizePlacement(args.placement),
+    looksLikeApronProduct(args.productType),
+  );
   const backgroundColor = normalizeBg(args.backgroundColor);
   const placementRect =
     resolveFlatBakePlacementRect(manifest, view, {

@@ -79,6 +79,9 @@ export async function syncProductTypeFromPlatformCatalogAop(
   },
 ): Promise<{ synced: boolean; productType?: Awaited<ReturnType<typeof storage.getProductType>> }> {
   if (!productType.printifyBlueprintId) return { synced: false };
+  if (productType.isAllOverPrint && productType.panelMappingTemplate) {
+    return { synced: false };
+  }
 
   const catalogEntry = await getPlatformCatalogEntry(productType.printifyBlueprintId);
   if (catalogEntry?.kind !== "aop") return { synced: false };
@@ -131,6 +134,13 @@ export async function prepareProductTypeForDesigner(
     })
   ) {
     await storage.updateProductType(current.id, { designerType: "framed-print" });
+    const healed = await storage.getProductType(current.id);
+    if (healed) current = healed;
+  } else if (
+    (!dt || dt === "generic") &&
+    /\b(hoodie|sweatshirt|crewneck|t-shirt|\btee\b|zip[- ]?up)\b/i.test(current.name || "")
+  ) {
+    await storage.updateProductType(current.id, { designerType: "apparel" });
     const healed = await storage.getProductType(current.id);
     if (healed) current = healed;
   }

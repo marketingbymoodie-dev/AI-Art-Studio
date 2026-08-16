@@ -13,9 +13,9 @@
  *     FLAT_ORDER_FULFILLMENT_ENABLED).
  *
  * DATA RESOLUTION PATH (verified against the codebase):
- *   line.variant_id
- *     → published_products.shopifyVariantId  → designId, baseVariantId, shop
- *       (fallback: line.properties `_appai_job_id` / `_design_id`)
+ *   line.properties `_appai_job_id`  → generation_jobs.id  (print source of truth)
+ *   line.properties `_flat_pl` / `_tote_pl` / `_aop_pl` → placement at add-to-cart (wins over job)
+ *   published_products.designId may be `jobId::mockupHash` (checkout image key only)
  *   designId (== generation_jobs.id)
  *     → generation_jobs: designState.flatPlacerState (normalized placement),
  *       designImageUrl (print-ready artwork), productTypeId
@@ -64,6 +64,14 @@ import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
 import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
 import type { ToteFoldedPlacement } from "@shared/toteFoldedLayout";
+import {
+  LINE_FLAT_PLACEMENT_KEY,
+  LINE_TOTE_PLACEMENT_KEY,
+  LINE_AOP_PANELS_KEY,
+  decodeFlatLinePlacement,
+  decodeToteLinePlacement,
+} from "@shared/linePlacementSnapshot";
+import { loadAopLinePanelSnapshot, normalizeAopPanels, pickAopPanelsForOrderLine } from "./aop-line-snapshot";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -229,9 +237,41 @@ function parseJson<T = any>(value: unknown, fallback: T): T {
   return fallback;
 }
 
+/** Shopify Storefront cart attributes truncate at 255 chars — those URLs cannot be fetched. */
+export function usablePrintArtworkUrl(url?: string | null): string {
+  const s = String(url || "").trim();
+  if (!s || s.startsWith("data:")) return "";
+  if (s.length >= 255) return "";
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("/")) return s;
+  return "";
+}
+
 /**
- * Prefer live placer artwork (updated on Apply) over generate-time job columns.
- * Exported for unit tests.
+ * Cart line `_appai_job_id` is the print source of truth. Shadow `designId` may be
+ * `jobId::mockupHash` (checkout image key) and must not be sent to getGenerationJob.
+ */
+export function resolveGenerationJobIdForOrderLine(args: {
+  lineJobId?: string | null;
+  publishedDesignId?: string | null;
+  lineDesignId?: string | null;
+}): string | null {
+  const lineJob = String(args.lineJobId || "").trim();
+  if (lineJob && !lineJob.includes(" · ")) return lineJob.split("::")[0] || null;
+
+  const published = String(args.publishedDesignId || "").trim();
+  if (published && !published.includes(" · ")) {
+    const jobId = published.split("::")[0];
+    if (jobId) return jobId;
+  }
+
+  const readable = String(args.lineDesignId || "").trim();
+  if (readable && !readable.includes(" · ") && !readable.includes(" ")) return readable;
+  return null;
+}
+
+/**
+ * Prefer the artwork stamped on that cart line (what the customer added).
+ * Fall back to the job / placer file when the line URL is missing or truncated.
  */
 export function pickFlatOrderArtworkUrl(args: {
   flatPlacerArtworkUrl?: string | null;
@@ -239,9 +279,9 @@ export function pickFlatOrderArtworkUrl(args: {
   lineArtworkUrl?: string | null;
 }): string {
   return (
-    (args.flatPlacerArtworkUrl && String(args.flatPlacerArtworkUrl)) ||
-    (args.jobDesignImageUrl && String(args.jobDesignImageUrl)) ||
-    (args.lineArtworkUrl && String(args.lineArtworkUrl)) ||
+    usablePrintArtworkUrl(args.lineArtworkUrl) ||
+    usablePrintArtworkUrl(args.flatPlacerArtworkUrl) ||
+    usablePrintArtworkUrl(args.jobDesignImageUrl) ||
     ""
   );
 }
@@ -347,22 +387,25 @@ export async function resolveDesignForOrderLine(
   let designId: string | null = null;
   let resolvedShop = shop;
   let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null = null;
+  let publishedDesignId: string | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
     if (pp) {
-      designId = pp.designId;
+      publishedDesignId = pp.designId;
       resolvedShop = pp.shop || shop;
     } else {
       const dp = await findDesignProductByVariant(shop, line.variantId);
       if (dp) {
-        designId = dp.jobId;
+        publishedDesignId = dp.jobId;
         designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId };
       }
     }
   }
-  if (!designId) {
-    designId = line.properties["_appai_job_id"] || line.properties["_design_id"] || null;
-  }
+  designId = resolveGenerationJobIdForOrderLine({
+    lineJobId: line.properties["_appai_job_id"],
+    publishedDesignId,
+    lineDesignId: line.properties["_design_id"],
+  });
   if (!designId) {
     return { ok: false, skip: true, reason: "no design id on line (normal product / mixed cart)" };
   }
@@ -410,6 +453,17 @@ export async function resolveDesignForOrderLine(
     printifyBlueprintId: productType.printifyBlueprintId,
   });
 
+  const flatCalibrationEarly = parseJson<any>(productType.flatCalibration, null);
+  const hasFlatViews = !!(
+    flatCalibrationEarly?.views && Object.keys(flatCalibrationEarly.views).length > 0
+  );
+  const lineFlatEarly = decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
+  const useFlatBake = shouldUseFlatBake({
+    onTheFlyTier: productType.onTheFlyTier,
+    hasFlatCalibrationViews: hasFlatViews,
+    hasLineOrJobFlatPlacement: !!(lineFlatEarly || flatPlacerState?.placements),
+  });
+
   if (toteFolded) {
     if (!productType.merchantId) {
       return { ok: false, skip: false, reason: `product type ${productTypeId} has no merchant` };
@@ -419,10 +473,11 @@ export async function resolveDesignForOrderLine(
       return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
     }
 
+    const lineTote = decodeToteLinePlacement(line.properties[LINE_TOTE_PLACEMENT_KEY]);
     const dsScale = Number(designState?.scale ?? 100);
     const dsX = Number(designState?.x ?? 50);
     const dsY = Number(designState?.y ?? 50);
-    const placement: ToteFoldedPlacement = {
+    const placement: ToteFoldedPlacement = lineTote ?? {
       scale: Math.max(0.05, Math.min(4, dsScale / 100)),
       offsetX: (dsX - 50) / 50,
       offsetY: (dsY - 50) / 50,
@@ -432,8 +487,8 @@ export async function resolveDesignForOrderLine(
       designProductColorId: designProductOverride?.colorId,
       designStateSize: designState?.selectedSize,
       designStateColor: designState?.selectedFrameColor,
-      lineSize: line.properties["Size"],
-      lineColor: line.properties["Color"],
+      lineSize: line.properties["_size"] || line.properties["Size"],
+      lineColor: line.properties["_color"] || line.properties["Color"],
       jobSize: job.size,
       jobColor: job.frameColor,
     });
@@ -457,7 +512,7 @@ export async function resolveDesignForOrderLine(
   }
 
   const tier = productType.onTheFlyTier;
-  if (tier !== "flat" && tier !== "mesh") {
+  if (!useFlatBake) {
     // Design products (My Designs → List as product) outside the flat/mesh/tote_folded
     // tiers (e.g. AOP, static/single-image products) have no on-the-fly bake path at
     // all — their artwork was already baked into a persistent Printify product at
@@ -476,8 +531,8 @@ export async function resolveDesignForOrderLine(
         designProductColorId: designProductOverride.colorId,
         designStateSize: designState?.selectedSize,
         designStateColor: designState?.selectedFrameColor,
-        lineSize: line.properties["Size"],
-        lineColor: line.properties["Color"],
+        lineSize: line.properties["_size"] || line.properties["Size"],
+        lineColor: line.properties["_color"] || line.properties["Color"],
         jobSize: job.size,
         jobColor: job.frameColor,
       });
@@ -505,10 +560,9 @@ export async function resolveDesignForOrderLine(
       const rawPanels = Array.isArray(designState?.aopPrintPanelUrls) ? designState.aopPrintPanelUrls : [];
       // Printify's order `src` must be a fetchable URL — hosted http(s) or app-relative
       // paths only (data: URLs from unpersisted local state can't be used).
-      const panels = rawPanels
-        .map((p: any) => ({ position: String(p?.position || ""), url: String(p?.url || "") }))
-        .filter((p: { position: string; url: string }) =>
-          p.position && p.url && (p.url.startsWith("http") || p.url.startsWith("/")));
+      // Cart-line snapshot wins so two ATCs from the same job keep independent panels.
+      const linePanels = await loadAopLinePanelSnapshot(line.properties[LINE_AOP_PANELS_KEY]);
+      const panels = pickAopPanelsForOrderLine(linePanels, normalizeAopPanels(rawPanels));
       if (panels.length === 0) {
         return {
           ok: false,
@@ -528,8 +582,8 @@ export async function resolveDesignForOrderLine(
         designProductColorId: designProductOverride?.colorId,
         designStateSize: designState?.selectedSize,
         designStateColor: designState?.selectedFrameColor,
-        lineSize: line.properties["Size"],
-        lineColor: line.properties["Color"],
+        lineSize: line.properties["_size"] || line.properties["Size"],
+        lineColor: line.properties["_color"] || line.properties["Color"],
         jobSize: job.size,
         jobColor: job.frameColor,
       });
@@ -542,7 +596,7 @@ export async function resolveDesignForOrderLine(
 
     return { ok: false, skip: true, reason: `product type ${productTypeId} tier=${tier ?? "none"} not flat/mesh` };
   }
-  const flatCalibration = parseJson<any>(productType.flatCalibration, null);
+  const flatCalibration = flatCalibrationEarly;
   if (!flatCalibration || !flatCalibration.views || Object.keys(flatCalibration.views).length === 0) {
     return { ok: false, skip: true, reason: `product type ${productTypeId} has no flat calibration manifest` };
   }
@@ -557,10 +611,12 @@ export async function resolveDesignForOrderLine(
   }
 
   // Placement + enabled flags (front defaults on, back defaults off — mirrors the placer).
+  // Cart-line snapshot wins so two ATCs from the same job keep independent placements.
+  const lineFlat = lineFlatEarly ?? decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
   const placements: Partial<Record<ViewName, FlatPlacement>> = {};
   const enabled: Record<ViewName, boolean> = { front: true, back: false };
   for (const v of VIEWS) {
-    const p = flatPlacerState?.placements?.[v];
+    const p = lineFlat?.placements[v] ?? flatPlacerState?.placements?.[v];
     placements[v] = p && typeof p === "object"
       ? {
           scale: Number(p.scale ?? 1),
@@ -569,7 +625,9 @@ export async function resolveDesignForOrderLine(
           rotationDeg: Number((p as { rotationDeg?: number }).rotationDeg ?? 0) || 0,
         }
       : { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 };
-    if (flatPlacerState?.enabled && typeof flatPlacerState.enabled[v] === "boolean") {
+    if (lineFlat) {
+      enabled[v] = lineFlat.enabled[v];
+    } else if (flatPlacerState?.enabled && typeof flatPlacerState.enabled[v] === "boolean") {
       enabled[v] = flatPlacerState.enabled[v]!;
     }
   }
@@ -579,13 +637,13 @@ export async function resolveDesignForOrderLine(
     designProductColorId: designProductOverride?.colorId,
     designStateSize: designState?.selectedSize,
     designStateColor: designState?.selectedFrameColor,
-    lineSize: line.properties["Size"],
-    lineColor: line.properties["Color"],
+    lineSize: line.properties["_size"] || line.properties["Size"],
+    lineColor: line.properties["_color"] || line.properties["Color"],
     jobSize: job.size,
     jobColor: job.frameColor,
   });
 
-  const rawBg = flatPlacerState?.backgroundColor;
+  const rawBg = lineFlat?.backgroundColor ?? flatPlacerState?.backgroundColor;
   const backgroundColor =
     typeof rawBg === "string" && /^#[0-9a-fA-F]{6}$/.test(rawBg.trim())
       ? rawBg.trim()
@@ -618,6 +676,38 @@ export type PrintifyTarget = {
   providerId: number;
   printifyVariantId: number;
 };
+
+/** Flat-calibrated AOP (apron) must bake from placer state, not stale job panels. */
+export function shouldUseFlatBake(args: {
+  onTheFlyTier?: string | null;
+  hasFlatCalibrationViews: boolean;
+  hasLineOrJobFlatPlacement: boolean;
+}): boolean {
+  if (!args.hasFlatCalibrationViews) return false;
+  if (args.onTheFlyTier === "flat" || args.onTheFlyTier === "mesh") return true;
+  return args.hasLineOrJobFlatPlacement;
+}
+
+export function looksLikeApronProduct(productType: {
+  name?: string | null;
+  designerType?: string | null;
+}): boolean {
+  return /apron/i.test(`${productType.name || ""} ${productType.designerType || ""}`);
+}
+
+/** Printify apron mockups read ~10% larger than the in-app placer. Shrink the bake. */
+export const APRON_PRINT_SCALE_MATCH = 0.9;
+
+export function placementForPrintMatch(
+  placement: FlatPlacement,
+  shrinkToMatchPreview: boolean,
+): FlatPlacement {
+  if (!shrinkToMatchPreview) return placement;
+  return {
+    ...placement,
+    scale: Number(placement.scale ?? 1) * APRON_PRINT_SCALE_MATCH,
+  };
+}
 
 /**
  * Resolve the Printify blueprint / provider / variant for a product type +
@@ -686,7 +776,10 @@ async function buildPrintAreasForDesign(
       frameColorId: design.colorId,
     });
     if (!dims?.width || !dims.height) continue;
-    const placement = design.placements[view] ?? { scale: 1, offsetX: 0, offsetY: 0 };
+    const placement = placementForPrintMatch(
+      design.placements[view] ?? { scale: 1, offsetX: 0, offsetY: 0 },
+      looksLikeApronProduct(design.productType),
+    );
     const placementRect = resolveFlatBakePlacementRect(design.flatCalibration, view, {
       sizeId: design.sizeId,
       frameColorId: design.colorId,
@@ -1209,4 +1302,56 @@ export async function submitFlatTestOrder(args: {
   });
 
   return { ...result, designId };
+}
+
+export function creatorCartLinesToOrderLines(
+  lines: Array<{
+    id: string;
+    quantity: number;
+    merchandiseId?: string | null;
+    attributes?: Array<{ key: string; value: string }>;
+  }>,
+): NormalizedOrderLine[] {
+  return lines.map((line) => {
+    const properties: Record<string, string> = {};
+    for (const a of line.attributes || []) {
+      if (a?.key) properties[a.key] = String(a.value ?? "");
+    }
+    const numeric = String(line.merchandiseId || "").replace(/\D/g, "");
+    return {
+      lineId: line.id,
+      variantId: numeric || null,
+      quantity: line.quantity,
+      properties,
+    };
+  });
+}
+
+/** Draft Printify order from a live creator cart — uses each line's placement snapshot. */
+export async function submitCreatorCartTestOrder(args: {
+  cartId: string;
+  shop: string;
+  lines: Array<{
+    id: string;
+    quantity: number;
+    merchandiseId?: string | null;
+    attributes?: Array<{ key: string; value: string }>;
+  }>;
+}): Promise<SubmitFlatOrderResult> {
+  const lines = creatorCartLinesToOrderLines(args.lines);
+  if (lines.length === 0) {
+    throw new Error("Cart is empty.");
+  }
+  const idempotencyKey = `cart-test-order:${args.cartId}:${Date.now()}`;
+  return submitFlatOrderToPrintify({
+    shopifyOrder: {
+      id: idempotencyKey,
+      shop_domain: args.shop,
+    },
+    lines,
+    sendToProduction: false,
+    isTest: true,
+    addressTo: resolveTestShipToAddress(),
+    idempotencyKey,
+  });
 }

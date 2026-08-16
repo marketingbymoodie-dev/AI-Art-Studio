@@ -929,10 +929,11 @@ export async function costsResponseFromProductIntelligence(productType: ProductT
     const sizeName = sizes.find((s) => String(s.id) === sizeId)?.name ?? sizeId;
     const colorName = frameColors.find((c) => String(c.id) === colorId)?.name;
     const vid = String(entry.printifyVariantId);
-    if (!labels[vid]) {
-      labels[vid] =
-        colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
-    }
+    const constructed =
+      colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+    // Prefer Size / Colour over Printify's colour-only variantName so the
+    // Create Page wizard can match "One Size / Black" (weekender / tote).
+    if (constructed) labels[vid] = constructed;
     const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
     nameToVmKey[nameKey] = key;
   }

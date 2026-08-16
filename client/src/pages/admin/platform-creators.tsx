@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { apiRequest } from "@/lib/queryClient";
@@ -30,8 +31,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { CREATOR_APPLICATION_STATUSES } from "@shared/creatorMarketplace";
+import {
+  CREATOR_APPLICATION_STATUSES,
+  formatSocialHandle,
+  parseCreatorSocials,
+  shopNameToHandle,
+  socialPlatformLabel,
+} from "@shared/creatorMarketplace";
 import { Loader2 } from "lucide-react";
+import PlatformCreatorDetailDialog from "./platform-creator-detail";
 
 type Application = {
   id: string;
@@ -40,15 +48,21 @@ type Application = {
   email: string;
   socialPlatform: string;
   socialUsername: string;
+  socials?: Array<{ platform: string; username: string; url?: string | null }>;
   niche: string;
   hasShopifyStore: boolean;
   status: string;
   assignedUsername: string | null;
+  shopName?: string | null;
   creatorId: string | null;
   adminNotes: string | null;
   followerCount: number | null;
   whyParticipate: string | null;
   shopifyStoreUrl: string | null;
+  applyTrack?: string | null;
+  payoutMethod?: string | null;
+  payoutDetail?: string | null;
+  termsAcceptedAt?: string | null;
   createdAt: string;
 };
 
@@ -57,8 +71,14 @@ export default function PlatformCreatorsPage() {
   const qc = useQueryClient();
   const [status, setStatus] = useState<string>("all");
   const [q, setQ] = useState("");
+  const [boardPeriod, setBoardPeriod] = useState("monthly");
+  const [reportMonth, setReportMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
+  const [shopNameCheck, setShopNameCheck] = useState("");
   const [notes, setNotes] = useState("");
 
   const { data: config } = useQuery<{
@@ -67,8 +87,132 @@ export default function PlatformCreatorsPage() {
     applicationCount: number;
     creatorCount: number;
     platformShopDomain: string | null;
+    storefrontTokenConfigured?: boolean;
+    emailsEnabled?: boolean;
   }>({
     queryKey: ["/api/platform/creators/config"],
+  });
+
+  const [creatorEditId, setCreatorEditId] = useState<string | null>(null);
+  const [search, setSearch] = useSearch();
+  const urlParams = new URLSearchParams(search);
+  const urlCreator = urlParams.get("creator");
+  const urlTab = urlParams.get("tab") || "overview";
+
+  useEffect(() => {
+    if (urlCreator) setCreatorEditId(urlCreator);
+  }, [urlCreator]);
+
+  const { data: creatorsData } = useQuery<{
+    creators: Array<{
+      id: string;
+      username: string;
+      displayName: string;
+      status: string;
+      freeGensPerCustomer: number;
+      monthlyGenerationAllowance: number;
+      monthlyGenerationsUsed: number;
+      shopDomain: string | null;
+      creatorType: string;
+      branding: Record<string, unknown> | null;
+      revenueShareCreatorPct?: number;
+      shareBasis?: string;
+      stats30d?: {
+        visitors: number;
+        generations: number;
+        orders: number;
+        grossCents: number;
+        productProfitCents: number;
+        netContributionCents: number;
+      };
+    }>;
+  }>({
+    queryKey: ["/api/platform/creators"],
+  });
+
+  const { data: leaderboard, isLoading: boardLoading } = useQuery<{
+    periodType: string;
+    periodKey: string;
+    leaders: Array<{
+      rank: number;
+      ofCount: number;
+      username: string | null;
+      displayName: string | null;
+      valueCents: number;
+      sharePct: number | null;
+      title: string;
+    }>;
+  }>({
+    queryKey: ["/api/platform/creators/leaderboard", boardPeriod],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/platform/creators/leaderboard?periodType=${encodeURIComponent(boardPeriod)}&limit=25`,
+      );
+      return res.json();
+    },
+    enabled: !!config?.enabled,
+  });
+
+  const { data: monthReport, isLoading: reportLoading } = useQuery<{
+    month: string;
+    rows: Array<{
+      rank: number;
+      username: string;
+      displayName: string;
+      visitors: number;
+      generations: number;
+      atcCount: number;
+      orders: number;
+      salesCents: number;
+      productProfitCents: number;
+      netProfitCents: number;
+      payoutCents: number;
+    }>;
+    totals: {
+      visitors: number;
+      generations: number;
+      atcCount: number;
+      orders: number;
+      salesCents: number;
+      productProfitCents: number;
+      netProfitCents: number;
+      payoutCents: number;
+    };
+  }>({
+    queryKey: ["/api/platform/creators/monthly-report", reportMonth],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/platform/creators/monthly-report?month=${encodeURIComponent(reportMonth)}`,
+      );
+      return res.json();
+    },
+    enabled: !!config?.enabled,
+  });
+
+  const sendReport = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/platform/creators/monthly-report/send", {
+        month: reportMonth,
+      });
+      return res.json() as Promise<{ emailed: boolean; month: string }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: data.emailed ? "Monthly report emailed" : "Report built, email skipped",
+        description: data.emailed
+          ? `Sent ${data.month} to FOUNDER_ALERT_EMAIL`
+          : "Check FOUNDER_ALERT_EMAIL / RESEND_API_KEY",
+      });
+    },
+    onError: (err) => {
+      toast({
+        title: "Could not send report",
+        description: err instanceof Error ? err.message : "Send failed",
+        variant: "destructive",
+      });
+    },
   });
 
   const listUrl = useMemo(() => {
@@ -90,6 +234,29 @@ export default function PlatformCreatorsPage() {
     queryKey: [`/api/platform/creators/applications/${selectedId}`],
     enabled: !!selectedId,
   });
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setShopNameCheck(username.trim()), 350);
+    return () => window.clearTimeout(t);
+  }, [username]);
+
+  const previewHandle = shopNameToHandle(username);
+  const { data: shopAvail } = useQuery<{
+    available: boolean;
+    handle?: string | null;
+    error?: string;
+    takenHandle?: string | null;
+  }>({
+    queryKey: ["/api/creators/shop-name-available", shopNameCheck, selectedId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ name: shopNameCheck });
+      if (selectedId) params.set("applicationId", selectedId);
+      const res = await fetch(`/api/creators/shop-name-available?${params}`);
+      return res.json();
+    },
+    enabled: !!selectedId && shopNameCheck.length >= 2,
+  });
+  const shopNameBlocked = shopAvail?.available === false;
 
   const patchMutation = useMutation({
     mutationFn: async (body: Record<string, unknown>) => {
@@ -160,33 +327,205 @@ export default function PlatformCreatorsPage() {
   });
 
   const apps = data?.applications ?? [];
+  const creatorRows = creatorsData?.creators ?? [];
 
   return (
     <AdminLayout>
       <div className="space-y-6 p-6">
         <div>
           <h1 className="text-2xl font-bold">Creator Marketplace</h1>
-          <p className="text-sm text-muted-foreground">
-            Applications and beta creators. Feature flag:{" "}
-            <Badge variant={config?.enabled ? "default" : "secondary"}>
-              {config?.enabled ? "enabled" : "disabled"}
-            </Badge>
-            {config ? (
-              <span className="ml-2">
-                · AI cost ${config.aiGenerationCostUsd.toFixed(2)}/gen · {config.applicationCount}{" "}
-                applications · {config.creatorCount} creators
-                {config.platformShopDomain
-                  ? ` · platform shop ${config.platformShopDomain}`
-                  : " · CREATOR_PLATFORM_SHOP_DOMAIN not set"}
-              </span>
-            ) : null}
+          <p className="mt-1 text-sm">
+            <a href="/admin/platform/landing" className="underline underline-offset-2">
+              Edit public landing copy
+            </a>
+            {" · "}
+            <a href="/admin/platform/terms" className="underline underline-offset-2">
+              Edit Terms of Use
+            </a>
           </p>
+          <p className="text-sm text-muted-foreground">
+            Review applications and manage live creator shops.
+          </p>
+          {config ? (
+            <details className="mt-2 text-xs text-muted-foreground">
+              <summary className="cursor-pointer select-none">System status</summary>
+              <p className="mt-1 leading-6">
+                Marketplace{" "}
+                <Badge variant={config.enabled ? "default" : "secondary"}>
+                  {config.enabled ? "enabled" : "disabled"}
+                </Badge>
+                {" · "}AI cost ${config.aiGenerationCostUsd.toFixed(2)}/gen
+                {" · "}
+                {config.applicationCount} applications · {config.creatorCount} creators
+                {" · "}
+                {config.platformShopDomain
+                  ? `Platform shop ${config.platformShopDomain}`
+                  : "CREATOR_PLATFORM_SHOP_DOMAIN not set"}
+                {" · "}
+                {config.storefrontTokenConfigured
+                  ? "Storefront token OK"
+                  : "CREATOR_PLATFORM_STOREFRONT_TOKEN missing"}
+                {" · "}
+                {config.emailsEnabled ? "Creator emails on" : "Creator emails off"}
+              </p>
+            </details>
+          ) : null}
         </div>
 
         {!config?.enabled && (
           <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             Set <code className="font-mono">CREATOR_MARKETPLACE_ENABLED=true</code> on Railway
             staging to accept applications and use this queue.
+          </div>
+        )}
+
+        {config?.enabled && (
+          <div className="rounded-md border p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Creator Network leaderboard</h2>
+                <p className="text-xs text-muted-foreground">
+                  Net profit · {leaderboard?.periodKey || boardPeriod}
+                </p>
+              </div>
+              <Select value={boardPeriod} onValueChange={setBoardPeriod}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                  <SelectItem value="lifetime">Lifetime</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {boardLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (leaderboard?.leaders.length || 0) === 0 ? (
+              <p className="text-sm text-muted-foreground">No rank snapshots yet.</p>
+            ) : (
+              <div className="rounded-md border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-16">Rank</TableHead>
+                      <TableHead>Creator</TableHead>
+                      <TableHead>Title</TableHead>
+                      <TableHead>Net</TableHead>
+                      <TableHead>Share</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {leaderboard!.leaders.map((row) => (
+                      <TableRow key={`${row.rank}-${row.username}`}>
+                        <TableCell>#{row.rank}</TableCell>
+                        <TableCell>
+                          {row.displayName || "—"}
+                          {row.username ? (
+                            <span className="ml-1 text-muted-foreground">@{row.username}</span>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{row.title}</TableCell>
+                        <TableCell>
+                          ${((row.valueCents || 0) / 100).toFixed(2)}
+                        </TableCell>
+                        <TableCell>
+                          {row.sharePct != null ? `${row.sharePct.toFixed(1)}%` : "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {config?.enabled && (
+          <div className="rounded-md border p-4 space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Monthly creator report</h2>
+                <p className="text-xs text-muted-foreground">
+                  Ranked one-liners: sales, profit, net profit, payout, visitors, gens, add to carts,
+                  orders. Emailed to you automatically after each month closes.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="report-month">Month</Label>
+                  <Input
+                    id="report-month"
+                    type="month"
+                    className="w-[160px]"
+                    value={reportMonth}
+                    onChange={(e) => setReportMonth(e.target.value)}
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  disabled={sendReport.isPending}
+                  onClick={() => sendReport.mutate()}
+                >
+                  {sendReport.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Email this month
+                </Button>
+              </div>
+            </div>
+            {reportLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <div className="rounded-md border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-14">#</TableHead>
+                      <TableHead>Creator</TableHead>
+                      <TableHead>Sales</TableHead>
+                      <TableHead>Profit</TableHead>
+                      <TableHead>Net profit</TableHead>
+                      <TableHead>Payout</TableHead>
+                      <TableHead>Vis</TableHead>
+                      <TableHead>Gens</TableHead>
+                      <TableHead>ATC</TableHead>
+                      <TableHead>Orders</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow className="bg-muted/40 font-medium">
+                      <TableCell />
+                      <TableCell>Total</TableCell>
+                      <TableCell>${((monthReport?.totals.salesCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>${((monthReport?.totals.productProfitCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>${((monthReport?.totals.netProfitCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>${((monthReport?.totals.payoutCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>{monthReport?.totals.visitors ?? 0}</TableCell>
+                      <TableCell>{monthReport?.totals.generations ?? 0}</TableCell>
+                      <TableCell>{monthReport?.totals.atcCount ?? 0}</TableCell>
+                      <TableCell>{monthReport?.totals.orders ?? 0}</TableCell>
+                    </TableRow>
+                    {(monthReport?.rows || []).map((row) => (
+                      <TableRow key={row.username}>
+                        <TableCell>#{row.rank}</TableCell>
+                        <TableCell>
+                          {row.displayName}
+                          <span className="ml-1 text-muted-foreground">@{row.username}</span>
+                        </TableCell>
+                        <TableCell>${(row.salesCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>${(row.productProfitCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>${(row.netProfitCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>${(row.payoutCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>{row.visitors}</TableCell>
+                        <TableCell>{row.generations}</TableCell>
+                        <TableCell>{row.atcCount}</TableCell>
+                        <TableCell>{row.orders}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </div>
         )}
 
@@ -249,19 +588,25 @@ export default function PlatformCreatorsPage() {
                     className="cursor-pointer"
                     onClick={() => {
                       setSelectedId(a.id);
-                      setUsername(a.assignedUsername || a.socialUsername || "");
+                      setUsername(a.assignedUsername || a.shopName || "");
                     }}
                     data-testid={`creator-app-row-${a.id}`}
                   >
                     <TableCell>
                       <div className="font-medium">
-                        {a.firstName} {a.lastName}
+                        {a.shopName || `${a.firstName} ${a.lastName}`}
                       </div>
-                      <div className="text-xs text-muted-foreground">{a.email}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {a.shopName
+                          ? `${a.firstName} ${a.lastName} · ${a.email}`
+                          : a.email}
+                      </div>
                     </TableCell>
                     <TableCell>{a.niche}</TableCell>
                     <TableCell>
-                      {a.hasShopifyStore ? "Shopify merchant" : "Creator"}
+                      {a.applyTrack === "shopify" || a.hasShopifyStore
+                        ? "Shopify merchant"
+                        : "Creator"}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{a.status}</Badge>
@@ -276,6 +621,91 @@ export default function PlatformCreatorsPage() {
           </Table>
         </div>
 
+        <div className="space-y-3">
+          <h2 className="text-lg font-semibold">Creators (30d rollup)</h2>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Creator</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Visitors</TableHead>
+                  <TableHead>Gens</TableHead>
+                  <TableHead>Orders</TableHead>
+                  <TableHead>Net</TableHead>
+                  <TableHead>Share</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {creatorRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-muted-foreground">
+                      No creators yet — accept an application to start onboarding.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  creatorRows.map((c) => (
+                    <TableRow key={c.id}>
+                      <TableCell>
+                        <div className="font-medium">{c.displayName}</div>
+                        <div className="text-xs text-muted-foreground">
+                          @{c.username} · {c.creatorType}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{c.status}</Badge>
+                      </TableCell>
+                      <TableCell>{c.stats30d?.visitors ?? 0}</TableCell>
+                      <TableCell>
+                        {c.stats30d?.generations ?? 0}
+                        <span className="text-xs text-muted-foreground">
+                          {" "}
+                          ({c.monthlyGenerationsUsed}/{c.monthlyGenerationAllowance})
+                        </span>
+                      </TableCell>
+                      <TableCell>{c.stats30d?.orders ?? 0}</TableCell>
+                      <TableCell>
+                        ${(((c.stats30d?.netContributionCents ?? 0) as number) / 100).toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {c.revenueShareCreatorPct ?? 100}% / {c.shareBasis || "net"}
+                      </TableCell>
+                      <TableCell className="text-right space-x-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setCreatorEditId(c.id)}
+                        >
+                          Manage
+                        </Button>
+                        <Button size="sm" variant="ghost" asChild>
+                          <a href={`/c/${c.username}`} target="_blank" rel="noreferrer">
+                            Preview
+                          </a>
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+
+        <PlatformCreatorDetailDialog
+          creatorId={creatorEditId}
+          platformShopDomain={config?.platformShopDomain}
+          initialTab={urlCreator && creatorEditId === urlCreator ? urlTab : "overview"}
+          onClose={() => {
+            setCreatorEditId(null);
+            const next = new URLSearchParams(search);
+            next.delete("creator");
+            next.delete("tab");
+            setSearch(next.toString());
+          }}
+        />
+
         <Dialog open={!!selectedId} onOpenChange={(o) => !o && setSelectedId(null)}>
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
@@ -288,15 +718,38 @@ export default function PlatformCreatorsPage() {
                     {detail.application.firstName} {detail.application.lastName}
                   </div>
                   <div className="text-muted-foreground">{detail.application.email}</div>
-                  <div className="mt-1">
-                    {detail.application.socialPlatform}/@{detail.application.socialUsername}
+                  <div className="mt-1 space-y-0.5">
+                    {parseCreatorSocials(detail.application.socials, {
+                      platform: detail.application.socialPlatform,
+                      username: detail.application.socialUsername,
+                    }).map((s) => (
+                      <div key={`${s.platform}:${s.username}`}>
+                        {socialPlatformLabel(s.platform)} {formatSocialHandle(s.username)}
+                      </div>
+                    ))}
                     {detail.application.followerCount != null
-                      ? ` · ${detail.application.followerCount.toLocaleString()} followers`
+                      ? `${detail.application.followerCount.toLocaleString()} followers`
                       : ""}
                   </div>
                   <div className="mt-1">Niche: {detail.application.niche}</div>
+                  {detail.application.shopName ? (
+                    <div className="mt-1">
+                      Requested shop: <span className="font-medium">{detail.application.shopName}</span>
+                    </div>
+                  ) : null}
                   {detail.application.shopifyStoreUrl ? (
                     <div className="mt-1">Store: {detail.application.shopifyStoreUrl}</div>
+                  ) : null}
+                  {detail.application.payoutMethod ? (
+                    <div className="mt-1">
+                      Payout: {detail.application.payoutMethod}
+                      {detail.application.payoutDetail ? ` · ${detail.application.payoutDetail}` : ""}
+                    </div>
+                  ) : null}
+                  {detail.application.termsAcceptedAt ? (
+                    <div className="mt-1 text-muted-foreground">
+                      Terms accepted {new Date(detail.application.termsAcceptedAt).toLocaleString()}
+                    </div>
                   ) : null}
                   {detail.application.whyParticipate ? (
                     <p className="mt-2 text-muted-foreground">{detail.application.whyParticipate}</p>
@@ -304,45 +757,98 @@ export default function PlatformCreatorsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Assigned username</Label>
-                  <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+                  <Label>Shop name (URL handle)</Label>
+                  <Input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="Mad Clown Core"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Public store name — not their personal name unless that is the store name.
+                    Becomes{" "}
+                    <span className="font-medium">
+                      {previewHandle || "…"}.aiartstudio.app
+                    </span>
+                    . If this applicant is already onboarded, saving here also updates the live
+                    URL. If taken, they must pick a different name — we will not add numbers.
+                  </p>
+                  {shopNameBlocked ? (
+                    <p className="text-xs text-destructive">{shopAvail?.error}</p>
+                  ) : previewHandle ? (
+                    <p className="text-xs text-muted-foreground">Handle available: {previewHandle}</p>
+                  ) : null}
                   <Button
                     size="sm"
                     variant="outline"
+                    disabled={patchMutation.isPending || shopNameBlocked || !previewHandle}
                     onClick={() =>
-                      patchMutation.mutate({ assignedUsername: username, status: "under_review" })
+                      patchMutation.mutate({
+                        assignedUsername: username,
+                        shopName: username,
+                        ...(detail.application.creatorId ? {} : { status: "under_review" }),
+                      })
                     }
                   >
-                    Save username + mark under review
+                    {detail.application.creatorId
+                      ? "Save shop name + update live URL"
+                      : "Save shop name + mark under review"}
                   </Button>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => patchMutation.mutate({ status: "waitlisted" })}
-                  >
-                    Waitlist
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => patchMutation.mutate({ status: "rejected" })}
-                  >
-                    Reject
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => onboardMutation.mutate()}
-                    disabled={onboardMutation.isPending || !!detail.application.creatorId}
-                  >
-                    {onboardMutation.isPending ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {detail.application.creatorId ? (
+                  <div className="space-y-2 rounded-md border bg-muted/40 px-3 py-2">
+                    <p className="text-xs text-muted-foreground">
+                      This applicant is already onboarded. Change the URL handle in creator
+                      settings — Accept stays off so we don&apos;t create a second shop.
+                    </p>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const id = detail.application.creatorId;
+                        setSelectedId(null);
+                        if (id) setCreatorEditId(id);
+                      }}
+                    >
+                      Open creator settings
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => patchMutation.mutate({ status: "waitlisted" })}
+                    >
+                      Waitlist
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => patchMutation.mutate({ status: "rejected" })}
+                    >
+                      Reject
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => onboardMutation.mutate()}
+                      disabled={
+                        onboardMutation.isPending || shopNameBlocked || !previewHandle
+                      }
+                    >
+                      {onboardMutation.isPending ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : null}
+                      Accept & start onboarding
+                    </Button>
+                    {shopNameBlocked ? (
+                      <p className="basis-full text-xs text-destructive">{shopAvail?.error}</p>
+                    ) : !previewHandle ? (
+                      <p className="basis-full text-xs text-destructive">
+                        Enter a valid shop name before accepting.
+                      </p>
                     ) : null}
-                    Accept & start onboarding
-                  </Button>
-                </div>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <Label>Internal note</Label>

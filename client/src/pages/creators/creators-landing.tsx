@@ -15,9 +15,14 @@ export default function CreatorsLandingPage() {
             shop at <span className="font-mono text-foreground">yourname.aiartstudio.app</span> with
             customizer pages your audience can actually use — not just look at.
           </p>
-          <Button asChild size="lg" className="mt-8">
-            <Link href="/creators/apply">Apply as a creator</Link>
-          </Button>
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            <Button asChild size="lg">
+              <Link href="/creators/apply">Apply as a creator</Link>
+            </Button>
+            <Button asChild size="lg" variant="outline">
+              <Link href="/portal/login">Creator Portal</Link>
+            </Button>
+          </div>
         </div>
       </section>
 

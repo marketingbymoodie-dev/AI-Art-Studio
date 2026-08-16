@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import { useLocation, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -64,6 +65,19 @@ async function uploadFile(file: File): Promise<string> {
 
 export default function AdminStyles() {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const [search] = useSearch();
+  const editorParams = new URLSearchParams(search);
+  const returnCreator = editorParams.get("returnCreator");
+  const editStyleId = editorParams.get("edit");
+  const openedFromUrlRef = useRef(false);
+
+  const returnToCreator = () => {
+    if (!returnCreator) return;
+    setLocation(
+      `/admin/platform/creators?creator=${encodeURIComponent(returnCreator)}&tab=styles`,
+    );
+  };
 
   // ── Dialog state ──────────────────────────────────────────────────────────
   const [styleDialogOpen, setStyleDialogOpen] = useState(false);
@@ -138,14 +152,17 @@ export default function AdminStyles() {
 
   const updateStyleMutation = useMutation({
     mutationFn: async ({ id, ...data }: { id: number } & any) => {
-      const response = await apiRequest("PATCH", `/api/admin/styles/${id}`, data);
+      const path = returnCreator ? `/api/platform/styles/${id}` : `/api/admin/styles/${id}`;
+      const response = await apiRequest("PATCH", path, data);
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
       setStyleDialogOpen(false);
       resetStyleForm();
       toast({ title: "Style updated" });
+      returnToCreator();
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update style", description: error.message, variant: "destructive" });
@@ -269,6 +286,35 @@ export default function AdminStyles() {
     setStyleDialogOpen(true);
   };
 
+  useEffect(() => {
+    if (!editStyleId || openedFromUrlRef.current) return;
+    const fromList = (styles || []).find((s) => String(s.id) === String(editStyleId));
+    if (fromList) {
+      openedFromUrlRef.current = true;
+      handleEditStyle(fromList);
+      return;
+    }
+    let cancelled = false;
+    apiRequest("GET", `/api/platform/styles/${editStyleId}`)
+      .then((res) => res.json())
+      .then((style: StylePresetDB) => {
+        if (cancelled || !style?.id) return;
+        openedFromUrlRef.current = true;
+        handleEditStyle(style);
+      })
+      .catch(() => {
+        toast({
+          title: "Could not open style",
+          description: "The custom style was not found.",
+          variant: "destructive",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editStyleId, styles]);
+
   const handleBaseImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -329,6 +375,18 @@ export default function AdminStyles() {
   };
 
   const handleSaveStyle = () => {
+    const isCustomStyle =
+      !!returnCreator || (editingStyle as any)?.creatorScope === "custom";
+    if (isCustomStyle && styleBaseImageUrls.length === 0) {
+      toast({
+        title: "Add an example image",
+        description:
+          "Shoppers use the eye icon to preview this style. Upload at least one image.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const options: StyleOptions | null =
       subStylesEnabled && subStyleChoices.length > 0
         ? {
@@ -561,7 +619,13 @@ export default function AdminStyles() {
         )}
 
         {/* ── Edit / Create dialog ──────────────────────────────────────────── */}
-        <Dialog open={styleDialogOpen} onOpenChange={setStyleDialogOpen}>
+        <Dialog
+          open={styleDialogOpen}
+          onOpenChange={(open) => {
+            setStyleDialogOpen(open);
+            if (!open && returnCreator) returnToCreator();
+          }}
+        >
           <DialogContent className="max-w-lg max-h-[90vh] flex flex-col p-0 gap-0">
             {/* Fixed header */}
             <div className="px-6 pt-6 pb-4 border-b shrink-0">
@@ -704,11 +768,15 @@ export default function AdminStyles() {
                 />
               </div>
 
-              {/* Base Reference Images — up to 5 */}
+              {/* Style example / AI reference images — up to 5 */}
               <div className="space-y-2">
                 <Label>
-                  Base Reference Images{" "}
-                  <span className="text-muted-foreground font-normal">(optional, up to {MAX_BASE_IMAGES})</span>
+                  Style example images{" "}
+                  <span className="text-muted-foreground font-normal">
+                    {(!!returnCreator || (editingStyle as any)?.creatorScope === "custom")
+                      ? `(required, up to ${MAX_BASE_IMAGES})`
+                      : `(optional, up to ${MAX_BASE_IMAGES})`}
+                  </span>
                 </Label>
                 {/* Thumbnail grid */}
                 {styleBaseImageUrls.length > 0 && (
@@ -747,7 +815,9 @@ export default function AdminStyles() {
                   </div>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  AI uses these as visual references alongside the customer's prompt. Add up to {MAX_BASE_IMAGES} images.
+                  The first image is what shoppers see when they tap the eye icon next to
+                  this style. AI also uses these as visual references. Add up to{" "}
+                  {MAX_BASE_IMAGES} images.
                 </p>
               </div>
 
@@ -937,7 +1007,13 @@ export default function AdminStyles() {
 
             {/* Fixed footer */}
             <div className="px-6 py-4 border-t shrink-0 flex justify-end gap-2 bg-background">
-              <Button variant="outline" onClick={() => setStyleDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setStyleDialogOpen(false);
+                  returnToCreator();
+                }}
+              >
                 Cancel
               </Button>
               <Button

@@ -1,8 +1,35 @@
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
+import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 
 function normalizeFlatColorKey(id: string): string {
-  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  return normalizePrintifyColorKey(id);
+}
+
+function colorKeyAliases(id: string, name?: string): string[] {
+  const out = new Set<string>();
+  const add = (value?: string) => {
+    const v = String(value || "").trim();
+    if (!v) return;
+    out.add(v);
+    out.add(normalizePrintifyColorKey(v));
+    out.add(slugPrintifyColorId(v));
+    out.add(normalizePrintifyColorKey(slugPrintifyColorId(v)));
+    const noSolid = v.replace(/^solid\s+/i, "").trim();
+    if (noSolid && noSolid.toLowerCase() !== v.toLowerCase()) {
+      out.add(noSolid);
+      out.add(normalizePrintifyColorKey(noSolid));
+      out.add(slugPrintifyColorId(noSolid));
+    }
+  };
+  add(id);
+  add(name);
+  return [...out].filter(Boolean);
+}
+
+function blankColorSegment(key: string): string {
+  const colon = key.lastIndexOf(":");
+  return colon >= 0 ? key.slice(colon + 1) : key;
 }
 
 function blankKeyMatches(manifest: FlatCalibrationManifest, key: string): boolean {
@@ -10,14 +37,15 @@ function blankKeyMatches(manifest: FlatCalibrationManifest, key: string): boolea
   return !!(entry?.front || entry?.back);
 }
 
-function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | null {
-  if (!id) return null;
-  if (blankKeyMatches(manifest, id)) return id;
-  const norm = normalizeFlatColorKey(id);
+function findBlankKey(manifest: FlatCalibrationManifest, id: string, name?: string): string | null {
+  if (!id && !name) return null;
+  if (id && blankKeyMatches(manifest, id)) return id;
+  const aliases = new Set(colorKeyAliases(id, name).map((a) => normalizeFlatColorKey(a)));
   for (const k of Object.keys(manifest.blanks || {})) {
     if (!blankKeyMatches(manifest, k)) continue;
     const kn = normalizeFlatColorKey(k);
-    if (kn === norm || kn.endsWith(`-${norm}`)) return k;
+    const seg = normalizeFlatColorKey(blankColorSegment(k));
+    if (aliases.has(kn) || aliases.has(seg)) return k;
   }
   return null;
 }
@@ -86,15 +114,9 @@ export function blanksLookLikeApparelSizeColor(manifest: FlatCalibrationManifest
 function findBlankKeyForColor(
   manifest: FlatCalibrationManifest,
   frameColorId: string,
+  frameColorName?: string,
 ): string | null {
-  const colorNorm = normalizeFlatColorKey(frameColorId);
-  for (const k of Object.keys(manifest.blanks || {})) {
-    if (!blankKeyMatches(manifest, k)) continue;
-    const kn = normalizeFlatColorKey(k);
-    // normalizeFlatColorKey turns `s:light_pink` into `s-light-pink` — match suffix, not `:color`.
-    if (kn === colorNorm || kn.endsWith(`-${colorNorm}`)) return k;
-  }
-  return null;
+  return findBlankKey(manifest, frameColorId, frameColorName);
 }
 
 /**
@@ -106,7 +128,7 @@ function findBlankKeyForColor(
  */
 export function resolveFlatBlankColorId(
   manifest: FlatCalibrationManifest,
-  opts: { sizeId?: string; frameColorId?: string; isApparel?: boolean },
+  opts: { sizeId?: string; frameColorId?: string; frameColorName?: string; isApparel?: boolean },
 ): string {
   const apparelColorOnly =
     !!opts.isApparel ||
@@ -130,23 +152,26 @@ export function resolveFlatBlankColorId(
     if (swappedSize) candidates.push(swappedSize);
   }
   if (opts.frameColorId) candidates.push(opts.frameColorId);
+  if (opts.frameColorName) candidates.push(opts.frameColorName);
 
   for (const id of candidates) {
-    const hit = findBlankKey(manifest, id);
+    const hit = findBlankKey(manifest, id, opts.frameColorName);
     if (hit) return hit;
   }
 
   // Apparel + legacy size×colour harvest: garment colour is size-independent.
-  if ((manifest.decorPerSize || apparelColorOnly) && opts.frameColorId) {
-    const colorHit = findBlankKeyForColor(manifest, opts.frameColorId);
+  if ((manifest.decorPerSize || apparelColorOnly || opts.frameColorId) && opts.frameColorId) {
+    const colorHit = findBlankKeyForColor(manifest, opts.frameColorId, opts.frameColorName);
     if (colorHit) return colorHit;
-    const direct = findBlankKey(manifest, opts.frameColorId);
+    const direct = findBlankKey(manifest, opts.frameColorId, opts.frameColorName);
     if (direct) return direct;
-    // Multi-colour harvest: never swap in a different blank when slug lookup misses.
+    // Never swap in a different colour's blank. A single harvest blank is only
+    // reused when it actually matches this colour (Navy ≠ first brown PNG).
     if (manifestHasMultipleColorBlanks(manifest)) return opts.frameColorId;
-    // Single/default blank harvest — keep flat tier alive until re-harvest adds per-colour blanks.
     const singleBlank = firstUsableBlankKey(manifest);
-    if (singleBlank) return singleBlank;
+    if (singleBlank && findBlankKey(manifest, opts.frameColorId, opts.frameColorName) === singleBlank) {
+      return singleBlank;
+    }
     return opts.frameColorId;
   }
 
@@ -162,13 +187,72 @@ export function resolveFlatBlankColorId(
     opts.sizeId && opts.frameColorId
       ? `${opts.sizeId}:${opts.frameColorId}`
       : opts.frameColorId || opts.sizeId || "";
-  const resolved = findBlankKey(manifest, fallback);
+  const resolved = findBlankKey(manifest, fallback, opts.frameColorName);
   if (resolved) return resolved;
+
+  // Never silently show another colour's blank when the customer picked one.
+  if (opts.frameColorId && manifestHasMultipleColorBlanks(manifest)) {
+    return opts.frameColorId;
+  }
 
   for (const k of Object.keys(manifest.blanks || {})) {
     if (blankKeyMatches(manifest, k)) return k;
   }
   return fallback;
+}
+
+/** Exact harvest key for the selected colour, or null when no blank matches. */
+export function harvestBlankMatchesSelection(
+  manifest: FlatCalibrationManifest,
+  opts: { sizeId?: string; frameColorId?: string; frameColorName?: string; isApparel?: boolean },
+): string | null {
+  if (!opts.frameColorId && !opts.frameColorName && !opts.sizeId) return null;
+  const resolved = resolveFlatBlankColorId(manifest, opts);
+  if (!resolved || !blankKeyMatches(manifest, resolved)) return null;
+  if (opts.frameColorId || opts.frameColorName) {
+    const aliases = new Set(
+      colorKeyAliases(opts.frameColorId || "", opts.frameColorName).map((a) =>
+        normalizeFlatColorKey(a),
+      ),
+    );
+    const kn = normalizeFlatColorKey(resolved);
+    const seg = normalizeFlatColorKey(blankColorSegment(resolved));
+    if (!aliases.has(kn) && !aliases.has(seg)) return null;
+  }
+  return resolved;
+}
+
+export function matchHarvestBlankKey(
+  manifest: FlatCalibrationManifest,
+  id: string,
+  name?: string,
+): string | null {
+  return findBlankKey(manifest, id, name);
+}
+
+/** Hoodies/tees imported as `generic` still need apparel blank matching. */
+export function productLooksLikeApparel(opts: {
+  designerType?: string | null;
+  name?: string | null;
+  sizes?: Array<{ id?: string; name?: string }> | null;
+}): boolean {
+  const dt = String(opts.designerType || "").toLowerCase();
+  if (dt === "apparel") return true;
+  if (dt === "framed-print" || dt === "pillow" || dt === "mug") return false;
+  if (
+    /\b(hoodie|sweatshirt|crewneck|t-shirt|\btee\b|apparel|garment|zip[- ]?up)\b/i.test(
+      opts.name || "",
+    )
+  ) {
+    return true;
+  }
+  const sizes = opts.sizes || [];
+  if (sizes.length === 0) return false;
+  return sizes.every(
+    (s) =>
+      isApparelSizeSegment(String(s.id || "")) ||
+      isApparelSizeSegment(String(s.name || "")),
+  );
 }
 
 /**
@@ -177,7 +261,7 @@ export function resolveFlatBlankColorId(
  */
 export function resolveFlatPlacementGeometryKey(
   manifest: FlatCalibrationManifest,
-  opts: { sizeId?: string; frameColorId?: string; isApparel?: boolean },
+  opts: { sizeId?: string; frameColorId?: string; frameColorName?: string; isApparel?: boolean },
 ): string {
   const apparelColorOnly =
     !!opts.isApparel ||

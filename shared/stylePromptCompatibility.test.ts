@@ -38,6 +38,23 @@ describe("stylePromptCompatibility", () => {
     expect(mismatch!.suggestedStyleNames).toContain("Free 4 All");
   });
 
+  it("does not treat regenerate recreate text as a pattern request", () => {
+    expect(
+      detectStylePromptMismatch(
+        "Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: angry bird",
+        "Create an illustrated motif of",
+        "Illustrated Motif",
+      ),
+    ).toBeNull();
+    expect(
+      detectStylePromptMismatch(
+        "Recreate this artwork as a SINGLE centered motif. Do not repeat, duplicate, tile. Original idea: angry bird",
+        "Create an illustrated motif of",
+        "Illustrated Motif",
+      ),
+    ).toBeNull();
+  });
+
   it("returns null for short prompts", () => {
     expect(
       detectStylePromptMismatch("cat", MINIMALIST_ICON_PREFIX, "Minimalist Icon"),

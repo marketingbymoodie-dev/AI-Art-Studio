@@ -137,7 +137,7 @@ export default function AdminSetupPage() {
             Get set up
           </h1>
           <p className="text-muted-foreground">
-            A few quick steps, then open Products Catalogue to Preview or Create a Live page.
+            A few quick steps, then open Products to Preview or Create a Live page.
           </p>
         </div>
 
@@ -258,7 +258,7 @@ export default function AdminSetupPage() {
               <div className="flex-1 space-y-1">
                 <p className="text-sm font-medium flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-600" />
-                  Setup complete — next: Products Catalogue
+                  Setup complete — next: Products
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Preview products in Preview Studio (in-app), or Create Page to pick a Printify supplier,
@@ -269,7 +269,7 @@ export default function AdminSetupPage() {
               <Button asChild data-testid="button-setup-open-catalogue">
                 <Link href="/admin/products">
                   <Package className="h-4 w-4 mr-2" />
-                  Open Products Catalogue
+                  Open Products
                   <ArrowRight className="h-4 w-4 ml-2" />
                 </Link>
               </Button>

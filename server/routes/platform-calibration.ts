@@ -17,6 +17,7 @@ import {
   listMerchantImportableCatalog,
   listPlatformCatalogByKind,
   publishPlatformAopCatalogEntry,
+  updatePlatformCatalogFabricWeave,
   type PlatformCatalogEntry,
 } from "../platformCatalogStore";
 import {
@@ -61,6 +62,7 @@ import { eq, inArray } from "drizzle-orm";
 type StorageLike = {
   getProductTypes(): Promise<any[]>;
   getProductTypesByMerchant(merchantId: string): Promise<any[]>;
+  updateProductType(id: number, updates: Record<string, unknown>): Promise<any>;
   getMerchant(id: string): Promise<any>;
   getMerchantByUserId(userId: string): Promise<any>;
   getMerchantByShop(shop: string): Promise<any>;
@@ -350,6 +352,7 @@ type FlatCanonicalEntry = {
   category: string;
   kind: "flat" | "aop";
   panelMappingTemplate?: string | null;
+  fabricWeaveTexture?: boolean | null;
 };
 
 type ReferenceProductLookup = {
@@ -371,6 +374,7 @@ function flatCanonicalEntryFromCatalog(entry: PlatformCatalogEntry): FlatCanonic
     category: entry.category ?? "",
     kind: entry.kind,
     panelMappingTemplate: entry.panelMappingTemplate,
+    fabricWeaveTexture: entry.fabricWeaveTexture ?? null,
   };
 }
 
@@ -1555,6 +1559,33 @@ export function registerPlatformCalibrationRoutes(
     } catch (e: any) {
       console.error("[platform-canonical] publish failed:", e);
       res.status(500).json({ error: e?.message || "Publish failed" });
+    }
+  });
+
+  app.patch("/api/platform/canonical/:blueprintId/fabric-weave", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      const fabricWeaveTexture = req.body?.fabricWeaveTexture;
+      if (typeof fabricWeaveTexture !== "boolean") {
+        return res.status(400).json({ error: "fabricWeaveTexture must be a boolean" });
+      }
+      const entry = await getPlatformCatalogEntry(blueprintId);
+      if (!entry || entry.kind !== "flat") {
+        return res.status(404).json({ error: "Blueprint is not a flat platform catalog product" });
+      }
+      const row = await updatePlatformCatalogFabricWeave(blueprintId, fabricWeaveTexture);
+      const allTypes = await storage.getProductTypes();
+      let propagated = 0;
+      for (const pt of allTypes) {
+        if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
+        await storage.updateProductType(pt.id, { fabricWeaveTexture });
+        propagated += 1;
+      }
+      res.json({ ok: true, tag: row, propagated });
+    } catch (e: any) {
+      console.error("[platform-canonical] fabric-weave update failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to update fabric weave" });
     }
   });
 

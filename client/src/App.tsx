@@ -37,14 +37,20 @@ import AdminDesignStudio from "@/pages/admin/design-studio";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 import AdminInsights from "@/pages/admin/insights";
 import PlatformCreatorsPage from "@/pages/admin/platform-creators";
-import BetaLandingPage from "@/pages/creators/beta-landing";
-import CreatorsLandingPage from "@/pages/creators/creators-landing";
-import ShopifyBetaLandingPage from "@/pages/creators/shopify-beta-landing";
+import PlatformLandingPage from "@/pages/admin/platform-landing";
+import PlatformTermsPage from "@/pages/admin/platform-terms";
+import LuxeLandingPage from "@/pages/creators/luxe-landing";
 import CreatorApplyPage from "@/pages/creators/apply";
 import CreatorPathStorefrontPage, {
   CreatorBootStorefrontPage,
   hasCreatorBootPayload,
 } from "@/pages/creators/storefront";
+import CreatorPortalLoginPage from "@/pages/portal/login";
+import CreatorPortalDashboardPage from "@/pages/portal/dashboard";
+import AdminSupportPage from "@/pages/admin/support";
+import AdminHowToPage from "@/pages/admin/how-to";
+import PlatformSupportPage from "@/pages/admin/platform-support";
+import PlatformHowToPage from "@/pages/admin/platform-how-to";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -52,12 +58,17 @@ import DevStorefrontPreview from "@/pages/dev-storefront-preview";
 import DevHoodiePlacerPage from "@/pages/dev-hoodie-placer";
 
 function AppRouter() {
+  // Path-based /c/:username/* must use the main router. Boot HTML is also
+  // injected on those URLs, and the subdomain switch would treat /c/x/cart as home.
+  const pathBasedCreator =
+    typeof window !== "undefined" && window.location.pathname.startsWith("/c/");
   // Creator subdomain boot: server injected window.__CREATOR__ — isolate storefront SPA.
-  if (hasCreatorBootPayload()) {
+  if (hasCreatorBootPayload() && !pathBasedCreator) {
     return (
       <Switch>
         <Route path="/products" component={CreatorBootStorefrontPage} />
         <Route path="/about" component={CreatorBootStorefrontPage} />
+        <Route path="/cart" component={CreatorBootStorefrontPage} />
         <Route path="/customize/:handle" component={CreatorBootStorefrontPage} />
         <Route path="/" component={CreatorBootStorefrontPage} />
         <Route component={CreatorBootStorefrontPage} />
@@ -86,17 +97,26 @@ function AppRouter() {
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
       <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
+      <Route path="/admin/platform/landing" component={PlatformLandingPage} />
+      <Route path="/admin/platform/terms" component={PlatformTermsPage} />
+      <Route path="/admin/platform/support" component={PlatformSupportPage} />
+      <Route path="/admin/platform/how-to" component={PlatformHowToPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Creator Marketplace marketing (public) */}
-      <Route path="/beta" component={BetaLandingPage} />
+      <Route path="/beta" component={LuxeLandingPage} />
       <Route path="/creators/apply" component={CreatorApplyPage} />
-      <Route path="/creators" component={CreatorsLandingPage} />
-      <Route path="/shopify-beta" component={ShopifyBetaLandingPage} />
+      <Route path="/creators" component={LuxeLandingPage} />
+      <Route path="/shopify-beta" component={LuxeLandingPage} />
       <Route path="/c/:username/products" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username/about" component={CreatorPathStorefrontPage} />
+      <Route path="/c/:username/cart" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username/customize/:handle" component={CreatorPathStorefrontPage} />
       <Route path="/c/:username" component={CreatorPathStorefrontPage} />
+
+      {/* Creator Portal (OTP auth — own data only) */}
+      <Route path="/portal/login" component={CreatorPortalLoginPage} />
+      <Route path="/portal" component={CreatorPortalDashboardPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />
@@ -105,6 +125,8 @@ function AppRouter() {
       {/* Admin */}
       <Route path="/admin/setup" component={AdminSetupPage} />
       <Route path="/admin/settings" component={AdminSettings} />
+      <Route path="/admin/support" component={AdminSupportPage} />
+      <Route path="/admin/how-to" component={AdminHowToPage} />
       <Route path="/admin/products" component={AdminProducts} />
       <Route path="/admin/styles" component={AdminStyles} />
       <Route path="/admin/coupons" component={AdminCoupons} />

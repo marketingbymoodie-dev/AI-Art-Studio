@@ -1,0 +1,11 @@
+---
+description: Create Customizer Page wizard — read the known-good skill before changing pricing, variants, or admin auth.
+globs: client/src/pages/admin/customizer-pages.tsx,client/src/lib/queryClient.ts,shared/condenseVariantPrices.ts,shared/printifyCostLabels.ts,shared/variantCombinations.ts,client/src/components/admin/ResyncPricesDialog.tsx
+alwaysApply: false
+---
+
+# Create Customizer Page
+
+Before changing this wizard, read `.cursor/skills/customizer-page-creator/SKILL.md` and `reference.md`.
+
+Known-good: Unisex Cotton Crew Tee (bp 5) on staging pin `db4510b`. Count real Printify combos (not sizes × colours), keep front/both COGS maps separate, use `apiFetch` for session JWTs, do not substring-match XL inside 4XL.

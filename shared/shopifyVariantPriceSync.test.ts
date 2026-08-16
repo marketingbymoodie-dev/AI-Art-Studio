@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildPrintifyToShopifyVariantIdMap } from "./shopifyVariantPriceSync";
+import {
+  buildPrintifyToShopifyVariantIdMap,
+  displayRetailPrice,
+  hasPositiveRetailPrice,
+  minPositiveRetailPrice,
+  pickLowestPricedShopifyVariant,
+  resolveStorefrontHeadlinePrice,
+} from "./shopifyVariantPriceSync";
 
 describe("buildPrintifyToShopifyVariantIdMap", () => {
   it("maps printify ids via size:color name keys on shopifyVariantIds", () => {
@@ -70,5 +77,138 @@ describe("buildPrintifyToShopifyVariantIdMap", () => {
       ],
     });
     expect(map["77"]).toBe(7001);
+  });
+});
+
+describe("pickLowestPricedShopifyVariant", () => {
+  it("picks the cheapest size, not Shopify's first variant", () => {
+    const cheapest = pickLowestPricedShopifyVariant([
+      { id: 1, title: `104" x 88"`, price: "254.95" },
+      { id: 2, title: `88" x 88"`, price: "198.95" },
+      { id: 3, title: `68" x 88"`, price: "164.95" },
+    ]);
+    expect(cheapest?.id).toBe(3);
+    expect(cheapest?.price).toBe("164.95");
+  });
+
+  it("skips zero or invalid prices", () => {
+    const cheapest = pickLowestPricedShopifyVariant([
+      { id: 1, title: "Large", price: "0.00" },
+      { id: 2, title: "Small", price: "21.95" },
+    ]);
+    expect(cheapest?.id).toBe(2);
+  });
+});
+
+describe("displayRetailPrice / hasPositiveRetailPrice", () => {
+  it("never treats zero or blank as a display price", () => {
+    expect(displayRetailPrice("0.00")).toBeNull();
+    expect(displayRetailPrice("$0.00")).toBeNull();
+    expect(displayRetailPrice("")).toBeNull();
+    expect(displayRetailPrice(null)).toBeNull();
+    expect(hasPositiveRetailPrice("0.00")).toBe(false);
+  });
+
+  it("formats a real retail amount", () => {
+    expect(displayRetailPrice("29.95")).toBe("29.95");
+    expect(displayRetailPrice("$18.9")).toBe("18.90");
+    expect(hasPositiveRetailPrice("29.95")).toBe(true);
+  });
+
+  it("picks the cheapest positive wizard price", () => {
+    expect(minPositiveRetailPrice({ a: "0.00", b: "32.95", c: "29.95" })).toBe(29.95);
+    expect(minPositiveRetailPrice({ a: "0", b: "" })).toBeNull();
+  });
+});
+
+describe("resolveStorefrontHeadlinePrice", () => {
+  const comforter = [
+    { id: 1, price: "271.95" },
+    { id: 2, price: "229.95" },
+    { id: 3, price: "201.95" },
+  ];
+
+  it("shows from the cheapest size when none is selected", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: comforter,
+      sizeSelected: false,
+      matchedVariantId: "1",
+    });
+    expect(headline).toEqual({ amount: 201.95, showFrom: true });
+  });
+
+  it("shows the selected size price without from", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: comforter,
+      sizeSelected: true,
+      matchedVariantId: "1",
+    });
+    expect(headline).toEqual({ amount: 271.95, showFrom: false });
+  });
+
+  it("shows the both-tier price when Print on Back is on", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [{ id: 1, price: "21.95" }],
+      sizeSelected: true,
+      matchedVariantId: "1",
+      bothPrice: 32.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline).toEqual({ amount: 32.95, showFrom: false });
+  });
+
+  it("estimates a front+back headline when Print on Back is on but no both map exists", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [{ id: 1, price: "48.95" }],
+      sizeSelected: true,
+      matchedVariantId: "1",
+      bothPrice: null,
+      hasBothRetailPrices: false,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline?.amount).toBeGreaterThan(48.95);
+    expect(headline?.showFrom).toBe(false);
+  });
+
+  it("steps the headline up when both-tier is not above the live front price", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [{ id: 1, price: "48.95" }],
+      sizeSelected: true,
+      matchedVariantId: "1",
+      bothPrice: 47.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline).toEqual({ amount: 49.95, showFrom: false });
+  });
+
+  it("shows the selected front size without from even when a both-tier exists", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [
+        { id: 1, price: "48.95" },
+        { id: 2, price: "55.95" },
+      ],
+      sizeSelected: true,
+      matchedVariantId: "2",
+      bothPrice: 67.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: false,
+    });
+    expect(headline).toEqual({ amount: 55.95, showFrom: false });
+  });
+
+  it("shows from the cheapest both-tier price before a size is picked", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [
+        { id: 1, price: "21.95" },
+        { id: 2, price: "29.95" },
+      ],
+      sizeSelected: false,
+      bothPrice: 32.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline).toEqual({ amount: 32.95, showFrom: true });
   });
 });

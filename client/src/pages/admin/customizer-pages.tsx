@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
+import { queryClient, apiRequest, apiFetch, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -28,16 +28,88 @@ import {
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
-import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import { condenseVariantPriceRows, unifySameSizeSuggestedPrices } from "@shared/condenseVariantPrices";
+import { dedupeCreatePageBlanks } from "@shared/productTypePicker";
+import { resolveVariantCostCents, variantCostLabelsMatch } from "@shared/printifyCostLabels";
+import {
+  comboSetFromPairs,
+  countExistingVariantCombos,
+  isAllowedVariantCombo,
+  type VariantComboPair,
+} from "@shared/variantCombinations";
+import { DEFAULT_MARKUP_PERCENT, resolveMarkupPercent } from "@shared/productIntelligence";
+
+function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
+  return normalizeSelectionId(a) === normalizeSelectionId(b);
+}
+
+/** Prefer stored product ids when the wizard used a different separator (`14x14` vs `14-x-14`). */
+function remapPickedIds(picked: string[], stored: VariantOption[] | undefined): string[] {
+  if (!stored?.length) return picked;
+  return picked.map((id) => stored.find((opt) => selectionIdEq(opt.id, id))?.id ?? id);
+}
+
+function buildVariantsFromAxes(
+  sizes: VariantOption[],
+  colors: VariantOption[],
+  sizeIds: string[],
+  colorIds: string[],
+  comboSet?: Set<string> | null,
+): BlankVariant[] {
+  const sizeSet = sizeIds.length ? new Set(sizeIds.map(normalizeSelectionId)) : null;
+  const colorSet = colorIds.length ? new Set(colorIds.map(normalizeSelectionId)) : null;
+  let sizesToUse = sizeSet ? sizes.filter((s) => sizeSet.has(normalizeSelectionId(s.id))) : sizes;
+  let colorsToUse = colorSet && colors.length > 0
+    ? colors.filter((c) => colorSet.has(normalizeSelectionId(c.id)))
+    : colors;
+  if (sizesToUse.length === 0 && sizes.length > 0) sizesToUse = sizes;
+  if (colorsToUse.length === 0 && colorIds.length > 0 && colors.length > 0) colorsToUse = colors;
+  const rows: BlankVariant[] = [];
+  if (colorsToUse.length === 0) {
+    for (const size of sizesToUse) {
+      if (!isAllowedVariantCombo(size.id, "", comboSet)) continue;
+      rows.push({ id: `size:${size.id}`, title: size.name, price: "0.00" });
+    }
+    return rows.length > 0
+      ? rows
+      : sizesToUse.map((size) => ({ id: `size:${size.id}`, title: size.name, price: "0.00" }));
+  }
+  for (const size of sizesToUse) {
+    for (const color of colorsToUse) {
+      if (!isAllowedVariantCombo(size.id, color.id, comboSet)) continue;
+      rows.push({
+        id: `size:${size.id}:${color.id}`,
+        title: `${size.name} / ${color.name}`,
+        price: "0.00",
+      });
+    }
+  }
+  // Combo ids can drift from wizard slugs — keep cartesian so the Printify-label
+  // filter on the pricing step can still drop the real phantoms.
+  if (rows.length === 0 && comboSet && comboSet.size > 0) {
+    for (const size of sizesToUse) {
+      for (const color of colorsToUse) {
+        rows.push({
+          id: `size:${size.id}:${color.id}`,
+          title: `${size.name} / ${color.name}`,
+          price: "0.00",
+        });
+      }
+    }
+  }
+  return rows;
+}
 
 /** Prefer all sizes, drop colours from the end until ≤ Shopify max (UI / prep helper). */
 function trimSelectionToShopifyMax(
   sizeIds: string[],
   colorIds: string[],
+  comboSet?: Set<string> | null,
 ): { sizeIds: string[]; colorIds: string[]; count: number; capped: boolean } {
   let sizes = sizeIds.filter(Boolean);
   let colors = colorIds.filter(Boolean);
-  const countOf = () => sizes.length * (colors.length > 0 ? colors.length : 1);
+  const countOf = () => countExistingVariantCombos(sizes, colors, comboSet);
   if (sizes.length === 0) {
     return { sizeIds: sizes, colorIds: colors, count: 0, capped: false };
   }
@@ -52,7 +124,6 @@ function trimSelectionToShopifyMax(
   }
   return { sizeIds: sizes, colorIds: colors, count: countOf(), capped: true };
 }
-import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -293,15 +364,19 @@ export default function AdminCustomizerPages() {
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
+  const editTargetIdRef = useRef<string | null>(null);
+  editTargetIdRef.current = editTarget?.id ?? null;
   const [editDescription, setEditDescription] = useState("");
   const [editPricingStrategy, setEditPricingStrategy] = useState("notify_only");
-  const [editMarkupPercent, setEditMarkupPercent] = useState("60");
+  const [editMarkupPercent, setEditMarkupPercent] = useState(String(DEFAULT_MARKUP_PERCENT));
+  const [editDescriptionLoading, setEditDescriptionLoading] = useState(false);
   const [editMinMarginPercent, setEditMinMarginPercent] = useState("");
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
   const [editCustomPlaceholder, setEditCustomPlaceholder] = useState("");
   const [uploadingPlaceholder, setUploadingPlaceholder] = useState(false);
   const placeholderUploadRef = useRef<HTMLInputElement>(null);
+  const placeholderHealAttemptedRef = useRef<number | null>(null);
 
   // Hub URL (fallback for disabled pages)
   const [hubUrl, setHubUrl] = useState("");
@@ -324,6 +399,7 @@ export default function AdminCustomizerPages() {
   const [wizardProviderId, setWizardProviderId] = useState<number | null>(null);
   const [wizardSizes, setWizardSizes] = useState<VariantOption[]>([]);
   const [wizardColors, setWizardColors] = useState<VariantOption[]>([]);
+  const [wizardCombinations, setWizardCombinations] = useState<VariantComboPair[]>([]);
   const [wizardSizeIds, setWizardSizeIds] = useState<Set<string>>(new Set());
   const [wizardColorIds, setWizardColorIds] = useState<Set<string>>(new Set());
   const [wizardVariantsLoading, setWizardVariantsLoading] = useState(false);
@@ -336,6 +412,9 @@ export default function AdminCustomizerPages() {
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
+  const [placeholderStepAlert, setPlaceholderStepAlert] = useState<string | null>(null);
+  const [variantLimitAlert, setVariantLimitAlert] = useState<string | null>(null);
+  const prevWizardVariantCountRef = useRef(0);
 
   // Edit-modal variant picker
   const [editSizes, setEditSizes] = useState<VariantOption[]>([]);
@@ -350,8 +429,9 @@ export default function AdminCustomizerPages() {
   const [costsShippingCountry, setCostsShippingCountry] = useState("US");
   const [costsShippingTier, setCostsShippingTier] = useState("standard");
 
-  // Markup percentage for recommended retail pricing (default 60%)
-  const [markupPercent, setMarkupPercent] = useState(60);
+  // Markup percentage for recommended retail pricing
+  const [markupPercent, setMarkupPercent] = useState(DEFAULT_MARKUP_PERCENT);
+  const [appliedSuggestedKey, setAppliedSuggestedKey] = useState("");
 
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
@@ -480,42 +560,67 @@ export default function AdminCustomizerPages() {
   }, [editTarget, blanksData]);
 
   useEffect(() => {
-    if (!editTarget || !editBlank) return;
+    if (!editTarget) {
+      setEditDescription("");
+      setEditDescriptionLoading(false);
+      return;
+    }
+    if (!editBlank) return;
     const images = editBlank.baseMockupImages || {};
+    // Seed once per page/product — do not re-run when description arrives later
+    // or a stale blanks refetch would wipe a just-fetched catalog description.
     setEditDescription(plainTextFromHtml(editBlank.description));
     setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
-    setEditMarkupPercent(String((editBlank as any).defaultMarkupPercent ?? 60));
+    setEditMarkupPercent(String(resolveMarkupPercent((editBlank as any).defaultMarkupPercent)));
     setEditMinMarginPercent(
       (editBlank as any).minMarginPercent != null ? String((editBlank as any).minMarginPercent) : "",
     );
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
-  }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description]);
+  }, [editTarget?.id, editBlank?.productTypeId]);
 
   // Backfill Printify catalog copy when Create Page left description empty.
   useEffect(() => {
     if (!editTarget || !editBlank?.productTypeId) return;
-    if (String(editBlank.description || "").trim()) return;
+    if (String(editBlank.description || "").trim()) {
+      setEditDescriptionLoading(false);
+      return;
+    }
     if (!editBlank.printifyBlueprintId) return;
-    let cancelled = false;
+    const pageId = editTarget.id;
+    const productTypeId = editBlank.productTypeId;
+    setEditDescriptionLoading(true);
     (async () => {
       try {
         const res = await apiRequest(
           "POST",
-          `/api/admin/product-types/${editBlank.productTypeId}/refresh-description`,
+          `/api/admin/product-types/${productTypeId}/refresh-description`,
         );
         const data = await res.json();
-        if (cancelled || !data?.description) return;
+        if (!data?.description) return;
+        // Apply even if this effect remounted (Strict Mode). Only skip if the merchant
+        // opened a different page — otherwise first-open catalog copy never appears.
+        if (editTargetIdRef.current !== pageId) return;
         setEditDescription(plainTextFromHtml(data.description));
+        queryClient.setQueryData(["/api/appai/blanks"], (old: { blanks?: Blank[] } | undefined) => {
+          if (!old?.blanks) return old;
+          return {
+            ...old,
+            blanks: old.blanks.map((b) =>
+              b.productTypeId === productTypeId
+                ? { ...b, description: data.description }
+                : b,
+            ),
+          };
+        });
         queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       } catch {
         /* Printify may have no description — leave empty */
+      } finally {
+        if (editTargetIdRef.current === pageId) setEditDescriptionLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description, editBlank?.printifyBlueprintId]);
 
   useEffect(() => {
@@ -543,6 +648,7 @@ export default function AdminCustomizerPages() {
       productTypeId?: number;
       variantPrices: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
       baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
       styleConfig: CustomizerPageStyleConfig;
     }) => {
@@ -551,10 +657,38 @@ export default function AdminCustomizerPages() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       setCreatedPageResult(data);
       setFormStep(6);
     },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: any) => {
+      const raw = err instanceof Error ? err.message : String(err ?? "");
+      const jsonStart = raw.indexOf("{");
+      if (jsonStart !== -1) {
+        try {
+          const parsed = JSON.parse(raw.slice(jsonStart)) as { error?: string; reinstallUrl?: string };
+          if (parsed.error === "REAUTH_REQUIRED") {
+            toast({
+              title: "Reconnect Shopify",
+              description: "Your store connection expired. Use Reconnect Shopify in the banner, then click Create Page again — this form is still here.",
+              variant: "destructive",
+            });
+            return;
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+      if (isSessionAuthError(err)) {
+        toast({
+          title: "Session expired",
+          description: "Refresh this admin page, then click Create Page again. Your pricing and images are still in this form.",
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({ title: "Couldn't create page", description: parseApiErrorMessage(err), variant: "destructive" });
+    },
   });
 
   const toggleMutation = useMutation({
@@ -681,6 +815,7 @@ export default function AdminCustomizerPages() {
         next.delete(url);
       } else if (next.size < MAX_GALLERY_PLACEHOLDERS) {
         next.add(url);
+        if (!formPrimaryPlaceholder) setFormPrimaryPlaceholder(url);
       }
       return next;
     });
@@ -746,6 +881,7 @@ export default function AdminCustomizerPages() {
     setWizardProviderId(null);
     setWizardSizes([]);
     setWizardColors([]);
+    setWizardCombinations([]);
     setWizardSizeIds(new Set());
     setWizardColorIds(new Set());
     setWizardVariantsReady(false);
@@ -753,6 +889,9 @@ export default function AdminCustomizerPages() {
     setVariantPricesBoth({});
     setPriceErrors({});
     setCreatedPageResult(null);
+    setPlaceholderStepAlert(null);
+    setMarkupPercent(DEFAULT_MARKUP_PERCENT);
+    setAppliedSuggestedKey("");
   }
 
   function handleTitleChange(val: string) {
@@ -786,24 +925,10 @@ export default function AdminCustomizerPages() {
     return canonical === formProductId || formProductId === `pt:${b.productTypeId}`;
   });
 
-  /**
-   * Deduplicate variants by full label — keeps all distinct variants including
-   * products with meaningful material/color variants (e.g. Body Pillow: Polyester
-   * vs Microfiber). Phone cases with cosmetic color variants will show multiple rows
-   * but the auto-calculator fills them with the same price.
-   */
-  const selectedVariants: BlankVariant[] = useMemo(() => {
-    const raw = selectedBlank?.variants ?? [];
-    const seen = new Set<string>();
-    const deduped: BlankVariant[] = [];
-    for (const v of raw) {
-      if (!seen.has(v.title)) {
-        seen.add(v.title);
-        deduped.push(v);
-      }
-    }
-    return deduped;
-  }, [selectedBlank?.variants]);
+  const wizardComboSet = useMemo(
+    () => comboSetFromPairs(wizardCombinations),
+    [wizardCombinations],
+  );
 
   // Printify costs query -- fetches production costs via temporary product probe
   const {
@@ -840,6 +965,58 @@ export default function AdminCustomizerPages() {
       (wizardProviderId == null || selectedBlank.printifyProviderId === wizardProviderId),
     retry: false,
   });
+
+  /**
+   * Deduplicate variants by full label — keeps all distinct variants including
+   * products with meaningful material/color variants (e.g. Body Pillow: Polyester
+   * vs Microfiber). Phone cases with cosmetic color variants will show multiple rows
+   * but the auto-calculator fills them with the same price.
+   */
+  const selectedVariants: BlankVariant[] = useMemo(() => {
+    const fromWizard =
+      wizardSizeIds.size > 0
+        ? buildVariantsFromAxes(
+            wizardSizes.length ? wizardSizes : (selectedBlank?.sizes ?? []),
+            wizardColors.length ? wizardColors : (selectedBlank?.frameColors ?? []),
+            Array.from(wizardSizeIds),
+            Array.from(wizardColorIds),
+            wizardComboSet,
+          )
+        : [];
+    const dropUnavailable = (rows: BlankVariant[]) => {
+      const labels = costsData?.printifyVariantLabels;
+      if (!labels || Object.keys(labels).length === 0) return rows;
+      const kept = rows.filter((v) =>
+        Object.values(labels).some((label) => variantCostLabelsMatch(v.title, label)),
+      );
+      return kept.length > 0 ? kept : rows;
+    };
+    // After Apply, pricing must follow the wizard picks even if /blanks is still
+    // refreshing (that refetch is slow and used to fail the whole Next click).
+    if (formStep >= 4 && fromWizard.length > 0) return dropUnavailable(fromWizard);
+    const raw = selectedBlank?.variants ?? [];
+    const seen = new Set<string>();
+    const deduped: BlankVariant[] = [];
+    for (const v of raw) {
+      if (!seen.has(v.title)) {
+        seen.add(v.title);
+        deduped.push(v);
+      }
+    }
+    if (deduped.length > 0) return dropUnavailable(deduped);
+    return dropUnavailable(fromWizard);
+  }, [
+    formStep,
+    selectedBlank?.variants,
+    selectedBlank?.sizes,
+    selectedBlank?.frameColors,
+    wizardSizes,
+    wizardColors,
+    wizardSizeIds,
+    wizardColorIds,
+    wizardComboSet,
+    costsData?.printifyVariantLabels,
+  ]);
 
   const costsErrorPayload = useMemo(() => {
     if (!costsFetchError) return null;
@@ -920,6 +1097,18 @@ export default function AdminCustomizerPages() {
     },
   });
 
+  const refreshPlaceholderImagesMutation = useMutation({
+    mutationFn: async (productTypeId: number) => {
+      const res = await apiRequest("POST", `/api/admin/product-types/${productTypeId}/refresh-images`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Could not load catalog images");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+    },
+  });
+
   // Refresh costs → Product Sync (sole preferred path). Legacy clear-cache removed from UI.
 
   // Shipping rates query
@@ -941,38 +1130,41 @@ export default function AdminCustomizerPages() {
     return Math.ceil(num) - 0.05;
   }
 
-  /** Blank variant ids from /api/appai/blanks use `printify:{id}`; costs keys are raw Printify ids. */
-  function resolveBlankVariantCostCents(
-    v: BlankVariant,
-    costs: {
-      costs?: Record<string, number>;
-      shopifyVariantCosts?: Record<string, number>;
-      printifyVariantLabels?: Record<string, string>;
-      costsByNormalizedLabel?: Record<string, number>;
-    },
-    labelToCost: Record<string, number>,
+  /** Front-only COGS. Wizard rows are `size:…` ids — match by title, never reuse front+back maps. */
+  function resolveFrontCostCents(v: BlankVariant): number | undefined {
+    if (!costsData) return undefined;
+    return resolveVariantCostCents(v, {
+      costs: costsData.costs,
+      shopifyVariantCosts: costsData.shopifyVariantCosts,
+      costsByNormalizedLabel: costsData.costsByNormalizedLabel,
+      printifyVariantLabels: costsData.printifyVariantLabels,
+    });
+  }
+
+  /** Front+back COGS. Must use the both-tier maps only — do not fall back to front. */
+  function resolveBothCostCents(v: BlankVariant): number | undefined {
+    if (!costsData) return undefined;
+    return resolveVariantCostCents(v, {
+      costs: costsData.costsBoth,
+      shopifyVariantCosts: costsData.shopifyVariantCostsBoth,
+      costsByNormalizedLabel: costsData.costsBothByNormalizedLabel,
+      printifyVariantLabels: costsData.printifyVariantLabels,
+    });
+  }
+
+  function groupCostCents(
+    variantIds: string[],
+    resolve: (v: BlankVariant) => number | undefined,
   ): number | undefined {
-    let costCents: number | undefined = costs.shopifyVariantCosts?.[v.id];
-    if (costCents == null && v.id.startsWith("printify:")) {
-      costCents = costs.costs?.[v.id.slice("printify:".length)];
+    let max: number | undefined;
+    for (const id of variantIds) {
+      const row = selectedVariants.find((x) => x.id === id);
+      if (!row) continue;
+      const cents = resolve(row);
+      if (cents == null) continue;
+      max = max == null ? cents : Math.max(max, cents);
     }
-    if (costCents == null) costCents = costs.costs?.[v.id];
-    if (costCents == null && v.title && costs.costsByNormalizedLabel) {
-      costCents = costs.costsByNormalizedLabel[normalizeVariantLabelForCostMatch(v.title)];
-    }
-    if (costCents == null && v.title) {
-      const normTitle = normalizeVariantLabelForCostMatch(v.title);
-      costCents = labelToCost[normTitle];
-      if (costCents == null) {
-        for (const [label, cost] of Object.entries(labelToCost)) {
-          if (normTitle.includes(label) || label.includes(normTitle)) {
-            costCents = cost;
-            break;
-          }
-        }
-      }
-    }
-    return costCents;
+    return max;
   }
 
   const costsAvailable =
@@ -988,81 +1180,92 @@ export default function AdminCustomizerPages() {
   const recommendedPrices = useMemo(() => {
     if (!costsAvailable || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
-    // Build a normalised-label → cost-in-cents lookup from Printify variant labels
-    // e.g. { "14x14" → 850, "18x18" → 950, ... }
-    const labelToCost: Record<string, number> = {};
-    if (costsData.printifyVariantLabels && costsData.costs) {
-      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-        const costCents = costsData.costs[printifyVid];
-        if (costCents != null) {
-          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
-        }
-      }
-    }
     for (const v of selectedVariants) {
-      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
+      const costCents = resolveFrontCostCents(v);
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
-    return result;
+    return unifySameSizeSuggestedPrices(selectedVariants, result);
   }, [costsAvailable, costsData, selectedVariants, markupPercent]);
 
   const recommendedPricesBoth = useMemo(() => {
     if (!supportsBothSidePricing || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
-    const labelToCost: Record<string, number> = {};
-    if (costsData.printifyVariantLabels && costsData.costsBoth) {
-      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-        const costCents = costsData.costsBoth[printifyVid];
-        if (costCents != null) {
-          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
-        }
-      }
-    }
-    const bothCostsData = { ...costsData, costs: costsData.costsBoth || {} };
     for (const v of selectedVariants) {
-      const costCents = resolveBlankVariantCostCents(v, bothCostsData, labelToCost);
+      const costCents = resolveBothCostCents(v);
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
-    return result;
+    return unifySameSizeSuggestedPrices(selectedVariants, result);
   }, [supportsBothSidePricing, costsData, selectedVariants, markupPercent]);
 
-  // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
+  const condensedPriceRows = useMemo(() => {
+    const rows = condenseVariantPriceRows(
+      selectedVariants,
+      variantPrices,
+      variantPricesBoth,
+      supportsBothSidePricing,
+    );
+    if (!costsAvailable) return rows;
+    const matched = rows.filter((row) =>
+      row.variantIds.some((id) => {
+        const v = selectedVariants.find((x) => x.id === id);
+        return v != null && resolveFrontCostCents(v) != null;
+      }),
+    );
+    // Bags / colour-only Printify titles can miss the first COGS pass — never
+    // hide every input or the pricing step goes blank (weekender bag).
+    return matched.length > 0 ? matched : rows;
+  }, [selectedVariants, variantPrices, variantPricesBoth, supportsBothSidePricing, costsAvailable, costsData]);
+
+  function setGroupRetailPrice(variantIds: string[], value: string) {
+    setVariantPrices((prev) => {
+      const next = { ...prev };
+      for (const id of variantIds) next[id] = value;
+      return next;
+    });
+  }
+
+  function setGroupRetailPriceBoth(variantIds: string[], value: string) {
+    setVariantPricesBoth((prev) => {
+      const next = { ...prev };
+      for (const id of variantIds) next[id] = value;
+      return next;
+    });
+  }
+
+  const suggestedPriceKey = useMemo(() => {
+    const front = Object.entries(recommendedPrices)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, price]) => `${id}:${price}`)
+      .join("|");
+    const both = supportsBothSidePricing
+      ? Object.entries(recommendedPricesBoth)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([id, price]) => `${id}:${price}`)
+          .join("|")
+      : "";
+    return `${markupPercent}:${front}:${both}`;
+  }, [markupPercent, recommendedPrices, recommendedPricesBoth, supportsBothSidePricing]);
+
+  const suggestedPricesApplying =
+    formStep === 4 &&
+    !costsError &&
+    (costsLoading ||
+      (Object.keys(recommendedPrices).length > 0 && appliedSuggestedKey !== suggestedPriceKey));
+
+  // Markup (and first cost load) always writes suggested retail into the inputs.
   useEffect(() => {
     if (formStep !== 4) return;
     if (Object.keys(recommendedPrices).length === 0) return;
-    setVariantPrices((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [id, price] of Object.entries(recommendedPrices)) {
-        // Only fill in if the field is currently empty or zero
-        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
-          next[id] = price;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [recommendedPrices, formStep]);
-
-  useEffect(() => {
-    if (formStep !== 4 || !supportsBothSidePricing) return;
-    if (Object.keys(recommendedPricesBoth).length === 0) return;
-    setVariantPricesBoth((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [id, price] of Object.entries(recommendedPricesBoth)) {
-        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
-          next[id] = price;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [recommendedPricesBoth, formStep, supportsBothSidePricing]);
+    setVariantPrices({ ...recommendedPrices });
+    if (supportsBothSidePricing) {
+      setVariantPricesBoth({ ...recommendedPricesBoth });
+    }
+    setAppliedSuggestedKey(suggestedPriceKey);
+  }, [formStep, recommendedPrices, recommendedPricesBoth, supportsBothSidePricing, suggestedPriceKey]);
 
   // Prefill edit-modal variant checkboxes when opening a page
   useEffect(() => {
@@ -1077,11 +1280,13 @@ export default function AdminCustomizerPages() {
     (async () => {
       setEditVariantsLoading(true);
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/admin/printify/blueprints/${editBlank.printifyBlueprintId}/variants?providerId=${editBlank.printifyProviderId}`,
-          { credentials: "include" },
         );
-        if (!res.ok) throw new Error("Failed to load variants");
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || body.message || "Failed to load variants");
+        }
         const data = await res.json();
         if (cancelled) return;
         const sizes: VariantOption[] = data.sizes || [];
@@ -1129,13 +1334,21 @@ export default function AdminCustomizerPages() {
     if (!handleTouched) setFormHandle(slugify(simplified));
   }, [selectedBlank?.title, titleTouched]);
 
-  useEffect(() => {
-    if (!selectedBlank) return;
-    const images = selectedBlank.baseMockupImages || {};
-    setFormPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
-    setFormGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
+  function resetPlaceholderPicks() {
+    setFormPrimaryPlaceholder("");
+    setFormGalleryPlaceholders(new Set());
     setFormCustomPlaceholder("");
-  }, [selectedBlank?.productTypeId, formProductId]);
+  }
+
+  useEffect(() => {
+    if (!selectedBlank?.productTypeId) return;
+    const available = buildAvailablePlaceholderImages(selectedBlank.baseMockupImages);
+    if (available.length > 0) return;
+    if (placeholderHealAttemptedRef.current === selectedBlank.productTypeId) return;
+    if (refreshPlaceholderImagesMutation.isPending) return;
+    placeholderHealAttemptedRef.current = selectedBlank.productTypeId;
+    refreshPlaceholderImagesMutation.mutate(selectedBlank.productTypeId);
+  }, [selectedBlank?.productTypeId, selectedBlank?.baseMockupImages]);
 
   useEffect(() => {
     if (!selectedBlank) {
@@ -1154,9 +1367,7 @@ export default function AdminCustomizerPages() {
   const { data: wizardProvidersData, isLoading: wizardProvidersLoading } = useQuery<WizardProvider[]>({
     queryKey: ["/api/admin/printify/blueprints", selectedBlank?.printifyBlueprintId, "providers"],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/printify/blueprints/${selectedBlank!.printifyBlueprintId}/providers`, {
-        credentials: "include",
-      });
+      const res = await apiFetch(`/api/admin/printify/blueprints/${selectedBlank!.printifyBlueprintId}/providers`);
       if (!res.ok) throw new Error("Failed to fetch print providers");
       return res.json();
     },
@@ -1167,51 +1378,69 @@ export default function AdminCustomizerPages() {
     wizardProvidersData?.find((p) => p.id === wizardProviderId)?.title ?? selectedBlankProviderLabel;
 
   const wizardVariantCount = useMemo(() => {
-    const sizeCount = wizardSizeIds.size;
-    if (sizeCount === 0) return 0;
-    const colorCount = wizardColors.length === 0 ? 1 : wizardColorIds.size;
-    if (wizardColors.length > 0 && colorCount === 0) return 0;
-    return sizeCount * colorCount;
-  }, [wizardSizeIds.size, wizardColorIds.size, wizardColors.length]);
+    if (wizardSizeIds.size === 0) return 0;
+    if (wizardColors.length > 0 && wizardColorIds.size === 0) return 0;
+    return countExistingVariantCombos(wizardSizeIds, wizardColorIds, wizardComboSet);
+  }, [wizardSizeIds, wizardColorIds, wizardColors.length, wizardComboSet]);
 
+  const wizardVariantOverLimit = wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
   const wizardVariantCountValid =
     wizardVariantsReady &&
     wizardSizes.length > 0 &&
     wizardVariantCount > 0 &&
-    wizardVariantCount <= SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
+    !wizardVariantOverLimit;
+
+  useEffect(() => {
+    if (formStep !== 3) {
+      prevWizardVariantCountRef.current = wizardVariantCount;
+      return;
+    }
+    const prev = prevWizardVariantCountRef.current;
+    prevWizardVariantCountRef.current = wizardVariantCount;
+    if (!wizardVariantsReady || !wizardVariantOverLimit) return;
+    if (prev > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) return;
+    setVariantLimitAlert(
+      `You have ${wizardVariantCount} variants — Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Deselect unwanted sizes or colours to get under ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} before you can set pricing.`,
+    );
+  }, [formStep, wizardVariantCount, wizardVariantOverLimit, wizardVariantsReady]);
 
   async function loadWizardVariants(blueprintId: number, providerId: number) {
     setWizardVariantsLoading(true);
     setWizardVariantsReady(false);
     setWizardSizes([]);
     setWizardColors([]);
+    setWizardCombinations([]);
     setWizardSizeIds(new Set());
     setWizardColorIds(new Set());
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/admin/printify/blueprints/${blueprintId}/variants?providerId=${providerId}`,
-        { credentials: "include" },
       );
-      if (!res.ok) throw new Error("Failed to fetch variants");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || `Failed to fetch variants (${res.status})`);
+      }
       const data = await res.json();
       const sizes: VariantOption[] = data.sizes || [];
       const colors: VariantOption[] = data.colors || [];
+      const combinations: VariantComboPair[] = Array.isArray(data.combinations) ? data.combinations : [];
       if (sizes.length === 0) throw new Error("Printify returned no sizes for this supplier");
       setWizardSizes(sizes);
       setWizardColors(colors);
+      setWizardCombinations(combinations);
       // Prefer current product picks when staying on the same supplier
       const sameProvider = providerId === selectedBlank?.printifyProviderId;
       const savedSizes = selectedBlank?.selectedSizeIds ?? [];
       const savedColors = selectedBlank?.selectedColorIds ?? [];
       let nextSizes =
         sameProvider && savedSizes.length > 0
-          ? savedSizes.filter((id) => sizes.some((s) => s.id === id))
+          ? sizes.filter((s) => savedSizes.some((id) => selectionIdEq(s.id, id))).map((s) => s.id)
           : sizes.map((s) => s.id);
       let nextColors =
         sameProvider && savedColors.length > 0 && colors.length > 0
-          ? savedColors.filter((id) => colors.some((c) => c.id === id))
+          ? colors.filter((c) => savedColors.some((id) => selectionIdEq(c.id, id))).map((c) => c.id)
           : colors.map((c) => c.id);
-      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors, comboSetFromPairs(combinations));
       setWizardSizeIds(new Set(trimmed.sizeIds));
       setWizardColorIds(new Set(trimmed.colorIds));
       setWizardVariantsReady(true);
@@ -1227,6 +1456,22 @@ export default function AdminCustomizerPages() {
     }
   }
 
+  type EnsureWizardResult = {
+    productId: string;
+    productTypeId: number;
+    providerId: number;
+    alreadyImported: boolean;
+    existingProductName?: string;
+  };
+
+  const selectedBlankRef = useRef(selectedBlank);
+  selectedBlankRef.current = selectedBlank;
+  const wizardProviderIdRef = useRef(wizardProviderId);
+  wizardProviderIdRef.current = wizardProviderId;
+  const wizardComboSetRef = useRef(wizardComboSet);
+  wizardComboSetRef.current = wizardComboSet;
+  const lastEnsureResultRef = useRef<EnsureWizardResult | null>(null);
+
   /**
    * Switch product type onto the chosen Printify supplier (clean title — no " — Provider" in H1).
    * Used for silent prep during Variants + final apply.
@@ -1236,51 +1481,69 @@ export default function AdminCustomizerPages() {
       sizeIds: string[];
       colorIds: string[];
       quiet?: boolean;
-    }): Promise<{ productId: string; alreadyImported: boolean; existingProductName?: string }> => {
-      if (!selectedBlank?.printifyBlueprintId || wizardProviderId == null) {
+    }): Promise<EnsureWizardResult> => {
+      const blank = selectedBlankRef.current;
+      const providerId = wizardProviderIdRef.current;
+      const last = lastEnsureResultRef.current;
+      const blueprintId = blank?.printifyBlueprintId;
+      if (!blueprintId || providerId == null) {
         throw new Error("Choose a print provider before continuing.");
       }
-      const sameProvider = wizardProviderId === selectedBlank.printifyProviderId;
-      const sizeIds = args.sizeIds;
-      const colorIds = args.colorIds;
+      const productTypeId = blank?.productTypeId ?? last?.productTypeId;
+      const sameProvider =
+        providerId === blank?.printifyProviderId ||
+        (last != null && last.providerId === providerId && last.productTypeId === productTypeId);
+      const sizeIds = remapPickedIds(args.sizeIds, blank?.sizes);
+      const colorIds = remapPickedIds(args.colorIds, blank?.frameColors);
 
-      if (sameProvider && selectedBlank.productTypeId) {
-        const cleanName = stripProviderSuffix(selectedBlank.title);
-        if (cleanName && cleanName !== selectedBlank.title) {
+      if (sameProvider && productTypeId) {
+        const cleanName = stripProviderSuffix(blank?.title || "");
+        if (blank?.title && cleanName && cleanName !== blank.title) {
           try {
-            await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}`, {
+            await apiRequest("PATCH", `/api/admin/product-types/${productTypeId}`, {
               name: cleanName,
             });
           } catch {
             // non-fatal — variants still save
           }
         }
-        const res = await apiRequest("PATCH", `/api/admin/product-types/${selectedBlank.productTypeId}/variants`, {
+        const res = await apiRequest("PATCH", `/api/admin/product-types/${productTypeId}/variants`, {
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
+          variantCount: countExistingVariantCombos(sizeIds, colorIds, wizardComboSetRef.current),
         });
         await res.json();
-        return {
-          productId: selectedBlank.productId ? selectedBlank.productId : `pt:${selectedBlank.productTypeId}`,
+        const result: EnsureWizardResult = {
+          productId: blank?.productId ? blank.productId : `pt:${productTypeId}`,
+          productTypeId,
+          providerId,
           alreadyImported: false,
         };
+        lastEnsureResultRef.current = result;
+        return result;
       }
 
       // Never append supplier to the product name — that leaked into storefront H1s.
-      const name = stripProviderSuffix(selectedBlank.title) || selectedBlank.title;
+      const name = stripProviderSuffix(blank?.title || "") || blank?.title || "Customizer product";
       try {
         const res = await apiRequest("POST", "/api/admin/printify/import", {
-          blueprintId: selectedBlank.printifyBlueprintId,
+          blueprintId,
           name,
-          providerId: wizardProviderId,
+          providerId,
           selectedSizeIds: sizeIds,
           selectedColorIds: colorIds,
+          variantCount: countExistingVariantCombos(sizeIds, colorIds, wizardComboSetRef.current),
         });
         const data = await res.json();
-        return {
-          productId: data?.shopifyProductId ? String(data.shopifyProductId) : `pt:${data?.id}`,
+        const importedId = Number(data?.id);
+        const result: EnsureWizardResult = {
+          productId: data?.shopifyProductId ? String(data.shopifyProductId) : `pt:${importedId}`,
+          productTypeId: importedId,
+          providerId,
           alreadyImported: false,
         };
+        lastEnsureResultRef.current = result;
+        return result;
       } catch (err: any) {
         const text = err instanceof Error ? err.message : String(err);
         const jsonStart = text.indexOf("{");
@@ -1291,6 +1554,7 @@ export default function AdminCustomizerPages() {
               await apiRequest("PATCH", `/api/admin/product-types/${payload.existingProductTypeId}/variants`, {
                 selectedSizeIds: sizeIds,
                 selectedColorIds: colorIds,
+                variantCount: countExistingVariantCombos(sizeIds, colorIds, wizardComboSetRef.current),
               });
               // Rename away any legacy " — Provider" suffix on the product type.
               const cleanName = stripProviderSuffix(String(payload.existingProductName || name)) || name;
@@ -1303,11 +1567,15 @@ export default function AdminCustomizerPages() {
                   // non-fatal
                 }
               }
-              return {
+              const result: EnsureWizardResult = {
                 productId: `pt:${payload.existingProductTypeId}`,
+                productTypeId: Number(payload.existingProductTypeId),
+                providerId,
                 alreadyImported: true,
                 existingProductName: cleanName,
               };
+              lastEnsureResultRef.current = result;
+              return result;
             }
           } catch {
             // fall through
@@ -1316,8 +1584,58 @@ export default function AdminCustomizerPages() {
         throw err;
       }
     },
-    [selectedBlank, wizardProviderId],
+    [],
   );
+
+  const ensureQueueRef = useRef(Promise.resolve());
+
+  const runEnsureWizardProvider = useCallback(
+    (args: { sizeIds: string[]; colorIds: string[]; quiet?: boolean }) => {
+      const run = ensureQueueRef.current.then(
+        () => ensureWizardProviderWithRetry(args),
+        () => ensureWizardProviderWithRetry(args),
+      );
+      ensureQueueRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    },
+    [ensureWizardProvider],
+  );
+
+  async function ensureWizardProviderWithRetry(args: {
+    sizeIds: string[];
+    colorIds: string[];
+    quiet?: boolean;
+  }) {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await ensureWizardProvider(args);
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const transient = /failed to respond|502|503|504|ECONNRESET|network|timeout/i.test(msg);
+        if (!transient || attempt === 1) throw err;
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    }
+    throw lastErr;
+  }
+
+  async function refreshBlanksBestEffort() {
+    try {
+      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      await Promise.race([
+        queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] }),
+        new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+      ]);
+    } catch (err) {
+      console.warn("[create-page] blanks refresh failed (continuing):", err);
+    }
+  }
 
   /** Silent supplier prep as soon as Variants loads — unlocks costs prefetch while merchant picks sizes. */
   const prepareProviderMutation = useMutation({
@@ -1327,20 +1645,19 @@ export default function AdminCustomizerPages() {
       const trimmed = trimSelectionToShopifyMax(
         wizardSizes.map((s) => s.id),
         wizardColors.map((c) => c.id),
+        wizardComboSet,
       );
-      return ensureWizardProvider({
+      return runEnsureWizardProvider({
         sizeIds: trimmed.sizeIds,
         colorIds: trimmed.colorIds,
         quiet: true,
       });
     },
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
+    onSuccess: (result) => {
       setFormProductId(result.productId);
-      // Kick costs fetch (enabled once blanks show matching provider).
-      void queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+      void refreshBlanksBestEffort().then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+      });
     },
     onError: (err: Error) => {
       // Quiet — merchant can still finish Variants; final Next will retry.
@@ -1372,6 +1689,7 @@ export default function AdminCustomizerPages() {
 
   useEffect(() => {
     preparedProviderKeyRef.current = null;
+    lastEnsureResultRef.current = null;
   }, [wizardProviderId]);
 
   /** Apply final size/colour picks, then Pricing (costs often already warm from background prep). */
@@ -1380,15 +1698,12 @@ export default function AdminCustomizerPages() {
       if (!wizardVariantCountValid) {
         throw new Error("Select sizes/colours within Shopify’s 100-variant limit.");
       }
-      return ensureWizardProvider({
+      return runEnsureWizardProvider({
         sizeIds: Array.from(wizardSizeIds),
         colorIds: Array.from(wizardColorIds),
       });
     },
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      await queryClient.refetchQueries({ queryKey: ["/api/appai/blanks"] });
       setFormProductId(result.productId);
       if (result.alreadyImported) {
         toast({
@@ -1399,7 +1714,9 @@ export default function AdminCustomizerPages() {
       setVariantPrices({});
       setVariantPricesBoth({});
       setPriceErrors({});
+      setAppliedSuggestedKey("");
       setFormStep(4);
+      void refreshBlanksBestEffort();
     },
     onError: (err: any) => {
       toast({
@@ -1479,6 +1796,33 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
+    const availablePlaceholderCount = selectedBlank
+      ? buildAvailablePlaceholderImages(selectedBlank.baseMockupImages, formCustomPlaceholder || undefined).length
+      : 0;
+    let primary = formPrimaryPlaceholder;
+    if (!primary && formGalleryPlaceholders.size > 0) {
+      primary = Array.from(formGalleryPlaceholders)[0] || "";
+      if (primary) setFormPrimaryPlaceholder(primary);
+    }
+    const missingPrimary = !primary;
+    const requireGallery = availablePlaceholderCount > 1;
+    const missingGallery = requireGallery && formGalleryPlaceholders.size < 1;
+    if (selectedBlank && (missingPrimary || missingGallery)) {
+      const parts = [
+        missingPrimary ? "a primary image" : null,
+        missingGallery ? "at least one gallery image" : null,
+      ].filter(Boolean);
+      setPlaceholderStepAlert(
+        availablePlaceholderCount <= 1
+          ? "Choose a primary image before continuing."
+          : `Choose ${parts.join(" and ")} before continuing.`,
+      );
+      document.getElementById("create-placeholder-images")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      return;
+    }
     // Always visit the print provider step — pricing depends on the chosen supplier's costs.
     setFormStep(2);
   }
@@ -1508,20 +1852,16 @@ export default function AdminCustomizerPages() {
   /** Step 3 (variants) → Step 4 (pricing). Applies supplier + size/colour picks. */
   function advanceFromVariants() {
     if (!wizardVariantCountValid) {
+      if (wizardVariantOverLimit) {
+        setVariantLimitAlert(
+          `You have ${wizardVariantCount} variants — Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Deselect unwanted sizes or colours to get under ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} before you can set pricing.`,
+        );
+        return;
+      }
       toast({
         title: "Select variants",
-        description:
-          wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
-            ? `Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants. Deselect some sizes or colours.`
-            : "Wait for sizes/colours to load, then select at least one of each.",
+        description: "Wait for sizes/colours to load, then select at least one of each.",
         variant: "destructive",
-      });
-      return;
-    }
-    if (prepareProviderMutation.isPending) {
-      toast({
-        title: "Almost ready",
-        description: "Finishing supplier setup so pricing can stay warm — try Next again in a moment.",
       });
       return;
     }
@@ -1537,6 +1877,13 @@ export default function AdminCustomizerPages() {
           ? `Wait until ${selectedBlankProviderLabel} has stock again (daily OOS report emails when it changes), or go back to Supplier and pick a different print provider.`
           : "Wait until Printify has stock again, or go back to Supplier and pick a different print provider.",
         variant: "destructive",
+      });
+      return;
+    }
+    if (suggestedPricesApplying) {
+      toast({
+        title: "Applying suggested prices",
+        description: "Wait a moment for the markup to finish updating retail prices.",
       });
       return;
     }
@@ -1600,6 +1947,7 @@ export default function AdminCustomizerPages() {
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
       ...(supportsBothSidePricing ? { variantPricesBoth } : {}),
+      defaultMarkupPercent: markupPercent,
       styleConfig: formStyleConfig,
       baseMockupImages: curated,
     });
@@ -1641,16 +1989,30 @@ export default function AdminCustomizerPages() {
     return ids;
   }, [pages]);
 
-  const sortedCreateBlanks = useMemo(() => {
-    const blanks = [...(blanksData?.blanks ?? [])];
-    blanks.sort((a, b) => {
-      const aLive = liveProductTypeIds.has(a.productTypeId) ? 0 : 1;
-      const bLive = liveProductTypeIds.has(b.productTypeId) ? 0 : 1;
-      if (aLive !== bLive) return aLive - bLive;
-      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-    });
-    return blanks;
-  }, [blanksData?.blanks, liveProductTypeIds]);
+  /** Live pages on a duplicate productType still count for that Printify blueprint. */
+  const liveBlueprintIds = useMemo(() => {
+    const ids = new Set<number>();
+    const blanks = blanksData?.blanks ?? [];
+    for (const p of pages) {
+      if (p.status !== "active" || p.productTypeId == null) continue;
+      const blank = blanks.find((b) => b.productTypeId === p.productTypeId);
+      if (blank?.printifyBlueprintId != null) ids.add(blank.printifyBlueprintId);
+    }
+    return ids;
+  }, [pages, blanksData?.blanks]);
+
+  const sortedCreateBlanks = useMemo(
+    () => dedupeCreatePageBlanks(blanksData?.blanks ?? [], liveProductTypeIds),
+    [blanksData?.blanks, liveProductTypeIds],
+  );
+
+  const createPageBlueprintIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const b of sortedCreateBlanks) {
+      if (b.printifyBlueprintId != null) ids.add(b.printifyBlueprintId);
+    }
+    return ids;
+  }, [sortedCreateBlanks]);
 
   const handleAlreadyUsed = useMemo(() => {
     const h = formHandle.trim();
@@ -1812,9 +2174,11 @@ export default function AdminCustomizerPages() {
                             if (val.startsWith("bp:")) {
                               const bpId = parseInt(val.slice(3), 10);
                               if (Number.isFinite(bpId)) ensureCatalogProductMutation.mutate(bpId);
+                              resetPlaceholderPicks();
                               return;
                             }
                             setFormProductId(val);
+                            resetPlaceholderPicks();
                           }}
                         >
                           <SelectTrigger className="mt-1">
@@ -1823,25 +2187,28 @@ export default function AdminCustomizerPages() {
                           <SelectContent>
                             {sortedCreateBlanks.map((blank) => {
                               const val = blank.productId ? blank.productId : `pt:${blank.productTypeId}`;
-                              const isLive = liveProductTypeIds.has(blank.productTypeId);
+                              const isLive =
+                                liveProductTypeIds.has(blank.productTypeId) ||
+                                (blank.printifyBlueprintId != null &&
+                                  liveBlueprintIds.has(blank.printifyBlueprintId));
                               return (
-                                <SelectItem key={val} value={val}>
+                                <SelectItem key={`pt:${blank.productTypeId}`} value={val}>
                                   {blank.title}
-                                  {isLive ? " (Live)" : ""}
-                                  {blank.needsShopifySync
-                                    ? " (not on this store yet — will be created)"
-                                    : ""}
+                                  {isLive
+                                    ? " (Live)"
+                                    : blank.needsShopifySync
+                                      ? " (not on this store yet — will be created)"
+                                      : " (will be created)"}
                                 </SelectItem>
                               );
                             })}
                             {(setupCatalogData?.entries ?? [])
                               .filter((entry) => {
-                                const blanks = blanksData?.blanks ?? [];
-                                return !blanks.some(
+                                if (createPageBlueprintIds.has(entry.blueprintId)) return false;
+                                return !sortedCreateBlanks.some(
                                   (b) =>
-                                    b.printifyBlueprintId === entry.blueprintId ||
-                                    (entry.existingProductType != null &&
-                                      b.productTypeId === entry.existingProductType.id),
+                                    entry.existingProductType != null &&
+                                    b.productTypeId === entry.existingProductType.id,
                                 );
                               })
                               .map((entry) => (
@@ -1869,11 +2236,16 @@ export default function AdminCustomizerPages() {
                           ). Use a unique page title and URL handle, or edit the existing page instead.
                         </p>
                       )}
-                      {selectedBlank?.needsShopifySync ? (
+                      {selectedBlank &&
+                      !(
+                        liveProductTypeIds.has(selectedBlank.productTypeId) ||
+                        (selectedBlank.printifyBlueprintId != null &&
+                          liveBlueprintIds.has(selectedBlank.printifyBlueprintId))
+                      ) ? (
                         <p className="text-xs text-muted-foreground mt-1">
-                          This product is not on Shopify in this store yet — finishing Create Page will
-                          send it. Deleting a customizer page does not remove the Shopify product, so
-                          products that were already sent stay listed without “will be created”.
+                          {selectedBlank.needsShopifySync
+                            ? "This product is not on Shopify in this store yet — finishing Create Page will send it and publish the customizer page."
+                            : "This product is already on Shopify. Finishing Create Page will publish a new customizer page for it."}
                         </p>
                       ) : null}
                       {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
@@ -1941,12 +2313,15 @@ export default function AdminCustomizerPages() {
                     </div>
 
                     {selectedBlank && (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <Label>Placeholder Images</Label>
+                      <div id="create-placeholder-images" className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label className="text-sm font-semibold">Placeholder images (required)</Label>
                           <span className="text-xs text-muted-foreground text-right max-w-[22rem]">
-                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images.
-                            Primary is your marketing hero — on the storefront the selected colour
+                            Choose 1 primary
+                            {buildAvailablePlaceholderImages(selectedBlank.baseMockupImages, formCustomPlaceholder || undefined).length > 1
+                              ? ` and at least 1 gallery image (up to ${MAX_GALLERY_PLACEHOLDERS})`
+                              : " image"}
+                            . Primary is your marketing hero — on the storefront the selected colour
                             blank leads when available; your Primary stays in the carousel.
                           </span>
                         </div>
@@ -2039,6 +2414,25 @@ export default function AdminCustomizerPages() {
 
                     </div>
 
+                    {selectedBlank && (() => {
+                      const availableCount = buildAvailablePlaceholderImages(
+                        selectedBlank.baseMockupImages,
+                        formCustomPlaceholder || undefined,
+                      ).length;
+                      const galleryOk = availableCount <= 1 || formGalleryPlaceholders.size > 0;
+                      const ready = !!formPrimaryPlaceholder && galleryOk;
+                      return (
+                      <p className={`text-xs mt-2 shrink-0 ${ready ? "text-muted-foreground" : "text-amber-800"}`}>
+                        {ready
+                          ? formGalleryPlaceholders.size > 0
+                            ? `Primary + ${formGalleryPlaceholders.size} gallery image${formGalleryPlaceholders.size === 1 ? "" : "s"} selected.`
+                            : "Primary image selected."
+                          : availableCount <= 1
+                            ? "Scroll down and choose a primary image."
+                            : "Scroll down and choose a primary image plus at least one gallery image."}
+                      </p>
+                      );
+                    })()}
                     <Button
                       className="w-full mt-3 shrink-0"
                       disabled={
@@ -2159,12 +2553,45 @@ export default function AdminCustomizerPages() {
                 {/* ── STEP 3: Variants ── */}
                 {formStep === 3 && (
                   <div className="flex flex-col min-h-0 flex-1 pt-2">
-                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
+                    <div
+                      className={`shrink-0 sticky top-0 z-10 space-y-2 pb-3 ${
+                        wizardVariantOverLimit
+                          ? "rounded-md border border-destructive/40 bg-destructive/5 px-3 pt-2"
+                          : ""
+                      }`}
+                    >
                       <p className="text-sm text-muted-foreground">
                         Choose sizes and colours for{" "}
                         <strong>{wizardProviderLabel ?? "this supplier"}</strong>. Shopify allows up to{" "}
                         {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants.
                       </p>
+                      <div
+                        className={`flex items-center justify-between rounded-md border px-3 py-2 ${
+                          wizardVariantOverLimit
+                            ? "border-destructive/50 bg-background"
+                            : "bg-muted/40"
+                        }`}
+                      >
+                        <span className="text-sm font-medium">Total variants</span>
+                        <span
+                          className={`text-lg font-bold tabular-nums ${
+                            wizardVariantCountValid ? "text-green-600" : "text-destructive"
+                          }`}
+                        >
+                          {wizardVariantCount} / {SHOPIFY_MAX_VARIANTS_PER_PRODUCT}
+                        </span>
+                      </div>
+                      {wizardVariantOverLimit && (
+                        <p className="text-sm text-destructive flex items-start gap-2">
+                          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                          <span>
+                            Over Shopify’s {SHOPIFY_MAX_VARIANTS_PER_PRODUCT}-variant limit. Deselect
+                            unwanted sizes or colours to continue to pricing.
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                       {(prepareProviderMutation.isPending ||
                         (costsLoading && formStep === 3) ||
                         (costsAvailable && formStep === 3)) && (
@@ -2181,16 +2608,6 @@ export default function AdminCustomizerPages() {
                                 : null}
                         </p>
                       )}
-                      <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
-                        <span className="text-sm font-medium">Total variants</span>
-                        <span
-                          className={`text-lg font-bold ${
-                            wizardVariantCountValid ? "text-green-600" : "text-destructive"
-                          }`}
-                        >
-                          {wizardVariantCount}
-                        </span>
-                      </div>
                       {wizardVariantsLoading ? (
                         <div className="flex flex-col items-center justify-center py-10 gap-2">
                           <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -2317,26 +2734,41 @@ export default function AdminCustomizerPages() {
                         </>
                       )}
                     </div>
-                    <div className="flex gap-2 pt-2 shrink-0">
-                      <Button
-                        variant="outline"
-                        className="flex-1"
-                        onClick={() => setFormStep(2)}
-                        disabled={applySupplierAndVariantsMutation.isPending}
-                      >
-                        Back
-                      </Button>
-                      <Button
-                        className="flex-1"
-                        onClick={advanceFromVariants}
-                        disabled={!wizardVariantCountValid || applySupplierAndVariantsMutation.isPending}
-                      >
-                        {applySupplierAndVariantsMutation.isPending ? (
-                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Applying…</>
-                        ) : (
-                          <>Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" /></>
-                        )}
-                      </Button>
+                    <div className="shrink-0 space-y-2 pt-2">
+                      {wizardVariantOverLimit && (
+                        <p className="text-xs text-destructive">
+                          Deselect sizes or colours until you are at {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} or fewer.
+                        </p>
+                      )}
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          className="flex-1"
+                          onClick={() => setFormStep(2)}
+                          disabled={applySupplierAndVariantsMutation.isPending}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          className="flex-1"
+                          onClick={advanceFromVariants}
+                          disabled={
+                            applySupplierAndVariantsMutation.isPending ||
+                            (!wizardVariantCountValid && !wizardVariantOverLimit)
+                          }
+                          title={
+                            wizardVariantOverLimit
+                              ? `Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants. Deselect sizes or colours.`
+                              : undefined
+                          }
+                        >
+                          {applySupplierAndVariantsMutation.isPending ? (
+                            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Applying…</>
+                          ) : (
+                            <>Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" /></>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2457,23 +2889,9 @@ export default function AdminCustomizerPages() {
                                       {supportsBothSidePricing && <span className="text-right text-emerald-700">Prem. both</span>}
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                      const labelToCost: Record<string, number> = {};
-                                      if (costsData.printifyVariantLabels && costsData.costs) {
-                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                                          const c = costsData.costs[printifyVid];
-                                          if (c != null) labelToCost[label.toLowerCase().trim()] = c;
-                                        }
-                                      }
-                                      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
-                                      const labelToBoth: Record<string, number> = {};
-                                      if (costsData.printifyVariantLabels && costsData.costsBoth) {
-                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                                          const c = costsData.costsBoth[printifyVid];
-                                          if (c != null) labelToBoth[label.toLowerCase().trim()] = c;
-                                        }
-                                      }
+                                      const costCents = resolveFrontCostCents(v);
                                       const bothCents = supportsBothSidePricing
-                                        ? resolveBlankVariantCostCents(v, { ...costsData, costs: costsData.costsBoth || {} }, labelToBoth)
+                                        ? resolveBothCostCents(v)
                                         : null;
                                       return (
                                         <div key={v.id} className={`grid gap-2 px-3 py-2 border-t ${supportsBothSidePricing ? "grid-cols-5" : "grid-cols-3"}`}>
@@ -2670,27 +3088,18 @@ export default function AdminCustomizerPages() {
                           <span className="text-sm font-medium">%</span>
                         </div>
                       </div>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="h-10"
-                        onClick={() => {
-                          const next: Record<string, string> = {};
-                          for (const [id, price] of Object.entries(recommendedPrices)) {
-                            next[id] = price;
-                          }
-                          setVariantPrices(next);
-                          if (supportsBothSidePricing) {
-                            const nextBoth: Record<string, string> = {};
-                            for (const [id, price] of Object.entries(recommendedPricesBoth)) {
-                              nextBoth[id] = price;
-                            }
-                            setVariantPricesBoth(nextBoth);
-                          }
-                        }}
-                      >
-                        Apply All Suggested
-                      </Button>
+                      <p className="text-sm text-muted-foreground flex items-center gap-2 shrink-0">
+                        {suggestedPricesApplying ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Applying suggested prices…
+                          </>
+                        ) : Object.keys(recommendedPrices).length > 0 ? (
+                          "Suggested prices applied"
+                        ) : (
+                          "Suggested prices load with Printify costs"
+                        )}
+                      </p>
                     </div>
 
                     {!selectedBlank?.printifyBlueprintId && (
@@ -2814,51 +3223,45 @@ export default function AdminCustomizerPages() {
                       </p>
                     )}
 
-                    <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0" style={{maxHeight: '240px'}}>
-                      <p className="text-xs font-semibold shimmer-text">
-                        Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
-                      </p>
+                    <p className="text-xs font-semibold shimmer-text shrink-0">
+                      Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
+                    </p>
+                    <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0">
                       {supportsBothSidePricing && (
                         <p className="text-xs text-muted-foreground">
                           This product can print front-only or front+back. Set both retail prices — the storefront shows
                           “from $front” and charges the front+back price when Print on Back is on.
                         </p>
                       )}
-                      {selectedVariants.map((v) => {
-                        const frontLabelToCost: Record<string, number> = {};
-                        if (costsData?.printifyVariantLabels && costsData.costs) {
-                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                            const c = costsData.costs[printifyVid];
-                            if (c != null) frontLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
-                          }
-                        }
-                        const bothLabelToCost: Record<string, number> = {};
-                        if (supportsBothSidePricing && costsData?.printifyVariantLabels && costsData.costsBoth) {
-                          for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                            const c = costsData.costsBoth[printifyVid];
-                            if (c != null) bothLabelToCost[normalizeVariantLabelForCostMatch(label)] = c;
-                          }
-                        }
-                        const frontCogs = costsData
-                          ? resolveBlankVariantCostCents(v, costsData, frontLabelToCost)
+                      {condensedPriceRows.map((row) => {
+                        const v = selectedVariants.find((x) => x.id === row.variantIds[0]);
+                        if (!v) return null;
+                        const frontCogs = groupCostCents(row.variantIds, resolveFrontCostCents);
+                        const bothCogs = supportsBothSidePricing
+                          ? groupCostCents(row.variantIds, resolveBothCostCents)
                           : undefined;
-                        const bothCogs =
-                          supportsBothSidePricing && costsData
-                            ? resolveBlankVariantCostCents(
-                                v,
-                                { ...costsData, costs: costsData.costsBoth || {} },
-                                bothLabelToCost,
-                              )
-                            : undefined;
-                        const retailN = parseFloat(variantPrices[v.id] || "");
+                        const retailN = parseFloat(row.price || "");
                         const frontProfit =
                           Number.isFinite(retailN) && frontCogs != null
                             ? retailN - frontCogs / 100
                             : null;
+                        const suggestedFront = (() => {
+                          const vals = new Set(
+                            row.variantIds.map((id) => recommendedPrices[id]).filter(Boolean),
+                          );
+                          return vals.size === 1 ? Array.from(vals)[0] : undefined;
+                        })();
+                        const suggestedBoth = (() => {
+                          const vals = new Set(
+                            row.variantIds.map((id) => recommendedPricesBoth[id]).filter(Boolean),
+                          );
+                          return vals.size === 1 ? Array.from(vals)[0] : undefined;
+                        })();
+                        const rowError = row.variantIds.map((id) => priceErrors[id]).find(Boolean);
 
                         return (
-                        <div key={v.id} className="space-y-1.5">
-                          <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
+                        <div key={row.key} className="space-y-1.5">
+                          <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{row.label}</Label>
                           <div className={supportsBothSidePricing ? "grid grid-cols-2 gap-2" : undefined}>
                             <div className="space-y-1">
                               <div className="flex justify-between items-end gap-2">
@@ -2869,17 +3272,17 @@ export default function AdminCustomizerPages() {
                                   <div className="flex items-center gap-1">
                                     <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
                                   </div>
-                                ) : recommendedPrices[v.id] ? (
-                                  <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
+                                ) : suggestedFront ? (
+                                  <span className="text-[10px] text-muted-foreground">Suggested: ${suggestedFront}</span>
                                 ) : null}
                               </div>
                               <div className="relative">
                                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                                 <Input
-                                  className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                  className={`pl-7 ${rowError ? "border-destructive" : ""}`}
                                   placeholder="0.00"
-                                  value={variantPrices[v.id] ?? ""}
-                                  onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
+                                  value={row.price}
+                                  onChange={(e) => setGroupRetailPrice(row.variantIds, e.target.value)}
                                 />
                               </div>
                               <p className="text-[10px] text-muted-foreground">
@@ -2898,23 +3301,23 @@ export default function AdminCustomizerPages() {
                               <div className="space-y-1">
                                 <div className="flex justify-between items-end gap-2">
                                   <span className="text-[10px] text-muted-foreground">Front + back</span>
-                                  {recommendedPricesBoth[v.id] ? (
-                                    <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPricesBoth[v.id]}</span>
+                                  {suggestedBoth ? (
+                                    <span className="text-[10px] text-muted-foreground">Suggested: ${suggestedBoth}</span>
                                   ) : null}
                                 </div>
                                 <div className="relative">
                                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                                   <Input
-                                    className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
+                                    className={`pl-7 ${rowError ? "border-destructive" : ""}`}
                                     placeholder="0.00"
-                                    value={variantPricesBoth[v.id] ?? ""}
-                                    onChange={(e) => setVariantPricesBoth({ ...variantPricesBoth, [v.id]: e.target.value })}
+                                    value={row.priceBoth}
+                                    onChange={(e) => setGroupRetailPriceBoth(row.variantIds, e.target.value)}
                                   />
                                 </div>
                                 <p className="text-[10px] text-muted-foreground">
                                   {bothCogs != null
                                     ? `COGS $${(bothCogs / 100).toFixed(2)}${(() => {
-                                        const bothRetail = parseFloat(variantPricesBoth[v.id] || "");
+                                        const bothRetail = parseFloat(row.priceBoth || "");
                                         if (!Number.isFinite(bothRetail)) return "";
                                         return ` · Profit $${(bothRetail - bothCogs / 100).toFixed(2)}`;
                                       })()}`
@@ -2923,12 +3326,18 @@ export default function AdminCustomizerPages() {
                               </div>
                             )}
                           </div>
-                          {priceErrors[v.id] && (
-                            <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
+                          {rowError && (
+                            <p className="text-[10px] text-destructive font-medium">{rowError}</p>
                           )}
                         </div>
                         );
                       })}
+                      {selectedVariants.length === 0 && (
+                        <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3">
+                          No variants to price. Go back to Variants and select at least one size
+                          {wizardColors.length > 0 ? " and colour" : ""}.
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex gap-2 pt-2 shrink-0">
@@ -2938,10 +3347,12 @@ export default function AdminCustomizerPages() {
                       <Button
                         className="flex-1"
                         onClick={advanceToStep4}
-                        disabled={selectedBlankFullyOos || !costsAvailable || costsError}
+                        disabled={selectedBlankFullyOos || !costsAvailable || costsError || suggestedPricesApplying}
                         title={
                           selectedBlankFullyOos
                             ? "Cannot create a customizer page while this Printify supplier has no stock"
+                            : suggestedPricesApplying
+                              ? "Wait for suggested prices to finish applying"
                             : !costsAvailable || costsError
                               ? "Suggested prices from Printify are required before creating this page"
                               : undefined
@@ -2982,24 +3393,26 @@ export default function AdminCustomizerPages() {
                           {formatStyleConfigSummary(formStyleConfig, adminStyles)}
                         </span>
                       </div>
-                      {selectedVariants.length > 0 ? (
+                      {condensedPriceRows.length > 0 ? (
                         <div className="border-t pt-2 mt-1 space-y-1">
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                          <div className={selectedVariants.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
-                            {selectedVariants.map((v) => (
-                              <div key={v.id} className="flex justify-between gap-3">
-                                <span className="truncate">{v.title}</span>
+                          <div className={condensedPriceRows.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
+                            {condensedPriceRows.map((row) => (
+                              <div key={row.key} className="flex justify-between gap-3">
+                                <span className="truncate">{row.label}</span>
                                 <span className="font-medium shrink-0 text-right">
-                                  ${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}
-                                  {supportsBothSidePricing && variantPricesBoth[v.id]
-                                    ? ` / $${parseFloat(variantPricesBoth[v.id]).toFixed(2)} both`
+                                  ${parseFloat(row.price || "0").toFixed(2)}
+                                  {supportsBothSidePricing && row.priceBoth
+                                    ? ` / $${parseFloat(row.priceBoth).toFixed(2)} both`
                                     : ""}
                                 </span>
                               </div>
                             ))}
                           </div>
-                          {selectedVariants.length > 6 && (
-                            <p className="text-[10px] text-muted-foreground pt-1">{selectedVariants.length} variants total — scroll to view all</p>
+                          {condensedPriceRows.length > 6 && (
+                            <p className="text-[10px] text-muted-foreground pt-1">
+                              {condensedPriceRows.length} price groups ({selectedVariants.length} variants) — scroll to view all
+                            </p>
                           )}
                         </div>
                       ) : (
@@ -3478,10 +3891,12 @@ export default function AdminCustomizerPages() {
                   value={editDescription}
                   onChange={(e) => setEditDescription(e.target.value)}
                   rows={5}
-                  placeholder="Describe this custom product..."
+                  placeholder={editDescriptionLoading ? "Loading catalog description…" : "Describe this custom product..."}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Saved locally and synced to the linked Shopify product description.
+                  {editDescriptionLoading && !editDescription.trim()
+                    ? "Pulling the Printify catalog description…"
+                    : "Saved locally and synced to the linked Shopify product description."}
                 </p>
               </div>
 
@@ -3810,6 +4225,47 @@ export default function AdminCustomizerPages() {
         productTypeId={syncPricesTarget?.productTypeId ?? 0}
         customizerPageId={syncPricesTarget?.id}
       />
+
+      <AlertDialog open={!!variantLimitAlert} onOpenChange={(v) => !v && setVariantLimitAlert(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Too many variants</AlertDialogTitle>
+            <AlertDialogDescription>
+              {variantLimitAlert ||
+                `Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product. Deselect unwanted sizes or colours to continue.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setVariantLimitAlert(null)}>
+              Deselect variants
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!placeholderStepAlert} onOpenChange={(v) => !v && setPlaceholderStepAlert(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Choose storefront images</AlertDialogTitle>
+            <AlertDialogDescription>
+              {placeholderStepAlert || "Choose a primary image and at least one gallery image before continuing."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction
+              onClick={() => {
+                setPlaceholderStepAlert(null);
+                document.getElementById("create-placeholder-images")?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                });
+              }}
+            >
+              Choose images
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Confirm delete dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>

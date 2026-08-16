@@ -25,28 +25,31 @@ uri = "/shopify/webhooks/customers-redact"
 compliance_topics = [ "shop/redact" ]
 uri = "/shopify/webhooks/shop-redact"
 
-# orders/paid is required to debit the credit ledger after a redeemed
-# Function discount. It carries protected customer data (email, address,
-# customer GID) so it cannot be declared here until the app is approved
-# for "Protected Customer Data" access in the Partners Dashboard.
-# Once approved, re-add:
+# Protected Customer Data (PCD) gated webhooks — staging has these live.
+# After Partners Dashboard PCD approval, uncomment and redeploy the production app.
+#
+# Creator Marketplace also needs these on the platform shop:
+#   orders/paid      → creator_orders ledger + pack credit grants
+#   refunds/create   → creator refunds + pack clawback
+#   orders/cancelled → creator cancel + pack clawback
+# (Handlers already live in server/routes.ts; see docs/creator-marketplace.md Phase 10.)
 #
 # [[webhooks.subscriptions]]
 # topics = [ "orders/paid" ]
 # uri = "/shopify/webhooks/orders-paid"
 #
-# The handler in server/routes.ts is already live and idempotent, so the
-# moment the subscription is re-enabled, redemption debits + audit rows
-# resume automatically.
+# Also powers: credit ledger debit after Function discount, design product sale
+# recording (My Orders), Reward Ladder purchase_threshold grants.
 #
-# Design product sale recording (My Orders stats dashboard) piggybacks on this
-# same orders/paid handler — see recordDesignProductSalesForOrder in
-# server/design-product-events.ts. No separate re-enable step needed.
-
-# carts/create + carts/update feed the "add to cart" counts on the My Orders
-# stats dashboard for permanent design products. Also contains protected
-# customer data (cart.customer), so they wait on the same PCD approval as
-# orders/paid above. Handlers already exist and are idempotent:
+# [[webhooks.subscriptions]]
+# topics = [ "refunds/create" ]
+# uri = "/shopify/webhooks/refunds-create"
+#
+# [[webhooks.subscriptions]]
+# topics = [ "orders/cancelled" ]
+# uri = "/shopify/webhooks/orders-cancelled"
+#
+# carts/create + carts/update feed My Orders ATC counts (also PCD-gated):
 #
 # [[webhooks.subscriptions]]
 # topics = [ "carts/create" ]

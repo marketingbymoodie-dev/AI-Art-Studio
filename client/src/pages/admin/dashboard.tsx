@@ -37,13 +37,13 @@ function SetupStatusCard() {
             <CardTitle>Setup complete</CardTitle>
           </div>
           <CardDescription>
-            Printify is connected. Open Products Catalogue to Preview in-app or Create a Live page.
+            Printify is connected. Open Products to Preview in-app or Create a Live page.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Button asChild variant="outline" size="sm" data-testid="button-setup-add-product">
             <Link href="/admin/products">
-              Open Products Catalogue
+              Open Products
               <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
             </Link>
           </Button>

@@ -154,3 +154,111 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
 
   return out;
 }
+
+export function parseShopifyVariantPrice(price: string | number | null | undefined): number {
+  const n = parseFloat(String(price ?? "").replace(/[^0-9.+-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** True only when the cached/Shopify price is a real retail amount. */
+export function hasPositiveRetailPrice(price: string | number | null | undefined): boolean {
+  return parseShopifyVariantPrice(price) > 0;
+}
+
+/**
+ * Customer-facing amount (e.g. "29.95"), or null when missing/zero.
+ * Never returns "0.00" — catalogs must not advertise a free product.
+ */
+export function displayRetailPrice(price: string | number | null | undefined): string | null {
+  const n = parseShopifyVariantPrice(price);
+  return n > 0 ? n.toFixed(2) : null;
+}
+
+/** Cheapest positive price from a wizard/Shopify map, or null if none. */
+export function minPositiveRetailPrice(
+  prices:
+    | Array<string | number | null | undefined>
+    | Record<string, string | number | null | undefined>
+    | null
+    | undefined,
+): number | null {
+  const values = Array.isArray(prices)
+    ? prices
+    : prices && typeof prices === "object"
+      ? Object.values(prices)
+      : [];
+  let min = Infinity;
+  for (const p of values) {
+    const n = parseShopifyVariantPrice(p);
+    if (n > 0 && n < min) min = n;
+  }
+  return Number.isFinite(min) ? min : null;
+}
+
+/** Shopify lists variants in option order (often largest size first). "From" must use the cheapest. */
+export function pickLowestPricedShopifyVariant<T extends { price?: string | number | null }>(
+  variants: T[] | null | undefined,
+): T | undefined {
+  if (!Array.isArray(variants) || variants.length === 0) return undefined;
+  let best: T | undefined;
+  let bestN = Infinity;
+  for (const v of variants) {
+    const n = parseShopifyVariantPrice(v?.price);
+    if (n <= 0) continue;
+    if (n < bestN) {
+      bestN = n;
+      best = v;
+    }
+  }
+  return best ?? variants[0];
+}
+
+export function resolveStorefrontHeadlinePrice(args: {
+  variants: Array<{ id?: string | number; price?: string | number | null }>;
+  sizeSelected: boolean;
+  matchedVariantId?: string | null;
+  bothPrice?: number | null;
+  hasBothRetailPrices?: boolean;
+  printPlacementUsesBoth?: boolean;
+}): { amount: number; showFrom: boolean } | null {
+  const cheapest = pickLowestPricedShopifyVariant(args.variants);
+  if (!cheapest) return null;
+
+  const matched =
+    args.sizeSelected && args.matchedVariantId
+      ? args.variants.find((v) => String(v.id) === String(args.matchedVariantId))
+      : undefined;
+  const variant = args.sizeSelected ? matched ?? cheapest : cheapest;
+  const front = parseShopifyVariantPrice(variant.price);
+  if (front <= 0) return null;
+
+  const both = args.bothPrice ?? null;
+  if (args.printPlacementUsesBoth) {
+    const amount =
+      both != null && both > front + 0.005
+        ? both
+        : both != null && both > 0
+          ? Math.ceil(front + 1) - 0.05
+          : Math.ceil(front * 1.22) - 0.05;
+    if (amount > 0) {
+      return { amount, showFrom: !args.sizeSelected };
+    }
+  }
+
+  const cheapestN = parseShopifyVariantPrice(cheapest.price);
+  const hasHigherSize = args.variants.some((v) => {
+    const n = parseShopifyVariantPrice(v.price);
+    return n > cheapestN + 0.005;
+  });
+  // "from" is only for no size yet: cheapest front, or a hint that back-print costs more.
+  // Once a size is picked, show that size's front price with no prefix.
+  const showFromSize = !args.sizeSelected && hasHigherSize;
+  const showFromBoth = !!(
+    !args.sizeSelected &&
+    args.hasBothRetailPrices &&
+    !args.printPlacementUsesBoth &&
+    both != null &&
+    both > front
+  );
+  return { amount: front, showFrom: showFromSize || showFromBoth };
+}

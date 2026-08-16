@@ -2,10 +2,25 @@ import { describe, expect, it } from "vitest";
 import {
   capVariantSelectionForShopifyLimit,
   countActiveVariantMapKeys,
+  normalizeSelectionId,
   resolveVariantForSizeOnly,
   resolveVariantFromMap,
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
 } from "./variantMapResolve";
+
+describe("normalizeSelectionId", () => {
+  it("treats pillow dimension id formats as the same size", () => {
+    expect(normalizeSelectionId("14x14")).toBe("14-14");
+    expect(normalizeSelectionId("14-x-14")).toBe("14-14");
+    expect(normalizeSelectionId("14-14")).toBe("14-14");
+    expect(normalizeSelectionId("14 x 14")).toBe("14-14");
+  });
+
+  it("does not rewrite apparel sizes that contain an x", () => {
+    expect(normalizeSelectionId("xl")).toBe("xl");
+    expect(normalizeSelectionId("2xl")).toBe("2xl");
+  });
+});
 
 describe("resolveVariantForSizeOnly", () => {
   const phoneMap = {

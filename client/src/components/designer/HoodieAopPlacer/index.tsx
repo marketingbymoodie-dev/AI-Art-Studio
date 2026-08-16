@@ -22,6 +22,7 @@ import {
   FinePositionNudgeInline,
   mockupDeltaFromScreenNudge,
 } from "@/components/designer/placementNudge";
+import { mergeSavedCustomerEnabled } from "./mergeSavedCustomerEnabled";
 import {
   SLEEVES_PART_ID,
   LEGS_PART_ID,
@@ -415,6 +416,37 @@ function viewsForPlacementEdit(activeGroupId: string, currentView: HoodieView): 
   return [currentView];
 }
 
+/**
+ * Hoodie Back is a real edit surface. Saved designs often persist
+ * `back-body: false` (old default) and/or `activeGroupId: front-body`
+ * while `view === "back"` — that made resize write onto the front.
+ */
+function pinHoodieBackEditSurface(
+  state: HoodieAopPlacerState,
+  template?: HoodieTemplate | null,
+): HoodieAopPlacerState {
+  if (!template) return state;
+  if (isLeggingsBlueprint(template.blueprintId) || isPillowWrapTemplate(template)) {
+    return state;
+  }
+  if (state.view !== "back") return state;
+  if (
+    isSleevesPart(state.activeGroupId) ||
+    state.activeGroupId === "hood" ||
+    state.activeGroupId === "collar"
+  ) {
+    return state;
+  }
+  if (state.activeGroupId === "back-body" && state.enabled["back-body"]) {
+    return state;
+  }
+  return {
+    ...state,
+    activeGroupId: "back-body",
+    enabled: { ...state.enabled, "back-body": true },
+  };
+}
+
 /** Per-group enabled defaults for the customer placer (not admin template). */
 function customerGroupEnabledByDefault(
   groupId: string,
@@ -437,7 +469,7 @@ function customerGroupEnabledByDefault(
       : false;
   }
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
-    if (groupId === "front-body" || groupId === "hood") {
+    if (groupId === "front-body" || groupId === "back-body" || groupId === "hood") {
       return group.enabled !== false;
     }
     return false;
@@ -510,21 +542,6 @@ function syncLegPlacementsForMirror(
     "right-leg": pair,
     "left-leg": { front: { ...canonical }, back: { ...canonical } },
   };
-}
-
-/**
- * Merge persisted enabled flags without resurrecting stale sleeve/trim defaults
- * from older saved designs or admin template `enabled: true`.
- */
-function mergeSavedCustomerEnabled(
-  base: Record<string, boolean>,
-  saved: Record<string, boolean> | undefined,
-): Record<string, boolean> {
-  const merged = { ...base, ...(saved ?? {}) };
-  merged["left-sleeve"] = false;
-  merged["right-sleeve"] = false;
-  merged["trim"] = false;
-  return merged;
 }
 
 function stripGroupPanelKeys(
@@ -652,7 +669,7 @@ function buildInitialState(
   if (!saved) return baseWithGroups;
   const legsSynced = saved.legsSynced ?? base.legsSynced;
   const legsMirrored = saved.legsMirrored ?? base.legsMirrored;
-  return {
+  const resumed: HoodieAopPlacerState = {
     ...baseWithGroups,
     ...saved,
     placements: syncLegPlacementsForMirror(
@@ -684,6 +701,7 @@ function buildInitialState(
         ? "front-face"
         : (saved.activeGroupId ?? baseWithGroups.activeGroupId),
   };
+  return pinHoodieBackEditSurface(resumed, template);
 }
 
 /**
@@ -1069,6 +1087,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   // (i.e. we're resuming a previously-saved design). Used to suppress the
   // initial auto-apply regardless of the parent prop's render timing.
   const seededAsResumeRef = useRef(false);
+  const lastPlacementEditAtRef = useRef(0);
 
   useEffect(() => {
     if (!data) return;
@@ -1095,6 +1114,30 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     // initialState is intentionally only consumed on first seed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+
+  // Saved-design race: placer can seed before `hoodieAopPlacerState` arrives.
+  // Re-apply sleeve flags when the parent later restores them.
+  const lastHydratedSleeveOnRef = useRef(false);
+  useEffect(() => {
+    const savedEn = initialState?.enabled;
+    const wantOn = !!(
+      savedEn &&
+      (savedEn["left-sleeve"] === true ||
+        savedEn["right-sleeve"] === true ||
+        savedEn.sleeves === true)
+    );
+    if (wantOn === lastHydratedSleeveOnRef.current) return;
+    lastHydratedSleeveOnRef.current = wantOn;
+    if (!wantOn) return;
+    setState((prev) => {
+      if (!prev) return prev;
+      if (prev.enabled["left-sleeve"] && prev.enabled["right-sleeve"]) return prev;
+      return {
+        ...prev,
+        enabled: { ...prev.enabled, "left-sleeve": true, "right-sleeve": true },
+      };
+    });
+  }, [initialState?.enabled]);
 
   // Notify parent of state changes.
   useEffect(() => {
@@ -1294,20 +1337,17 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
    * after changing view. Pick Sleeves again explicitly to edit sleeves.
    * Also leaves Printers Mockup so the first click is never a no-op.
    */
-  /** Back is inspection-only for leggings — edits always return to Front. */
+  /**
+   * Leggings Back is inspection-only — any edit returns to Front.
+   * Hoodies keep Back as a real edit surface for back-body (scale/drag
+   * must not jump to Front or rewrite front-body placement). Front-only
+   * parts (Hood / Sleeves / Place↔Pattern) still switch view themselves.
+   */
   const withFrontIfNeeded = useCallback(
     (prev: HoodieAopPlacerState): HoodieAopPlacerState => {
       if (prev.view === "front") return prev;
       const leggings = data && isLeggingsBlueprint(data.template.blueprintId);
-      if (!leggings) {
-        // Hoodies: still jump off Back when the customer starts editing.
-        return {
-          ...prev,
-          view: "front",
-          activeGroupId:
-            prev.activeGroupId === "back-body" ? "front-body" : prev.activeGroupId,
-        };
-      }
+      if (!leggings) return prev;
       return {
         ...prev,
         view: "front",
@@ -1336,7 +1376,10 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           : view === "back"
             ? "back-body"
             : "front-body";
-      return { ...prev, view, activeGroupId };
+      const next = { ...prev, view, activeGroupId };
+      return view === "back" && data
+        ? pinHoodieBackEditSurface(next, data.template)
+        : next;
     });
   }, [data]);
 
@@ -1379,12 +1422,23 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const handleCanvasBackdropClick = useCallback(
     (e: React.MouseEvent) => {
       if (state.mode !== "place") return;
+      // Corner-resize often ends outside the rect; the trailing click
+      // must not steal Part (Sleeves) or jump Back → Front.
+      if (Date.now() - lastPlacementEditAtRef.current < 400) {
+        setOverlayVisible(true);
+        return;
+      }
       if (!data || !artworkImg || !mockups[state.view] || !canvasRef.current) {
         setOverlayVisible((v) => !v);
         return;
       }
-      // Back view is inspection-only — any click returns to Front for editing.
-      if (state.view === "back") {
+      // Leggings Back is inspection-only — any click returns to Front.
+      // Zip/pullover Back stays put so back-body handles keep editing back.
+      if (
+        state.view === "back" &&
+        data &&
+        isLeggingsBlueprint(data.template.blueprintId)
+      ) {
         setState((prev) => (prev ? withFrontIfNeeded(prev) : prev));
         onEngageLiveEditorRef.current?.();
         return;
@@ -1442,8 +1496,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         return;
       }
 
-      // Sleeves ↔ body: click the front/back torso (or a sleeve) to switch Part.
-      // Applies to every sleeved garment (bomber, zip, pullover, sweatshirt, …).
+      // Sleeves ↔ body: click the front torso (or a sleeve) to switch Part.
+      // Never steal a Back-view back-body edit — sleeve hit-tests on the
+      // back mockup overlap the back print and would force Front + Sleeves.
       if (isSleevesPart(state.activeGroupId)) {
         if (state.view === "front") {
           const frontRect = rects.get("front-body");
@@ -1461,8 +1516,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           }
         }
       } else if (
-        state.activeGroupId === "front-body" ||
-        state.activeGroupId === "back-body"
+        state.view === "front" &&
+        (state.activeGroupId === "front-body" ||
+          state.activeGroupId === "back-body")
       ) {
         for (const sleeveId of SLEEVE_GROUP_IDS) {
           const sleeveRect = rects.get(sleeveId);
@@ -1528,7 +1584,12 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev || !data) return prev;
-        prev = withFrontIfNeeded(prev);
+        if (data && isLeggingsBlueprint(data.template.blueprintId)) {
+          prev = withFrontIfNeeded(prev);
+        } else {
+          prev = pinHoodieBackEditSurface(prev, data.template);
+        }
+        lastPlacementEditAtRef.current = Date.now();
         const clampedNext: ArtworkPlacement = {
           ...next,
           scale: clampPlaceScale(next.scale),
@@ -1619,8 +1680,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     setOverlayVisible(true);
     setState((prev) => {
       if (!prev) return prev;
-      prev = withFrontIfNeeded(prev);
+      if (data && isLeggingsBlueprint(data.template.blueprintId)) {
+        prev = withFrontIfNeeded(prev);
+      } else if (data) {
+        prev = pinHoodieBackEditSurface(prev, data.template);
+      }
       if (!prev || !data) return prev;
+      lastPlacementEditAtRef.current = Date.now();
       const pillowDup = pillowDuplicateLinked(prev, data.template);
       const primaryId = pillowDup
         ? "front-face"

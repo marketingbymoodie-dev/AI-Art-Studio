@@ -1,4 +1,5 @@
 import { hasUserArtworkDescription, userPromptRequestsMonochrome } from "./generationPromptHints";
+import { unwrapReuseOriginalIdea } from "./reuseArtworkPrompt";
 
 export type StylePromptMismatch = {
   reasons: string[];
@@ -79,19 +80,20 @@ export function detectStylePromptMismatch(
   if (!hasUserArtworkDescription(user)) return null;
   if (!prefix && !name) return null;
 
-  const wordCount = user.split(/\s+/).filter(Boolean).length;
+  const userForIntent = unwrapReuseOriginalIdea(user) || user;
+  const wordCount = userForIntent.split(/\s+/).filter(Boolean).length;
   const reasons: string[] = [];
   const suggestedStyleNames: string[] = [];
 
   // High-confidence conflicts — fire even on short prompts (e.g. "rainbow pattern").
-  if (userPromptRequestsPattern(user) && stylePrefixIsSingleMotif(prefix, name)) {
+  if (userPromptRequestsPattern(userForIntent) && stylePrefixIsSingleMotif(prefix, name)) {
     reasons.push(
       "Your description asks for a repeating pattern, but this style is built for a single centered icon or motif.",
     );
     suggestedStyleNames.push("Pattern Maker");
   }
 
-  if (userPromptRequestsMonochrome(user) && stylePrefixRequiresVibrantColor(prefix)) {
+  if (userPromptRequestsMonochrome(userForIntent) && stylePrefixRequiresVibrantColor(prefix)) {
     reasons.push(
       "Your description asks for black & white or monochrome, but this style requires vibrant colors and limits white in the design.",
     );
@@ -102,7 +104,7 @@ export function detectStylePromptMismatch(
   if (
     stylePrefixIsMinimalIcon(prefix, name) &&
     wordCount >= 4 &&
-    !userPromptRequestsPattern(user) &&
+    !userPromptRequestsPattern(userForIntent) &&
     reasons.length === 0
   ) {
     reasons.push(

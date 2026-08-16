@@ -20,8 +20,9 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, creators, creatorCustomizerPages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -32,6 +33,7 @@ import {
 import {
   hasExactVariantMapping,
   normalizeApparelSizeId,
+  normalizeSelectionId,
   resolveVariantFromMap,
   variantMapKey,
   countActiveVariantMapKeys,
@@ -57,8 +59,8 @@ import {
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
-import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
-import { buildPrintifyToShopifyVariantIdMap } from "@shared/shopifyVariantPriceSync";
+import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
+import { buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
@@ -77,7 +79,7 @@ import {
   usesAopStorefrontCustomizer,
   usesToteFoldedFulfillment,
 } from "@shared/productLayoutPolicy";
-import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   apparelMotifDesignColors,
   buildAopPatternSizingRequirements,
@@ -100,6 +102,8 @@ import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShop
 import { ensureValidOfflineAccessToken, getBearerTokenFromRequest } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
+import { renderTermsOfUseHtml } from "./terms-of-use";
+import { getTermsContent } from "./creator-config";
 import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
@@ -142,6 +146,7 @@ import {
 } from "./merchant-coupon-quota";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
+import { clearZeroPriceAlertIfPriced, notifyZeroRetailPricePages } from "./zero-price-alerts";
 import {
   runCatalogueProductSync,
   getProductIntelligence,
@@ -642,6 +647,16 @@ function resolveGenerationAspectRatio(
     if (fromFlat) return normalizeStandardApparelAspectRatio(fromFlat);
     return normalizeStandardApparelAspectRatio(aspectRatioStr);
   }
+  // Flat-calibrated AOP (apron / tote etc.): single-placement print on a tall
+  // panel driven by the FlatProductPlacer. Import stores a near-square product AR
+  // (often 1:1), so square art never reaches the top/bottom of the apron without
+  // manual upscaling. Generate at the harvested print-area AR instead. Mesh AOP
+  // (hoodies) has no flatCalibration and phone cases are not AOP, so both are
+  // left untouched by this branch.
+  if (opts.isAllOverPrint) {
+    const fromFlat = aspectRatioFromFlatCalibration(opts.flatCalibration);
+    if (fromFlat) return fromFlat;
+  }
   return aspectRatioStr;
 }
 
@@ -720,10 +735,25 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
 6b. NO WHITE OR GREY PLATE: Do NOT render the subject on a white or grey mat — the ONLY background color is #FF00FF edge-to-edge.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+8. COMPOSITION FORMAT: Match the requested aspect ratio. Keep ONE centered subject. Do NOT repeat, duplicate, tile, or make a triptych to fill extra space — leave #FF00FF around the subject instead.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+10. NO REPEATS: Never draw the same subject more than once.
 ${APPAREL_CHROMA_MATTING_LINE}
 `;
+}
+
+function singleCustomerReferenceInstruction(opts: {
+  stylePreset?: string | null;
+  userPrompt?: string;
+}): string {
+  const isTextStyle = opts.stylePreset && ["opinionated", "quotes"].includes(opts.stylePreset);
+  if (isTextStyle) {
+    return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
+  }
+  if ((opts.userPrompt || "").toLowerCase().includes("recreate this artwork")) {
+    return `The reference image is the customer's existing artwork. Recreate it as ONE single centered subject. Do NOT repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the canvas — leave empty space (or the required background color) instead.`;
+  }
+  return `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design as a SINGLE centered subject. Do NOT repeat, duplicate, tile, or make a triptych.`;
 }
 
 /**
@@ -1283,7 +1313,8 @@ function buildCustomizerBootHtml(): string {
 </script>
 <script src="/apps/appai/theme-asset/appai-art-embed.js" defer></script>
 <script src="/apps/appai/theme-asset/appai-saved-designs-nav.js" defer></script>
-<script src="/apps/appai/theme-asset/appai-customizer-tray.js" defer></script>`.trim();
+<script src="/apps/appai/theme-asset/appai-customizer-tray.js" defer></script>
+<script src="/apps/appai/theme-asset/appai-last-creator.js" defer></script>`.trim();
 }
 
 const customizerBootBackfillCache = new Set<string>();
@@ -1707,6 +1738,17 @@ export async function registerRoutes(
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.send(privacyPolicyHtml);
+  });
+
+  app.get("/terms", async (_req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=60, must-revalidate");
+    try {
+      res.send(renderTermsOfUseHtml(await getTermsContent()));
+    } catch (e: any) {
+      console.error("[terms] render failed:", e);
+      res.status(500).send("Terms of Use are temporarily unavailable.");
+    }
   });
 
   // SVG Proxy to bypass CORS issues for AOP patterns
@@ -2787,10 +2829,10 @@ ${orientationExtra}
         if (effectiveStyleBaseUrl && customerImageUrl) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
         } else if (customerImageUrl) {
-          const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
-          refInstruction = isTextStyle
-            ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
-            : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+          refInstruction = singleCustomerReferenceInstruction({
+            stylePreset,
+            userPrompt: userDescAdmin,
+          });
         } else {
           refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
         }
@@ -3403,6 +3445,7 @@ console.log("[shopify/session] installation ok", {
 
       const embedBillingReqId = `shopify-gen-${Date.now().toString(36)}`;
       let stylePromptPrefix = "";
+      let stylePromptPrefixDark: string | null = null;
       let styleName = "";
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
@@ -3416,6 +3459,7 @@ console.log("[shopify/session] installation ok", {
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
+          stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3505,31 +3549,6 @@ console.log("[shopify/session] installation ok", {
         fullPrompt = prompt;
       }
 
-      // Build shape-specific safe zone instructions
-      const printShape = productType?.printShape || "rectangle";
-      const bleedMargin = productType?.bleedMarginPercent || 5;
-      const safeZonePercent = 100 - (bleedMargin * 2);
-      
-      let shapeInstructions = "";
-      if (printShape === "circle") {
-        shapeInstructions = `
-CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
-- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
-- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
-- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
-- Design with radial/circular composition in mind`;
-      } else if (printShape === "square") {
-        shapeInstructions = `
-SQUARE PRINT AREA: This design is for a square product.
-- Center important elements within the inner ${safeZonePercent}% of the canvas
-- Keep a ${bleedMargin}% margin from all edges for bleed`;
-      } else {
-        shapeInstructions = `
-RECTANGULAR PRINT AREA:
-- Keep important elements within the inner ${safeZonePercent}% of the canvas
-- Maintain a ${bleedMargin}% margin from edges for bleed`;
-      }
-
       // Determine aspect ratio and orientation
       if (
         (embedIsApparelEarly && !embedIsAllOverPrintEarly) ||
@@ -3554,28 +3573,79 @@ RECTANGULAR PRINT AREA:
         }
       }
 
-      const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
-      const aspectRatioValue = arW / arH;
-      let orientationDescription: string;
-      if (aspectRatioValue > 1.05) {
-        orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
-      } else if (aspectRatioValue < 0.95) {
-        orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
-      } else {
-        orientationDescription = `SQUARE`;
-      }
-      
       const cylindricalWrap = useCylindricalWrapPrompt({
         designerType: productType?.designerType,
         isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
       });
-      const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
-      const orientationExtra = buildOrientationCompositionExtra(
-        aspectRatioValue,
-        productType?.designerType,
-      );
-      
-      const sizingRequirements = `
+
+      let sizingRequirements: string;
+      if (embedIsApparelEarly && embedIsAllOverPrintEarly) {
+        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
+        sizingRequirements = usePatternAop
+          ? buildAopPatternSizingRequirements(userDescEmbed)
+          : buildAopSizingRequirements(userDescEmbed);
+      } else if (embedIsApparelEarly) {
+        let colorTier: ColorTier = "light";
+        if (frameColor && productType) {
+          const frameColors = JSON.parse(productType.frameColors || "[]");
+          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+          if (selectedColor?.hex) {
+            colorTier = getColorTier(selectedColor.hex);
+          }
+        }
+        const isDarkTier = colorTier === "dark";
+        if (embedStyleCategory === "apparel" && isDarkTier && stylePreset) {
+          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
+          if (darkTierPrompt) {
+            fullPrompt = userDescEmbed ? `${userDescEmbed}, ${darkTierPrompt}` : darkTierPrompt;
+          }
+        }
+        sizingRequirements = buildApparelChromaSizingRequirements(
+          apparelMotifDesignColors(userDescEmbed, isDarkTier),
+        );
+      } else {
+        const printShape = productType?.printShape || "rectangle";
+        const bleedMargin = productType?.bleedMarginPercent || 5;
+        const safeZonePercent = 100 - (bleedMargin * 2);
+
+        let shapeInstructions = "";
+        if (printShape === "circle") {
+          shapeInstructions = `
+CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
+- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
+- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
+- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
+- Design with radial/circular composition in mind`;
+        } else if (printShape === "square") {
+          shapeInstructions = `
+SQUARE PRINT AREA: This design is for a square product.
+- Center important elements within the inner ${safeZonePercent}% of the canvas
+- Keep a ${bleedMargin}% margin from all edges for bleed`;
+        } else {
+          shapeInstructions = `
+RECTANGULAR PRINT AREA:
+- Keep important elements within the inner ${safeZonePercent}% of the canvas
+- Maintain a ${bleedMargin}% margin from edges for bleed`;
+        }
+
+        const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
+        const aspectRatioValue = arW / arH;
+        let orientationDescription: string;
+        if (aspectRatioValue > 1.05) {
+          orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
+        } else if (aspectRatioValue < 0.95) {
+          orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
+        } else {
+          orientationDescription = `SQUARE`;
+        }
+
+        const textEdgeRestrictions = buildDecorTextEdgeRestrictions(cylindricalWrap);
+        const orientationExtra = buildOrientationCompositionExtra(
+          aspectRatioValue,
+          productType?.designerType,
+        );
+
+        sizingRequirements = `
 
 === CRITICAL CANVAS REQUIREMENTS (MUST FOLLOW) ===
 CANVAS: ${orientationDescription} format
@@ -3590,12 +3660,10 @@ ${orientationExtra}
 3. The subject must NOT appear floating - complete the background behind and around it
 4. This is for high-quality printing - create finished artwork that bleeds to all edges
 `;
+      }
 
-      // Build final prompt: CONSTRAINTS FIRST, then style, then user description
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      const constraintsFirst = sizingRequirements;
-      const styleAndContent = fullPrompt;
-      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
@@ -3647,10 +3715,10 @@ ${orientationExtra}
         } else if (embedCustomerImageUrls.length > 1) {
           refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
         } else if (embedCustomerImageUrl) {
-          const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
-          refInstruction = isTextStyle
-            ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE element integrated INTO the typographic composition. Do NOT duplicate the subject.`
-            : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+          refInstruction = singleCustomerReferenceInstruction({
+            stylePreset,
+            userPrompt: userDescEmbed,
+          });
         } else {
           refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
         }
@@ -3877,25 +3945,25 @@ ${orientationExtra}
     shop: string;
     shopifyProductId: string;
     shopifyHandle: string;
-    firstVariantId: string | number;
+    cheapestVariantId: string | number;
   }): Promise<void> {
     const pages = await storage.listCustomizerPagesByProductTypeId(args.productTypeId);
     for (const page of pages) {
       if (page.shop !== args.shop) continue;
       if (
         String(page.baseProductId) === String(args.shopifyProductId) &&
-        String(page.baseVariantId) === String(args.firstVariantId) &&
+        String(page.baseVariantId) === String(args.cheapestVariantId) &&
         (page as any).baseProductHandle === args.shopifyHandle
       ) {
         continue;
       }
       await storage.updateCustomizerPage(page.id, {
         baseProductId: String(args.shopifyProductId),
-        baseVariantId: String(args.firstVariantId),
+        baseVariantId: String(args.cheapestVariantId),
         baseProductHandle: args.shopifyHandle,
       });
       console.log(
-        `[customizer-pages] synced page ${page.handle} → product ${args.shopifyProductId} variant ${args.firstVariantId}`,
+        `[customizer-pages] synced page ${page.handle} → product ${args.shopifyProductId} variant ${args.cheapestVariantId}`,
       );
     }
   }
@@ -3919,8 +3987,21 @@ ${orientationExtra}
     const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
     const colorIdsToUse = selectedColorIds && selectedColorIds.length > 0 ? selectedColorIds : savedColorIds.length > 0 ? savedColorIds : allColors.map((c: any) => c.id);
 
-    const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
-    const colorsToUse = allColors.filter((c: any) => colorIdsToUse.includes(c.id));
+    // Size/colour ids can drift in separator format between where selections were
+    // saved and where the sizes list / variantMap were built — e.g. a catalogue-
+    // activated pillow whose selectedSizeIds are "14x14" while sizes/variantMap
+    // use "14-14". A plain `.includes()` then matches nothing and we build zero
+    // variants ("No variants to create"). Match on a normalised id instead. Only
+    // the dimension separator between digits is normalised, so apparel sizes that
+    // legitimately contain an "x" (xl, 2xl) are left untouched.
+    const sizeIdSet = new Set(sizeIdsToUse.map(normalizeSelectionId));
+    const colorIdSet = new Set(colorIdsToUse.map(normalizeSelectionId));
+    let sizesToUse = allSizes.filter((s: any) => sizeIdSet.has(normalizeSelectionId(s.id)));
+    let colorsToUse = allColors.filter((c: any) => colorIdSet.has(normalizeSelectionId(c.id)));
+    // Safety net: a non-empty selection that matched nothing means id drift, not an
+    // intentional empty selection — fall back to all rather than creating 0 variants.
+    if (sizesToUse.length === 0 && allSizes.length > 0) sizesToUse = allSizes;
+    if (colorsToUse.length === 0 && colorIdsToUse.length > 0 && allColors.length > 0) colorsToUse = allColors;
     const priceMap: Record<string, string> = variantPrices && typeof variantPrices === 'object' ? variantPrices : {};
 
     const shopifyVariants: any[] = [];
@@ -4043,18 +4124,49 @@ ${orientationExtra}
       lastPushedToShopify: new Date(),
     });
 
-    const firstVariantId = createdVariants[0]?.id;
-    if (firstVariantId) {
+    const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+    const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
+    if (cheapestVariantId) {
       await syncCustomizerPagesForShopifyProduct({
         productTypeId: productType.id,
         shop,
         shopifyProductId: newShopifyProductId,
         shopifyHandle,
-        firstVariantId,
+        cheapestVariantId,
       });
     }
 
     return { shopifyProductId: newShopifyProductId, shopifyHandle };
+  }
+
+  function isShopifyAuthError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err ?? "");
+    return /Shopify API error 401|Invalid API key or access token|Access token is invalid/i.test(msg);
+  }
+
+  async function createShopifyProductForTypeHealed(
+    req: any,
+    shop: string,
+    installation: any,
+    productType: any,
+    merchant: any,
+  ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
+    try {
+      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
+    } catch (e: any) {
+      if (!isShopifyAuthError(e)) throw e;
+      const retried = await ensureValidOfflineAccessToken(installation, {
+        sessionToken: getBearerTokenFromRequest(req),
+        forceRefresh: true,
+      });
+      if (!retried.ok) {
+        const err = new Error("REAUTH_REQUIRED");
+        (err as any).reinstallUrl = `/shopify/install?shop=${encodeURIComponent(shop)}`;
+        throw err;
+      }
+      Object.assign(installation, retried.installation);
+      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, []);
+    }
   }
 
   app.post("/api/shopify/products", isAuthenticated, async (req: any, res: Response) => {
@@ -4662,14 +4774,15 @@ ${orientationExtra}
             lastPushedToShopify: new Date(),
           });
 
-          const firstVariantId = createdVariants[0]?.id;
-          if (firstVariantId) {
+          const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+          const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
+          if (cheapestVariantId) {
             await syncCustomizerPagesForShopifyProduct({
               productTypeId,
               shop: shopDomain,
               shopifyProductId: String(shopifyProductId),
               shopifyHandle,
-              firstVariantId,
+              cheapestVariantId,
             });
           }
 
@@ -4914,14 +5027,15 @@ ${orientationExtra}
         lastPushedToShopify: new Date(),
       });
 
-      const firstVariantId = createdVariants[0]?.id;
-      if (firstVariantId) {
+      const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+      const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
+      if (cheapestVariantId) {
         await syncCustomizerPagesForShopifyProduct({
           productTypeId,
           shop: shopDomain,
           shopifyProductId: String(shopifyProductId),
           shopifyHandle,
-          firstVariantId,
+          cheapestVariantId,
         });
       }
 
@@ -5348,9 +5462,17 @@ ${orientationExtra}
   }> {
     const resolveImageSrc = (v: any): string | null => {
       if (v.featured_image?.src) return String(v.featured_image.src);
-      if (v.image_id && productImages?.length) {
-        const img = productImages.find((i: any) => i.id === v.image_id);
-        if (img?.src) return String(img.src);
+      if (productImages?.length) {
+        if (v.image_id) {
+          const img = productImages.find((i: any) => Number(i.id) === Number(v.image_id));
+          if (img?.src) return String(img.src);
+        }
+        const byVariantIds = productImages.find(
+          (i: any) =>
+            Array.isArray(i.variant_ids) &&
+            i.variant_ids.some((id: unknown) => Number(id) === Number(v.id)),
+        );
+        if (byVariantIds?.src) return String(byVariantIds.src);
       }
       return null;
     };
@@ -5792,12 +5914,13 @@ ${orientationExtra}
         const prepared = await prepareProductTypeForDesigner(productType, {
           allowUnpublishedHarvest: true,
         });
-        if (prepared && prepared !== productType) {
+        const hydrated = await hydratePrintifyBothCostsFromPlatform(prepared);
+        if (hydrated && hydrated !== productType) {
           console.log(
             `[Designer API] Synced catalog metadata onto pt ${id}` +
-              ` (panelMappingTemplate=${(prepared as any).panelMappingTemplate ?? "null"})`,
+              ` (panelMappingTemplate=${(hydrated as any).panelMappingTemplate ?? "null"})`,
           );
-          productType = prepared;
+          productType = hydrated;
         }
       }
 
@@ -5830,9 +5953,71 @@ ${orientationExtra}
         sizeType === "dimensional" ? sortDimensionalSizesAscending(sizes) : sizes;
 
       // Parse base mockup images if available
-      const baseMockupImages = typeof productType.baseMockupImages === 'string'
+      let baseMockupImages = typeof productType.baseMockupImages === 'string'
         ? JSON.parse(productType.baseMockupImages)
         : productType.baseMockupImages || {};
+
+      // Self-heal empty base mockups. Catalogue-activated products (esp. AOP)
+      // can land with baseMockupImages `{}` — the storefront still shows a blank
+      // because it reads live Shopify variant images, but admin Preview Studio /
+      // Generator Tester have no Shopify variants, so the pre-artwork preview is
+      // empty. Harvest Printify catalog photos once and persist (also benefits
+      // merchant curation + storefront). Gate on `available` being absent so this
+      // runs at most once per product (an empty harvest still stores `available: []`).
+      // This is the admin/tester endpoint only — the storefront uses a separate
+      // route, so the storefront hot path never pays this cost.
+      try {
+        const alreadyHarvested = Array.isArray((baseMockupImages as any).available);
+        const healToken = resolveCatalogPrintifyToken(null);
+        if (!alreadyHarvested && healToken && productType.printifyBlueprintId) {
+          const healHeaders = {
+            Authorization: `Bearer ${healToken}`,
+            "Content-Type": "application/json",
+          };
+          let providerId = (productType as any).printifyProviderId as number | null | undefined;
+          if (!providerId) {
+            const provRes = await fetchWithRetry(
+              `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers.json`,
+              { headers: healHeaders },
+              2,
+              800,
+            );
+            if (provRes.ok) {
+              const provs = await provRes.json();
+              providerId = Array.isArray(provs) && provs.length
+                ? (provs[0].id ?? provs[0].print_provider_id)
+                : undefined;
+            }
+          }
+          if (providerId) {
+            const opts = await fetchPrintifyPlaceholderOptions(
+              healToken,
+              productType.printifyBlueprintId,
+              providerId,
+            );
+            let healed = buildBaseMockupImagesFromOptions(
+              opts,
+              (baseMockupImages as any).primary,
+              (baseMockupImages as any).gallery,
+              (baseMockupImages as any).custom,
+            );
+            healed = mergeCatalogSizeBlanksIfNeeded(productType.printifyBlueprintId, healed);
+            const patch: any = { baseMockupImages: JSON.stringify(healed) };
+            if (!(productType as any).printifyProviderId) patch.printifyProviderId = providerId;
+            await storage.updateProductType(id, patch);
+            baseMockupImages = healed;
+            console.log(
+              `[Designer API] Self-healed baseMockupImages for pt ${id}: ` +
+                `${opts.length} catalog image(s) via provider ${providerId}`,
+            );
+          }
+        }
+      } catch (healErr) {
+        console.warn(
+          `[Designer API] baseMockupImages self-heal skipped for pt ${id}:`,
+          (healErr as Error)?.message,
+        );
+      }
 
       // Parse variant map for size/color availability
       const variantMap = typeof productType.variantMap === 'string'
@@ -6046,6 +6231,17 @@ ${orientationExtra}
           if (stored.right_side && !stored.right_leg) stored.right_leg = stored.right_side;
           return stored;
         })(),
+        variantPricesBoth: resolveDesignerVariantPricesBoth(
+          (productType as any).variantPricesBoth,
+          (productType as any).printifyCosts,
+          (productType as any).defaultMarkupPercent,
+          {
+            variantMap: productType.variantMap,
+            shopifyVariantIds: (productType as any).shopifyVariantIds,
+            sizes: productType.sizes,
+            frameColors: productType.frameColors,
+          },
+        ),
       };
 
       // Match storefront: same merchant styles + page allow-list (not /api/config).
@@ -6174,9 +6370,27 @@ ${orientationExtra}
         options: s.options || (hardcoded as any)?.options,
         baseImageUrl:
           s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+        baseImageUrls:
+          s.baseImageUrls || (hardcoded as any)?.baseImageUrls || undefined,
         descriptionOptional: !!s.descriptionOptional,
       };
     });
+  }
+
+  /** Hardcoded catalog styles when the merchant has no seeded `style_presets` rows. */
+  function hardcodedStylePresetsForDesigner() {
+    return STYLE_PRESETS.map((s) => ({
+      id: s.id,
+      name: s.name,
+      promptSuffix: s.promptPrefix,
+      promptPrefix: s.promptPrefix,
+      category: s.category || "all",
+      promptPlaceholder: (s as any).promptPlaceholder,
+      options: (s as any).options,
+      baseImageUrl: (s as any).baseImageUrl || undefined,
+      baseImageUrls: (s as any).baseImageUrls || undefined,
+      descriptionOptional: !!(s as any).descriptionOptional,
+    }));
   }
 
   /**
@@ -6200,7 +6414,9 @@ ${orientationExtra}
     try {
       const merchantId = productType.merchantId;
       if (merchantId) {
-        const dbStyles = await storage.getActiveStylePresetsByMerchant(merchantId);
+        const dbStyles = (await storage.getActiveStylePresetsByMerchant(merchantId)).filter(
+          (s: any) => (s.creatorScope || "merchant") !== "custom",
+        );
         stylePresets = mapDbStylesForDesigner(dbStyles);
       }
     } catch (e) {
@@ -6209,12 +6425,41 @@ ${orientationExtra}
         e,
       );
     }
+    if (stylePresets.length === 0) {
+      stylePresets = hardcodedStylePresetsForDesigner() as ReturnType<
+        typeof mapDbStylesForDesigner
+      >;
+    }
     stylePresets = filterStylePresetsForPage(
       stylePresets,
       styleConfig,
       productType.designerType,
     ) as ReturnType<typeof mapDbStylesForDesigner>;
     return { styleConfig, stylePresets };
+  }
+
+  async function hydratePrintifyBothCostsFromPlatform(pt: any): Promise<any> {
+    if (!pt) return pt;
+    const parsed = parsePrintifyCostsCache(pt.printifyCosts);
+    if (Object.keys(parsed.both).length > 0) return pt;
+    const bp = Number(pt.printifyBlueprintId);
+    if (!Number.isFinite(bp) || bp <= 0) return pt;
+    try {
+      const { findPlatformCatalogRef } = await import("./platform-catalogue-pi");
+      const ref = await findPlatformCatalogRef(bp);
+      if (!ref) return pt;
+      const refParsed = parsePrintifyCostsCache((ref as any).printifyCosts);
+      if (Object.keys(refParsed.both).length === 0) return pt;
+      const next = serializePrintifyCostsCache({
+        front: Object.keys(parsed.front).length > 0 ? parsed.front : refParsed.front,
+        both: refParsed.both,
+      });
+      await storage.updateProductType(pt.id, { printifyCosts: next });
+      return (await storage.getProductType(pt.id)) || { ...pt, printifyCosts: next };
+    } catch (e) {
+      console.warn(`[designer] both-cost hydrate failed for pt ${pt.id}:`, e);
+      return pt;
+    }
   }
 
   /**
@@ -6508,22 +6753,17 @@ ${orientationExtra}
       // Front+back retail tier (Shopify base variants stay at front-only prices).
       // Expand printify: blank keys → Shopify id / size:color so storefront lookups hit
       // even when Resync originally persisted printify-only keys.
-      variantPricesBoth: (() => {
-        try {
-          const raw = (productTypeToUse as any).variantPricesBoth;
-          const parsed =
-            typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
-          if (!parsed || typeof parsed !== "object") return {};
-          return expandVariantPricesBothMap(parsed as Record<string, string>, {
-            variantMap: (productTypeToUse as any).variantMap,
-            shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
-            sizes: (productTypeToUse as any).sizes,
-            frameColors: (productTypeToUse as any).frameColors,
-          });
-        } catch {
-          return {};
-        }
-      })(),
+      variantPricesBoth: resolveDesignerVariantPricesBoth(
+        (productTypeToUse as any).variantPricesBoth,
+        (productTypeToUse as any).printifyCosts,
+        (productTypeToUse as any).defaultMarkupPercent,
+        {
+          variantMap: (productTypeToUse as any).variantMap,
+          shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
+          sizes: (productTypeToUse as any).sizes,
+          frameColors: (productTypeToUse as any).frameColors,
+        },
+      ),
     };
 
     if (resolvedFrom) {
@@ -6652,9 +6892,11 @@ ${orientationExtra}
           "getProductType_fast_path"
         );
         if (fastPt) {
-          const productTypeForConfig = await prepareProductTypeForDesigner(fastPt, {
-            allowUnpublishedHarvest: true,
-          });
+          const productTypeForConfig = await hydratePrintifyBothCostsFromPlatform(
+            await prepareProductTypeForDesigner(fastPt, {
+              allowUnpublishedHarvest: true,
+            }),
+          );
           const totalMs = Date.now() - startTime;
           console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${productTypeForConfig!.name}" ms=${totalMs}`);
           if (killSwitchTimeout) clearTimeout(killSwitchTimeout);
@@ -6808,6 +7050,7 @@ ${orientationExtra}
       let productTypeForConfig = await prepareProductTypeForDesigner(productTypeToUse, {
         allowUnpublishedHarvest: true,
       });
+      productTypeForConfig = await hydratePrintifyBothCostsFromPlatform(productTypeForConfig);
       if (productTypeForConfig && productTypeForConfig !== productTypeToUse) {
         console.log(`[SF-DESIGNER ${requestId}] Synced canonical flat calibration onto pt ${productTypeForConfig.id}`);
       }
@@ -7341,6 +7584,204 @@ ${orientationExtra}
     }
   });
 
+  /**
+   * GET /api/storefront/customizer-page?shop=&handle=
+   * Same payload shape as App Proxy /api/proxy/customizer-page, but for
+   * Creator Marketplace / Railway-hosted designer (no proxy HMAC).
+   */
+  app.get("/api/storefront/customizer-page", asyncHandler(async (req: Request, res: Response) => {
+    const shop = normalizeMyshopifyShopDomain(String(req.query.shop || ""));
+    const handle = String(req.query.handle || "").trim();
+    if (!shop || !handle) {
+      return res.status(400).json({ error: "Missing shop or handle" });
+    }
+
+    let page = await storage.getCustomizerPageByHandle(shop, handle);
+    if (!page) {
+      const bare = shop.endsWith(".myshopify.com")
+        ? shop.slice(0, -".myshopify.com".length)
+        : "";
+      if (bare) page = await storage.getCustomizerPageByHandle(bare, handle);
+    }
+    if (!page || page.status === "disabled") {
+      return res.status(404).json({ error: "Customizer page not found" });
+    }
+
+    const installation = await getAuthorizedInstallation(shop);
+    const rawCreatorUsername = String(req.query.creatorUsername || "").trim();
+    const rawCreatorId = String(req.query.creatorId || "").trim();
+
+    const designerPromise = (async () => {
+      if (!page.productTypeId) return null;
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (!pt) return null;
+        const prepared = await prepareProductTypeForDesigner(pt, {
+          allowUnpublishedHarvest: true,
+        });
+        const ptForDesigner = await hydratePrintifyBothCostsFromPlatform(prepared);
+        // Size chart is loaded client-side; waiting here added up to 2.5s before
+        // the first placeholder could render.
+        return buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, null);
+      } catch (e) {
+        console.warn(
+          `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
+          e,
+        );
+        return null;
+      }
+    })();
+
+    const variantsPromise = (async () => {
+      const empty: Array<{ id: string; title: string; price: string }> = [];
+      if (!page.baseProductId || !installation) return empty;
+      try {
+        const tokenReady = await ensureValidOfflineAccessToken(installation);
+        const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+        if (!accessToken) throw new Error("No Shopify access token");
+        const prodResult = await shopifyApiCall(
+          shop,
+          accessToken,
+          `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
+        );
+        const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
+        const productImages: any[] = prodResult.data?.product?.images ?? [];
+        let baseVariants = selectBaseCatalogVariants(rawVariants);
+        if (baseVariants.length === 0 && page.productTypeId) {
+          const pt = await storage.getProductType(page.productTypeId);
+          if (pt) {
+            const fallback = enrichVariantsWithShopifyPrices(
+              buildFallbackVariantsFromProductType(pt),
+              rawVariants,
+            );
+            if (fallback.length > 0) baseVariants = fallback;
+          }
+        }
+        const mapped = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
+          id: String(v.id),
+          title: v.title || "",
+          price: v.price || "0.00",
+          option1: v.option1 ?? undefined,
+          option2: v.option2 ?? undefined,
+          option3: v.option3 ?? undefined,
+          imageSrc: v.imageSrc ?? undefined,
+        }));
+        const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
+        if (productIdNum && prodResult.ok) {
+          void ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum).catch(
+            () => {},
+          );
+        }
+        return mapped;
+      } catch (e) {
+        console.warn(`[storefront/customizer-page] variants failed:`, e);
+        return empty;
+      }
+    })();
+
+    const [designerConfig, variants] = await Promise.all([designerPromise, variantsPromise]);
+
+    let stylePresets: any[] = [];
+    try {
+      const merchantId = installation?.merchantId;
+      const dbStyles = merchantId
+        ? (await storage.getActiveStylePresetsByMerchant(merchantId)).filter(
+            (s: any) => (s.creatorScope || "merchant") !== "custom",
+          )
+        : [];
+      stylePresets =
+        dbStyles.length > 0
+          ? mapDbStylesForDesigner(dbStyles)
+          : hardcodedStylePresetsForDesigner();
+    } catch (e) {
+      console.warn(`[storefront/customizer-page] stylePresets failed:`, e);
+      stylePresets = hardcodedStylePresetsForDesigner();
+    }
+
+    let creatorStorefrontStyles = false;
+    if (rawCreatorUsername || rawCreatorId) {
+      try {
+        const { assertPublicCreatorApiContext } = await import("./creator-host");
+        const { resolveCreatorStorefrontStyles } = await import("./creator-styles");
+        let asserted = await assertPublicCreatorApiContext({
+          shop,
+          creatorId: rawCreatorId || null,
+          creatorUsername: rawCreatorUsername || null,
+          requirePlatformShop: true,
+        });
+        if (!asserted.ok) {
+          asserted = await assertPublicCreatorApiContext({
+            shop,
+            creatorId: rawCreatorId || null,
+            creatorUsername: rawCreatorUsername || null,
+            requirePlatformShop: false,
+          });
+        }
+        if (asserted.ok) {
+          const entitled = await resolveCreatorStorefrontStyles(asserted.creator.id);
+          const { displayCreatorStyleName } = await import("@shared/creatorMarketplace");
+          stylePresets = mapDbStylesForDesigner(
+            entitled.map((s) => ({
+              id: s.stylePresetId,
+              name: displayCreatorStyleName(s.name),
+              promptPrefix: s.promptPrefix,
+              category: s.category,
+              baseImageUrl: s.baseImageUrl,
+              baseImageUrls: s.baseImageUrls,
+              options: s.options,
+              promptPlaceholder: s.promptPlaceholder,
+              descriptionOptional: s.descriptionOptional,
+            })),
+          );
+          creatorStorefrontStyles = true;
+        } else {
+          console.warn(
+            "[storefront/customizer-page] creator styles skipped:",
+            asserted.error,
+          );
+        }
+      } catch (e) {
+        console.warn("[storefront/customizer-page] creator styles failed:", e);
+      }
+    }
+
+    const pageStyleConfig =
+      parseCustomizerPageStyleConfig(page.styleConfig) ??
+      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+    // Creator assignment is the catalog — do not drop styles because the
+    // customizer page was saved as Apparel-only / selected merchant IDs.
+    if (!creatorStorefrontStyles) {
+      stylePresets = filterStylePresetsForPage(
+        stylePresets,
+        pageStyleConfig,
+        designerConfig?.designerType,
+      );
+    }
+    stylePresets = stylePresets.map((s) => ({
+      ...s,
+      promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
+    }));
+
+    return res.json({
+      id: page.id,
+      handle: page.handle,
+      title: page.title,
+      status: page.status,
+      baseVariantId: page.baseVariantId,
+      baseProductId: page.baseProductId ?? null,
+      baseProductHandle: (page as any).baseProductHandle ?? null,
+      baseProductTitle: page.baseProductTitle ?? null,
+      baseVariantTitle: page.baseVariantTitle ?? null,
+      baseProductPrice: displayRetailPrice(page.baseProductPrice),
+      productTypeId: page.productTypeId ?? null,
+      designerConfig,
+      variants,
+      stylePresets,
+      styleConfig: pageStyleConfig,
+      freshDesignAllowed: page.status === "active" || page.status === "preview",
+    });
+  }));
+
   // Resolve product type ID from shop + product handle
   app.get("/api/storefront/resolve-product-type", asyncHandler(async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
@@ -7471,7 +7912,24 @@ ${orientationExtra}
     }
 
     try {
-      const { prompt, userPrompt: rawUserPrompt, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArrSf, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
+      const {
+        prompt,
+        userPrompt: rawUserPrompt,
+        stylePreset,
+        size,
+        frameColor,
+        referenceImage,
+        referenceImages: referenceImagesArrSf,
+        shop,
+        bgRemovalSensitivity,
+        productTypeId,
+        sessionId,
+        customerId,
+        baseImageUrl: clientBaseImageUrlSf,
+        creatorUsername: rawCreatorUsername,
+        creatorId: rawCreatorId,
+        creatorSessionId: rawCreatorSessionId,
+      } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
 
       if (!shop) {
@@ -7499,16 +7957,95 @@ ${orientationExtra}
         });
       }
 
+      // Optional Creator Marketplace context (dual quota; does not use merchant free-gens).
+      // Phase 10: platform-shop only, active statuses, id/username match, per-IP rate limit.
+      let creatorCtx: { id: string; freeGensPerCustomer: number; sessionId: string | null } | null = null;
+      if (rawCreatorUsername || rawCreatorId) {
+        try {
+          const { assertPublicCreatorApiContext } = await import("./creator-host");
+          const { peekCreatorMonthlyAllowance } = await import("./creator-quota");
+          const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+
+          const asserted = await assertPublicCreatorApiContext({
+            shop,
+            creatorId: rawCreatorId ? String(rawCreatorId) : null,
+            creatorUsername: rawCreatorUsername ? String(rawCreatorUsername) : null,
+            requirePlatformShop: true,
+          });
+          if (!asserted.ok) {
+            return res.status(asserted.status).json({
+              error: asserted.code || asserted.error,
+              message: asserted.error,
+              reqId,
+              stage: "creator",
+            });
+          }
+
+          const ipRl = checkCreatorRateLimit({
+            key: `sf-gen-ip:${clientIpFromReq(req)}`,
+            limit: 40,
+            windowMs: 60 * 60 * 1000,
+          });
+          if (!ipRl.ok) {
+            res.setHeader("Retry-After", String(ipRl.retryAfterSec));
+            return res.status(429).json({
+              error: "Rate limit exceeded. Please try again later.",
+              retryAfter: ipRl.retryAfterSec,
+              reqId,
+            });
+          }
+          const creatorRl = checkCreatorRateLimit({
+            key: `sf-gen-creator:${asserted.creator.id}:${clientIpFromReq(req)}`,
+            limit: 25,
+            windowMs: 60 * 60 * 1000,
+          });
+          if (!creatorRl.ok) {
+            res.setHeader("Retry-After", String(creatorRl.retryAfterSec));
+            return res.status(429).json({
+              error: "Rate limit exceeded. Please try again later.",
+              retryAfter: creatorRl.retryAfterSec,
+              reqId,
+            });
+          }
+
+          const creatorRow = asserted.creator;
+          const monthly = await peekCreatorMonthlyAllowance(creatorRow);
+          if (!monthly.allowed) {
+            return res.status(403).json({
+              error: monthly.error,
+              message: monthly.message,
+              used: monthly.used,
+              limit: monthly.allowance,
+              reqId,
+            });
+          }
+          creatorCtx = {
+            id: creatorRow.id,
+            freeGensPerCustomer: creatorRow.freeGensPerCustomer,
+            sessionId: rawCreatorSessionId ? String(rawCreatorSessionId) : null,
+          };
+          console.log(P, reqId, `creator ctx ${creatorCtx.id} monthly ${monthly.used}/${monthly.allowance}`);
+        } catch (e: any) {
+          console.error(P, reqId, "creator context failed:", e);
+          return res.status(500).json({ error: e?.message || "Creator context failed", reqId });
+        }
+      }
+
       // Per-merchant monthly plan quota — fail fast before job creation.
       // Customer-paid Studio Credits are spent on the wallet directly; only
       // reward-earned credits also burn merchant quota (see generation-billing).
+      // Creator storefront gens use creator monthly allowance instead of merchant plan.
       let usedCustomerPaidCredit = false;
       let storefrontBillingMode: GenerationBillingMode = "merchant";
 
       // Free generations per visitor (merchant-configurable, default 5, max 10)
-      const FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
+      // Creator storefronts override this with creators.free_gens_per_customer.
+      let FREE_GENERATION_LIMIT = clampStorefrontFreeGens(
         (installation as any).storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
       );
+      if (creatorCtx) {
+        FREE_GENERATION_LIMIT = Math.min(10, Math.max(0, creatorCtx.freeGensPerCustomer));
+      }
 
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
@@ -7532,6 +8069,23 @@ ${orientationExtra}
             usedCustomerPaidCredit = true;
             storefrontBillingMode = "customer_paid";
             console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits — will deduct on success`);
+          } else if (creatorCtx) {
+            const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
+            const freePeek = await peekCreatorCustomerFreeGens({
+              creatorId: creatorCtx.id,
+              customerId: customer.id,
+              freeGensPerCustomer: FREE_GENERATION_LIMIT,
+            });
+            if (!freePeek.allowed) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: `You've used all ${freePeek.limit} free generations on this creator shop. Purchase credits to continue.`,
+                generationsUsed: freePeek.used,
+                limit: freePeek.limit,
+              });
+            }
+            storefrontBillingMode = "customer_free";
+            console.log(P, reqId, `creator free gen ${freePeek.used + 1}/${freePeek.limit}`);
           } else {
             const freeUsed = balance.freeGenerationsUsed || 0;
             if (freeUsed >= FREE_GENERATION_LIMIT) {
@@ -7563,19 +8117,37 @@ ${orientationExtra}
 
         if (anonCustomer) {
           resolvedJobCustomerId = anonCustomer.id;
-          const balance = await storage.ensureCustomerBalance(anonCustomer.id);
-          const freeUsed = balance.freeGenerationsUsed || 0;
-          if (freeUsed >= FREE_GENERATION_LIMIT) {
-            return res.status(403).json({
-              error: "FREE_LIMIT_REACHED",
-              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
-              generationsUsed: freeUsed,
-              limit: FREE_GENERATION_LIMIT,
+          if (creatorCtx) {
+            const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
+            const freePeek = await peekCreatorCustomerFreeGens({
+              creatorId: creatorCtx.id,
+              customerId: anonCustomer.id,
+              freeGensPerCustomer: FREE_GENERATION_LIMIT,
             });
+            if (!freePeek.allowed) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: `You've used all ${freePeek.limit} free generations on this creator shop. Create an account to continue.`,
+                generationsUsed: freePeek.used,
+                limit: freePeek.limit,
+              });
+            }
+            storefrontBillingMode = "customer_free";
+          } else {
+            const balance = await storage.ensureCustomerBalance(anonCustomer.id);
+            const freeUsed = balance.freeGenerationsUsed || 0;
+            if (freeUsed >= FREE_GENERATION_LIMIT) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Create an account to continue.`,
+                generationsUsed: freeUsed,
+                limit: FREE_GENERATION_LIMIT,
+              });
+            }
+            // Anon free gens use the wallet-tracked customer_free path so they
+            // merge into the signed-in customer's wallet after login.
+            storefrontBillingMode = "customer_free";
           }
-          // Anon free gens use the wallet-tracked customer_free path so they
-          // merge into the signed-in customer's wallet after login.
-          storefrontBillingMode = "customer_free";
         } else {
           // Fallback to the legacy job-count path if the alias lookup fails.
           const count = await storage.countSessionGenerations(shop, sessionId);
@@ -7592,7 +8164,8 @@ ${orientationExtra}
       }
 
       // Free / session gens come off the merchant allotment — peek before creating the job.
-      if (!usedCustomerPaidCredit) {
+      // Creator storefronts use creator monthly allowance (already peeked) instead.
+      if (!usedCustomerPaidCredit && !creatorCtx) {
         const sfQuotaPeek = await peekMerchantQuotaWithAlerts(installation);
         if (!sfQuotaPeek.allowed) {
           return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
@@ -7601,6 +8174,7 @@ ${orientationExtra}
 
       // Gallery limit check for logged-in customers (20 saved designs max; 30 for the
       // merchant's own design-studio identity — see getGalleryLimitForCustomer).
+      // Creator storefronts use the same 20 Saved Designs cap — tell them to delete.
       if (customerId) {
         const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
         const savedCount = await db
@@ -7653,13 +8227,30 @@ ${orientationExtra}
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
+      if (creatorCtx && stylePreset) {
+        const { isStyleEntitledForGenerate } = await import("./creator-styles");
+        const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
+        if (!entitled) {
+          return res.status(403).json({
+            error: "STYLE_NOT_AVAILABLE",
+            message: "This style is not available.",
+            reqId,
+            stage: "style",
+          });
+        }
+      }
+
       if (stylePreset && installation.merchantId) {
         t1 = Date.now();
         const dbStyles = await withTimeout(
           storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
         );
         console.log(P, reqId, `style presets lookup ok in ${Date.now() - t1}ms`);
-        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
+        const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null; creatorScope?: string | null }) => {
+          if (s.id.toString() !== String(stylePreset)) return false;
+          if (!creatorCtx && (s.creatorScope || "merchant") === "custom") return false;
+          return true;
+        });
         if (selectedStyle) {
           styleName = selectedStyle.name || "";
           sfStyleCategory = selectedStyle.category || "all";
@@ -7672,7 +8263,7 @@ ${orientationExtra}
           sfStyleBaseImageUrls = dbBaseUrls;
           if (dbBaseUrls.length > 0) sfStyleBaseImageUrl = dbBaseUrls[0];
         }
-        if (!stylePromptPrefix && !styleName) {
+        if (!stylePromptPrefix && !styleName && !creatorCtx) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
@@ -7945,9 +8536,17 @@ ${orientationExtra}
         referenceImageUrl: null,
         billingMode: storefrontBillingMode,
         expiresAt,
+        creatorId: creatorCtx?.id ?? null,
+        creatorSessionId: creatorCtx?.sessionId ?? null,
       }), 8000, "createGenerationJob");
       const jobId = job.id;
       console.log(P, reqId, `created jobId=${jobId} in ${Date.now() - t1}ms (total pre-response ${Date.now() - t0}ms)`);
+
+      // Capture for worker closure (creator dual-quota finalize).
+      const workerCreatorCtx = creatorCtx;
+      const workerFreeLimit = FREE_GENERATION_LIMIT;
+      const workerBillingMode = storefrontBillingMode;
+      const workerCustomerId = resolvedJobCustomerId;
 
       // ── Background worker: AI call + storage save ─────────────────────────────
       // Fire-and-forget; never awaited. Railway keeps the process alive.
@@ -8007,10 +8606,10 @@ ${orientationExtra}
             } else if (sfCustomerImageUrls.length > 1) {
               refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
             } else if (sfCustomerImageUrl) {
-              const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
-              refInstruction = isTextStyle
-                ? `Using the provided reference image, incorporate its subject as a SINGLE element integrated INTO the typographic composition. Do NOT duplicate.`
-                : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+              refInstruction = singleCustomerReferenceInstruction({
+                stylePreset,
+                userPrompt: userDescSf,
+              });
             } else {
               refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
             }
@@ -8109,19 +8708,89 @@ ${orientationExtra}
             designId,
           });
 
-          await finalizeGenerationBilling({
-            installation,
-            billingMode: storefrontBillingMode,
-            customerId: resolvedJobCustomerId,
-            idempotencyKey: reqId.toString(),
-            freeGenerationLimit: FREE_GENERATION_LIMIT,
-          });
+          if (workerCreatorCtx) {
+            void import("./creator-artwork-library")
+              .then(({ evictOldestCreatorArtworksIfNeeded }) =>
+                evictOldestCreatorArtworksIfNeeded({
+                  creatorId: workerCreatorCtx.id,
+                  sessionId: workerCreatorCtx.sessionId,
+                  customerId: workerCustomerId,
+                }),
+              )
+              .catch((e: any) =>
+                console.warn("[Storefront Generate] creator artwork eviction failed:", e?.message || e),
+              );
+            // Creator dual quota: burn monthly allowance + per-creator free (or wallet credits).
+            // Do not burn platform-shop merchant plan quota.
+            // Pack-paid gens skip monthly allowance by default (CREATOR_PACK_GENS_BURN_ALLOWANCE opt-in).
+            const {
+              consumeCreatorMonthlyAllowance,
+              consumeCreatorCustomerFreeGen,
+            } = await import("./creator-quota");
+            const { packGensBurnCreatorAllowance } = await import("./creator-packs");
+            let spentCreditSource: "pack" | "earned" | null = null;
+            if (workerBillingMode === "customer_paid" && workerCustomerId) {
+              const paid = await applyCustomerBillingOnSuccess({
+                customerId: workerCustomerId,
+                mode: "customer_paid",
+                idempotencyKey: reqId.toString(),
+                externalRef: reqId.toString(),
+                shop,
+              });
+              spentCreditSource = paid.source;
+            } else if (workerBillingMode === "customer_free" && workerCustomerId) {
+              await consumeCreatorCustomerFreeGen({
+                creatorId: workerCreatorCtx.id,
+                customerId: workerCustomerId,
+                freeGensPerCustomer: workerFreeLimit,
+              });
+            }
+            const skipMonthlyForPack =
+              spentCreditSource === "pack" && !packGensBurnCreatorAllowance();
+            if (!skipMonthlyForPack) {
+              await consumeCreatorMonthlyAllowance(workerCreatorCtx.id);
+            }
+            void import("./creator-analytics")
+              .then(({ recordCreatorEvent }) =>
+                recordCreatorEvent({
+                  creatorId: workerCreatorCtx.id,
+                  sessionId: workerCreatorCtx.sessionId,
+                  eventType: "generation",
+                  generationJobId: jobId,
+                  productTypeId: productTypeId ? Number(productTypeId) || null : null,
+                  stylePreset: stylePreset ? String(stylePreset) : null,
+                  metadata: { billingMode: workerBillingMode },
+                }),
+              )
+              .catch(() => {});
+            void import("./creator-ledger")
+              .then(({ recordCreatorGenerationCost }) =>
+                recordCreatorGenerationCost({
+                  creatorId: workerCreatorCtx.id,
+                  generationJobId: jobId,
+                  sessionId: workerCreatorCtx.sessionId,
+                  customerId: workerCustomerId,
+                  billingMode: workerBillingMode,
+                }),
+              )
+              .catch((e: any) =>
+                console.warn("[Storefront Generate] creator gen cost failed:", e?.message || e),
+              );
+          } else {
+            await finalizeGenerationBilling({
+              installation,
+              billingMode: workerBillingMode,
+              customerId: workerCustomerId,
+              idempotencyKey: reqId.toString(),
+              freeGenerationLimit: workerFreeLimit,
+            });
+          }
 
           void recordGenerationOutcomeForFounder(installation, true);
 
           void logMerchantGeneration({
             installation,
-            customerId: resolvedJobCustomerId,
+            customerId: workerCustomerId,
             designId,
             promptLength: String(rawUserPrompt ?? prompt ?? "").length,
             hadReferenceImage:
@@ -8452,10 +9121,36 @@ ${orientationExtra}
         // Fire-and-forget: don't await, respond to client immediately
         (async () => {
           try {
+            const refreshShadowImage = async (productId: string, variantId: string) => {
+              try {
+                const imgRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    image: {
+                      src: primaryMockupUrl,
+                      variant_ids: [Number(variantId)],
+                    },
+                  }),
+                });
+                if (!imgRes.ok) {
+                  const t = await imgRes.text();
+                  console.warn(
+                    `[PreShadow] Failed to refresh shadow image:`,
+                    imgRes.status,
+                    t.substring(0, 200),
+                  );
+                }
+              } catch (imgErr: any) {
+                console.warn(`[PreShadow] Failed to refresh shadow image:`, imgErr?.message || imgErr);
+              }
+            };
+
             // Check if shadow product already exists for this job
             const freshJob = await storage.getGenerationJob(jobId);
             if (freshJob?.shadowVariantId && freshJob?.shadowProductId) {
               console.log(`[PreShadow] jobId=${jobId} already has shadow product ${freshJob.shadowProductId}`);
+              await refreshShadowImage(freshJob.shadowProductId, freshJob.shadowVariantId);
               return;
             }
 
@@ -8470,6 +9165,9 @@ ${orientationExtra}
                 shadowVariantId: existing.shopifyVariantId,
                 shadowExpiresAt: existing.expiresAt,
               } as any);
+              if (existing.shopifyProductId && existing.shopifyVariantId) {
+                await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
+              }
               return;
             }
 
@@ -8632,6 +9330,67 @@ ${orientationExtra}
     } catch (err: any) {
       console.error("[ForkDesign]", err);
       return res.status(500).json({ error: "Failed to fork design" });
+    }
+  });
+
+  /** New saved design when the customer changes placement/scale on an existing job. */
+  app.post("/api/storefront/fork-placement", async (req: Request, res: Response) => {
+    try {
+      const { shop, sourceJobId, designState, creatorId, creatorSessionId } = req.body || {};
+      if (!shop || !sourceJobId) {
+        return res.status(400).json({ error: "shop and sourceJobId are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shop))) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const source = await storage.getGenerationJob(String(sourceJobId));
+      if (!source || source.shop !== String(shop).toLowerCase().replace(/^https?:\/\//, "")) {
+        return res.status(404).json({ error: "Source design not found" });
+      }
+      const prevState =
+        source.designState && typeof source.designState === "object" && !Array.isArray(source.designState)
+          ? (source.designState as Record<string, unknown>)
+          : {};
+      const { flatMockups: _srcFlatMockups, hoodieAopMockups: _srcHoodieMockups, ...prevRest } =
+        prevState;
+      const patch =
+        designState && typeof designState === "object" && !Array.isArray(designState)
+          ? (designState as Record<string, unknown>)
+          : {};
+      const job = await storage.createGenerationJob({
+        shop: source.shop,
+        sessionId: source.sessionId,
+        customerId: source.customerId,
+        creatorId: source.creatorId || (typeof creatorId === "string" ? creatorId : null),
+        creatorSessionId:
+          source.creatorSessionId || (typeof creatorSessionId === "string" ? creatorSessionId : null),
+        status: "complete",
+        prompt: source.prompt,
+        userPrompt: source.userPrompt,
+        stylePreset: source.stylePreset,
+        size: source.size,
+        frameColor: source.frameColor,
+        productTypeId: source.productTypeId,
+        referenceImageUrl: source.referenceImageUrl,
+        designImageUrl: source.designImageUrl,
+        thumbnailUrl: source.thumbnailUrl,
+        designState: {
+          ...prevRest,
+          ...patch,
+          placementFork: true,
+          sourceJobId: source.id,
+        },
+        billingMode: source.billingMode,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      });
+      return res.json({ jobId: job.id, saved: true });
+    } catch (err: any) {
+      console.error("[ForkPlacement]", err);
+      return res.status(500).json({ error: "Failed to fork placement" });
     }
   });
 
@@ -9298,6 +10057,38 @@ ${orientationExtra}
             console.warn(`[ShadowProduct] Failed to update reused shadow price:`, priceErr?.message || priceErr);
           }
         }
+        // Placement edits reuse the same designId — replace the variant image
+        // so cart/checkout thumbnails match the latest mockup.
+        if (existing.shopifyProductId && existing.shopifyVariantId) {
+          try {
+            const imgRes = await fetch(
+              `${apiBase}/products/${existing.shopifyProductId}/images.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  image: {
+                    src: mockupUrl,
+                    variant_ids: [Number(existing.shopifyVariantId)],
+                  },
+                }),
+              },
+            );
+            if (!imgRes.ok) {
+              const t = await imgRes.text();
+              console.warn(
+                `[ShadowProduct] Failed to refresh reused shadow image:`,
+                imgRes.status,
+                t.substring(0, 200),
+              );
+            }
+          } catch (imgErr: any) {
+            console.warn(
+              `[ShadowProduct] Failed to refresh reused shadow image:`,
+              imgErr?.message || imgErr,
+            );
+          }
+        }
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
 
@@ -9744,6 +10535,7 @@ ${orientationExtra}
       ] as string[];
       const ptMap: Record<string, string> = {};   // productTypeId → name
       const handleMap: Record<string, string> = {}; // productTypeId → page handle
+      const titleByHandle: Record<string, string> = {};
       if (ptIds.length > 0) {
         const numericIds = ptIds.map(Number).filter(n => !isNaN(n));
         if (numericIds.length > 0) {
@@ -9754,7 +10546,11 @@ ${orientationExtra}
 
           // Look up customizer page handles by productTypeId + shop
           const pages = await db
-            .select({ productTypeId: customizerPages.productTypeId, handle: customizerPages.handle })
+            .select({
+              productTypeId: customizerPages.productTypeId,
+              handle: customizerPages.handle,
+              title: customizerPages.title,
+            })
             .from(customizerPages)
             .where(
               and(
@@ -9763,7 +10559,49 @@ ${orientationExtra}
                 inArray(customizerPages.productTypeId, numericIds)
               )
             );
-          for (const p of pages) if (p.productTypeId) handleMap[String(p.productTypeId)] = p.handle;
+          const typeCounts: Record<string, number> = {};
+          for (const p of pages) {
+            if (!p.productTypeId) continue;
+            const key = String(p.productTypeId);
+            typeCounts[key] = (typeCounts[key] || 0) + 1;
+          }
+          // Only infer a handle from productTypeId when exactly one live page
+          // uses that type. Shared types (hoodie name on an apron page) would
+          // otherwise stamp the wrong product onto Saved Designs.
+          for (const p of pages) {
+            if (p.handle && p.title) titleByHandle[p.handle] = p.title;
+            if (!p.productTypeId) continue;
+            const key = String(p.productTypeId);
+            if (typeCounts[key] === 1) handleMap[key] = p.handle;
+          }
+        }
+      }
+      const extraHandles = [
+        ...new Set(
+          rows
+            .map((r) => {
+              const ds =
+                r.designState && typeof r.designState === "object" && !Array.isArray(r.designState)
+                  ? (r.designState as Record<string, unknown>)
+                  : null;
+              return ds && typeof ds.pageHandle === "string" ? ds.pageHandle.trim() : "";
+            })
+            .filter((h) => h && !titleByHandle[h]),
+        ),
+      ];
+      if (extraHandles.length > 0) {
+        const extraPages = await db
+          .select({ handle: customizerPages.handle, title: customizerPages.title })
+          .from(customizerPages)
+          .where(
+            and(
+              eq(customizerPages.shop, shop),
+              eq(customizerPages.status, "active"),
+              inArray(customizerPages.handle, extraHandles),
+            ),
+          );
+        for (const p of extraPages) {
+          if (p.handle && p.title) titleByHandle[p.handle] = p.title;
         }
       }
 
@@ -9792,6 +10630,103 @@ ${orientationExtra}
         return `/apps/appai${clean}`;
       };
 
+      const originCreatorIds = [
+        ...new Set(rows.map((r) => (r.creatorId ? String(r.creatorId).trim() : "")).filter(Boolean)),
+      ];
+      const originCreatorById = new Map<
+        string,
+        { username: string; shopName: string }
+      >();
+      const originPagesByCreator = new Map<
+        string,
+        Array<{ handle: string; title: string; productTypeId: number | null }>
+      >();
+      if (originCreatorIds.length > 0) {
+        const originCreators = await db
+          .select({
+            id: creators.id,
+            username: creators.username,
+            displayName: creators.displayName,
+            branding: creators.branding,
+          })
+          .from(creators)
+          .where(inArray(creators.id, originCreatorIds));
+        const { creatorPublicName } = await import("@shared/creatorMarketplace");
+        for (const c of originCreators) {
+          originCreatorById.set(c.id, {
+            username: String(c.username || "").trim().toLowerCase(),
+            shopName:
+              creatorPublicName({
+                username: c.username,
+                branding: (c.branding as Record<string, unknown> | null) ?? null,
+              }) ||
+              String(c.displayName || "").trim() ||
+              String(c.username || "").trim(),
+          });
+        }
+        const originLinks = await db
+          .select({
+            creatorId: creatorCustomizerPages.creatorId,
+            customizerPageId: creatorCustomizerPages.customizerPageId,
+            titleOverride: creatorCustomizerPages.titleOverride,
+            sortOrder: creatorCustomizerPages.sortOrder,
+          })
+          .from(creatorCustomizerPages)
+          .where(
+            and(
+              inArray(creatorCustomizerPages.creatorId, originCreatorIds),
+              eq(creatorCustomizerPages.enabled, true),
+            ),
+          );
+        const originPageIds = [
+          ...new Set(originLinks.map((l) => l.customizerPageId).filter(Boolean)),
+        ];
+        const originPageRows =
+          originPageIds.length > 0
+            ? await db
+                .select({
+                  id: customizerPages.id,
+                  handle: customizerPages.handle,
+                  title: customizerPages.title,
+                  productTypeId: customizerPages.productTypeId,
+                  status: customizerPages.status,
+                })
+                .from(customizerPages)
+                .where(inArray(customizerPages.id, originPageIds))
+            : [];
+        const originPageById = new Map(originPageRows.map((p) => [p.id, p]));
+        for (const link of originLinks) {
+          const page = originPageById.get(link.customizerPageId);
+          if (!page || page.status === "disabled" || !page.handle) continue;
+          const list = originPagesByCreator.get(link.creatorId) || [];
+          list.push({
+            handle: page.handle,
+            title: link.titleOverride || page.title,
+            productTypeId: page.productTypeId ?? null,
+          });
+          originPagesByCreator.set(link.creatorId, list);
+        }
+      }
+
+      const pickOriginPage = (
+        creatorId: string,
+        preferredHandle: string | null,
+        productTypeId: string | null,
+      ): { handle: string; title: string } | null => {
+        const pages = originPagesByCreator.get(creatorId) || [];
+        if (pages.length === 0) return null;
+        if (preferredHandle) {
+          const exact = pages.find((p) => p.handle === preferredHandle);
+          if (exact) return { handle: exact.handle, title: exact.title };
+        }
+        const typeId = productTypeId != null ? Number(productTypeId) : NaN;
+        if (Number.isFinite(typeId) && typeId > 0) {
+          const typed = pages.find((p) => p.productTypeId === typeId);
+          if (typed) return { handle: typed.handle, title: typed.title };
+        }
+        return { handle: pages[0].handle, title: pages[0].title };
+      };
+
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
@@ -9809,6 +10744,13 @@ ${orientationExtra}
             ds && typeof ds.pageHandle === "string" && ds.pageHandle.trim()
               ? ds.pageHandle.trim()
               : null;
+          const resolvedHandle = stateHandle || (ptId ? (handleMap[ptId] || null) : null);
+          const originCreator = d.creatorId
+            ? originCreatorById.get(String(d.creatorId)) || null
+            : null;
+          const originPage = d.creatorId
+            ? pickOriginPage(String(d.creatorId), resolvedHandle, ptId)
+            : null;
           return {
           id: d.id,
           artworkUrl:
@@ -9821,13 +10763,24 @@ ${orientationExtra}
           designState: d.designState || null,
           prompt: (d as any).userPrompt || d.prompt,
           stylePreset: d.stylePreset,
-          size: d.size,
-          frameColor: d.frameColor,
+          size:
+            d.size ||
+            (ds && typeof ds.selectedSize === "string" ? ds.selectedSize : null),
+          frameColor:
+            d.frameColor ||
+            (ds && typeof ds.selectedFrameColor === "string" ? ds.selectedFrameColor : null),
           productTypeId: ptId,
-          baseTitle: ptId ? (ptMap[ptId] || null) : null,
-          pageHandle: stateHandle || (ptId ? (handleMap[ptId] || null) : null),
+          pageHandle: resolvedHandle,
+          baseTitle:
+            (resolvedHandle && titleByHandle[resolvedHandle]) ||
+            (ptId ? ptMap[ptId] || null : null),
           customerId: d.customerId,
           createdAt: d.createdAt,
+          creatorId: d.creatorId ? String(d.creatorId) : null,
+          creatorUsername: originCreator?.username || null,
+          creatorShopName: originCreator?.shopName || null,
+          originPageHandle: originPage?.handle || null,
+          originPageTitle: originPage?.title || null,
         };
         })
       });
@@ -10121,12 +11074,29 @@ ${orientationExtra}
         anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
       });
       const balance = await storage.ensureCustomerBalance(customer.id);
+      const aliases = await storage.getCustomerAliases(customer.id).catch(() => []);
+      const emailAlias = aliases.find((a) => a.aliasType === "otp_email");
+      let email = emailAlias?.aliasValue || null;
+      if (!email) {
+        try {
+          const row = await pool.query(`SELECT email FROM customers WHERE id = $1`, [customer.id]);
+          email = row.rows[0]?.email || null;
+        } catch {
+          /* email column may be missing on older DBs */
+        }
+      }
+      const signedIn =
+        !!email ||
+        !!shopifyCustomerId ||
+        (typeof customer.userId === "string" && customer.userId.startsWith("email:"));
       return res.json({
         ok: true,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
         credits: balance.credits,
         freeGenerationsUsed: balance.freeGenerationsUsed,
+        email,
+        signedIn,
       });
     } catch (error: any) {
       console.error("[Storefront Identity] bootstrap error:", error);
@@ -10379,6 +11349,39 @@ ${orientationExtra}
         );
       }
 
+      // ── Creator Marketplace financial ledger (Phase 5) ─────────────────────
+      // Platform-shop orders with `_creator_id` / job.creator_id → creator_orders.
+      if (shop && Array.isArray(order.line_items)) {
+        void import("./creator-ledger")
+          .then(({ recordCreatorOrdersFromPaidWebhook }) =>
+            recordCreatorOrdersFromPaidWebhook(shop, order),
+          )
+          .then((r) => {
+            if (r.ordersUpserted > 0) {
+              console.log("[Shopify Orders Paid] creator ledger", r);
+            }
+          })
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] creator ledger failed:", e?.message || e),
+          );
+      }
+
+      // ── Creator Marketplace credit packs (Phase 8) ─────────────────────────
+      if (shop && Array.isArray(order.line_items)) {
+        void import("./creator-packs")
+          .then(({ grantCreatorPacksFromPaidOrder }) =>
+            grantCreatorPacksFromPaidOrder(shop, order),
+          )
+          .then((r) => {
+            if (r.granted > 0) {
+              console.log("[Shopify Orders Paid] creator packs granted", r);
+            }
+          })
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] creator packs failed:", e?.message || e),
+          );
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
@@ -10445,6 +11448,45 @@ ${orientationExtra}
             console.log(`[Shopify Refunds Create] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
           }
         }).catch((err: any) => console.warn("[Shopify Refunds Create] clawback failed:", err?.message));
+
+        // Creator ledger: accumulate refunded cents from this refund event.
+        const refundCents = Array.isArray(body.transactions)
+          ? body.transactions.reduce(
+              (s: number, t: any) => s + Math.max(0, Math.round(Number(t.amount || 0) * 100)),
+              0,
+            )
+          : Math.max(0, Math.round(Number(body.amount || 0) * 100));
+        if (refundCents > 0) {
+          void import("./creator-ledger")
+            .then(({ addCreatorOrderRefund }) =>
+              addCreatorOrderRefund({
+                shop,
+                orderId: String(orderId),
+                additionalRefundCents: refundCents,
+              }),
+            )
+            .then((r) => {
+              if (r.updated > 0) {
+                console.log("[Shopify Refunds Create] creator ledger updated", r);
+              }
+            })
+            .catch((err: any) =>
+              console.warn("[Shopify Refunds Create] creator ledger failed:", err?.message),
+            );
+        }
+
+        void import("./creator-packs")
+          .then(({ clawbackCreatorPacksForOrder }) =>
+            clawbackCreatorPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Refunds Create] creator packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Refunds Create] creator packs failed:", err?.message),
+          );
       }
       return res.status(200).send("OK");
     } catch (error: any) {
@@ -10473,6 +11515,32 @@ ${orientationExtra}
             console.log(`[Shopify Orders Cancelled] clawed ${r.clawedGrants} purchase_threshold grant(s) for order ${orderId}`);
           }
         }).catch((err: any) => console.warn("[Shopify Orders Cancelled] clawback failed:", err?.message));
+
+        void import("./creator-ledger")
+          .then(({ applyCreatorOrderCancelled }) =>
+            applyCreatorOrderCancelled({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.updated > 0) {
+              console.log("[Shopify Orders Cancelled] creator ledger updated", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Orders Cancelled] creator ledger failed:", err?.message),
+          );
+
+        void import("./creator-packs")
+          .then(({ clawbackCreatorPacksForOrder }) =>
+            clawbackCreatorPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Orders Cancelled] creator packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Orders Cancelled] creator packs failed:", err?.message),
+          );
       }
       return res.status(200).send("OK");
     } catch (error: any) {
@@ -10776,6 +11844,54 @@ ${orientationExtra}
     import("./leftover-gens-reminder")
       .then(({ runLeftoverGensReminders }) => runLeftoverGensReminders())
       .catch((e: Error) => console.error("[Leftover Gens Reminder] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Creator Marketplace daily attribution rollups (sessions/events → creator_daily_stats).
+  setTimeout(() => {
+    import("./creator-analytics")
+      .then(({ runCreatorDailyStatsRollup }) => runCreatorDailyStatsRollup())
+      .catch((e: Error) => console.error("[Creator Daily Stats] Startup error:", e));
+  }, 30 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-analytics")
+      .then(({ runCreatorDailyStatsRollup }) => runCreatorDailyStatsRollup())
+      .catch((e: Error) => console.error("[Creator Daily Stats] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Email last month's ranked creator P&L to FOUNDER_ALERT_EMAIL on UTC day 1–3.
+  setTimeout(() => {
+    import("./creator-monthly-report")
+      .then(({ runCreatorMonthlyReport }) => runCreatorMonthlyReport())
+      .catch((e: Error) => console.error("[Creator Monthly Report] Startup error:", e));
+  }, 45 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-monthly-report")
+      .then(({ runCreatorMonthlyReport }) => runCreatorMonthlyReport())
+      .catch((e: Error) => console.error("[Creator Monthly Report] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Creator Network rank snapshots (after daily rollup has fresh money fields).
+  setTimeout(() => {
+    import("./creator-rankings")
+      .then(({ runCreatorRankSnapshots }) => runCreatorRankSnapshots({ force: true }))
+      .catch((e: Error) => console.error("[Creator Rankings] Startup error:", e));
+  }, 40 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-rankings")
+      .then(({ runCreatorRankSnapshots }) => runCreatorRankSnapshots())
+      .catch((e: Error) => console.error("[Creator Rankings] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Creator beta lifecycle (7/3/1 day reminders + auto beta_completed).
+  setTimeout(() => {
+    import("./creator-beta-lifecycle")
+      .then(({ runCreatorBetaLifecycle }) => runCreatorBetaLifecycle())
+      .catch((e: Error) => console.error("[Creator Beta Lifecycle] Startup error:", e));
+  }, 50 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-beta-lifecycle")
+      .then(({ runCreatorBetaLifecycle }) => runCreatorBetaLifecycle())
+      .catch((e: Error) => console.error("[Creator Beta Lifecycle] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern
@@ -12296,7 +13412,9 @@ ${orientationExtra}
       if (!merchant) {
         return res.json([]);
       }
-      const presets = await storage.getStylePresetsByMerchant(merchant.id);
+      const presets = (await storage.getStylePresetsByMerchant(merchant.id)).filter(
+        (s: any) => (s.creatorScope || "merchant") !== "custom",
+      );
       // Enrich each DB record with hardcoded options/promptPlaceholder when the DB column is null
       // (styles seeded before the options column was added won't have these fields populated)
       const enriched = presets.map((s: any) => {
@@ -12342,6 +13460,7 @@ ${orientationExtra}
         baseImageUrl: baseImageUrl || null,
         promptPlaceholder: promptPlaceholder || null,
         descriptionOptional: !!descriptionOptional,
+        creatorScope: "merchant",
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
@@ -13199,11 +14318,12 @@ ${orientationExtra}
         actualProviderId,
         printifyToken,
       );
-      const variants = dual.variants;
+      const variants = Array.isArray(dual.variants) ? dual.variants : [];
       
       // Parse variants to extract sizes and colors (simplified version of import logic)
       const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
       const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
+      const combinations: { sizeId: string; colorId: string }[] = [];
       
       const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
       const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
@@ -13305,7 +14425,22 @@ ${orientationExtra}
           }
         }
         
-        const colorName = extractPrintifyColorName(options, title);
+        let colorName = "";
+        try {
+          colorName = extractPrintifyColorName(options, title) || "";
+        } catch {
+          colorName = "";
+        }
+        if (extractedSizeId) {
+          try {
+            combinations.push({
+              sizeId: extractedSizeId,
+              colorId: colorName ? slugPrintifyColorId(colorName) : "",
+            });
+          } catch {
+            /* skip a bad combo — still return sizes/colours */
+          }
+        }
 
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {
           const colorId = slugPrintifyColorId(colorName);
@@ -13365,7 +14500,8 @@ ${orientationExtra}
 
       res.json({
         sizes: Array.from(sizesMap.values()),
-        colors: Array.from(colorsMap.values())
+        colors: Array.from(colorsMap.values()),
+        combinations,
       });
     } catch (error) {
       console.error("Error fetching variant options:", error);
@@ -13395,15 +14531,32 @@ ${orientationExtra}
         return res.status(403).json({ error: "Not authorized to modify this product" });
       }
 
-      // Validate variant count
+      // Count Printify-real combos from variantMap (sizes × colours overcounts
+      // when a colour is not sold in every size — e.g. 9×13=117 but only 91 exist).
+      let variantMap: Record<string, unknown> = {};
+      try {
+        variantMap = typeof productType.variantMap === "string"
+          ? JSON.parse(productType.variantMap || "{}")
+          : productType.variantMap || {};
+      } catch {
+        variantMap = {};
+      }
       const sizeCount = Array.isArray(selectedSizeIds) ? selectedSizeIds.length : 0;
       const colorCount = Array.isArray(selectedColorIds) ? selectedColorIds.length : 0;
-      const totalVariants = sizeCount * (colorCount || 1);
-      
-      if (totalVariants > 100) {
-        return res.status(400).json({ 
+      const cartesian = sizeCount * (colorCount || 1);
+      const mapCount = countActiveVariantMapKeys(variantMap, selectedSizeIds, selectedColorIds);
+      const reported = Number((req.body as { variantCount?: unknown })?.variantCount);
+      const totalVariants =
+        mapCount > 0
+          ? mapCount
+          : Number.isFinite(reported) && reported > 0
+            ? reported
+            : cartesian;
+
+      if (totalVariants > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({
           error: "Too many variants",
-          details: `Selected options would create ${totalVariants} variants. Maximum is 100.`
+          details: `Selected options would create ${totalVariants} variants. Maximum is ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`,
         });
       }
 
@@ -14679,7 +15832,10 @@ ${orientationExtra}
           catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
         storefrontMockupMode: catalogStorefrontMode,
         fulfillmentLayout: catalogFulfillmentLayout,
-        fabricWeaveTexture: blueprintIdNum === WOVEN_WALL_TAPESTRY_BLUEPRINT_ID,
+        fabricWeaveTexture: resolveFabricWeaveTexture({
+          fabricWeaveTexture: catalogEntry.fabricWeaveTexture,
+          printifyBlueprintId: blueprintIdNum,
+        }),
         isActive: true,
         sortOrder: existingTypes.length,
         ...(printifyCostsAtImport ? { printifyCosts: printifyCostsAtImport } : {}),
@@ -15071,7 +16227,8 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      if (!merchant.printifyApiToken) {
+      const printifyToken = resolveCatalogPrintifyToken(merchant);
+      if (!printifyToken) {
         return res.status(400).json({ error: "Printify API token not configured" });
       }
 
@@ -15081,17 +16238,36 @@ ${orientationExtra}
         return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
-      if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+      if (!productType.printifyBlueprintId) {
         return res.status(400).json({ error: "Product type is not linked to Printify" });
+      }
+
+      let providerId = productType.printifyProviderId as number | null | undefined;
+      if (!providerId) {
+        const provRes = await fetchWithRetry(
+          `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers.json`,
+          { headers: { Authorization: `Bearer ${printifyToken}`, "Content-Type": "application/json" } },
+          2,
+          800,
+        );
+        if (provRes.ok) {
+          const provs = await provRes.json();
+          providerId = Array.isArray(provs) && provs.length
+            ? (provs[0].id ?? provs[0].print_provider_id)
+            : undefined;
+        }
+      }
+      if (!providerId) {
+        return res.status(400).json({ error: "Product type is not linked to a Printify provider" });
       }
 
       const existingImages = typeof productType.baseMockupImages === "string"
         ? JSON.parse(productType.baseMockupImages || "{}")
         : productType.baseMockupImages || {};
       const availablePlaceholderImages = await fetchPrintifyPlaceholderOptions(
-        merchant.printifyApiToken,
+        printifyToken,
         productType.printifyBlueprintId,
-        productType.printifyProviderId,
+        providerId,
       );
       let baseMockupImages = buildBaseMockupImagesFromOptions(
         availablePlaceholderImages,
@@ -15122,7 +16298,10 @@ ${orientationExtra}
 
       // Update the product type with new images
       const updated = await storage.updateProductType(productTypeId, {
-        baseMockupImages: JSON.stringify(baseMockupImages)
+        baseMockupImages: JSON.stringify(baseMockupImages),
+        ...(!(productType as any).printifyProviderId && providerId
+          ? { printifyProviderId: providerId }
+          : {}),
       });
 
       res.json({ 
@@ -15892,8 +17071,10 @@ ${orientationExtra}
   const KNOWN_DUAL_SIDED_BLUEPRINTS = new Set<number>([
     26, // Men's Lightweight Fashion Tee
     79, // Unisex 3/4 Sleeve Baseball Tee
+    5, // Unisex Cotton Crew Tee (Printify Choice / known-good wizard)
     6, // Unisex Cotton Crew Tee (common)
     12, // Unisex Heavy Cotton Tee
+    66, // Unisex Heavy Blend Full Zip Hooded Sweatshirt (Gildan 18600)
     77, // Unisex Heavy Blend Hooded Sweatshirt
     49, // Unisex Heavy Blend Crewneck
   ]);
@@ -15908,9 +17089,11 @@ ${orientationExtra}
       placeholderPositionsJson?: string | null;
       doubleSidedPrint?: boolean | null;
       sampleVariantId?: number | null;
+      hasBackView?: boolean;
     },
   ): Promise<boolean> {
     if (opts?.isAllOverPrint) return false;
+    if (opts?.hasBackView) return true;
     if (KNOWN_DUAL_SIDED_BLUEPRINTS.has(Number(blueprintId))) return true;
     try {
       const positions: { position?: string }[] =
@@ -15967,9 +17150,13 @@ ${orientationExtra}
       images.front ||
       (Object.values(images).find((v) => typeof v === "string") as string | undefined);
     const probeImageId = await ensureCostProbeImageId(args.apiToken, mockupUrl);
-    const imageSpec = probeImageId
-      ? { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }
-      : null;
+    // Printify only adds the back-print fee when the back placeholder has art
+    // (empty back = front-only COGS). Never probe both-sides with empty images.
+    if (!probeImageId) {
+      console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
+      return {};
+    }
+    const imageSpec = { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 };
     // OOS-heavy providers (baseball) often fail large chunks — try progressively.
     const seen = new Set<string>();
     const attempts: number[][] = [];
@@ -15982,29 +17169,26 @@ ${orientationExtra}
     }
 
     for (const chunk of attempts) {
-      const specs = imageSpec ? [imageSpec, null] : [null];
-      for (const spec of specs) {
-        const bothProbe = await tryCreateTempProductForCosts(
-          args.shopId,
-          args.apiToken,
-          args.blueprintId,
-          args.providerId,
-          chunk,
-          ["front", "back"],
-          spec,
+      const bothProbe = await tryCreateTempProductForCosts(
+        args.shopId,
+        args.apiToken,
+        args.blueprintId,
+        args.providerId,
+        chunk,
+        ["front", "back"],
+        imageSpec,
+      );
+      if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+        console.log(
+          `[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs` +
+            ` (n=${chunk.length}, image on front+back)`,
         );
-        if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
-          console.log(
-            `[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs` +
-              ` (n=${chunk.length}${spec ? ", with image" : ", empty images"})`,
-          );
-          return bothProbe.costs;
-        }
-        console.warn(
-          `[Printify Costs] Front+back probe failed n=${chunk.length}` +
-            ` (${bothProbe.status}): ${bothProbe.error?.slice(0, 160)}`,
-        );
+        return bothProbe.costs;
       }
+      console.warn(
+        `[Printify Costs] Front+back probe failed n=${chunk.length}` +
+          ` (${bothProbe.status}): ${bothProbe.error?.slice(0, 160)}`,
+      );
     }
     return {};
   }
@@ -17151,6 +18335,16 @@ ${orientationExtra}
 
       async function detectHasBackPlaceholder(): Promise<boolean> {
         const sampleVid = [...currentPrintifyVariantIds][0] ?? null;
+        let hasBackView = false;
+        try {
+          const fc =
+            typeof (productType as any).flatCalibration === "string"
+              ? JSON.parse((productType as any).flatCalibration || "{}")
+              : (productType as any).flatCalibration;
+          hasBackView = !!(fc?.views?.back);
+        } catch {
+          hasBackView = false;
+        }
         return catalogHasBackPlaceholder(
           productType.printifyBlueprintId!,
           productType.printifyProviderId!,
@@ -17163,6 +18357,7 @@ ${orientationExtra}
                 : JSON.stringify(productType.placeholderPositions || []),
             doubleSidedPrint: !!productType.doubleSidedPrint,
             sampleVariantId: sampleVid,
+            hasBackView,
           },
         );
       }
@@ -17358,6 +18553,17 @@ ${orientationExtra}
           variantIds: printifyVariantIds,
           baseMockupImages,
         });
+        // Empty back art returns the same COGS as front-only — do not store that as both-tier.
+        const bothIds = Object.keys(costsBoth);
+        const sameAsFront =
+          bothIds.length > 0 &&
+          bothIds.every((id) => costs[id] != null && Math.abs(costs[id] - costsBoth[id]) < 1);
+        if (sameAsFront) {
+          console.warn(
+            `[Printify Costs] Front+back probe matched front-only COGS for blueprint ${productType.printifyBlueprintId} — discarding both-tier`,
+          );
+          costsBoth = {};
+        }
       } else if (hasBackPlaceholder && !shopId?.trim()) {
         console.warn(
           "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
@@ -17928,7 +19134,25 @@ ${orientationExtra}
       return { ok: false, status: 403, error: "SHOP_NOT_ACTIVE" };
     }
 
-    return { ok: true, installation };
+    // Public apps use expiring offline tokens. Refresh (or recover via the live
+    // App Bridge session JWT) before any Admin API write — otherwise Create Page
+    // posts with a stale token and Shopify returns 401 Invalid API key.
+    const tokenReady = await ensureValidOfflineAccessToken(installation, {
+      sessionToken: getBearerTokenFromRequest(req),
+    });
+    if (!tokenReady.ok) {
+      console.log(`[resolver] TOKEN_UNUSABLE: ${shopDomain} — ${tokenReady.error}`);
+      return {
+        ok: false,
+        status: tokenReady.needsReinstall ? 401 : 502,
+        error: tokenReady.needsReinstall ? "REAUTH_REQUIRED" : tokenReady.error,
+        reinstallUrl: tokenReady.needsReinstall
+          ? `/shopify/install?shop=${encodeURIComponent(shopDomain)}`
+          : undefined,
+      };
+    }
+
+    return { ok: true, installation: tokenReady.installation };
   }
 
   /**
@@ -18797,6 +20021,57 @@ ${orientationExtra}
       console.warn("[backfill] Some backfill tasks rejected unexpectedly");
     }
 
+    // Cached "from" price used the first Shopify variant (option order), not the
+    // cheapest. Re-point existing pages at the lowest-priced variant of the same product.
+    const productIdsToHeal = [...new Set(pages.map((p) => p.baseProductId).filter(Boolean))];
+    const cheapestByProduct = new Map<string, { id: string; title: string; price: string }>();
+    await Promise.all(
+      productIdsToHeal.map(async (productId) => {
+        try {
+          const productIdNum = parseInt(String(productId).replace(/\D/g, ""), 10);
+          if (!productIdNum) return;
+          const productRes = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${productIdNum}.json?fields=id,variants`,
+          );
+          const cheapest = pickLowestPricedShopifyVariant(productRes.data?.product?.variants);
+          if (!cheapest) return;
+          cheapestByProduct.set(String(productId), {
+            id: String(cheapest.id),
+            title: cheapest.title || "Default Title",
+            price: cheapest.price || "0.00",
+          });
+        } catch (e: any) {
+          console.warn(`[from-price] Could not load variants for product ${productId}:`, e?.message ?? e);
+        }
+      }),
+    );
+    for (const p of pages) {
+      if (!p.baseProductId) continue;
+      const cheapest = cheapestByProduct.get(String(p.baseProductId));
+      if (!cheapest) continue;
+      const cached = parseShopifyVariantPrice(p.baseProductPrice);
+      const live = parseShopifyVariantPrice(cheapest.price);
+      if (String(p.baseVariantId) === cheapest.id && Math.abs(cached - live) < 0.005) continue;
+      if (live <= 0) continue;
+      try {
+        await storage.updateCustomizerPage(p.id, {
+          baseVariantId: cheapest.id,
+          baseVariantTitle: cheapest.title,
+          ...clearZeroPriceAlertIfPriced({ baseProductPrice: cheapest.price }, cheapest.price),
+        });
+        Object.assign(p, {
+          baseVariantId: cheapest.id,
+          baseVariantTitle: cheapest.title,
+          baseProductPrice: cheapest.price,
+          zeroPriceAlertSentAt: null,
+        });
+      } catch (e: any) {
+        console.warn(`[from-price] Could not update page ${p.id}:`, e?.message ?? e);
+      }
+    }
+
     // Refresh each active page's body_html to the latest boot loader so existing
     // pages pick up the self-bootstrapping <script> that mounts the studio even
     // on themes where the "AI Art Studio" app embed is turned off. Fire-and-forget;
@@ -18813,6 +20088,10 @@ ${orientationExtra}
     removeCustomizerNavParent(shop, installation.accessToken).catch(() => {});
 
     const plan = getEffectivePlan(installation as any, shop);
+
+    void notifyZeroRetailPricePages(pages).catch((e) =>
+      console.warn("[zero-price-alert] admin list notify failed:", e?.message ?? e),
+    );
 
     return res.json({
       pages,
@@ -18841,7 +20120,7 @@ ${orientationExtra}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, defaultMarkupPercent: incomingMarkupPercent, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
@@ -18850,6 +20129,7 @@ ${orientationExtra}
       variantPrices?: Record<string, string>;
       /** Front+back retail prices keyed like variantPrices — not written to Shopify base variants. */
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
       styleConfig?: unknown;
     };
@@ -18979,9 +20259,21 @@ ${orientationExtra}
       // auto-publish the product to Shopify now.
       if (!resolvedBaseProductId) {
         try {
-          const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, ptForSync, merchant, []);
+          const { shopifyProductId } = await createShopifyProductForTypeHealed(
+            req,
+            shop,
+            installation,
+            ptForSync,
+            merchant,
+          );
           resolvedBaseProductId = shopifyProductId;
         } catch (e: any) {
+          if (e?.message === "REAUTH_REQUIRED" || isShopifyAuthError(e)) {
+            return res.status(401).json({
+              error: "REAUTH_REQUIRED",
+              reinstallUrl: e?.reinstallUrl || `/shopify/install?shop=${encodeURIComponent(shop)}`,
+            });
+          }
           return res.status(400).json({ error: e.message || "Failed to send product to Shopify. Try using Generator Tester to send it first." });
         }
         if (!resolvedBaseProductId) {
@@ -19064,7 +20356,8 @@ ${orientationExtra}
     }
 
     // Resolve variant + product info via Admin API.
-    // New flow: merchant selects a product → fetch product and use its first variant.
+    // New flow: merchant selects a product → use the cheapest variant for "from" price
+    // (Shopify lists option order, often largest/most expensive first).
     // Legacy flow: merchant sends baseVariantId directly → look up variant then product.
     let variant: any;
     let productTitle: string;
@@ -19100,9 +20393,21 @@ ${orientationExtra}
             shopifyVariantIds: null as any,
           });
           try {
-            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, recoveryPt, merchant, []);
+            const { shopifyProductId } = await createShopifyProductForTypeHealed(
+              req,
+              shop,
+              installation,
+              recoveryPt,
+              merchant,
+            );
             resolvedBaseProductId = shopifyProductId;
           } catch (e: any) {
+            if (e?.message === "REAUTH_REQUIRED" || isShopifyAuthError(e)) {
+              return res.status(401).json({
+                error: "REAUTH_REQUIRED",
+                reinstallUrl: e?.reinstallUrl || `/shopify/install?shop=${encodeURIComponent(shop)}`,
+              });
+            }
             return res.status(400).json({ error: e.message || `Product could not be created in your store. Open Products, send "${recoveryPt.name}" to Shopify, then try again.` });
           }
           if (!resolvedBaseProductId) {
@@ -19114,9 +20419,9 @@ ${orientationExtra}
             return res.status(400).json({ error: `Newly created product ${resolvedBaseProductId} not found. Please try again.` });
           }
           const product = newProdResult.data.product;
-          const firstVariant = product.variants?.[0];
-          if (!firstVariant) return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
-          variant = firstVariant;
+          const cheapest = pickLowestPricedShopifyVariant(product.variants);
+          if (!cheapest) return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
+          variant = cheapest;
           productTitle = product.title ?? "";
           productHandle = product.handle ?? "";
         } else {
@@ -19124,11 +20429,11 @@ ${orientationExtra}
         }
       } else {
         const product = prodResult.data.product;
-        const firstVariant = product.variants?.[0];
-        if (!firstVariant) {
+        const cheapest = pickLowestPricedShopifyVariant(product.variants);
+        if (!cheapest) {
           return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
         }
-        variant = firstVariant;
+        variant = cheapest;
         productTitle = product.title ?? "";
         productHandle = product.handle ?? "";
       }
@@ -19163,6 +20468,38 @@ ${orientationExtra}
     );
     const resolvedProductTypeId: number | null =
       matchedType?.id ?? incomingProductTypeId ?? ptForSync?.id ?? null;
+
+    // Persist wizard markup and backfill Printify catalog copy for every create path
+    // (including products already on Shopify, which skip the earlier productTypeId-only backfill).
+    if (resolvedProductTypeId) {
+      const ptForMeta = await storage.getProductType(resolvedProductTypeId);
+      const ptUpdates: Record<string, unknown> = {};
+      const markupNum = parseInt(String(incomingMarkupPercent), 10);
+      if (Number.isFinite(markupNum) && markupNum >= 0) {
+        ptUpdates.defaultMarkupPercent = markupNum;
+      }
+      if (ptForMeta && !String(ptForMeta.description || "").trim() && ptForMeta.printifyBlueprintId) {
+        const token = resolveCatalogPrintifyToken(merchant);
+        if (token) {
+          const fetched = await fetchPrintifyBlueprintDescriptionHtml(
+            token,
+            Number(ptForMeta.printifyBlueprintId),
+          );
+          if (fetched) {
+            ptUpdates.description = fetched;
+            if (ptForSync) ptForSync.description = fetched;
+            if (matchedType) (matchedType as any).description = fetched;
+          }
+        }
+      }
+      if (Object.keys(ptUpdates).length > 0) {
+        try {
+          await storage.updateProductType(resolvedProductTypeId, ptUpdates as any);
+        } catch (e: any) {
+          console.warn("[customizer-pages] markup/description persist failed:", e?.message ?? e);
+        }
+      }
+    }
 
     // Persist front+back retail map on the product type (Shopify base variants stay front-only).
     if (
@@ -19319,7 +20656,30 @@ ${orientationExtra}
             variant = { ...variant, price: formatted };
           }
         }
+        const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
+        if (productIdNum) {
+          const priced = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${productIdNum}.json?fields=id,title,handle,variants`,
+          );
+          const cheapestAfter = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+          if (cheapestAfter && hasPositiveRetailPrice(cheapestAfter.price)) variant = cheapestAfter;
+        }
       }
+    }
+
+    const fromWizard = minPositiveRetailPrice(variantPrices);
+    const cachedFromPrice = hasPositiveRetailPrice(variant.price)
+      ? String(variant.price)
+      : fromWizard != null
+        ? fromWizard.toFixed(2)
+        : null;
+    if (initialStatus === "active" && !hasPositiveRetailPrice(cachedFromPrice)) {
+      return res.status(400).json({
+        error: "Set retail prices (Create Page pricing) before creating a Live customizer page.",
+        code: "PRICES_REQUIRED",
+      });
     }
 
     // ── Ensure product is published to Online Store (but keep status as unlisted) ──
@@ -19407,7 +20767,7 @@ ${orientationExtra}
       baseProductHandle: productHandle,
       baseProductTitle: productTitle,
       baseVariantTitle: variant.title ?? "",
-      baseProductPrice: variant.price ?? "",
+      baseProductPrice: cachedFromPrice,
       productTypeId: resolvedProductTypeId,
       styleConfig: styleConfig as any,
       status: initialStatus,
@@ -19472,8 +20832,7 @@ ${orientationExtra}
             code: "PRINTIFY_NOT_CONNECTED",
           });
         }
-        const livePrice = parseFloat(String(dbPage.baseProductPrice || "0"));
-        if (!Number.isFinite(livePrice) || livePrice <= 0) {
+        if (!hasPositiveRetailPrice(dbPage.baseProductPrice)) {
           return res.status(400).json({
             error: "Set retail prices (Resync Prices or Create Page pricing) before setting a page Live.",
             code: "PRICES_REQUIRED",
@@ -19545,7 +20904,9 @@ ${orientationExtra}
       updates.baseVariantId = String(variantNum);
       updates.baseProductId = String(v.product_id);
       updates.baseVariantTitle = v.title ?? "";
-      updates.baseProductPrice = v.price ?? "";
+      if (hasPositiveRetailPrice(v.price)) {
+        Object.assign(updates, clearZeroPriceAlertIfPriced({ baseProductPrice: v.price ?? "" }, v.price));
+      }
     }
 
     const productTypeId = dbPage.productTypeId ? Number(dbPage.productTypeId) : null;
@@ -19786,9 +21147,10 @@ ${orientationExtra}
     const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
     if (!dbPage) return res.status(404).json({ error: "Page not found" });
 
-    const { variantPrices, variantPricesBoth } = req.body as {
+    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
@@ -19827,28 +21189,55 @@ ${orientationExtra}
       baseProductId: dbPage.baseProductId,
       productType: matchedType,
       variantPrices,
-      onBaseVariantUpdated: async (formatted, variantNum) => {
-        if (String(variantNum) === String(dbPage.baseVariantId)) {
-          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
-        }
-      },
     });
+
+    try {
+      const productIdNum = parseInt(String(dbPage.baseProductId).replace(/\D/g, ""), 10);
+      if (productIdNum) {
+        const priced = await shopifyApiCall(
+          shop,
+          installation.accessToken!,
+          `products/${productIdNum}.json?fields=id,variants`,
+        );
+        const cheapest = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+        if (cheapest && parseShopifyVariantPrice(cheapest.price) > 0) {
+          await storage.updateCustomizerPage(dbPage.id, {
+            baseVariantId: String(cheapest.id),
+            baseVariantTitle: cheapest.title || dbPage.baseVariantTitle,
+            ...clearZeroPriceAlertIfPriced(
+              { baseProductPrice: String(cheapest.price) },
+              cheapest.price,
+            ),
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[from-price] Could not re-point page ${dbPage.id} after sync:`, e?.message ?? e);
+    }
 
     // Persist front+back retail on the product type for storefront “from $X” + ATC surcharge.
     // Expand printify: blank keys so embed lookups by Shopify variant id succeed.
     const ptId = matchedType?.id ?? (dbPage.productTypeId ? Number(dbPage.productTypeId) : null);
     let bothKeyCount = 0;
-    if (ptId && variantPricesBoth && typeof variantPricesBoth === "object") {
-      const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
-        variantMap: matchedType?.variantMap,
-        shopifyVariantIds: matchedType?.shopifyVariantIds,
-        sizes: matchedType?.sizes,
-        frameColors: matchedType?.frameColors,
-      });
-      bothKeyCount = Object.keys(expandedBoth).length;
-      await storage.updateProductType(ptId, {
-        variantPricesBoth: JSON.stringify(expandedBoth),
-      } as any);
+    if (ptId) {
+      const ptUpdates: Record<string, unknown> = {};
+      if (variantPricesBoth && typeof variantPricesBoth === "object") {
+        const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
+          variantMap: matchedType?.variantMap,
+          shopifyVariantIds: matchedType?.shopifyVariantIds,
+          sizes: matchedType?.sizes,
+          frameColors: matchedType?.frameColors,
+        });
+        bothKeyCount = Object.keys(expandedBoth).length;
+        ptUpdates.variantPricesBoth = JSON.stringify(expandedBoth);
+      }
+      const markupNum = Number(defaultMarkupPercent);
+      if (Number.isFinite(markupNum) && markupNum > 0) {
+        ptUpdates.defaultMarkupPercent = Math.round(markupNum);
+      }
+      if (Object.keys(ptUpdates).length > 0) {
+        await storage.updateProductType(ptId, ptUpdates as any);
+      }
     }
 
     return res.json({
@@ -19890,9 +21279,10 @@ ${orientationExtra}
       });
     }
 
-    const { variantPrices, variantPricesBoth } = req.body as {
+    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
@@ -19923,6 +21313,7 @@ ${orientationExtra}
     });
 
     let bothKeyCount = 0;
+    const ptUpdates: Record<string, unknown> = {};
     if (variantPricesBoth && typeof variantPricesBoth === "object") {
       const expandedBoth = expandVariantPricesBothMap(variantPricesBoth, {
         variantMap: productType.variantMap,
@@ -19931,9 +21322,14 @@ ${orientationExtra}
         frameColors: productType.frameColors,
       });
       bothKeyCount = Object.keys(expandedBoth).length;
-      await storage.updateProductType(productTypeId, {
-        variantPricesBoth: JSON.stringify(expandedBoth),
-      } as any);
+      ptUpdates.variantPricesBoth = JSON.stringify(expandedBoth);
+    }
+    const markupNum = Number(defaultMarkupPercent);
+    if (Number.isFinite(markupNum) && markupNum > 0) {
+      ptUpdates.defaultMarkupPercent = Math.round(markupNum);
+    }
+    if (Object.keys(ptUpdates).length > 0) {
+      await storage.updateProductType(productTypeId, ptUpdates as any);
     }
 
     return res.json({
@@ -20217,19 +21613,55 @@ ${orientationExtra}
         const allColors = JSON.parse(pt.frameColors || "[]");
         const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
         const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
-        const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
-        const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
+        // selectedSizeIds can drift in separator format vs the sizes list /
+        // variantMap ids (e.g. wizard `14x14` vs catalogue `14-x-14` / `14-14`).
+        // A raw Set.has() then drops every variant, leaving the pricing step empty.
+        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds.map(normalizeSelectionId)) : null;
+        const activeColorSet = savedColorIds.length ? new Set(savedColorIds.map(normalizeSelectionId)) : null;
+        let activeSizes = activeSizeSet
+          ? allSizes.filter((s: any) => activeSizeSet.has(normalizeSelectionId(s.id)))
+          : allSizes;
+        let activeColors = activeColorSet
+          ? allColors.filter((c: any) => activeColorSet.has(normalizeSelectionId(c.id)))
+          : allColors;
+        if (activeSizes.length === 0 && allSizes.length > 0) activeSizes = allSizes;
+        if (activeColors.length === 0 && savedColorIds.length > 0 && allColors.length > 0) activeColors = allColors;
         const labels: Record<string, string> = {};
-        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds) : null;
-        const activeColorSet = savedColorIds.length ? new Set(savedColorIds) : null;
-        for (const [key, entry] of Object.entries(storedVm)) {
-          const [sizeId, colorId = "default"] = key.split(":");
-          if (activeSizeSet && !activeSizeSet.has(sizeId)) continue;
-          if (activeColorSet && !activeColorSet.has(colorId)) continue;
-          const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
-          const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
-          const vid = String((entry as any).printifyVariantId);
-          labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+        const addFromMap = (filterSizes: boolean, filterColors: boolean) => {
+          for (const [key, entry] of Object.entries(storedVm)) {
+            const [sizeId, colorId = "default"] = key.split(":");
+            if (filterSizes && activeSizeSet && !activeSizeSet.has(normalizeSelectionId(sizeId))) continue;
+            if (filterColors && activeColorSet && !activeColorSet.has(normalizeSelectionId(colorId))) continue;
+            const sizeName =
+              activeSizes.find((s: any) => normalizeSelectionId(s.id) === normalizeSelectionId(sizeId))?.name ??
+              allSizes.find((s: any) => normalizeSelectionId(s.id) === normalizeSelectionId(sizeId))?.name ??
+              sizeId;
+            const colorName =
+              activeColors.find((c: any) => normalizeSelectionId(c.id) === normalizeSelectionId(colorId))?.name ??
+              allColors.find((c: any) => normalizeSelectionId(c.id) === normalizeSelectionId(colorId))?.name;
+            const vid = String((entry as any).printifyVariantId);
+            labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+          }
+        };
+        addFromMap(true, true);
+        // Safety net: a non-empty selection that matched nothing is id drift, not
+        // an intentional empty catalogue — show every mapped variant so pricing
+        // never renders a blank step.
+        if (Object.keys(labels).length === 0 && Object.keys(storedVm).length > 0) {
+          addFromMap(false, false);
+        }
+        if (Object.keys(labels).length === 0) {
+          const sizes = activeSizes.length ? activeSizes : allSizes;
+          const colors = activeColors.length ? activeColors : allColors;
+          if (colors.length === 0) {
+            for (const s of sizes) labels[`size:${s.id}`] = s.name;
+          } else {
+            for (const s of sizes) {
+              for (const c of colors) {
+                labels[`size:${s.id}:${c.id}`] = `${s.name} / ${c.name}`;
+              }
+            }
+          }
         }
         return labels;
       }
@@ -20388,7 +21820,7 @@ ${orientationExtra}
     try {
       // Step 1: Get all publications (sales channels)
       const pubQuery = JSON.stringify({
-        query: `{ publications(first: 20) { edges { node { id name } } } }`,
+        query: `{ publications(first: 50) { edges { node { id name } } } }`,
       });
       const pubRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: pubQuery });
       if (!pubRes.ok) {
@@ -20402,13 +21834,19 @@ ${orientationExtra}
       }
 
       const publications = pubData?.data?.publications?.edges ?? [];
-      const onlineStore = publications.find((e: any) => /online store/i.test(e.node.name));
-      const otherChannels = publications.filter((e: any) => !/online store/i.test(e.node.name));
+      const { partitionPublications } = await import("./shopify-publications");
+      const { checkout, pos } = partitionPublications(
+        publications.map((e: any) => e.node).filter((n: any) => n?.id),
+      );
 
-      console.log(`[ensurePublished] Found ${publications.length} channels. Online Store: ${onlineStore ? 'yes' : 'no'}, Others: ${otherChannels.map((e: any) => e.node.name).join(', ')}`);
+      console.log(
+        `[ensurePublished] Found ${publications.length} channels. Checkout: ${checkout.map((c) => c.name).join(", ") || "none"}, POS: ${pos.map((c) => c.name).join(", ") || "none"}`,
+      );
 
-      // Step 2: Publish to Online Store only
-      if (onlineStore) {
+      // Step 2: Publish to Online Store AND Storefront API / custom-app channels.
+      // Creator checkout uses a custom-app token; unpublishing that channel
+      // makes cartCreate return "merchandise does not exist".
+      if (checkout.length > 0) {
         const publishMutation = JSON.stringify({
           query: `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
             publishablePublish(id: $id, input: $input) {
@@ -20418,7 +21856,7 @@ ${orientationExtra}
           }`,
           variables: {
             id: productGid,
-            input: [{ publicationId: onlineStore.node.id }],
+            input: checkout.map((c) => ({ publicationId: c.id })),
           },
         });
         const publishRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: publishMutation });
@@ -20428,15 +21866,15 @@ ${orientationExtra}
           if (userErrors.length > 0 && !userErrors.some((e: any) => /already/i.test(e.message))) {
             console.warn(`[ensurePublished] Publish userErrors:`, JSON.stringify(userErrors));
           } else {
-            console.log(`[ensurePublished] Published product ${productId} to Online Store`);
+            console.log(`[ensurePublished] Published product ${productId} to ${checkout.map((c) => c.name).join(", ")}`);
           }
         }
       } else {
-        console.warn(`[ensurePublished] No Online Store publication found`);
+        console.warn(`[ensurePublished] No checkout publications found`);
       }
 
-      // Step 3: Unpublish from all OTHER channels (Point of Sale, etc.)
-      for (const channel of otherChannels) {
+      // Step 3: Unpublish from Point of Sale only (keep Headless / custom app).
+      for (const channel of pos) {
         try {
           const unpublishMutation = JSON.stringify({
             query: `mutation publishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
@@ -20447,7 +21885,7 @@ ${orientationExtra}
             }`,
             variables: {
               id: productGid,
-              input: [{ publicationId: channel.node.id }],
+              input: [{ publicationId: channel.id }],
             },
           });
           const unpubRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: unpublishMutation });
@@ -20455,13 +21893,13 @@ ${orientationExtra}
             const unpubData = await unpubRes.json() as any;
             const ue = unpubData?.data?.publishableUnpublish?.userErrors ?? [];
             if (ue.length > 0) {
-              console.warn(`[ensurePublished] Unpublish from ${channel.node.name} errors:`, JSON.stringify(ue));
+              console.warn(`[ensurePublished] Unpublish from ${channel.name} errors:`, JSON.stringify(ue));
             } else {
-              console.log(`[ensurePublished] Unpublished product ${productId} from ${channel.node.name}`);
+              console.log(`[ensurePublished] Unpublished product ${productId} from ${channel.name}`);
             }
           }
         } catch (unpubErr: any) {
-          console.warn(`[ensurePublished] Failed to unpublish from ${channel.node.name}: ${unpubErr.message}`);
+          console.warn(`[ensurePublished] Failed to unpublish from ${channel.name}: ${unpubErr.message}`);
         }
       }
 
@@ -20552,6 +21990,7 @@ ${orientationExtra}
     "appai-art-embed.css",
     "appai-saved-designs-nav.js",
     "appai-customizer-tray.js",
+    "appai-last-creator.js",
     "appai-customizer-embed.js",
     "appai-cart-guard.js",
     "appai-cart-images.js",
@@ -20577,6 +22016,8 @@ ${orientationExtra}
     });
   });
 
+  app.get("/api/proxy/remember-creator", proxyAuth, handleRememberCreatorProxy);
+
   /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
   app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
     const shop: string = (req as any).proxyShop;
@@ -20600,7 +22041,7 @@ ${orientationExtra}
       baseVariantId: p.baseVariantId,
       baseProductTitle: p.baseProductTitle,
       baseVariantTitle: p.baseVariantTitle,
-      baseProductPrice: p.baseProductPrice,
+      baseProductPrice: displayRetailPrice(p.baseProductPrice),
       status: p.status,
       publiclyMountable:
         (p.status === "active" && printifyConnected) ||
@@ -20636,7 +22077,7 @@ ${orientationExtra}
     }
     if (!page) return res.status(404).json({ error: "Customizer page not found" });
 
-    const installation = await storage.getShopifyInstallationByShop(shop);
+    let installation = await storage.getShopifyInstallationByShop(shop);
     const merchantForGate = await storage.getMerchantByShop(shop);
     const previewOk = verifyPreviewToken(req.query.appai_preview as string | undefined, shop, page.handle);
     // Saved-design reopen while page is disabled: allow config load for ATC, not fresh design.
@@ -20706,14 +22147,22 @@ ${orientationExtra}
     let productPublished: boolean | null = null;
     if (page.baseProductId) {
       try {
-        if (installation?.accessToken) {
+        let accessToken = installation?.accessToken || "";
+        if (installation) {
+          const tokenReady = await ensureValidOfflineAccessToken(installation);
+          if (tokenReady.ok) {
+            accessToken = tokenReady.accessToken;
+            installation = tokenReady.installation;
+          }
+        }
+        if (accessToken) {
           const prodResult = await shopifyApiCall(
             shop,
-            installation.accessToken,
+            accessToken,
             `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`
           );
-          const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
-          const productImages: any[] = prodResult.data?.product?.images ?? [];
+          const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
+          const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
           let baseVariants = selectBaseCatalogVariants(rawVariants);
           if (baseVariants.length === 0 && page.productTypeId) {
             const pt = await storage.getProductType(page.productTypeId);
@@ -20724,7 +22173,9 @@ ${orientationExtra}
               );
               if (fallback.length > 0) {
                 console.log(
-                  `[proxy/customizer-page] Product ${page.baseProductId} had ${rawVariants.length} Shopify variants but catalog empty; using DB fallback (${fallback.length})`,
+                  `[proxy/customizer-page] Product ${page.baseProductId} catalog empty` +
+                    `${prodResult.ok ? "" : ` (Shopify ${prodResult.error || "failed"})`}` +
+                    `; using DB fallback (${fallback.length})`,
                 );
                 baseVariants = fallback;
               }
@@ -20753,9 +22204,9 @@ ${orientationExtra}
 
           // Ensure product is published to Online Store so /cart/add.js works.
           // "unlisted" products still work with /cart/add.js when published to Online Store.
-          if (productIdNum) {
+          if (productIdNum && prodResult.ok) {
             try {
-              await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+              await ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum);
               productPublished = true;
               console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
             } catch (pubErr: any) {
@@ -20767,30 +22218,50 @@ ${orientationExtra}
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
       }
     }
+    if (variants.length === 0 && page.productTypeId) {
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (pt) {
+          const fallback = buildFallbackVariantsFromProductType(pt);
+          if (fallback.length > 0) {
+            variants = mapVariantsForCatalogResponse(fallback, true).map((v) => ({
+              id: String(v.id),
+              title: v.title || "",
+              price: v.price || "0.00",
+              option1: v.option1 ?? undefined,
+              option2: v.option2 ?? undefined,
+              option3: v.option3 ?? undefined,
+              imageSrc: v.imageSrc ?? undefined,
+            }));
+            console.log(
+              `[proxy/customizer-page] Using DB fallback variants for handle=${page.handle} (${variants.length})`,
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] DB variant fallback failed:`, e);
+      }
+    }
 
     // Fetch style presets for this shop's merchant only (never all merchants —
     // getAllActiveStylePresets duplicates names across tenants).
+    // If the merchant has no seeded rows, fall back to hardcoded STYLE_PRESETS
+    // (same as Creator Marketplace /api/storefront/customizer-page).
     let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string; descriptionOptional?: boolean }> = [];
     try {
       const merchantId = installation?.merchantId;
       const dbStyles = merchantId
-        ? await storage.getActiveStylePresetsByMerchant(merchantId)
+        ? (await storage.getActiveStylePresetsByMerchant(merchantId)).filter(
+            (s: any) => (s.creatorScope || "merchant") !== "custom",
+          )
         : [];
-      stylePresets = dbStyles.map((s: any) => {
-        const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
-        return {
-          id: s.id.toString(),
-          name: s.name,
-          promptSuffix: s.promptPrefix,
-          category: s.category || "all",
-          promptPlaceholder: s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-          options: s.options || (hardcoded as any)?.options,
-          baseImageUrl: s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
-          descriptionOptional: !!s.descriptionOptional,
-        };
-      });
+      stylePresets =
+        dbStyles.length > 0
+          ? mapDbStylesForDesigner(dbStyles)
+          : hardcodedStylePresetsForDesigner();
     } catch (e) {
       console.warn(`[proxy/customizer-page] Failed to load stylePresets:`, e);
+      stylePresets = hardcodedStylePresetsForDesigner();
     }
 
     const pageStyleConfig =
@@ -20815,7 +22286,7 @@ ${orientationExtra}
       baseProductHandle: (page as any).baseProductHandle ?? null,
       baseProductTitle: page.baseProductTitle ?? null,
       baseVariantTitle: page.baseVariantTitle ?? null,
-      baseProductPrice: page.baseProductPrice ?? null,
+      baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
       appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || "https://appai-pod-production.up.railway.app").replace(/\/$/, ""),
       designerConfig,
@@ -22166,6 +23637,10 @@ ${orientationExtra}
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   const { registerCreatorMarketplaceRoutes } = await import("./routes/creators");
   registerCreatorMarketplaceRoutes(app, { isAuthenticated });
+  const { registerCreatorPortalRoutes } = await import("./routes/creator-portal");
+  registerCreatorPortalRoutes(app);
+  const { registerSupportRoutes } = await import("./routes/support");
+  registerSupportRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");

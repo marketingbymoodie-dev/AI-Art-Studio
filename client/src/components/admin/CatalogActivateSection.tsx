@@ -72,7 +72,7 @@ export default function CatalogActivateSection({
   const [categoryFilter, setCategoryFilter] = useState("all");
 
   const defaultTitle =
-    mode === "catalogue" ? "Products Catalogue" : "Preview a Customizer Product";
+    mode === "catalogue" ? "Products" : "Preview a Customizer Product";
   const defaultDescription =
     mode === "catalogue"
       ? "Every product below is ready — Preview in-app, or Create Page (Printify supplier + suggested retail) without Previewing first. Provider, pricing, variants, and Art Styles live on the Customizer Page."
