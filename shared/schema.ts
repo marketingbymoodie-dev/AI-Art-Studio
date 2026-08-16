@@ -839,6 +839,8 @@ export const customizerPages = pgTable("customizer_pages", {
   baseProductTitle: text("base_product_title"),    // cached display title
   baseVariantTitle: text("base_variant_title"),    // cached variant title (size/color)
   baseProductPrice: text("base_product_price"),    // cached price string
+  /** Set when we emailed that this page was hidden for a $0 / missing retail price. */
+  zeroPriceAlertSentAt: timestamp("zero_price_alert_sent_at"),
   baseProductHandle: text("base_product_handle"),  // Shopify product handle for embed iframe
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
