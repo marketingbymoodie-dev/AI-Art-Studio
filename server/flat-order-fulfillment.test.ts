@@ -191,7 +191,7 @@ describe("placementForPrintMatch", () => {
   it("shrinks apron print scale to match the in-app mockup", () => {
     expect(looksLikeApronProduct({ name: "Custom Apron (AOP)" })).toBe(true);
     expect(placementForPrintMatch({ scale: 1, offsetX: 0, offsetY: 0 }, true).scale).toBeCloseTo(
-      0.95,
+      0.9,
     );
     expect(placementForPrintMatch({ scale: 1.1, offsetX: 0, offsetY: 0 }, false).scale).toBe(1.1);
   });

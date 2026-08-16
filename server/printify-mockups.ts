@@ -800,6 +800,10 @@ export function isWrapOnlyPlaceholder(
 function labelMatchesPreferredToken(norm: string, prefNorm: string): boolean {
   if (!norm || !prefNorm) return false;
   if (norm === prefNorm) return true;
+  // Printify apron / apparel UI: "Lifestyle Woman" / "Lifestyle Man" — not "lifestyle 2".
+  if (prefNorm === "lifestyle" && (norm === "lifestyle" || norm.startsWith("lifestyle "))) {
+    return true;
+  }
   let rest: string | null = null;
   if (norm.startsWith(`${prefNorm}-`)) rest = norm.slice(prefNorm.length + 1);
   else if (norm.startsWith(`${prefNorm} `)) rest = norm.slice(prefNorm.length + 1);
@@ -836,11 +840,17 @@ function selectPreferredViews(
       .map((img) => ({ url: img.url, label: img.label }));
   }
 
+  // Lifestyle Shot must not apply printPlacement=front — "Lifestyle Woman"
+  // does not contain "front" and would be dropped before we ever rank it.
+  const placementFilter = preferContextViews ? undefined : printPlacement;
+
   const preferredLabels = frontBackOnly
     ? AOP_FLAT_LAY_LABELS
     : preferContextViews
         ? ([
             "on person",
+            "lifestyle woman",
+            "lifestyle man",
             "lifestyle",
             "context 2",
             "context",
@@ -863,12 +873,12 @@ function selectPreferredViews(
 
   for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
-    if (printPlacement && !labelMatchesPrintPlacement(prefNorm, printPlacement)) continue;
+    if (placementFilter && !labelMatchesPrintPlacement(prefNorm, placementFilter)) continue;
     const match = annotated.find(
       (img) =>
         labelMatchesPreferredToken(img.norm, prefNorm) &&
         !seenUrls.has(img.url) &&
-        (!printPlacement || labelMatchesPrintPlacement(img.norm, printPlacement)),
+        (!placementFilter || labelMatchesPrintPlacement(img.norm, placementFilter)),
     );
     if (match) {
       selected.push({ url: match.url, label: match.label });
@@ -889,12 +899,15 @@ function selectPreferredViews(
         .slice(0, maxViews)
         .map((img) => ({ url: img.url, label: img.label }));
     }
-    const fallback = printPlacement
-      ? annotated.filter((img) => labelMatchesPrintPlacement(img.norm, printPlacement))
-      : annotated;
-    return (fallback.length > 0 ? fallback : annotated)
-      .slice(0, maxViews)
-      .map((img) => ({ url: img.url, label: img.label }));
+    // Do not fall back to Front / Close-up when the customer asked for lifestyle.
+    if (!preferContextViews) {
+      const fallback = placementFilter
+        ? annotated.filter((img) => labelMatchesPrintPlacement(img.norm, placementFilter))
+        : annotated;
+      return (fallback.length > 0 ? fallback : annotated)
+        .slice(0, maxViews)
+        .map((img) => ({ url: img.url, label: img.label }));
+    }
   }
 
   // Keep remaining unique cameras (e.g. wall / context-N) so Lifestyle Shot
@@ -902,7 +915,7 @@ function selectPreferredViews(
   if (!frontBackOnly && selected.length < maxViews) {
     for (const img of annotated) {
       if (seenUrls.has(img.url)) continue;
-      if (printPlacement && !labelMatchesPrintPlacement(img.norm, printPlacement)) continue;
+      if (placementFilter && !labelMatchesPrintPlacement(img.norm, placementFilter)) continue;
       // When asking for lifestyle, skip extra flatlay/on-model sides.
       if (preferContextViews && !isContextLikeMockupLabel(img.label)) continue;
       if (preferPersonViews && !isPersonMockupLabel(img.label)) continue;

@@ -17,6 +17,8 @@ describe("isContextLikeMockupLabel", () => {
     expect(isContextLikeMockupLabel("Context 2")).toBe(true);
     expect(isContextLikeMockupLabel("context2")).toBe(true);
     expect(isContextLikeMockupLabel("Lifestyle Room")).toBe(true);
+    expect(isContextLikeMockupLabel("Lifestyle Woman")).toBe(true);
+    expect(isContextLikeMockupLabel("Lifestyle Man")).toBe(true);
     expect(isContextLikeMockupLabel("bedroom")).toBe(true);
     expect(isContextLikeMockupLabel("wall")).toBe(true);
   });

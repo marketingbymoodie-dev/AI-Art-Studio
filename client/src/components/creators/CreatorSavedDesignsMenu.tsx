@@ -36,9 +36,29 @@ function readLoggedInCustomerId(): string | null {
   }
 }
 
+function isPlacementFork(d: SavedDesign): boolean {
+  return d.designState?.placementFork === true;
+}
+
 function thumbUrl(d: SavedDesign): string {
-  const mockup = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
-  return String(mockup || d.artworkUrl || "");
+  const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
+  const flat =
+    ds && ds.flatMockups && typeof ds.flatMockups === "object"
+      ? (ds.flatMockups as Record<string, unknown>)
+      : null;
+  const hoodie =
+    ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
+      ? (ds.hoodieAopMockups as Record<string, unknown>)
+      : null;
+  for (const u of [
+    flat?.front,
+    hoodie?.front,
+    Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "",
+    d.artworkUrl,
+  ]) {
+    if (typeof u === "string" && u.trim()) return u.trim();
+  }
+  return "";
 }
 
 function urlPath(u: unknown): string {
@@ -169,6 +189,7 @@ export function CreatorSavedDesignsMenu({
   const [designs, setDesigns] = useState<SavedDesign[]>([]);
   const [pages, setPages] = useState<ShopPage[]>([]);
   const [galleryLimit, setGalleryLimit] = useState(20);
+  const [generateCount, setGenerateCount] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const customerId = readLoggedInCustomerId();
@@ -203,6 +224,9 @@ export function CreatorSavedDesignsMenu({
         setDesigns(Array.isArray(designData?.designs) ? designData.designs : []);
         if (typeof designData?.limit === "number" && designData.limit > 0) {
           setGalleryLimit(designData.limit);
+        }
+        if (typeof designData?.generateCount === "number") {
+          setGenerateCount(designData.generateCount);
         }
         setPages(Array.isArray(pageData?.pages) ? pageData.pages : []);
       })
@@ -257,6 +281,9 @@ export function CreatorSavedDesignsMenu({
     });
   }
 
+  const slotCount =
+    generateCount != null ? generateCount : designs.filter((d) => !isPlacementFork(d)).length;
+
   return (
     <div className="relative" ref={rootRef}>
       <button
@@ -268,14 +295,14 @@ export function CreatorSavedDesignsMenu({
       >
         <Images className="h-4 w-4" />
         Saved Designs
-        {designs.length > 0 ? ` (${designs.length}/${galleryLimit})` : ""}
+        {designs.length > 0 ? ` (${slotCount}/${galleryLimit})` : ""}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open ? (
         <div className="absolute right-0 z-50 mt-2 w-[min(32rem,calc(100vw-1.5rem))] rounded-lg border bg-background p-4 shadow-lg">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold">
-              Saved Designs ({designs.length}/{galleryLimit})
+              Saved Designs ({slotCount}/{galleryLimit})
             </h3>
             <button
               type="button"
@@ -286,12 +313,12 @@ export function CreatorSavedDesignsMenu({
               <X className="h-4 w-4" />
             </button>
           </div>
-          {designs.length >= galleryLimit - 4 && designs.length < galleryLimit ? (
+          {slotCount >= galleryLimit - 4 && slotCount < galleryLimit ? (
             <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
             </div>
           ) : null}
-          {designs.length >= galleryLimit ? (
+          {slotCount >= galleryLimit ? (
             <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
               Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
             </div>

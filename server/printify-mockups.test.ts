@@ -508,6 +508,17 @@ describe("Mockup camera_label preference", () => {
     ]);
   });
 
+  it("preferContextViews keeps Printify Lifestyle Woman/Man even when printPlacement is front", () => {
+    const images = [
+      { url: "https://x.example/front.png", label: "front" },
+      { url: "https://x.example/close.png", label: "Close-up" },
+      { url: "https://x.example/w.png", label: "Lifestyle Woman" },
+      { url: "https://x.example/m.png", label: "Lifestyle Man" },
+    ];
+    const picked = pickPreferredMockupViews(images, false, "front", true).map((p) => p.label);
+    expect(picked).toEqual(["Lifestyle Woman", "Lifestyle Man"]);
+  });
+
   it("preferContextViews surfaces On Person before Context / flat front", () => {
     const images = [
       { url: "https://x.example/front.png", label: "front" },

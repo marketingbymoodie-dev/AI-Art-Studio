@@ -9343,6 +9343,8 @@ ${orientationExtra}
         source.designState && typeof source.designState === "object" && !Array.isArray(source.designState)
           ? (source.designState as Record<string, unknown>)
           : {};
+      const { flatMockups: _srcFlatMockups, hoodieAopMockups: _srcHoodieMockups, ...prevRest } =
+        prevState;
       const patch =
         designState && typeof designState === "object" && !Array.isArray(designState)
           ? (designState as Record<string, unknown>)
@@ -9364,7 +9366,12 @@ ${orientationExtra}
         referenceImageUrl: source.referenceImageUrl,
         designImageUrl: source.designImageUrl,
         thumbnailUrl: source.thumbnailUrl,
-        designState: { ...prevState, ...patch },
+        designState: {
+          ...prevRest,
+          ...patch,
+          placementFork: true,
+          sourceJobId: source.id,
+        },
         billingMode: source.billingMode,
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       });
@@ -10492,7 +10499,7 @@ ${orientationExtra}
           )
         )
         .orderBy(desc(generationJobs.createdAt))
-        .limit(GALLERY_LIMIT);
+        .limit(Math.max(GALLERY_LIMIT, 50));
       console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
 
       // Resolve product type names AND page handles for all unique productTypeIds.
@@ -10611,9 +10618,19 @@ ${orientationExtra}
         return `/apps/appai${clean}`;
       };
 
+      const isPlacementForkRow = (d: (typeof rows)[number]) => {
+        const ds =
+          d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)
+            ? (d.designState as Record<string, unknown>)
+            : null;
+        return ds?.placementFork === true;
+      };
+      const generateCount = rows.filter((d) => !isPlacementForkRow(d)).length;
+
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
+        generateCount,
         designs: rows.map(d => {
           const ds =
             d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)

@@ -695,8 +695,8 @@ export function looksLikeApronProduct(productType: {
   return /apron/i.test(`${productType.name || ""} ${productType.designerType || ""}`);
 }
 
-/** Printify apron mockups read ~5% larger than the in-app placer. Shrink the bake. */
-export const APRON_PRINT_SCALE_MATCH = 0.95;
+/** Printify apron mockups read ~10% larger than the in-app placer. Shrink the bake. */
+export const APRON_PRINT_SCALE_MATCH = 0.9;
 
 export function placementForPrintMatch(
   placement: FlatPlacement,

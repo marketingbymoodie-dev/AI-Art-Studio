@@ -1440,6 +1440,36 @@ function isPrintifyContextMockupLabel(label: string): boolean {
   return isContextLikeMockupLabel(label);
 }
 
+function isPlacementForkDesign(d: { designState?: Record<string, unknown> | null }): boolean {
+  return d.designState?.placementFork === true;
+}
+
+/** Per-job cart/preview raster — do not fall back to a sibling placement's mockupUrls. */
+function savedDesignPreviewUrl(d: {
+  mockupUrls?: string[] | null;
+  artworkUrl?: string | null;
+  designState?: Record<string, unknown> | null;
+}): string {
+  const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
+  const flat =
+    ds && ds.flatMockups && typeof ds.flatMockups === "object"
+      ? (ds.flatMockups as Record<string, unknown>)
+      : null;
+  const hoodie =
+    ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
+      ? (ds.hoodieAopMockups as Record<string, unknown>)
+      : null;
+  for (const u of [
+    flat?.front,
+    hoodie?.front,
+    Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "",
+    d.artworkUrl,
+  ]) {
+    if (typeof u === "string" && u.trim()) return u.trim();
+  }
+  return "";
+}
+
 /** On-demand slides: lifestyle/context, tapestry Printers Mockup, or AOP person. */
 function isPrintifyOnDemandMockupLabel(label: string): boolean {
   const l = String(label || "").toLowerCase();
@@ -4653,8 +4683,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     try {
       const parentUrl = new URL(window.parent.location.href);
       parentUrl.searchParams.set("loadDesignId", clickedId);
-      const mockupSrc =
-        design.mockupUrls && design.mockupUrls.length > 0 ? design.mockupUrls[0] : "";
+      const mockupSrc = savedDesignPreviewUrl(design);
       if (mockupSrc) {
         parentUrl.searchParams.set("loadMockup", toAbsoluteImageUrl(mockupSrc));
       } else {
@@ -4797,7 +4826,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setFreshDesignAllowed(config.freshDesignAllowed);
     }
 
-    const mockupSrc = (design.mockupUrls && design.mockupUrls[0]) || "";
+    const mockupSrc = savedDesignPreviewUrl(design);
     const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : "";
     const loadingProductName = design.baseTitle || config.title || "saved design";
     replaceCustomizerPageHistory(pageHandle, {
@@ -7532,7 +7561,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     // Pre-check: block generation immediately if gallery is full.
     // Creator storefronts evict the oldest artwork at 50 instead of blocking.
-    if (!isCreatorStorefront && savedDesigns.length >= galleryLimit) {
+    const generateSlots = savedDesigns.filter((d) => !isPlacementForkDesign(d)).length;
+    if (!isCreatorStorefront && generateSlots >= galleryLimit) {
       setShowGalleryFullModal(true);
       // Scroll to top so the modal is visible on mobile (fixed positioning
       // inside an iframe doesn't work relative to the viewport)
@@ -8574,6 +8604,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             if (forkRes.ok && forkJson?.jobId) {
               savedJobIdRef.current = String(forkJson.jobId);
               placementFrozenSigRef.current = liveSig;
+              lastFlatGalleryMockupKeyRef.current = "";
+              preShadowJobIdRef.current = null;
             }
           } catch (forkErr) {
             console.warn("[Design Studio] fork-placement failed:", forkErr);
@@ -8816,39 +8848,53 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
         }).catch(() => {});
       }
-    } else if (mockupFullUrl && mockupFullUrl.startsWith('https://') && shopDomain) {
-      try {
-        console.log('[Design Studio] Resolving unique design variant before cart add (on demand)...');
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout for variant creation
-        const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shop: shopDomain,
-            ...(productId ? { productId } : {}), // server will look it up from variantId if missing
-            variantId: normalizedVariant,
-            designId: shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
-            mockupUrl: mockupFullUrl,
-            productTypeId: productTypeConfig?.id ?? productTypeId,
-            sizeId: selectedSize,
-            colorId: selectedFrameColor || "default",
-            ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        if (resolveRes.ok) {
-          const data = await resolveRes.json();
-          if (data.success && data.variantId) {
-            finalVariantId = data.variantId;
-            console.log('[Design Studio] Resolved unique variant (on demand):', finalVariantId);
-          }
-        } else {
-          console.warn('[Design Studio] resolve-design-variant failed:', resolveRes.status);
+    } else if (shopDomain) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 1200 * attempt));
+          const retriedMockup = await ensureCartMockupUrl(getPreferredMockupUrl());
+          if (retriedMockup) mockupFullUrl = retriedMockup;
         }
-      } catch (e: any) {
-        console.warn('[Design Studio] resolve-design-variant error/timeout:', e?.message || e);
+        if (!mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
+          console.warn("[Design Studio] Shadow resolve skipped — mockup not hosted yet", attempt);
+          continue;
+        }
+        try {
+          console.log(
+            `[Design Studio] Resolving unique design variant before cart add (attempt ${attempt + 1})...`,
+          );
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 20000);
+          const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              shop: shopDomain,
+              ...(productId ? { productId } : {}),
+              variantId: normalizedVariant,
+              designId: shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
+              mockupUrl: mockupFullUrl,
+              productTypeId: productTypeConfig?.id ?? productTypeId,
+              sizeId: selectedSize,
+              colorId: selectedFrameColor || "default",
+              ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (resolveRes.ok) {
+            const data = await resolveRes.json();
+            if (data.success && data.variantId) {
+              finalVariantId = data.variantId;
+              console.log("[Design Studio] Resolved unique variant (on demand):", finalVariantId);
+              if (normalizeVariantId(finalVariantId) !== normalizedVariant) break;
+            }
+          } else {
+            console.warn("[Design Studio] resolve-design-variant failed:", resolveRes.status);
+          }
+        } catch (e: any) {
+          console.warn("[Design Studio] resolve-design-variant error/timeout:", e?.message || e);
+        }
       }
     }
 
@@ -9316,7 +9362,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const persistFlatMockupsForGallery = useCallback(
     async (mockupUrls: string[], dedupeKey: string) => {
       if (!isStorefront || !savedJobIdRef.current || !shopDomain) return;
-      if (dedupeKey && dedupeKey === lastFlatGalleryMockupKeyRef.current) return;
 
       const absUrls = mockupUrls
         .map((u) => toAbsoluteMockupUrlForSave(u))
@@ -9324,6 +9369,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (absUrls.length === 0) return;
 
       const jobId = savedJobIdRef.current;
+      const persistKey = `${jobId}::${dedupeKey}`;
+      if (persistKey === lastFlatGalleryMockupKeyRef.current) return;
       const baseVariantForShadow = baseVariantForShadowRef.current;
       try {
         const currentHandle = activeProductContext.pageHandle || undefined;
@@ -9358,7 +9405,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : {}),
           }),
         });
-        lastFlatGalleryMockupKeyRef.current = dedupeKey;
+        lastFlatGalleryMockupKeyRef.current = persistKey;
         if (productId && baseVariantForShadow) {
           startShadowVariantPoll(jobId, shopDomain, 3000);
         }
@@ -11370,6 +11417,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatApplyStatus !== "saving" &&
     flatApplyStatus !== "error"
   );
+  const galleryGenerateSlots = savedDesigns.filter((d) => !isPlacementForkDesign(d)).length;
   const selectedPostGenItem = postGenGalleryItems[selectedMockupIndex] ?? null;
   const flatCanvasOverrideUrl =
     flatPlacerActive &&
@@ -13250,7 +13298,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Saved Designs ({savedDesigns.length}/{galleryLimit})</h3>
+                          <h3 className="text-sm font-semibold">Saved Designs ({galleryGenerateSlots}/{galleryLimit})</h3>
                           <button
                             onClick={() => setShowSavedDesigns(false)}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -13258,12 +13306,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <X className="w-4 h-4" />
                           </button>
                         </div>
-                        {savedDesigns.length >= galleryLimit - 4 && savedDesigns.length < galleryLimit && (
+                        {galleryGenerateSlots >= galleryLimit - 4 && galleryGenerateSlots < galleryLimit && (
                           <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
                             You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
                           </div>
                         )}
-                        {savedDesigns.length >= galleryLimit && (
+                        {galleryGenerateSlots >= galleryLimit && (
                           <div className="mb-3 px-3 py-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
                             Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
                           </div>
@@ -13337,8 +13385,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 >
                                   <div className="aspect-square relative bg-muted">
                                     {(() => {
-                                      const mockupSrc = d.mockupUrls && d.mockupUrls.length > 0 ? d.mockupUrls[0] : null;
-                                      const mockupAbs = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : null;
+                                      const previewSrc = savedDesignPreviewUrl(d);
+                                      const mockupAbs = previewSrc ? toAbsoluteImageUrl(previewSrc) : null;
                                       const artworkAbs = d.artworkUrl ? toAbsoluteImageUrl(d.artworkUrl) : null;
                                       const displaySrc = mockupAbs || artworkAbs;
                                       return displaySrc ? (
