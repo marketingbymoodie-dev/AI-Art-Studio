@@ -49,6 +49,10 @@ function sizeTokensMatch(a: string, b: string): boolean {
 }
 
 /** Match a Shopify option/title fragment to a frame colour id or display name. */
+function stripSolidColorPrefix(value: string): string {
+  return value.replace(/^solid\s+/i, "").trim();
+}
+
 export function colorMatchesFrame(
   raw: string,
   frameName: string,
@@ -56,6 +60,11 @@ export function colorMatchesFrame(
 ): boolean {
   if (frameName && shopifyColorTokensEqual(raw, frameName)) return true;
   if (frameColorId && shopifyColorTokensEqual(raw, frameColorId)) return true;
+  const rawNoSolid = stripSolidColorPrefix(raw);
+  const nameNoSolid = stripSolidColorPrefix(frameName);
+  const idNoSolid = frameColorId ? stripSolidColorPrefix(frameColorId) : "";
+  if (nameNoSolid && shopifyColorTokensEqual(rawNoSolid, nameNoSolid)) return true;
+  if (idNoSolid && shopifyColorTokensEqual(rawNoSolid, idNoSolid)) return true;
   // Title often is "White / Navy / S" — check each slash segment and the full string.
   const parts = raw.split(/\s*\/\s*/);
   if (parts.length > 1) {

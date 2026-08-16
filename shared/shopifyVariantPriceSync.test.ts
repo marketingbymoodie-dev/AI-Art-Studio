@@ -158,6 +158,18 @@ describe("resolveStorefrontHeadlinePrice", () => {
     expect(headline).toEqual({ amount: 32.95, showFrom: false });
   });
 
+  it("steps the headline up when both-tier is not above the live front price", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [{ id: 1, price: "48.95" }],
+      sizeSelected: true,
+      matchedVariantId: "1",
+      bothPrice: 47.95,
+      hasBothRetailPrices: true,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline).toEqual({ amount: 49.95, showFrom: false });
+  });
+
   it("shows from the cheapest both-tier price before a size is picked", () => {
     const headline = resolveStorefrontHeadlinePrice({
       variants: [

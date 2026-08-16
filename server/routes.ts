@@ -59,8 +59,8 @@ import {
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
-import { expandVariantPricesBothMap } from "@shared/variantPricesBoth";
-import { buildPrintifyToShopifyVariantIdMap, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
+import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
+import { buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
@@ -144,6 +144,7 @@ import {
 } from "./merchant-coupon-quota";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
+import { clearZeroPriceAlertIfPriced, notifyZeroRetailPricePages } from "./zero-price-alerts";
 import {
   runCatalogueProductSync,
   getProductIntelligence,
@@ -6208,6 +6209,17 @@ ${orientationExtra}
           if (stored.right_side && !stored.right_leg) stored.right_leg = stored.right_side;
           return stored;
         })(),
+        variantPricesBoth: resolveDesignerVariantPricesBoth(
+          (productType as any).variantPricesBoth,
+          (productType as any).printifyCosts,
+          (productType as any).defaultMarkupPercent,
+          {
+            variantMap: productType.variantMap,
+            shopifyVariantIds: (productType as any).shopifyVariantIds,
+            sizes: productType.sizes,
+            frameColors: productType.frameColors,
+          },
+        ),
       };
 
       // Match storefront: same merchant styles + page allow-list (not /api/config).
@@ -6695,22 +6707,17 @@ ${orientationExtra}
       // Front+back retail tier (Shopify base variants stay at front-only prices).
       // Expand printify: blank keys → Shopify id / size:color so storefront lookups hit
       // even when Resync originally persisted printify-only keys.
-      variantPricesBoth: (() => {
-        try {
-          const raw = (productTypeToUse as any).variantPricesBoth;
-          const parsed =
-            typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
-          if (!parsed || typeof parsed !== "object") return {};
-          return expandVariantPricesBothMap(parsed as Record<string, string>, {
-            variantMap: (productTypeToUse as any).variantMap,
-            shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
-            sizes: (productTypeToUse as any).sizes,
-            frameColors: (productTypeToUse as any).frameColors,
-          });
-        } catch {
-          return {};
-        }
-      })(),
+      variantPricesBoth: resolveDesignerVariantPricesBoth(
+        (productTypeToUse as any).variantPricesBoth,
+        (productTypeToUse as any).printifyCosts,
+        (productTypeToUse as any).defaultMarkupPercent,
+        {
+          variantMap: (productTypeToUse as any).variantMap,
+          shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
+          sizes: (productTypeToUse as any).sizes,
+          frameColors: (productTypeToUse as any).frameColors,
+        },
+      ),
     };
 
     if (resolvedFrom) {
@@ -7715,7 +7722,7 @@ ${orientationExtra}
       baseProductHandle: (page as any).baseProductHandle ?? null,
       baseProductTitle: page.baseProductTitle ?? null,
       baseVariantTitle: page.baseVariantTitle ?? null,
-      baseProductPrice: page.baseProductPrice ?? null,
+      baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
       designerConfig,
       variants,
@@ -19792,12 +19799,13 @@ ${orientationExtra}
         await storage.updateCustomizerPage(p.id, {
           baseVariantId: cheapest.id,
           baseVariantTitle: cheapest.title,
-          baseProductPrice: cheapest.price,
+          ...clearZeroPriceAlertIfPriced({ baseProductPrice: cheapest.price }, cheapest.price),
         });
         Object.assign(p, {
           baseVariantId: cheapest.id,
           baseVariantTitle: cheapest.title,
           baseProductPrice: cheapest.price,
+          zeroPriceAlertSentAt: null,
         });
       } catch (e: any) {
         console.warn(`[from-price] Could not update page ${p.id}:`, e?.message ?? e);
@@ -19820,6 +19828,10 @@ ${orientationExtra}
     removeCustomizerNavParent(shop, installation.accessToken).catch(() => {});
 
     const plan = getEffectivePlan(installation as any, shop);
+
+    void notifyZeroRetailPricePages(pages).catch((e) =>
+      console.warn("[zero-price-alert] admin list notify failed:", e?.message ?? e),
+    );
 
     return res.json({
       pages,
@@ -20392,9 +20404,22 @@ ${orientationExtra}
             `products/${productIdNum}.json?fields=id,title,handle,variants`,
           );
           const cheapestAfter = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
-          if (cheapestAfter) variant = cheapestAfter;
+          if (cheapestAfter && hasPositiveRetailPrice(cheapestAfter.price)) variant = cheapestAfter;
         }
       }
+    }
+
+    const fromWizard = minPositiveRetailPrice(variantPrices);
+    const cachedFromPrice = hasPositiveRetailPrice(variant.price)
+      ? String(variant.price)
+      : fromWizard != null
+        ? fromWizard.toFixed(2)
+        : null;
+    if (initialStatus === "active" && !hasPositiveRetailPrice(cachedFromPrice)) {
+      return res.status(400).json({
+        error: "Set retail prices (Create Page pricing) before creating a Live customizer page.",
+        code: "PRICES_REQUIRED",
+      });
     }
 
     // ── Ensure product is published to Online Store (but keep status as unlisted) ──
@@ -20482,7 +20507,7 @@ ${orientationExtra}
       baseProductHandle: productHandle,
       baseProductTitle: productTitle,
       baseVariantTitle: variant.title ?? "",
-      baseProductPrice: variant.price ?? "",
+      baseProductPrice: cachedFromPrice,
       productTypeId: resolvedProductTypeId,
       styleConfig: styleConfig as any,
       status: initialStatus,
@@ -20547,8 +20572,7 @@ ${orientationExtra}
             code: "PRINTIFY_NOT_CONNECTED",
           });
         }
-        const livePrice = parseFloat(String(dbPage.baseProductPrice || "0"));
-        if (!Number.isFinite(livePrice) || livePrice <= 0) {
+        if (!hasPositiveRetailPrice(dbPage.baseProductPrice)) {
           return res.status(400).json({
             error: "Set retail prices (Resync Prices or Create Page pricing) before setting a page Live.",
             code: "PRICES_REQUIRED",
@@ -20620,7 +20644,9 @@ ${orientationExtra}
       updates.baseVariantId = String(variantNum);
       updates.baseProductId = String(v.product_id);
       updates.baseVariantTitle = v.title ?? "";
-      updates.baseProductPrice = v.price ?? "";
+      if (hasPositiveRetailPrice(v.price)) {
+        Object.assign(updates, clearZeroPriceAlertIfPriced({ baseProductPrice: v.price ?? "" }, v.price));
+      }
     }
 
     const productTypeId = dbPage.productTypeId ? Number(dbPage.productTypeId) : null;
@@ -20918,7 +20944,10 @@ ${orientationExtra}
           await storage.updateCustomizerPage(dbPage.id, {
             baseVariantId: String(cheapest.id),
             baseVariantTitle: cheapest.title || dbPage.baseVariantTitle,
-            baseProductPrice: String(cheapest.price),
+            ...clearZeroPriceAlertIfPriced(
+              { baseProductPrice: String(cheapest.price) },
+              cheapest.price,
+            ),
           });
         }
       }
@@ -21752,7 +21781,7 @@ ${orientationExtra}
       baseVariantId: p.baseVariantId,
       baseProductTitle: p.baseProductTitle,
       baseVariantTitle: p.baseVariantTitle,
-      baseProductPrice: p.baseProductPrice,
+      baseProductPrice: displayRetailPrice(p.baseProductPrice),
       status: p.status,
       publiclyMountable:
         (p.status === "active" && printifyConnected) ||
@@ -21997,7 +22026,7 @@ ${orientationExtra}
       baseProductHandle: (page as any).baseProductHandle ?? null,
       baseProductTitle: page.baseProductTitle ?? null,
       baseVariantTitle: page.baseVariantTitle ?? null,
-      baseProductPrice: page.baseProductPrice ?? null,
+      baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
       appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || "https://appai-pod-production.up.railway.app").replace(/\/$/, ""),
       designerConfig,

@@ -37,6 +37,9 @@ import {
   resolveFlatPlacementGeometryKey,
   firstUsableBlankKey,
   manifestHasMultipleColorBlanks,
+  matchHarvestBlankKey,
+  harvestBlankMatchesSelection,
+  productLooksLikeApparel,
 } from "./flatBlankResolve";
 
 export {
@@ -44,18 +47,13 @@ export {
   resolveFlatPlacementGeometryKey,
   firstUsableBlankKey,
   manifestHasMultipleColorBlanks,
+  matchHarvestBlankKey,
+  harvestBlankMatchesSelection,
+  productLooksLikeApparel,
 };
 
 function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | null {
-  if (!id) return null;
-  if (flatBlankHasViews(manifest.blanks?.[id])) return id;
-  const norm = normalizeFlatColorKey(id);
-  for (const k of Object.keys(manifest.blanks || {})) {
-    if (!flatBlankHasViews(manifest.blanks?.[k])) continue;
-    const kn = normalizeFlatColorKey(k);
-    if (kn === norm || kn.endsWith(`-${norm}`)) return k;
-  }
-  return null;
+  return matchHarvestBlankKey(manifest, id);
 }
 
 /**
@@ -261,13 +259,8 @@ export function resolveFlatBlank(
   const hit = colorId ? findBlankKey(manifest, colorId) : null;
   if (hit && flatBlankHasViews(blanks[hit])) return blanks[hit];
   if (colorId) {
-    // decorPerSize / multi-colour: never silently swap in another frame colour's blank
-    // (that is what made White selection keep showing a Black frame).
-    if (manifest.decorPerSize || manifestHasMultipleColorBlanks(manifest)) {
-      return {};
-    }
-    const fallbackKey = firstUsableBlankKey(manifest);
-    if (fallbackKey && flatBlankHasViews(blanks[fallbackKey])) return blanks[fallbackKey];
+    // Never silently swap in another colour's blank (Navy must not show the
+    // first harvested brown hoodie). Caller can override with a Shopify image.
     return {};
   }
   for (const k of Object.keys(blanks)) {

@@ -4,6 +4,8 @@ import {
   expandVariantPricesBothMap,
   minBothRetailDollarsFromMap,
   resolveBothRetailDollarsFromMap,
+  resolveDesignerVariantPricesBoth,
+  bothRetailAboveFront,
 } from "./variantPricesBoth";
 
 describe("coerceVariantPricesBothMap", () => {
@@ -96,6 +98,24 @@ describe("resolveBothRetailDollarsFromMap", () => {
     ).toBe(32.95);
   });
 
+  it("matches Solid-prefixed colours to the storefront colour name", () => {
+    expect(
+      resolveBothRetailDollarsFromMap(
+        { "S:Solid Navy": "54.95" },
+        { sizeName: "S", colorName: "Navy" },
+      ),
+    ).toBe(54.95);
+  });
+
+  it("resolves Dark Heather via printify slug aliases", () => {
+    expect(
+      resolveBothRetailDollarsFromMap(
+        { "S:dark_heather": "54.95" },
+        { sizeName: "S", colorName: "Dark Heather" },
+      ),
+    ).toBe(54.95);
+  });
+
   it("uses the only both-tier price when keys do not match", () => {
     expect(
       resolveBothRetailDollarsFromMap(
@@ -103,5 +123,55 @@ describe("resolveBothRetailDollarsFromMap", () => {
         { sizeName: "S", colorName: "Black", shopifyVariantId: "123" },
       ),
     ).toBe(29.95);
+  });
+});
+
+describe("resolveDesignerVariantPricesBoth", () => {
+  const ctx = {
+    variantMap: {
+      "s:dark_heather": { printifyVariantId: 8801 },
+    },
+    shopifyVariantIds: {
+      "s:dark_heather": 112233,
+    },
+    sizes: [{ id: "s", name: "S" }],
+    frameColors: [{ id: "dark_heather", name: "Dark Heather" }],
+  };
+
+  it("synthesizes both-tier retail from cached both-side costs when the saved map is empty", () => {
+    const map = resolveDesignerVariantPricesBoth(
+      {},
+      JSON.stringify({
+        front: { "8801": 2000 },
+        both: { "8801": 3500 },
+      }),
+      70,
+      ctx,
+    );
+    expect(map["S:Dark Heather"]).toBe("59.95");
+    expect(map["112233"]).toBe("59.95");
+  });
+
+  it("keeps a merchant-saved both-tier map", () => {
+    const map = resolveDesignerVariantPricesBoth(
+      { "printify:8801": "61.95" },
+      JSON.stringify({
+        front: { "8801": 2000 },
+        both: { "8801": 3500 },
+      }),
+      70,
+      ctx,
+    );
+    expect(map["S:Dark Heather"]).toBe("61.95");
+  });
+});
+
+describe("bothRetailAboveFront", () => {
+  it("keeps a both-tier price that is already above front", () => {
+    expect(bothRetailAboveFront(54.95, 48.95)).toBe(54.95);
+  });
+
+  it("steps up when both-tier is missing a surcharge vs live front", () => {
+    expect(bothRetailAboveFront(47.95, 48.95)).toBe(49.95);
   });
 });

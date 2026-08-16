@@ -89,6 +89,8 @@ import {
   resolveFlatBlank,
   normalizeFlatColorKey,
   withFlatAssetVersion,
+  harvestBlankMatchesSelection,
+  productLooksLikeApparel,
 } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
@@ -106,6 +108,7 @@ import {
   composeReuseRegenerateUserPrompt,
 } from "@shared/reuseArtworkPrompt";
 import {
+  bothRetailAboveFront,
   coerceVariantPricesBothMap,
   minBothRetailDollarsFromMap,
   resolveBothRetailDollarsFromMap,
@@ -2918,7 +2921,32 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
-  const isApparel = productTypeConfig?.designerType === "apparel";
+  const isApparel = productLooksLikeApparel({
+    designerType: productTypeConfig?.designerType,
+    name: productTypeConfig?.name,
+    sizes: productTypeConfig?.sizes,
+  });
+  const selectedFrameColorName =
+    frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ||
+    selectedFrameColor ||
+    "";
+  const harvestBlankKey = useMemo(() => {
+    if (!productTypeConfig?.flatCalibration) return null;
+    if (frameOptionsRedundantWithSizes && selectedSize) return selectedSize;
+    return harvestBlankMatchesSelection(productTypeConfig.flatCalibration, {
+      sizeId: selectedSize || undefined,
+      frameColorId: selectedFrameColor || undefined,
+      frameColorName: selectedFrameColorName || undefined,
+      isApparel,
+    });
+  }, [
+    productTypeConfig?.flatCalibration,
+    selectedSize,
+    selectedFrameColor,
+    selectedFrameColorName,
+    isApparel,
+    frameOptionsRedundantWithSizes,
+  ]);
   const flatEdgeWrapMode = !!productTypeConfig?.flatCalibration?.edgeWrap;
   const flatDecorMode = !!(
     productTypeConfig?.flatCalibration &&
@@ -2940,21 +2968,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return resolveFlatBlankColorId(productTypeConfig.flatCalibration, {
       sizeId: selectedSize || undefined,
       frameColorId: selectedFrameColor || undefined,
+      frameColorName: selectedFrameColorName || undefined,
       isApparel,
     });
   }, [
     productTypeConfig?.flatCalibration,
     selectedSize,
     selectedFrameColor,
+    selectedFrameColorName,
     isApparel,
     frameOptionsRedundantWithSizes,
   ]);
 
   const flatCalibrationBlankUrl = useMemo(() => {
-    if (!usesFlatOnTheFlyPreview || !productTypeConfig?.flatCalibration || !flatBlankColorId) {
+    if (!usesFlatOnTheFlyPreview || !productTypeConfig?.flatCalibration || !harvestBlankKey) {
       return null;
     }
-    const blank = resolveFlatBlank(productTypeConfig.flatCalibration, flatBlankColorId);
+    const blank = resolveFlatBlank(productTypeConfig.flatCalibration, harvestBlankKey);
     const front = blank?.front || null;
     // Match FlatProductPlacer: pin harvest pixels to manifest.generatedAt so a
     // re-upload at the same storage path can't leave the storefront on a stale
@@ -2962,13 +2992,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return front
       ? withFlatAssetVersion(front, productTypeConfig.flatCalibration.generatedAt)
       : null;
-  }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration, flatBlankColorId]);
+  }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration, harvestBlankKey]);
 
   const flatPlacerGeometryKey = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return flatBlankColorId;
     return resolveFlatPlacementGeometryKey(productTypeConfig.flatCalibration, {
       sizeId: selectedSize || undefined,
       frameColorId: selectedFrameColor || undefined,
+      frameColorName: selectedFrameColorName || undefined,
       isApparel,
     });
   }, [
@@ -2976,6 +3007,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatBlankColorId,
     selectedSize,
     selectedFrameColor,
+    selectedFrameColorName,
     isApparel,
   ]);
   const useAopCustomizer = !!(
@@ -6565,10 +6597,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
 
   /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
+  const shopifyColorImagesDistinct = useMemo(() => {
+    const catalog = shopifyVariants.length > 0 ? shopifyVariants : variants;
+    const urls = new Set<string>();
+    for (const v of catalog) {
+      if (v.imageSrc) urls.add(mockupImageUrlKey(v.imageSrc));
+    }
+    return urls.size > 1;
+  }, [shopifyVariants, variants]);
+
   const colorAwareBlankUrl = useMemo(() => {
     const catalog = shopifyVariants.length > 0 ? shopifyVariants : variants;
-    if (catalog.length === 0 || !selectedSize) return null;
-    const sizeName = printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize;
+    if (catalog.length === 0) return null;
+    const sizeName = printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
     const needsColorForVariantMatch =
@@ -6591,6 +6632,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     frameOptionsRedundantWithSizes,
   ]);
 
+  const colorBlankOverrideUrl =
+    !harvestBlankKey && shopifyColorImagesDistinct ? colorAwareBlankUrl : null;
+
   /**
    * Pre-artwork browse carousel: optional colour/size-accurate blank leads, then
    * merchant Primary + Gallery unchanged (never pixel-swapped under the Primary label).
@@ -6608,7 +6652,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
 
     const colorLead =
-      orientationBlankOverride || flatCalibrationBlankUrl || colorAwareBlankUrl || null;
+      orientationBlankOverride ||
+      flatCalibrationBlankUrl ||
+      (shopifyColorImagesDistinct ? colorAwareBlankUrl : null) ||
+      null;
     const merchantPrimary = catalogPreviewImages[0] || null;
     if (
       colorLead &&
@@ -6642,6 +6689,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     orientationBlankOverride,
     flatCalibrationBlankUrl,
     colorAwareBlankUrl,
+    shopifyColorImagesDistinct,
     catalogPreviewImages,
     frameColorObjects,
     selectedFrameColor,
@@ -8662,14 +8710,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
       "";
-    const bothRetailForAtc =
-      printPlacementUsesBoth
-        ? resolveBothRetailDollars({
+    const bothRetailForAtc = printPlacementUsesBoth
+      ? bothRetailAboveFront(
+          resolveBothRetailDollars({
             sizeName: atcSizeName,
             colorName: atcColorName,
             shopifyVariantId: normalizedVariant,
-          })
-        : null;
+          }),
+          parseFloat(
+            shopifyVariants.find((v) => String(v.id) === String(normalizedVariant))?.price ||
+              "0",
+          ),
+        )
+      : null;
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
 
@@ -11658,15 +11711,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             back: { scale: 1, offsetX: 0, offsetY: 0 },
             ...(flatPlacerState?.placements ?? {}),
           },
-          // Print Side dropdown is source of truth when available — do not let a
-          // stale enabled.back:false (e.g. from an older generate seed) win via ??.
           enabled: {
-            front: supportsPrintPlacementSelection
-              ? printPlacement === "front" || printPlacement === "both"
-              : (flatPlacerState?.enabled?.front ?? true),
-            back: supportsPrintPlacementSelection
-              ? printPlacement === "back" || printPlacement === "both"
-              : (flatPlacerState?.enabled?.back ?? false),
+            front:
+              flatPlacerState?.enabled?.front ??
+              (supportsPrintPlacementSelection
+                ? printPlacement === "front" || printPlacement === "both"
+                : true),
+            back:
+              flatPlacerState?.enabled?.back ??
+              (supportsPrintPlacementSelection
+                ? printPlacement === "back" || printPlacement === "both"
+                : false),
           },
           linkSides: false,
           artworkUrl,
@@ -11694,7 +11749,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               decorMode: flatDecorMode,
               fabricWeave: flatFabricWeave,
               landscapeOrientation: flatLandscapeOrientation,
-              blankUrlOverride: flatDecorMode ? null : orientationBlankOverride,
+              blankUrlOverride:
+                flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl,
               catalogSizeAspectRatio:
                 !flatDecorMode && orientationBlankOverride
                   ? catalogSizeAspectRatio
@@ -11786,6 +11842,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatFabricWeave,
     flatLandscapeOrientation,
     orientationBlankOverride,
+    colorBlankOverrideUrl,
     catalogSizeAspectRatio,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
@@ -11800,12 +11857,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const bothPricesMap = coerceVariantPricesBothMap(productTypeConfig?.variantPricesBoth);
   const hasBothRetailPrices = Object.keys(bothPricesMap).length > 0;
-  // Surcharge when BOTH sides are printed — from Print Side dropdown OR flat
-  // PRINT ON FRONT + PRINT ON BACK toggles (saved designs often only set the latter).
+  // Surcharge when BOTH sides are printed — Print Side dropdown OR the placer
+  // PRINT ON BACK toggle. Prefer placer enabled flags so a hoodie/crewneck
+  // toggle is not ignored while printPlacement is still "front".
   const flatBothEnabled =
-    !!flatPlacerEligible &&
-    flatPlacerState?.enabled?.front !== false &&
-    !!flatPlacerState?.enabled?.back;
+    flatPlacerState?.enabled?.front !== false && !!flatPlacerState?.enabled?.back;
   const printPlacementUsesBoth = printPlacement === "both" || flatBothEnabled;
 
   /** Resolve front+back retail ($) for a size/color (or the active Shopify variant). */
@@ -11856,11 +11912,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (matchedVariant?.price) {
         let priceNum = parseFloat(matchedVariant.price);
         if (printPlacementUsesBoth) {
-          const both = resolveBothRetailDollars({
-            sizeName: size.name,
-            colorName: frameName,
-            shopifyVariantId: matchedVariant.id,
-          });
+          const both = bothRetailAboveFront(
+            resolveBothRetailDollars({
+              sizeName: size.name,
+              colorName: frameName,
+              shopifyVariantId: matchedVariant.id,
+            }),
+            priceNum,
+          );
           if (both != null) priceNum = both;
         }
         if (priceNum > 0) {
@@ -14596,16 +14655,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     initialState={{
                       ...(flatPlacerState ?? {}),
                       artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
-                      // Keep PRINT ON BACK / front in sync with Print Side dropdown.
+                      // Placer toggles are source of truth after the first change.
+                      // Print Side dropdown writes flatPlacerState.enabled itself.
                       enabled: {
                         front:
-                          !supportsPrintPlacementSelection ||
-                          printPlacement === "front" ||
-                          printPlacement === "both",
+                          flatPlacerState?.enabled?.front ??
+                          (!supportsPrintPlacementSelection ||
+                            printPlacement === "front" ||
+                            printPlacement === "both"),
                         back:
-                          supportsPrintPlacementSelection
-                            ? printPlacement === "back" || printPlacement === "both"
-                            : (flatPlacerState?.enabled?.back ?? false),
+                          flatPlacerState?.enabled?.back ??
+                          (supportsPrintPlacementSelection &&
+                            (printPlacement === "back" || printPlacement === "both")),
                       },
                     }}
                     onChange={handleFlatPlacerChange}
@@ -14619,7 +14680,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     fabricWeave={flatFabricWeave}
                     landscapeOrientation={flatLandscapeOrientation}
                     // Never pin catalog orientation photos over decorPerSize frame-colour blanks.
-                    blankUrlOverride={flatDecorMode ? null : orientationBlankOverride}
+                    blankUrlOverride={
+                      flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl
+                    }
                     catalogSizeAspectRatio={
                       !flatDecorMode && orientationBlankOverride
                         ? catalogSizeAspectRatio

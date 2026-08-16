@@ -234,7 +234,8 @@ export function resolveStorefrontHeadlinePrice(args: {
 
   const both = args.bothPrice ?? null;
   if (args.printPlacementUsesBoth && both != null && both > 0) {
-    return { amount: both, showFrom: !args.sizeSelected };
+    const amount = both > front + 0.005 ? both : Math.ceil(front + 1) - 0.05;
+    return { amount: amount > 0 ? amount : both, showFrom: !args.sizeSelected };
   }
 
   const cheapestN = parseShopifyVariantPrice(cheapest.price);
