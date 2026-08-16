@@ -49,7 +49,9 @@ import {
   getCreatorPlatformShopDomain,
   getCreatorPlatformStorefrontToken,
   getLandingContent,
+  isCreatorCartPrintifyTestOpen,
   isCreatorMarketplaceEnabled,
+  requestLooksLikeStagingHost,
   saveLandingContent,
 } from "../creator-config";
 import {
@@ -1395,63 +1397,89 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  const runCreatorCartPrintifyTest = async (req: any, res: Response) => {
+    const userId = req.user?.claims?.sub;
+    const shop = getCreatorPlatformShopDomain();
+    let merchant = userId ? await storage.getMerchantByUserId(userId) : undefined;
+    if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
+      merchant = shop ? await storage.getMerchantByShop(shop) : undefined;
+    }
+    if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
+      return res.status(400).json({
+        error: "Printify credentials are not configured for the platform shop.",
+      });
+    }
+    const username = normalizeCreatorUsername(String(req.body?.creatorUsername || ""));
+    const cartId = String(req.body?.cartId || "").trim();
+    if (!username || !cartId) {
+      return res.status(400).json({ error: "creatorUsername and cartId are required." });
+    }
+    if (!isCreatorStorefrontConfigured() || !shop) {
+      return res.status(503).json({ error: "Creator storefront is not configured." });
+    }
+    const cart = await getCreatorCart(cartId);
+    if (!cart || cart.lines.length === 0) {
+      return res.status(404).json({ error: "Cart not found or empty." });
+    }
+    const result = await submitCreatorCartTestOrder({
+      cartId: cart.cartId,
+      shop,
+      lines: cart.lines,
+    });
+    if (result.status === "failed") {
+      return res.status(502).json({
+        error: result.error || "Printify rejected the draft order",
+        skippedReasons: result.skippedReasons,
+      });
+    }
+    if (result.status === "skipped") {
+      return res.status(400).json({
+        error: result.skippedReasons.join("; ") || "No eligible cart lines for a Printify draft.",
+        skippedReasons: result.skippedReasons,
+      });
+    }
+    return res.json({
+      success: true,
+      draft: true,
+      printifyOrderId: result.printifyOrderId,
+      printFileUrls: result.printFileUrls,
+      eligibleLines: result.eligibleLines,
+      skippedReasons: result.skippedReasons,
+      printifyOrderUrl: result.printifyOrderId
+        ? `https://printify.com/app/orders/${merchant.printifyShopId}/${result.printifyOrderId}`
+        : undefined,
+      message:
+        "Created a DRAFT Printify order from this cart. Open it to compare each line’s print file. Not sent to production.",
+    });
+  };
+
+  /** Staging cart: bake every line’s placement into a Printify DRAFT (no Admin JWT). */
+  app.post("/api/creators/cart/test-printify-order", async (req: any, res) => {
+    if (!marketplaceGate(res)) return;
+    if (!isCreatorCartPrintifyTestOpen() && !requestLooksLikeStagingHost(req)) {
+      return res.status(403).json({ error: "Cart Printify test is only available on staging." });
+    }
+    const rl = checkCreatorRateLimit({
+      key: `cart-printify-test:${clientIpFromReq(req)}`,
+      limit: 8,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      return res.status(429).json({ error: "Too many cart test orders. Try again later." });
+    }
+    try {
+      await runCreatorCartPrintifyTest(req, res);
+    } catch (e: any) {
+      console.error("[creators] cart test-printify-order failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to create cart test order" });
+    }
+  });
+
   /** Admin: bake every cart line (including per-line placement) into a Printify DRAFT. */
   app.post("/api/admin/creators/cart/test-printify-order", isAuthenticated, async (req: any, res) => {
     try {
       if (!requirePlatformAdmin(req, res)) return;
-      const userId = req.user?.claims?.sub;
-      const shop = getCreatorPlatformShopDomain();
-      let merchant = userId ? await storage.getMerchantByUserId(userId) : undefined;
-      if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
-        merchant = shop ? await storage.getMerchantByShop(shop) : undefined;
-      }
-      if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
-        return res.status(400).json({
-          error: "Printify credentials are not configured for the platform shop.",
-        });
-      }
-      const username = normalizeCreatorUsername(String(req.body?.creatorUsername || ""));
-      const cartId = String(req.body?.cartId || "").trim();
-      if (!username || !cartId) {
-        return res.status(400).json({ error: "creatorUsername and cartId are required." });
-      }
-      if (!isCreatorStorefrontConfigured() || !shop) {
-        return res.status(503).json({ error: "Creator storefront is not configured." });
-      }
-      const cart = await getCreatorCart(cartId);
-      if (!cart || cart.lines.length === 0) {
-        return res.status(404).json({ error: "Cart not found or empty." });
-      }
-      const result = await submitCreatorCartTestOrder({
-        cartId: cart.cartId,
-        shop,
-        lines: cart.lines,
-      });
-      if (result.status === "failed") {
-        return res.status(502).json({
-          error: result.error || "Printify rejected the draft order",
-          skippedReasons: result.skippedReasons,
-        });
-      }
-      if (result.status === "skipped") {
-        return res.status(400).json({
-          error: result.skippedReasons.join("; ") || "No eligible cart lines for a Printify draft.",
-          skippedReasons: result.skippedReasons,
-        });
-      }
-      return res.json({
-        success: true,
-        draft: true,
-        printifyOrderId: result.printifyOrderId,
-        printFileUrls: result.printFileUrls,
-        eligibleLines: result.eligibleLines,
-        skippedReasons: result.skippedReasons,
-        printifyOrderUrl: result.printifyOrderId
-          ? `https://printify.com/app/orders/${merchant.printifyShopId}/${result.printifyOrderId}`
-          : undefined,
-        message:
-          "Created a DRAFT Printify order from this cart. Open it to compare each line’s print file. Not sent to production.",
-      });
+      await runCreatorCartPrintifyTest(req, res);
     } catch (e: any) {
       console.error("[creators] cart test-printify-order failed:", e);
       res.status(500).json({ error: e?.message || "Failed to create cart test order" });

@@ -602,6 +602,8 @@ function CartCount({ username }: { username: string }) {
 
 function isPrintifyCartTestEnabled(): boolean {
   if (typeof window === "undefined") return false;
+  const host = window.location.hostname.toLowerCase();
+  if (host.includes("staging") || host === "localhost" || host === "127.0.0.1") return true;
   return new URLSearchParams(window.location.search).get("printifyTest") === "1";
 }
 
@@ -648,7 +650,7 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
   const printifyTest = useMutation({
     mutationFn: async () => {
       if (!snap?.cartId) throw new Error("Cart expired");
-      const res = await apiFetch("/api/admin/creators/cart/test-printify-order", {
+      const res = await apiFetch("/api/creators/cart/test-printify-order", {
         method: "POST",
         body: JSON.stringify({
           creatorUsername: creator.username,
@@ -657,11 +659,6 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (res.status === 401 || res.status === 403) {
-          throw new Error(
-            "Open Shopify Admin → Creators → this shop → Test Printify cart, and paste the cart ID shown here. This page is not signed into Admin.",
-          );
-        }
         throw new Error(parseApiErrorMessage(json?.error || json?.message || JSON.stringify(json)));
       }
       return json as {
@@ -838,41 +835,23 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         </Button>
       </div>
       {printifyTestEnabled && snap?.cartId ? (
-        <div className="space-y-2 rounded-lg border border-dashed p-3 text-sm">
-          <div className="font-medium">Printify cart test</div>
+        <div className="space-y-2 rounded-lg border p-3 text-sm">
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full"
+            disabled={itemCount < 1 || printifyTest.isPending}
+            onClick={() => {
+              setPrintifyTestMessage(null);
+              setPrintifyTestUrl(null);
+              printifyTest.mutate();
+            }}
+          >
+            {printifyTest.isPending ? "Sending Printify draft…" : "Send Printify test draft"}
+          </Button>
           <p className="text-muted-foreground">
-            Creates a <span className="font-medium">draft</span> from every line’s placement.
-            Never sent to production. On staging, paste this cart ID in Admin if the button
-            is unauthorized.
+            Staging only. Creates a draft from both placements — not sent to production.
           </p>
-          <div className="break-all rounded-md bg-muted px-2 py-1 font-mono text-xs">
-            {snap.cartId}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={itemCount < 1 || printifyTest.isPending}
-              onClick={() => {
-                setPrintifyTestMessage(null);
-                setPrintifyTestUrl(null);
-                printifyTest.mutate();
-              }}
-            >
-              {printifyTest.isPending ? "Sending draft…" : "Send cart to Printify draft"}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                void navigator.clipboard.writeText(snap.cartId);
-              }}
-            >
-              Copy cart ID
-            </Button>
-          </div>
           {printifyTestMessage ? (
             <p className="text-sm">
               {printifyTestMessage}{" "}

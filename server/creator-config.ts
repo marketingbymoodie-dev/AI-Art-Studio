@@ -23,6 +23,31 @@ export function isCreatorMarketplaceEnabled(): boolean {
   return v === "true" || v === "1" || v === "yes";
 }
 
+/** Staging/local only — lets the creator cart send a Printify DRAFT without Shopify Admin JWT. */
+export function isCreatorCartPrintifyTestOpen(env: NodeJS.ProcessEnv = process.env): boolean {
+  if ((env.NODE_ENV || "development").trim() !== "production") return true;
+  const blob = [
+    env.RAILWAY_ENVIRONMENT,
+    env.RAILWAY_ENVIRONMENT_NAME,
+    env.RAILWAY_SERVICE_NAME,
+    env.RAILWAY_PUBLIC_DOMAIN,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (blob.includes("staging")) return true;
+  const v = (env.CREATOR_CART_PRINTIFY_TEST_OPEN || "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes";
+}
+
+export function requestLooksLikeStagingHost(req: {
+  hostname?: string;
+  headers?: { host?: unknown };
+}): boolean {
+  const host = String(req.hostname || req.headers?.host || "").toLowerCase();
+  return host.includes("staging");
+}
+
 /** Platform Shopify shop that backs all creator storefront checkouts. */
 export function getCreatorPlatformShopDomain(): string | null {
   const d = (process.env.CREATOR_PLATFORM_SHOP_DOMAIN || "").trim().toLowerCase();
