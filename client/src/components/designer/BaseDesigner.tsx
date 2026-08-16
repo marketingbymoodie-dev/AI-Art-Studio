@@ -10,6 +10,7 @@ import { StyleSelector } from "./StyleSelector";
 import { useDesignerState } from "./useDesignerState";
 import {
   filterStylePresetsForPage,
+  collapseStyleNameTwins,
   parseCustomizerPageStyleConfig,
   selectableCategoriesForDesignerType,
   styleMatchesSelectableCategories,
@@ -99,8 +100,11 @@ export function BaseDesigner({
       );
     }
     const selectable = selectableCategoriesForDesignerType(designerConfig.designerType);
-    if (selectable === "all") return allStylePresets;
-    return allStylePresets.filter((s) => styleMatchesSelectableCategories(s, selectable));
+    const matched =
+      selectable === "all"
+        ? allStylePresets
+        : allStylePresets.filter((s) => styleMatchesSelectableCategories(s, selectable));
+    return collapseStyleNameTwins(matched, designerConfig.designerType);
   }, [allStylePresets, designerConfig]);
 
   const state = useDesignerState(designerConfig || null);

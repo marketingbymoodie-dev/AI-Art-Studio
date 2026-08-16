@@ -151,6 +151,7 @@ import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   filterStylePresetsForPage,
   dedupeStylePresets,
+  collapseStyleNameTwins,
   parseCustomizerPageStyleConfig,
   selectableCategoriesForDesignerType,
   styleMatchesSelectableCategories,
@@ -3333,7 +3334,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Filter styles based on designerType and per-page styleConfig
   const filteredStylePresets = useMemo(() => {
     const deduped = dedupeStylePresets(stylePresets);
-    if (isCreatorStorefront) return deduped;
+    if (isCreatorStorefront) {
+      return collapseStyleNameTwins(deduped, productTypeConfig?.designerType);
+    }
     if (pageStyleConfig) {
       return filterStylePresetsForPage(
         deduped,
@@ -3342,8 +3345,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       );
     }
     const selectable = selectableCategoriesForDesignerType(productTypeConfig?.designerType);
-    if (selectable === "all") return deduped;
-    return deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
+    const matched =
+      selectable === "all"
+        ? deduped
+        : deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
+    return collapseStyleNameTwins(matched, productTypeConfig?.designerType);
   }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
 
   const activeStyleHasOrientationChoices = useMemo(() => {

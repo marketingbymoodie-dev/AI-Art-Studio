@@ -32,6 +32,7 @@ import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
 import {
   filterStylePresetsForPage,
+  collapseStyleNameTwins,
   parseCustomizerPageStyleConfig,
   selectableCategoriesForDesignerType,
   styleMatchesSelectableCategories,
@@ -937,11 +938,14 @@ export default function DesignPage() {
         pageStyleConfig,
         designerConfig?.designerType,
       )
-    : sourceStyles.filter((style) =>
-        styleMatchesSelectableCategories(
-          style as { category?: string | null },
-          selectableStyleCategories,
+    : collapseStyleNameTwins(
+        sourceStyles.filter((style) =>
+          styleMatchesSelectableCategories(
+            style as { category?: string | null },
+            selectableStyleCategories,
+          ),
         ),
+        designerConfig?.designerType,
       );
 
   const styleCategoryLabel = pageStyleConfig

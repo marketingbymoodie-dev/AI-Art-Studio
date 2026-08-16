@@ -3,6 +3,7 @@
  * Merchants attach explicit presets or allow all styles in a category.
  */
 
+import { canonicalCreatorStyleName } from "./creatorMarketplace";
 import {
   type CustomizerPageStyleCategory,
   type StylePresetCategory,
@@ -98,6 +99,53 @@ export function dedupeStylePresets<T extends { id: string; name?: string }>(
   });
 }
 
+/** Apparel DTG vs Graphics chroma twins share a customer-facing name. */
+function isGraphicsStyleTwin<T extends { name?: string; category?: string | null }>(
+  style: T,
+): boolean {
+  return /\(graphics\)\s*$/i.test(style.name || "") || style.category === "graphics";
+}
+
+/**
+ * Phone cases / decor / generic flats should use the Graphics twin.
+ * Apparel / AOP keep the DTG (non-Graphics) twin.
+ */
+export function preferGraphicsStyleTwin(
+  designerType?: string | null,
+  pageCategory?: string | null,
+): boolean {
+  if (pageCategory === "apparel") return false;
+  if (pageCategory === "graphics") return true;
+  const dt = (designerType || "").toLowerCase();
+  return dt !== "apparel" && dt !== "all-over-print";
+}
+
+/**
+ * Collapse "Centered Graphic" + "Centered Graphic (Graphics)" to one row.
+ * Storefront labels strip "(Graphics)", so both otherwise look identical.
+ */
+export function collapseStyleNameTwins<
+  T extends { id: string; name?: string; category?: string | null },
+>(presets: T[], designerType?: string | null, pageCategory?: string | null): T[] {
+  const preferGraphics = preferGraphicsStyleTwin(designerType, pageCategory);
+  const rank = (p: T) => (isGraphicsStyleTwin(p) ? 0 : 1);
+  const best = new Map<string, T>();
+  const order: string[] = [];
+  for (const p of presets) {
+    const key = canonicalCreatorStyleName(p.name || p.id);
+    if (!key) continue;
+    const prev = best.get(key);
+    if (!prev) {
+      best.set(key, p);
+      order.push(key);
+      continue;
+    }
+    const takeNew = preferGraphics ? rank(p) < rank(prev) : rank(p) > rank(prev);
+    if (takeNew) best.set(key, p);
+  }
+  return order.map((key) => best.get(key)!);
+}
+
 /**
  * Styles shown in admin "choose specific styles" multi-select.
  * Merchants may pick any preset (Decor / Apparel / Graphics) regardless of
@@ -112,20 +160,28 @@ export function stylesForCustomizerPagePicker<T extends { category?: string | nu
   return presets;
 }
 
-export function filterStylePresetsForPage<T extends { id: string; category?: string | null }>(
+export function filterStylePresetsForPage<
+  T extends { id: string; name?: string; category?: string | null },
+>(
   presets: T[],
   config: CustomizerPageStyleConfig | null | undefined,
   designerType?: string | null,
 ): T[] {
   const deduped = dedupeStylePresets(presets);
   const cfg = config ?? defaultStyleConfigForDesignerType(designerType);
+  let filtered = deduped;
   if (cfg.mode === "selected") {
     const idSet = new Set(cfg.presetIds.map(String));
-    return deduped.filter((p) => idSet.has(String(p.id)));
+    filtered = deduped.filter((p) => idSet.has(String(p.id)));
+  } else if (cfg.category !== "all") {
+    filtered = deduped.filter(
+      (p) => p.category === cfg.category || p.category === "all" || !p.category,
+    );
   }
-  if (cfg.category === "all") return deduped;
-  return deduped.filter(
-    (p) => p.category === cfg.category || p.category === "all" || !p.category,
+  return collapseStyleNameTwins(
+    filtered,
+    designerType,
+    cfg.mode === "category" ? cfg.category : undefined,
   );
 }
 
