@@ -17,6 +17,12 @@ import {
   parseLandingContentJson,
   type LandingContent,
 } from "@shared/landingContent";
+import {
+  DEFAULT_TERMS_CONTENT,
+  parseTermsContentJson,
+  stampTermsOnSave,
+  type TermsContent,
+} from "@shared/termsContent";
 
 export function isCreatorMarketplaceEnabled(): boolean {
   const v = (process.env.CREATOR_MARKETPLACE_ENABLED || "").trim().toLowerCase();
@@ -159,6 +165,9 @@ export async function setPlatformConfig(key: string, value: string): Promise<voi
   if (key === PLATFORM_CONFIG_KEYS.LANDING_CONTENT) {
     cachedLanding = null;
   }
+  if (key === PLATFORM_CONFIG_KEYS.TERMS_CONTENT) {
+    cachedTerms = null;
+  }
 }
 
 let cachedLanding: { value: LandingContent; at: number } | null = null;
@@ -187,5 +196,35 @@ export async function saveLandingContent(raw: unknown): Promise<LandingContent> 
   const value = mergeLandingContent(raw);
   await setPlatformConfig(PLATFORM_CONFIG_KEYS.LANDING_CONTENT, JSON.stringify(value));
   cachedLanding = { value, at: Date.now() };
+  return value;
+}
+
+let cachedTerms: { value: TermsContent; at: number } | null = null;
+const TERMS_CACHE_MS = 15_000;
+
+export async function getTermsContent(): Promise<TermsContent> {
+  const now = Date.now();
+  if (cachedTerms && now - cachedTerms.at < TERMS_CACHE_MS) {
+    return cachedTerms.value;
+  }
+  try {
+    const [row] = await db
+      .select()
+      .from(platformConfig)
+      .where(eq(platformConfig.key, PLATFORM_CONFIG_KEYS.TERMS_CONTENT))
+      .limit(1);
+    const value = parseTermsContentJson(row?.value);
+    cachedTerms = { value, at: now };
+    return value;
+  } catch {
+    return structuredClone(DEFAULT_TERMS_CONTENT);
+  }
+}
+
+export async function saveTermsContent(raw: unknown): Promise<TermsContent> {
+  const previous = await getTermsContent();
+  const value = stampTermsOnSave(raw, previous);
+  await setPlatformConfig(PLATFORM_CONFIG_KEYS.TERMS_CONTENT, JSON.stringify(value));
+  cachedTerms = { value, at: Date.now() };
   return value;
 }
