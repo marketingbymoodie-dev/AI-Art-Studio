@@ -3,12 +3,12 @@
  * Two ATCs from the same generation job otherwise share the latest
  * designState.aopPrintPanelUrls and Printify bakes one placement twice.
  */
-import { storage } from "./storage";
 import {
   downloadFlatCalibrationFile,
   uploadToFlatCalibrationBucket,
 } from "./supabaseFlatCalibration";
 import { LINE_AOP_PANELS_KEY } from "@shared/linePlacementSnapshot";
+import { storage } from "./storage";
 
 export type AopPanel = { position: string; url: string };
 
