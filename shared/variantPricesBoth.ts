@@ -352,6 +352,12 @@ export function resolveDesignerVariantPricesBoth(
   return synthesizeBothRetailMapFromCosts(printifyCostsRaw, markupPercent, ctx);
 }
 
+/** Last-resort front+back retail when no both-tier map/costs exist yet. */
+export function estimateBothRetailFromFront(front: number): number | null {
+  if (!Number.isFinite(front) || front <= 0) return null;
+  return bothRetailAboveFront(Math.ceil(front * 1.22) - 0.05, front);
+}
+
 /**
  * Print on Back must never show the same (or lower) price as front-only.
  * If the both-tier map is missing a surcharge vs live Shopify front, step up

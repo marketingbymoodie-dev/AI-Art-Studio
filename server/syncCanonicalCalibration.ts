@@ -136,6 +136,13 @@ export async function prepareProductTypeForDesigner(
     await storage.updateProductType(current.id, { designerType: "framed-print" });
     const healed = await storage.getProductType(current.id);
     if (healed) current = healed;
+  } else if (
+    (!dt || dt === "generic") &&
+    /\b(hoodie|sweatshirt|crewneck|t-shirt|\btee\b|zip[- ]?up)\b/i.test(current.name || "")
+  ) {
+    await storage.updateProductType(current.id, { designerType: "apparel" });
+    const healed = await storage.getProductType(current.id);
+    if (healed) current = healed;
   }
 
   const aopSync = await syncProductTypeFromPlatformCatalogAop(current);

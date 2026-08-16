@@ -91,7 +91,9 @@ import {
   withFlatAssetVersion,
   harvestBlankMatchesSelection,
   productLooksLikeApparel,
+  firstUsableBlankKey,
 } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { resolveStoredColorHex } from "@shared/printifyColorResolver";
 import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
@@ -110,6 +112,7 @@ import {
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
+  estimateBothRetailFromFront,
   minBothRetailDollarsFromMap,
   resolveBothRetailDollarsFromMap,
 } from "@shared/variantPricesBoth";
@@ -2930,6 +2933,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ||
     selectedFrameColor ||
     "";
+  const selectedGarmentHex = selectedFrameColorName
+    ? resolveStoredColorHex(
+        selectedFrameColorName,
+        frameColorObjects.find((f) => f.id === selectedFrameColor)?.hex,
+      ).hex
+    : null;
+  const defaultHarvestBlankUrl = useMemo(() => {
+    const manifest = productTypeConfig?.flatCalibration;
+    if (!usesFlatOnTheFlyPreview || !manifest) return null;
+    const key = firstUsableBlankKey(manifest);
+    if (!key) return null;
+    const front = resolveFlatBlank(manifest, key)?.front || null;
+    return front ? withFlatAssetVersion(front, manifest.generatedAt) : null;
+  }, [usesFlatOnTheFlyPreview, productTypeConfig?.flatCalibration]);
   const harvestBlankKey = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return null;
     if (frameOptionsRedundantWithSizes && selectedSize) return selectedSize;
@@ -2947,6 +2964,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     isApparel,
     frameOptionsRedundantWithSizes,
   ]);
+  const colorizeSharedBlank =
+    isApparel &&
+    !!selectedGarmentHex &&
+    selectedGarmentHex.toLowerCase() !== "#888888" &&
+    (!harvestBlankKey || harvestBlankKey === "default");
   const flatEdgeWrapMode = !!productTypeConfig?.flatCalibration?.edgeWrap;
   const flatDecorMode = !!(
     productTypeConfig?.flatCalibration &&
@@ -6655,6 +6677,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       orientationBlankOverride ||
       flatCalibrationBlankUrl ||
       (shopifyColorImagesDistinct ? colorAwareBlankUrl : null) ||
+      (isApparel ? defaultHarvestBlankUrl : null) ||
       null;
     const merchantPrimary = catalogPreviewImages[0] || null;
     if (
@@ -6690,6 +6713,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatCalibrationBlankUrl,
     colorAwareBlankUrl,
     shopifyColorImagesDistinct,
+    defaultHarvestBlankUrl,
+    isApparel,
     catalogPreviewImages,
     frameColorObjects,
     selectedFrameColor,
@@ -8710,6 +8735,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
       "";
+    const atcFrontPrice = parseFloat(
+      shopifyVariants.find((v) => String(v.id) === String(normalizedVariant))?.price || "0",
+    );
     const bothRetailForAtc = printPlacementUsesBoth
       ? bothRetailAboveFront(
           resolveBothRetailDollars({
@@ -8717,11 +8745,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             colorName: atcColorName,
             shopifyVariantId: normalizedVariant,
           }),
-          parseFloat(
-            shopifyVariants.find((v) => String(v.id) === String(normalizedVariant))?.price ||
-              "0",
-          ),
-        )
+          atcFrontPrice,
+        ) ?? estimateBothRetailFromFront(atcFrontPrice)
       : null;
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
@@ -11751,6 +11776,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               landscapeOrientation: flatLandscapeOrientation,
               blankUrlOverride:
                 flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl,
+              garmentColorHex: colorizeSharedBlank ? selectedGarmentHex : null,
               catalogSizeAspectRatio:
                 !flatDecorMode && orientationBlankOverride
                   ? catalogSizeAspectRatio
@@ -11843,6 +11869,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatLandscapeOrientation,
     orientationBlankOverride,
     colorBlankOverrideUrl,
+    colorizeSharedBlank,
+    selectedGarmentHex,
     catalogSizeAspectRatio,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
@@ -11920,7 +11948,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             }),
             priceNum,
           );
-          if (both != null) priceNum = both;
+          priceNum = both ?? estimateBothRetailFromFront(priceNum) ?? priceNum;
         }
         if (priceNum > 0) {
           priceMap[size.id] = Math.round(priceNum * 100);
@@ -14683,6 +14711,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     blankUrlOverride={
                       flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl
                     }
+                    garmentColorHex={colorizeSharedBlank ? selectedGarmentHex : null}
                     catalogSizeAspectRatio={
                       !flatDecorMode && orientationBlankOverride
                         ? catalogSizeAspectRatio
@@ -15086,6 +15115,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       isAop={isAopProduct}
                       selectedSize={selectedSizeConfig}
                       selectedFrameColor={selectedFrameColorConfig}
+                      blankColorizeHex={
+                        colorizeSharedBlank &&
+                        !generatedDesign?.imageUrl &&
+                        browsePlaceholderSlides[catalogPreviewIndex]?.kind !== "primary" &&
+                        browsePlaceholderSlides[catalogPreviewIndex]?.kind !== "gallery"
+                          ? selectedGarmentHex
+                          : null
+                      }
                       transform={transform}
                       onTransformChange={setTransform}
                       enableDrag={

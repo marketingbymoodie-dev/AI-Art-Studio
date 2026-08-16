@@ -184,6 +184,8 @@ export type FlatProductPlacerProps = {
    * column (prompt box). Zoom sits at the bottom of this card.
    */
   viewerHeightPx?: number | null;
+  /** Recolor a shared default blank to the selected garment colour. */
+  garmentColorHex?: string | null;
 };
 
 type LoadedAssets = {
@@ -289,6 +291,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
       viewerHeightPx = null,
+      garmentColorHex = null,
     },
     ref,
   ) {
@@ -448,7 +451,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableViews, artworkSourceUrl, defaultPlacement, edgeWrapMode]);
 
-  // Print Side dropdown → PRINT ON BACK / front toggles (parent owns printPlacement).
+  // Print Side dropdown writes flatPlacerState.enabled; parent passes that through.
   const parentEnabledFront = initialState?.enabled?.front;
   const parentEnabledBack = initialState?.enabled?.back;
   useEffect(() => {
@@ -604,6 +607,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
+          garmentColorHex,
         });
         return true;
       } catch (e) {
@@ -625,6 +629,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       calibOpts,
       clampPlacementScale,
       defaultPlacement,
+      garmentColorHex,
     ],
   );
 

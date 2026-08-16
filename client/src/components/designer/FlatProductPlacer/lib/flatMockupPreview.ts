@@ -20,6 +20,7 @@ export async function renderFlatMockupDataUrl(
     landscapeOrientation?: boolean;
     blankUrlOverride?: string | null;
     catalogSizeAspectRatio?: string | null;
+    garmentColorHex?: string | null;
   },
 ): Promise<string | null> {
   const refitCatalogSizeGuide =
@@ -63,6 +64,7 @@ export async function renderFlatMockupDataUrl(
     fabricWeave: opts?.fabricWeave === true,
     // Phone cases: customer BG colour must survive colour-swap re-bake.
     printCanvasBackgroundColor: manifest.edgeWrap ? bg : null,
+    garmentColorHex: opts?.garmentColorHex ?? null,
   });
 
   try {

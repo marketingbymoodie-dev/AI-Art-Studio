@@ -5449,9 +5449,17 @@ ${orientationExtra}
   }> {
     const resolveImageSrc = (v: any): string | null => {
       if (v.featured_image?.src) return String(v.featured_image.src);
-      if (v.image_id && productImages?.length) {
-        const img = productImages.find((i: any) => i.id === v.image_id);
-        if (img?.src) return String(img.src);
+      if (productImages?.length) {
+        if (v.image_id) {
+          const img = productImages.find((i: any) => Number(i.id) === Number(v.image_id));
+          if (img?.src) return String(img.src);
+        }
+        const byVariantIds = productImages.find(
+          (i: any) =>
+            Array.isArray(i.variant_ids) &&
+            i.variant_ids.some((id: unknown) => Number(id) === Number(v.id)),
+        );
+        if (byVariantIds?.src) return String(byVariantIds.src);
       }
       return null;
     };
@@ -5893,12 +5901,13 @@ ${orientationExtra}
         const prepared = await prepareProductTypeForDesigner(productType, {
           allowUnpublishedHarvest: true,
         });
-        if (prepared && prepared !== productType) {
+        const hydrated = await hydratePrintifyBothCostsFromPlatform(prepared);
+        if (hydrated && hydrated !== productType) {
           console.log(
             `[Designer API] Synced catalog metadata onto pt ${id}` +
-              ` (panelMappingTemplate=${(prepared as any).panelMappingTemplate ?? "null"})`,
+              ` (panelMappingTemplate=${(hydrated as any).panelMappingTemplate ?? "null"})`,
           );
-          productType = prepared;
+          productType = hydrated;
         }
       }
 
@@ -6416,6 +6425,30 @@ ${orientationExtra}
     return { styleConfig, stylePresets };
   }
 
+  async function hydratePrintifyBothCostsFromPlatform(pt: any): Promise<any> {
+    if (!pt) return pt;
+    const parsed = parsePrintifyCostsCache(pt.printifyCosts);
+    if (Object.keys(parsed.both).length > 0) return pt;
+    const bp = Number(pt.printifyBlueprintId);
+    if (!Number.isFinite(bp) || bp <= 0) return pt;
+    try {
+      const { findPlatformCatalogRef } = await import("./platform-catalogue-pi");
+      const ref = await findPlatformCatalogRef(bp);
+      if (!ref) return pt;
+      const refParsed = parsePrintifyCostsCache((ref as any).printifyCosts);
+      if (Object.keys(refParsed.both).length === 0) return pt;
+      const next = serializePrintifyCostsCache({
+        front: Object.keys(parsed.front).length > 0 ? parsed.front : refParsed.front,
+        both: refParsed.both,
+      });
+      await storage.updateProductType(pt.id, { printifyCosts: next });
+      return (await storage.getProductType(pt.id)) || { ...pt, printifyCosts: next };
+    } catch (e) {
+      console.warn(`[designer] both-cost hydrate failed for pt ${pt.id}:`, e);
+      return pt;
+    }
+  }
+
   /**
    * Pure CPU function: given a product type row, build the designer config object.
    * Extracted so we can call it from the fast path (direct ID lookup) and the
@@ -6846,9 +6879,11 @@ ${orientationExtra}
           "getProductType_fast_path"
         );
         if (fastPt) {
-          const productTypeForConfig = await prepareProductTypeForDesigner(fastPt, {
-            allowUnpublishedHarvest: true,
-          });
+          const productTypeForConfig = await hydratePrintifyBothCostsFromPlatform(
+            await prepareProductTypeForDesigner(fastPt, {
+              allowUnpublishedHarvest: true,
+            }),
+          );
           const totalMs = Date.now() - startTime;
           console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${productTypeForConfig!.name}" ms=${totalMs}`);
           if (killSwitchTimeout) clearTimeout(killSwitchTimeout);
@@ -7002,6 +7037,7 @@ ${orientationExtra}
       let productTypeForConfig = await prepareProductTypeForDesigner(productTypeToUse, {
         allowUnpublishedHarvest: true,
       });
+      productTypeForConfig = await hydratePrintifyBothCostsFromPlatform(productTypeForConfig);
       if (productTypeForConfig && productTypeForConfig !== productTypeToUse) {
         console.log(`[SF-DESIGNER ${requestId}] Synced canonical flat calibration onto pt ${productTypeForConfig.id}`);
       }
@@ -7567,9 +7603,10 @@ ${orientationExtra}
       try {
         const pt = await storage.getProductType(page.productTypeId);
         if (!pt) return null;
-        const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+        const prepared = await prepareProductTypeForDesigner(pt, {
           allowUnpublishedHarvest: true,
         });
+        const ptForDesigner = await hydratePrintifyBothCostsFromPlatform(prepared);
         // Size chart is loaded client-side; waiting here added up to 2.5s before
         // the first placeholder could render.
         return buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, null);

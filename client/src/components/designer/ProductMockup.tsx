@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
 import ArtworkTransformOverlay from "./ArtworkTransformOverlay";
+import { colorizeApparelBlank } from "./FlatProductPlacer/lib/flatRender";
 
 /** Magnification for the inline hover/tap zoom on composite mockup slides. */
 const ZOOM_SCALE = 2.2;
@@ -38,6 +39,8 @@ interface ProductMockupProps {
    * a re-harvest wipe). Typically the merchant catalog primary placeholder.
    */
   blankImageFallbackUrl?: string | null;
+  /** Recolor a shared default blank to the selected garment colour. */
+  blankColorizeHex?: string | null;
   /** The product's aspect ratio string, e.g. "3:4" or "2:1". Used to detect
    *  landscape products that need a scale-up to fill the container. */
   aspectRatio?: string;
@@ -333,6 +336,7 @@ export function ProductMockup({
   showSafeZone = false,
   blankImageUrl,
   blankImageFallbackUrl,
+  blankColorizeHex = null,
   aspectRatio,
   isAop = false,
   initialPreviewUrl,
@@ -346,8 +350,38 @@ export function ProductMockup({
   const [blankPrimaryFailed, setBlankPrimaryFailed] = useState(false);
   useEffect(() => {
     setBlankPrimaryFailed(false);
-    setBlankSrc(blankImageUrl || null);
-  }, [blankImageUrl, blankImageFallbackUrl]);
+    if (!blankImageUrl) {
+      setBlankSrc(null);
+      return;
+    }
+    const hex = blankColorizeHex && /^#?[0-9a-fA-F]{6}$/.test(blankColorizeHex)
+      ? blankColorizeHex.startsWith("#")
+        ? blankColorizeHex
+        : `#${blankColorizeHex}`
+      : null;
+    if (!hex) {
+      setBlankSrc(blankImageUrl);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (cancelled) return;
+      try {
+        setBlankSrc(colorizeApparelBlank(img, hex).toDataURL("image/jpeg", 0.88));
+      } catch {
+        setBlankSrc(blankImageUrl);
+      }
+    };
+    img.onerror = () => {
+      if (!cancelled) setBlankSrc(blankImageUrl);
+    };
+    img.src = blankImageUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [blankImageUrl, blankImageFallbackUrl, blankColorizeHex]);
   useEffect(() => {
     if (blankPrimaryFailed && blankImageFallbackUrl && blankImageFallbackUrl !== blankImageUrl) {
       setBlankSrc(blankImageFallbackUrl);

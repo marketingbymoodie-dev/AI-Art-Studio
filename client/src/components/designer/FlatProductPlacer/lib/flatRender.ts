@@ -161,7 +161,62 @@ export type FlatRenderInput = {
   };
   /** Calibrator / debug — toggle compositing stages. */
   previewLayers?: FlatPreviewLayers;
+  /**
+   * Recolor a shared/default apparel blank to the selected garment colour.
+   * Used when harvest only has one blank (canonical zip hoodie).
+   */
+  garmentColorHex?: string | null;
 };
+
+function parseCssHex(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/**
+ * Keep garment folds (source luminance) but shift chromaticity toward `hex`
+ * so Navy / Black / Sport Grey are distinguishable on a single harvested blank.
+ */
+export function colorizeApparelBlank(
+  source: CanvasImageSource,
+  hex: string,
+  width?: number,
+  height?: number,
+): HTMLCanvasElement {
+  const w =
+    width ||
+    (source instanceof HTMLImageElement
+      ? source.naturalWidth || source.width
+      : (source as HTMLCanvasElement).width);
+  const h =
+    height ||
+    (source instanceof HTMLImageElement
+      ? source.naturalHeight || source.height
+      : (source as HTMLCanvasElement).height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, w);
+  canvas.height = Math.max(1, h);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+  const rgb = parseCssHex(hex);
+  if (!rgb) return canvas;
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  const targetY = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 8) continue;
+    const y = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255;
+    const outY = Math.max(0, Math.min(1, y * 0.42 + targetY * 0.58));
+    d[i] = Math.round(rgb.r * outY);
+    d[i + 1] = Math.round(rgb.g * outY);
+    d[i + 2] = Math.round(rgb.b * outY);
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
   return {
@@ -2245,7 +2300,16 @@ export function renderFlatView(input: FlatRenderInput): void {
     fabricWeave = false,
     layerAdjust,
     previewLayers,
+    garmentColorHex = null,
   } = input;
+  const coloredBlank =
+    !edgeWrapMode &&
+    !decorMode &&
+    garmentColorHex &&
+    parseCssHex(garmentColorHex)
+      ? colorizeApparelBlank(blank, garmentColorHex)
+      : null;
+  const blankDrawSource = coloredBlank || blank;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
 
@@ -2507,7 +2571,7 @@ export function renderFlatView(input: FlatRenderInput): void {
   if (!ctx) return;
 
   ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(blank, 0, 0, W, H);
+  ctx.drawImage(blankDrawSource, 0, 0, W, H);
   if (!artwork) return;
 
   const { w: artW, h: artH } = imgDims(artwork);

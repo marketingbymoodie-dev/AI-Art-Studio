@@ -158,6 +158,19 @@ describe("resolveStorefrontHeadlinePrice", () => {
     expect(headline).toEqual({ amount: 32.95, showFrom: false });
   });
 
+  it("estimates a front+back headline when Print on Back is on but no both map exists", () => {
+    const headline = resolveStorefrontHeadlinePrice({
+      variants: [{ id: 1, price: "48.95" }],
+      sizeSelected: true,
+      matchedVariantId: "1",
+      bothPrice: null,
+      hasBothRetailPrices: false,
+      printPlacementUsesBoth: true,
+    });
+    expect(headline?.amount).toBeGreaterThan(48.95);
+    expect(headline?.showFrom).toBe(false);
+  });
+
   it("steps the headline up when both-tier is not above the live front price", () => {
     const headline = resolveStorefrontHeadlinePrice({
       variants: [{ id: 1, price: "48.95" }],
