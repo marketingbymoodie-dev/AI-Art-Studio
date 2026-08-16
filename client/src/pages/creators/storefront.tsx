@@ -10,7 +10,10 @@ import {
 } from "@/lib/creator-analytics";
 import { clearCreatorCart, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
-import { CreatorSavedDesignsMenu } from "@/components/creators/CreatorSavedDesignsMenu";
+import {
+  CreatorSavedDesignsMenu,
+  CreatorSignOutButton,
+} from "@/components/creators/CreatorSavedDesignsMenu";
 import { API_BASE } from "@/lib/urlBase";
 import { apiFetch, parseApiErrorMessage } from "@/lib/queryClient";
 import {
@@ -229,6 +232,7 @@ function StoreShell({
             >
               About
             </Link>
+            <CreatorSignOutButton />
             <CreatorSavedDesignsMenu
               username={creator.username}
               platformShop={platformShop}

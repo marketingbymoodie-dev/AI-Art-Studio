@@ -19,21 +19,73 @@ type ShopPage = {
   productTypeId: number | null;
 };
 
-function readLoggedInCustomerId(): string | null {
+function readLoggedInCustomer(): { id: string; email: string } | null {
   try {
     const raw = localStorage.getItem("appai_customer");
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed?.isLoggedIn && parsed?.id) return String(parsed.id);
+      if (parsed?.isLoggedIn && parsed?.id) {
+        return {
+          id: String(parsed.id),
+          email: typeof parsed.email === "string" ? parsed.email : "",
+        };
+      }
     }
   } catch {
     /* ignore */
   }
+  return null;
+}
+
+function readLoggedInCustomerId(): string | null {
+  const loggedIn = readLoggedInCustomer();
+  if (loggedIn?.id) return loggedIn.id;
   try {
     return localStorage.getItem("appai_customer_id");
   } catch {
     return null;
   }
+}
+
+function clearStorefrontLogin() {
+  try {
+    localStorage.removeItem("appai_customer_id");
+    localStorage.removeItem("appai_identity_token");
+    localStorage.removeItem("appai_otp_email");
+    localStorage.removeItem("appai_customer");
+    sessionStorage.removeItem("appai_customer");
+    sessionStorage.removeItem("appai_customer_id");
+    sessionStorage.removeItem("appai_identity_token");
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Same account button as the product embed — only when signed in. */
+export function CreatorSignOutButton() {
+  const [account, setAccount] = useState<{ id: string; email: string } | null>(() =>
+    readLoggedInCustomer(),
+  );
+
+  if (!account) return null;
+
+  return (
+    <button
+      type="button"
+      className="group text-muted-foreground hover:text-foreground"
+      title={account.email || "Signed in"}
+      onClick={() => {
+        clearStorefrontLogin();
+        setAccount(null);
+        window.location.reload();
+      }}
+    >
+      <span className="group-hover:hidden">Sign out</span>
+      <span className="hidden max-w-[10rem] truncate group-hover:inline">
+        {account.email || "Signed in"}
+      </span>
+    </button>
+  );
 }
 
 function thumbUrl(d: SavedDesign): string {
