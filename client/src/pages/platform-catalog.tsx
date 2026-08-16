@@ -15,6 +15,9 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2, Crosshair, Upload, RefreshCw, Trash2, Check } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 import {
   AlertDialog,
@@ -45,6 +48,7 @@ type CatalogProduct = {
   harvestComplete?: boolean;
   harvestOutcome?: "none" | "ready" | "unsupported" | "failed";
   harvestError?: string;
+  fabricWeaveTexture?: boolean | null;
   publish: PublishState;
 };
 
@@ -222,6 +226,30 @@ export default function PlatformCatalogPage() {
     onError: (e: Error) => toast({ title: "Remove failed", description: e.message, variant: "destructive" }),
   });
 
+  const weaveMutation = useMutation({
+    mutationFn: async ({
+      blueprintId,
+      fabricWeaveTexture,
+    }: {
+      blueprintId: number;
+      fabricWeaveTexture: boolean;
+    }) => {
+      const res = await apiRequest("PATCH", `/api/platform/canonical/${blueprintId}/fabric-weave`, {
+        fabricWeaveTexture,
+      });
+      return res.json();
+    },
+    onSuccess: (_body, vars) => {
+      toast({
+        title: vars.fabricWeaveTexture ? "Woven texture on" : "Woven texture off",
+        description: `Synced to imported product types for blueprint ${vars.blueprintId}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/canonical/products"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Couldn't update weave texture", description: e.message, variant: "destructive" }),
+  });
+
   const products = data?.products ?? [];
 
   const categories = useMemo(() => {
@@ -270,6 +298,8 @@ export default function PlatformCatalogPage() {
           <p className="mt-1 text-sm text-muted-foreground">
             Curated Printify products with shared calibration assets. Merchants only see allowlisted
             blueprints at import. Harvest once here, publish, then every merchant gets instant setup.
+            Merchant pricing, variants, and Art Styles stay on Customizer Pages. Draft Printify test
+            orders are sent from Preview Studio.
           </p>
         </div>
 
@@ -427,6 +457,25 @@ export default function PlatformCatalogPage() {
                       {harvestFailed && p.harvestError && (
                         <p className="w-full text-xs text-destructive">{p.harvestError}</p>
                       )}
+                      <div className="flex w-full items-center gap-2 pt-1">
+                        <Switch
+                          id={`weave-${p.blueprintId}`}
+                          checked={resolveFabricWeaveTexture({
+                            fabricWeaveTexture: p.fabricWeaveTexture,
+                            printifyBlueprintId: p.blueprintId,
+                          })}
+                          disabled={weaveMutation.isPending}
+                          onCheckedChange={(checked) =>
+                            weaveMutation.mutate({
+                              blueprintId: p.blueprintId,
+                              fabricWeaveTexture: checked,
+                            })
+                          }
+                        />
+                        <Label htmlFor={`weave-${p.blueprintId}`} className="text-xs cursor-pointer">
+                          Woven fabric texture (mockup)
+                        </Label>
+                      </div>
                     </>
                   )}
                   {p.kind === "aop" && (

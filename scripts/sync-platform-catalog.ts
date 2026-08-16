@@ -42,6 +42,7 @@ type Row = {
   storefront_mockup_mode: string | null;
   fulfillment_layout: string | null;
   force_flat_harvest: boolean;
+  fabric_weave_texture: boolean | null;
   notes: string | null;
 };
 
@@ -62,6 +63,7 @@ async function main() {
         storefront_mockup_mode,
         fulfillment_layout,
         force_flat_harvest,
+        fabric_weave_texture,
         notes
       FROM platform_catalog_blueprints
       ORDER BY printify_blueprint_id
@@ -76,11 +78,11 @@ async function main() {
         INSERT INTO platform_catalog_blueprints (
           printify_blueprint_id, label, brand, category, kind, status,
           panel_mapping_template, storefront_mockup_mode, fulfillment_layout,
-          force_flat_harvest, notes, tagged_at, updated_at
+          force_flat_harvest, fabric_weave_texture, notes, tagged_at, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6,
           $7, $8, $9,
-          $10, $11, NOW(), NOW()
+          $10, $11, $12, NOW(), NOW()
         )
         ON CONFLICT (printify_blueprint_id) DO UPDATE SET
           label = EXCLUDED.label,
@@ -92,6 +94,7 @@ async function main() {
           storefront_mockup_mode = EXCLUDED.storefront_mockup_mode,
           fulfillment_layout = EXCLUDED.fulfillment_layout,
           force_flat_harvest = EXCLUDED.force_flat_harvest,
+          fabric_weave_texture = EXCLUDED.fabric_weave_texture,
           notes = EXCLUDED.notes,
           updated_at = NOW()
         `,
@@ -106,6 +109,7 @@ async function main() {
           r.storefront_mockup_mode,
           r.fulfillment_layout,
           r.force_flat_harvest,
+          r.fabric_weave_texture,
           r.notes,
         ],
       );

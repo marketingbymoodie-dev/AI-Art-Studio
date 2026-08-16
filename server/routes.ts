@@ -79,7 +79,7 @@ import {
   usesAopStorefrontCustomizer,
   usesToteFoldedFulfillment,
 } from "@shared/productLayoutPolicy";
-import { resolveFabricWeaveTexture, WOVEN_WALL_TAPESTRY_BLUEPRINT_ID } from "@shared/fabricWeave";
+import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
   apparelMotifDesignColors,
   buildAopPatternSizingRequirements,
@@ -15807,7 +15807,10 @@ ${orientationExtra}
           catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
         storefrontMockupMode: catalogStorefrontMode,
         fulfillmentLayout: catalogFulfillmentLayout,
-        fabricWeaveTexture: blueprintIdNum === WOVEN_WALL_TAPESTRY_BLUEPRINT_ID,
+        fabricWeaveTexture: resolveFabricWeaveTexture({
+          fabricWeaveTexture: catalogEntry.fabricWeaveTexture,
+          printifyBlueprintId: blueprintIdNum,
+        }),
         isActive: true,
         sortOrder: existingTypes.length,
         ...(printifyCostsAtImport ? { printifyCosts: printifyCostsAtImport } : {}),

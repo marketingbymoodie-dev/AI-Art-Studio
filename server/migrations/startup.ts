@@ -76,6 +76,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "storefront_mockup_mode", type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "fulfillment_layout",       type: "TEXT" },
   { table: "platform_catalog_blueprints", column: "force_flat_harvest",       type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "platform_catalog_blueprints", column: "fabric_weave_texture",     type: "BOOLEAN" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },

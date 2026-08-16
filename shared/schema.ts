@@ -1388,6 +1388,8 @@ export const platformCatalogBlueprints = pgTable("platform_catalog_blueprints", 
   fulfillmentLayout: text("fulfillment_layout"),
   /** When true, allow flat catalog tag/harvest despite (AOP) in the Printify title */
   forceFlatHarvest: boolean("force_flat_harvest").notNull().default(false),
+  /** Procedural woven-fabric texture on flat mockups. Null = blueprint default (tapestry 1649 on). */
+  fabricWeaveTexture: boolean("fabric_weave_texture"),
   notes: text("notes"),
   taggedAt: timestamp("tagged_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

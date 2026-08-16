@@ -192,6 +192,26 @@ export async function upsertPlatformCatalogTag(args: {
   return row;
 }
 
+export async function updatePlatformCatalogFabricWeave(
+  blueprintId: number,
+  fabricWeaveTexture: boolean,
+): Promise<PlatformCatalogEntry> {
+  const existing = await getPlatformCatalogEntry(blueprintId);
+  if (!existing) {
+    throw new Error(`Blueprint ${blueprintId} is not in the platform catalog`);
+  }
+  const [row] = await db
+    .update(platformCatalogBlueprints)
+    .set({
+      fabricWeaveTexture,
+      updatedAt: new Date(),
+    })
+    .where(eq(platformCatalogBlueprints.printifyBlueprintId, blueprintId))
+    .returning();
+  invalidatePlatformCatalogCache();
+  return row;
+}
+
 export async function markPlatformCatalogPublished(
   blueprintId: number,
 ): Promise<PlatformCatalogEntry | undefined> {

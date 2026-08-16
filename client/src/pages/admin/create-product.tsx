@@ -324,7 +324,7 @@ export default function AdminCreateProduct() {
             </div>
           ) : productTypes.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No active product types found. Import or activate products under Products first.
+              No products ready yet. Open Products to Preview or Create Page first.
             </p>
           ) : (
             <Select
