@@ -2735,6 +2735,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  /** Placement already saved on that job — a later scale/move ATC forks a new saved design. */
+  const placementFrozenSigRef = useRef<string | null>(null);
   // admin-tester has no shop URL param — the admin generate endpoint returns the job's
   // shop so applied AOP panels can be persisted for "Send a Test Order to Printify".
   const savedJobShopRef = useRef<string | null>(null);
@@ -4259,6 +4261,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
+    placementFrozenSigRef.current = null;
     // Keep flat placer open in the admin tester so dashed print guides + trim
     // warnings stay visible after opening a saved design (merchant QA).
     // Apply-to-product also wants the editor; other loads land on mockups.
@@ -4369,6 +4372,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (ds.flatPlacerState && typeof ds.flatPlacerState === 'object') {
         const fps = ds.flatPlacerState as FlatProductPlacerState;
         setFlatPlacerState(fps);
+        placementFrozenSigRef.current = encodeFlatLinePlacement(fps);
         // Flat PRINT ON FRONT/BACK toggles are the source of truth for pricing on
         // flat products (Print Side dropdown is often unused). Sync printPlacement
         // so front+back retail / ATC surcharge apply to resumed designs.
@@ -7261,6 +7265,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      placementFrozenSigRef.current = null;
       savedJobShopRef.current = data.jobShop || null;
       // New artwork — seed framed default scale into placer (110% → 1.1) so bake
       // matches what the gallery used to show as Zoom; clear stale fronts.
@@ -8540,6 +8545,43 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     flatClipConfirmProceedRef.current = false;
 
+    // Changing scale/placement on a saved design must not overwrite that job —
+    // Printify would reprint the original (or the latest) for every cart line.
+    if (usesFlatOnTheFlyPreview && !flatRenderFailed) {
+      const liveForFork = flatPlacerRef.current?.getState() || flatPlacerState;
+      const liveSig = encodeFlatLinePlacement(liveForFork);
+      const frozenSig = placementFrozenSigRef.current;
+      if (liveSig && frozenSig && liveSig !== frozenSig && savedJobIdRef.current) {
+        const forkShop = shopDomain || savedJobShopRef.current;
+        if (forkShop) {
+          try {
+            const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-placement`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                shop: forkShop,
+                sourceJobId: savedJobIdRef.current,
+                creatorId: creatorIdParam || undefined,
+                creatorSessionId: creatorSessionIdRef.current || undefined,
+                designState: {
+                  flatPlacerState: liveForFork,
+                  selectedSize: selectedSize || null,
+                  selectedFrameColor: selectedFrameColor || null,
+                },
+              }),
+            });
+            const forkJson = await forkRes.json().catch(() => ({}));
+            if (forkRes.ok && forkJson?.jobId) {
+              savedJobIdRef.current = String(forkJson.jobId);
+              placementFrozenSigRef.current = liveSig;
+            }
+          } catch (forkErr) {
+            console.warn("[Design Studio] fork-placement failed:", forkErr);
+          }
+        }
+      }
+    }
+
     // Only re-raster/upload when placement actually changed — a clean Apply
     // already left https mockup URLs ready for shadow SKU + cart.
     const flatNeedsFlush = !!(
@@ -8853,6 +8895,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           itemCount: Number(cartData.itemCount) || (existingCart?.itemCount || 0) + 1,
           username: creatorUsernameParam,
         });
+        placementFrozenSigRef.current = encodeFlatLinePlacement(
+          flatPlacerRef.current?.getState() || flatPlacerState,
+        );
         setAddedToCart(true);
         const itemCount = Number(cartData.itemCount) || 1;
         toast({
@@ -11294,18 +11339,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     postGenGalleryItems,
   ]);
 
-  // Framed decor + catalog blanks + tapestry + phone cases + folded/flat totes share on-demand Printify.
-  // Apron AOP has no Printify lifestyle/context cameras — hide the button.
+  // Framed decor + catalog blanks + tapestry + phone cases + folded/flat totes + aprons.
+  // Aprons are apparel but Printify still has Lifestyle Woman / Man cameras.
   const looksLikeApron = /apron/i.test(
     `${productTypeConfig?.name || ""} ${activeProductContext.pageHandle || ""} ${productTitle} ${displayName}`,
   );
   const canRequestLifestyleShot = !!(
-    !looksLikeApron &&
     (flatDecorMode ||
       isCatalogSizeBlankBlueprint(productTypeConfig?.printifyBlueprintId) ||
       flatFabricWeave ||
       flatEdgeWrapMode ||
       toteFoldedLayout ||
+      looksLikeApron ||
       (flatPlacerEligible && !isApparel)) &&
     flatPlacerEligible &&
     productTypeConfig?.hasPrintifyMockups &&

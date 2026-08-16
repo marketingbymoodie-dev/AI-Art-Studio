@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   creatorCartLinesToOrderLines,
+  looksLikeApronProduct,
   pickFlatOrderArtworkUrl,
   pickFlatOrderSizeColor,
+  placementForPrintMatch,
   resolveGenerationJobIdForOrderLine,
   resolvePrintifyTarget,
+  shouldUseFlatBake,
   usablePrintArtworkUrl,
 } from "./flat-order-fulfillment";
 import type { ProductType } from "@shared/schema";
@@ -162,5 +165,34 @@ describe("creatorCartLinesToOrderLines", () => {
         },
       },
     ]);
+  });
+});
+
+describe("shouldUseFlatBake", () => {
+  it("uses the flat bake for calibrated AOP when a line snapshot exists", () => {
+    expect(
+      shouldUseFlatBake({
+        onTheFlyTier: null,
+        hasFlatCalibrationViews: true,
+        hasLineOrJobFlatPlacement: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseFlatBake({
+        onTheFlyTier: null,
+        hasFlatCalibrationViews: true,
+        hasLineOrJobFlatPlacement: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("placementForPrintMatch", () => {
+  it("shrinks apron print scale to match the in-app mockup", () => {
+    expect(looksLikeApronProduct({ name: "Custom Apron (AOP)" })).toBe(true);
+    expect(placementForPrintMatch({ scale: 1, offsetX: 0, offsetY: 0 }, true).scale).toBeCloseTo(
+      0.95,
+    );
+    expect(placementForPrintMatch({ scale: 1.1, offsetX: 0, offsetY: 0 }, false).scale).toBe(1.1);
   });
 });

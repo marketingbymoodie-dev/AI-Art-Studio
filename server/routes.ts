@@ -9321,6 +9321,60 @@ ${orientationExtra}
     }
   });
 
+  /** New saved design when the customer changes placement/scale on an existing job. */
+  app.post("/api/storefront/fork-placement", async (req: Request, res: Response) => {
+    try {
+      const { shop, sourceJobId, designState, creatorId, creatorSessionId } = req.body || {};
+      if (!shop || !sourceJobId) {
+        return res.status(400).json({ error: "shop and sourceJobId are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shop))) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const source = await storage.getGenerationJob(String(sourceJobId));
+      if (!source || source.shop !== String(shop).toLowerCase().replace(/^https?:\/\//, "")) {
+        return res.status(404).json({ error: "Source design not found" });
+      }
+      const prevState =
+        source.designState && typeof source.designState === "object" && !Array.isArray(source.designState)
+          ? (source.designState as Record<string, unknown>)
+          : {};
+      const patch =
+        designState && typeof designState === "object" && !Array.isArray(designState)
+          ? (designState as Record<string, unknown>)
+          : {};
+      const job = await storage.createGenerationJob({
+        shop: source.shop,
+        sessionId: source.sessionId,
+        customerId: source.customerId,
+        creatorId: source.creatorId || (typeof creatorId === "string" ? creatorId : null),
+        creatorSessionId:
+          source.creatorSessionId || (typeof creatorSessionId === "string" ? creatorSessionId : null),
+        status: "complete",
+        prompt: source.prompt,
+        userPrompt: source.userPrompt,
+        stylePreset: source.stylePreset,
+        size: source.size,
+        frameColor: source.frameColor,
+        productTypeId: source.productTypeId,
+        referenceImageUrl: source.referenceImageUrl,
+        designImageUrl: source.designImageUrl,
+        thumbnailUrl: source.thumbnailUrl,
+        designState: { ...prevState, ...patch },
+        billingMode: source.billingMode,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      });
+      return res.json({ jobId: job.id, saved: true });
+    } catch (err: any) {
+      console.error("[ForkPlacement]", err);
+      return res.status(500).json({ error: "Failed to fork placement" });
+    }
+  });
+
   // ==================== STOREFRONT SAVE DESIGN STATE ====================
   app.post("/api/storefront/save-state", async (req: Request, res: Response) => {
     try {

@@ -453,6 +453,17 @@ export async function resolveDesignForOrderLine(
     printifyBlueprintId: productType.printifyBlueprintId,
   });
 
+  const flatCalibrationEarly = parseJson<any>(productType.flatCalibration, null);
+  const hasFlatViews = !!(
+    flatCalibrationEarly?.views && Object.keys(flatCalibrationEarly.views).length > 0
+  );
+  const lineFlatEarly = decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
+  const useFlatBake = shouldUseFlatBake({
+    onTheFlyTier: productType.onTheFlyTier,
+    hasFlatCalibrationViews: hasFlatViews,
+    hasLineOrJobFlatPlacement: !!(lineFlatEarly || flatPlacerState?.placements),
+  });
+
   if (toteFolded) {
     if (!productType.merchantId) {
       return { ok: false, skip: false, reason: `product type ${productTypeId} has no merchant` };
@@ -501,7 +512,7 @@ export async function resolveDesignForOrderLine(
   }
 
   const tier = productType.onTheFlyTier;
-  if (tier !== "flat" && tier !== "mesh") {
+  if (!useFlatBake) {
     // Design products (My Designs → List as product) outside the flat/mesh/tote_folded
     // tiers (e.g. AOP, static/single-image products) have no on-the-fly bake path at
     // all — their artwork was already baked into a persistent Printify product at
@@ -585,7 +596,7 @@ export async function resolveDesignForOrderLine(
 
     return { ok: false, skip: true, reason: `product type ${productTypeId} tier=${tier ?? "none"} not flat/mesh` };
   }
-  const flatCalibration = parseJson<any>(productType.flatCalibration, null);
+  const flatCalibration = flatCalibrationEarly;
   if (!flatCalibration || !flatCalibration.views || Object.keys(flatCalibration.views).length === 0) {
     return { ok: false, skip: true, reason: `product type ${productTypeId} has no flat calibration manifest` };
   }
@@ -601,7 +612,7 @@ export async function resolveDesignForOrderLine(
 
   // Placement + enabled flags (front defaults on, back defaults off — mirrors the placer).
   // Cart-line snapshot wins so two ATCs from the same job keep independent placements.
-  const lineFlat = decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
+  const lineFlat = lineFlatEarly ?? decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
   const placements: Partial<Record<ViewName, FlatPlacement>> = {};
   const enabled: Record<ViewName, boolean> = { front: true, back: false };
   for (const v of VIEWS) {
@@ -665,6 +676,38 @@ export type PrintifyTarget = {
   providerId: number;
   printifyVariantId: number;
 };
+
+/** Flat-calibrated AOP (apron) must bake from placer state, not stale job panels. */
+export function shouldUseFlatBake(args: {
+  onTheFlyTier?: string | null;
+  hasFlatCalibrationViews: boolean;
+  hasLineOrJobFlatPlacement: boolean;
+}): boolean {
+  if (!args.hasFlatCalibrationViews) return false;
+  if (args.onTheFlyTier === "flat" || args.onTheFlyTier === "mesh") return true;
+  return args.hasLineOrJobFlatPlacement;
+}
+
+export function looksLikeApronProduct(productType: {
+  name?: string | null;
+  designerType?: string | null;
+}): boolean {
+  return /apron/i.test(`${productType.name || ""} ${productType.designerType || ""}`);
+}
+
+/** Printify apron mockups read ~5% larger than the in-app placer. Shrink the bake. */
+export const APRON_PRINT_SCALE_MATCH = 0.95;
+
+export function placementForPrintMatch(
+  placement: FlatPlacement,
+  shrinkToMatchPreview: boolean,
+): FlatPlacement {
+  if (!shrinkToMatchPreview) return placement;
+  return {
+    ...placement,
+    scale: Number(placement.scale ?? 1) * APRON_PRINT_SCALE_MATCH,
+  };
+}
 
 /**
  * Resolve the Printify blueprint / provider / variant for a product type +
@@ -733,7 +776,10 @@ async function buildPrintAreasForDesign(
       frameColorId: design.colorId,
     });
     if (!dims?.width || !dims.height) continue;
-    const placement = design.placements[view] ?? { scale: 1, offsetX: 0, offsetY: 0 };
+    const placement = placementForPrintMatch(
+      design.placements[view] ?? { scale: 1, offsetX: 0, offsetY: 0 },
+      looksLikeApronProduct(design.productType),
+    );
     const placementRect = resolveFlatBakePlacementRect(design.flatCalibration, view, {
       sizeId: design.sizeId,
       frameColorId: design.colorId,
