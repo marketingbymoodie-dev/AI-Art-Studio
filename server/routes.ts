@@ -16875,8 +16875,10 @@ ${orientationExtra}
   const KNOWN_DUAL_SIDED_BLUEPRINTS = new Set<number>([
     26, // Men's Lightweight Fashion Tee
     79, // Unisex 3/4 Sleeve Baseball Tee
+    5, // Unisex Cotton Crew Tee (Printify Choice / known-good wizard)
     6, // Unisex Cotton Crew Tee (common)
     12, // Unisex Heavy Cotton Tee
+    66, // Unisex Heavy Blend Full Zip Hooded Sweatshirt (Gildan 18600)
     77, // Unisex Heavy Blend Hooded Sweatshirt
     49, // Unisex Heavy Blend Crewneck
   ]);
@@ -16891,9 +16893,11 @@ ${orientationExtra}
       placeholderPositionsJson?: string | null;
       doubleSidedPrint?: boolean | null;
       sampleVariantId?: number | null;
+      hasBackView?: boolean;
     },
   ): Promise<boolean> {
     if (opts?.isAllOverPrint) return false;
+    if (opts?.hasBackView) return true;
     if (KNOWN_DUAL_SIDED_BLUEPRINTS.has(Number(blueprintId))) return true;
     try {
       const positions: { position?: string }[] =
@@ -16950,9 +16954,13 @@ ${orientationExtra}
       images.front ||
       (Object.values(images).find((v) => typeof v === "string") as string | undefined);
     const probeImageId = await ensureCostProbeImageId(args.apiToken, mockupUrl);
-    const imageSpec = probeImageId
-      ? { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }
-      : null;
+    // Printify only adds the back-print fee when the back placeholder has art
+    // (empty back = front-only COGS). Never probe both-sides with empty images.
+    if (!probeImageId) {
+      console.warn("[Printify Costs] Front+back probe skipped — no probe image id");
+      return {};
+    }
+    const imageSpec = { id: probeImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 };
     // OOS-heavy providers (baseball) often fail large chunks — try progressively.
     const seen = new Set<string>();
     const attempts: number[][] = [];
@@ -16965,29 +16973,26 @@ ${orientationExtra}
     }
 
     for (const chunk of attempts) {
-      const specs = imageSpec ? [imageSpec, null] : [null];
-      for (const spec of specs) {
-        const bothProbe = await tryCreateTempProductForCosts(
-          args.shopId,
-          args.apiToken,
-          args.blueprintId,
-          args.providerId,
-          chunk,
-          ["front", "back"],
-          spec,
+      const bothProbe = await tryCreateTempProductForCosts(
+        args.shopId,
+        args.apiToken,
+        args.blueprintId,
+        args.providerId,
+        chunk,
+        ["front", "back"],
+        imageSpec,
+      );
+      if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
+        console.log(
+          `[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs` +
+            ` (n=${chunk.length}, image on front+back)`,
         );
-        if (bothProbe.success && Object.keys(bothProbe.costs).length > 0) {
-          console.log(
-            `[Printify Costs] Front+back probe extracted ${Object.keys(bothProbe.costs).length} costs` +
-              ` (n=${chunk.length}${spec ? ", with image" : ", empty images"})`,
-          );
-          return bothProbe.costs;
-        }
-        console.warn(
-          `[Printify Costs] Front+back probe failed n=${chunk.length}` +
-            ` (${bothProbe.status}): ${bothProbe.error?.slice(0, 160)}`,
-        );
+        return bothProbe.costs;
       }
+      console.warn(
+        `[Printify Costs] Front+back probe failed n=${chunk.length}` +
+          ` (${bothProbe.status}): ${bothProbe.error?.slice(0, 160)}`,
+      );
     }
     return {};
   }
@@ -18134,6 +18139,16 @@ ${orientationExtra}
 
       async function detectHasBackPlaceholder(): Promise<boolean> {
         const sampleVid = [...currentPrintifyVariantIds][0] ?? null;
+        let hasBackView = false;
+        try {
+          const fc =
+            typeof (productType as any).flatCalibration === "string"
+              ? JSON.parse((productType as any).flatCalibration || "{}")
+              : (productType as any).flatCalibration;
+          hasBackView = !!(fc?.views?.back);
+        } catch {
+          hasBackView = false;
+        }
         return catalogHasBackPlaceholder(
           productType.printifyBlueprintId!,
           productType.printifyProviderId!,
@@ -18146,6 +18161,7 @@ ${orientationExtra}
                 : JSON.stringify(productType.placeholderPositions || []),
             doubleSidedPrint: !!productType.doubleSidedPrint,
             sampleVariantId: sampleVid,
+            hasBackView,
           },
         );
       }
@@ -18341,6 +18357,17 @@ ${orientationExtra}
           variantIds: printifyVariantIds,
           baseMockupImages,
         });
+        // Empty back art returns the same COGS as front-only — do not store that as both-tier.
+        const bothIds = Object.keys(costsBoth);
+        const sameAsFront =
+          bothIds.length > 0 &&
+          bothIds.every((id) => costs[id] != null && Math.abs(costs[id] - costsBoth[id]) < 1);
+        if (sameAsFront) {
+          console.warn(
+            `[Printify Costs] Front+back probe matched front-only COGS for blueprint ${productType.printifyBlueprintId} — discarding both-tier`,
+          );
+          costsBoth = {};
+        }
       } else if (hasBackPlaceholder && !shopId?.trim()) {
         console.warn(
           "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",

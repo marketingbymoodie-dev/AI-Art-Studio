@@ -114,7 +114,7 @@ export default function ResyncPricesDialog({
     return deduped;
   }, [blank?.variants]);
 
-  const { data: costsData, isLoading: costsLoading, refetch: refetchCosts } = useQuery<CostsResponse>({
+  const { data: costsData, isLoading: costsLoading } = useQuery<CostsResponse>({
     queryKey: ["/api/admin/printify/costs", productTypeId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${productTypeId}`);
@@ -315,8 +315,12 @@ export default function ResyncPricesDialog({
       // Clear this product type only (works for platform-owned rows too), then force a fresh GET.
       await apiRequest("POST", "/api/admin/printify/costs/clear-cache", { productTypeId });
       queryClient.removeQueries({ queryKey: ["/api/admin/printify/costs", productTypeId] });
-      const result = await refetchCosts();
-      const data = result.data;
+      const res = await apiRequest(
+        "GET",
+        `/api/admin/printify/costs/${productTypeId}?refresh=1`,
+      );
+      const data = (await res.json()) as CostsResponse;
+      queryClient.setQueryData(["/api/admin/printify/costs", productTypeId], data);
       const frontCount = data?.costs ? Object.keys(data.costs).length : 0;
       const bothReady = !!(data?.supportsBothSides && data?.costsBoth && Object.keys(data.costsBoth).length > 0);
       if (frontCount === 0) {
@@ -334,7 +338,7 @@ export default function ResyncPricesDialog({
         title: bothReady ? "Front + front/back costs loaded" : "Costs refreshed",
         description: bothReady
           ? "Front-only and front+back production costs are ready — Apply All Suggested to fill both columns."
-          : `Loaded ${frontCount} front costs. If this product has a back print area and you still see one column, check Printify Shop ID in Settings and try again.`,
+          : `Loaded ${frontCount} front costs, but Printify did not return a higher front+back tier. The probe must place art on the back (same as Printify's own quote). Check Printify Shop ID in Settings and try Refresh Costs again.`,
       });
     } catch (err: any) {
       toast({
