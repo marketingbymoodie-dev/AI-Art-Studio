@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useSearch } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   CREATOR_PAYOUT_METHODS,
@@ -41,12 +41,33 @@ import { Loader2 } from "lucide-react";
 
 type Track = "creator" | "shopify";
 
+function applyTrackFromSearch(search: string): Track {
+  const query = search.startsWith("?") ? search.slice(1) : search;
+  return new URLSearchParams(query).get("track") === "shopify" ? "shopify" : "creator";
+}
+
+const APPLY_PRIVACY: Record<Track, { title: string; body: string }> = {
+  creator: {
+    title: "Your Privacy",
+    body: `We value your privacy and will never sell, share, or rent your personal information to anyone.
+
+We may ask for your permission to share your success story with us to help further market the Studio app. That is always optional.
+
+You choose the personal information you want to share as a Creator Profile on our Creators platform. The minimum required is your storefront name and social handle.`,
+  },
+  shopify: {
+    title: "Your Privacy",
+    body: `We value your privacy and will never sell, share, or rent your personal information to anyone.
+
+We may ask for your permission to share your success story with us to help further market the Studio app. That is always optional.
+
+We use the details on this form — including your name, email, and Shopify store URL — only to review your application and set up merchant access.`,
+  },
+};
+
 export default function CreatorApplyPage() {
-  const [location] = useLocation();
-  const track: Track = useMemo(() => {
-    const query = location.includes("?") ? location.slice(location.indexOf("?")) : window.location.search;
-    return new URLSearchParams(query).get("track") === "shopify" ? "shopify" : "creator";
-  }, [location]);
+  const [search] = useSearch();
+  const track = useMemo(() => applyTrackFromSearch(search), [search]);
 
   const { data } = useQuery<{ content: LandingContent }>({
     queryKey: ["/api/creators/landing"],
@@ -61,6 +82,7 @@ export default function CreatorApplyPage() {
   const [submittedId, setSubmittedId] = useState<string | null>(null);
   const [terms, setTerms] = useState(false);
   const [termsOpen, setTermsOpen] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [form, setForm] = useState({
     firstName: "",
     lastName: "",
@@ -79,6 +101,12 @@ export default function CreatorApplyPage() {
     const t = window.setTimeout(() => setShopNameQuery(form.shopName.trim()), 350);
     return () => window.clearTimeout(t);
   }, [form.shopName]);
+
+  useEffect(() => {
+    setTerms(false);
+    setTermsOpen(false);
+    setPrivacyOpen(false);
+  }, [track]);
 
   const shopHandle = shopNameToHandle(form.shopName);
   const { data: shopAvail } = useQuery<{
@@ -216,7 +244,7 @@ export default function CreatorApplyPage() {
           <Field label="Shop name">
             <Input
               required
-              placeholder="Mad Clown Core"
+              placeholder="Your Shop Name"
               value={form.shopName}
               onChange={(e) => set("shopName", e.target.value)}
               data-testid="creator-apply-shop-name"
@@ -313,13 +341,22 @@ export default function CreatorApplyPage() {
             />
             <div className="space-y-1">
               <p>{termsText}</p>
-              <button
-                type="button"
-                className="underline underline-offset-2 text-white/85 hover:text-white"
-                onClick={() => setTermsOpen(true)}
-              >
-                {termsCopy.checkboxes.readFullTermsLabel}
-              </button>
+              <p className="space-x-3">
+                <button
+                  type="button"
+                  className="underline underline-offset-2 text-white/85 hover:text-white"
+                  onClick={() => setTermsOpen(true)}
+                >
+                  {termsCopy.checkboxes.readFullTermsLabel}
+                </button>
+                <button
+                  type="button"
+                  className="underline underline-offset-2 text-white/85 hover:text-white"
+                  onClick={() => setPrivacyOpen(true)}
+                >
+                  Your Privacy
+                </button>
+              </p>
             </div>
           </div>
 
@@ -351,6 +388,28 @@ export default function CreatorApplyPage() {
                 className="text-sm underline underline-offset-2"
               >
                 Open the full Terms of Use
+              </a>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={privacyOpen} onOpenChange={setPrivacyOpen}>
+            <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{APPLY_PRIVACY[track].title}</DialogTitle>
+              </DialogHeader>
+              <div
+                className="space-y-3 text-sm leading-relaxed"
+                dangerouslySetInnerHTML={{
+                  __html: renderTermsBodyHtml(APPLY_PRIVACY[track].body),
+                }}
+              />
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm underline underline-offset-2"
+              >
+                Open the full Privacy Policy
               </a>
             </DialogContent>
           </Dialog>
