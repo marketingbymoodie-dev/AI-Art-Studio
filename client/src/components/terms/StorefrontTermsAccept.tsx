@@ -22,7 +22,7 @@ export function useStorefrontTermsAccept(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     try {
-      setAcceptedState(window.localStorage.getItem(storageKey) === "1");
+      setAcceptedState(window.sessionStorage.getItem(storageKey) === "1");
     } catch {
       setAcceptedState(false);
     }
@@ -31,8 +31,8 @@ export function useStorefrontTermsAccept(enabled: boolean) {
   const setAccepted = (value: boolean) => {
     setAcceptedState(value);
     try {
-      if (value) window.localStorage.setItem(storageKey, "1");
-      else window.localStorage.removeItem(storageKey);
+      if (value) window.sessionStorage.setItem(storageKey, "1");
+      else window.sessionStorage.removeItem(storageKey);
     } catch {
       /* ignore quota / privacy mode */
     }
@@ -63,7 +63,7 @@ export function StorefrontTermsAccept({
         data-testid="checkbox-storefront-terms"
       />
       <span>
-        {content.checkboxes.storefrontAccept}{" "}
+        {accepted ? "Generation Terms" : content.checkboxes.storefrontAccept}{" "}
         <a
           href="/terms#customers"
           target="_blank"
