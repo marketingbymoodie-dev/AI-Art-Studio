@@ -2,7 +2,7 @@
  * Resolve creator storefronts from Host subdomain or /c/:username path.
  * Also exposes public API validation for generate / analytics / cart (Phase 10).
  */
-import { eq, inArray, or } from "drizzle-orm";
+import { eq, inArray, isNotNull, or } from "drizzle-orm";
 import type { Request } from "express";
 import { db } from "./db";
 import { creatorApplications, creators, type Creator } from "@shared/schema";
@@ -191,12 +191,50 @@ export async function lookupCreatorByUsername(username: string): Promise<Creator
   const [row] = await db
     .select()
     .from(creators)
-    .where(or(eq(creators.username, key), eq(creators.subdomain, key)))
+    .where(
+      or(
+        eq(creators.username, key),
+        eq(creators.subdomain, key),
+        eq(creators.previousUsername, key),
+      ),
+    )
     .limit(1);
 
-  const creator = row ?? null;
-  cache.set(key, { at: Date.now(), creator });
-  return creator;
+  if (row) {
+    cache.set(key, { at: Date.now(), creator: row });
+    return row;
+  }
+
+  const compact = key.replace(/[^a-z0-9]/g, "");
+  const appRows = await db
+    .select({
+      creatorId: creatorApplications.creatorId,
+      shopName: creatorApplications.shopName,
+    })
+    .from(creatorApplications)
+    .where(isNotNull(creatorApplications.creatorId))
+    .limit(200);
+  const appMatch = appRows.find((a) => {
+    const shop = String(a.shopName || "").trim();
+    if (!shop || !a.creatorId) return false;
+    const handle = shopNameToHandle(shop);
+    const compacted = shop.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return handle === key || compacted === compact;
+  });
+  if (appMatch?.creatorId) {
+    const [viaApp] = await db
+      .select()
+      .from(creators)
+      .where(eq(creators.id, appMatch.creatorId))
+      .limit(1);
+    if (viaApp) {
+      cache.set(key, { at: Date.now(), creator: viaApp });
+      return viaApp;
+    }
+  }
+
+  cache.set(key, { at: Date.now(), creator: null });
+  return null;
 }
 
 export function invalidateCreatorHostCache(username?: string): void {
@@ -360,6 +398,7 @@ export async function renameCreatorHandle(opts: {
     .update(creators)
     .set({
       username: next,
+      previousUsername: opts.currentUsername,
       subdomain: next,
       updatedAt: new Date(),
     })

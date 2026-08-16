@@ -73,7 +73,7 @@ export function HowToLibrary({ audience, fetcher, chrome = "admin" }: Props) {
           }
         >
           <BookOpen className="mb-2 h-5 w-5" />
-          No How To articles yet. AppAI will add them here as we find things that need explaining.
+          No How To articles yet. AI Art Studio will add them here as we find things that need explaining.
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">

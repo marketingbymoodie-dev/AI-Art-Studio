@@ -116,6 +116,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creator_applications",   column: "socials",                    type: "JSONB" },
   { table: "creators",               column: "socials",                    type: "JSONB" },
   { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "creators",                  column: "previous_username",       type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -1042,6 +1043,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       CREATE TABLE IF NOT EXISTS "creators" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
         "username" text NOT NULL,
+        "previous_username" text,
         "subdomain" text NOT NULL,
         "display_name" text NOT NULL,
         "email" text NOT NULL,

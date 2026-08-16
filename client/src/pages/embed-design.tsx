@@ -1595,6 +1595,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       shopName: creatorUsernameParam,
       returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
     });
+    let cancelled = false;
+    fetch(`${API_BASE}/api/creators/storefront/${encodeURIComponent(creatorUsernameParam)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (cancelled) return;
+        const creator = json?.creator as { username?: string; publicName?: string } | undefined;
+        if (!creator?.username) return;
+        writeLastCreatorVisit({
+          username: creator.username,
+          shopName: creator.publicName || creator.username,
+          returnUrl: currentCreatorReturnUrl(creator.username),
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [isCreatorStorefront, creatorUsernameParam]);
   const creatorSessionIdRef = useRef<string>(
     typeof window !== "undefined" ? getOrCreateCreatorSessionId() : "",

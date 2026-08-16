@@ -281,6 +281,7 @@ const LUXE_CSS = `
   }
   .luxe-btn-white { border: 0; background: #fff; color: #111; box-shadow: 0 0 28px rgba(190, 150, 255, 0.55); }
   .luxe-btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.55); }
+  .luxe-btn-return { text-transform: none; letter-spacing: 0.02em; font-size: 12px; }
   .luxe-window {
     width: min(860px, 94vw); border-radius: 28px; border: 1px solid rgba(255,255,255,0.12);
     background: #0c0c12; box-shadow: 0 0 80px rgba(90, 140, 255, 0.2); overflow: hidden;

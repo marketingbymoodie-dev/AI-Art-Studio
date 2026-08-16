@@ -140,7 +140,7 @@ export function CreatorPortalProfileForm({ creator }: { creator: CreatorPortalPr
           placeholder={creator.username}
         />
         <p className="text-xs text-stone-500">
-          Shown to customers. Your URL stays /c/{creator.username}. Ask AppAI if you
+          Shown to customers. Your URL stays /c/{creator.username}. Ask AI Art Studio if you
           need the URL or subdomain changed.
         </p>
       </div>

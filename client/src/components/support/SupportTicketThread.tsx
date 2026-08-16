@@ -126,7 +126,7 @@ export function SupportTicketThread({
             }
           >
             <p className="mb-1 text-xs font-medium text-muted-foreground">
-              {r.authorRole === "operator" ? r.authorName || "AppAI Support" : r.authorName || "You"}
+              {r.authorRole === "operator" ? r.authorName || "AI Art Studio Support" : r.authorName || "You"}
               {" · "}
               {new Date(r.createdAt).toLocaleString()}
             </p>

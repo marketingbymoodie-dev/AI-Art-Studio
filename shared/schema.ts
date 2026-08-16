@@ -1422,6 +1422,7 @@ export const creators = pgTable(
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     username: text("username").notNull(),
+    previousUsername: text("previous_username"),
     subdomain: text("subdomain").notNull(),
     displayName: text("display_name").notNull(),
     email: text("email").notNull(),

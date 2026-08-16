@@ -60,6 +60,8 @@ type StatsPayload = {
     productProfitCents: number;
   };
   periodDays: number;
+  todayVisitors?: { unique: number; firstTime: number; returning: number };
+  periodVisitors?: { unique: number; firstTime: number; returning: number };
 };
 
 type OrdersPayload = {
@@ -126,6 +128,19 @@ function periodLabel(periodType: string): string {
   if (periodType === "monthly") return "This month";
   if (periodType === "lifetime") return "Lifetime";
   return periodType;
+}
+
+function visitorHint(split?: { unique: number; firstTime: number; returning: number }) {
+  if (!split) return undefined;
+  return `${split.firstTime} first-time · ${split.returning} returning`;
+}
+
+function visitorCount(
+  split: { unique: number } | undefined,
+  fallback: number | undefined,
+) {
+  if (split && split.unique > 0) return split.unique;
+  return fallback ?? 0;
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -341,14 +356,14 @@ export default function CreatorPortalDashboardPage() {
             <section>
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-stone-500">Today</h2>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Stat label="Visitors" value={String(today?.visitors ?? 0)} />
-                <Stat label="Generations" value={String(today?.generations ?? 0)} />
-                <Stat label="Orders" value={String(today?.orders ?? 0)} />
                 <Stat
-                  label="Net contribution"
-                  value={formatCents(today?.netContributionCents ?? 0)}
-                  hint="After COGS, fees, and AI cost"
+                  label="Visitors"
+                  value={String(visitorCount(statsQuery.data?.todayVisitors, today?.visitors))}
+                  hint={visitorHint(statsQuery.data?.todayVisitors)}
                 />
+                <Stat label="Generations" value={String(today?.generations ?? 0)} hint="Storefront gens today" />
+                <Stat label="Add to carts" value={String(today?.atcCount ?? 0)} />
+                <Stat label="Orders" value={String(today?.orders ?? 0)} />
               </div>
             </section>
 
@@ -356,15 +371,36 @@ export default function CreatorPortalDashboardPage() {
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-stone-500">
                 Last {days} days
               </h2>
+              <p className="mb-3 text-xs text-stone-500">
+                Same funnel as Today, for the range in the top-right dropdown.
+              </p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Stat label="Visitors" value={String(period?.visitors ?? 0)} />
+                <Stat
+                  label="Visitors"
+                  value={String(visitorCount(statsQuery.data?.periodVisitors, period?.visitors))}
+                  hint={visitorHint(statsQuery.data?.periodVisitors)}
+                />
+                <Stat
+                  label="Generations"
+                  value={String(period?.generations ?? 0)}
+                  hint="Storefront gens in this range"
+                />
+                <Stat label="Add to carts" value={String(period?.atcCount ?? 0)} />
+                <Stat label="Orders" value={String(period?.orders ?? 0)} />
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <Stat label="Sales" value={formatCents(period?.grossCents ?? 0)} />
                 <Stat label="Product profit" value={formatCents(period?.productProfitCents ?? 0)} />
-                <Stat label="Net contribution" value={formatCents(period?.netContributionCents ?? 0)} />
+                <Stat
+                  label="Net contribution"
+                  value={formatCents(period?.netContributionCents ?? 0)}
+                  hint="After COGS, fees, and AI cost"
+                />
               </div>
               <p className="mt-3 text-sm text-stone-500">
-                Monthly allowance: {creator.monthlyGenerationsUsed}/{creator.monthlyGenerationAllowance}
-                {creator.generationMonth ? ` · ${creator.generationMonth}` : ""}
+                Month quota: {creator.monthlyGenerationsUsed}/{creator.monthlyGenerationAllowance} used
+                {creator.generationMonth ? ` · ${creator.generationMonth}` : ""}. This is the
+                calendar-month allowance, not the {days}-day window above.
               </p>
             </section>
 

@@ -55,6 +55,39 @@ function parseDays(raw: unknown, fallback = 14): number {
   return Math.min(90, Math.max(1, n));
 }
 
+function utcDayStart(day: string): Date {
+  return new Date(`${day}T00:00:00.000Z`);
+}
+
+async function visitorSplit(params: {
+  creatorId: string;
+  start: Date;
+  end: Date;
+}): Promise<{ unique: number; firstTime: number; returning: number }> {
+  const rows = await db
+    .select({
+      firstSeenAt: creatorSessions.firstSeenAt,
+      lastSeenAt: creatorSessions.lastSeenAt,
+    })
+    .from(creatorSessions)
+    .where(
+      and(
+        eq(creatorSessions.creatorId, params.creatorId),
+        lt(creatorSessions.firstSeenAt, params.end),
+        gte(creatorSessions.lastSeenAt, params.start),
+      ),
+    );
+  let unique = 0;
+  let firstTime = 0;
+  let returning = 0;
+  for (const row of rows) {
+    unique += 1;
+    if (row.firstSeenAt < params.start) returning += 1;
+    else firstTime += 1;
+  }
+  return { unique, firstTime, returning };
+}
+
 export function registerCreatorPortalRoutes(app: Express): void {
   app.post("/api/creator/auth/request-otp", async (req, res) => {
     if (!marketplaceGate(res)) return;
@@ -229,16 +262,33 @@ export function registerCreatorPortalRoutes(app: Express): void {
     try {
       const creatorId = req.creatorId!;
       const days = parseDays(req.query.days, 14);
-      await rollupCreatorDailyStats({ day: utcDayKey(), creatorId }).catch(() => {});
+      const todayKey = utcDayKey();
+      const dayKeys = Array.from({ length: days }, (_, i) =>
+        utcDayKey(new Date(Date.now() - i * 24 * 60 * 60 * 1000)),
+      );
+      await Promise.all(
+        dayKeys.map((day) => rollupCreatorDailyStats({ day, creatorId }).catch(() => {})),
+      );
+      const startDay = dayKeys[dayKeys.length - 1];
       const rows = await db
         .select()
         .from(creatorDailyStats)
-        .where(eq(creatorDailyStats.creatorId, creatorId))
-        .orderBy(desc(creatorDailyStats.day))
-        .limit(days);
+        .where(
+          and(
+            eq(creatorDailyStats.creatorId, creatorId),
+            gte(creatorDailyStats.day, startDay),
+          ),
+        )
+        .orderBy(desc(creatorDailyStats.day));
 
-      const todayKey = utcDayKey();
       const today = rows.find((r) => r.day === todayKey) || null;
+      const periodStart = utcDayStart(startDay);
+      const periodEnd = new Date(utcDayStart(todayKey).getTime() + 24 * 60 * 60 * 1000);
+      const todayStart = utcDayStart(todayKey);
+      const [periodVisitors, todayVisitors] = await Promise.all([
+        visitorSplit({ creatorId, start: periodStart, end: periodEnd }),
+        visitorSplit({ creatorId, start: todayStart, end: periodEnd }),
+      ]);
       const totals = rows.reduce(
         (acc, r) => {
           acc.visitors += r.visitors || 0;
@@ -267,7 +317,14 @@ export function registerCreatorPortalRoutes(app: Express): void {
         },
       );
 
-      res.json({ days: rows, today, periodTotals: totals, periodDays: days });
+      res.json({
+        days: rows,
+        today,
+        periodTotals: totals,
+        periodDays: days,
+        todayVisitors,
+        periodVisitors,
+      });
     } catch (e: any) {
       console.error("[creator portal] stats failed:", e);
       res.status(500).json({ error: "Failed to load stats" });

@@ -294,7 +294,7 @@ export function registerSupportRoutes(
       const { ticket, reply } = await addSupportReply({
         ticket: existing,
         authorRole: "operator",
-        authorName: "AppAI Support",
+        authorName: "AI Art Studio Support",
         body: req.body?.body,
         nextStatus,
       });

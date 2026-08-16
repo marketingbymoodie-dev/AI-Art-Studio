@@ -275,24 +275,32 @@ export default function PlatformCreatorsPage() {
             </a>
           </p>
           <p className="text-sm text-muted-foreground">
-            Applications and beta creators. Feature flag:{" "}
-            <Badge variant={config?.enabled ? "default" : "secondary"}>
-              {config?.enabled ? "enabled" : "disabled"}
-            </Badge>
-            {config ? (
-              <span className="ml-2">
-                · AI cost ${config.aiGenerationCostUsd.toFixed(2)}/gen · {config.applicationCount}{" "}
-                applications · {config.creatorCount} creators
-                {config.platformShopDomain
-                  ? ` · platform shop ${config.platformShopDomain}`
-                  : " · CREATOR_PLATFORM_SHOP_DOMAIN not set"}
-                {config.storefrontTokenConfigured
-                  ? " · Storefront token OK"
-                  : " · CREATOR_PLATFORM_STOREFRONT_TOKEN missing"}
-                {config.emailsEnabled ? " · creator emails ON" : " · creator emails off"}
-              </span>
-            ) : null}
+            Review applications and manage live creator shops.
           </p>
+          {config ? (
+            <details className="mt-2 text-xs text-muted-foreground">
+              <summary className="cursor-pointer select-none">System status</summary>
+              <p className="mt-1 leading-6">
+                Marketplace{" "}
+                <Badge variant={config.enabled ? "default" : "secondary"}>
+                  {config.enabled ? "enabled" : "disabled"}
+                </Badge>
+                {" · "}AI cost ${config.aiGenerationCostUsd.toFixed(2)}/gen
+                {" · "}
+                {config.applicationCount} applications · {config.creatorCount} creators
+                {" · "}
+                {config.platformShopDomain
+                  ? `Platform shop ${config.platformShopDomain}`
+                  : "CREATOR_PLATFORM_SHOP_DOMAIN not set"}
+                {" · "}
+                {config.storefrontTokenConfigured
+                  ? "Storefront token OK"
+                  : "CREATOR_PLATFORM_STOREFRONT_TOKEN missing"}
+                {" · "}
+                {config.emailsEnabled ? "Creator emails on" : "Creator emails off"}
+              </p>
+            </details>
+          ) : null}
         </div>
 
         {!config?.enabled && (
