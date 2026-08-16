@@ -7,6 +7,7 @@ import {
   getCreatorPlatformShopDomain,
   getCreatorPlatformStorefrontToken,
 } from "./creator-config";
+import { attachAopPanelSnapshotToLineAttributes } from "./aop-line-snapshot";
 
 const STOREFRONT_API_VERSION = "2025-01";
 
@@ -227,6 +228,7 @@ export async function createCreatorCheckoutCart(params: {
   attributes?: CartLineAttribute[];
   cartAttributes?: CartLineAttribute[];
 }): Promise<CreatorCartResult> {
+  const attributes = await attachAopPanelSnapshotToLineAttributes(params.attributes);
   const data = await storefrontGraphql<{
     cartCreate: {
       cart: StorefrontCartNode | null;
@@ -241,7 +243,7 @@ export async function createCreatorCheckoutCart(params: {
     }`,
     {
       input: {
-        lines: [lineInput(params)],
+        lines: [lineInput({ ...params, attributes })],
         attributes: (params.cartAttributes || [])
           .filter((a) => a.key && a.value != null)
           .map((a) => ({
@@ -311,6 +313,7 @@ export async function addLinesToCreatorCart(params: {
   attributes?: CartLineAttribute[];
   cartAttributes?: CartLineAttribute[];
 }): Promise<CreatorCartResult> {
+  const attributes = await attachAopPanelSnapshotToLineAttributes(params.attributes);
   const data = await storefrontGraphql<{
     cartLinesAdd: {
       cart: StorefrontCartNode | null;
@@ -325,7 +328,7 @@ export async function addLinesToCreatorCart(params: {
     }`,
     {
       cartId: params.cartId,
-      lines: [lineInput(params)],
+      lines: [lineInput({ ...params, attributes })],
     },
   );
 

@@ -14,7 +14,7 @@
  *
  * DATA RESOLUTION PATH (verified against the codebase):
  *   line.properties `_appai_job_id`  → generation_jobs.id  (print source of truth)
- *   line.properties `_flat_pl` / `_tote_pl` → placement at add-to-cart (wins over job)
+ *   line.properties `_flat_pl` / `_tote_pl` / `_aop_pl` → placement at add-to-cart (wins over job)
  *   published_products.designId may be `jobId::mockupHash` (checkout image key only)
  *   designId (== generation_jobs.id)
  *     → generation_jobs: designState.flatPlacerState (normalized placement),
@@ -67,9 +67,11 @@ import type { ToteFoldedPlacement } from "@shared/toteFoldedLayout";
 import {
   LINE_FLAT_PLACEMENT_KEY,
   LINE_TOTE_PLACEMENT_KEY,
+  LINE_AOP_PANELS_KEY,
   decodeFlatLinePlacement,
   decodeToteLinePlacement,
 } from "@shared/linePlacementSnapshot";
+import { loadAopLinePanelSnapshot, normalizeAopPanels, pickAopPanelsForOrderLine } from "./aop-line-snapshot";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -547,10 +549,9 @@ export async function resolveDesignForOrderLine(
       const rawPanels = Array.isArray(designState?.aopPrintPanelUrls) ? designState.aopPrintPanelUrls : [];
       // Printify's order `src` must be a fetchable URL — hosted http(s) or app-relative
       // paths only (data: URLs from unpersisted local state can't be used).
-      const panels = rawPanels
-        .map((p: any) => ({ position: String(p?.position || ""), url: String(p?.url || "") }))
-        .filter((p: { position: string; url: string }) =>
-          p.position && p.url && (p.url.startsWith("http") || p.url.startsWith("/")));
+      // Cart-line snapshot wins so two ATCs from the same job keep independent panels.
+      const linePanels = await loadAopLinePanelSnapshot(line.properties[LINE_AOP_PANELS_KEY]);
+      const panels = pickAopPanelsForOrderLine(linePanels, normalizeAopPanels(rawPanels));
       if (panels.length === 0) {
         return {
           ok: false,

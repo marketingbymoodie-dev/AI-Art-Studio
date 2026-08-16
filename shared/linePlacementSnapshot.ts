@@ -1,6 +1,8 @@
 /** Hidden Shopify line properties — Printify bakes these, checkout does not show them. */
 export const LINE_FLAT_PLACEMENT_KEY = "_flat_pl";
 export const LINE_TOTE_PLACEMENT_KEY = "_tote_pl";
+/** Hosted JSON path/URL of AOP print panels frozen at add-to-cart. */
+export const LINE_AOP_PANELS_KEY = "_aop_pl";
 
 export type LineViewPlacement = {
   scale: number;
