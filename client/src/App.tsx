@@ -38,6 +38,7 @@ import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 import AdminInsights from "@/pages/admin/insights";
 import PlatformCreatorsPage from "@/pages/admin/platform-creators";
 import PlatformLandingPage from "@/pages/admin/platform-landing";
+import PlatformTermsPage from "@/pages/admin/platform-terms";
 import LuxeLandingPage from "@/pages/creators/luxe-landing";
 import CreatorApplyPage from "@/pages/creators/apply";
 import CreatorPathStorefrontPage, {
@@ -97,6 +98,7 @@ function AppRouter() {
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
       <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/landing" component={PlatformLandingPage} />
+      <Route path="/admin/platform/terms" component={PlatformTermsPage} />
       <Route path="/admin/platform/support" component={PlatformSupportPage} />
       <Route path="/admin/platform/how-to" component={PlatformHowToPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />

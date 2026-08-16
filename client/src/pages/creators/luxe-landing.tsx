@@ -214,6 +214,14 @@ function Landing({
         <Link href="/portal/login" className="underline underline-offset-2">
           Creator Portal
         </Link>
+        {" · "}
+        <a href="/terms" className="underline underline-offset-2">
+          Terms
+        </a>
+        {" · "}
+        <a href="/privacy" className="underline underline-offset-2">
+          Privacy
+        </a>
       </p>
     </section>
   );

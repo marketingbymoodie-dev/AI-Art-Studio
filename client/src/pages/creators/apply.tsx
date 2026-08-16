@@ -24,6 +24,7 @@ import {
   type SocialDraft,
 } from "@/components/creators/CreatorSocialsFields";
 import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
+import { DEFAULT_TERMS_CONTENT, type TermsContent } from "@shared/termsContent";
 import { Loader2 } from "lucide-react";
 
 type Track = "creator" | "shopify";
@@ -38,7 +39,12 @@ export default function CreatorApplyPage() {
   const { data } = useQuery<{ content: LandingContent }>({
     queryKey: ["/api/creators/landing"],
   });
+  const { data: termsData } = useQuery<{ content: TermsContent }>({
+    queryKey: ["/api/terms"],
+    staleTime: 60_000,
+  });
   const copy = data?.content.copy ?? DEFAULT_LANDING_CONTENT.copy;
+  const termsCopy = termsData?.content ?? DEFAULT_TERMS_CONTENT;
   const { toast } = useToast();
   const [submittedId, setSubmittedId] = useState<string | null>(null);
   const [terms, setTerms] = useState(false);
@@ -140,7 +146,9 @@ export default function CreatorApplyPage() {
     track !== "creator" || !!normalizeSocialHandle(primarySocial?.username);
   const title = track === "shopify" ? copy.shopifyTitle : copy.applyTitle;
   const lede = track === "shopify" ? copy.shopifyLede : copy.applyLede;
-  const termsText = track === "shopify" ? copy.shopifyTerms : copy.applyTerms;
+  const termsText =
+    track === "shopify" ? termsCopy.checkboxes.applyMerchant : termsCopy.checkboxes.applyCreator;
+  const termsHref = track === "shopify" ? "/terms#merchants" : "/terms#creators";
   const submitLabel = track === "shopify" ? copy.shopifySubmit : copy.applySubmit;
 
   return (
@@ -284,7 +292,17 @@ export default function CreatorApplyPage() {
 
           <label className="flex items-start gap-3 text-sm text-white/70">
             <Checkbox checked={terms} onCheckedChange={(c) => setTerms(!!c)} className="mt-0.5" />
-            <span>{termsText}</span>
+            <span>
+              {termsText}{" "}
+              <a
+                href={termsHref}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 text-white/85"
+              >
+                {termsCopy.checkboxes.readFullTermsLabel}
+              </a>
+            </span>
           </label>
 
           <Button

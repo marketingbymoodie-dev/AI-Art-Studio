@@ -268,6 +268,14 @@ function StoreShell({
       <footer className="border-t mt-16">
         <div className="mx-auto max-w-5xl px-4 py-6 text-center text-xs text-muted-foreground">
           Powered by AI Art Studio · Personalized merch for {storeName(creator)}
+          {" · "}
+          <a href="/terms" className="underline underline-offset-2 hover:text-foreground">
+            Terms
+          </a>
+          {" · "}
+          <a href="/privacy" className="underline underline-offset-2 hover:text-foreground">
+            Privacy
+          </a>
         </div>
       </footer>
     </div>

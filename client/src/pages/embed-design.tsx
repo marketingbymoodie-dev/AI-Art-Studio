@@ -37,6 +37,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import {
+  StorefrontTermsAccept,
+  useStorefrontTermsAccept,
+} from "@/components/terms/StorefrontTermsAccept";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
 import { getSizeChartByBlueprintId, type NormalizedSizeChart } from "@/lib/printifySizeCharts";
@@ -1621,6 +1625,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = !isAdminTester && !isMerchantStudio && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
+  const customerTermsEnabled = (isShopify || isStorefront) && !isMerchantStudio;
+  const storefrontTerms = useStorefrontTermsAccept(customerTermsEnabled);
   // Printify composite mockups + post-gen carousel. Admin Generator Tester
   // already fetches via /api/mockup/generate but used to leave mockupUrl null
   // (storefront/Shopify-only gate) — tumblers then showed raw artwork only.
@@ -7562,6 +7568,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       });
       return;
     }
+    if (customerTermsEnabled && !storefrontTerms.accepted) {
+      toast({
+        title: "Please accept the terms",
+        description: "Agree to the AI Art Studio terms before generating.",
+        variant: "destructive",
+      });
+      return;
+    }
     let effectivePresetId = options?.overridePresetId ?? selectedPreset;
     if (options?.overridePresetId) {
       setSelectedPreset(options.overridePresetId);
@@ -12361,7 +12375,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               }
               handleGenerate();
             }}
-            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted)}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
@@ -12378,6 +12392,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
           </Button>
         )}
+        {customerTermsEnabled && !(generatedDesign && !reuseAwaitingGenerate) ? (
+          <StorefrontTermsAccept
+            content={storefrontTerms.content}
+            accepted={storefrontTerms.accepted}
+            onAcceptedChange={storefrontTerms.setAccepted}
+          />
+        ) : null}
         {(isShopify || isStorefront) && generatedDesign ? (
           <div className="mt-1 flex flex-col items-center gap-1">
             {variantError && (
@@ -13797,7 +13818,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         }
                         handleGenerate();
                       }}
-                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted)}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -13814,6 +13835,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       )}
                     </Button>
                   )}
+                  {customerTermsEnabled && !(generatedDesign && !reuseAwaitingGenerate) ? (
+                    <StorefrontTermsAccept
+                      content={storefrontTerms.content}
+                      accepted={storefrontTerms.accepted}
+                      onAcceptedChange={storefrontTerms.setAccepted}
+                    />
+                  ) : null}
                   {/* Credits label — shown under Generate; Start Fresh — shown after generation */}
                   {(isShopify || isStorefront) && generatedDesign ? (
                     <div className="mt-1 flex flex-col items-center gap-1">

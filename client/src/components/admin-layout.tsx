@@ -44,6 +44,7 @@ import {
   Megaphone,
   LifeBuoy,
   BookOpen,
+  Scale,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -75,6 +76,7 @@ const platformMenuItems = [
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
+  { title: "Terms of Use", url: "/admin/platform/terms", icon: Scale },
   { title: "Support tickets", url: "/admin/platform/support", icon: LifeBuoy },
   { title: "How To library", url: "/admin/platform/how-to", icon: BookOpen },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },

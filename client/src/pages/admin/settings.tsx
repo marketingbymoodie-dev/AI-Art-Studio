@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2, Sparkles } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2, Sparkles, Copy, Scale } from "lucide-react";
+import { DEFAULT_TERMS_CONTENT, type TermsContent } from "@shared/termsContent";
 import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
 import type { Merchant } from "@shared/schema";
@@ -60,6 +61,12 @@ export default function AdminSettings() {
   const { data: storefrontSettings } = useQuery<StorefrontSettings>({
     queryKey: ["/api/admin/storefront-settings"],
   });
+
+  const { data: termsData } = useQuery<{ content: TermsContent }>({
+    queryKey: ["/api/terms"],
+    staleTime: 60_000,
+  });
+  const termsContent = termsData?.content ?? DEFAULT_TERMS_CONTENT;
 
   type RewardRung = {
     id: number;
@@ -749,6 +756,56 @@ export default function AdminSettings() {
                 <p className="text-sm text-muted-foreground">No Shopify stores connected yet.</p>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Scale className="h-5 w-5" />
+              AI Art Studio terms
+            </CardTitle>
+            <CardDescription>
+              Customers using the customizer agree to the live Terms of Use. Paste the addendum
+              below into your Shopify Terms of service if you want the same rules on your store
+              policy page. Changing our terms later does not update text you already published
+              there — we will tell you if you need to paste a new version.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" asChild>
+                <a href="/terms" target="_blank" rel="noreferrer">
+                  <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                  View live terms
+                </a>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(termsContent.merchantStoreAddendum);
+                    toast({
+                      title: "Copied",
+                      description: "Paste into Shopify → Settings → Policies → Terms of service.",
+                    });
+                  } catch {
+                    toast({
+                      title: "Copy failed",
+                      description: "Select the addendum text and copy it manually.",
+                      variant: "destructive",
+                    });
+                  }
+                }}
+              >
+                <Copy className="mr-2 h-3.5 w-3.5" />
+                Copy store addendum
+              </Button>
+            </div>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+              {termsContent.merchantStoreAddendum}
+            </pre>
           </CardContent>
         </Card>
 
