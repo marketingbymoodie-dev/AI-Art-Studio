@@ -2738,6 +2738,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const flatClipConfirmProceedRef = useRef(false);
   /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
   const lastFlatGalleryMockupKeyRef = useRef<string>("");
+  const skipGalleryPersistRef = useRef(false);
   /** Latest flat front URLs — Printify lifestyle merge keeps these. */
   const flatFrontMockupsRef = useRef<Array<{ url: string; label: string }>>([]);
   /** Mesh AOP local front/back — Printers Mockup (person) merge keeps these. */
@@ -7560,9 +7561,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     // Pre-check: block generation immediately if gallery is full.
-    // Creator storefronts evict the oldest artwork at 50 instead of blocking.
-    const generateSlots = savedDesigns.filter((d) => !isPlacementForkDesign(d)).length;
-    if (!isCreatorStorefront && generateSlots >= galleryLimit) {
+    if (savedDesigns.length >= galleryLimit) {
       setShowGalleryFullModal(true);
       // Scroll to top so the modal is visible on mobile (fixed positioning
       // inside an iframe doesn't work relative to the viewport)
@@ -8535,6 +8534,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+    skipGalleryPersistRef.current = false;
 
     // Product Intelligence: refuse OOS size/colour before shadow resolve / cart.
     if (selectedSize && outOfStockSizeIds.includes(selectedSize)) {
@@ -8582,6 +8582,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const liveSig = encodeFlatLinePlacement(liveForFork);
       const frozenSig = placementFrozenSigRef.current;
       if (liveSig && frozenSig && liveSig !== frozenSig && savedJobIdRef.current) {
+        if (savedDesigns.length >= galleryLimit) {
+          // Cart still gets `_flat_pl`. Do not add a 21st Saved Design.
+          skipGalleryPersistRef.current = true;
+        } else {
         const forkShop = shopDomain || savedJobShopRef.current;
         if (forkShop) {
           try {
@@ -8611,6 +8615,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             console.warn("[Design Studio] fork-placement failed:", forkErr);
           }
         }
+        }
       }
     }
 
@@ -8627,6 +8632,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setFlatPlacementDirty(false);
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
+        skipGalleryPersistRef.current = false;
         return;
       }
     }
@@ -8644,9 +8650,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
+        skipGalleryPersistRef.current = false;
         return;
       }
     }
+    skipGalleryPersistRef.current = false;
 
     if (mockupsStale) {
       setVariantError(
@@ -9362,6 +9370,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const persistFlatMockupsForGallery = useCallback(
     async (mockupUrls: string[], dedupeKey: string) => {
       if (!isStorefront || !savedJobIdRef.current || !shopDomain) return;
+      if (skipGalleryPersistRef.current) return;
 
       const absUrls = mockupUrls
         .map((u) => toAbsoluteMockupUrlForSave(u))
@@ -9482,7 +9491,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
     const shouldPersist =
-      (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
+      (isStorefront || isAdminTester) &&
+      !!savedJobIdRef.current &&
+      !!panelSaveShop &&
+      !skipGalleryPersistRef.current;
     if (shouldPersist) {
       emitTesterDesignStatus({
         jobId: savedJobIdRef.current,
@@ -11417,7 +11429,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatApplyStatus !== "saving" &&
     flatApplyStatus !== "error"
   );
-  const galleryGenerateSlots = savedDesigns.filter((d) => !isPlacementForkDesign(d)).length;
+  const galleryGenerateSlots = savedDesigns.length;
   const selectedPostGenItem = postGenGalleryItems[selectedMockupIndex] ?? null;
   const flatCanvasOverrideUrl =
     flatPlacerActive &&
@@ -11595,10 +11607,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       let xPct: number;
       let yPct: number;
 
-      // Phone cases: bake full print canvas (bg + placement) like order
-      // fulfillment, then ask Printify at scale=1 center — raw art + approximate
-      // scale omitted the background and mismatched artwork size.
-      if (flatEdgeWrapMode) {
+      // Phone cases + aprons: bake the same print file as order fulfillment,
+      // then ask Printify at scale=1 center. Raw art + cover-scale made Lifestyle
+      // Woman/Man much smaller than the in-app Artwork slide.
+      const bakeLifestylePrint = flatEdgeWrapMode || looksLikeApron;
+      if (bakeLifestylePrint) {
         const bakeEndpoint = isStorefront
           ? `${API_BASE}/api/storefront/bake-flat-print`
           : `${API_BASE}/api/mockup/bake-flat-print`;
@@ -11622,22 +11635,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }, 120_000);
         const bakeJson = await bakeRes.json().catch(() => ({}));
         if (!bakeRes.ok || !bakeJson?.url) {
-          const msg =
-            typeof bakeJson?.error === "string"
-              ? bakeJson.error
-              : "Could not bake print file for printers mockup";
-          setLifestyleShotError(msg);
-          toast({
-            title: "Printers mockup unavailable",
-            description: msg,
-            variant: "destructive",
-          });
-          return;
+          if (looksLikeApron && !flatEdgeWrapMode) {
+            const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
+            designUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+            scalePct = Math.round(coverScale * 100);
+            xPct = Math.round(Math.max(0, Math.min(100, 50 + (front?.offsetX ?? 0) * 50)));
+            yPct = Math.round(Math.max(0, Math.min(100, 50 + (front?.offsetY ?? 0) * 50)));
+          } else {
+            const msg =
+              typeof bakeJson?.error === "string"
+                ? bakeJson.error
+                : "Could not bake print file for printers mockup";
+            setLifestyleShotError(msg);
+            toast({
+              title: "Printers mockup unavailable",
+              description: msg,
+              variant: "destructive",
+            });
+            return;
+          }
+        } else {
+          designUrl = toAbsoluteImageUrl(String(bakeJson.url));
+          scalePct = 100;
+          xPct = 50;
+          yPct = 50;
         }
-        designUrl = toAbsoluteImageUrl(String(bakeJson.url));
-        scalePct = 100;
-        xPct = 50;
-        yPct = 50;
       } else {
         const coverScale = Math.max(0.1, Math.min(2, front?.scale ?? 1.1));
         // Damp cover→Printify so Lifestyle art size matches the Artwork placer slide.
@@ -11708,6 +11730,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedFrameColor,
     flatFabricWeave,
     flatEdgeWrapMode,
+    looksLikeApron,
     isStorefront,
     shopDomain,
     isPhoneCaseProduct,
@@ -13091,9 +13114,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </div>
                     <button
                       onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
+                      className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors cursor-pointer whitespace-nowrap flex-shrink-0 ${
+                        savedDesigns.length >= galleryLimit
+                          ? "border-red-300 bg-red-50 text-red-800 hover:bg-red-100"
+                          : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                      }`}
                     >
-                      Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
+                      Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ''}
                     </button>
                     <button
                       onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}

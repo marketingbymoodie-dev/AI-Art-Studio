@@ -36,10 +36,6 @@ function readLoggedInCustomerId(): string | null {
   }
 }
 
-function isPlacementFork(d: SavedDesign): boolean {
-  return d.designState?.placementFork === true;
-}
-
 function thumbUrl(d: SavedDesign): string {
   const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
   const flat =
@@ -189,7 +185,6 @@ export function CreatorSavedDesignsMenu({
   const [designs, setDesigns] = useState<SavedDesign[]>([]);
   const [pages, setPages] = useState<ShopPage[]>([]);
   const [galleryLimit, setGalleryLimit] = useState(20);
-  const [generateCount, setGenerateCount] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const customerId = readLoggedInCustomerId();
@@ -224,9 +219,6 @@ export function CreatorSavedDesignsMenu({
         setDesigns(Array.isArray(designData?.designs) ? designData.designs : []);
         if (typeof designData?.limit === "number" && designData.limit > 0) {
           setGalleryLimit(designData.limit);
-        }
-        if (typeof designData?.generateCount === "number") {
-          setGenerateCount(designData.generateCount);
         }
         setPages(Array.isArray(pageData?.pages) ? pageData.pages : []);
       })
@@ -281,14 +273,17 @@ export function CreatorSavedDesignsMenu({
     });
   }
 
-  const slotCount =
-    generateCount != null ? generateCount : designs.filter((d) => !isPlacementFork(d)).length;
+  const slotCount = designs.length;
 
   return (
     <div className="relative" ref={rootRef}>
       <button
         type="button"
-        className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+        className={`inline-flex items-center gap-1 ${
+          slotCount >= galleryLimit
+            ? "text-red-700 hover:text-red-800"
+            : "text-muted-foreground hover:text-foreground"
+        }`}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="true"

@@ -8161,9 +8161,8 @@ ${orientationExtra}
 
       // Gallery limit check for logged-in customers (20 saved designs max; 30 for the
       // merchant's own design-studio identity — see getGalleryLimitForCustomer).
-      // Creator storefronts skip this hard block and evict oldest artworks after
-      // a successful generate (50 unique images per visitor).
-      if (!creatorCtx && customerId) {
+      // Creator storefronts use the same 20 Saved Designs cap — tell them to delete.
+      if (customerId) {
         const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
         const savedCount = await db
           .select({ count: sql<number>`count(*)` })
@@ -10499,7 +10498,7 @@ ${orientationExtra}
           )
         )
         .orderBy(desc(generationJobs.createdAt))
-        .limit(Math.max(GALLERY_LIMIT, 50));
+        .limit(GALLERY_LIMIT);
       console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
 
       // Resolve product type names AND page handles for all unique productTypeIds.
@@ -10618,19 +10617,9 @@ ${orientationExtra}
         return `/apps/appai${clean}`;
       };
 
-      const isPlacementForkRow = (d: (typeof rows)[number]) => {
-        const ds =
-          d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)
-            ? (d.designState as Record<string, unknown>)
-            : null;
-        return ds?.placementFork === true;
-      };
-      const generateCount = rows.filter((d) => !isPlacementForkRow(d)).length;
-
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
-        generateCount,
         designs: rows.map(d => {
           const ds =
             d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)
