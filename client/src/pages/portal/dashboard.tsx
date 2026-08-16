@@ -33,7 +33,8 @@ import { CreatorPortalProfileForm } from "@/components/creators/CreatorPortalPro
 import { SupportInbox } from "@/components/support/SupportInbox";
 import { HowToLibrary } from "@/components/support/HowToLibrary";
 import { creatorPublicName } from "@shared/creatorMarketplace";
-import { Loader2 } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 type StatsPayload = {
   days: Array<{
@@ -60,6 +61,8 @@ type StatsPayload = {
     productProfitCents: number;
   };
   periodDays: number;
+  periodRange?: string;
+  periodLabel?: string;
   todayVisitors?: { unique: number; firstTime: number; returning: number };
   periodVisitors?: { unique: number; firstTime: number; returning: number };
 };
@@ -185,7 +188,7 @@ function RankList({
 export default function CreatorPortalDashboardPage() {
   const [, setLocation] = useLocation();
   const qc = useQueryClient();
-  const [days, setDays] = useState("14");
+  const [days, setDays] = useState("mtd");
   const hasToken = !!getCreatorPortalToken();
 
   const meQuery = useQuery({
@@ -214,7 +217,7 @@ export default function CreatorPortalDashboardPage() {
     queryKey: ["creator-portal-stats", days],
     enabled: !!meQuery.data,
     queryFn: async () => {
-      const res = await creatorPortalFetch(`/api/creator/stats?days=${days}`);
+      const res = await creatorPortalFetch(`/api/creator/stats?range=${days}`);
       if (!res.ok) throw new Error("Failed to load stats");
       return (await res.json()) as StatsPayload;
     },
@@ -234,7 +237,7 @@ export default function CreatorPortalDashboardPage() {
     queryKey: ["creator-portal-performance", days],
     enabled: !!meQuery.data,
     queryFn: async () => {
-      const res = await creatorPortalFetch(`/api/creator/performance?days=${days}`);
+      const res = await creatorPortalFetch(`/api/creator/performance?range=${days}`);
       if (!res.ok) throw new Error("Failed to load performance");
       return (await res.json()) as PerformancePayload;
     },
@@ -314,14 +317,16 @@ export default function CreatorPortalDashboardPage() {
           </div>
           <div className="flex items-center gap-2">
             <Select value={days} onValueChange={setDays}>
-              <SelectTrigger className="w-[120px]">
+              <SelectTrigger className="w-[170px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="7">7 days</SelectItem>
-                <SelectItem value="14">14 days</SelectItem>
-                <SelectItem value="30">30 days</SelectItem>
-                <SelectItem value="90">90 days</SelectItem>
+                <SelectItem value="today">Today</SelectItem>
+                <SelectItem value="mtd">Month to date</SelectItem>
+                <SelectItem value="7">Last 7 days</SelectItem>
+                <SelectItem value="14">Last 14 days</SelectItem>
+                <SelectItem value="30">Last 30 days</SelectItem>
+                <SelectItem value="90">Last 90 days</SelectItem>
               </SelectContent>
             </Select>
             <Button
@@ -369,10 +374,11 @@ export default function CreatorPortalDashboardPage() {
 
             <section>
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-stone-500">
-                Last {days} days
+                {statsQuery.data?.periodLabel || "Selected range"}
               </h2>
               <p className="mb-3 text-xs text-stone-500">
-                Same funnel as Today, for the range in the top-right dropdown.
+                Sales, profit, and funnel for the range in the top-right dropdown — including Today
+                and Month to date.
               </p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Stat
@@ -392,15 +398,41 @@ export default function CreatorPortalDashboardPage() {
                 <Stat label="Sales" value={formatCents(period?.grossCents ?? 0)} />
                 <Stat label="Product profit" value={formatCents(period?.productProfitCents ?? 0)} />
                 <Stat
-                  label="Net contribution"
+                  label="Net profit"
                   value={formatCents(period?.netContributionCents ?? 0)}
-                  hint="After COGS, fees, and AI cost"
+                  hint="Product profit minus AI cost — not a payout"
                 />
               </div>
-              <p className="mt-3 text-sm text-stone-500">
-                Month quota: {creator.monthlyGenerationsUsed}/{creator.monthlyGenerationAllowance} used
-                {creator.generationMonth ? ` · ${creator.generationMonth}` : ""}. This is the
-                calendar-month allowance, not the {days}-day window above.
+              <p className="mt-3 flex flex-wrap items-center gap-1.5 text-sm text-stone-500">
+                <span>
+                  Month quota: {creator.monthlyGenerationsUsed}/{creator.monthlyGenerationAllowance} used
+                  {creator.generationMonth ? ` · ${creator.generationMonth}` : ""}
+                </span>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex rounded-full text-stone-400 hover:text-stone-700"
+                      aria-label="What month quota means"
+                    >
+                      <Info className="h-4 w-4" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="max-w-sm text-sm leading-relaxed">
+                    <p>
+                      {creator.monthlyGenerationsUsed} of {creator.monthlyGenerationAllowance} included
+                      generations used this calendar month
+                      {creator.generationMonth ? ` (${creator.generationMonth})` : ""}.
+                    </p>
+                    <p className="mt-2">
+                      This is this shop&apos;s monthly generation budget, not the selected range
+                      above. When it hits the cap, storefront generations pause until next month.
+                    </p>
+                    <p className="mt-2">
+                      Paid generation packs do not consume your monthly quota.
+                    </p>
+                  </PopoverContent>
+                </Popover>
               </p>
             </section>
 
@@ -420,7 +452,7 @@ export default function CreatorPortalDashboardPage() {
                         <th className="px-3 py-2 font-medium">Order</th>
                         <th className="px-3 py-2 font-medium">Status</th>
                         <th className="px-3 py-2 font-medium">Gross</th>
-                        <th className="px-3 py-2 font-medium">Net</th>
+                        <th className="px-3 py-2 font-medium">Net profit</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -441,7 +473,7 @@ export default function CreatorPortalDashboardPage() {
 
           <TabsContent value="rank" className="space-y-4">
             <p className="text-sm text-stone-600">
-              Ranked by Net Creator Contribution. Only your position is shown — never other creators&apos; figures.
+              Ranked by Net profit. Only your position is shown — never other creators&apos; figures.
             </p>
             {rankQuery.isLoading ? (
               <Loader2 className="h-5 w-5 animate-spin text-stone-400" />
@@ -543,7 +575,7 @@ export default function CreatorPortalDashboardPage() {
             </section>
 
             <section className="rounded-xl border border-stone-200 bg-white p-4">
-              <h2 className="text-sm font-semibold text-stone-800">Net contribution ($)</h2>
+              <h2 className="text-sm font-semibold text-stone-800">Net profit ($)</h2>
               <div className="mt-4 h-56 w-full">
                 {chartData.length === 0 ? (
                   <p className="text-sm text-stone-500">No sales in this period yet.</p>

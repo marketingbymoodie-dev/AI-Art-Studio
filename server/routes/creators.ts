@@ -49,10 +49,12 @@ import {
   getCreatorPlatformShopDomain,
   getCreatorPlatformStorefrontToken,
   getLandingContent,
+  getTermsContent,
   isCreatorCartPrintifyTestOpen,
   isCreatorMarketplaceEnabled,
   requestLooksLikeStagingHost,
   saveLandingContent,
+  saveTermsContent,
 } from "../creator-config";
 import {
   creatorReturnCheckoutAttributes,
@@ -168,6 +170,37 @@ export function registerCreatorMarketplaceRoutes(
     } catch (e: any) {
       console.error("[creators] admin landing save failed:", e);
       res.status(500).json({ error: e?.message || "Failed to save landing" });
+    }
+  });
+
+  app.get("/api/terms", async (_req, res) => {
+    try {
+      res.setHeader("Cache-Control", "public, max-age=60, must-revalidate");
+      res.json({ content: await getTermsContent() });
+    } catch (e: any) {
+      console.error("[terms] public read failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load terms" });
+    }
+  });
+
+  app.get("/api/platform/terms", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json({ content: await getTermsContent() });
+    } catch (e: any) {
+      console.error("[terms] admin read failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load terms" });
+    }
+  });
+
+  app.put("/api/platform/terms", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const content = await saveTermsContent(req.body?.content ?? req.body);
+      res.json({ content });
+    } catch (e: any) {
+      console.error("[terms] admin save failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to save terms" });
     }
   });
 
@@ -764,6 +797,39 @@ export function registerCreatorMarketplaceRoutes(
       }
     },
   );
+
+  app.get("/api/platform/creators/monthly-report", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const { buildCreatorMonthReport, currentUtcMonthKey } = await import(
+        "../creator-monthly-report"
+      );
+      const month = String(req.query.month || currentUtcMonthKey());
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        return res.status(400).json({ error: "month must be YYYY-MM" });
+      }
+      const report = await buildCreatorMonthReport(month);
+      res.json(report);
+    } catch (e: any) {
+      console.error("[platform creators] monthly report failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to load monthly report" });
+    }
+  });
+
+  app.post("/api/platform/creators/monthly-report/send", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const { runCreatorMonthlyReport, previousUtcMonthKey } = await import(
+        "../creator-monthly-report"
+      );
+      const month = String(req.body?.month || previousUtcMonthKey());
+      const result = await runCreatorMonthlyReport({ force: true, month });
+      res.json(result);
+    } catch (e: any) {
+      console.error("[platform creators] monthly report send failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to send monthly report" });
+    }
+  });
 
   /** Public: assigned customizer pages for a creator storefront. */
   app.get("/api/creators/storefront/:username/pages", async (req, res) => {

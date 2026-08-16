@@ -55,6 +55,22 @@ function parseDays(raw: unknown, fallback = 14): number {
   return Math.min(90, Math.max(1, n));
 }
 
+function resolvePortalRange(raw: unknown): { days: number; range: string; label: string } {
+  const v = String(raw || "14").toLowerCase();
+  if (v === "today" || v === "1") {
+    return { days: 1, range: "today", label: "Today" };
+  }
+  if (v === "mtd") {
+    const now = new Date();
+    const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+    const days = Math.max(1, Math.floor((Date.now() - start) / 86400000) + 1);
+    const month = now.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+    return { days, range: "mtd", label: `Month to date · ${month}` };
+  }
+  const days = parseDays(v, 14);
+  return { days, range: String(days), label: `Last ${days} days` };
+}
+
 function utcDayStart(day: string): Date {
   return new Date(`${day}T00:00:00.000Z`);
 }
@@ -261,7 +277,8 @@ export function registerCreatorPortalRoutes(app: Express): void {
   app.get("/api/creator/stats", requireCreator, async (req: CreatorAuthedRequest, res) => {
     try {
       const creatorId = req.creatorId!;
-      const days = parseDays(req.query.days, 14);
+      const range = resolvePortalRange(req.query.range ?? req.query.days);
+      const days = range.days;
       const todayKey = utcDayKey();
       const dayKeys = Array.from({ length: days }, (_, i) =>
         utcDayKey(new Date(Date.now() - i * 24 * 60 * 60 * 1000)),
@@ -322,6 +339,8 @@ export function registerCreatorPortalRoutes(app: Express): void {
         today,
         periodTotals: totals,
         periodDays: days,
+        periodRange: range.range,
+        periodLabel: range.label,
         todayVisitors,
         periodVisitors,
       });
@@ -387,7 +406,8 @@ export function registerCreatorPortalRoutes(app: Express): void {
   app.get("/api/creator/performance", requireCreator, async (req: CreatorAuthedRequest, res) => {
     try {
       const creatorId = req.creatorId!;
-      const days = parseDays(req.query.days, 14);
+      const range = resolvePortalRange(req.query.range ?? req.query.days);
+      const days = range.days;
       const start = new Date(`${utcDayKey(new Date(Date.now() - (days - 1) * 86400000))}T00:00:00.000Z`);
       const end = new Date(Date.now() + 60_000);
 
@@ -508,6 +528,8 @@ export function registerCreatorPortalRoutes(app: Express): void {
 
       res.json({
         periodDays: days,
+        periodRange: range.range,
+        periodLabel: range.label,
         daily: daily.map((d) => ({
           day: d.day,
           visitors: d.visitors,

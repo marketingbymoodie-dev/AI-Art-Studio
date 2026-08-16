@@ -72,6 +72,10 @@ export default function PlatformCreatorsPage() {
   const [status, setStatus] = useState<string>("all");
   const [q, setQ] = useState("");
   const [boardPeriod, setBoardPeriod] = useState("monthly");
+  const [reportMonth, setReportMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [shopNameCheck, setShopNameCheck] = useState("");
@@ -148,6 +152,67 @@ export default function PlatformCreatorsPage() {
       return res.json();
     },
     enabled: !!config?.enabled,
+  });
+
+  const { data: monthReport, isLoading: reportLoading } = useQuery<{
+    month: string;
+    rows: Array<{
+      rank: number;
+      username: string;
+      displayName: string;
+      visitors: number;
+      generations: number;
+      atcCount: number;
+      orders: number;
+      salesCents: number;
+      productProfitCents: number;
+      netProfitCents: number;
+      payoutCents: number;
+    }>;
+    totals: {
+      visitors: number;
+      generations: number;
+      atcCount: number;
+      orders: number;
+      salesCents: number;
+      productProfitCents: number;
+      netProfitCents: number;
+      payoutCents: number;
+    };
+  }>({
+    queryKey: ["/api/platform/creators/monthly-report", reportMonth],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/platform/creators/monthly-report?month=${encodeURIComponent(reportMonth)}`,
+      );
+      return res.json();
+    },
+    enabled: !!config?.enabled,
+  });
+
+  const sendReport = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/platform/creators/monthly-report/send", {
+        month: reportMonth,
+      });
+      return res.json() as Promise<{ emailed: boolean; month: string }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: data.emailed ? "Monthly report emailed" : "Report built, email skipped",
+        description: data.emailed
+          ? `Sent ${data.month} to FOUNDER_ALERT_EMAIL`
+          : "Check FOUNDER_ALERT_EMAIL / RESEND_API_KEY",
+      });
+    },
+    onError: (err) => {
+      toast({
+        title: "Could not send report",
+        description: err instanceof Error ? err.message : "Send failed",
+        variant: "destructive",
+      });
+    },
   });
 
   const listUrl = useMemo(() => {
@@ -273,6 +338,10 @@ export default function PlatformCreatorsPage() {
             <a href="/admin/platform/landing" className="underline underline-offset-2">
               Edit public landing copy
             </a>
+            {" · "}
+            <a href="/admin/platform/terms" className="underline underline-offset-2">
+              Edit Terms of Use
+            </a>
           </p>
           <p className="text-sm text-muted-foreground">
             Review applications and manage live creator shops.
@@ -316,7 +385,7 @@ export default function PlatformCreatorsPage() {
               <div>
                 <h2 className="text-sm font-semibold">Creator Network leaderboard</h2>
                 <p className="text-xs text-muted-foreground">
-                  Net Creator Contribution · {leaderboard?.periodKey || boardPeriod}
+                  Net profit · {leaderboard?.periodKey || boardPeriod}
                 </p>
               </div>
               <Select value={boardPeriod} onValueChange={setBoardPeriod}>
@@ -364,6 +433,93 @@ export default function PlatformCreatorsPage() {
                         <TableCell>
                           {row.sharePct != null ? `${row.sharePct.toFixed(1)}%` : "—"}
                         </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {config?.enabled && (
+          <div className="rounded-md border p-4 space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Monthly creator report</h2>
+                <p className="text-xs text-muted-foreground">
+                  Ranked one-liners: sales, profit, net profit, payout, visitors, gens, add to carts,
+                  orders. Emailed to you automatically after each month closes.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="report-month">Month</Label>
+                  <Input
+                    id="report-month"
+                    type="month"
+                    className="w-[160px]"
+                    value={reportMonth}
+                    onChange={(e) => setReportMonth(e.target.value)}
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  disabled={sendReport.isPending}
+                  onClick={() => sendReport.mutate()}
+                >
+                  {sendReport.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Email this month
+                </Button>
+              </div>
+            </div>
+            {reportLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <div className="rounded-md border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-14">#</TableHead>
+                      <TableHead>Creator</TableHead>
+                      <TableHead>Sales</TableHead>
+                      <TableHead>Profit</TableHead>
+                      <TableHead>Net profit</TableHead>
+                      <TableHead>Payout</TableHead>
+                      <TableHead>Vis</TableHead>
+                      <TableHead>Gens</TableHead>
+                      <TableHead>ATC</TableHead>
+                      <TableHead>Orders</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow className="bg-muted/40 font-medium">
+                      <TableCell />
+                      <TableCell>Total</TableCell>
+                      <TableCell>${((monthReport?.totals.salesCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>${((monthReport?.totals.productProfitCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>${((monthReport?.totals.netProfitCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>${((monthReport?.totals.payoutCents ?? 0) / 100).toFixed(2)}</TableCell>
+                      <TableCell>{monthReport?.totals.visitors ?? 0}</TableCell>
+                      <TableCell>{monthReport?.totals.generations ?? 0}</TableCell>
+                      <TableCell>{monthReport?.totals.atcCount ?? 0}</TableCell>
+                      <TableCell>{monthReport?.totals.orders ?? 0}</TableCell>
+                    </TableRow>
+                    {(monthReport?.rows || []).map((row) => (
+                      <TableRow key={row.username}>
+                        <TableCell>#{row.rank}</TableCell>
+                        <TableCell>
+                          {row.displayName}
+                          <span className="ml-1 text-muted-foreground">@{row.username}</span>
+                        </TableCell>
+                        <TableCell>${(row.salesCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>${(row.productProfitCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>${(row.netProfitCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>${(row.payoutCents / 100).toFixed(2)}</TableCell>
+                        <TableCell>{row.visitors}</TableCell>
+                        <TableCell>{row.generations}</TableCell>
+                        <TableCell>{row.atcCount}</TableCell>
+                        <TableCell>{row.orders}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

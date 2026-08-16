@@ -102,6 +102,8 @@ import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShop
 import { ensureValidOfflineAccessToken, getBearerTokenFromRequest } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
+import { renderTermsOfUseHtml } from "./terms-of-use";
+import { getTermsContent } from "./creator-config";
 import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
@@ -1736,6 +1738,17 @@ export async function registerRoutes(
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.send(privacyPolicyHtml);
+  });
+
+  app.get("/terms", async (_req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=60, must-revalidate");
+    try {
+      res.send(renderTermsOfUseHtml(await getTermsContent()));
+    } catch (e: any) {
+      console.error("[terms] render failed:", e);
+      res.status(500).send("Terms of Use are temporarily unavailable.");
+    }
   });
 
   // SVG Proxy to bypass CORS issues for AOP patterns
@@ -11843,6 +11856,18 @@ ${orientationExtra}
     import("./creator-analytics")
       .then(({ runCreatorDailyStatsRollup }) => runCreatorDailyStatsRollup())
       .catch((e: Error) => console.error("[Creator Daily Stats] Interval error:", e));
+  }, 24 * 60 * 60 * 1000);
+
+  // Email last month's ranked creator P&L to FOUNDER_ALERT_EMAIL on UTC day 1–3.
+  setTimeout(() => {
+    import("./creator-monthly-report")
+      .then(({ runCreatorMonthlyReport }) => runCreatorMonthlyReport())
+      .catch((e: Error) => console.error("[Creator Monthly Report] Startup error:", e));
+  }, 45 * 60 * 1000);
+  setInterval(() => {
+    import("./creator-monthly-report")
+      .then(({ runCreatorMonthlyReport }) => runCreatorMonthlyReport())
+      .catch((e: Error) => console.error("[Creator Monthly Report] Interval error:", e));
   }, 24 * 60 * 60 * 1000);
 
   // Creator Network rank snapshots (after daily rollup has fresh money fields).
