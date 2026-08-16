@@ -39,6 +39,8 @@ import {
   sanitizeCreatorImageUrl,
   sanitizeCreatorShopName,
   sanitizeCreatorSocials,
+  isApplyShopNameAllowed,
+  APPLY_SHOP_NAME_INVALID_MESSAGE,
   type CreatorApplicationStatus,
   type CreatorApplyTrack,
   type CreatorPayoutMethod,
@@ -231,8 +233,20 @@ export function registerCreatorMarketplaceRoutes(
       return res.status(429).json({ error: "Too many checks. Try again shortly." });
     }
     try {
+      const rawName = String(req.query.name || "");
+      const lettersOnly =
+        String(req.query.lettersOnly || "").trim() === "1" ||
+        String(req.query.lettersOnly || "").trim() === "true";
+      if (lettersOnly && rawName.trim() && !isApplyShopNameAllowed(rawName)) {
+        return res.status(200).json({
+          available: false,
+          handle: null,
+          error: APPLY_SHOP_NAME_INVALID_MESSAGE,
+          code: "CREATOR_HANDLE_INVALID",
+        });
+      }
       const result = await resolveCreatorHandleAvailability({
-        rawName: String(req.query.name || ""),
+        rawName,
         excludeApplicationId: String(req.query.applicationId || "").trim() || null,
         excludeCreatorId: String(req.query.creatorId || "").trim() || null,
       });
@@ -283,6 +297,11 @@ export function registerCreatorMarketplaceRoutes(
       const termsAccepted = body.termsAccepted === true || body.termsAccepted === "true";
 
       const shopName = sanitizeCreatorShopName(body.shopName);
+      if (shopName && !isApplyShopNameAllowed(shopName)) {
+        return res.status(400).json({
+          error: APPLY_SHOP_NAME_INVALID_MESSAGE,
+        });
+      }
       if (!firstName || !lastName || !email) {
         return res.status(400).json({
           error: "First name, last name, and email are required.",

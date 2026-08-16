@@ -14,7 +14,7 @@ export const privacyPolicyHtml = `<!doctype html>
 </head>
 <body>
   <h1>AI Art Studio Privacy Policy</h1>
-  <p class="muted">Last updated: May 3, 2026</p>
+  <p class="muted">Last updated: August 17, 2026</p>
 
   <p>
     AI Art Studio ("we", "us") provides AI artwork generation,
@@ -28,7 +28,7 @@ export const privacyPolicyHtml = `<!doctype html>
     <li>Shopify shop domain and app installation details.</li>
     <li>Shopify customer ID and, where provided by the customer, email address.</li>
     <li>Customer artwork prompts, generated design metadata, and design status.</li>
-    <li>Credit balances, credit ledger entries, and free generation usage.</li>
+    <li>Credit balances, credit ledger entries, and included generation usage.</li>
   </ul>
   <p>
     We do not sell customer personal data and we do not use it for unrelated
@@ -39,7 +39,7 @@ export const privacyPolicyHtml = `<!doctype html>
   <p>We use this data only to:</p>
   <ul>
     <li>Generate and display customer-created artwork.</li>
-    <li>Maintain accurate Studio Credit and free generation balances.</li>
+    <li>Maintain accurate Studio Credit and included generation balances.</li>
     <li>Create product/mockup records needed for cart and checkout display.</li>
     <li>Support merchant troubleshooting, fraud prevention, and legal compliance.</li>
   </ul>

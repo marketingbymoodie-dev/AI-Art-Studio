@@ -5,6 +5,8 @@ import {
   CREATOR_PAYOUT_METHODS,
   normalizeSocialHandle,
   shopNameToHandle,
+  sanitizeApplyShopNameInput,
+  isApplyShopNameAllowed,
 } from "@shared/creatorMarketplace";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -118,7 +120,7 @@ export default function CreatorApplyPage() {
     queryKey: ["/api/creators/shop-name-available", shopNameQuery],
     queryFn: async () => {
       const res = await fetch(
-        `/api/creators/shop-name-available?name=${encodeURIComponent(shopNameQuery)}`,
+        `/api/creators/shop-name-available?name=${encodeURIComponent(shopNameQuery)}&lettersOnly=1`,
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok && !data.error) throw new Error("Could not check shop name");
@@ -246,12 +248,14 @@ export default function CreatorApplyPage() {
               required
               placeholder="Your Shop Name"
               value={form.shopName}
-              onChange={(e) => set("shopName", e.target.value)}
+              onChange={(e) => set("shopName", sanitizeApplyShopNameInput(e.target.value))}
               data-testid="creator-apply-shop-name"
+              autoComplete="off"
+              inputMode="text"
             />
             <p className="text-xs text-white/40">
               Your public store name — not your personal name, unless that is the store name.
-              This becomes your URL
+              Letters and spaces only. This becomes your URL
               {shopHandle ? (
                 <>
                   : <span className="text-white/70">{shopHandle}.aiartstudio.app</span>
@@ -260,10 +264,9 @@ export default function CreatorApplyPage() {
                 "."
               )}
             </p>
-            {form.shopName.trim() && !shopHandle ? (
+            {form.shopName.trim() && !isApplyShopNameAllowed(form.shopName) ? (
               <p className="text-xs text-red-300">
-                Use 2–32 letters, numbers, or spaces. Reserved words like www or admin cannot be
-                used.
+                Use 2–32 letters and spaces only. Reserved words like www or admin cannot be used.
               </p>
             ) : shopAvail && shopAvail.available === false ? (
               <p className="text-xs text-red-300" data-testid="creator-apply-shop-taken">
@@ -420,7 +423,7 @@ export default function CreatorApplyPage() {
               mutation.isPending ||
               !terms ||
               shopAvail?.available === false ||
-              (!!form.shopName.trim() && !shopHandle) ||
+              (!!form.shopName.trim() && !isApplyShopNameAllowed(form.shopName)) ||
               !primaryHandleValid
             }
             data-testid="creator-apply-submit"

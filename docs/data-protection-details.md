@@ -1,6 +1,6 @@
 # AI Art Studio Data Protection Details
 
-Last updated: 2026-05-03
+Last updated: 2026-08-17
 
 Use this document as the source of truth for Shopify's Protected Customer Data application.
 
@@ -9,7 +9,7 @@ Use this document as the source of truth for Shopify's Protected Customer Data a
 AI Art Studio processes the minimum customer personal data required to:
 
 - Generate and save customer-created artwork.
-- Maintain Studio Credit and free generation balances.
+- Maintain Studio Credit and included generation balances.
 - Troubleshoot merchant support issues and comply with Shopify privacy webhooks.
 
 The app does not sell customer personal data, use customer data for unrelated advertising, or use personal data for automated decisions with legal or similarly significant effects.
@@ -22,7 +22,7 @@ The app may process:
 - Shopify customer ID.
 - Customer email address when provided for OTP or Shopify customer identity resolution.
 - Artwork prompts and generated design metadata.
-- Credit balances, credit ledger entries, and free generation usage.
+- Credit balances, credit ledger entries, and included generation usage.
 
 The app does not need customer names, full postal addresses, or phone numbers for Studio Credits. If an orders/paid webhook payload contains those fields, the app ignores them unless required for fulfillment.
 

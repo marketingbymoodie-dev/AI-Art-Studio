@@ -609,6 +609,22 @@ export const CREATOR_HANDLE_HOLDING_APPLICATION_STATUSES = [
 export const CREATOR_HANDLE_INVALID_MESSAGE =
   "Shop name must become a 2–32 character URL (letters, numbers, hyphens). Reserved words like www or admin cannot be used.";
 
+/** Apply-form shop names: letters and spaces only. Spaces become hyphens in the URL. */
+const APPLY_SHOP_NAME_RE = /^[A-Za-z]+(?:[ ][A-Za-z]+)*$/;
+
+export const APPLY_SHOP_NAME_INVALID_MESSAGE =
+  "Use letters and spaces only — no numbers or special characters. This becomes your store URL.";
+
+export function isApplyShopNameAllowed(raw: string): boolean {
+  const name = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (!name || !APPLY_SHOP_NAME_RE.test(name)) return false;
+  return shopNameToHandle(name) != null;
+}
+
+export function sanitizeApplyShopNameInput(raw: string): string {
+  return String(raw ?? "").replace(/[^A-Za-z ]/g, "");
+}
+
 export const CREATOR_HANDLE_TAKEN_MESSAGE =
   "That shop name is already taken. Choose a different name — we will not add numbers to make it unique.";
 

@@ -20,6 +20,8 @@ import {
   normalizeCreatorUsername,
   sanitizeCreatorShopName,
   shopNameToHandle,
+  isApplyShopNameAllowed,
+  sanitizeApplyShopNameInput,
   parseCreatorHeadingFontId,
   parseCreatorSocials,
   resolveCreatorHeadingFont,
@@ -53,6 +55,14 @@ describe("shop name → handle", () => {
     expect(shopNameToHandle("Mad Clown Core")).toBe("mad-clown-core");
     expect(shopNameToHandle("Max's Pets")).toBe("maxs-pets");
     expect(sanitizeCreatorShopName("  Mad   Clown Core  ")).toBe("Mad Clown Core");
+  });
+
+  it("apply shop names allow letters and spaces only", () => {
+    expect(isApplyShopNameAllowed("Mad Clown Core")).toBe(true);
+    expect(isApplyShopNameAllowed("Max's Pets")).toBe(false);
+    expect(isApplyShopNameAllowed("Shop 2")).toBe(false);
+    expect(isApplyShopNameAllowed("www")).toBe(false);
+    expect(sanitizeApplyShopNameInput("Mad Clown 2!")).toBe("Mad Clown ");
   });
 
   it("flags exact and numbered-suffix duplicates", () => {
