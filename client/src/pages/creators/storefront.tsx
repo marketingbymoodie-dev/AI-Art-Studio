@@ -156,6 +156,8 @@ function designerHref(opts: {
   productTypeId?: number | null;
   title?: string | null;
   loadDesignId?: string | null;
+  creatorUsername?: string | null;
+  creatorId?: string | null;
 }): string {
   const params = new URLSearchParams();
   if (opts.platformShop) params.set("shop", opts.platformShop);
@@ -165,8 +167,10 @@ function designerHref(opts: {
     params.set("productTypeId", String(opts.productTypeId));
   }
   if (opts.title) params.set("productTitle", opts.title);
-  params.set("creatorUsername", opts.creator.username);
-  params.set("creatorId", opts.creator.id);
+  const username = String(opts.creatorUsername || opts.creator.username || "").trim();
+  const creatorId = String(opts.creatorId || opts.creator.id || "").trim();
+  if (username) params.set("creatorUsername", username);
+  if (creatorId) params.set("creatorId", creatorId);
   params.set("storefront", "true");
   if (opts.loadDesignId) params.set("loadDesignId", opts.loadDesignId);
   return `/s/designer?${params.toString()}`;
@@ -236,7 +240,7 @@ function StoreShell({
             <CreatorSavedDesignsMenu
               username={creator.username}
               platformShop={platformShop}
-              designerHrefFor={({ handle, productTypeId, title, loadDesignId }) =>
+              designerHrefFor={({ handle, productTypeId, title, loadDesignId, creatorUsername, creatorId }) =>
                 designerHref({
                   handle,
                   platformShop,
@@ -244,6 +248,8 @@ function StoreShell({
                   productTypeId,
                   title,
                   loadDesignId,
+                  creatorUsername,
+                  creatorId,
                 })
               }
             />

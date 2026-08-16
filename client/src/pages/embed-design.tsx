@@ -2628,7 +2628,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }
     }, 500);
   }, [shopDomain, centralAppUrl, googleAuthEnabled]);
-  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
+  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string; creatorId?: string | null; creatorUsername?: string | null; creatorShopName?: string | null; originPageHandle?: string | null; originPageTitle?: string | null}>>([]);
   const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
   const [styleMismatchDialog, setStyleMismatchDialog] = useState<{
     reasons: string[];
@@ -13372,6 +13372,30 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                     const clickedId = String(d.id || "");
                                     if (!clickedId) return;
                                     setShowSavedDesigns(false);
+                                    const originCreator = String(d.creatorUsername || "").trim().toLowerCase();
+                                    if (
+                                      isCreatorStorefront &&
+                                      originCreator &&
+                                      originCreator !== creatorUsernameParam
+                                    ) {
+                                      const handle = String(d.originPageHandle || d.pageHandle || "").trim();
+                                      if (handle && shopDomain) {
+                                        const params = new URLSearchParams();
+                                        params.set("shop", shopDomain);
+                                        params.set("page", handle);
+                                        params.set("pageHandle", handle);
+                                        if (d.productTypeId) params.set("productTypeId", String(d.productTypeId));
+                                        if (d.originPageTitle || d.baseTitle) {
+                                          params.set("productTitle", String(d.originPageTitle || d.baseTitle));
+                                        }
+                                        params.set("creatorUsername", originCreator);
+                                        if (d.creatorId) params.set("creatorId", String(d.creatorId));
+                                        params.set("storefront", "true");
+                                        params.set("loadDesignId", clickedId);
+                                        window.location.assign(`/s/designer?${params.toString()}`);
+                                        return;
+                                      }
+                                    }
                                     // If this design belongs to a different product type, switch
                                     // the iframe's active customizer context without navigating the
                                     // Shopify parent document.
@@ -13439,9 +13463,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                     {d.baseTitle && (
                                       <p className="text-xs font-medium truncate">{d.baseTitle}</p>
                                     )}
-                                    {d.prompt && (
+                                    {isCreatorStorefront &&
+                                    d.creatorUsername &&
+                                    String(d.creatorUsername).toLowerCase() !== creatorUsernameParam ? (
+                                      <p className="text-[10px] text-muted-foreground truncate">
+                                        Opens in {d.creatorShopName || d.creatorUsername}
+                                      </p>
+                                    ) : d.prompt ? (
                                       <p className="text-[10px] text-muted-foreground truncate">{d.prompt}</p>
-                                    )}
+                                    ) : null}
                                   </div>
                                 </div>
                                 {/* Delete button — visible on hover (desktop) or always visible (mobile) */}

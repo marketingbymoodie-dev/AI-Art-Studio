@@ -11,6 +11,11 @@ type SavedDesign = {
   productTypeId?: string | number | null;
   prompt?: string | null;
   designState?: Record<string, unknown> | null;
+  creatorId?: string | null;
+  creatorUsername?: string | null;
+  creatorShopName?: string | null;
+  originPageHandle?: string | null;
+  originPageTitle?: string | null;
 };
 
 type ShopPage = {
@@ -230,6 +235,8 @@ export function CreatorSavedDesignsMenu({
     productTypeId?: number | null;
     title?: string | null;
     loadDesignId: string;
+    creatorUsername?: string | null;
+    creatorId?: string | null;
   }) => string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -307,6 +314,29 @@ export function CreatorSavedDesignsMenu({
   }
 
   function hrefFor(d: SavedDesign, page: ShopPage | null): string | null {
+    const originUsername = String(d.creatorUsername || "").trim().toLowerCase();
+    const currentUsername = String(username || "").trim().toLowerCase();
+    const belongsToOtherShop = !!(
+      originUsername &&
+      currentUsername &&
+      originUsername !== currentUsername
+    );
+    if (belongsToOtherShop) {
+      const handle = String(d.originPageHandle || d.pageHandle || "").trim();
+      if (!handle) return null;
+      const typeId =
+        d.productTypeId != null && Number(d.productTypeId) > 0
+          ? Number(d.productTypeId)
+          : null;
+      return designerHrefFor({
+        handle,
+        productTypeId: typeId,
+        title: d.originPageTitle || d.baseTitle || null,
+        loadDesignId: d.id,
+        creatorUsername: originUsername,
+        creatorId: d.creatorId || null,
+      });
+    }
     // Leftover jobs from a product not in this shop still open — reuse the
     // artwork on the first assigned product (same as in-place load in the customizer).
     const target = page || pages[0] || null;
@@ -384,7 +414,14 @@ export function CreatorSavedDesignsMenu({
                 const page = resolveShopPage(d, pages);
                 const href = hrefFor(d, page);
                 const img = thumbUrl(d);
-                const title = labelFor(d, page, pages);
+                const originUsername = String(d.creatorUsername || "").trim().toLowerCase();
+                const fromOtherShop = !!(
+                  originUsername &&
+                  originUsername !== String(username || "").trim().toLowerCase()
+                );
+                const title = fromOtherShop
+                  ? d.originPageTitle || d.baseTitle || "Saved design"
+                  : labelFor(d, page, pages);
                 const card = (
                   <>
                     <div className="relative aspect-square bg-muted">
@@ -398,7 +435,11 @@ export function CreatorSavedDesignsMenu({
                     </div>
                     <div className="px-2 py-1.5">
                       <p className="truncate text-xs font-medium">{title}</p>
-                      {d.prompt ? (
+                      {fromOtherShop ? (
+                        <p className="truncate text-[10px] text-muted-foreground">
+                          Opens in {d.creatorShopName || d.creatorUsername}
+                        </p>
+                      ) : d.prompt ? (
                         <p className="truncate text-[10px] text-muted-foreground">{d.prompt}</p>
                       ) : null}
                     </div>

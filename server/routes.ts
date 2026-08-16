@@ -22,7 +22,7 @@ import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, creators, creatorCustomizerPages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -10617,6 +10617,103 @@ ${orientationExtra}
         return `/apps/appai${clean}`;
       };
 
+      const originCreatorIds = [
+        ...new Set(rows.map((r) => (r.creatorId ? String(r.creatorId).trim() : "")).filter(Boolean)),
+      ];
+      const originCreatorById = new Map<
+        string,
+        { username: string; shopName: string }
+      >();
+      const originPagesByCreator = new Map<
+        string,
+        Array<{ handle: string; title: string; productTypeId: number | null }>
+      >();
+      if (originCreatorIds.length > 0) {
+        const originCreators = await db
+          .select({
+            id: creators.id,
+            username: creators.username,
+            displayName: creators.displayName,
+            branding: creators.branding,
+          })
+          .from(creators)
+          .where(inArray(creators.id, originCreatorIds));
+        const { creatorPublicName } = await import("@shared/creatorMarketplace");
+        for (const c of originCreators) {
+          originCreatorById.set(c.id, {
+            username: String(c.username || "").trim().toLowerCase(),
+            shopName:
+              creatorPublicName({
+                username: c.username,
+                branding: (c.branding as Record<string, unknown> | null) ?? null,
+              }) ||
+              String(c.displayName || "").trim() ||
+              String(c.username || "").trim(),
+          });
+        }
+        const originLinks = await db
+          .select({
+            creatorId: creatorCustomizerPages.creatorId,
+            customizerPageId: creatorCustomizerPages.customizerPageId,
+            titleOverride: creatorCustomizerPages.titleOverride,
+            sortOrder: creatorCustomizerPages.sortOrder,
+          })
+          .from(creatorCustomizerPages)
+          .where(
+            and(
+              inArray(creatorCustomizerPages.creatorId, originCreatorIds),
+              eq(creatorCustomizerPages.enabled, true),
+            ),
+          );
+        const originPageIds = [
+          ...new Set(originLinks.map((l) => l.customizerPageId).filter(Boolean)),
+        ];
+        const originPageRows =
+          originPageIds.length > 0
+            ? await db
+                .select({
+                  id: customizerPages.id,
+                  handle: customizerPages.handle,
+                  title: customizerPages.title,
+                  productTypeId: customizerPages.productTypeId,
+                  status: customizerPages.status,
+                })
+                .from(customizerPages)
+                .where(inArray(customizerPages.id, originPageIds))
+            : [];
+        const originPageById = new Map(originPageRows.map((p) => [p.id, p]));
+        for (const link of originLinks) {
+          const page = originPageById.get(link.customizerPageId);
+          if (!page || page.status === "disabled" || !page.handle) continue;
+          const list = originPagesByCreator.get(link.creatorId) || [];
+          list.push({
+            handle: page.handle,
+            title: link.titleOverride || page.title,
+            productTypeId: page.productTypeId ?? null,
+          });
+          originPagesByCreator.set(link.creatorId, list);
+        }
+      }
+
+      const pickOriginPage = (
+        creatorId: string,
+        preferredHandle: string | null,
+        productTypeId: string | null,
+      ): { handle: string; title: string } | null => {
+        const pages = originPagesByCreator.get(creatorId) || [];
+        if (pages.length === 0) return null;
+        if (preferredHandle) {
+          const exact = pages.find((p) => p.handle === preferredHandle);
+          if (exact) return { handle: exact.handle, title: exact.title };
+        }
+        const typeId = productTypeId != null ? Number(productTypeId) : NaN;
+        if (Number.isFinite(typeId) && typeId > 0) {
+          const typed = pages.find((p) => p.productTypeId === typeId);
+          if (typed) return { handle: typed.handle, title: typed.title };
+        }
+        return { handle: pages[0].handle, title: pages[0].title };
+      };
+
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
@@ -10635,6 +10732,12 @@ ${orientationExtra}
               ? ds.pageHandle.trim()
               : null;
           const resolvedHandle = stateHandle || (ptId ? (handleMap[ptId] || null) : null);
+          const originCreator = d.creatorId
+            ? originCreatorById.get(String(d.creatorId)) || null
+            : null;
+          const originPage = d.creatorId
+            ? pickOriginPage(String(d.creatorId), resolvedHandle, ptId)
+            : null;
           return {
           id: d.id,
           artworkUrl:
@@ -10660,6 +10763,11 @@ ${orientationExtra}
             (ptId ? ptMap[ptId] || null : null),
           customerId: d.customerId,
           createdAt: d.createdAt,
+          creatorId: d.creatorId ? String(d.creatorId) : null,
+          creatorUsername: originCreator?.username || null,
+          creatorShopName: originCreator?.shopName || null,
+          originPageHandle: originPage?.handle || null,
+          originPageTitle: originPage?.title || null,
         };
         })
       });
