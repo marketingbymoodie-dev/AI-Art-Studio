@@ -24,7 +24,19 @@ import {
   type SocialDraft,
 } from "@/components/creators/CreatorSocialsFields";
 import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
-import { DEFAULT_TERMS_CONTENT, type TermsContent } from "@shared/termsContent";
+import {
+  DEFAULT_TERMS_CONTENT,
+  formatTermsDate,
+  renderTermsBodyHtml,
+  type TermsContent,
+  type TermsSectionId,
+} from "@shared/termsContent";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Loader2 } from "lucide-react";
 
 type Track = "creator" | "shopify";
@@ -48,6 +60,7 @@ export default function CreatorApplyPage() {
   const { toast } = useToast();
   const [submittedId, setSubmittedId] = useState<string | null>(null);
   const [terms, setTerms] = useState(false);
+  const [termsOpen, setTermsOpen] = useState(false);
   const [form, setForm] = useState({
     firstName: "",
     lastName: "",
@@ -148,8 +161,10 @@ export default function CreatorApplyPage() {
   const lede = track === "shopify" ? copy.shopifyLede : copy.applyLede;
   const termsText =
     track === "shopify" ? termsCopy.checkboxes.applyMerchant : termsCopy.checkboxes.applyCreator;
+  const termsSectionId: TermsSectionId = track === "shopify" ? "merchants" : "creators";
   const termsHref = track === "shopify" ? "/terms#merchants" : "/terms#creators";
   const submitLabel = track === "shopify" ? copy.shopifySubmit : copy.applySubmit;
+  const popupSections: TermsSectionId[] = ["general", termsSectionId];
 
   return (
     <ApplyShell>
@@ -290,20 +305,55 @@ export default function CreatorApplyPage() {
             </Field>
           )}
 
-          <label className="flex items-start gap-3 text-sm text-white/70">
-            <Checkbox checked={terms} onCheckedChange={(c) => setTerms(!!c)} className="mt-0.5" />
-            <span>
-              {termsText}{" "}
+          <div className="flex items-start gap-3 text-sm text-white/70">
+            <Checkbox
+              checked={terms}
+              onCheckedChange={(c) => setTerms(!!c)}
+              className="mt-0.5"
+            />
+            <div className="space-y-1">
+              <p>{termsText}</p>
+              <button
+                type="button"
+                className="underline underline-offset-2 text-white/85 hover:text-white"
+                onClick={() => setTermsOpen(true)}
+              >
+                {termsCopy.checkboxes.readFullTermsLabel}
+              </button>
+            </div>
+          </div>
+
+          <Dialog open={termsOpen} onOpenChange={setTermsOpen}>
+            <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{termsCopy.sections[termsSectionId].title} terms</DialogTitle>
+              </DialogHeader>
+              <p className="text-xs text-muted-foreground">
+                Last updated {formatTermsDate(termsCopy.lastUpdated)} · revision {termsCopy.revision}
+              </p>
+              <div className="space-y-6 text-sm leading-relaxed [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_a]:underline">
+                {popupSections.map((id) => (
+                  <section key={id}>
+                    <h2 className="text-base font-semibold">{termsCopy.sections[id].title}</h2>
+                    <div
+                      className="mt-2 space-y-2"
+                      dangerouslySetInnerHTML={{
+                        __html: renderTermsBodyHtml(termsCopy.sections[id].body),
+                      }}
+                    />
+                  </section>
+                ))}
+              </div>
               <a
                 href={termsHref}
                 target="_blank"
                 rel="noreferrer"
-                className="underline underline-offset-2 text-white/85"
+                className="text-sm underline underline-offset-2"
               >
-                {termsCopy.checkboxes.readFullTermsLabel}
+                Open the full Terms of Use
               </a>
-            </span>
-          </label>
+            </DialogContent>
+          </Dialog>
 
           <Button
             type="submit"
