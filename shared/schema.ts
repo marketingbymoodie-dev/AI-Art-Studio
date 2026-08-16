@@ -1810,3 +1810,79 @@ export const creatorEmailLog = pgTable(
   },
   (table) => [index("creator_email_log_creator_idx").on(table.creatorId)],
 );
+
+export const supportTickets = pgTable(
+  "support_tickets",
+  {
+    id: serial("id").primaryKey(),
+    source: text("source").notNull(),
+    category: text("category").notNull(),
+    status: text("status").notNull().default("open"),
+    subject: text("subject").notNull(),
+    body: text("body").notNull(),
+    reporterEmail: text("reporter_email").notNull(),
+    reporterName: text("reporter_name"),
+    creatorId: varchar("creator_id"),
+    merchantId: varchar("merchant_id"),
+    shopDomain: text("shop_domain"),
+    pageUrl: text("page_url"),
+    userAgent: text("user_agent"),
+    generationJobId: varchar("generation_job_id"),
+    generationSnapshot: jsonb("generation_snapshot"),
+    attachmentUrls: jsonb("attachment_urls").$type<string[]>(),
+    lastReplyRole: text("last_reply_role"),
+    lastReplyAt: timestamp("last_reply_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    resolvedAt: timestamp("resolved_at"),
+  },
+  (table) => [
+    index("support_tickets_source_idx").on(table.source, table.status),
+    index("support_tickets_creator_idx").on(table.creatorId),
+    index("support_tickets_merchant_idx").on(table.merchantId),
+    index("support_tickets_shop_idx").on(table.shopDomain),
+    index("support_tickets_updated_idx").on(table.updatedAt),
+  ],
+);
+
+export type SupportTicketRow = typeof supportTickets.$inferSelect;
+export type InsertSupportTicketRow = typeof supportTickets.$inferInsert;
+
+export const supportTicketReplies = pgTable(
+  "support_ticket_replies",
+  {
+    id: serial("id").primaryKey(),
+    ticketId: integer("ticket_id").notNull(),
+    authorRole: text("author_role").notNull(),
+    authorName: text("author_name"),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("support_ticket_replies_ticket_idx").on(table.ticketId, table.createdAt)],
+);
+
+export type SupportTicketReplyRow = typeof supportTicketReplies.$inferSelect;
+
+export const helpArticles = pgTable(
+  "help_articles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    title: text("title").notNull(),
+    slug: text("slug").notNull(),
+    summary: text("summary"),
+    body: text("body").notNull(),
+    audience: text("audience").notNull().default("both"),
+    category: text("category").notNull().default("other"),
+    published: boolean("published").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("help_articles_slug_uidx").on(table.slug),
+    index("help_articles_audience_idx").on(table.audience, table.published),
+  ],
+);
+
+export type HelpArticleRow = typeof helpArticles.$inferSelect;
+export type InsertHelpArticleRow = typeof helpArticles.$inferInsert;

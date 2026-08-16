@@ -46,6 +46,10 @@ import CreatorPathStorefrontPage, {
 } from "@/pages/creators/storefront";
 import CreatorPortalLoginPage from "@/pages/portal/login";
 import CreatorPortalDashboardPage from "@/pages/portal/dashboard";
+import AdminSupportPage from "@/pages/admin/support";
+import AdminHowToPage from "@/pages/admin/how-to";
+import PlatformSupportPage from "@/pages/admin/platform-support";
+import PlatformHowToPage from "@/pages/admin/platform-how-to";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -93,6 +97,8 @@ function AppRouter() {
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
       <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/landing" component={PlatformLandingPage} />
+      <Route path="/admin/platform/support" component={PlatformSupportPage} />
+      <Route path="/admin/platform/how-to" component={PlatformHowToPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Creator Marketplace marketing (public) */}
@@ -117,6 +123,8 @@ function AppRouter() {
       {/* Admin */}
       <Route path="/admin/setup" component={AdminSetupPage} />
       <Route path="/admin/settings" component={AdminSettings} />
+      <Route path="/admin/support" component={AdminSupportPage} />
+      <Route path="/admin/how-to" component={AdminHowToPage} />
       <Route path="/admin/products" component={AdminProducts} />
       <Route path="/admin/styles" component={AdminStyles} />
       <Route path="/admin/coupons" component={AdminCoupons} />

@@ -1366,6 +1366,65 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "support_tickets",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "support_tickets" (
+        "id" serial PRIMARY KEY,
+        "source" text NOT NULL,
+        "category" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'open',
+        "subject" text NOT NULL,
+        "body" text NOT NULL,
+        "reporter_email" text NOT NULL,
+        "reporter_name" text,
+        "creator_id" varchar,
+        "merchant_id" varchar,
+        "shop_domain" text,
+        "page_url" text,
+        "user_agent" text,
+        "generation_job_id" varchar,
+        "generation_snapshot" jsonb,
+        "attachment_urls" jsonb,
+        "last_reply_role" text,
+        "last_reply_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        "resolved_at" timestamp
+      )
+    `,
+  },
+  {
+    name: "support_ticket_replies",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "support_ticket_replies" (
+        "id" serial PRIMARY KEY,
+        "ticket_id" integer NOT NULL,
+        "author_role" text NOT NULL,
+        "author_name" text,
+        "body" text NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "help_articles",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "help_articles" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "title" text NOT NULL,
+        "slug" text NOT NULL,
+        "summary" text,
+        "body" text NOT NULL,
+        "audience" text NOT NULL DEFAULT 'both',
+        "category" text NOT NULL DEFAULT 'other',
+        "published" boolean NOT NULL DEFAULT false,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -1636,6 +1695,46 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_pack_purchases_creator_idx",
     sql: `CREATE INDEX IF NOT EXISTS "creator_pack_purchases_creator_idx"
       ON "creator_pack_purchases" ("creator_id", "created_at")`,
+  },
+  {
+    name: "support_tickets_source_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_source_idx"
+      ON "support_tickets" ("source", "status")`,
+  },
+  {
+    name: "support_tickets_creator_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_creator_idx"
+      ON "support_tickets" ("creator_id")`,
+  },
+  {
+    name: "support_tickets_merchant_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_merchant_idx"
+      ON "support_tickets" ("merchant_id")`,
+  },
+  {
+    name: "support_tickets_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_shop_idx"
+      ON "support_tickets" ("shop_domain")`,
+  },
+  {
+    name: "support_tickets_updated_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_tickets_updated_idx"
+      ON "support_tickets" ("updated_at")`,
+  },
+  {
+    name: "support_ticket_replies_ticket_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "support_ticket_replies_ticket_idx"
+      ON "support_ticket_replies" ("ticket_id", "created_at")`,
+  },
+  {
+    name: "help_articles_slug_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "help_articles_slug_uidx"
+      ON "help_articles" ("slug")`,
+  },
+  {
+    name: "help_articles_audience_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "help_articles_audience_idx"
+      ON "help_articles" ("audience", "published")`,
   },
 ];
 

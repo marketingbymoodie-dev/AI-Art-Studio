@@ -30,6 +30,8 @@ import {
 } from "@/lib/creator-portal-auth";
 import { Switch } from "@/components/ui/switch";
 import { CreatorPortalProfileForm } from "@/components/creators/CreatorPortalProfileForm";
+import { SupportInbox } from "@/components/support/SupportInbox";
+import { HowToLibrary } from "@/components/support/HowToLibrary";
 import { creatorPublicName } from "@shared/creatorMarketplace";
 import { Loader2 } from "lucide-react";
 
@@ -331,6 +333,8 @@ export default function CreatorPortalDashboardPage() {
             <TabsTrigger value="performance">Performance</TabsTrigger>
             <TabsTrigger value="styles">Styles</TabsTrigger>
             <TabsTrigger value="profile">Profile</TabsTrigger>
+            <TabsTrigger value="support">Support</TabsTrigger>
+            <TabsTrigger value="howto">How To</TabsTrigger>
           </TabsList>
 
           <TabsContent value="today" className="space-y-6">
@@ -604,6 +608,24 @@ export default function CreatorPortalDashboardPage() {
 
           <TabsContent value="profile" className="rounded-xl border border-stone-200 bg-white p-5">
             <CreatorPortalProfileForm creator={creator} />
+          </TabsContent>
+
+          <TabsContent value="support">
+            <SupportInbox
+              listPath="/api/creator/support/tickets"
+              createPath="/api/creator/support/tickets"
+              detailPath={(id) => `/api/creator/support/tickets/${id}`}
+              replyPath={(id) => `/api/creator/support/tickets/${id}/replies`}
+              fetcher={creatorPortalFetch}
+              queryKey={["creator-portal-support"]}
+              chrome="portal"
+              defaultEmail={creator.email}
+              emailLocked
+            />
+          </TabsContent>
+
+          <TabsContent value="howto">
+            <HowToLibrary audience="creator" fetcher={creatorPortalFetch} chrome="portal" />
           </TabsContent>
         </Tabs>
 

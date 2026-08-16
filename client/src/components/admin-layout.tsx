@@ -42,6 +42,8 @@ import {
   Calculator,
   Users,
   Megaphone,
+  LifeBuoy,
+  BookOpen,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -62,6 +64,8 @@ const menuItems = [
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
   { title: "Profit Insights", url: "/admin/insights", icon: Calculator },
   { title: "Settings", url: "/admin/settings", icon: Settings },
+  { title: "Support", url: "/admin/support", icon: LifeBuoy },
+  { title: "How To", url: "/admin/how-to", icon: BookOpen },
 ];
 
 const platformMenuItems = [
@@ -71,6 +75,8 @@ const platformMenuItems = [
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
+  { title: "Support tickets", url: "/admin/platform/support", icon: LifeBuoy },
+  { title: "How To library", url: "/admin/platform/how-to", icon: BookOpen },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];
