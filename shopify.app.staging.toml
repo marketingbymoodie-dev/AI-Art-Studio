@@ -26,6 +26,10 @@ uri = "/shopify/webhooks/customers-redact"
 compliance_topics = [ "shop/redact" ]
 uri = "/shopify/webhooks/shop-redact"
 
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/shopify/webhooks/uninstall"
+
 # Studio Credits Phase 1 — Reward Ladder purchase_threshold grant + clawback.
 # Requires Protected Customer Data (Level 2) selected in Partner Dashboard.
 [[webhooks.subscriptions]]

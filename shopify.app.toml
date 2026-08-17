@@ -24,6 +24,10 @@ uri = "/shopify/webhooks/customers-redact"
 compliance_topics = [ "shop/redact" ]
 uri = "/shopify/webhooks/shop-redact"
 
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/shopify/webhooks/uninstall"
+
 # orders/paid is required to debit the credit ledger after a redeemed
 # Function discount. It carries protected customer data (email, address,
 # customer GID) so it cannot be declared here until the app is approved
