@@ -99,7 +99,7 @@ import {
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
-import { ensureValidOfflineAccessToken, getBearerTokenFromRequest } from "./shopify-offline-token";
+import { ensureValidOfflineAccessToken, getBearerTokenFromRequest, recoverOrCreateInstallationFromSession } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { renderTermsOfUseHtml } from "./terms-of-use";
@@ -1687,7 +1687,7 @@ async function getAuthorizedInstallation(shop: string) {
   if (inst.status === "active") return inst;
 
   // Status is stale — try to self-heal if a token is present.
-  if (!inst.accessToken) {
+  if (!inst.accessToken || inst.accessToken === "NEEDS_RECONNECT") {
     console.warn(`[auth-heal] ${shop} has status=${inst.status} with no token — OAuth reinstall required`);
     return null;
   }
@@ -5770,32 +5770,39 @@ ${orientationExtra}
 
       let combined = [...installations, ...unlinkedInstallations];
 
-      // If we have a shop domain from session but no installation, create a placeholder
+      // If we have a shop domain from session but no installation, exchange the
+      // live session JWT for an offline token (same as first-open setup).
       if (shopDomain && combined.length === 0) {
-        console.log(`[/api/shopify/installations] Creating placeholder installation for ${shopDomain}`);
+        console.log(`[/api/shopify/installations] No linked installation for ${shopDomain} — recovering from session`);
         try {
-          const existingInstallation = await storage.getShopifyInstallationByShop(shopDomain);
-
-          if (!existingInstallation) {
-            // Create a new installation - mark as needing reconnection
-            const newInstallation = await storage.createShopifyInstallation({
-              shopDomain,
-              accessToken: "NEEDS_RECONNECT", // Placeholder until OAuth completes
-              scope: "",
-              status: "needs_reconnect", // Needs OAuth to complete
-              installedAt: new Date(),
-              merchantId: merchant.id,
-            });
-            combined = [newInstallation];
-            console.log(`[/api/shopify/installations] Created placeholder installation for ${shopDomain}`);
+          const recovered = await recoverOrCreateInstallationFromSession(
+            shopDomain,
+            getBearerTokenFromRequest(req),
+          );
+          if (recovered.ok) {
+            if (!recovered.installation.merchantId) {
+              await storage.updateShopifyInstallation(recovered.installation.id, { merchantId: merchant.id });
+            }
+            combined = [{ ...recovered.installation, merchantId: merchant.id }];
           } else {
-            // Link existing installation to this merchant
-            console.log(`[/api/shopify/installations] Linking existing installation to merchant`);
-            await storage.updateShopifyInstallation(existingInstallation.id, { merchantId: merchant.id });
-            combined = [existingInstallation];
+            const existingInstallation = await storage.getShopifyInstallationByShop(shopDomain);
+            if (existingInstallation) {
+              await storage.updateShopifyInstallation(existingInstallation.id, { merchantId: merchant.id });
+              combined = [existingInstallation];
+            } else {
+              const newInstallation = await storage.createShopifyInstallation({
+                shopDomain,
+                accessToken: "NEEDS_RECONNECT",
+                scope: "",
+                status: "needs_reconnect",
+                installedAt: new Date(),
+                merchantId: merchant.id,
+              });
+              combined = [newInstallation];
+              console.log(`[/api/shopify/installations] Created placeholder installation for ${shopDomain}`);
+            }
           }
         } catch (installError: any) {
-          // Handle unique constraint - installation might exist from another attempt
           if (installError.code === '23505') {
             console.log(`[/api/shopify/installations] Installation exists (race condition), fetching...`);
             const existing = await storage.getShopifyInstallationByShop(shopDomain);
@@ -5804,7 +5811,6 @@ ${orientationExtra}
             }
           } else {
             console.error(`[/api/shopify/installations] Error creating installation:`, installError);
-            // Don't throw - just continue with empty installations
           }
         }
       }
@@ -19107,9 +19113,18 @@ ${orientationExtra}
 
     // Use self-healing lookup: if status is stale but token is valid,
     // auto-reset to "active" so admin operations aren't blocked after a stuck reinstall.
-    const installation = await getAuthorizedInstallation(shopDomain);
+    let installation = await getAuthorizedInstallation(shopDomain);
 
     if (!installation) {
+      const recovered = await recoverOrCreateInstallationFromSession(
+        shopDomain,
+        getBearerTokenFromRequest(req),
+      );
+      if (recovered.ok) {
+        console.log(`[resolver] Recovered installation via session token for ${shopDomain}`);
+        return { ok: true, installation: recovered.installation };
+      }
+
       // Check if it exists at all (for better error messaging)
       const raw = await storage.getShopifyInstallationByShop(shopDomain);
       if (!raw) {

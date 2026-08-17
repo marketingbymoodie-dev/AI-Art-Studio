@@ -313,3 +313,60 @@ export function getBearerTokenFromRequest(req: { headers?: Record<string, unknow
   if (parts.length !== 2 || parts[0].toLowerCase() !== "bearer") return null;
   return parts[1] || null;
 }
+
+/**
+ * After a Dev Dashboard / App Store install, Shopify often opens the embedded
+ * app with a session JWT before (or instead of) our classic /shopify/callback.
+ * Exchange that JWT for an offline Admin token and persist the install row so
+ * merchants are not asked to "Connect Shopify" again.
+ */
+export async function recoverOrCreateInstallationFromSession(
+  shop: string,
+  sessionToken: string | null,
+): Promise<EnsureOfflineTokenResult> {
+  const existing = await storage.getShopifyInstallationByShop(shop);
+  if (existing) {
+    return ensureValidOfflineAccessToken(existing, { sessionToken });
+  }
+  if (!sessionToken) {
+    return { ok: false, needsReinstall: true, error: "No installation and no session token" };
+  }
+  if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+    return { ok: false, needsReinstall: false, error: "Shopify API credentials not configured" };
+  }
+
+  console.log(`[shopify-token] Creating installation via session exchange (${shop})`);
+  const exchanged = await exchangeSessionTokenForOffline(shop, sessionToken);
+  if (!exchanged.ok) {
+    console.error(`[shopify-token] Session exchange failed for new shop ${shop}:`, exchanged.status, exchanged.error);
+    return {
+      ok: false,
+      needsReinstall: true,
+      error: `Failed to obtain offline token from session (${exchanged.status}): ${exchanged.error}`,
+    };
+  }
+
+  try {
+    const created = await storage.createShopifyInstallation({
+      shopDomain: shop,
+      accessToken: exchanged.fields.accessToken,
+      refreshToken: exchanged.fields.refreshToken,
+      accessTokenExpiresAt: exchanged.fields.accessTokenExpiresAt,
+      refreshTokenExpiresAt: exchanged.fields.refreshTokenExpiresAt,
+      scope: exchanged.fields.scope || "",
+      status: "active",
+      installedAt: new Date(),
+    });
+    console.log(`[shopify-token] Created installation via session exchange for ${shop}`);
+    return { ok: true, accessToken: created.accessToken, installation: created };
+  } catch (err: any) {
+    if (err?.code === "23505") {
+      const raced = await storage.getShopifyInstallationByShop(shop);
+      if (raced) {
+        return ensureValidOfflineAccessToken(raced, { sessionToken });
+      }
+    }
+    console.error(`[shopify-token] Failed to persist new installation for ${shop}:`, err?.message ?? err);
+    return { ok: false, needsReinstall: false, error: "Failed to persist installation from session exchange" };
+  }
+}

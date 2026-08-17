@@ -141,32 +141,22 @@ export default function AdminSetupPage() {
           </p>
         </div>
 
-        {status && status.shopAuthorized === false && status.reconnectUrl && (
-          <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
-            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
-              <div className="flex-1 space-y-1">
-                <p className="text-sm font-medium">Finish connecting this shop</p>
-                <p className="text-sm text-muted-foreground">
-                  Shopify opened the app, but we still need one approval step to save an Admin API
-                  token (needed for Preview and Create Page). This is different from uninstalling.
-                </p>
-              </div>
-              <Button asChild data-testid="button-reconnect-shopify">
-                <a href={status.reconnectUrl} target="_top" rel="noopener noreferrer">
-                  <ExternalLink className="h-4 w-4 mr-2" />
-                  Connect Shopify
-                </a>
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
         <StepShell number={1} title="Install the app" done={status?.shopAuthorized !== false}>
           {status?.shopAuthorized === false ? (
-            <p className="text-sm text-muted-foreground">
-              Almost done — click <strong>Connect Shopify</strong> above, approve permissions, then
-              continue.
-            </p>
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                The app is open in Shopify Admin. Click below once to save store access — needed for
+                Preview and Create Page.
+              </p>
+              {status.reconnectUrl && (
+                <Button asChild data-testid="button-reconnect-shopify">
+                  <a href={status.reconnectUrl} target="_top" rel="noopener noreferrer">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    Save store access
+                  </a>
+                </Button>
+              )}
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               Done — you&apos;ve installed AI Art Studio and approved the required permissions.

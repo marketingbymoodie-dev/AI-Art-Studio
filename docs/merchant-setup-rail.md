@@ -9,7 +9,7 @@ never creates a storefront page that can go Live at $0 with the wrong supplier.
 
 ## Flow
 
-1. **Install + permissions** — Shopify OAuth → `/admin/setup`.
+1. **Install + permissions** — Shopify opens the embedded app → `/admin/setup`. The session JWT is exchanged for an Admin API token automatically (no second “Connect Shopify” step). Classic `/shopify/callback` still lands on setup too.
 2. **Enable the App Embed** — theme editor (merchant-only; cannot be automated).
 3. **Connect Printify** — Settings: API token + Shop ID (Detect).
 4. **Products Catalogue** (prompted at end of setup) —

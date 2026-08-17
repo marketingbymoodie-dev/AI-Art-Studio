@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { isShopifyEmbedded } from "@/lib/shopify";
 import { useAuth } from "@/hooks/use-auth";
 
-export type SetupNextStep = "enable_embed" | "choose_product" | "connect_printify" | "done";
+export type SetupNextStep = "connect_shopify" | "enable_embed" | "choose_product" | "connect_printify" | "done";
 
 export interface MerchantSetupStatus {
   trialActive: boolean;
@@ -17,6 +17,16 @@ export interface MerchantSetupStatus {
   nextStep: SetupNextStep;
   shopAuthorized?: boolean;
   reconnectUrl?: string | null;
+}
+
+/** Fresh install: still need store access or the theme embed. Printify can wait. */
+export function needsFirstRunSetup(status: MerchantSetupStatus | undefined): boolean {
+  if (!status) return true;
+  return (
+    status.shopAuthorized === false ||
+    status.nextStep === "connect_shopify" ||
+    status.nextStep === "enable_embed"
+  );
 }
 
 /** Shared setup-rail status query — used by both /admin/setup and the daily Printify nag modal. */
