@@ -83,7 +83,7 @@ export async function ensureTrialStarted(
   return updated ?? installation;
 }
 
-export type SetupNextStep = "enable_embed" | "choose_product" | "connect_printify" | "done";
+export type SetupNextStep = "connect_shopify" | "enable_embed" | "choose_product" | "connect_printify" | "done";
 
 export interface MerchantSetupStatus {
   trialActive: boolean;
@@ -141,7 +141,8 @@ export async function getMerchantSetupStatus(
 
   // Preview / catalogue is not a setup step — after embed + Printify, point merchants to Products.
   let nextStep: SetupNextStep = "done";
-  if (!embedEnabledGuess) nextStep = "enable_embed";
+  if (!shopAuthorized) nextStep = "connect_shopify";
+  else if (!embedEnabledGuess) nextStep = "enable_embed";
   else if (!printifyConnected) nextStep = "connect_printify";
 
   return {

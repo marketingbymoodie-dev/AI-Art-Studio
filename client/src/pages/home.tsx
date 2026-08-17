@@ -8,6 +8,7 @@ import { Link, useLocation } from "wouter";
 import { Palette, Image, ShoppingCart, Settings } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import { isShopifyEmbedded } from "@/lib/shopify";
+import { needsFirstRunSetup, useSetupStatus } from "@/hooks/use-setup-status";
 import LuxeLandingPage from "@/pages/creators/luxe-landing";
 import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
 import type { Customer } from "@shared/schema";
@@ -15,21 +16,25 @@ import type { Customer } from "@shared/schema";
 export default function Home() {
   const { user, isLoading: authLoading, isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
+  const embedded = isShopifyEmbedded();
+  const { data: setupStatus, isLoading: setupLoading } = useSetupStatus();
 
   // When loaded inside Shopify Admin iframe, always show merchant admin — never the customer landing page.
+  // Fresh installs land on Setup; completed shops go to Dashboard.
   // Preserve ?host= and ?shop= so App Bridge CDN script (app-bridge.js) can still read them if it loads later.
   useEffect(() => {
-    if (isShopifyEmbedded()) {
-      const params = new URLSearchParams(window.location.search);
-      const host = params.get("host");
-      const shop = params.get("shop");
-      const qs = new URLSearchParams();
-      if (host) qs.set("host", host);
-      if (shop) qs.set("shop", shop);
-      const dest = `/admin${qs.toString() ? `?${qs.toString()}` : ""}`;
-      navigate(dest);
-    }
-  }, [navigate]);
+    if (!embedded) return;
+    if (setupLoading) return;
+    const params = new URLSearchParams(window.location.search);
+    const host = params.get("host");
+    const shop = params.get("shop");
+    const qs = new URLSearchParams();
+    if (host) qs.set("host", host);
+    if (shop) qs.set("shop", shop);
+    const path = needsFirstRunSetup(setupStatus) ? "/admin/setup" : "/admin";
+    const dest = `${path}${qs.toString() ? `?${qs.toString()}` : ""}`;
+    navigate(dest);
+  }, [embedded, setupLoading, setupStatus, navigate]);
 
   const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
     queryKey: ["/api/customer"],
@@ -37,7 +42,15 @@ export default function Home() {
   });
 
 
-  if (authLoading) {
+  if (authLoading || (embedded && setupLoading)) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Skeleton className="h-32 w-32 rounded-full" />
+      </div>
+    );
+  }
+
+  if (embedded) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Skeleton className="h-32 w-32 rounded-full" />
