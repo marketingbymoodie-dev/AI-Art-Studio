@@ -75,7 +75,7 @@ Create a **new** development store. Install **AI Art Studio** (production Partne
 
 ### B1. Install and admin
 
-- [ ] Install → OAuth consent → land **inside** Shopify Admin (`/admin/setup` or dashboard), not the public `aiartstudio.app` marketing page
+- [ ] Install → OAuth consent → land **inside** Shopify Admin on **Setup** (not Dashboard, not the public `aiartstudio.app` marketing page). Step 1 should already be done — no extra “Finish connecting this shop” banner.
 - [ ] Setup / How-to explains: enable **Theme app embed** → Create Customizer Page → open storefront
 - [ ] Theme editor → App embeds → **AI Art Studio** on (reviewers will miss this if the listing is vague)
 - [ ] Create Customizer Page (cotton crew tee / blueprint 5 is the known-good wizard). No $0.00 rows, no silent “Next” grey-out over 100 variants

@@ -1,12 +1,13 @@
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart3, CheckCircle, AlertCircle, TrendingUp, ArrowRight, CheckCircle2, Sparkles } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import GenerationQuotaUsage from "@/components/admin/GenerationQuotaUsage";
-import { useSetupStatus, type SetupNextStep } from "@/hooks/use-setup-status";
+import { needsFirstRunSetup, useSetupStatus, type SetupNextStep } from "@/hooks/use-setup-status";
 
 interface GenerationStats {
   total: number;
@@ -15,10 +16,12 @@ interface GenerationStats {
 }
 
 const SETUP_STEP_LABELS: Partial<Record<SetupNextStep, string>> = {
+  connect_shopify: "Install the app",
   enable_embed: "Enable the App Embed",
   connect_printify: "Connect Printify to fulfil orders",
 };
 const SETUP_STEP_NUMBERS: Partial<Record<SetupNextStep, number>> = {
+  connect_shopify: 1,
   enable_embed: 2,
   connect_printify: 3,
 };
@@ -76,9 +79,18 @@ function SetupStatusCard() {
 }
 
 export default function AdminDashboard() {
+  const [, navigate] = useLocation();
+  const { data: setupStatus, isLoading: setupLoading } = useSetupStatus();
   const { data: stats, isLoading } = useQuery<GenerationStats>({
     queryKey: ["/api/admin/stats"],
   });
+
+  useEffect(() => {
+    if (setupLoading || !setupStatus) return;
+    if (needsFirstRunSetup(setupStatus)) {
+      navigate("/admin/setup");
+    }
+  }, [setupLoading, setupStatus, navigate]);
 
   return (
     <AdminLayout>

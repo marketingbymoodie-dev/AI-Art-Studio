@@ -13,6 +13,7 @@ import { storage } from "./storage";
 import { getEffectivePlan } from "./customizer-plans";
 import { peekMerchantGenerationQuota } from "./generation-quota";
 import { isPrintifyConnected } from "./printify-connection";
+import { getAppUrl } from "./shopify";
 import type { Merchant, ShopifyInstallation } from "@shared/schema";
 
 export { isPrintifyConnected };
@@ -83,7 +84,7 @@ export async function ensureTrialStarted(
   return updated ?? installation;
 }
 
-export type SetupNextStep = "enable_embed" | "choose_product" | "connect_printify" | "done";
+export type SetupNextStep = "connect_shopify" | "enable_embed" | "choose_product" | "connect_printify" | "done";
 
 export interface MerchantSetupStatus {
   trialActive: boolean;
@@ -113,9 +114,11 @@ function isShopAuthorized(installation: ShopifyInstallation): boolean {
 }
 
 function buildReconnectUrl(shop: string): string {
-  const base = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "");
-  const path = `/shopify/install?shop=${encodeURIComponent(shop)}`;
-  return base ? `${base}${path}` : path;
+  // Must match /shopify/callback's host (APP_URL / Railway), not the apex
+  // marketing domain — a cookie set on aiartstudio.app never comes back on
+  // appai-pod-production.up.railway.app.
+  const base = getAppUrl();
+  return `${base}/shopify/install?shop=${encodeURIComponent(shop)}`;
 }
 
 /** Aggregate the setup rail's readiness flags for a shop. */
@@ -141,7 +144,8 @@ export async function getMerchantSetupStatus(
 
   // Preview / catalogue is not a setup step — after embed + Printify, point merchants to Products.
   let nextStep: SetupNextStep = "done";
-  if (!embedEnabledGuess) nextStep = "enable_embed";
+  if (!shopAuthorized) nextStep = "connect_shopify";
+  else if (!embedEnabledGuess) nextStep = "enable_embed";
   else if (!printifyConnected) nextStep = "connect_printify";
 
   return {
