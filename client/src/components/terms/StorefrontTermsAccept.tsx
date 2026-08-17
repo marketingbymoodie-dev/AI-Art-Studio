@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Checkbox } from "@/components/ui/checkbox";
-import { DEFAULT_TERMS_CONTENT, type TermsContent } from "@shared/termsContent";
+import { DEFAULT_TERMS_CONTENT, publicTermsHref, type TermsContent } from "@shared/termsContent";
+import { getCentralAppOrigin } from "@/lib/storefrontAuth";
 
 const STORAGE_PREFIX = "appai_terms_accept:";
 
@@ -49,10 +50,13 @@ export function StorefrontTermsAccept({
   content,
   accepted,
   onAcceptedChange,
+  appOrigin,
 }: {
   content: TermsContent;
   accepted: boolean;
   onAcceptedChange: (value: boolean) => void;
+  /** Railway / central app origin. Shopify store hosts are ignored. */
+  appOrigin?: string;
 }) {
   return (
     <label className="mt-2 flex items-start gap-2 text-[11px] leading-snug text-muted-foreground">
@@ -65,7 +69,7 @@ export function StorefrontTermsAccept({
       <span>
         {accepted ? "Generation Terms" : content.checkboxes.storefrontAccept}{" "}
         <a
-          href="/terms#customers"
+          href={publicTermsHref("customers", appOrigin || getCentralAppOrigin())}
           target="_blank"
           rel="noreferrer"
           className="underline underline-offset-2"

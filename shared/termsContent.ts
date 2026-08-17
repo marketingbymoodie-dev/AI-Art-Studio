@@ -236,6 +236,37 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Apex Railway host that serves /terms. Shopify storefronts do not. */
+export const DEFAULT_TERMS_ORIGIN = "https://aiartstudio.app";
+
+/** Origins that can serve the React /terms page (Railway), not a Shopify theme. */
+export function isAppHostedTermsOrigin(origin: string): boolean {
+  try {
+    const host = new URL(origin.includes("://") ? origin : `https://${origin}`).hostname.toLowerCase();
+    if (!host) return false;
+    if (host.endsWith(".myshopify.com")) return false;
+    if (host === "shop.aiartstudio.app") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function publicTermsHref(
+  section: TermsSectionId | "" = "customers",
+  origin?: string,
+): string {
+  const hash = section ? `#${section}` : "";
+  const raw = String(origin || "").replace(/\/$/, "");
+  const base =
+    raw && isAppHostedTermsOrigin(raw)
+      ? raw.includes("://")
+        ? raw
+        : `https://${raw}`
+      : DEFAULT_TERMS_ORIGIN;
+  return `${base}/terms${hash}`;
+}
+
 export function isSafeTermsHref(href: string): boolean {
   const value = href.trim();
   if (!value) return false;

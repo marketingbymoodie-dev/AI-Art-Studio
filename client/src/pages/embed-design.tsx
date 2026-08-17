@@ -12396,6 +12396,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             content={storefrontTerms.content}
             accepted={storefrontTerms.accepted}
             onAcceptedChange={storefrontTerms.setAccepted}
+            appOrigin={centralAppUrl || undefined}
           />
         ) : null}
         {(isShopify || isStorefront) && generatedDesign ? (
@@ -13839,6 +13840,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       content={storefrontTerms.content}
                       accepted={storefrontTerms.accepted}
                       onAcceptedChange={storefrontTerms.setAccepted}
+                      appOrigin={centralAppUrl || undefined}
                     />
                   ) : null}
                   {/* Credits label — shown under Generate; Start Fresh — shown after generation */}
