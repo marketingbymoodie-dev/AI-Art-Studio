@@ -61,15 +61,58 @@ export async function registerCartScript(shop: string, accessToken: string): Pro
   }
 }
 
-function getAppUrl(): string {
+export function getAppUrl(): string {
   // Staging often sets PUBLIC_APP_URL only; OAuth redirect_uri must be the
   // public Railway URL — never localhost — or Shopify install never saves a token.
+  // Prefer APP_URL so reconnect links match /shopify/callback (not the apex
+  // marketing host, which would set a cookie Shopify never sends back).
   const appUrl = process.env.APP_URL || process.env.PUBLIC_APP_URL;
   if (appUrl) {
     return appUrl.replace(/\/$/, "");
   }
 
   return `http://localhost:${process.env.PORT || 5000}`;
+}
+
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+/** Cookie-independent CSRF token: HMAC(shop + timestamp + nonce). */
+export function createOAuthState(shop: string, secret = SHOPIFY_API_SECRET): string {
+  const payload = Buffer.from(
+    JSON.stringify({ s: shop, t: Date.now(), n: crypto.randomBytes(16).toString("hex") }),
+  ).toString("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+
+export function verifyOAuthState(
+  state: string | undefined,
+  shop: string,
+  secret = SHOPIFY_API_SECRET,
+  now = Date.now(),
+): boolean {
+  if (!state || !shop || !secret) return false;
+  const lastDot = state.lastIndexOf(".");
+  if (lastDot <= 0) return false;
+  const payload = state.slice(0, lastDot);
+  const sig = state.slice(lastDot + 1);
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  if (expected.length !== sig.length) return false;
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      s?: string;
+      t?: number;
+    };
+    if (parsed.s !== shop || typeof parsed.t !== "number") return false;
+    return Math.abs(now - parsed.t) <= OAUTH_STATE_TTL_MS;
+  } catch {
+    return false;
+  }
 }
 
 function verifyHmac(query: Record<string, any>): boolean {
@@ -212,7 +255,7 @@ export function registerShopifyRoutes(app: Express): void {
       `);
     }
 
-    const state = crypto.randomBytes(16).toString("hex");
+    const state = createOAuthState(shop);
     const redirectUri = `${getAppUrl()}/shopify/callback`;
 
     const authUrl = `https://${shop}/admin/oauth/authorize?` +
@@ -258,7 +301,12 @@ if (res.locals.shopify?.session?.shop) {
       return res.status(400).send("Invalid shop domain");
     }
 
-    if (state !== storedState) {
+    const signedStateOk = verifyOAuthState(state, shop);
+    const cookieStateOk = !!storedState && storedState === state;
+    if (!signedStateOk && !cookieStateOk) {
+      console.warn(
+        `[shopify/callback] State mismatch for ${shop} (signed=${signedStateOk} cookie=${cookieStateOk} hasCookie=${!!storedState})`,
+      );
       return res.status(403).send("State verification failed - possible CSRF attack");
     }
 
