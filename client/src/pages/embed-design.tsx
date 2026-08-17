@@ -1596,7 +1596,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!isCreatorStorefront || !creatorUsernameParam) return;
     writeLastCreatorVisit({
       username: creatorUsernameParam,
-      shopName: creatorUsernameParam,
       returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
     });
     let cancelled = false;
@@ -12397,6 +12396,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             content={storefrontTerms.content}
             accepted={storefrontTerms.accepted}
             onAcceptedChange={storefrontTerms.setAccepted}
+            appOrigin={centralAppUrl || undefined}
           />
         ) : null}
         {(isShopify || isStorefront) && generatedDesign ? (
@@ -13840,6 +13840,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       content={storefrontTerms.content}
                       accepted={storefrontTerms.accepted}
                       onAcceptedChange={storefrontTerms.setAccepted}
+                      appOrigin={centralAppUrl || undefined}
                     />
                   ) : null}
                   {/* Credits label — shown under Generate; Start Fresh — shown after generation */}

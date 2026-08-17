@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_TERMS_CONTENT,
+  DEFAULT_TERMS_ORIGIN,
   escapeHtml,
   formatTermsDate,
+  isAppHostedTermsOrigin,
   isSafeTermsHref,
+  publicTermsHref,
   mergeTermsContent,
   parseTermsContentJson,
   renderTermsBodyHtml,
@@ -14,6 +17,23 @@ import {
 describe("formatTermsDate", () => {
   it("formats ISO dates in en-AU UTC", () => {
     expect(formatTermsDate("2026-08-16")).toBe("16 August 2026");
+  });
+});
+
+describe("publicTermsHref", () => {
+  it("uses the Railway app origin and ignores Shopify storefront hosts", () => {
+    expect(publicTermsHref("customers")).toBe(`${DEFAULT_TERMS_ORIGIN}/terms#customers`);
+    expect(publicTermsHref("customers", "https://ai-art-studio-staging.up.railway.app")).toBe(
+      "https://ai-art-studio-staging.up.railway.app/terms#customers",
+    );
+    expect(publicTermsHref("customers", "https://shop.aiartstudio.app")).toBe(
+      `${DEFAULT_TERMS_ORIGIN}/terms#customers`,
+    );
+    expect(publicTermsHref("customers", "https://aiartstudio-gizsmzs2.myshopify.com")).toBe(
+      `${DEFAULT_TERMS_ORIGIN}/terms#customers`,
+    );
+    expect(isAppHostedTermsOrigin("https://max.aiartstudio.app")).toBe(true);
+    expect(isAppHostedTermsOrigin("https://shop.aiartstudio.app")).toBe(false);
   });
 });
 

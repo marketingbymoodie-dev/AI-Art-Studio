@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  isHandleLikeShopName,
   readLastCreatorVisit,
   writeLastCreatorVisit,
   type LastCreatorVisit,
@@ -54,11 +55,15 @@ export function LastCreatorReturnButton({
 
   if (!visit) return null;
 
-  const shopName = live.data?.publicName || visit.shopName;
+  const liveName = live.data?.publicName?.trim() || "";
+  const storedName = visit.shopName?.trim() || "";
+  const shopName =
+    liveName ||
+    (!isHandleLikeShopName(storedName, visit.username) ? storedName : "");
   const href = live.data?.username
     ? currentCreatorReturnUrl(live.data.username)
     : visit.returnUrl;
-  const label = `Back to ${shopName}`;
+  const label = shopName ? `Back to ${shopName}` : "Back to shop";
 
   if (variant === "luxe") {
     return (

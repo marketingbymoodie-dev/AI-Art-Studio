@@ -704,16 +704,30 @@ export function extractUsernameFromPath(pathname: string): string | null {
   return normalizeCreatorUsername(m[1]!);
 }
 
-/** Public storefront name: shop handle, never the legal / application name. */
+function brandingRecord(raw: unknown): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+}
+
+/** Public storefront name: shop name from branding, never the legal / application name. */
 export function creatorPublicName(opts: {
   username: string;
-  branding?: Record<string, unknown> | null;
+  branding?: unknown;
 }): string {
+  const branding = brandingRecord(opts.branding);
   const headline =
-    opts.branding && typeof opts.branding.headline === "string"
-      ? opts.branding.headline.trim()
-      : "";
-  return headline || opts.username;
+    branding && typeof branding.headline === "string" ? branding.headline.trim() : "";
+  const shopName =
+    branding && typeof branding.shopName === "string" ? branding.shopName.trim() : "";
+  return headline || shopName || opts.username;
 }
 
 /** Allow only our app hosts so checkout “Back to shop” cannot open an arbitrary URL. */

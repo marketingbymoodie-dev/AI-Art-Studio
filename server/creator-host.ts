@@ -233,7 +233,6 @@ export async function lookupCreatorByUsername(username: string): Promise<Creator
     }
   }
 
-  cache.set(key, { at: Date.now(), creator: null });
   return null;
 }
 

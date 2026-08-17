@@ -48,6 +48,19 @@ export function readLastCreatorVisit(): LastCreatorVisit | null {
   }
 }
 
+/** True when the stored label is just the URL handle, not a public shop name. */
+export function isHandleLikeShopName(shopName: string, username: string): boolean {
+  const raw = String(shopName || "").trim();
+  if (!raw) return true;
+  if (/\s/.test(raw)) return false;
+  const name = raw.toLowerCase().replace(/[_-]+/g, "");
+  const handle = String(username || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, "");
+  return !!handle && name === handle;
+}
+
 export function writeLastCreatorVisit(input: {
   username: string;
   shopName?: string;
