@@ -25,6 +25,10 @@ uri = "/shopify/webhooks/customers-redact"
 compliance_topics = [ "shop/redact" ]
 uri = "/shopify/webhooks/shop-redact"
 
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/shopify/webhooks/uninstall"
+
 # Protected Customer Data (PCD) gated webhooks — staging has these live.
 # After Partners Dashboard PCD approval, uncomment and redeploy the production app.
 #
