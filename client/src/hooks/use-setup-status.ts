@@ -17,6 +17,7 @@ export interface MerchantSetupStatus {
   nextStep: SetupNextStep;
   shopAuthorized?: boolean;
   reconnectUrl?: string | null;
+  themeEditorUrl?: string | null;
 }
 
 /** Fresh install: still need store access or the theme embed. Printify can wait. */

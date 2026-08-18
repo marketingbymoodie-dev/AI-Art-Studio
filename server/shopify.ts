@@ -351,6 +351,7 @@ if (res.locals.shopify?.session?.shop) {
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
+          embedConfirmedAt: null,
         };
         // Always update merchant ID on reinstall if we have one (handles reinstall with different logged-in user)
         if (merchantId) {
@@ -505,6 +506,7 @@ if (res.locals.shopify?.session?.shop) {
       await storage.updateShopifyInstallation(installation.id, {
         status: "uninstalled",
         uninstalledAt: new Date(),
+        embedConfirmedAt: null,
       });
       console.log(`[uninstall-webhook] Marked ${shop} as uninstalled`);
     }

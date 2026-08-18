@@ -115,6 +115,33 @@ export default function AdminSetupPage() {
     },
   });
 
+  const resetEmbedMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/appai/setup/reset-embed");
+      return res.json() as Promise<{ success?: boolean; error?: string }>;
+    },
+    onSuccess: () => {
+      queryClient.setQueryData(["/api/appai/setup/status"], (prev: MerchantSetupStatus | undefined) =>
+        prev
+          ? {
+              ...prev,
+              embedEnabledGuess: false,
+              nextStep: "enable_embed",
+            }
+          : prev,
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/setup/status"] });
+      toast({ title: "App Embed step reset", description: "Open Theme Editor to walk through it again." });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Couldn't reset that step",
+        description: parseApiErrorMessage(err) || "Try reopening the app from Shopify Admin.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const embedDone = !!status?.embedEnabledGuess;
   const printifyDone = !!status?.printifyConnected;
   const setupComplete = embedDone && printifyDone;
@@ -124,9 +151,28 @@ export default function AdminSetupPage() {
       ? shopDomain
       : `${shopDomain}.myshopify.com`
     : null;
-  const themeEditorUrl = normalizedShop
-    ? `https://${normalizedShop}/admin/themes/current/editor?context=apps`
-    : null;
+  const themeEditorUrl =
+    status?.themeEditorUrl ||
+    (normalizedShop
+      ? `https://admin.shopify.com/store/${normalizedShop.replace(/\.myshopify\.com$/i, "")}/themes/current/editor?context=apps`
+      : null);
+
+  const openThemeEditor = () => {
+    if (!themeEditorUrl) {
+      toast({
+        title: "Open Theme Editor from Shopify",
+        description:
+          "Go to Online Store → Themes → Customize → App embeds, then toggle on AI Art Studio Embed and Save.",
+      });
+      return;
+    }
+    // Same Admin tab so the theme editor back arrow returns to Setup (a new tab exits to Home).
+    if (window.top) {
+      window.top.location.href = themeEditorUrl;
+      return;
+    }
+    window.location.href = themeEditorUrl;
+  };
 
   return (
     <AdminLayout>
@@ -183,17 +229,7 @@ export default function AdminSetupPage() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant={embedDone ? "outline" : "default"}
-              onClick={() => {
-                if (themeEditorUrl) {
-                  window.open(themeEditorUrl, "_blank");
-                  return;
-                }
-                toast({
-                  title: "Open Theme Editor from Shopify",
-                  description:
-                    "Go to Online Store → Themes → Customize → App embeds, then toggle on AI Art Studio Embed and Save.",
-                });
-              }}
+              onClick={openThemeEditor}
               data-testid="button-open-theme-editor"
             >
               <ExternalLink className="h-4 w-4 mr-2" />
@@ -210,10 +246,22 @@ export default function AdminSetupPage() {
                 I&apos;ve enabled it
               </Button>
             )}
+            {embedDone && (
+              <Button
+                variant="ghost"
+                onClick={() => resetEmbedMutation.mutate()}
+                disabled={resetEmbedMutation.isPending}
+                data-testid="button-reset-embed"
+              >
+                {resetEmbedMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Show this step again
+              </Button>
+            )}
           </div>
           {!embedDone && (
             <p className="text-xs text-muted-foreground mt-2">
-              In the theme editor: App Embeds (left sidebar) → toggle on &quot;AI Art Studio Embed&quot; → Save.
+              App Embeds (left sidebar) → toggle on &quot;AI Art Studio Embed&quot; → Save. Then use the
+              theme editor <strong>back arrow</strong> to return here and click I&apos;ve enabled it.
             </p>
           )}
         </StepShell>
