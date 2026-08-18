@@ -22700,6 +22700,32 @@ ${orientationExtra}
     }
   }));
 
+  /** POST /api/appai/setup/reset-embed — show the App Embed step again (does not turn the theme embed off). */
+  app.post("/api/appai/setup/reset-embed", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallationForSetup(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    try {
+      const result = await pool.query(
+        `UPDATE "shopify_installations"
+         SET "embed_confirmed_at" = NULL
+         WHERE "id" = $1
+         RETURNING "id"`,
+        [resolved.installation.id],
+      );
+      if (!result.rowCount) {
+        return res.status(500).json({ error: "Installation row not found while resetting embed confirmation" });
+      }
+      return res.json({ success: true, embedConfirmedAt: null });
+    } catch (err: any) {
+      console.error("[reset-embed] failed:", err?.message ?? err);
+      return res.status(500).json({
+        error: "Failed to reset embed confirmation",
+        details: String(err?.message ?? err),
+      });
+    }
+  }));
+
   /** GET /api/appai/setup/catalog — published platform catalogue + imported product types. */
   app.get("/api/appai/setup/catalog", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const entries = await listMerchantImportableCatalog();
