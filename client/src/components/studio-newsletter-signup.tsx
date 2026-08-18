@@ -10,8 +10,9 @@ type Props = {
   shopDomain?: string | null;
   creatorUsername?: string | null;
   customerId?: string | null;
-  variant?: "default" | "muted" | "luxe";
+  variant?: "default" | "muted" | "luxe" | "compact";
   className?: string;
+  hideIntro?: boolean;
 };
 
 export function StudioNewsletterSignup({
@@ -21,14 +22,14 @@ export function StudioNewsletterSignup({
   customerId,
   variant = "default",
   className = "",
+  hideIntro = false,
 }: Props) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const join = async () => {
     setLoading(true);
     setError(null);
     try {
@@ -62,18 +63,23 @@ export function StudioNewsletterSignup({
   };
 
   const isLuxe = variant === "luxe";
-  const isMuted = variant === "muted";
+  const isMuted = variant === "muted" || variant === "compact";
 
   return (
-    <div className={className}>
-      <p className={isLuxe ? "text-sm text-white/70 mb-2" : "text-sm text-muted-foreground mb-2"}>
-        Join the Studio Art Class list. If a signup credit is enabled, Studio issues it — it does
-        not come off a shop quota.
-      </p>
+    <div
+      className={className}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      {!hideIntro && (
+        <p className={isLuxe ? "text-sm text-white/70 mb-2" : "text-sm text-muted-foreground mb-2"}>
+          Join the Studio Art Class list. Discover prompt tips and tricks, inspiration from others and more.
+        </p>
+      )}
       {done ? (
         <p className={isLuxe ? "text-sm text-white" : "text-sm font-medium"}>{done}</p>
       ) : (
-        <form onSubmit={onSubmit} className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <Input
             type="email"
             required
@@ -81,11 +87,22 @@ export function StudioNewsletterSignup({
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@email.com"
             className={isLuxe ? "bg-white/10 border-white/20 text-white placeholder:text-white/40" : ""}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (email.trim()) void join();
+              }
+            }}
           />
-          <Button type="submit" disabled={loading} variant={isMuted ? "outline" : "default"}>
+          <Button
+            type="button"
+            disabled={loading || !email.trim()}
+            variant={isMuted ? "outline" : "default"}
+            onClick={() => void join()}
+          >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Join"}
           </Button>
-        </form>
+        </div>
       )}
       {error && <p className="text-sm text-destructive mt-2">{error}</p>}
     </div>

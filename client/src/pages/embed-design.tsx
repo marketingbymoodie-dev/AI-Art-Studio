@@ -19,6 +19,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
+import { StudioMenuIconButton } from "@/components/studio-menu-icon-button";
+import { publicTermsHref } from "@shared/termsContent";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -36,7 +38,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2 } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   StorefrontTermsAccept,
@@ -2663,6 +2665,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
   const [showCouponInput, setShowCouponInput] = useState(false);
+  const [showArtClassSignup, setShowArtClassSignup] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponError, setCouponError] = useState<string | null>(null);
@@ -12915,13 +12918,47 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
           </p>
           <div className="rounded-md bg-muted p-3 space-y-2">
-            <p className="font-medium text-foreground">Buy more generations</p>
+            <p className="font-medium text-foreground">Need more generations</p>
             <p className="text-muted-foreground text-xs">
-              {isCreatorStorefront
-                ? "Checkout on the Studio shop. Credits are added after payment and come from Studio, not a merchant quota."
-                : "Checkout on this store. Credits are added after payment and do not come off the shop’s monthly generation allotment."}
+              Studio Credit Packs available below. Or get some free credits other ways:
             </p>
-            <div className="flex flex-col gap-2">
+            {activeEarnRungs.length > 0 && (
+              <ol className="list-decimal pl-4 space-y-1 text-xs text-muted-foreground">
+                {activeEarnRungs.map((rung) => {
+                  const n = rung.creditAmount;
+                  const creditLabel = `${n} Credit${n === 1 ? "" : "s"}`;
+                  if (rung.rungKey === "email_signup") {
+                    return (
+                      <li key={rung.rungKey}>
+                        Sign up to the Art Class Newsletter = {creditLabel}
+                      </li>
+                    );
+                  }
+                  if (rung.rungKey === "share_design") {
+                    return (
+                      <li key={rung.rungKey}>
+                        Share a design that gets viewed = {creditLabel}
+                      </li>
+                    );
+                  }
+                  const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
+                  return (
+                    <li key={rung.rungKey}>
+                      Make a physical purchase over ${dollars} = {creditLabel}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            <a
+              href={publicTermsHref("customers", centralAppUrl || undefined)}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground"
+            >
+              Terms
+            </a>
+            <div className="flex flex-col gap-2 pt-1">
               {(creatorCreditPacks.length
                 ? creatorCreditPacks
                 : [
@@ -12948,32 +12985,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ))}
             </div>
           </div>
-          {activeEarnRungs.some((r) => r.rungKey === "email_signup") && (
-            <div className="rounded-md bg-muted p-3">
-              <p className="font-medium text-foreground mb-2">Studio Art Class</p>
-              <StudioNewsletterSignup
-                source="store_user"
-                shopDomain={shopDomain}
-                creatorUsername={creatorUsernameParam}
-                customerId={storefrontCustomerId || customer?.id}
-                variant="muted"
-              />
-            </div>
-          )}
-          {activeEarnRungs.length > 0 ? (
-            <div className="rounded-md bg-muted p-3 space-y-2">
-              <p className="font-medium text-foreground">Ways to earn</p>
-              <ul className="space-y-1.5 text-muted-foreground list-disc pl-4">
-                {activeEarnRungs.map((rung) => (
-                  <li key={rung.rungKey}>{describeEarnRung(rung)}</li>
-                ))}
-              </ul>
-            </div>
-          ) : !isCreatorStorefront ? (
-            <p className="rounded-md bg-muted p-3 text-muted-foreground">
-              No earn rewards are enabled for this shop right now.
-            </p>
-          ) : null}
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (
               <Button
@@ -13167,69 +13178,93 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </a>
                   </div>
                 ) : null}
-                {isLoggedIn ? (
-                  <div className="flex flex-wrap gap-2" data-testid="user-actions">
-                    {/* Combined account button: shows email on hover, click signs out */}
-                    <div className="relative group flex-shrink-0">
-                      <button
-                        onClick={() => {
-                          setCustomer(null);
-                          setStorefrontCustomerId(null);
-                          setStorefrontIdentityToken(null);
-                          setOtpEmail('');
-                          try {
-                            localStorage.removeItem('appai_customer_id');
-                            localStorage.removeItem('appai_identity_token');
-                            localStorage.removeItem('appai_otp_email');
-                            localStorage.removeItem('appai_customer');
-                            sessionStorage.removeItem('appai_customer');
-                            sessionStorage.removeItem('appai_customer_id');
-                            sessionStorage.removeItem('appai_identity_token');
-                          } catch {}
-                          setShowSavedDesigns(false);
-                          setShowCouponInput(false);
-                        }}
-                        className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5"
-                        title={customer?.email}
-                      >
-                        {/* Default label: Sign out */}
-                        <span className="group-hover:hidden">Sign out</span>
-                        {/* Hover label: show email */}
-                        <span className="hidden group-hover:inline truncate max-w-[160px]">{customer?.email || 'Signed in'}</span>
-                      </button>
-                    </div>
-                    <button
-                      onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                      className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors cursor-pointer whitespace-nowrap flex-shrink-0 ${
-                        savedDesigns.length >= galleryLimit
-                          ? "border-red-300 bg-red-50 text-red-800 hover:bg-red-100"
-                          : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-                      }`}
-                    >
-                      Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ''}
-                    </button>
-                    <button
-                      onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
-                    >
-                      Redeem Code
-                    </button>
-                    {credits > 0 && (
-                      <div className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 whitespace-nowrap flex-shrink-0">
-                        {credits} credit{credits !== 1 ? 's' : ''}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setShowOtpLogin(true)}
-                    className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer flex items-center gap-1.5"
-                    data-testid="text-login-prompt"
-                  >
-                    <LogIn className="w-4 h-4" />
-                    Sign in or Create an Account to save designs
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center gap-2" data-testid="user-actions">
+                  {isLoggedIn ? (
+                    <StudioMenuIconButton
+                      label={customer?.email ? `Sign out (${customer.email})` : "Sign out"}
+                      icon={LogOut}
+                      onClick={() => {
+                        setCustomer(null);
+                        setStorefrontCustomerId(null);
+                        setStorefrontIdentityToken(null);
+                        setOtpEmail('');
+                        try {
+                          localStorage.removeItem('appai_customer_id');
+                          localStorage.removeItem('appai_identity_token');
+                          localStorage.removeItem('appai_otp_email');
+                          localStorage.removeItem('appai_customer');
+                          sessionStorage.removeItem('appai_customer');
+                          sessionStorage.removeItem('appai_customer_id');
+                          sessionStorage.removeItem('appai_identity_token');
+                        } catch {}
+                        setShowSavedDesigns(false);
+                        setShowCouponInput(false);
+                        setShowArtClassSignup(false);
+                      }}
+                    />
+                  ) : (
+                    <StudioMenuIconButton
+                      label="Sign in"
+                      icon={LogIn}
+                      testId="text-login-prompt"
+                      onClick={() => {
+                        setShowOtpLogin(true);
+                        setShowSavedDesigns(false);
+                        setShowCouponInput(false);
+                        setShowArtClassSignup(false);
+                      }}
+                    />
+                  )}
+                  {isLoggedIn && (
+                    <StudioMenuIconButton
+                      label={`Saved Designs${savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ""}`}
+                      icon={Images}
+                      active={showSavedDesigns}
+                      danger={savedDesigns.length >= galleryLimit}
+                      badge={savedDesigns.length > 0 ? `${savedDesigns.length}` : null}
+                      onClick={() => {
+                        setShowSavedDesigns(!showSavedDesigns);
+                        setShowCouponInput(false);
+                        setShowArtClassSignup(false);
+                      }}
+                    />
+                  )}
+                  {isLoggedIn && (
+                    <StudioMenuIconButton
+                      label="Redeem Code"
+                      icon={Ticket}
+                      active={showCouponInput}
+                      onClick={() => {
+                        setShowCouponInput(!showCouponInput);
+                        setShowSavedDesigns(false);
+                        setShowArtClassSignup(false);
+                        setCouponError(null);
+                        setCouponSuccess(null);
+                      }}
+                    />
+                  )}
+                  <StudioMenuIconButton
+                    label="Art Class newsletter"
+                    icon={GraduationCap}
+                    active={showArtClassSignup}
+                    onClick={() => {
+                      setShowArtClassSignup(!showArtClassSignup);
+                      setShowSavedDesigns(false);
+                      setShowCouponInput(false);
+                    }}
+                  />
+                  <StudioMenuIconButton
+                    label={credits > 0 ? `${credits} Studio Credit${credits === 1 ? "" : "s"}` : "Studio Credits"}
+                    icon={Sparkles}
+                    badge={credits > 0 ? credits : null}
+                    onClick={() => {
+                      setCreditsPopoverOpen(true);
+                      setShowSavedDesigns(false);
+                      setShowCouponInput(false);
+                      setShowArtClassSignup(false);
+                    }}
+                  />
+                </div>
 
                 {/* Auth panel — absolute overlay, doesn't push content */}
                 {showOtpLogin && (
@@ -13410,6 +13445,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
+                        <div className="mb-3 rounded-md border bg-muted/50 p-3">
+                          <p className="text-sm font-medium mb-1">Studio Art Class</p>
+                          <StudioNewsletterSignup
+                            source="store_user"
+                            shopDomain={shopDomain}
+                            creatorUsername={creatorUsernameParam}
+                            customerId={storefrontCustomerId || customer?.id}
+                            variant="compact"
+                            hideIntro
+                          />
+                        </div>
                         <div className="flex items-center justify-between mb-3">
                           <h3 className="text-sm font-semibold">Saved Designs ({galleryGenerateSlots}/{galleryLimit})</h3>
                           <button
@@ -13664,6 +13710,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Redeem'}
                           </Button>
                         </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
+                {showArtClassSignup && (
+                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                    <Card className="border bg-background shadow-lg">
+                      <CardContent className="py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold">Studio Art Class</h3>
+                          <button
+                            type="button"
+                            onClick={() => setShowArtClassSignup(false)}
+                            className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <StudioNewsletterSignup
+                          source="store_user"
+                          shopDomain={shopDomain}
+                          creatorUsername={creatorUsernameParam}
+                          customerId={storefrontCustomerId || customer?.id}
+                          variant="compact"
+                        />
                       </CardContent>
                     </Card>
                   </div>
