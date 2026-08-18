@@ -45,6 +45,7 @@ import {
   LifeBuoy,
   BookOpen,
   Scale,
+  Mail,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -79,6 +80,7 @@ const platformMenuItems = [
   { title: "Terms of Use", url: "/admin/platform/terms", icon: Scale },
   { title: "Support tickets", url: "/admin/platform/support", icon: LifeBuoy },
   { title: "How To library", url: "/admin/platform/how-to", icon: BookOpen },
+  { title: "Newsletter", url: "/admin/platform/newsletter", icon: Mail },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];
@@ -336,7 +338,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             borderTop: "1px solid #ca8a04",
           }}
         >
-          {(() => { const p = getShopifyParams(); return `[AppAI Debug] embedded=${String(embedded)} | shop=${p.shop ?? "—"} | host=${p.host ? "present" : "—"} | path=${location}`; })()}
+          {(() => { const p = getShopifyParams(); return `[Studio Debug] embedded=${String(embedded)} | shop=${p.shop ?? "—"} | host=${p.host ? "present" : "—"} | path=${location}`; })()}
         </div>
       )}
     </SidebarProvider>

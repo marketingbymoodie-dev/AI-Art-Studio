@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
 import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
+import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 
 const FALLBACK_ART = [
   "radial-gradient(circle at 40% 35%, #ff8a4a, transparent 34%), radial-gradient(circle at 70% 60%, #5b8cff, transparent 36%), #2a2030",
@@ -210,6 +211,9 @@ function Landing({
         </div>
       </div>
       <LandingKeys onLeft={() => go(index - 1)} onRight={() => go(index + 1)} />
+      <div className="mx-auto mt-8 max-w-md">
+        <StudioNewsletterSignup source="creator" variant="luxe" />
+      </div>
       <p className="luxe-portal">
         <Link href="/portal/login" className="underline underline-offset-2">
           Creator Portal

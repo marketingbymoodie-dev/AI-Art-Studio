@@ -54,7 +54,7 @@ function subjectAndHtml(
     case "partner_welcome":
       return {
         subject: `Welcome to the AI Art Studio Partner Program`,
-        html: `<p>Hi ${name},</p><p>You're now on the Partner Program for @${creator.username}. Revenue share settings are configured by the AppAI team.</p>`,
+        html: `<p>Hi ${name},</p><p>You're now on the Partner Program for @${creator.username}. Revenue share settings are configured by the Studio team.</p>`,
       };
     case "application_accepted":
       return {

@@ -40,7 +40,7 @@ export const SUPPORT_STATUS_LABELS: Record<SupportStatus, string> = {
   open: "Open",
   in_progress: "In progress",
   waiting_on_reporter: "Waiting on you",
-  waiting_on_operator: "Waiting on AppAI",
+  waiting_on_operator: "Waiting on Studio",
   resolved: "Resolved",
   closed: "Closed",
 };

@@ -18,6 +18,7 @@ import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
+import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -2868,7 +2869,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const describeEarnRung = useCallback((rung: PublicRewardRung) => {
     const n = rung.creditAmount;
     const credits = `${n} Studio Credit${n === 1 ? "" : "s"}`;
-    if (rung.rungKey === "email_signup") return `Sign in to earn ${credits}`;
+    if (rung.rungKey === "email_signup") {
+      return `Join the Studio Art Class list to earn ${credits} (issued by Studio)`;
+    }
     if (rung.rungKey === "share_design") {
       return `Share a design — earn ${credits} when someone opens your link`;
     }
@@ -2902,9 +2905,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn, isCreatorStorefront]);
 
   useEffect(() => {
-    if (!creditsPopoverOpen || !isCreatorStorefront) return;
+    if (!creditsPopoverOpen) return;
     let cancelled = false;
-    void safeFetch(`${API_BASE}/api/creators/credits/packs`)
+    const url = isCreatorStorefront
+      ? `${API_BASE}/api/creators/credits/packs`
+      : shopDomain
+        ? `${API_BASE}/api/storefront/credit-packs?shop=${encodeURIComponent(shopDomain)}`
+        : "";
+    if (!url) return;
+    void safeFetch(url)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data || !Array.isArray(data.packs)) return;
@@ -2921,7 +2930,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return () => {
       cancelled = true;
     };
-  }, [creditsPopoverOpen, isCreatorStorefront]);
+  }, [creditsPopoverOpen, isCreatorStorefront, shopDomain]);
 
   const buyCreatorCreditPack = useCallback(
     async (packId: string) => {
@@ -2934,38 +2943,57 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         });
         return;
       }
-      if (!creatorUsernameParam) {
+      if (isCreatorStorefront && !creatorUsernameParam) {
         toast({
           title: "Unavailable",
-          description: "Credit packs are only available on creator shops.",
+          description: "Credit packs need a creator shop.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!isCreatorStorefront && !shopDomain) {
+        toast({
+          title: "Unavailable",
+          description: "Credit packs need a shop.",
           variant: "destructive",
         });
         return;
       }
       setPackCheckoutLoadingId(packId);
       try {
-        const res = await safeFetch(`${API_BASE}/api/creators/credits/checkout`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            packId,
-            creatorUsername: creatorUsernameParam,
-            customerId,
-            creatorSessionId: creatorSessionIdRef.current || undefined,
-            creatorReturnUrl: currentCreatorReturnUrl(creatorUsernameParam),
-          }),
-        });
+        const res = await safeFetch(
+          isCreatorStorefront
+            ? `${API_BASE}/api/creators/credits/checkout`
+            : `${API_BASE}/api/storefront/credit-packs/checkout`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+              isCreatorStorefront
+                ? {
+                    packId,
+                    creatorUsername: creatorUsernameParam,
+                    customerId,
+                    creatorSessionId: creatorSessionIdRef.current || undefined,
+                    creatorReturnUrl: currentCreatorReturnUrl(creatorUsernameParam),
+                  }
+                : { packId, shop: shopDomain, customerId },
+            ),
+          },
+        );
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data?.checkoutUrl) {
           throw new Error(data?.error || data?.message || "Could not start checkout");
         }
         const target = window.top || window;
-        target.location.href = creatorCheckoutRememberUrl({
-          checkoutUrl: String(data.checkoutUrl),
-          username: creatorUsernameParam,
-          shopName: creatorUsernameParam,
-          returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
-        });
+        target.location.href = isCreatorStorefront
+          ? creatorCheckoutRememberUrl({
+              checkoutUrl: String(data.checkoutUrl),
+              username: creatorUsernameParam,
+              shopName: creatorUsernameParam,
+              returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
+            })
+          : String(data.checkoutUrl);
       } catch (e: any) {
         toast({
           title: "Pack checkout failed",
@@ -2976,7 +3004,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPackCheckoutLoadingId(null);
       }
     },
-    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast],
+    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast, isCreatorStorefront, shopDomain],
   );
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
@@ -12884,38 +12912,50 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
           </p>
-          {isCreatorStorefront && (
-            <div className="rounded-md bg-muted p-3 space-y-2">
-              <p className="font-medium text-foreground">Buy more generations</p>
-              <p className="text-muted-foreground text-xs">
-                Checkout on Shopify. Credits are added after payment.
-              </p>
-              <div className="flex flex-col gap-2">
-                {(creatorCreditPacks.length
-                  ? creatorCreditPacks
-                  : [
-                      { packId: "5", credits: 5, priceInCents: 100, label: "5 Studio Credits for $1" },
-                      { packId: "10", credits: 10, priceInCents: 200, label: "10 Studio Credits for $2" },
-                      { packId: "20", credits: 20, priceInCents: 300, label: "20 Studio Credits for $3" },
-                    ]
-                ).map((pack) => (
-                  <Button
-                    key={pack.packId}
-                    type="button"
-                    variant="outline"
-                    className="w-full justify-between"
-                    disabled={packCheckoutLoadingId === pack.packId}
-                    onClick={() => void buyCreatorCreditPack(pack.packId)}
-                  >
-                    <span>{pack.label}</span>
-                    {packCheckoutLoadingId === pack.packId ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <span>${(pack.priceInCents / 100).toFixed(0)}</span>
-                    )}
-                  </Button>
-                ))}
-              </div>
+          <div className="rounded-md bg-muted p-3 space-y-2">
+            <p className="font-medium text-foreground">Buy more generations</p>
+            <p className="text-muted-foreground text-xs">
+              {isCreatorStorefront
+                ? "Checkout on the Studio shop. Credits are added after payment and come from Studio, not a merchant quota."
+                : "Checkout on this store. Credits are added after payment and do not come off the shop’s monthly generation allotment."}
+            </p>
+            <div className="flex flex-col gap-2">
+              {(creatorCreditPacks.length
+                ? creatorCreditPacks
+                : [
+                    { packId: "5", credits: 5, priceInCents: 100, label: "5 Studio Credits for $1" },
+                    { packId: "10", credits: 10, priceInCents: 200, label: "10 Studio Credits for $2" },
+                    { packId: "20", credits: 20, priceInCents: 300, label: "20 Studio Credits for $3" },
+                  ]
+              ).map((pack) => (
+                <Button
+                  key={pack.packId}
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-between"
+                  disabled={packCheckoutLoadingId === pack.packId}
+                  onClick={() => void buyCreatorCreditPack(pack.packId)}
+                >
+                  <span>{pack.label}</span>
+                  {packCheckoutLoadingId === pack.packId ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <span>${(pack.priceInCents / 100).toFixed(0)}</span>
+                  )}
+                </Button>
+              ))}
+            </div>
+          </div>
+          {activeEarnRungs.some((r) => r.rungKey === "email_signup") && (
+            <div className="rounded-md bg-muted p-3">
+              <p className="font-medium text-foreground mb-2">Studio Art Class</p>
+              <StudioNewsletterSignup
+                source="store_user"
+                shopDomain={shopDomain}
+                creatorUsername={creatorUsernameParam}
+                customerId={storefrontCustomerId || customer?.id}
+                variant="muted"
+              />
             </div>
           )}
           {activeEarnRungs.length > 0 ? (
@@ -12942,7 +12982,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   setShowOtpLogin(true);
                 }}
               >
-                Sign in to earn credits
+                Sign in
               </Button>
             )}
             {activeEarnRungs.some((r) => r.rungKey === "share_design") && !!generatedDesign?.imageUrl && (

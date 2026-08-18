@@ -133,7 +133,6 @@ import {
   ensureRewardLadder,
   getRewardLadder,
   patchRewardLadder,
-  tryGrantEmailSignup,
   tryGrantShareDesign,
   tryGrantPurchaseThreshold,
   clawbackPurchaseThresholdForOrder,
@@ -10897,15 +10896,13 @@ ${orientationExtra}
 
       await storage.ensureCustomerBalance(customer.id);
 
-      // Reward Ladder — email_signup rung (idempotent per customer).
+      // Newsletter credit only — sign-in alone does not grant Studio Credits.
       if (emailNorm) {
         try {
-          const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
-          if (r.granted) {
-            console.log(`[Google Auth] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
-          }
+          const { tryGrantNewsletterCreditAfterAuth } = await import("./studio-newsletter");
+          await tryGrantNewsletterCreditAfterAuth(shop, customer.id, emailNorm);
         } catch (rewardErr: any) {
-          console.warn(`[Google Auth] email_signup grant failed:`, rewardErr?.message);
+          console.warn(`[Google Auth] newsletter credit grant failed:`, rewardErr?.message);
         }
       }
 
@@ -11038,14 +11035,12 @@ ${orientationExtra}
       await storage.ensureCustomerBalance(customer.id);
       await storage.addCustomerAlias(customer.id, { aliasType: "otp_email", aliasValue: emailNorm, shop });
 
-      // Reward Ladder — email_signup rung (idempotent per customer).
+      // Newsletter credit only — OTP sign-in alone does not grant Studio Credits.
       try {
-        const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
-        if (r.granted) {
-          console.log(`[OTP] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
-        }
+        const { tryGrantNewsletterCreditAfterAuth } = await import("./studio-newsletter");
+        await tryGrantNewsletterCreditAfterAuth(shop, customer.id, emailNorm);
       } catch (rewardErr: any) {
-        console.warn(`[OTP] email_signup grant failed:`, rewardErr?.message);
+        console.warn(`[OTP] newsletter credit grant failed:`, rewardErr?.message);
       }
 
       const balance = await storage.getCreditBalance(customer.id);
@@ -11386,6 +11381,19 @@ ${orientationExtra}
           .catch((e: any) =>
             console.warn("[Shopify Orders Paid] creator packs failed:", e?.message || e),
           );
+
+        void import("./merchant-packs")
+          .then(({ grantMerchantPacksFromPaidOrder }) =>
+            grantMerchantPacksFromPaidOrder(shop, order),
+          )
+          .then((r) => {
+            if (r.granted > 0) {
+              console.log("[Shopify Orders Paid] merchant packs granted", r);
+            }
+          })
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] merchant packs failed:", e?.message || e),
+          );
       }
 
       return res.status(200).send("OK");
@@ -11493,6 +11501,19 @@ ${orientationExtra}
           .catch((err: any) =>
             console.warn("[Shopify Refunds Create] creator packs failed:", err?.message),
           );
+
+        void import("./merchant-packs")
+          .then(({ clawbackMerchantPacksForOrder }) =>
+            clawbackMerchantPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Refunds Create] merchant packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Refunds Create] merchant packs failed:", err?.message),
+          );
       }
       return res.status(200).send("OK");
     } catch (error: any) {
@@ -11546,6 +11567,19 @@ ${orientationExtra}
           })
           .catch((err: any) =>
             console.warn("[Shopify Orders Cancelled] creator packs failed:", err?.message),
+          );
+
+        void import("./merchant-packs")
+          .then(({ clawbackMerchantPacksForOrder }) =>
+            clawbackMerchantPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Orders Cancelled] merchant packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Orders Cancelled] merchant packs failed:", err?.message),
           );
       }
       return res.status(200).send("OK");
@@ -23682,6 +23716,8 @@ ${orientationExtra}
   registerCreatorPortalRoutes(app);
   const { registerSupportRoutes } = await import("./routes/support");
   registerSupportRoutes(app, { isAuthenticated });
+  const { registerStudioGrowthRoutes } = await import("./routes/studio-growth");
+  registerStudioGrowthRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");

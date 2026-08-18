@@ -18,6 +18,7 @@ import {
   STOREFRONT_FREE_GENERATION_MAX,
   STOREFRONT_FREE_GENERATION_MIN,
 } from "@shared/storefront-credits";
+import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 
 interface ShopifyInstallation {
   id: number;
@@ -472,6 +473,8 @@ export default function AdminSettings() {
             <CardDescription>
               Free generations come off your monthly plan allotment (default{" "}
               {STOREFRONT_FREE_GENERATION_DEFAULT}, max {STOREFRONT_FREE_GENERATION_MAX}).
+              Customers can buy generation packs on your store; you are billed wholesale and
+              those credits do not burn this allotment.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -511,8 +514,8 @@ export default function AdminSettings() {
               Reward Ladder
             </CardTitle>
             <CardDescription>
-              Credits for email signup and share-design are a one-time reward per customer.
-              When spent, they count against your shop plan quota.
+              Share-design and purchase rewards come off your shop plan quota when spent.
+              Studio Art Class signup credits are issued by Studio, not your quota.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -526,19 +529,19 @@ export default function AdminSettings() {
                     thresholdDollars: "50",
                   };
                   const label = rung.rungKey === "email_signup"
-                    ? "Email sign-up"
+                    ? "Studio Art Class signup"
                     : rung.rungKey === "share_design"
                       ? "Share a design"
                       : rung.rungKey === "purchase_threshold"
                         ? "Purchase threshold"
                         : rung.rungKey;
                   const description = rung.rungKey === "email_signup"
-                    ? "Studio Credits when a visitor signs in with Google or email OTP (once per customer)."
+                    ? "Studio Credits when a visitor joins the Studio Art Class list (once per customer). Issued by Studio — does not burn your quota."
                     : rung.rungKey === "share_design"
-                      ? "Studio Credits when someone else opens their shared design (once per customer)."
+                      ? "Studio Credits when someone else opens their shared design (once per customer). Comes off your monthly allotment when spent."
                       : rung.rungKey === "purchase_threshold"
                         ? rewardLadder.purchaseRewardsEnabled
-                          ? "Studio Credits when a customer’s paid order clears this amount (once per customer)."
+                          ? "Studio Credits when a customer’s paid order clears this amount (once per customer). Comes off your monthly allotment when spent."
                           : "Temporarily disabled by the app operator."
                         : "";
                   const disabled =
@@ -643,6 +646,22 @@ export default function AdminSettings() {
             ) : (
               <Skeleton className="h-24 w-full" />
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Studio Art Class list</CardTitle>
+            <CardDescription>
+              Join the Studio list for merchant updates. Signup credits for store customers
+              are issued by Studio, not your shop quota.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <StudioNewsletterSignup
+              source="merchant"
+              shopDomain={storefrontSettings?.shopDomain || undefined}
+            />
           </CardContent>
         </Card>
 

@@ -1,45 +1,38 @@
 /**
- * Creator Marketplace Phase 8 — generation credit packs on the platform shop.
+ * Merchant-sold Studio Credit packs.
+ * Customer pays the merchant store; credits are pack-funded (no plan quota).
+ * Wholesale is billed to the merchant via Shopify usage charges when available.
  */
 import { eq, inArray, like } from "drizzle-orm";
 import {
   CREDIT_PACK_CATALOG,
+  STUDIO_CREDIT_WHOLESALE_CENTS,
   getCreditPackDefinition,
   type CreditPackDefinition,
 } from "@shared/storefront-credits";
-import { creatorPackPurchases, platformConfig } from "@shared/schema";
-import { normalizeCreatorUsername } from "@shared/creatorMarketplace";
+import { merchantPackPurchases, merchantPackVariants } from "@shared/schema";
 import { db } from "./db";
-import {
-  getCreatorPlatformShopDomain,
-  isCreatorMarketplaceEnabled,
-  setPlatformConfig,
-} from "./creator-config";
-import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "./shopify-storefront";
 import { clawbackStudioCredits, grantStudioCredits } from "./studio-credits";
-import { creatorReturnCheckoutAttributes, lookupCreatorByUsername } from "./creator-host";
 import { normalizeShopifyOrderLine } from "./flat-order-fulfillment";
 import { storage } from "./storage";
+import { emitOverageUsageCharge } from "./usage-billing";
+import { getCreatorPlatformShopDomain } from "./creator-config";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
 
-const VARIANT_CONFIG_PREFIX = "CREATOR_PACK_VARIANT_";
-const PACK_SKU_PREFIX = "appai-pack-";
+const PACK_SKU_PREFIX = "studio-pack-";
+const LEGACY_PACK_SKU_PREFIX = "appai-pack-";
 
-export function packGensBurnCreatorAllowance(): boolean {
-  const v = (process.env.CREATOR_PACK_GENS_BURN_ALLOWANCE || "").trim().toLowerCase();
-  return v === "true" || v === "1" || v === "yes";
-}
-
-export function isCreatorCreditPackLine(props: Record<string, string>, sku?: string | null): boolean {
+export function isMerchantCreditPackLine(
+  props: Record<string, string>,
+  sku?: string | null,
+): boolean {
   if (props._credit_pack_id) return true;
-  return String(sku || "").startsWith(PACK_SKU_PREFIX);
+  const s = String(sku || "");
+  return s.startsWith(PACK_SKU_PREFIX) || s.startsWith(LEGACY_PACK_SKU_PREFIX);
 }
 
 function normalizeShop(shop: string | null | undefined): string {
-  return String(shop || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/$/, "");
+  return normalizeMyshopifyShopDomain(shop);
 }
 
 function isPlatformShop(shop: string): boolean {
@@ -47,29 +40,6 @@ function isPlatformShop(shop: string): boolean {
   if (!platform) return false;
   const s = normalizeShop(shop);
   return s === platform || s === platform.replace(/\.myshopify\.com$/, "");
-}
-
-/** Env override: CREATOR_PACK_VARIANTS_JSON={"5":"123456","10":"789"} */
-function variantIdFromEnv(packId: string): string | null {
-  const raw = (process.env.CREATOR_PACK_VARIANTS_JSON || "").trim();
-  if (!raw) return null;
-  try {
-    const map = JSON.parse(raw) as Record<string, string>;
-    const v = map[packId];
-    return v ? String(v).replace(/\D/g, "") || null : null;
-  } catch {
-    return null;
-  }
-}
-
-async function variantIdFromConfig(packId: string): Promise<string | null> {
-  const [row] = await db
-    .select()
-    .from(platformConfig)
-    .where(eq(platformConfig.key, `${VARIANT_CONFIG_PREFIX}${packId}`))
-    .limit(1);
-  const digits = row?.value ? String(row.value).replace(/\D/g, "") : "";
-  return digits || null;
 }
 
 async function resolveInstallation(shop: string) {
@@ -145,56 +115,90 @@ async function publishProductToOnlineStore(
     /online store/i.test(e.node.name),
   );
   if (!onlineStore) return;
-  await adminGraphql(shop, accessToken, `
+  await adminGraphql(
+    shop,
+    accessToken,
+    `
     mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
       publishablePublish(id: $id, input: $input) {
         userErrors { message }
       }
     }
-  `, {
-    id: productGid,
-    input: [{ publicationId: onlineStore.node.id }],
+  `,
+    {
+      id: productGid,
+      input: [{ publicationId: onlineStore.node.id }],
+    },
+  );
+}
+
+async function cachedVariant(
+  shop: string,
+  packId: string,
+): Promise<{ variantId: string; productId: string | null } | null> {
+  const rows = await db
+    .select()
+    .from(merchantPackVariants)
+    .where(eq(merchantPackVariants.shopDomain, shop));
+  const match = rows.find((r) => r.packId === packId);
+  if (!match?.variantId) return null;
+  return { variantId: match.variantId, productId: match.productId };
+}
+
+async function saveVariant(
+  shop: string,
+  packId: string,
+  variantId: string,
+  productId: string | null,
+): Promise<void> {
+  const existing = (
+    await db
+      .select()
+      .from(merchantPackVariants)
+      .where(eq(merchantPackVariants.shopDomain, shop))
+  ).find((r) => r.packId === packId);
+  if (existing) {
+    await db
+      .update(merchantPackVariants)
+      .set({ variantId, productId, updatedAt: new Date() })
+      .where(eq(merchantPackVariants.id, existing.id));
+    return;
+  }
+  await db.insert(merchantPackVariants).values({
+    shopDomain: shop,
+    packId,
+    variantId,
+    productId,
   });
 }
 
-/**
- * Ensure each catalog pack has a Shopify variant on the platform shop.
- * Creates products when missing; caches variant ids in platform_config.
- */
-export async function ensureCreatorPackVariants(): Promise<
+export async function ensureMerchantPackVariants(shopRaw: string): Promise<
   Array<CreditPackDefinition & { variantId: string }>
 > {
-  const shop = getCreatorPlatformShopDomain();
-  if (!shop) throw new Error("CREATOR_PLATFORM_SHOP_DOMAIN is not set");
+  const shop = normalizeShop(shopRaw);
+  if (!shop) throw new Error("Shop is required");
+  if (isPlatformShop(shop)) {
+    throw new Error("Use creator pack checkout on the platform shop");
+  }
 
+  const installation = await resolveInstallation(shop);
+  if (!installation?.accessToken) {
+    throw new Error("This shop is not authorized — reconnect Shopify");
+  }
+  const token = installation.accessToken;
   const out: Array<CreditPackDefinition & { variantId: string }> = [];
-  let installationToken: string | null = null;
 
   for (const pack of CREDIT_PACK_CATALOG) {
-    const fromEnv = variantIdFromEnv(pack.packId);
-    if (fromEnv) {
-      out.push({ ...pack, variantId: fromEnv });
-      continue;
-    }
-    const fromCfg = await variantIdFromConfig(pack.packId);
-    if (fromCfg) {
-      out.push({ ...pack, variantId: fromCfg });
+    const cached = await cachedVariant(shop, pack.packId);
+    if (cached?.variantId) {
+      out.push({ ...pack, variantId: cached.variantId });
       continue;
     }
 
-    if (!installationToken) {
-      const installation = await resolveInstallation(shop);
-      if (!installation?.accessToken) {
-        throw new Error("Platform shop is not authorized — reconnect the staging app");
-      }
-      installationToken = installation.accessToken;
-    }
-    const token = installationToken;
     const sku = `${PACK_SKU_PREFIX}${pack.packId}`;
-
     const existing = await findVariantIdBySku(shop, token, sku).catch(() => null);
     if (existing?.variantId) {
-      await setPlatformConfig(`${VARIANT_CONFIG_PREFIX}${pack.packId}`, existing.variantId);
+      await saveVariant(shop, pack.packId, existing.variantId, existing.productId);
       out.push({ ...pack, variantId: existing.variantId });
       continue;
     }
@@ -213,7 +217,7 @@ export async function ensureCreatorPackVariants(): Promise<
           published: true,
           vendor: "AI Art Studio",
           product_type: "Credit Pack",
-          tags: "appai-credit-pack,appai-shadow",
+          tags: "studio-credit-pack",
           variants: [
             {
               price,
@@ -232,15 +236,16 @@ export async function ensureCreatorPackVariants(): Promise<
       throw new Error(`Failed to create pack product ${pack.packId}: ${t.slice(0, 200)}`);
     }
     const { product } = await createRes.json();
-    const vid = String(product?.variants?.[0]?.id || "");
+    const vid = String(product?.variants?.[0]?.id || "").replace(/\D/g, "");
+    const pid = product?.id != null ? String(product.id) : null;
     const productGid =
       product?.admin_graphql_api_id ||
-      (product?.id != null ? `gid://shopify/Product/${product.id}` : "");
+      (pid ? `gid://shopify/Product/${pid}` : "");
     if (!vid) throw new Error(`Pack product ${pack.packId} created without variant`);
-    await setPlatformConfig(`${VARIANT_CONFIG_PREFIX}${pack.packId}`, vid);
+    await saveVariant(shop, pack.packId, vid, pid);
     if (productGid) {
       await publishProductToOnlineStore(shop, token, productGid).catch((e) =>
-        console.warn("[creator-packs] publish failed:", e?.message || e),
+        console.warn("[merchant-packs] publish failed:", e?.message || e),
       );
     }
     out.push({ ...pack, variantId: vid });
@@ -248,66 +253,42 @@ export async function ensureCreatorPackVariants(): Promise<
   return out;
 }
 
-export async function listCreatorPacksForSale(): Promise<
+export async function listMerchantPacksForSale(shopRaw: string): Promise<
   Array<CreditPackDefinition & { variantReady: boolean }>
 > {
-  const packs = [];
-  for (const pack of CREDIT_PACK_CATALOG) {
-    const vid =
-      variantIdFromEnv(pack.packId) || (await variantIdFromConfig(pack.packId));
-    packs.push({ ...pack, variantReady: !!vid });
-  }
-  return packs;
+  const shop = normalizeShop(shopRaw);
+  const cached = shop
+    ? await db.select().from(merchantPackVariants).where(eq(merchantPackVariants.shopDomain, shop))
+    : [];
+  return CREDIT_PACK_CATALOG.map((pack) => ({
+    ...pack,
+    variantReady: cached.some((r) => r.packId === pack.packId && r.variantId),
+  }));
 }
 
-export async function createCreatorPackCheckout(params: {
+export async function createMerchantPackCheckout(params: {
+  shop: string;
   packId: string;
-  creatorUsername: string;
   customerId: string;
-  creatorSessionId?: string | null;
-  returnUrl?: string | null;
-}): Promise<{ checkoutUrl: string; cartId: string; pack: CreditPackDefinition }> {
-  if (!isCreatorMarketplaceEnabled()) {
-    throw new Error("Creator Marketplace is not enabled");
-  }
-  if (!isCreatorStorefrontConfigured()) {
-    throw new Error("Creator Storefront API is not configured");
-  }
+}): Promise<{ checkoutUrl: string; pack: CreditPackDefinition }> {
+  const shop = normalizeShop(params.shop);
+  if (!shop) throw new Error("Shop is required");
+  if (!params.customerId?.trim()) throw new Error("customerId is required");
   const pack = getCreditPackDefinition(params.packId);
   if (!pack) throw new Error("Unknown credit pack");
-  if (!params.customerId?.trim()) throw new Error("customerId is required");
 
-  const username = normalizeCreatorUsername(params.creatorUsername);
-  if (!username) throw new Error("Invalid creator username");
-  const creator = await lookupCreatorByUsername(username);
-  if (!creator) throw new Error("Creator not found");
-  if (["paused", "suspended", "archived"].includes(creator.status)) {
-    throw new Error("This creator shop is not accepting pack purchases");
-  }
-
-  const variants = await ensureCreatorPackVariants();
+  const variants = await ensureMerchantPackVariants(shop);
   const matched = variants.find((v) => v.packId === pack.packId);
   if (!matched?.variantId) throw new Error("Pack variant is not available");
 
-  const returnAttrs = creatorReturnCheckoutAttributes(creator, params.returnUrl);
-  const cart = await createCreatorCheckoutCart({
-    variantId: matched.variantId,
-    quantity: 1,
-    attributes: [
-      { key: "_creator_id", value: creator.id },
-      { key: "_creator_username", value: creator.username },
-      { key: "_credit_pack_id", value: pack.packId },
-      { key: "_appai_customer_id", value: params.customerId },
-      { key: "_appai_pack_credits", value: String(pack.credits) },
-      ...returnAttrs,
-      ...(params.creatorSessionId
-        ? [{ key: "_creator_session", value: String(params.creatorSessionId) }]
-        : []),
-    ],
-    cartAttributes: returnAttrs,
+  const props = new URLSearchParams({
+    checkout: "",
+    "properties[_credit_pack_id]": pack.packId,
+    "properties[_appai_customer_id]": params.customerId,
+    "properties[_appai_pack_credits]": String(pack.credits),
   });
-
-  return { checkoutUrl: cart.checkoutUrl, cartId: cart.cartId, pack };
+  const checkoutUrl = `https://${shop}/cart/${matched.variantId}:1?${props.toString()}`;
+  return { checkoutUrl, pack };
 }
 
 function orderIdKey(order: any): string {
@@ -316,20 +297,20 @@ function orderIdKey(order: any): string {
   return "";
 }
 
-/** Grant pack credits from a paid platform-shop order (idempotent per line). */
-export async function grantCreatorPacksFromPaidOrder(
-  shop: string,
+export async function grantMerchantPacksFromPaidOrder(
+  shopRaw: string,
   order: any,
 ): Promise<{ granted: number }> {
-  if (!isCreatorMarketplaceEnabled() || !isPlatformShop(shop)) {
-    return { granted: 0 };
-  }
+  const shop = normalizeShop(shopRaw);
+  if (!shop || isPlatformShop(shop)) return { granted: 0 };
   if (!Array.isArray(order?.line_items)) return { granted: 0 };
 
   const orderKey = orderIdKey(order);
   if (!orderKey) return { granted: 0 };
 
+  const installation = await resolveInstallation(shop);
   let granted = 0;
+
   for (const raw of order.line_items) {
     const line = normalizeShopifyOrderLine(raw);
     const props = line.properties;
@@ -338,14 +319,16 @@ export async function grantCreatorPacksFromPaidOrder(
     const sku = String(raw.sku || "");
     const packFromSku = sku.startsWith(PACK_SKU_PREFIX)
       ? getCreditPackDefinition(sku.slice(PACK_SKU_PREFIX.length))
-      : null;
+      : sku.startsWith(LEGACY_PACK_SKU_PREFIX)
+        ? getCreditPackDefinition(sku.slice(LEGACY_PACK_SKU_PREFIX.length))
+        : null;
     const resolved = pack || packFromSku;
     if (!resolved) continue;
+    if (props._creator_id) continue;
 
     const customerId = props._appai_customer_id || "";
-    const creatorId = props._creator_id || "";
-    if (!customerId || !creatorId) {
-      console.warn("[creator-packs] pack line missing customer/creator attrs", {
+    if (!customerId) {
+      console.warn("[merchant-packs] pack line missing customer id", {
         orderKey,
         lineId: raw.id,
       });
@@ -356,17 +339,18 @@ export async function grantCreatorPacksFromPaidOrder(
     const qty = Math.max(1, Number(raw.quantity) || 1);
     const credits = resolved.credits * qty;
     const priceCents = Math.round(Number(raw.price || 0) * 100) * qty;
+    const wholesaleCents = STUDIO_CREDIT_WHOLESALE_CENTS * credits;
 
     try {
-      await db.insert(creatorPackPurchases).values({
-        creatorId,
+      await db.insert(merchantPackPurchases).values({
+        shopDomain: shop,
         customerId,
-        sessionId: props._creator_session || null,
         shopifyOrderId: orderKey,
         shopifyLineId: lineId,
         packId: resolved.packId,
         credits,
         priceCents,
+        wholesaleCents,
         creditsClawed: 0,
         status: "paid",
       });
@@ -381,34 +365,45 @@ export async function grantCreatorPacksFromPaidOrder(
       customerId,
       amount: credits,
       source: "pack",
-      reason: `creator_pack:${resolved.packId}`,
-      idempotencyKey: `creator-pack-grant:${orderKey}:${lineId}`,
-      shop: normalizeShop(shop),
-      relatedEntityId: creatorId,
+      reason: `merchant_pack:${resolved.packId}`,
+      idempotencyKey: `merchant-pack-grant:${orderKey}:${lineId}`,
+      shop,
+      relatedEntityId: shop,
       externalRef: orderKey,
       metadata: {
         packId: resolved.packId,
-        creatorId,
         shopifyLineId: lineId,
       },
     });
     if (grant.inserted) granted++;
+
+    if (installation && wholesaleCents > 0) {
+      const priceUsd = wholesaleCents / 100;
+      await emitOverageUsageCharge({
+        installation,
+        bucketKey: `merchant-pack:${orderKey}:${lineId}`,
+        overageSeq: 1,
+        priceUsd,
+        description: `Studio Credit pack wholesale (${credits} credits) for ${shop}`,
+      }).catch((e: any) =>
+        console.warn("[merchant-packs] wholesale usage charge failed:", e?.message || e),
+      );
+    }
+
     console.log(
-      `[creator-packs] granted ${credits} pack credits to ${customerId} for creator ${creatorId} order ${orderKey}`,
+      `[merchant-packs] granted ${credits} pack credits to ${customerId} on ${shop} order ${orderKey}`,
     );
   }
   return { granted };
 }
 
-/** Claw back pack credits for a refunded/cancelled order. */
-export async function clawbackCreatorPacksForOrder(params: {
+export async function clawbackMerchantPacksForOrder(params: {
   shop: string;
   orderId: string;
   creditsToClaw?: number;
 }): Promise<{ clawed: number }> {
-  if (!isCreatorMarketplaceEnabled() || !isPlatformShop(params.shop)) {
-    return { clawed: 0 };
-  }
+  const shop = normalizeShop(params.shop);
+  if (!shop || isPlatformShop(shop)) return { clawed: 0 };
 
   const keys = [
     String(params.orderId),
@@ -418,19 +413,20 @@ export async function clawbackCreatorPacksForOrder(params: {
   ];
   let rows = await db
     .select()
-    .from(creatorPackPurchases)
-    .where(inArray(creatorPackPurchases.shopifyOrderId, keys));
+    .from(merchantPackPurchases)
+    .where(inArray(merchantPackPurchases.shopifyOrderId, keys));
 
   if (rows.length === 0) {
     const digits = String(params.orderId).replace(/\D/g, "");
     if (digits) {
       rows = await db
         .select()
-        .from(creatorPackPurchases)
-        .where(like(creatorPackPurchases.shopifyOrderId, `%${digits}%`))
+        .from(merchantPackPurchases)
+        .where(like(merchantPackPurchases.shopifyOrderId, `%${digits}%`))
         .limit(20);
     }
   }
+  rows = rows.filter((r) => normalizeShop(r.shopDomain) === shop);
   if (rows.length === 0) return { clawed: 0 };
 
   let remaining = params.creditsToClaw;
@@ -446,23 +442,23 @@ export async function clawbackCreatorPacksForOrder(params: {
       customerId: row.customerId,
       amount,
       preferSource: "pack",
-      reason: "creator_pack_refund",
-      idempotencyKey: `creator-pack-clawback:${row.shopifyOrderId}:${row.shopifyLineId}:${row.creditsClawed + amount}`,
-      shop: normalizeShop(params.shop),
-      relatedEntityId: row.creatorId,
+      reason: "merchant_pack_refund",
+      idempotencyKey: `merchant-pack-clawback:${row.shopifyOrderId}:${row.shopifyLineId}:${row.creditsClawed + amount}`,
+      shop,
+      relatedEntityId: shop,
       externalRef: row.shopifyOrderId,
       metadata: { packId: row.packId, purchaseId: row.id },
     });
     if (r.inserted) {
       const nextClawed = row.creditsClawed + amount;
       await db
-        .update(creatorPackPurchases)
+        .update(merchantPackPurchases)
         .set({
           creditsClawed: nextClawed,
           status: nextClawed >= row.credits ? "refunded" : "partially_refunded",
           updatedAt: new Date(),
         })
-        .where(eq(creatorPackPurchases.id, row.id));
+        .where(eq(merchantPackPurchases.id, row.id));
       clawed += amount;
       if (remaining != null) remaining -= amount;
     }

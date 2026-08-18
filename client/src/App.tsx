@@ -51,6 +51,7 @@ import AdminSupportPage from "@/pages/admin/support";
 import AdminHowToPage from "@/pages/admin/how-to";
 import PlatformSupportPage from "@/pages/admin/platform-support";
 import PlatformHowToPage from "@/pages/admin/platform-how-to";
+import PlatformNewsletterPage from "@/pages/admin/platform-newsletter";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -101,6 +102,7 @@ function AppRouter() {
       <Route path="/admin/platform/terms" component={PlatformTermsPage} />
       <Route path="/admin/platform/support" component={PlatformSupportPage} />
       <Route path="/admin/platform/how-to" component={PlatformHowToPage} />
+      <Route path="/admin/platform/newsletter" component={PlatformNewsletterPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Creator Marketplace marketing (public) */}
