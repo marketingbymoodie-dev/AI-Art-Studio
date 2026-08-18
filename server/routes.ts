@@ -12444,11 +12444,51 @@ ${orientationExtra}
     }
   });
 
+  function resolveSharedDesignImageUrl(raw: string): string | null {
+    let u = raw.trim();
+    if (!u) return null;
+    const embedded = Math.max(u.lastIndexOf("https://"), u.lastIndexOf("http://"));
+    if (embedded > 0) u = u.slice(embedded);
+    if (u.startsWith("data:image/")) return null;
+    if (
+      u.startsWith("/objects/") ||
+      u.startsWith("/apps/appai/") ||
+      u.startsWith("/api/")
+    ) {
+      const origin = (process.env.APP_URL || process.env.PUBLIC_APP_URL || "").replace(/\/$/, "");
+      return origin ? `${origin}${u}` : u;
+    }
+    try {
+      const parsed = new URL(u);
+      const host = parsed.hostname.toLowerCase();
+      if (host !== "localhost" && parsed.protocol !== "https:") return null;
+      const exact = new Set(["storage.googleapis.com", "storage.cloud.google.com", "localhost"]);
+      const suffixes = [".supabase.co", ".replit.app", ".up.railway.app"];
+      if (exact.has(host) || suffixes.some((s) => host === s.slice(1) || host.endsWith(s))) {
+        return parsed.toString();
+      }
+      for (const rawOrigin of [process.env.APP_URL, process.env.PUBLIC_APP_URL]) {
+        if (!rawOrigin) continue;
+        try {
+          const originHost = new URL(
+            String(rawOrigin).startsWith("http") ? rawOrigin : `https://${rawOrigin}`,
+          ).hostname.toLowerCase();
+          if (host === originHost) return parsed.toString();
+        } catch {
+          // ignore bad env origin
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   // Create share link for a design (public endpoint for Shopify embed)
   app.post("/api/designs/share", async (req: Request, res: Response) => {
     try {
       const { 
-        imageUrl,
+        imageUrl: rawImageUrl,
         thumbnailUrl,
         prompt,
         stylePreset,
@@ -12464,35 +12504,13 @@ ${orientationExtra}
         customerId: rawOwnerCustomerId,
       } = req.body;
 
-      if (!imageUrl || !prompt || !size || !frameColor) {
+      if (!rawImageUrl || !prompt) {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
-      // Validate image URL is from our storage domain (security check)
-      // Use strict hostname matching to prevent bypass via subdomains
-      const allowedDomains = [
-        "storage.googleapis.com",
-        "storage.cloud.google.com",
-        process.env.REPL_SLUG ? `${process.env.REPL_SLUG}.replit.app` : null,
-        "localhost",
-      ].filter(Boolean) as string[];
-      
-      try {
-        const imageUrlObj = new URL(imageUrl);
-        // Require https for non-localhost URLs
-        if (imageUrlObj.hostname !== "localhost" && imageUrlObj.protocol !== "https:") {
-          return res.status(400).json({ error: "Image URL must use HTTPS" });
-        }
-        // Strict hostname matching: exact match or ends with .domain
-        const isAllowedDomain = allowedDomains.some(domain => {
-          const hostname = imageUrlObj.hostname;
-          return hostname === domain || hostname.endsWith(`.${domain}`);
-        });
-        if (!isAllowedDomain) {
-          return res.status(400).json({ error: "Invalid image URL" });
-        }
-      } catch {
-        return res.status(400).json({ error: "Invalid image URL format" });
+      const imageUrl = resolveSharedDesignImageUrl(String(rawImageUrl));
+      if (!imageUrl) {
+        return res.status(400).json({ error: "Invalid image URL" });
       }
 
       // Generate unique share token
@@ -12523,8 +12541,8 @@ ${orientationExtra}
         thumbnailUrl: thumbnailUrl || null,
         prompt,
         stylePreset: stylePreset || null,
-        size,
-        frameColor,
+        size: size || "default",
+        frameColor: frameColor || "default",
         transformScale: Math.round(transformScale ?? 100),
         transformX: Math.round(transformX ?? 50),
         transformY: Math.round(transformY ?? 50),

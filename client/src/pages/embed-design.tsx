@@ -9753,11 +9753,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageUrl: generatedDesign.imageUrl,
+          imageUrl: toAbsoluteImageUrl(generatedDesign.imageUrl),
           prompt: generatedDesign.prompt,
           stylePreset: selectedPreset !== "" ? selectedPreset : null,
-          size: selectedSize,
-          frameColor: selectedFrameColor,
+          size: selectedSize || "default",
+          frameColor: selectedFrameColor || "default",
           transformScale: transform.scale,
           transformX: transform.x,
           transformY: transform.y,
@@ -9765,11 +9765,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           shopDomain: shopDomain || null,
           productId: productId || null,
           productHandle: productHandle || null,
+          customerId: storefrontCustomerId || customer?.id || null,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to create share link");
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.error || "Failed to create share link");
       }
 
       const data = await response.json();
