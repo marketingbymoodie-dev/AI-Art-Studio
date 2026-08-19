@@ -44,10 +44,27 @@ export type LandingCard = {
   imageUrl: string;
 };
 
+/** Fastest prompt type delay (ms per character). Higher = slower. */
+export const LANDING_TYPE_DELAY_FAST_MS = 38;
+export const LANDING_TYPE_DELAY_SLOW_MS = 152;
+/** Half of the original 38ms tick. */
+export const LANDING_TYPE_DELAY_DEFAULT_MS = 76;
+
+export function clampLandingTypeDelayMs(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return LANDING_TYPE_DELAY_DEFAULT_MS;
+  return Math.min(
+    LANDING_TYPE_DELAY_SLOW_MS,
+    Math.max(LANDING_TYPE_DELAY_FAST_MS, Math.round(n)),
+  );
+}
+
 export type LandingContent = {
   copy: LandingCopy;
   scenes: LandingScene[];
   cards: LandingCard[];
+  /** Splash prompt typewriter delay in ms per character. */
+  typeDelayMs: number;
 };
 
 export const DEFAULT_LANDING_COPY: LandingCopy = {
@@ -138,6 +155,7 @@ export const DEFAULT_LANDING_CONTENT: LandingContent = {
   copy: DEFAULT_LANDING_COPY,
   scenes: DEFAULT_LANDING_SCENES,
   cards: DEFAULT_LANDING_CARDS,
+  typeDelayMs: LANDING_TYPE_DELAY_DEFAULT_MS,
 };
 
 const MAX_SCENES = 12;
@@ -221,6 +239,7 @@ export function mergeLandingContent(raw: unknown): LandingContent {
     copy,
     scenes: sanitizeScenes(src.scenes),
     cards: sanitizeCards(src.cards),
+    typeDelayMs: clampLandingTypeDelayMs(src.typeDelayMs),
   };
 }
 

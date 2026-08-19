@@ -33,6 +33,7 @@ import { CreatorPortalProfileForm } from "@/components/creators/CreatorPortalPro
 import { SupportInbox } from "@/components/support/SupportInbox";
 import { HowToLibrary } from "@/components/support/HowToLibrary";
 import { creatorPublicName } from "@shared/creatorMarketplace";
+import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 import { Info, Loader2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -345,6 +346,10 @@ export default function CreatorPortalDashboardPage() {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6">
+        <section className="mb-6 rounded-xl border border-stone-200 bg-white p-4">
+          <h2 className="mb-1 text-sm font-semibold">Studio Art Class list</h2>
+          <StudioNewsletterSignup source="creator" creatorUsername={creator.username} />
+        </section>
         <Tabs defaultValue="today">
           <TabsList className="mb-6 flex h-auto flex-wrap gap-1 bg-stone-200/60 p-1">
             <TabsTrigger value="today">Today</TabsTrigger>

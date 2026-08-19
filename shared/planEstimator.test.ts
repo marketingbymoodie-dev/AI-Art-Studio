@@ -49,10 +49,10 @@ describe("generation / cost estimates", () => {
   it("estimates customizer funnel on credits spent (live ladder grants)", () => {
     // 100 visitors × 25% engaged = 25
     // free: 25 × 1.5 = 37.5
-    // email: 25 × 12% × 1 = 3
+    // email: 25 × 12% × 1 = 3 (Studio-funded — not in shop quota)
     // share: 25 × 3% × 1 = 0.75
     // purchase: 25 × 5% × 1 × 40% = 0.5
-    // total = 41.75 → ceil 42
+    // shop quota = 38.75 → ceil 39
     const f = estimateCustomizerFunnel({
       monthlyVisitors: 100,
       engagementRate: 0.25,
@@ -67,11 +67,12 @@ describe("generation / cost estimates", () => {
       },
     });
     expect(f.engaged).toBe(25);
-    expect(f.totalGensSpent).toBe(42);
+    expect(f.totalGensSpent).toBe(39);
+    expect(f.emailGensSpent).toBe(3);
     expect(f.orders).toBe(1); // floor(25 × 0.05)
     expect(f.leadsCaptured).toBe(3); // floor(25 × 0.12)
     expect(f.blendedCostPerGen).toBe(0.045);
-    expect(f.aiCostUsd).toBe(Math.round(42 * 0.045 * 100) / 100);
+    expect(f.aiCostUsd).toBe(Math.round(39 * 0.045 * 100) / 100);
     expect(f.costPerLeadUsd).toBe(Math.round((f.aiCostUsd / 3) * 100) / 100);
   });
 

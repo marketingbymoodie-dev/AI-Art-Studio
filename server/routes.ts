@@ -89,6 +89,7 @@ import {
   filterStyleReferenceUrls,
   styleIsPatternMaker,
   useCylindricalWrapPrompt,
+  userPromptAsksToRecreateReference,
 } from "@shared/generationPromptHints";
 import { resolveSizeAspectRatio, sortDimensionalSizesAscending } from "@shared/productVariantOptions";
 import {
@@ -133,7 +134,6 @@ import {
   ensureRewardLadder,
   getRewardLadder,
   patchRewardLadder,
-  tryGrantEmailSignup,
   tryGrantShareDesign,
   tryGrantPurchaseThreshold,
   clawbackPurchaseThresholdForOrder,
@@ -146,6 +146,7 @@ import {
 } from "./merchant-coupon-quota";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
+import { runPrintifyTestArtifactCleanup } from "./printify-test-artifact-cleanup";
 import { clearZeroPriceAlertIfPriced, notifyZeroRetailPricePages } from "./zero-price-alerts";
 import {
   runCatalogueProductSync,
@@ -172,7 +173,7 @@ import {
   extraSpentCents,
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
-import { logMerchantGeneration } from "./merchant-generation-log";
+import { logMerchantGeneration, tryCreateGenerationLog } from "./merchant-generation-log";
 import { recordDesignProductSalesForOrder, recordDesignProductAtcForCart } from "./design-product-events";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
@@ -750,8 +751,8 @@ function singleCustomerReferenceInstruction(opts: {
   if (isTextStyle) {
     return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
   }
-  if ((opts.userPrompt || "").toLowerCase().includes("recreate this artwork")) {
-    return `The reference image is the customer's existing artwork. Recreate it as ONE single centered subject. Do NOT repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the canvas — leave empty space (or the required background color) instead.`;
+  if (userPromptAsksToRecreateReference(opts.userPrompt)) {
+    return `The reference image is the customer's existing artwork. Recreate it as ONE single centered subject. Keep the same subject, composition, and recognizable details. Apply the requested art style without replacing the subject with a different scene. Do NOT repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the canvas — leave empty space (or the required background color) instead.`;
   }
   return `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design as a SINGLE centered subject. Do NOT repeat, duplicate, tile, or make a triptych.`;
 }
@@ -2486,7 +2487,7 @@ export async function registerRoutes(
         }
       }
 
-      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -2788,46 +2789,52 @@ ${orientationExtra}
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
-      // Resolve reference image for Replicate — pass data URLs directly to avoid URL-accessibility issues
-      let customerImageUrl: string | null = null;
-      if (referenceImage) {
+      // Resolve customer reference image(s) — Preview Studio sends `referenceImages[]`
+      const customerImageUrls: string[] = [];
+      const rawRefImagesAdmin: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
+        ? referenceImagesArr
+        : referenceImage ? [referenceImage] : [];
+      for (const refImg of rawRefImagesAdmin.slice(0, 5)) {
         try {
-          if (referenceImage.startsWith("data:")) {
-            customerImageUrl = referenceImage;
-          } else if (referenceImage.startsWith("http")) {
-            customerImageUrl = referenceImage;
-          } else if (referenceImage.startsWith("/objects/")) {
+          let resolvedUrl: string | null = null;
+          if (typeof refImg !== "string") continue;
+          if (refImg.startsWith("data:")) {
+            resolvedUrl = refImg;
+          } else if (refImg.startsWith("http")) {
+            resolvedUrl = refImg;
+          } else if (refImg.startsWith("/objects/")) {
             const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            customerImageUrl = `${appUrl}${referenceImage}`;
+            resolvedUrl = `${appUrl}${refImg}`;
           }
-          if (customerImageUrl) {
-            const urlType = customerImageUrl.startsWith("data:") ? "data-url" : "http-url";
-            const urlSize = customerImageUrl.length;
-            console.log(`[Generate] Reference image: type=${urlType}, size=${urlSize} chars`);
+          if (resolvedUrl) {
+            customerImageUrls.push(resolvedUrl);
+            console.log(`[Generate] Reference image ${customerImageUrls.length}: type=${resolvedUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${resolvedUrl.length} chars`);
           }
         } catch (refErr) {
-          console.warn("[Generate] Could not process reference image, generating without it:", refErr);
-          customerImageUrl = null;
+          console.warn("[Generate] Could not process reference image, skipping:", refErr);
         }
       }
+      const customerImageUrl: string | null = customerImageUrls[0] || null;
 
       // Build image input array: style base images (when no user subject) + customer reference
       const imageInputUrls: string[] = [];
       const allStyleBaseUrls: string[] = filterStyleReferenceUrls(
         (req as any)._styleBaseImageUrls || (styleBaseImageUrl ? [styleBaseImageUrl] : []),
         userDescAdmin,
-        !!customerImageUrl,
+        customerImageUrls.length > 0,
       );
       const effectiveStyleBaseUrl = allStyleBaseUrls[0];
       imageInputUrls.push(...allStyleBaseUrls);
-      if (customerImageUrl) imageInputUrls.push(customerImageUrl);
+      imageInputUrls.push(...customerImageUrls);
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
 
       // When reference images are provided, instruct the model how to use them
       if (imageInputUrls.length > 0) {
         let refInstruction: string;
-        if (effectiveStyleBaseUrl && customerImageUrl) {
+        if (effectiveStyleBaseUrl && customerImageUrls.length > 0) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
+        } else if (customerImageUrls.length > 1) {
+          refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
         } else if (customerImageUrl) {
           refInstruction = singleCustomerReferenceInstruction({
             stylePreset,
@@ -2863,10 +2870,10 @@ console.log("[api/generate] replicate returned", {
 });
 
       if (!data) {
-        await storage.createGenerationLog({
+        await tryCreateGenerationLog({
           customerId: customer.id,
           promptLength: prompt.length,
-          hadReferenceImage: !!referenceImage,
+          hadReferenceImage: customerImageUrls.length > 0,
           stylePreset,
           size,
           success: false,
@@ -2920,7 +2927,7 @@ console.log("[api/shopify/generate] saved image", result);
           customerId: customer.id,
           prompt,
           stylePreset: stylePreset || null,
-          referenceImageUrl: referenceImage ? "uploaded" : null,
+          referenceImageUrl: customerImageUrls.length > 0 ? "uploaded" : null,
           generatedImageUrl,
           thumbnailImageUrl,
           size,
@@ -2954,11 +2961,11 @@ console.log("[api/shopify/generate] saved image", result);
       }
 
       // Log generation
-      await storage.createGenerationLog({
+      await tryCreateGenerationLog({
         customerId: customer.id,
         designId: design?.id ?? null,
         promptLength: prompt.length,
-        hadReferenceImage: !!referenceImage,
+        hadReferenceImage: customerImageUrls.length > 0,
         stylePreset,
         size,
         success: true,
@@ -3164,7 +3171,7 @@ const result = await saveImageToStorage(base64Data, finalMimeType, {
       }
 
       // Log the regeneration
-      await storage.createGenerationLog({
+      await tryCreateGenerationLog({
         customerId: customer.id,
         designId: designId,
         promptLength: prompt.length,
@@ -10897,15 +10904,13 @@ ${orientationExtra}
 
       await storage.ensureCustomerBalance(customer.id);
 
-      // Reward Ladder — email_signup rung (idempotent per customer).
+      // Newsletter credit only — sign-in alone does not grant Studio Credits.
       if (emailNorm) {
         try {
-          const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
-          if (r.granted) {
-            console.log(`[Google Auth] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
-          }
+          const { tryGrantNewsletterCreditAfterAuth } = await import("./studio-newsletter");
+          await tryGrantNewsletterCreditAfterAuth(shop, customer.id, emailNorm);
         } catch (rewardErr: any) {
-          console.warn(`[Google Auth] email_signup grant failed:`, rewardErr?.message);
+          console.warn(`[Google Auth] newsletter credit grant failed:`, rewardErr?.message);
         }
       }
 
@@ -11038,14 +11043,12 @@ ${orientationExtra}
       await storage.ensureCustomerBalance(customer.id);
       await storage.addCustomerAlias(customer.id, { aliasType: "otp_email", aliasValue: emailNorm, shop });
 
-      // Reward Ladder — email_signup rung (idempotent per customer).
+      // Newsletter credit only — OTP sign-in alone does not grant Studio Credits.
       try {
-        const r = await tryGrantEmailSignup(shop, customer.id, emailNorm);
-        if (r.granted) {
-          console.log(`[OTP] granted email_signup rung to ${customer.id} (${r.amount} credit)`);
-        }
+        const { tryGrantNewsletterCreditAfterAuth } = await import("./studio-newsletter");
+        await tryGrantNewsletterCreditAfterAuth(shop, customer.id, emailNorm);
       } catch (rewardErr: any) {
-        console.warn(`[OTP] email_signup grant failed:`, rewardErr?.message);
+        console.warn(`[OTP] newsletter credit grant failed:`, rewardErr?.message);
       }
 
       const balance = await storage.getCreditBalance(customer.id);
@@ -11386,6 +11389,19 @@ ${orientationExtra}
           .catch((e: any) =>
             console.warn("[Shopify Orders Paid] creator packs failed:", e?.message || e),
           );
+
+        void import("./merchant-packs")
+          .then(({ grantMerchantPacksFromPaidOrder }) =>
+            grantMerchantPacksFromPaidOrder(shop, order),
+          )
+          .then((r) => {
+            if (r.granted > 0) {
+              console.log("[Shopify Orders Paid] merchant packs granted", r);
+            }
+          })
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] merchant packs failed:", e?.message || e),
+          );
       }
 
       return res.status(200).send("OK");
@@ -11493,6 +11509,19 @@ ${orientationExtra}
           .catch((err: any) =>
             console.warn("[Shopify Refunds Create] creator packs failed:", err?.message),
           );
+
+        void import("./merchant-packs")
+          .then(({ clawbackMerchantPacksForOrder }) =>
+            clawbackMerchantPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Refunds Create] merchant packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Refunds Create] merchant packs failed:", err?.message),
+          );
       }
       return res.status(200).send("OK");
     } catch (error: any) {
@@ -11546,6 +11575,19 @@ ${orientationExtra}
           })
           .catch((err: any) =>
             console.warn("[Shopify Orders Cancelled] creator packs failed:", err?.message),
+          );
+
+        void import("./merchant-packs")
+          .then(({ clawbackMerchantPacksForOrder }) =>
+            clawbackMerchantPacksForOrder({ shop, orderId: String(orderId) }),
+          )
+          .then((r) => {
+            if (r.clawed > 0) {
+              console.log("[Shopify Orders Cancelled] merchant packs clawed", r);
+            }
+          })
+          .catch((err: any) =>
+            console.warn("[Shopify Orders Cancelled] merchant packs failed:", err?.message),
           );
       }
       return res.status(200).send("OK");
@@ -11804,6 +11846,15 @@ ${orientationExtra}
   }
 
   // Manual trigger endpoint
+  app.post("/api/admin/printify-test-artifact-cleanup", isAuthenticated, async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform admin only" });
+    }
+    const result = await runPrintifyTestArtifactCleanup();
+    res.json({ ok: true, ...result });
+  });
+
+  // Manual trigger endpoint
   app.post("/api/admin/shadow-product-cleanup", isAuthenticated, async (_req: any, res: Response) => {
     const result = await runShadowProductCleanup();
     res.json({ ok: true, ...result });
@@ -11812,6 +11863,20 @@ ${orientationExtra}
   // Auto-run shadow product cleanup every hour
   setInterval(() => {
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
+  }, 60 * 60 * 1000);
+
+  // Hourly: delete unpublished Mockup Preview / test-order products (1h grace).
+  // Draft test *orders* still cancel only after 7 days. Never deletes published
+  // Printify store listings or design_products.
+  setTimeout(() => {
+    runPrintifyTestArtifactCleanup().catch((e: Error) =>
+      console.error("[Printify Test Cleanup] Startup run error:", e),
+    );
+  }, 5 * 60 * 1000);
+  setInterval(() => {
+    runPrintifyTestArtifactCleanup().catch((e: Error) =>
+      console.error("[Printify Test Cleanup] Interval error:", e),
+    );
   }, 60 * 60 * 1000);
 
   // Daily Printify catalogue OOS scan + email digest. This in-process interval is the
@@ -12410,11 +12475,51 @@ ${orientationExtra}
     }
   });
 
+  function resolveSharedDesignImageUrl(raw: string): string | null {
+    let u = raw.trim();
+    if (!u) return null;
+    const embedded = Math.max(u.lastIndexOf("https://"), u.lastIndexOf("http://"));
+    if (embedded > 0) u = u.slice(embedded);
+    if (u.startsWith("data:image/")) return null;
+    if (
+      u.startsWith("/objects/") ||
+      u.startsWith("/apps/appai/") ||
+      u.startsWith("/api/")
+    ) {
+      const origin = (process.env.APP_URL || process.env.PUBLIC_APP_URL || "").replace(/\/$/, "");
+      return origin ? `${origin}${u}` : u;
+    }
+    try {
+      const parsed = new URL(u);
+      const host = parsed.hostname.toLowerCase();
+      if (host !== "localhost" && parsed.protocol !== "https:") return null;
+      const exact = new Set(["storage.googleapis.com", "storage.cloud.google.com", "localhost"]);
+      const suffixes = [".supabase.co", ".replit.app", ".up.railway.app"];
+      if (exact.has(host) || suffixes.some((s) => host === s.slice(1) || host.endsWith(s))) {
+        return parsed.toString();
+      }
+      for (const rawOrigin of [process.env.APP_URL, process.env.PUBLIC_APP_URL]) {
+        if (!rawOrigin) continue;
+        try {
+          const originHost = new URL(
+            String(rawOrigin).startsWith("http") ? rawOrigin : `https://${rawOrigin}`,
+          ).hostname.toLowerCase();
+          if (host === originHost) return parsed.toString();
+        } catch {
+          // ignore bad env origin
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   // Create share link for a design (public endpoint for Shopify embed)
   app.post("/api/designs/share", async (req: Request, res: Response) => {
     try {
       const { 
-        imageUrl,
+        imageUrl: rawImageUrl,
         thumbnailUrl,
         prompt,
         stylePreset,
@@ -12430,35 +12535,13 @@ ${orientationExtra}
         customerId: rawOwnerCustomerId,
       } = req.body;
 
-      if (!imageUrl || !prompt || !size || !frameColor) {
+      if (!rawImageUrl || !prompt) {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
-      // Validate image URL is from our storage domain (security check)
-      // Use strict hostname matching to prevent bypass via subdomains
-      const allowedDomains = [
-        "storage.googleapis.com",
-        "storage.cloud.google.com",
-        process.env.REPL_SLUG ? `${process.env.REPL_SLUG}.replit.app` : null,
-        "localhost",
-      ].filter(Boolean) as string[];
-      
-      try {
-        const imageUrlObj = new URL(imageUrl);
-        // Require https for non-localhost URLs
-        if (imageUrlObj.hostname !== "localhost" && imageUrlObj.protocol !== "https:") {
-          return res.status(400).json({ error: "Image URL must use HTTPS" });
-        }
-        // Strict hostname matching: exact match or ends with .domain
-        const isAllowedDomain = allowedDomains.some(domain => {
-          const hostname = imageUrlObj.hostname;
-          return hostname === domain || hostname.endsWith(`.${domain}`);
-        });
-        if (!isAllowedDomain) {
-          return res.status(400).json({ error: "Invalid image URL" });
-        }
-      } catch {
-        return res.status(400).json({ error: "Invalid image URL format" });
+      const imageUrl = resolveSharedDesignImageUrl(String(rawImageUrl));
+      if (!imageUrl) {
+        return res.status(400).json({ error: "Invalid image URL" });
       }
 
       // Generate unique share token
@@ -12489,8 +12572,8 @@ ${orientationExtra}
         thumbnailUrl: thumbnailUrl || null,
         prompt,
         stylePreset: stylePreset || null,
-        size,
-        frameColor,
+        size: size || "default",
+        frameColor: frameColor || "default",
         transformScale: Math.round(transformScale ?? 100),
         transformX: Math.round(transformX ?? 50),
         transformY: Math.round(transformY ?? 50),
@@ -23682,6 +23765,8 @@ ${orientationExtra}
   registerCreatorPortalRoutes(app);
   const { registerSupportRoutes } = await import("./routes/support");
   registerSupportRoutes(app, { isAuthenticated });
+  const { registerStudioGrowthRoutes } = await import("./routes/studio-growth");
+  registerStudioGrowthRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
   registerPlatformAopMapperRoutes(app, { storage, isAuthenticated });
   const { registerBakeFlatPrintRoutes } = await import("./routes/bake-flat-print");

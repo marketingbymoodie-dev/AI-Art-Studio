@@ -160,7 +160,7 @@ export function computePageMetrics(args: {
     const gEmail = engaged * (rates.emailTakePct / 100) * emailGensPer;
     const gShare = engaged * (rates.shareTakePct / 100) * shareGensPer;
     const gPurchase = orders * (rates.purchaseRedeemPct / 100) * purchaseGensPer;
-    const gens = gFree + gEmail + gShare + gPurchase;
+    const gens = gFree + gShare + gPurchase;
     const leads = engaged * (rates.emailTakePct / 100);
     const baseProfitUsd = orders * unitMarginUsd;
     const simUnitProfitUsd = orders * unitMarginUsd * Math.max(1, p.unitsPerOrder);

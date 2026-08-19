@@ -843,10 +843,12 @@ function buildEffectiveRenderConfig(
     if (state.wrapBackMode === "duplicate") {
       const frontPl = placements["front-face"];
       if (frontPl) {
-        placements["back-face"] = {
-          front: { ...frontPl.front },
-          back: { ...frontPl.back },
-        };
+        // Same print: the customer only edits the front face. Copy that
+        // placement onto both views of both groups — `frontPl.back` is
+        // usually still the default and would bake a different crop.
+        const shared = { ...frontPl.front };
+        placements["front-face"] = { front: { ...shared }, back: { ...shared } };
+        placements["back-face"] = { front: { ...shared }, back: { ...shared } };
       }
       enabled = { ...enabled, "front-face": true, "back-face": true };
     } else {
@@ -1105,7 +1107,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         // suppressed.
         seededAsResumeRef.current = !!(
           initialState &&
-          Object.keys(initialState).some((k) => k !== "artworkUrl")
+          (initialState.placements ||
+            initialState.enabled ||
+            initialState.tileSettings)
         );
         return buildInitialState(data.template, initialState);
       }
@@ -1932,10 +1936,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     return outputSignature(state) !== lastAppliedSignatureRef.current;
   }, [state, artworkImg]);
 
+  const applyInFlightRef = useRef(false);
   const applyIfNeeded = useCallback(
     async (opts?: { force?: boolean }): Promise<boolean> => {
       if (!onApply || !state || !data || !artworkImg) return false;
+      if (applyInFlightRef.current) return false;
       if (!opts?.force && !hasPendingChanges()) return false;
+      applyInFlightRef.current = true;
       setApplyStatusBoth("saving");
       try {
         await Promise.resolve(
@@ -1953,6 +1960,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         console.error("[HoodieAopPlacer] apply error:", e);
         setApplyStatusBoth("error");
         throw e;
+      } finally {
+        applyInFlightRef.current = false;
       }
     },
     [
