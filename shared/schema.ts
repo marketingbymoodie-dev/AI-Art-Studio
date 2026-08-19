@@ -1872,6 +1872,7 @@ export const helpArticles = pgTable(
     slug: text("slug").notNull(),
     summary: text("summary"),
     body: text("body").notNull(),
+    demoUrl: text("demo_url"),
     audience: text("audience").notNull().default("both"),
     category: text("category").notNull().default("other"),
     published: boolean("published").notNull().default(false),

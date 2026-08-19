@@ -117,6 +117,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creators",               column: "socials",                    type: "JSONB" },
   { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "creators",                  column: "previous_username",       type: "TEXT" },
+  { table: "help_articles",             column: "demo_url",                type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -1418,6 +1419,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "slug" text NOT NULL,
         "summary" text,
         "body" text NOT NULL,
+        "demo_url" text,
         "audience" text NOT NULL DEFAULT 'both',
         "category" text NOT NULL DEFAULT 'other',
         "published" boolean NOT NULL DEFAULT false,
