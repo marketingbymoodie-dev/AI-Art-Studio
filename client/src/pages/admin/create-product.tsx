@@ -55,6 +55,7 @@ export default function AdminCreateProduct() {
   const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
   /** Flushes pending flat placement / zoom before a test order. */
   const flushDesignRef = useRef<(() => Promise<void>) | null>(null);
+  const openEditorRef = useRef<(() => void) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
   const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
@@ -73,6 +74,7 @@ export default function AdminCreateProduct() {
             onTesterDesignStatus: handleTesterDesignStatus,
             saveDesignRef,
             flushDesignRef,
+            openEditorRef,
           }
         : undefined,
     [selectedProductTypeId, handleTesterDesignStatus],
@@ -183,6 +185,18 @@ export default function AdminCreateProduct() {
     testOrderMutation.mutate(selectedProductTypeId);
   }, [selectedProductTypeId, testOrderMutation]);
 
+  const requestPlaceOrTestOrder = useCallback(() => {
+    if (testerPanelStatus === "none" && testerHasDesign) {
+      openEditorRef.current?.();
+      return;
+    }
+    if (testerPanelStatus === "error") {
+      openEditorRef.current?.();
+      return;
+    }
+    requestTestOrder();
+  }, [testerPanelStatus, testerHasDesign, requestTestOrder]);
+
   const saveDesignMutation = useMutation({
     mutationFn: async () => {
       const waitStart = Date.now();
@@ -218,17 +232,18 @@ export default function AdminCreateProduct() {
   const syncingPrintFiles = testerPanelStatus === "saving";
   const testerBusy =
     testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
+  const needsPlacement = testerPanelStatus === "none" && testerHasDesign;
   const testOrderLabel = testOrderMutation.isPending
     ? "Sending test order…"
     : testerPanelStatus === "saving"
       ? "Syncing print files…"
-      : testerPanelStatus === "none"
-        ? testerHasDesign
-          ? "Apply pattern to unlock test order"
-          : "Generate artwork first"
-        : testerPanelStatus === "error"
-          ? "Print file sync failed"
-          : "Send a Test Order to Printify";
+      : needsPlacement
+        ? "Open placement editor"
+        : testerPanelStatus === "none"
+          ? "Generate artwork first"
+          : testerPanelStatus === "error"
+            ? "Retry placement"
+            : "Send a Test Order to Printify";
   const testerActions = selectedProductTypeId ? (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -257,11 +272,11 @@ export default function AdminCreateProduct() {
           </p>
         ) : null}
         <Button
-          onClick={requestTestOrder}
+          onClick={requestPlaceOrTestOrder}
           disabled={
             testOrderMutation.isPending ||
             testerPanelStatus === "saving" ||
-            testerPanelStatus === "none"
+            (testerPanelStatus === "none" && !testerHasDesign)
           }
           data-testid="button-send-test-order"
         >
@@ -276,6 +291,11 @@ export default function AdminCreateProduct() {
       {syncingPrintFiles ? (
         <p className="text-xs text-muted-foreground" data-testid="text-design-saving">
           Building Printify print files — this can take a minute on all-over-print products.
+        </p>
+      ) : null}
+      {needsPlacement ? (
+        <p className="text-xs text-muted-foreground" data-testid="text-open-placement-editor">
+          Same editor as the live store — place the artwork, then Send a Test Order unlocks.
         </p>
       ) : null}
       {testerPanelStatus === "error" ? (

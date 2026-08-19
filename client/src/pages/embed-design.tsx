@@ -1336,6 +1336,8 @@ export interface EmbedDesignProps {
         saveDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Set by EmbedDesign — parent awaits `.current()` to flush placement/zoom before test order. */
         flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+        /** Opens the AOP/flat placement editor (same UI as the live storefront). */
+        openEditorRef?: React.MutableRefObject<(() => void) | null>;
       }
     | {
         mode: 'merchant-studio';
@@ -6290,8 +6292,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   useEffect(() => {
     if (
       reuseAwaitingGenerate ||
-      !isStorefront ||
-      !generatedDesign?.imageUrl ||
+      !(isStorefront || isAdminTester) ||
+      !generatedDesign?.imageUrl
+    ) return;
+
+    if (useAopCustomizer) {
+      if (showPatternStep) return;
+      console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
+      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      setShowPatternStep(true);
+      return;
+    }
+
+    if (
       !productTypeConfig?.hasPrintifyMockups ||
       !selectedSize ||
       printifyMockups.length > 0 ||
@@ -6299,14 +6313,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       mockupLoading ||
       mockupFailed
     ) return;
-
-    if (useAopCustomizer) {
-      console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
-      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-      if (!hoodieAopPlacerState) setAopPatternUrl(null);
-      setShowPatternStep(true);
-      return;
-    }
 
     if (usesFlatOnTheFlyPreview) {
       setFlatPlacerEditOpen(true);
@@ -6323,7 +6329,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       transform.x,
       transform.y
     );
-  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
+  }, [isStorefront, isAdminTester, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate, showPatternStep]);
 
   /**
    * Admin tester (Printify zoom products): persist scale/position/size for the
@@ -7526,13 +7532,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         selectedSize,
         willFetch: shouldFetchMockups,
       });
-      if (shouldFetchMockups) {
-        if (useAopCustomizer) {
-          // AOP: show pattern customizer step first
-          setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
-          setAopPatternUrl(null);
-          setShowPatternStep(true);
-        } else if (usesFlatOnTheFlyPreview) {
+      if (useAopCustomizer && imageUrl) {
+        setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
+        setAopPatternUrl(null);
+        setShowPatternStep(true);
+      } else if (shouldFetchMockups) {
+        if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           console.log('[Mockups] Triggering mockup generation');
@@ -7961,12 +7966,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setSelectedMockupIndex(0);
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
-      if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        if (useAopCustomizer) {
-          setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
-          setAopPatternUrl(null);
-          setShowPatternStep(true);
-        } else if (usesFlatOnTheFlyPreview) {
+      if (useAopCustomizer && importedImageUrl) {
+        setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
+        setAopPatternUrl(null);
+        setShowPatternStep(true);
+      } else if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
+        if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
@@ -8469,6 +8474,29 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ref.current = null;
     };
   }, [embeddedContext, flushDesignForTester]);
+
+  const openTesterPlacementEditor = useCallback(() => {
+    if (useAopCustomizer) {
+      openAopPlacer();
+      window.setTimeout(() => {
+        void flushHoodieAopPlacer({ force: true });
+      }, 400);
+      return;
+    }
+    if (usesFlatOnTheFlyPreview) {
+      setFlatPlacerEditOpen(true);
+    }
+  }, [useAopCustomizer, openAopPlacer, flushHoodieAopPlacer, usesFlatOnTheFlyPreview]);
+
+  useEffect(() => {
+    if (embeddedContext?.mode !== "admin-tester") return;
+    const ref = embeddedContext.openEditorRef;
+    if (!ref) return;
+    ref.current = openTesterPlacementEditor;
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, openTesterPlacementEditor]);
 
   // Opening Saved Designs while a placer is mid-edit: flush the deferred apply
   // NOW so the current design's latest placement is persisted before the
