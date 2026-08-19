@@ -1034,6 +1034,25 @@ function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null
  * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
  * is broken by Shopify's service worker) and window.fetch everywhere else.
  */
+/** AI generate with a reference image routinely exceeds 30s. */
+const GENERATE_REQUEST_TIMEOUT_MS = 180_000;
+
+function isAbortLikeError(err: unknown): boolean {
+  if (!err) return false;
+  const name = (err as { name?: string }).name || "";
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    name === "AbortError" ||
+    /aborted without reason|The user aborted|Request aborted|The operation was aborted/i.test(
+      message,
+    )
+  );
+}
+
+function generationTimeoutUserMessage(): string {
+  return "Generation is taking longer than usual. Please try again — a reference image can take a minute or two.";
+}
+
 const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit = {}, timeoutMs = 30000): Promise<Response> => {
   const controller = new AbortController();
   const started = Date.now();
@@ -1091,14 +1110,14 @@ async function fetchWithTimeoutSimple(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const res = await safeFetch(url, { ...options, signal: controller.signal });
+    const res = await safeFetch(url, { ...options, signal: controller.signal }, timeout);
     if (!res.ok) {
       const body = await res.text().catch(() => res.statusText);
       throw new Error(`HTTP ${res.status}: ${body}`);
     }
     return res;
   } catch (err: any) {
-    if (controller.signal.aborted) {
+    if (controller.signal.aborted || isAbortLikeError(err)) {
       throw new Error(`Request to ${url.substring(0, 80)} timed out after ${timeout}ms`);
     }
     throw err;
@@ -3766,7 +3785,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       console.log(`${logPrefix} START: ${fullUrl}`);
 
       try {
-        const res = await safeFetch(fullUrl, { signal: controller.signal });
+        const res = await safeFetch(fullUrl, { signal: controller.signal }, timeout);
         const elapsed = Date.now() - startTime;
 
         if (!res.ok) {
@@ -7157,7 +7176,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           method: "POST",
           headers: { ...storefrontJsonHeaders(), "X-Req-Id": reqId },
           body: JSON.stringify(payload),
-        });
+        }, 60_000);
         const jobRes = await raceTimeout(fetchPromise, 60_000, 'POST /generate');
         console.log('[SF UI] POST complete — status', jobRes.status, 'in', Date.now() - postStart, 'ms');
         const jobData = await safeJson(jobRes, 'POST /generate');
@@ -7243,7 +7262,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      }, 90000);
+      }, GENERATE_REQUEST_TIMEOUT_MS);
       const data = await response.json();
       if (!response.ok) {
         if (data.requiresLogin) {
@@ -15990,7 +16009,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               generateMutation.error?.message !== 'GALLERY_FULL' &&
               !/credit/i.test(generateMutation.error?.message ?? '') && (
               <p className="text-destructive text-sm" data-testid="text-error">
-                {generateMutation.error?.message || "Failed to generate design. Please try again."}
+                {isAbortLikeError(generateMutation.error)
+                  ? generationTimeoutUserMessage()
+                  : generateMutation.error?.message || "Failed to generate design. Please try again."}
               </p>
             )}
 
