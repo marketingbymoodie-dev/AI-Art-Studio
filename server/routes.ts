@@ -89,6 +89,7 @@ import {
   filterStyleReferenceUrls,
   styleIsPatternMaker,
   useCylindricalWrapPrompt,
+  userPromptAsksToRecreateReference,
 } from "@shared/generationPromptHints";
 import { resolveSizeAspectRatio, sortDimensionalSizesAscending } from "@shared/productVariantOptions";
 import {
@@ -749,8 +750,8 @@ function singleCustomerReferenceInstruction(opts: {
   if (isTextStyle) {
     return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
   }
-  if ((opts.userPrompt || "").toLowerCase().includes("recreate this artwork")) {
-    return `The reference image is the customer's existing artwork. Recreate it as ONE single centered subject. Do NOT repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the canvas — leave empty space (or the required background color) instead.`;
+  if (userPromptAsksToRecreateReference(opts.userPrompt)) {
+    return `The reference image is the customer's existing artwork. Recreate it as ONE single centered subject. Keep the same subject, composition, and recognizable details. Apply the requested art style without replacing the subject with a different scene. Do NOT repeat, duplicate, tile, or make a triptych or collage. Do not copy the subject multiple times to fill the canvas — leave empty space (or the required background color) instead.`;
   }
   return `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design as a SINGLE centered subject. Do NOT repeat, duplicate, tile, or make a triptych.`;
 }
@@ -2485,7 +2486,7 @@ export async function registerRoutes(
         }
       }
 
-      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -2787,46 +2788,52 @@ ${orientationExtra}
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
-      // Resolve reference image for Replicate — pass data URLs directly to avoid URL-accessibility issues
-      let customerImageUrl: string | null = null;
-      if (referenceImage) {
+      // Resolve customer reference image(s) — Preview Studio sends `referenceImages[]`
+      const customerImageUrls: string[] = [];
+      const rawRefImagesAdmin: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
+        ? referenceImagesArr
+        : referenceImage ? [referenceImage] : [];
+      for (const refImg of rawRefImagesAdmin.slice(0, 5)) {
         try {
-          if (referenceImage.startsWith("data:")) {
-            customerImageUrl = referenceImage;
-          } else if (referenceImage.startsWith("http")) {
-            customerImageUrl = referenceImage;
-          } else if (referenceImage.startsWith("/objects/")) {
+          let resolvedUrl: string | null = null;
+          if (typeof refImg !== "string") continue;
+          if (refImg.startsWith("data:")) {
+            resolvedUrl = refImg;
+          } else if (refImg.startsWith("http")) {
+            resolvedUrl = refImg;
+          } else if (refImg.startsWith("/objects/")) {
             const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            customerImageUrl = `${appUrl}${referenceImage}`;
+            resolvedUrl = `${appUrl}${refImg}`;
           }
-          if (customerImageUrl) {
-            const urlType = customerImageUrl.startsWith("data:") ? "data-url" : "http-url";
-            const urlSize = customerImageUrl.length;
-            console.log(`[Generate] Reference image: type=${urlType}, size=${urlSize} chars`);
+          if (resolvedUrl) {
+            customerImageUrls.push(resolvedUrl);
+            console.log(`[Generate] Reference image ${customerImageUrls.length}: type=${resolvedUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${resolvedUrl.length} chars`);
           }
         } catch (refErr) {
-          console.warn("[Generate] Could not process reference image, generating without it:", refErr);
-          customerImageUrl = null;
+          console.warn("[Generate] Could not process reference image, skipping:", refErr);
         }
       }
+      const customerImageUrl: string | null = customerImageUrls[0] || null;
 
       // Build image input array: style base images (when no user subject) + customer reference
       const imageInputUrls: string[] = [];
       const allStyleBaseUrls: string[] = filterStyleReferenceUrls(
         (req as any)._styleBaseImageUrls || (styleBaseImageUrl ? [styleBaseImageUrl] : []),
         userDescAdmin,
-        !!customerImageUrl,
+        customerImageUrls.length > 0,
       );
       const effectiveStyleBaseUrl = allStyleBaseUrls[0];
       imageInputUrls.push(...allStyleBaseUrls);
-      if (customerImageUrl) imageInputUrls.push(customerImageUrl);
+      imageInputUrls.push(...customerImageUrls);
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
 
       // When reference images are provided, instruct the model how to use them
       if (imageInputUrls.length > 0) {
         let refInstruction: string;
-        if (effectiveStyleBaseUrl && customerImageUrl) {
+        if (effectiveStyleBaseUrl && customerImageUrls.length > 0) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
+        } else if (customerImageUrls.length > 1) {
+          refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
         } else if (customerImageUrl) {
           refInstruction = singleCustomerReferenceInstruction({
             stylePreset,
@@ -2865,7 +2872,7 @@ console.log("[api/generate] replicate returned", {
         await tryCreateGenerationLog({
           customerId: customer.id,
           promptLength: prompt.length,
-          hadReferenceImage: !!referenceImage,
+          hadReferenceImage: customerImageUrls.length > 0,
           stylePreset,
           size,
           success: false,
@@ -2919,7 +2926,7 @@ console.log("[api/shopify/generate] saved image", result);
           customerId: customer.id,
           prompt,
           stylePreset: stylePreset || null,
-          referenceImageUrl: referenceImage ? "uploaded" : null,
+          referenceImageUrl: customerImageUrls.length > 0 ? "uploaded" : null,
           generatedImageUrl,
           thumbnailImageUrl,
           size,
@@ -2957,7 +2964,7 @@ console.log("[api/shopify/generate] saved image", result);
         customerId: customer.id,
         designId: design?.id ?? null,
         promptLength: prompt.length,
-        hadReferenceImage: !!referenceImage,
+        hadReferenceImage: customerImageUrls.length > 0,
         stylePreset,
         size,
         success: true,

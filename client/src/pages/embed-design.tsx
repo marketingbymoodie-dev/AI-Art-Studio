@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import {
   ensureCreatorAnalyticsSession,
   getOrCreateCreatorSessionId,
@@ -1343,6 +1343,8 @@ export interface EmbedDesignProps {
         /** Merchant's connected shop domain ({handle}.myshopify.com) — resolved server-side, not guessed from URL/referrer. */
         shop: string;
       };
+  /** Preview Studio: Save / test-order actions sit above Generate + Upload. */
+  testerActions?: ReactNode;
 }
 
 /**
@@ -1573,7 +1575,7 @@ function resolvePostGenMockupUrl(
   return null;
 }
 
-export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
+export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
   // Detect runtime mode. When hosted in-process by the admin tester or merchant design
@@ -13824,6 +13826,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
             <div className="space-y-2.5 mt-2">
+              {testerActions ? <div className="space-y-2">{testerActions}</div> : null}
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
