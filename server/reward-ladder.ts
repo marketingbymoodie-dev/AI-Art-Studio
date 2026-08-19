@@ -5,7 +5,8 @@
  *   - free_anonymous     : the storefront free-gen allowance (mirrors installation.storefrontFreeGensPerVisitor).
  *                          Not granted through this module (free gens are tracked on credit_balances.freeGenerationsUsed);
  *                          the rung row exists so the admin UI can display / disable it.
- *   - email_signup       : granted once per customer after successful storefront auth (Google or OTP).
+ *   - email_signup       : granted once per customer after Studio Art Class newsletter signup
+ *                          (platform-funded pack credits — does not burn shop quota).
  *   - share_design       : granted to the sharer once a *different* visitor opens the share link.
  *   - purchase_threshold : granted after a paid Shopify order clears `thresholdCents`.
  *                          On by default once order webhooks are available; set
@@ -19,7 +20,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "./db";
 import { rewardGrants, rewardLadderRungs, type RewardLadderRung } from "@shared/schema";
-import { grantStudioCredits, clawbackStudioCredits } from "./studio-credits";
+import { grantStudioCredits, clawbackStudioCredits, type CreditSource } from "./studio-credits";
 import { storage } from "./storage";
 import { clampStorefrontFreeGens, STOREFRONT_FREE_GENERATION_DEFAULT } from "@shared/storefront-credits";
 
@@ -227,6 +228,8 @@ export type GrantRungInput = {
   rungKey: RewardRungKey;
   relatedEntityId?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Default earned (burns merchant/creator quota). Newsletter uses pack (platform-funded). */
+  creditSource?: CreditSource;
 };
 
 export type GrantRungResult = {
@@ -293,7 +296,7 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
   const grant = await grantStudioCredits({
     customerId: input.customerId,
     amount,
-    source: "earned",
+    source: input.creditSource ?? "earned",
     shop,
     reason: `reward:${input.rungKey}`,
     idempotencyKey,
@@ -319,7 +322,8 @@ export async function tryGrantEmailSignup(
     customerId,
     rungKey: "email_signup",
     relatedEntityId: normEmail,
-    metadata: { email: normEmail },
+    metadata: { email: normEmail, platformFunded: true },
+    creditSource: "pack",
   });
 }
 

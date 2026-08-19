@@ -55,13 +55,16 @@ export default function AdminCreateProduct() {
   const saveDesignRef = useRef<(() => Promise<void>) | null>(null);
   /** Flushes pending flat placement / zoom before a test order. */
   const flushDesignRef = useRef<(() => Promise<void>) | null>(null);
+  const openEditorRef = useRef<(() => void) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
+  const [placementEditorOpen, setPlacementEditorOpen] = useState(false);
   const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
     setTesterPanelStatus(status.aopPanels);
+    setPlacementEditorOpen(!!status.placementEditorOpen);
   }, []);
 
   const embeddedContext = useMemo(
@@ -73,6 +76,7 @@ export default function AdminCreateProduct() {
             onTesterDesignStatus: handleTesterDesignStatus,
             saveDesignRef,
             flushDesignRef,
+            openEditorRef,
           }
         : undefined,
     [selectedProductTypeId, handleTesterDesignStatus],
@@ -138,12 +142,12 @@ export default function AdminCreateProduct() {
       // a test order until the on-screen design has been persisted for Printify.
       if (testerStatusRef.current.aopPanels === "error") {
         throw new Error(
-          "Last placement sync failed — nudge the artwork once, wait for Ready for test order, then try again.",
+          "Last print-file sync failed — nudge the artwork once, wait until the button says Send a Test Order, then try again.",
         );
       }
       if (testerStatusRef.current.aopPanels !== "saved") {
         throw new Error(
-          "Placement is still syncing for Printify — wait for Ready for test order, then send again.",
+          "Print files are still syncing — wait until the button says Send a Test Order, then send again.",
         );
       }
       const jobId = testerStatusRef.current.jobId;
@@ -183,6 +187,16 @@ export default function AdminCreateProduct() {
     testOrderMutation.mutate(selectedProductTypeId);
   }, [selectedProductTypeId, testOrderMutation]);
 
+  const requestPlaceOrTestOrder = useCallback(() => {
+    const needsOpen =
+      testerPanelStatus === "none" && testerHasDesign && !placementEditorOpen;
+    if (needsOpen || testerPanelStatus === "error") {
+      openEditorRef.current?.();
+      return;
+    }
+    requestTestOrder();
+  }, [testerPanelStatus, testerHasDesign, placementEditorOpen, requestTestOrder]);
+
   const saveDesignMutation = useMutation({
     mutationFn: async () => {
       const waitStart = Date.now();
@@ -215,11 +229,95 @@ export default function AdminCreateProduct() {
     },
   });
 
+  const syncingPrintFiles =
+    testerPanelStatus === "saving" ||
+    (testerPanelStatus === "none" && testerHasDesign && placementEditorOpen);
+  const testerBusy =
+    testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
+  const needsPlacement =
+    testerPanelStatus === "none" && testerHasDesign && !placementEditorOpen;
+  const testOrderLabel = testOrderMutation.isPending
+    ? "Sending test order…"
+    : syncingPrintFiles
+      ? "Syncing placement…"
+      : needsPlacement
+        ? "Open placement editor"
+        : testerPanelStatus === "none"
+          ? "Generate artwork first"
+          : testerPanelStatus === "error"
+            ? "Retry placement"
+            : "Send a Test Order to Printify";
+  const testerActions = selectedProductTypeId ? (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {canSaveDesigns ? (
+          <Button
+            variant="outline"
+            onClick={() => saveDesignMutation.mutate()}
+            disabled={!testerHasDesign || saveDesignMutation.isPending || testOrderMutation.isPending}
+            data-testid="button-save-design"
+          >
+            {saveDesignMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-2" />
+            )}
+            {saveDesignMutation.isPending ? "Saving…" : "Save to My Designs"}
+          </Button>
+        ) : null}
+        {!canSaveDesigns && studioIdentity ? (
+          <p className="text-xs text-muted-foreground w-full sm:w-auto">
+            Saving to My Designs requires{" "}
+            <a href="/admin/plan" className="underline">
+              Starter or above
+            </a>
+            .
+          </p>
+        ) : null}
+        <Button
+          onClick={requestPlaceOrTestOrder}
+          disabled={
+            testOrderMutation.isPending ||
+            syncingPrintFiles ||
+            (testerPanelStatus === "none" && !testerHasDesign)
+          }
+          data-testid="button-send-test-order"
+        >
+          {testerBusy ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <FlaskConical className="h-4 w-4 mr-2" />
+          )}
+          {testOrderLabel}
+        </Button>
+      </div>
+      {syncingPrintFiles ? (
+        <p className="text-xs text-muted-foreground" data-testid="text-design-saving">
+          Syncing placement for the test order — usually a few seconds.
+        </p>
+      ) : null}
+      {needsPlacement ? (
+        <p className="text-xs text-muted-foreground" data-testid="text-open-placement-editor">
+          Same editor as the live store — place the artwork, then Send a Test Order unlocks.
+        </p>
+      ) : null}
+      {testerPanelStatus === "error" ? (
+        <p className="text-xs text-destructive" data-testid="text-design-save-error">
+          Print file sync failed. Move or scale the artwork once to retry.
+        </p>
+      ) : null}
+      {testerPanelStatus === "saved" && testerHasDesign ? (
+        <p className="text-xs text-muted-foreground" data-testid="text-design-saved">
+          Ready to send a draft test order. Placement updates sync automatically.
+        </p>
+      ) : null}
+    </div>
+  ) : null;
+
   return (
     <AdminLayout>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
+        <div>
             <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Preview Studio</h1>
             <p className="text-muted-foreground max-w-2xl">
               Try the AI art studio on your imported products before creating a Live Customizer Page.
@@ -236,67 +334,6 @@ export default function AdminCreateProduct() {
               </Link>{" "}
               tab.
             </p>
-          </div>
-          {selectedProductTypeId && (
-            <div className="flex flex-wrap items-center gap-2">
-              {canSaveDesigns ? (
-                <Button
-                  variant="outline"
-                  onClick={() => saveDesignMutation.mutate()}
-                  disabled={!testerHasDesign || saveDesignMutation.isPending || testOrderMutation.isPending}
-                  data-testid="button-save-design"
-                >
-                  {saveDesignMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4 mr-2" />
-                  )}
-                  {saveDesignMutation.isPending ? "Saving…" : "Save to My Designs"}
-                </Button>
-              ) : null}
-              {!canSaveDesigns && studioIdentity ? (
-                <p className="text-xs text-muted-foreground w-full sm:w-auto">
-                  Saving to My Designs requires{" "}
-                  <a href="/admin/plan" className="underline">
-                    Starter or above
-                  </a>
-                  .
-                </p>
-              ) : null}
-              <Button
-                onClick={requestTestOrder}
-                disabled={
-                  testOrderMutation.isPending ||
-                  testerPanelStatus === "saving" ||
-                  testerPanelStatus === "none"
-                }
-                data-testid="button-send-test-order"
-              >
-                {testOrderMutation.isPending || testerPanelStatus === "saving" ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <FlaskConical className="h-4 w-4 mr-2" />
-                )}
-                {testOrderMutation.isPending
-                  ? "Sending Test Order…"
-                  : testerPanelStatus === "saving"
-                    ? "Syncing placement…"
-                    : testerPanelStatus === "none"
-                      ? "Waiting for artwork…"
-                      : "Send a Test Order to Printify"}
-              </Button>
-              {testerPanelStatus === "saving" && (
-                <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saving">
-                  Syncing size and placement for Printify in the background…
-                </p>
-              )}
-              {testerPanelStatus === "saved" && testerHasDesign && (
-                <p className="text-xs text-muted-foreground w-full" data-testid="text-design-saved">
-                  Ready for test order — placement syncs automatically when you change size or move art.
-                </p>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Product Type selector — the "tester" input that chooses which product's customizer to render */}
@@ -393,6 +430,7 @@ export default function AdminCreateProduct() {
               <EmbedDesign
                 key={selectedProductTypeId}
                 embeddedContext={embeddedContext}
+                testerActions={testerActions}
               />
             </CardContent>
           </Card>

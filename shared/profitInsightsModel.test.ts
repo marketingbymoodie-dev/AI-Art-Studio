@@ -68,7 +68,6 @@ describe("consumed gens (worked example)", () => {
     expect(m.engaged).toBe(engaged);
     const expected =
       engaged * Math.min(INTERNAL_FUNNEL_RATES.freeGensPer, 2) +
-      engaged * (INTERNAL_FUNNEL_RATES.emailTakePct / 100) * 1 +
       engaged * (INTERNAL_FUNNEL_RATES.shareTakePct / 100) * 1 +
       2 * (INTERNAL_FUNNEL_RATES.purchaseRedeemPct / 100) * 3;
     expect(m.gens).toBeCloseTo(expected, 5);

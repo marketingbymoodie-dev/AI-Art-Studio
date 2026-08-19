@@ -140,6 +140,7 @@ export async function emitOverageUsageCharge(params: {
   /** Running overage count within the bucket (1-based; the unit just consumed). */
   overageSeq: number;
   priceUsd: number;
+  description?: string;
 }): Promise<{ status: "charged" | "failed" | "skipped" | "duplicate"; error?: string }> {
   const { installation, bucketKey, overageSeq, priceUsd } = params;
   const lineItemId = installation.billingUsageLineItemId ?? null;
@@ -187,7 +188,8 @@ export async function emitOverageUsageCharge(params: {
       accessToken: installation.accessToken,
       subscriptionLineItemId: lineItemId,
       priceUsd,
-      description: describeCharge(installation.shopDomain, bucketKey, overageSeq),
+      description:
+        params.description || describeCharge(installation.shopDomain, bucketKey, overageSeq),
     });
 
     if (res.ok) {

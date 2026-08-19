@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import {
   ensureCreatorAnalyticsSession,
   getOrCreateCreatorSessionId,
@@ -18,6 +18,9 @@ import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
+import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
+import { StudioMenuIconButton } from "@/components/studio-menu-icon-button";
+import { publicTermsHref } from "@shared/termsContent";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -35,7 +38,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2 } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   StorefrontTermsAccept,
@@ -65,7 +68,10 @@ import HoodieAopPlacer, {
   type HoodieAopPlacerApplyResult,
   type HoodieAopPlacerHandle,
 } from "@/components/designer/HoodieAopPlacer";
-import { MOCKUP_PANEL_MAX_LONG_EDGE_PX } from "@/components/hoodie-template-mapper/lib/aopPreview";
+import {
+  MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+  TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX,
+} from "@/components/hoodie-template-mapper/lib/aopPreview";
 import FlatProductPlacer, {
   type FlatApplyStatus,
   type FlatProductPlacerHandle,
@@ -1319,6 +1325,8 @@ export type TesterDesignStatus = {
    * Tester uses this to confirm before sending a clipped test order.
    */
   flatClipSides?: Array<'front' | 'back'>;
+  /** Live-store placement editor is already on screen (AOP mesh or flat placer). */
+  placementEditorOpen?: boolean;
 };
 
 export interface EmbedDesignProps {
@@ -1333,6 +1341,8 @@ export interface EmbedDesignProps {
         saveDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Set by EmbedDesign — parent awaits `.current()` to flush placement/zoom before test order. */
         flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+        /** Opens the AOP/flat placement editor (same UI as the live storefront). */
+        openEditorRef?: React.MutableRefObject<(() => void) | null>;
       }
     | {
         mode: 'merchant-studio';
@@ -1340,6 +1350,8 @@ export interface EmbedDesignProps {
         /** Merchant's connected shop domain ({handle}.myshopify.com) — resolved server-side, not guessed from URL/referrer. */
         shop: string;
       };
+  /** Preview Studio: Save / test-order actions sit above Generate + Upload. */
+  testerActions?: ReactNode;
 }
 
 /**
@@ -1570,7 +1582,7 @@ function resolvePostGenMockupUrl(
   return null;
 }
 
-export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
+export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
   // Detect runtime mode. When hosted in-process by the admin tester or merchant design
@@ -2083,10 +2095,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [selectedSize, outOfStockSizeIds, printSizes]);
 
   // Hide the redundant Printify "Model" dropdown when models already live in Size.
+  // AOP garments (leggings, hoodies) ship a dummy Printify colour (often White)
+  // that is not a customer choice — showing "Select color" empty breaks mockups.
   const showFrameColorSelector =
     frameColorObjects.length > 0 &&
     !frameOptionsRedundantWithSizes &&
-    !(isPhoneCaseProduct && !frameColorsArePhoneModels);
+    !(isPhoneCaseProduct && !frameColorsArePhoneModels) &&
+    !(!!productTypeConfig?.isAllOverPrint && frameColorObjects.length <= 1);
 
   // Phone cases with models in Size: never leave a junk Model fragment as frameColor.
   useEffect(() => {
@@ -2662,6 +2677,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
   const [showCouponInput, setShowCouponInput] = useState(false);
+  const [showArtClassSignup, setShowArtClassSignup] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponError, setCouponError] = useState<string | null>(null);
@@ -2868,7 +2884,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const describeEarnRung = useCallback((rung: PublicRewardRung) => {
     const n = rung.creditAmount;
     const credits = `${n} Studio Credit${n === 1 ? "" : "s"}`;
-    if (rung.rungKey === "email_signup") return `Sign in to earn ${credits}`;
+    if (rung.rungKey === "email_signup") {
+      return `Join the Studio Art Class list to earn ${credits} (issued by Studio)`;
+    }
     if (rung.rungKey === "share_design") {
       return `Share a design — earn ${credits} when someone opens your link`;
     }
@@ -2902,9 +2920,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn, isCreatorStorefront]);
 
   useEffect(() => {
-    if (!creditsPopoverOpen || !isCreatorStorefront) return;
+    if (!creditsPopoverOpen) return;
     let cancelled = false;
-    void safeFetch(`${API_BASE}/api/creators/credits/packs`)
+    const url = isCreatorStorefront
+      ? `${API_BASE}/api/creators/credits/packs`
+      : shopDomain
+        ? `${API_BASE}/api/storefront/credit-packs?shop=${encodeURIComponent(shopDomain)}`
+        : "";
+    if (!url) return;
+    void safeFetch(url)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data || !Array.isArray(data.packs)) return;
@@ -2921,7 +2945,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return () => {
       cancelled = true;
     };
-  }, [creditsPopoverOpen, isCreatorStorefront]);
+  }, [creditsPopoverOpen, isCreatorStorefront, shopDomain]);
 
   const buyCreatorCreditPack = useCallback(
     async (packId: string) => {
@@ -2934,38 +2958,57 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         });
         return;
       }
-      if (!creatorUsernameParam) {
+      if (isCreatorStorefront && !creatorUsernameParam) {
         toast({
           title: "Unavailable",
-          description: "Credit packs are only available on creator shops.",
+          description: "Credit packs need a creator shop.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!isCreatorStorefront && !shopDomain) {
+        toast({
+          title: "Unavailable",
+          description: "Credit packs need a shop.",
           variant: "destructive",
         });
         return;
       }
       setPackCheckoutLoadingId(packId);
       try {
-        const res = await safeFetch(`${API_BASE}/api/creators/credits/checkout`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            packId,
-            creatorUsername: creatorUsernameParam,
-            customerId,
-            creatorSessionId: creatorSessionIdRef.current || undefined,
-            creatorReturnUrl: currentCreatorReturnUrl(creatorUsernameParam),
-          }),
-        });
+        const res = await safeFetch(
+          isCreatorStorefront
+            ? `${API_BASE}/api/creators/credits/checkout`
+            : `${API_BASE}/api/storefront/credit-packs/checkout`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+              isCreatorStorefront
+                ? {
+                    packId,
+                    creatorUsername: creatorUsernameParam,
+                    customerId,
+                    creatorSessionId: creatorSessionIdRef.current || undefined,
+                    creatorReturnUrl: currentCreatorReturnUrl(creatorUsernameParam),
+                  }
+                : { packId, shop: shopDomain, customerId },
+            ),
+          },
+        );
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data?.checkoutUrl) {
           throw new Error(data?.error || data?.message || "Could not start checkout");
         }
         const target = window.top || window;
-        target.location.href = creatorCheckoutRememberUrl({
-          checkoutUrl: String(data.checkoutUrl),
-          username: creatorUsernameParam,
-          shopName: creatorUsernameParam,
-          returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
-        });
+        target.location.href = isCreatorStorefront
+          ? creatorCheckoutRememberUrl({
+              checkoutUrl: String(data.checkoutUrl),
+              username: creatorUsernameParam,
+              shopName: creatorUsernameParam,
+              returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
+            })
+          : String(data.checkoutUrl);
       } catch (e: any) {
         toast({
           title: "Pack checkout failed",
@@ -2976,7 +3019,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPackCheckoutLoadingId(null);
       }
     },
-    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast],
+    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast, isCreatorStorefront, shopDomain],
   );
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
@@ -3616,6 +3659,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       canvasConfig: dc.canvasConfig,
       sizes: dc.sizes || [],
       frameColors: dc.frameColors || [],
+      variantMap: dc.variantMap || {},
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
@@ -5564,6 +5608,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
     const mergeProductMockups = !!fetchOpts?.mergeProductMockups;
     const mergePersonViews = !!fetchOpts?.mergePersonViews;
+    const colors = productTypeConfig?.frameColors || [];
+    const vm = productTypeConfig?.variantMap;
+    const resolvedColorId =
+      colorId && colorId !== "default"
+        ? colorId
+        : (vm && colors.find((c) => hasVariantMappingForColor(vm, c.id))?.id) ||
+          colors[0]?.id ||
+          colorId ||
+          "default";
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
@@ -5608,7 +5661,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       imageUrl: designImageUrl,
       productTypeId: ptId,
       sizeId,
-      colorId,
+      colorId: resolvedColorId,
       scale: clampedScale,
       x: clampedX,
       y: clampedY,
@@ -5689,7 +5742,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         mirrorLegs: mirrorLegs ?? false,
         printPlacement: mockupPrintPlacement,
         sizeId,
-        colorId,
+        colorId: resolvedColorId,
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
@@ -5705,7 +5758,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         mirrorLegs: mirrorLegs ?? false,
         printPlacement: mockupPrintPlacement,
         sizeId,
-        colorId,
+        colorId: resolvedColorId,
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
@@ -5722,7 +5775,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         mirrorLegs: mirrorLegs ?? false,
         printPlacement: mockupPrintPlacement,
         sizeId,
-        colorId,
+        colorId: resolvedColorId,
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
@@ -5990,7 +6043,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         }
         sendMockupsToParent(finalUrls);
-        const cacheKey = mockupCacheKey(sizeId, colorId);
+        const cacheKey = mockupCacheKey(sizeId, resolvedColorId);
         currentMockupColorRef.current = cacheKey;
         mockupColorCacheRef.current[cacheKey] = { urls: finalUrls, images: finalImages };
         console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for', cacheKey);
@@ -6117,6 +6170,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        if (errorData.debug) {
+          console.warn("[Mockups] Mockup request failed:", errorData.error, errorData.debug);
+        }
         throw new Error(errorData.error || `Mockup generation failed (${response.status})`);
       }
 
@@ -6187,7 +6243,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       );
     }
     return { ok: true };
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -6240,8 +6296,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     if (
       reuseAwaitingGenerate ||
-      !isStorefront ||
-      !generatedDesign?.imageUrl ||
+      !(isStorefront || isAdminTester) ||
+      !generatedDesign?.imageUrl
+    ) return;
+
+    if (useAopCustomizer) {
+      if (showPatternStep) return;
+      console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
+      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      setShowPatternStep(true);
+      return;
+    }
+
+    if (
       !productTypeConfig?.hasPrintifyMockups ||
       !selectedSize ||
       printifyMockups.length > 0 ||
@@ -6249,14 +6317,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       mockupLoading ||
       mockupFailed
     ) return;
-
-    if (useAopCustomizer) {
-      console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
-      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-      if (!hoodieAopPlacerState) setAopPatternUrl(null);
-      setShowPatternStep(true);
-      return;
-    }
 
     if (usesFlatOnTheFlyPreview) {
       setFlatPlacerEditOpen(true);
@@ -6273,7 +6333,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       transform.x,
       transform.y
     );
-  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
+  }, [isStorefront, isAdminTester, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate, showPatternStep]);
 
   /**
    * Admin tester (Printify zoom products): persist scale/position/size for the
@@ -6456,6 +6516,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
     );
     if (fallback) setSelectedFrameColor(fallback.id);
+    else if (!selectedFrameColor && colors[0]) setSelectedFrameColor(colors[0].id);
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
   useEffect(() => {
@@ -7368,16 +7429,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       } else {
         setFlatPlacerState(null);
       }
-      // AOP needs panel upload; flat/mesh auto-Applies in tester (status → saved).
-      // Other Printify products can mark saved immediately after generate.
+      // AOP + flat open the live editor immediately. Mark saving so Preview
+      // Studio never asks to "Open placement editor" while it is already open.
+      // Other Printify products persist zoom and can mark saved right away.
       emitTesterDesignStatus({
         jobId: data.jobId || null,
-        aopPanels: useAopCustomizer
-          ? "none"
-          : usesFlatOnTheFlyPreview
-            ? "saving"
-            : "saved",
+        aopPanels: useAopCustomizer || usesFlatOnTheFlyPreview ? "saving" : "saved",
         flatClipSides: [],
+        placementEditorOpen: !!(useAopCustomizer || usesFlatOnTheFlyPreview),
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
@@ -7475,13 +7534,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         selectedSize,
         willFetch: shouldFetchMockups,
       });
-      if (shouldFetchMockups) {
-        if (useAopCustomizer) {
-          // AOP: show pattern customizer step first
-          setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
-          setAopPatternUrl(null);
-          setShowPatternStep(true);
-        } else if (usesFlatOnTheFlyPreview) {
+      if (useAopCustomizer && imageUrl) {
+        setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
+        setAopPatternUrl(null);
+        setShowPatternStep(true);
+      } else if (shouldFetchMockups) {
+        if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           console.log('[Mockups] Triggering mockup generation');
@@ -7910,12 +7968,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setSelectedMockupIndex(0);
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
-      if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        if (useAopCustomizer) {
-          setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
-          setAopPatternUrl(null);
-          setShowPatternStep(true);
-        } else if (usesFlatOnTheFlyPreview) {
+      if (useAopCustomizer && importedImageUrl) {
+        setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
+        setAopPatternUrl(null);
+        setShowPatternStep(true);
+      } else if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
+        if (usesFlatOnTheFlyPreview) {
           setFlatPlacerEditOpen(true);
         } else {
           fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
@@ -8387,6 +8445,75 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       ref.current = null;
     };
   }, [embeddedContext, flushDesignForTester]);
+
+  const openTesterPlacementEditor = useCallback(() => {
+    if (useAopCustomizer) {
+      openAopPlacer();
+      return;
+    }
+    if (usesFlatOnTheFlyPreview) {
+      setFlatPlacerEditOpen(true);
+    }
+  }, [useAopCustomizer, openAopPlacer, usesFlatOnTheFlyPreview]);
+
+  useEffect(() => {
+    if (embeddedContext?.mode !== "admin-tester") return;
+    const ref = embeddedContext.openEditorRef;
+    if (!ref) return;
+    ref.current = openTesterPlacementEditor;
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, openTesterPlacementEditor]);
+
+  useEffect(() => {
+    if (!isAdminTester) return;
+    emitTesterDesignStatus({
+      placementEditorOpen: !!(showPatternStep || flatPlacerEditOpen),
+    });
+  }, [isAdminTester, showPatternStep, flatPlacerEditOpen, emitTesterDesignStatus]);
+
+  // Preview Studio: if the live AOP editor is open but persist never started
+  // (resume skip, late shop, etc.), kick one apply so the button can unlock.
+  useEffect(() => {
+    if (!isAdminTester || !useAopCustomizer || !showPatternStep) return;
+    if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
+    const aopStatus = () => testerDesignStatusRef.current.aopPanels;
+    if (aopStatus() === "saved") return;
+    if (aopStatus() === "none") {
+      emitTesterDesignStatus({ aopPanels: "saving" });
+    }
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < 20 && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        if (cancelled) return;
+        if (aopStatus() === "saved") return;
+        if (!hoodieAopPlacerRef.current) continue;
+        try {
+          await flushHoodieAopPlacer({ force: true });
+        } catch (err) {
+          if (!cancelled && aopStatus() !== "saved") {
+            console.warn("[AdminTester] AOP persist kick failed:", err);
+            emitTesterDesignStatus({ aopPanels: "error" });
+          }
+          return;
+        }
+        if (aopStatus() === "saved") return;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isAdminTester,
+    useAopCustomizer,
+    showPatternStep,
+    generatedDesign?.imageUrl,
+    generatedDesign?.id,
+    flushHoodieAopPlacer,
+    emitTesterDesignStatus,
+  ]);
 
   // Opening Saved Designs while a placer is mid-edit: flush the deferred apply
   // NOW so the current design's latest placement is persisted before the
@@ -9129,6 +9256,109 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // the customer out of the placer. They leave via "Back".
 
     // Front is the canonical "preferred" mockup the cart references.
+    const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    const mockupPanels = result.renderPrintPanels({
+      maxLongEdgePx: isAdminTester
+        ? TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX
+        : MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+    });
+    // Preview Studio: persist ~3200px panels (not mockup-only 1800). Full
+    // storefront bake still uses the uncapped path below so live orders
+    // keep print-ready files without blocking the tester button.
+    const fullPrintPanels = isAdminTester
+      ? null
+      : result.renderPrintPanels();
+
+    const persistPrintPanels = async () => {
+      if (!(isStorefront || isAdminTester) || !savedJobIdRef.current) {
+        return;
+      }
+      if (!panelSaveShop) {
+        console.warn("[HoodieAopApply] No shop for print-panel persist");
+        if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+        return;
+      }
+      const panelJobId = savedJobIdRef.current;
+      const seq = ++aopPanelPersistSeqRef.current;
+      const isStale = () => seq !== aopPanelPersistSeqRef.current;
+      const panelCaptureSignature = JSON.stringify({
+        mode: result.state.mode,
+        artworkUrl: result.state.artworkUrl,
+        backgroundColor: result.state.backgroundColor,
+        tileSettings: result.state.tileSettings,
+        pocketsEnabled: result.state.pocketsEnabled,
+        placements: result.state.placements,
+        enabled: result.state.enabled,
+        sleevesMirrored: result.state.sleevesMirrored,
+        legsSynced: result.state.legsSynced,
+        legsMirrored: result.state.legsMirrored,
+        wrapBackMode: result.state.wrapBackMode,
+      });
+      const panelsForSave = isAdminTester
+        ? mockupPanels
+        : (fullPrintPanels ?? result.renderPrintPanels());
+      if (!panelsForSave?.length) {
+        if (isAdminTester && !isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        return;
+      }
+      if (isAdminTester) {
+        emitTesterDesignStatus({ jobId: panelJobId, aopPanels: "saving" });
+      }
+      const persistWork = (async () => {
+        try {
+          if (isStale()) return;
+          const aopPrintPanelUrls = await Promise.all(
+            panelsForSave.map(async ({ position, dataUrl }) => ({
+              position,
+              url: await ensureHostedUrl(dataUrl),
+            })),
+          );
+          if (isStale()) return;
+          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId: panelJobId,
+              shop: panelSaveShop,
+              designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
+            }),
+          });
+          console.log(
+            "[HoodieAopApply] Saved aopPrintPanelUrls on job",
+            panelJobId,
+            aopPrintPanelUrls.map((p) => p.position).join(","),
+          );
+          if (!isStale()) emitTesterDesignStatus({ aopPanels: "saved" });
+        } catch (e) {
+          console.error("[HoodieAopApply] Failed to persist print panels:", e);
+          if (!isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        }
+      })();
+      aopPanelPersistPromiseRef.current = persistWork;
+      if (isAdminTester) await persistWork;
+    };
+
+    // Preview Studio: unlock Send a Test Order as soon as preview-size panels
+    // are hosted. Skip full-res bakes and Printify lifestyle mockups.
+    if (isAdminTester) {
+      await persistPrintPanels();
+      const frontCanvas = result.renderView("front");
+      if (frontCanvas) {
+        try {
+          const frontHosted = await ensureHostedUrl(frontCanvas.toDataURL("image/jpeg", 0.85));
+          setAopPatternUrl(frontHosted);
+          setPrintifyMockupImages([{ url: frontHosted, label: "front" }]);
+          setPrintifyMockups([frontHosted]);
+          setMockupFailed(false);
+          setMockupError(null);
+          setMockupsStale(false);
+        } catch (err: any) {
+          console.warn("[HoodieAopApply] Tester preview upload failed:", err);
+        }
+      }
+      return;
+    }
+
     const frontCanvas = result.renderView("front");
     const backCanvas = result.renderView("back");
     if (!frontCanvas) {
@@ -9137,19 +9367,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     const frontDataUrl = frontCanvas.toDataURL("image/png");
     const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
-    const panelSaveShop = shopDomain || savedJobShopRef.current;
-    const willPersistPanels =
-      (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
-    if (willPersistPanels) {
+    if (isStorefront && savedJobIdRef.current && panelSaveShop) {
       emitTesterDesignStatus({
         jobId: savedJobIdRef.current,
         aopPanels: "saving",
       });
     }
-    const mockupPanels = result.renderPrintPanels({
-      maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
-    });
-    const fullPrintPanels = result.renderPrintPanels();
 
     setMockupLoading(true);
     setMockupTriggered(true);
@@ -9215,64 +9438,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         );
       }
 
-      // Persist the flat per-panel PRINT files on the job's designState
-      // (aopPrintPanelUrls). This is what order fulfillment, the admin
-      // test-order flow, and permanent design-product publishing submit to
-      // Printify as print_areas — without it a placer-designed AOP product
-      // can never be auto-fulfilled. Runs non-blocking so the mockup upload
-      // (which gates ATC) isn't delayed by the heavier panel bake.
-      const panelSaveShopInner = shopDomain || savedJobShopRef.current;
-      if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShopInner) {
-        const panelJobId = savedJobIdRef.current;
-        // Versioned capture: bump the sequence for this apply; if a newer apply
-        // starts while this one is still baking/uploading, abort before the write
-        // so stale panels can never overwrite the latest state.
-        const seq = ++aopPanelPersistSeqRef.current;
-        const isStale = () => seq !== aopPanelPersistSeqRef.current;
-        const panelCaptureSignature = JSON.stringify({
-          mode: result.state.mode,
-          artworkUrl: result.state.artworkUrl,
-          backgroundColor: result.state.backgroundColor,
-          tileSettings: result.state.tileSettings,
-          pocketsEnabled: result.state.pocketsEnabled,
-          placements: result.state.placements,
-          enabled: result.state.enabled,
-          sleevesMirrored: result.state.sleevesMirrored,
-          legsSynced: result.state.legsSynced,
-          legsMirrored: result.state.legsMirrored,
-        });
-        aopPanelPersistPromiseRef.current = (async () => {
-          try {
-            const panelsForSave = fullPrintPanels ?? result.renderPrintPanels();
-            if (!panelsForSave?.length || isStale()) return;
-            const aopPrintPanelUrls = await Promise.all(
-              panelsForSave.map(async ({ position, dataUrl }) => ({
-                position,
-                url: await ensureHostedUrl(dataUrl),
-              })),
-            );
-            if (isStale()) return;
-            await safeFetch(`${API_BASE}/api/storefront/save-state`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                jobId: panelJobId,
-                shop: panelSaveShopInner,
-                designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
-              }),
-            });
-            console.log(
-              "[HoodieAopApply] Saved aopPrintPanelUrls on job",
-              panelJobId,
-              aopPrintPanelUrls.map((p) => p.position).join(","),
-            );
-            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
-          } catch (e) {
-            console.error("[HoodieAopApply] Failed to persist print panels:", e);
-            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
-          }
-        })();
-      }
+      // Persist print panels in the background so ATC is not blocked.
+      void persistPrintPanels();
 
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
@@ -9725,11 +9892,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageUrl: generatedDesign.imageUrl,
+          imageUrl: toAbsoluteImageUrl(generatedDesign.imageUrl),
           prompt: generatedDesign.prompt,
           stylePreset: selectedPreset !== "" ? selectedPreset : null,
-          size: selectedSize,
-          frameColor: selectedFrameColor,
+          size: selectedSize || "default",
+          frameColor: selectedFrameColor || "default",
           transformScale: transform.scale,
           transformX: transform.x,
           transformY: transform.y,
@@ -9737,11 +9904,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           shopDomain: shopDomain || null,
           productId: productId || null,
           productHandle: productHandle || null,
+          customerId: storefrontCustomerId || customer?.id || null,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to create share link");
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.error || "Failed to create share link");
       }
 
       const data = await response.json();
@@ -12884,54 +13053,74 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
             {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
           </p>
-          {isCreatorStorefront && (
-            <div className="rounded-md bg-muted p-3 space-y-2">
-              <p className="font-medium text-foreground">Buy more generations</p>
-              <p className="text-muted-foreground text-xs">
-                Checkout on Shopify. Credits are added after payment.
-              </p>
-              <div className="flex flex-col gap-2">
-                {(creatorCreditPacks.length
-                  ? creatorCreditPacks
-                  : [
-                      { packId: "5", credits: 5, priceInCents: 100, label: "5 Studio Credits for $1" },
-                      { packId: "10", credits: 10, priceInCents: 200, label: "10 Studio Credits for $2" },
-                      { packId: "20", credits: 20, priceInCents: 300, label: "20 Studio Credits for $3" },
-                    ]
-                ).map((pack) => (
-                  <Button
-                    key={pack.packId}
-                    type="button"
-                    variant="outline"
-                    className="w-full justify-between"
-                    disabled={packCheckoutLoadingId === pack.packId}
-                    onClick={() => void buyCreatorCreditPack(pack.packId)}
-                  >
-                    <span>{pack.label}</span>
-                    {packCheckoutLoadingId === pack.packId ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <span>${(pack.priceInCents / 100).toFixed(0)}</span>
-                    )}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
-          {activeEarnRungs.length > 0 ? (
-            <div className="rounded-md bg-muted p-3 space-y-2">
-              <p className="font-medium text-foreground">Ways to earn</p>
-              <ul className="space-y-1.5 text-muted-foreground list-disc pl-4">
-                {activeEarnRungs.map((rung) => (
-                  <li key={rung.rungKey}>{describeEarnRung(rung)}</li>
-                ))}
-              </ul>
-            </div>
-          ) : !isCreatorStorefront ? (
-            <p className="rounded-md bg-muted p-3 text-muted-foreground">
-              No earn rewards are enabled for this shop right now.
+          <div className="rounded-md bg-muted p-3 space-y-2">
+            <p className="font-medium text-foreground">Need more generations</p>
+            <p className="text-muted-foreground text-xs">
+              Studio Credit Packs available below. Or get some free credits other ways:
             </p>
-          ) : null}
+            {activeEarnRungs.length > 0 && (
+              <ol className="list-decimal pl-4 space-y-1 text-xs text-muted-foreground">
+                {activeEarnRungs.map((rung) => {
+                  const n = rung.creditAmount;
+                  const creditLabel = `${n} Credit${n === 1 ? "" : "s"}`;
+                  if (rung.rungKey === "email_signup") {
+                    return (
+                      <li key={rung.rungKey}>
+                        Sign up to the Art Class Newsletter = {creditLabel}
+                      </li>
+                    );
+                  }
+                  if (rung.rungKey === "share_design") {
+                    return (
+                      <li key={rung.rungKey}>
+                        Share a design that gets viewed = {creditLabel}
+                      </li>
+                    );
+                  }
+                  const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
+                  return (
+                    <li key={rung.rungKey}>
+                      Make a physical purchase over ${dollars} = {creditLabel}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            <a
+              href={publicTermsHref("customers", centralAppUrl || undefined)}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground"
+            >
+              Terms
+            </a>
+            <div className="flex flex-col gap-2 pt-1">
+              {(creatorCreditPacks.length
+                ? creatorCreditPacks
+                : [
+                    { packId: "5", credits: 5, priceInCents: 100, label: "5 Studio Credits for $1" },
+                    { packId: "10", credits: 10, priceInCents: 200, label: "10 Studio Credits for $2" },
+                    { packId: "20", credits: 20, priceInCents: 300, label: "20 Studio Credits for $3" },
+                  ]
+              ).map((pack) => (
+                <Button
+                  key={pack.packId}
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-between"
+                  disabled={packCheckoutLoadingId === pack.packId}
+                  onClick={() => void buyCreatorCreditPack(pack.packId)}
+                >
+                  <span>{pack.label}</span>
+                  {packCheckoutLoadingId === pack.packId ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <span>${(pack.priceInCents / 100).toFixed(0)}</span>
+                  )}
+                </Button>
+              ))}
+            </div>
+          </div>
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (
               <Button
@@ -12942,7 +13131,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   setShowOtpLogin(true);
                 }}
               >
-                Sign in to earn credits
+                Sign in
               </Button>
             )}
             {activeEarnRungs.some((r) => r.rungKey === "share_design") && !!generatedDesign?.imageUrl && (
@@ -13125,69 +13314,93 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </a>
                   </div>
                 ) : null}
-                {isLoggedIn ? (
-                  <div className="flex flex-wrap gap-2" data-testid="user-actions">
-                    {/* Combined account button: shows email on hover, click signs out */}
-                    <div className="relative group flex-shrink-0">
-                      <button
-                        onClick={() => {
-                          setCustomer(null);
-                          setStorefrontCustomerId(null);
-                          setStorefrontIdentityToken(null);
-                          setOtpEmail('');
-                          try {
-                            localStorage.removeItem('appai_customer_id');
-                            localStorage.removeItem('appai_identity_token');
-                            localStorage.removeItem('appai_otp_email');
-                            localStorage.removeItem('appai_customer');
-                            sessionStorage.removeItem('appai_customer');
-                            sessionStorage.removeItem('appai_customer_id');
-                            sessionStorage.removeItem('appai_identity_token');
-                          } catch {}
-                          setShowSavedDesigns(false);
-                          setShowCouponInput(false);
-                        }}
-                        className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5"
-                        title={customer?.email}
-                      >
-                        {/* Default label: Sign out */}
-                        <span className="group-hover:hidden">Sign out</span>
-                        {/* Hover label: show email */}
-                        <span className="hidden group-hover:inline truncate max-w-[160px]">{customer?.email || 'Signed in'}</span>
-                      </button>
-                    </div>
-                    <button
-                      onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                      className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors cursor-pointer whitespace-nowrap flex-shrink-0 ${
-                        savedDesigns.length >= galleryLimit
-                          ? "border-red-300 bg-red-50 text-red-800 hover:bg-red-100"
-                          : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-                      }`}
-                    >
-                      Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ''}
-                    </button>
-                    <button
-                      onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
-                    >
-                      Redeem Code
-                    </button>
-                    {credits > 0 && (
-                      <div className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 whitespace-nowrap flex-shrink-0">
-                        {credits} credit{credits !== 1 ? 's' : ''}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setShowOtpLogin(true)}
-                    className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer flex items-center gap-1.5"
-                    data-testid="text-login-prompt"
-                  >
-                    <LogIn className="w-4 h-4" />
-                    Sign in or Create an Account to save designs
-                  </button>
-                )}
+                <div className="flex w-full items-center justify-between gap-2" data-testid="user-actions">
+                  {isLoggedIn ? (
+                    <StudioMenuIconButton
+                      label={customer?.email ? `Sign out (${customer.email})` : "Sign out"}
+                      icon={LogOut}
+                      onClick={() => {
+                        setCustomer(null);
+                        setStorefrontCustomerId(null);
+                        setStorefrontIdentityToken(null);
+                        setOtpEmail('');
+                        try {
+                          localStorage.removeItem('appai_customer_id');
+                          localStorage.removeItem('appai_identity_token');
+                          localStorage.removeItem('appai_otp_email');
+                          localStorage.removeItem('appai_customer');
+                          sessionStorage.removeItem('appai_customer');
+                          sessionStorage.removeItem('appai_customer_id');
+                          sessionStorage.removeItem('appai_identity_token');
+                        } catch {}
+                        setShowSavedDesigns(false);
+                        setShowCouponInput(false);
+                        setShowArtClassSignup(false);
+                      }}
+                    />
+                  ) : (
+                    <StudioMenuIconButton
+                      label="Sign in"
+                      icon={LogIn}
+                      testId="text-login-prompt"
+                      onClick={() => {
+                        setShowOtpLogin(true);
+                        setShowSavedDesigns(false);
+                        setShowCouponInput(false);
+                        setShowArtClassSignup(false);
+                      }}
+                    />
+                  )}
+                  {isLoggedIn && (
+                    <StudioMenuIconButton
+                      label={`Saved Designs${savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ""}`}
+                      icon={Images}
+                      active={showSavedDesigns}
+                      danger={savedDesigns.length >= galleryLimit}
+                      badge={savedDesigns.length > 0 ? `${savedDesigns.length}` : null}
+                      onClick={() => {
+                        setShowSavedDesigns(!showSavedDesigns);
+                        setShowCouponInput(false);
+                        setShowArtClassSignup(false);
+                      }}
+                    />
+                  )}
+                  {isLoggedIn && (
+                    <StudioMenuIconButton
+                      label="Redeem Code"
+                      icon={Ticket}
+                      active={showCouponInput}
+                      onClick={() => {
+                        setShowCouponInput(!showCouponInput);
+                        setShowSavedDesigns(false);
+                        setShowArtClassSignup(false);
+                        setCouponError(null);
+                        setCouponSuccess(null);
+                      }}
+                    />
+                  )}
+                  <StudioMenuIconButton
+                    label="Art Class newsletter"
+                    icon={GraduationCap}
+                    active={showArtClassSignup}
+                    onClick={() => {
+                      setShowArtClassSignup(!showArtClassSignup);
+                      setShowSavedDesigns(false);
+                      setShowCouponInput(false);
+                    }}
+                  />
+                  <StudioMenuIconButton
+                    label={credits > 0 ? `${credits} Studio Credit${credits === 1 ? "" : "s"}` : "Studio Credits"}
+                    icon={Sparkles}
+                    badge={credits > 0 ? credits : null}
+                    onClick={() => {
+                      setCreditsPopoverOpen(true);
+                      setShowSavedDesigns(false);
+                      setShowCouponInput(false);
+                      setShowArtClassSignup(false);
+                    }}
+                  />
+                </div>
 
                 {/* Auth panel — absolute overlay, doesn't push content */}
                 {showOtpLogin && (
@@ -13368,6 +13581,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
+                        <div className="mb-3 rounded-md border bg-muted/50 p-3">
+                          <p className="text-sm font-medium mb-1">Studio Art Class</p>
+                          <StudioNewsletterSignup
+                            source="store_user"
+                            shopDomain={shopDomain}
+                            creatorUsername={creatorUsernameParam}
+                            customerId={storefrontCustomerId || customer?.id}
+                            variant="compact"
+                            hideIntro
+                          />
+                        </div>
                         <div className="flex items-center justify-between mb-3">
                           <h3 className="text-sm font-semibold">Saved Designs ({galleryGenerateSlots}/{galleryLimit})</h3>
                           <button
@@ -13626,6 +13850,31 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Card>
                   </div>
                 )}
+                {showArtClassSignup && (
+                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                    <Card className="border bg-background shadow-lg">
+                      <CardContent className="py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold">Studio Art Class</h3>
+                          <button
+                            type="button"
+                            onClick={() => setShowArtClassSignup(false)}
+                            className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <StudioNewsletterSignup
+                          source="store_user"
+                          shopDomain={shopDomain}
+                          creatorUsername={creatorUsernameParam}
+                          customerId={storefrontCustomerId || customer?.id}
+                          variant="compact"
+                        />
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
               </div>
             )}
             {/* Product title + price */}
@@ -13694,6 +13943,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
             <div className="space-y-2.5 mt-2">
+              {testerActions ? <div className="space-y-2">{testerActions}</div> : null}
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
@@ -14503,7 +14753,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
-                      ...(hoodieAopPlacerState ?? {}),
+                      // New artwork remounts the placer. Spreading a prior
+                      // placement makes HoodieAopPlacer treat it as a resume
+                      // and skip the persist that unlocks Send a Test Order.
+                      ...(hoodieAopPlacerState?.artworkUrl === aopPendingMotifUrl
+                        ? hoodieAopPlacerState
+                        : {}),
                       // Always seed the latest AI-generated motif as the
                       // active artwork, even if the saved state pointed at
                       // an older one — fresh generations should take over.
@@ -14515,13 +14770,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         : {}),
                     }}
                     onChange={(s) => {
-                      if (
-                        isAdminTester &&
-                        hoodieAopPlacerState?.artworkUrl &&
-                        s.artworkUrl !== hoodieAopPlacerState.artworkUrl
-                      ) {
-                        emitTesterDesignStatus({ aopPanels: "none" });
-                      }
                       setHoodieAopPlacerState(s);
                       setAopPlacementDirty(true);
                     }}
@@ -14532,7 +14780,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     }}
                     // Resume: skip one-shot initial apply (mockup already persisted).
                     // Fresh designs still apply once for the first cart image.
-                    skipInitialAutoApply={!!hoodieAopPlacerState}
+                    skipInitialAutoApply={
+                      !!hoodieAopPlacerState &&
+                      hoodieAopPlacerState.artworkUrl === aopPendingMotifUrl
+                    }
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
                     onEngageLiveEditor={engageAopLiveEditor}
@@ -14757,7 +15008,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // The admin Generator Tester also persists print-resolution panels (its job
                   // shop comes from the generate response) so "Send a Test Order to Printify"
                   // submits the same print files a real order would.
-                  const panelSaveShop = shopDomain || savedJobShopRef.current;
+                  const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
                   if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
                     const panelJobId = savedJobIdRef.current;
                     // Versioned capture — see handleHoodieAopApply for the rationale.
@@ -14766,7 +15017,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
                     void (async () => {
                       try {
-                        const printPanels = (isMerchantStudio || isAdminTester) && options.getPrintPanelUrls
+                        const printPanels = isMerchantStudio && options.getPrintPanelUrls
                           ? await options.getPrintPanelUrls()
                           : (options.printPanelUrls || options.panelUrls);
                         if (!printPanels?.length || isStale()) return;

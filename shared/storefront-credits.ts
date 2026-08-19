@@ -11,9 +11,8 @@ export const STOREFRONT_FREE_GENERATION_MIN = 1;
 export const STOREFRONT_FREE_GENERATION_LIMIT = STOREFRONT_FREE_GENERATION_DEFAULT;
 
 /**
- * Premade Studio Credits packs (merchant-mediated Shopify products in Phase 2).
- * Wholesale to merchant is the catalogue headline overage rate per credit
- * (OVERAGE_PRICE_USD / resolveOveragePriceUsd) via usage billing at grant time.
+ * Premade Studio Credits packs sold on merchant stores (and the platform shop for creators).
+ * Wholesale to the merchant is STUDIO_CREDIT_WHOLESALE_CENTS per credit via usage billing at grant time.
  */
 export type CreditPackDefinition = {
   packId: string;

@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
+import {
+  clampLandingTypeDelayMs,
+  DEFAULT_LANDING_CONTENT,
+  LANDING_TYPE_DELAY_FAST_MS,
+  LANDING_TYPE_DELAY_SLOW_MS,
+  type LandingContent,
+} from "@shared/landingContent";
 import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
+import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 
 const FALLBACK_ART = [
   "radial-gradient(circle at 40% 35%, #ff8a4a, transparent 34%), radial-gradient(circle at 70% 60%, #5b8cff, transparent 36%), #2a2030",
@@ -37,6 +44,13 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
   const [index, setIndex] = useState(0);
   const [typed, setTyped] = useState("");
   const [progress, setProgress] = useState(0);
+  const [typeDelayMs, setTypeDelayMs] = useState(() =>
+    clampLandingTypeDelayMs(content.typeDelayMs),
+  );
+
+  useEffect(() => {
+    setTypeDelayMs(clampLandingTypeDelayMs(content.typeDelayMs));
+  }, [content.typeDelayMs]);
 
   useEffect(() => {
     if (!scenes.length) return;
@@ -52,9 +66,9 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
         window.clearInterval(tick);
         window.setTimeout(() => setIndex((i) => (i + 1) % scenes.length), 1600);
       }
-    }, 38);
+    }, typeDelayMs);
     return () => window.clearInterval(tick);
-  }, [index, scenes]);
+  }, [index, scenes, typeDelayMs]);
 
   const scene = scenes[index] ?? scenes[0];
   if (!scene) return null;
@@ -86,6 +100,22 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
         </div>
       </div>
       <p className="luxe-caption mt-5">{content.copy.splashCaption}</p>
+      <label className="luxe-type-speed">
+        <span>Type speed</span>
+        <input
+          type="range"
+          min={LANDING_TYPE_DELAY_FAST_MS}
+          max={LANDING_TYPE_DELAY_SLOW_MS}
+          step={2}
+          value={typeDelayMs}
+          onChange={(e) => setTypeDelayMs(Number(e.target.value))}
+          aria-label="Prompt type speed"
+        />
+        <span className="luxe-type-speed-ends">
+          <em>Fast</em>
+          <em>Slow</em>
+        </span>
+      </label>
       <div className="mt-8 flex flex-col items-center gap-3">
         <button type="button" className="luxe-btn-white" onClick={onMore}>
           {content.copy.splashCta}
@@ -210,6 +240,9 @@ function Landing({
         </div>
       </div>
       <LandingKeys onLeft={() => go(index - 1)} onRight={() => go(index + 1)} />
+      <div className="mx-auto mt-8 max-w-md">
+        <StudioNewsletterSignup source="creator" variant="luxe" />
+      </div>
       <p className="luxe-portal">
         <Link href="/portal/login" className="underline underline-offset-2">
           Creator Portal
@@ -282,6 +315,31 @@ const LUXE_CSS = `
   .luxe-h1 { margin: 0; font-size: clamp(32px, 4.2vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
   .luxe-lede { margin: 14px 0 0; max-width: 36rem; color: rgba(245,245,247,0.62); font-size: 16px; line-height: 1.45; }
   .luxe-caption { letter-spacing: 0.08em; text-transform: uppercase; color: rgba(245,245,247,0.62); font-size: 14px; }
+  .luxe-type-speed {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    width: min(220px, 70vw);
+    margin: 18px auto 0;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(245,245,247,0.55);
+  }
+  .luxe-type-speed input[type="range"] {
+    width: 100%;
+    accent-color: #fff;
+    cursor: pointer;
+  }
+  .luxe-type-speed-ends {
+    display: flex;
+    justify-content: space-between;
+    font-style: normal;
+    letter-spacing: 0.12em;
+    color: rgba(245,245,247,0.4);
+  }
+  .luxe-type-speed-ends em { font-style: normal; }
   .luxe-portal { text-align: center; font-size: 11px; color: rgba(255,255,255,0.35); margin: 10px 0 0; }
   .luxe-btn-white, .luxe-btn-ghost {
     border-radius: 999px; padding: 12px 22px; cursor: pointer; letter-spacing: 0.06em;

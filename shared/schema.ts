@@ -1888,3 +1888,76 @@ export const helpArticles = pgTable(
 
 export type HelpArticleRow = typeof helpArticles.$inferSelect;
 export type InsertHelpArticleRow = typeof helpArticles.$inferInsert;
+
+/** Studio Art Class newsletter — platform-owned list (not merchant quota). */
+export const studioNewsletterSubscribers = pgTable(
+  "studio_newsletter_subscribers",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    email: text("email").notNull(),
+    /** merchant | creator | store_user */
+    source: text("source").notNull(),
+    shopDomain: text("shop_domain"),
+    creatorUsername: text("creator_username"),
+    customerId: varchar("customer_id"),
+    creditGranted: boolean("credit_granted").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("studio_newsletter_email_uidx").on(table.email),
+    index("studio_newsletter_source_idx").on(table.source, table.createdAt),
+  ],
+);
+
+export type StudioNewsletterSubscriber = typeof studioNewsletterSubscribers.$inferSelect;
+
+/** Per-shop Shopify variant ids for merchant-sold Studio Credit packs. */
+export const merchantPackVariants = pgTable(
+  "merchant_pack_variants",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    shopDomain: text("shop_domain").notNull(),
+    packId: text("pack_id").notNull(),
+    variantId: text("variant_id").notNull(),
+    productId: text("product_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("merchant_pack_variants_shop_pack_uidx").on(table.shopDomain, table.packId),
+    index("merchant_pack_variants_shop_idx").on(table.shopDomain),
+  ],
+);
+
+export type MerchantPackVariant = typeof merchantPackVariants.$inferSelect;
+
+/** Merchant shop generation-pack purchases (customer pays store; wholesale to merchant). */
+export const merchantPackPurchases = pgTable(
+  "merchant_pack_purchases",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    shopDomain: text("shop_domain").notNull(),
+    customerId: text("customer_id").notNull(),
+    shopifyOrderId: text("shopify_order_id").notNull(),
+    shopifyLineId: text("shopify_line_id").notNull(),
+    packId: text("pack_id").notNull(),
+    credits: integer("credits").notNull(),
+    priceCents: integer("price_cents").notNull().default(0),
+    wholesaleCents: integer("wholesale_cents").notNull().default(0),
+    creditsClawed: integer("credits_clawed").notNull().default(0),
+    status: text("status").notNull().default("paid"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("merchant_pack_purchases_line_uidx").on(
+      table.shopifyOrderId,
+      table.shopifyLineId,
+    ),
+    index("merchant_pack_purchases_shop_idx").on(table.shopDomain, table.createdAt),
+    index("merchant_pack_purchases_customer_idx").on(table.customerId),
+  ],
+);
+
+export type MerchantPackPurchase = typeof merchantPackPurchases.$inferSelect;

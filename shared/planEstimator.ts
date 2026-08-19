@@ -137,7 +137,8 @@ function clampNonNeg(n: number | undefined, fallback: number): number {
 
 /**
  * Funnel plan-fit estimate. Counts credits SPENT only (granted-but-unused cost nothing).
- * Earned/ladder spend burns merchant quota — pack credits are out of scope here.
+ * Share + purchase rewards burn merchant quota. Art Class signup credits are
+ * platform-funded and do not count toward shop quota (still returned as emailGensSpent).
  */
 export function estimateCustomizerFunnel(args: FunnelEstimateInput): FunnelEstimate {
   const grants = args.grants ?? DEFAULT_FUNNEL_REWARD_GRANTS;
@@ -176,7 +177,7 @@ export function estimateCustomizerFunnel(args: FunnelEstimateInput): FunnelEstim
   const emailGensSpent = engaged * emailTake * avgEmail;
   const shareGensSpent = engaged * shareTake * avgShare;
   const purchaseGensSpent = engaged * purchaseConv * purchaseCredits * purchaseRedeem;
-  const totalGensSpentRaw = freeGensSpent + emailGensSpent + shareGensSpent + purchaseGensSpent;
+  const totalGensSpentRaw = freeGensSpent + shareGensSpent + purchaseGensSpent;
   // Ceil for plan-quota sizing; AI cost uses the same integer so UI numbers match.
   const totalGensSpent = Math.ceil(totalGensSpentRaw);
 

@@ -71,8 +71,9 @@ function overageNoteForCap(overageCap: number, overagePriceUsd: number): string 
 
 const CUSTOMER_ABUSE_NOTE =
   "Free generations per customer default to 2 (merchant can raise up to 10) to avoid abuse. " +
-  "Customers can earn more Studio Credits via the Reward Ladder (email signup, sharing a design, and optionally a purchase threshold). " +
-  "Merchant-sold credit packs are coming soon.";
+  "Customers can earn more Studio Credits via the Reward Ladder (Studio Art Class signup, sharing a design, and optionally a purchase threshold). " +
+  "Signup credits are issued by Studio. Share and purchase rewards come off your monthly allotment. " +
+  "Customers can also buy generation packs on your store — you are billed wholesale; those credits do not burn plan quota.";
 
 type PlanRow = {
   planName: string;

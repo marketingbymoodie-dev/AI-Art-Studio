@@ -896,7 +896,7 @@ export default function PlatformCreatorDetailDialog({
                   <Input value={creatorPct} onChange={(e) => setCreatorPct(e.target.value)} />
                 </div>
                 <div className="space-y-1">
-                  <Label>AppAI share %</Label>
+                  <Label>Studio share %</Label>
                   <Input value={aasPct} onChange={(e) => setAasPct(e.target.value)} />
                 </div>
               </div>

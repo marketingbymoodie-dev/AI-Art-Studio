@@ -404,8 +404,9 @@ export default function GenerationQuotaUsage({
       )}
 
       <p className="text-xs text-muted-foreground mt-3">
-        {data?.usdDisclaimer ?? "All prices in USD."} Reward Ladder free gens and earned Studio Credits
-        count toward this shop quota when spent; merchant-sold pack credits (coming soon) do not.
+        {data?.usdDisclaimer ?? "All prices in USD."} Reward Ladder free gens plus share and purchase
+        Studio Credits count toward this shop quota when spent. Newsletter signup credits are issued
+        by Studio. Generation packs sold on your store do not burn this quota.
         Overage used is your live counter for this period — what you were charged appears in Shopify
         billing history.
       </p>

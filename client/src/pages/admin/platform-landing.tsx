@@ -8,8 +8,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
+  clampLandingTypeDelayMs,
   DEFAULT_LANDING_CONTENT,
   LANDING_COPY_FIELDS,
+  LANDING_TYPE_DELAY_FAST_MS,
+  LANDING_TYPE_DELAY_SLOW_MS,
   type LandingCard,
   type LandingContent,
   type LandingCopy,
@@ -151,6 +154,33 @@ export default function PlatformLandingPage() {
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : tab === "text" ? (
           <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2 md:col-span-2 max-w-md">
+              <Label htmlFor="typeDelayMs">Prompt type speed</Label>
+              <p className="text-xs text-muted-foreground">
+                How fast the splash window types each prompt. Fast is the original speed; the
+                default is half that. Save, then check /beta.
+              </p>
+              <input
+                id="typeDelayMs"
+                type="range"
+                min={LANDING_TYPE_DELAY_FAST_MS}
+                max={LANDING_TYPE_DELAY_SLOW_MS}
+                step={2}
+                value={clampLandingTypeDelayMs(draft.typeDelayMs)}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    typeDelayMs: clampLandingTypeDelayMs(Number(e.target.value)),
+                  }))
+                }
+                className="w-full accent-foreground"
+                aria-label="Prompt type speed"
+              />
+              <div className="flex justify-between text-[11px] uppercase tracking-wide text-muted-foreground">
+                <span>Fast</span>
+                <span>Slow</span>
+              </div>
+            </div>
             {LANDING_COPY_FIELDS.map(([key, label]) => (
               <div key={key} className="space-y-2">
                 <Label htmlFor={key}>{label}</Label>

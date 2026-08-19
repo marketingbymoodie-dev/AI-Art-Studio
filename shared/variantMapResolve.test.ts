@@ -40,6 +40,36 @@ describe("resolveVariantForSizeOnly", () => {
   });
 });
 
+describe("resolveVariantFromMap default colour → size-only", () => {
+  const aopLeggingsMap = {
+    "xs:white": { printifyVariantId: 11, providerId: 29 },
+    "s:white": { printifyVariantId: 12, providerId: 29 },
+    "m:white": { printifyVariantId: 13, providerId: 29 },
+    "l:white": { printifyVariantId: 14, providerId: 29 },
+    "xl:white": { printifyVariantId: 15, providerId: 29 },
+    "2xl:white": { printifyVariantId: 16, providerId: 29 },
+  };
+
+  it("resolves AOP dummy colour when client sends default (empty color dropdown)", () => {
+    const hit = resolveVariantFromMap(aopLeggingsMap, "l", "default", {
+      allowSizeFallbackForColor: true,
+    });
+    expect(hit?.entry.printifyVariantId).toBe(14);
+    expect(hit?.key).toBe("l:white");
+  });
+
+  it("resolves when colorId is omitted entirely", () => {
+    const hit = resolveVariantFromMap(aopLeggingsMap, "L", "", {
+      allowSizeFallbackForColor: true,
+    });
+    expect(hit?.entry.printifyVariantId).toBe(14);
+  });
+
+  it("does not pick a different colour when the customer explicitly chose one", () => {
+    expect(resolveVariantFromMap(aopLeggingsMap, "l", "black")).toBeNull();
+  });
+});
+
 describe("resolveVariantFromMap vs junk phone colour", () => {
   const phoneMap = {
     "iphone_13:black": { printifyVariantId: 101, providerId: 1 },

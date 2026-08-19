@@ -52,9 +52,9 @@ async function sendLeftoverEmail(params: {
     ``,
     `There ${params.daysLeft === 1 ? "is 1 day" : `are ${params.daysLeft} days`} left in the billing month.`,
     ``,
-    `Tip: create a coupon in AppAI → Coupons to gift free generations for a promotion. Coupon credits are taken from your monthly allotment when customers redeem them.`,
+    `Tip: create a coupon in Studio → Coupons to gift free generations for a promotion. Coupon credits are taken from your monthly allotment when customers redeem them.`,
     ``,
-    `Open Coupons in your AppAI admin to set one up.`,
+    `Open Coupons in your Studio admin to set one up.`,
   ].join("\n");
 
   try {
@@ -65,9 +65,9 @@ async function sendLeftoverEmail(params: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: process.env.APP_TRANSACTIONAL_FROM || "AppAI <onboarding@resend.dev>",
+        from: process.env.APP_TRANSACTIONAL_FROM || "AI Art Studio <onboarding@resend.dev>",
         to: [params.to],
-        subject: `[AppAI] ${params.remaining} generations left this month — try a coupon promo`,
+        subject: `[Studio] ${params.remaining} generations left this month — try a coupon promo`,
         text: body,
       }),
     });

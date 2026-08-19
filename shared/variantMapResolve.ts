@@ -83,7 +83,7 @@ export function hasVariantMappingForColor(
   const normColor = normalizeId(colorId);
   return Object.keys(variantMap).some((key) => {
     const [, kColor] = key.split(":");
-    return kColor === normColor && (variantMap[key]?.printifyVariantId != null && variantMap[key]?.printifyVariantId !== "");
+    return normalizeId(kColor) === normColor && (variantMap[key]?.printifyVariantId != null && variantMap[key]?.printifyVariantId !== "");
   });
 }
 
@@ -123,6 +123,10 @@ export function resolveVariantFromMap(
     if (sizeOnly?.printifyVariantId != null && sizeOnly.printifyVariantId !== "") {
       return { entry: sizeOnly, key: variantMapKey(size, "default") };
     }
+    // AOP / size-only catalogs key a dummy Printify colour (e.g. l:white)
+    // rather than l:default. Safe: the customer did not pick a colour.
+    const anyForSize = resolveVariantForSizeOnly(variantMap, size);
+    if (anyForSize) return anyForSize;
   }
 
   const wantsDefaultSize = !sizeId || sizeId === "default";
@@ -145,7 +149,7 @@ export function resolveVariantFromMap(
     for (const [key, entry] of Object.entries(variantMap)) {
       if (!entry?.printifyVariantId || entry.printifyVariantId === "") continue;
       const [, kColor] = key.split(":");
-      if (kColor === color) {
+      if (normalizeId(kColor) === color) {
         return { entry, key };
       }
     }

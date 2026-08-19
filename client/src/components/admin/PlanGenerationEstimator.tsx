@@ -399,7 +399,7 @@ export default function PlanGenerationEstimator({
           Free allotment from Settings:{" "}
           <span className="font-medium text-foreground">{grants.freeGensPerVisitor}</span>
           {" · "}
-          Email rung:{" "}
+          Art Class signup:{" "}
           <span className="font-medium text-foreground">
             {grants.emailEnabled ? `+${grants.emailCredits}` : "off"}
           </span>
@@ -551,7 +551,7 @@ export default function PlanGenerationEstimator({
               <div className="text-muted-foreground">Funnel breakdown (gens used)</div>
               <p className="text-[11px] text-muted-foreground mt-1 space-y-0.5">
                 <span className="block">Free: {funnel.freeGensSpent}</span>
-                <span className="block">Email rewards: {funnel.emailGensSpent}</span>
+                <span className="block">Art Class signup (Studio-funded): {funnel.emailGensSpent}</span>
                 <span className="block">Share rewards: {funnel.shareGensSpent}</span>
                 <span className="block">
                   {isMerchant ? "Purchase rewards" : "Purchase redeem"}: {funnel.purchaseGensSpent}
@@ -608,7 +608,7 @@ export default function PlanGenerationEstimator({
                   {grants.emailEnabled && grants.emailCredits > 0 && (
                     <>
                       <div className="space-y-1">
-                        <Label htmlFor="email-take">Email rung take %</Label>
+                        <Label htmlFor="email-take">Art Class signup take %</Label>
                         <Input
                           id="email-take"
                           type="number"
@@ -620,7 +620,7 @@ export default function PlanGenerationEstimator({
                         />
                       </div>
                       <div className="space-y-1">
-                        <Label htmlFor="avg-email-gens">Avg email gens used</Label>
+                        <Label htmlFor="avg-email-gens">Avg Art Class gens used</Label>
                         <Input
                           id="avg-email-gens"
                           type="number"

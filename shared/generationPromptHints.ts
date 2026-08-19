@@ -1,3 +1,13 @@
+/** True when the customer asked to remake the uploaded reference (not invent a new scene). */
+export function userPromptAsksToRecreateReference(userDesc: string | null | undefined): boolean {
+  const t = (userDesc || "").toLowerCase();
+  if (!t.trim()) return false;
+  return (
+    /\b(recreate|redo|remake|reproduce)\b/.test(t) ||
+    /\bthis (image|artwork|picture|photo|design)\b/.test(t)
+  );
+}
+
 /** True when the customer typed a concrete subject (not style-only generation). */
 export function hasUserArtworkDescription(userDesc: string | null | undefined): boolean {
   return !!(userDesc && userDesc.trim().length >= 3);
