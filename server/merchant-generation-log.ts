@@ -3,7 +3,15 @@
  * Plan quota enforcement uses shopify_installations counters separately.
  */
 import { storage } from "./storage";
-import type { ShopifyInstallation } from "@shared/schema";
+import type { InsertGenerationLog, ShopifyInstallation } from "@shared/schema";
+
+export async function tryCreateGenerationLog(log: InsertGenerationLog): Promise<void> {
+  try {
+    await storage.createGenerationLog(log);
+  } catch (err) {
+    console.warn("[generation-log] failed to write:", (err as Error).message);
+  }
+}
 
 export interface MerchantGenerationLogInput {
   installation: Pick<ShopifyInstallation, "merchantId"> | { merchantId?: string | null };

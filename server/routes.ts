@@ -171,7 +171,7 @@ import {
   extraSpentCents,
   OVERAGE_PRICE_CENTS,
 } from "./overage-settings";
-import { logMerchantGeneration } from "./merchant-generation-log";
+import { logMerchantGeneration, tryCreateGenerationLog } from "./merchant-generation-log";
 import { recordDesignProductSalesForOrder, recordDesignProductAtcForCart } from "./design-product-events";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
@@ -2862,7 +2862,7 @@ console.log("[api/generate] replicate returned", {
 });
 
       if (!data) {
-        await storage.createGenerationLog({
+        await tryCreateGenerationLog({
           customerId: customer.id,
           promptLength: prompt.length,
           hadReferenceImage: !!referenceImage,
@@ -2953,7 +2953,7 @@ console.log("[api/shopify/generate] saved image", result);
       }
 
       // Log generation
-      await storage.createGenerationLog({
+      await tryCreateGenerationLog({
         customerId: customer.id,
         designId: design?.id ?? null,
         promptLength: prompt.length,
@@ -3163,7 +3163,7 @@ const result = await saveImageToStorage(base64Data, finalMimeType, {
       }
 
       // Log the regeneration
-      await storage.createGenerationLog({
+      await tryCreateGenerationLog({
         customerId: customer.id,
         designId: designId,
         promptLength: prompt.length,

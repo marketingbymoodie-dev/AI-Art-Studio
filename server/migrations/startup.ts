@@ -643,6 +643,24 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "generation_logs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "generation_logs" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar,
+        "customer_id" varchar,
+        "design_id" integer,
+        "prompt_length" integer,
+        "had_reference_image" boolean NOT NULL DEFAULT false,
+        "style_preset" text,
+        "size" text,
+        "success" boolean NOT NULL DEFAULT true,
+        "error_message" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "published_products",
     sql: `
       CREATE TABLE IF NOT EXISTS "published_products" (
