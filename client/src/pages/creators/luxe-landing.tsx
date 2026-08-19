@@ -4,8 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   clampLandingTypeDelayMs,
   DEFAULT_LANDING_CONTENT,
-  LANDING_TYPE_DELAY_FAST_MS,
-  LANDING_TYPE_DELAY_SLOW_MS,
   type LandingContent,
 } from "@shared/landingContent";
 import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
@@ -21,10 +19,11 @@ const FALLBACK_ART = [
 
 export default function LuxeLandingPage() {
   const [, setLocation] = useLocation();
-  const { data } = useQuery<{ content: LandingContent }>({
+  const { data, isFetched } = useQuery<{ content: LandingContent }>({
     queryKey: ["/api/creators/landing"],
   });
-  const content = data?.content ?? DEFAULT_LANDING_CONTENT;
+  // Wait for saved landing copy — defaults flash the old placeholder prompts.
+  const content = isFetched ? (data?.content ?? DEFAULT_LANDING_CONTENT) : null;
   const [view, setView] = useState<"splash" | "landing">("splash");
 
   return (
@@ -33,28 +32,38 @@ export default function LuxeLandingPage() {
       {view === "splash" ? (
         <Splash content={content} onMore={() => setView("landing")} />
       ) : (
-        <Landing content={content} onApply={(track) => setLocation(`/creators/apply?track=${track}`)} />
+        <Landing
+          content={content ?? DEFAULT_LANDING_CONTENT}
+          onApply={(track) => setLocation(`/creators/apply?track=${track}`)}
+        />
       )}
     </div>
   );
 }
 
-function Splash({ content, onMore }: { content: LandingContent; onMore: () => void }) {
-  const scenes = content.scenes;
+function Splash({
+  content,
+  onMore,
+}: {
+  content: LandingContent | null;
+  onMore: () => void;
+}) {
+  const scenes = content?.scenes ?? [];
+  const typeDelayMs = clampLandingTypeDelayMs(content?.typeDelayMs);
   const [index, setIndex] = useState(0);
   const [typed, setTyped] = useState("");
   const [progress, setProgress] = useState(0);
-  const [typeDelayMs, setTypeDelayMs] = useState(() =>
-    clampLandingTypeDelayMs(content.typeDelayMs),
-  );
 
   useEffect(() => {
-    setTypeDelayMs(clampLandingTypeDelayMs(content.typeDelayMs));
-  }, [content.typeDelayMs]);
+    setIndex(0);
+    setTyped("");
+    setProgress(0);
+  }, [scenes[0]?.id, scenes[0]?.prompt]);
 
   useEffect(() => {
-    if (!scenes.length) return;
+    if (!content || !scenes.length) return;
     const scene = scenes[index];
+    if (!scene) return;
     let char = 0;
     setTyped("");
     setProgress(0);
@@ -68,15 +77,15 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
       }
     }, typeDelayMs);
     return () => window.clearInterval(tick);
-  }, [index, scenes, typeDelayMs]);
+  }, [content, index, scenes, typeDelayMs]);
 
   const scene = scenes[index] ?? scenes[0];
-  if (!scene) return null;
+  const copy = content?.copy ?? DEFAULT_LANDING_CONTENT.copy;
 
   return (
     <section className="luxe-page text-center pt-[8vh] px-6 pb-16">
-      <p className="luxe-eyebrow">{content.copy.splashEyebrow}</p>
-      <h1 className="luxe-h1">{content.copy.splashTitle}</h1>
+      <p className="luxe-eyebrow">{copy.splashEyebrow}</p>
+      <h1 className="luxe-h1">{copy.splashTitle}</h1>
       <div className="luxe-window mx-auto mt-8">
         <div className="luxe-scene">
           <div className="luxe-bubble">
@@ -92,33 +101,17 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
               style={{
                 opacity: Math.min(1, progress * 1.15),
                 transform: `scale(${0.96 + progress * 0.04})`,
-                background: scene.imageUrl ? undefined : FALLBACK_ART[index % FALLBACK_ART.length],
-                backgroundImage: scene.imageUrl ? `url(${scene.imageUrl})` : undefined,
+                background: scene?.imageUrl ? undefined : FALLBACK_ART[index % FALLBACK_ART.length],
+                backgroundImage: scene?.imageUrl ? `url(${scene.imageUrl})` : undefined,
               }}
             />
           </div>
         </div>
       </div>
-      <p className="luxe-caption mt-5">{content.copy.splashCaption}</p>
-      <label className="luxe-type-speed">
-        <span>Type speed</span>
-        <input
-          type="range"
-          min={LANDING_TYPE_DELAY_FAST_MS}
-          max={LANDING_TYPE_DELAY_SLOW_MS}
-          step={2}
-          value={typeDelayMs}
-          onChange={(e) => setTypeDelayMs(Number(e.target.value))}
-          aria-label="Prompt type speed"
-        />
-        <span className="luxe-type-speed-ends">
-          <em>Fast</em>
-          <em>Slow</em>
-        </span>
-      </label>
+      <p className="luxe-caption mt-5">{copy.splashCaption}</p>
       <div className="mt-8 flex flex-col items-center gap-3">
         <button type="button" className="luxe-btn-white" onClick={onMore}>
-          {content.copy.splashCta}
+          {copy.splashCta}
         </button>
         <LastCreatorReturnButton variant="luxe" />
       </div>
@@ -315,31 +308,6 @@ const LUXE_CSS = `
   .luxe-h1 { margin: 0; font-size: clamp(32px, 4.2vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
   .luxe-lede { margin: 14px 0 0; max-width: 36rem; color: rgba(245,245,247,0.62); font-size: 16px; line-height: 1.45; }
   .luxe-caption { letter-spacing: 0.08em; text-transform: uppercase; color: rgba(245,245,247,0.62); font-size: 14px; }
-  .luxe-type-speed {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-    width: min(220px, 70vw);
-    margin: 18px auto 0;
-    font-size: 11px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: rgba(245,245,247,0.55);
-  }
-  .luxe-type-speed input[type="range"] {
-    width: 100%;
-    accent-color: #fff;
-    cursor: pointer;
-  }
-  .luxe-type-speed-ends {
-    display: flex;
-    justify-content: space-between;
-    font-style: normal;
-    letter-spacing: 0.12em;
-    color: rgba(245,245,247,0.4);
-  }
-  .luxe-type-speed-ends em { font-style: normal; }
   .luxe-portal { text-align: center; font-size: 11px; color: rgba(255,255,255,0.35); margin: 10px 0 0; }
   .luxe-btn-white, .luxe-btn-ghost {
     border-radius: 999px; padding: 12px 22px; cursor: pointer; letter-spacing: 0.06em;
