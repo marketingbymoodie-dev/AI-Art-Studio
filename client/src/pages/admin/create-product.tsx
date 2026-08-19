@@ -58,11 +58,13 @@ export default function AdminCreateProduct() {
   const openEditorRef = useRef<(() => void) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
+  const [placementEditorOpen, setPlacementEditorOpen] = useState(false);
   const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
     setTesterPanelStatus(status.aopPanels);
+    setPlacementEditorOpen(!!status.placementEditorOpen);
   }, []);
 
   const embeddedContext = useMemo(
@@ -186,16 +188,14 @@ export default function AdminCreateProduct() {
   }, [selectedProductTypeId, testOrderMutation]);
 
   const requestPlaceOrTestOrder = useCallback(() => {
-    if (testerPanelStatus === "none" && testerHasDesign) {
-      openEditorRef.current?.();
-      return;
-    }
-    if (testerPanelStatus === "error") {
+    const needsOpen =
+      testerPanelStatus === "none" && testerHasDesign && !placementEditorOpen;
+    if (needsOpen || testerPanelStatus === "error") {
       openEditorRef.current?.();
       return;
     }
     requestTestOrder();
-  }, [testerPanelStatus, testerHasDesign, requestTestOrder]);
+  }, [testerPanelStatus, testerHasDesign, placementEditorOpen, requestTestOrder]);
 
   const saveDesignMutation = useMutation({
     mutationFn: async () => {
@@ -229,14 +229,17 @@ export default function AdminCreateProduct() {
     },
   });
 
-  const syncingPrintFiles = testerPanelStatus === "saving";
+  const syncingPrintFiles =
+    testerPanelStatus === "saving" ||
+    (testerPanelStatus === "none" && testerHasDesign && placementEditorOpen);
   const testerBusy =
     testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
-  const needsPlacement = testerPanelStatus === "none" && testerHasDesign;
+  const needsPlacement =
+    testerPanelStatus === "none" && testerHasDesign && !placementEditorOpen;
   const testOrderLabel = testOrderMutation.isPending
     ? "Sending test order…"
-    : testerPanelStatus === "saving"
-      ? "Syncing print files…"
+    : syncingPrintFiles
+      ? "Syncing placement…"
       : needsPlacement
         ? "Open placement editor"
         : testerPanelStatus === "none"
@@ -275,7 +278,7 @@ export default function AdminCreateProduct() {
           onClick={requestPlaceOrTestOrder}
           disabled={
             testOrderMutation.isPending ||
-            testerPanelStatus === "saving" ||
+            syncingPrintFiles ||
             (testerPanelStatus === "none" && !testerHasDesign)
           }
           data-testid="button-send-test-order"

@@ -1322,6 +1322,8 @@ export type TesterDesignStatus = {
    * Tester uses this to confirm before sending a clipped test order.
    */
   flatClipSides?: Array<'front' | 'back'>;
+  /** Live-store placement editor is already on screen (AOP mesh or flat placer). */
+  placementEditorOpen?: boolean;
 };
 
 export interface EmbedDesignProps {
@@ -7424,16 +7426,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       } else {
         setFlatPlacerState(null);
       }
-      // AOP needs panel upload; flat/mesh auto-Applies in tester (status → saved).
-      // Other Printify products can mark saved immediately after generate.
+      // AOP + flat open the live editor immediately. Mark saving so Preview
+      // Studio never asks to "Open placement editor" while it is already open.
+      // Other Printify products persist zoom and can mark saved right away.
       emitTesterDesignStatus({
         jobId: data.jobId || null,
-        aopPanels: useAopCustomizer
-          ? "none"
-          : usesFlatOnTheFlyPreview
-            ? "saving"
-            : "saved",
+        aopPanels: useAopCustomizer || usesFlatOnTheFlyPreview ? "saving" : "saved",
         flatClipSides: [],
+        placementEditorOpen: !!(useAopCustomizer || usesFlatOnTheFlyPreview),
       });
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
@@ -8463,6 +8463,55 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
   }, [embeddedContext, openTesterPlacementEditor]);
 
+  useEffect(() => {
+    if (!isAdminTester) return;
+    emitTesterDesignStatus({
+      placementEditorOpen: !!(showPatternStep || flatPlacerEditOpen),
+    });
+  }, [isAdminTester, showPatternStep, flatPlacerEditOpen, emitTesterDesignStatus]);
+
+  // Preview Studio: if the live AOP editor is open but persist never started
+  // (resume skip, late shop, etc.), kick one apply so the button can unlock.
+  useEffect(() => {
+    if (!isAdminTester || !useAopCustomizer || !showPatternStep) return;
+    if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
+    const aopStatus = () => testerDesignStatusRef.current.aopPanels;
+    if (aopStatus() === "saved") return;
+    if (aopStatus() === "none") {
+      emitTesterDesignStatus({ aopPanels: "saving" });
+    }
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < 20 && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        if (cancelled) return;
+        if (aopStatus() === "saved") return;
+        if (!hoodieAopPlacerRef.current) continue;
+        try {
+          await flushHoodieAopPlacer({ force: true });
+        } catch (err) {
+          if (!cancelled && aopStatus() !== "saved") {
+            console.warn("[AdminTester] AOP persist kick failed:", err);
+            emitTesterDesignStatus({ aopPanels: "error" });
+          }
+          return;
+        }
+        if (aopStatus() === "saved") return;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isAdminTester,
+    useAopCustomizer,
+    showPatternStep,
+    generatedDesign?.imageUrl,
+    generatedDesign?.id,
+    flushHoodieAopPlacer,
+    emitTesterDesignStatus,
+  ]);
+
   // Opening Saved Designs while a placer is mid-edit: flush the deferred apply
   // NOW so the current design's latest placement is persisted before the
   // customer clicks another design (otherwise reopen shows a stale placement).
@@ -9216,7 +9265,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       : result.renderPrintPanels();
 
     const persistPrintPanels = async () => {
-      if (!(isStorefront || isAdminTester) || !savedJobIdRef.current || !panelSaveShop) {
+      if (!(isStorefront || isAdminTester) || !savedJobIdRef.current) {
+        return;
+      }
+      if (!panelSaveShop) {
+        console.warn("[HoodieAopApply] No shop for print-panel persist");
+        if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
         return;
       }
       const panelJobId = savedJobIdRef.current;
