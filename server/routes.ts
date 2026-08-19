@@ -22993,7 +22993,7 @@ ${orientationExtra}
       productTypeId: productType.id,
       productTypeName: productType.name ?? entry.label,
       reused,
-      openInAppPath: `/admin/create-product?productTypeId=${productType.id}`,
+      openInAppPath: `/admin/create-product?productTypeId=${productType.id}&from=catalog`,
     });
   }));
 
