@@ -2086,10 +2086,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   }, [selectedSize, outOfStockSizeIds, printSizes]);
 
   // Hide the redundant Printify "Model" dropdown when models already live in Size.
+  // AOP garments (leggings, hoodies) ship a dummy Printify colour (often White)
+  // that is not a customer choice — showing "Select color" empty breaks mockups.
   const showFrameColorSelector =
     frameColorObjects.length > 0 &&
     !frameOptionsRedundantWithSizes &&
-    !(isPhoneCaseProduct && !frameColorsArePhoneModels);
+    !(isPhoneCaseProduct && !frameColorsArePhoneModels) &&
+    !(!!productTypeConfig?.isAllOverPrint && frameColorObjects.length <= 1);
 
   // Phone cases with models in Size: never leave a junk Model fragment as frameColor.
   useEffect(() => {
@@ -3647,6 +3650,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       canvasConfig: dc.canvasConfig,
       sizes: dc.sizes || [],
       frameColors: dc.frameColors || [],
+      variantMap: dc.variantMap || {},
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
@@ -5595,6 +5599,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     const mergeContextOnly = !!fetchOpts?.mergeContextOnly;
     const mergeProductMockups = !!fetchOpts?.mergeProductMockups;
     const mergePersonViews = !!fetchOpts?.mergePersonViews;
+    const colors = productTypeConfig?.frameColors || [];
+    const vm = productTypeConfig?.variantMap;
+    const resolvedColorId =
+      colorId && colorId !== "default"
+        ? colorId
+        : (vm && colors.find((c) => hasVariantMappingForColor(vm, c.id))?.id) ||
+          colors[0]?.id ||
+          colorId ||
+          "default";
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
       console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
@@ -5639,7 +5652,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       imageUrl: designImageUrl,
       productTypeId: ptId,
       sizeId,
-      colorId,
+      colorId: resolvedColorId,
       scale: clampedScale,
       x: clampedX,
       y: clampedY,
@@ -5720,7 +5733,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         mirrorLegs: mirrorLegs ?? false,
         printPlacement: mockupPrintPlacement,
         sizeId,
-        colorId,
+        colorId: resolvedColorId,
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
@@ -5736,7 +5749,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         mirrorLegs: mirrorLegs ?? false,
         printPlacement: mockupPrintPlacement,
         sizeId,
-        colorId,
+        colorId: resolvedColorId,
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
@@ -5753,7 +5766,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         mirrorLegs: mirrorLegs ?? false,
         printPlacement: mockupPrintPlacement,
         sizeId,
-        colorId,
+        colorId: resolvedColorId,
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
@@ -6021,7 +6034,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         }
         sendMockupsToParent(finalUrls);
-        const cacheKey = mockupCacheKey(sizeId, colorId);
+        const cacheKey = mockupCacheKey(sizeId, resolvedColorId);
         currentMockupColorRef.current = cacheKey;
         mockupColorCacheRef.current[cacheKey] = { urls: finalUrls, images: finalImages };
         console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for', cacheKey);
@@ -6148,6 +6161,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        if (errorData.debug) {
+          console.warn("[Mockups] Mockup request failed:", errorData.error, errorData.debug);
+        }
         throw new Error(errorData.error || `Mockup generation failed (${response.status})`);
       }
 
@@ -6218,7 +6234,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       );
     }
     return { ok: true };
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -6487,6 +6503,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
     );
     if (fallback) setSelectedFrameColor(fallback.id);
+    else if (!selectedFrameColor && colors[0]) setSelectedFrameColor(colors[0].id);
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
   useEffect(() => {
