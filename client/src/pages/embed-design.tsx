@@ -13195,7 +13195,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </a>
                   </div>
                 ) : null}
-                <div className="flex flex-wrap items-center gap-2" data-testid="user-actions">
+                <div className="flex w-full items-center justify-between gap-2" data-testid="user-actions">
                   {isLoggedIn ? (
                     <StudioMenuIconButton
                       label={customer?.email ? `Sign out (${customer.email})` : "Sign out"}
