@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildThemeEditorUrl } from "./themeEditorUrl";
+import {
+  buildThemeEditorShopifyHref,
+  buildThemeEditorUrl,
+  httpsAdminUrlToShopifyProtocol,
+} from "./themeEditorUrl";
 
 describe("buildThemeEditorUrl", () => {
   it("builds an admin.shopify.com App embeds deep link", () => {
@@ -16,5 +20,19 @@ describe("buildThemeEditorUrl", () => {
     expect(buildThemeEditorUrl("studio-demo.myshopify.com", "")).toBe(
       "https://admin.shopify.com/store/studio-demo/themes/current/editor?context=apps",
     );
+  });
+
+  it("builds a shopify:// admin href that App Bridge can keep in history", () => {
+    expect(buildThemeEditorShopifyHref("abc123")).toBe(
+      "shopify://admin/themes/current/editor?context=apps&activateAppId=abc123%2Fai-art-embed",
+    );
+  });
+
+  it("converts an admin.shopify.com editor URL to shopify://", () => {
+    expect(
+      httpsAdminUrlToShopifyProtocol(
+        "https://admin.shopify.com/store/studio-demo/themes/current/editor?context=apps&activateAppId=abc123%2Fai-art-embed",
+      ),
+    ).toBe("shopify://admin/themes/current/editor?context=apps&activateAppId=abc123%2Fai-art-embed");
   });
 });

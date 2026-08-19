@@ -4,6 +4,7 @@ import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient
 import { useToast } from "@/hooks/use-toast";
 import { useSetupStatus, type MerchantSetupStatus } from "@/hooks/use-setup-status";
 import { getShopifyParams } from "@/lib/shopify";
+import { httpsAdminUrlToShopifyProtocol } from "@shared/themeEditorUrl";
 import AdminLayout from "@/components/admin-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -151,28 +152,14 @@ export default function AdminSetupPage() {
       ? shopDomain
       : `${shopDomain}.myshopify.com`
     : null;
-  const themeEditorUrl =
+  const themeEditorHttps =
     status?.themeEditorUrl ||
     (normalizedShop
       ? `https://admin.shopify.com/store/${normalizedShop.replace(/\.myshopify\.com$/i, "")}/themes/current/editor?context=apps`
       : null);
-
-  const openThemeEditor = () => {
-    if (!themeEditorUrl) {
-      toast({
-        title: "Open Theme Editor from Shopify",
-        description:
-          "Go to Online Store → Themes → Customize → App embeds, then toggle on AI Art Studio Embed and Save.",
-      });
-      return;
-    }
-    // Same Admin tab so the theme editor back arrow returns to Setup (a new tab exits to Home).
-    if (window.top) {
-      window.top.location.href = themeEditorUrl;
-      return;
-    }
-    window.location.href = themeEditorUrl;
-  };
+  const themeEditorHref =
+    status?.themeEditorShopifyUrl ||
+    (themeEditorHttps ? httpsAdminUrlToShopifyProtocol(themeEditorHttps) : null);
 
   return (
     <AdminLayout>
@@ -227,14 +214,29 @@ export default function AdminSetupPage() {
             </Tooltip>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant={embedDone ? "outline" : "default"}
-              onClick={openThemeEditor}
-              data-testid="button-open-theme-editor"
-            >
-              <ExternalLink className="h-4 w-4 mr-2" />
-              {embedDone ? "Re-open Theme Editor" : "Open Theme Editor"}
-            </Button>
+            {themeEditorHref ? (
+              <Button asChild variant={embedDone ? "outline" : "default"}>
+                <a href={themeEditorHref} target="_top" data-testid="button-open-theme-editor">
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  {embedDone ? "Re-open Theme Editor" : "Open Theme Editor"}
+                </a>
+              </Button>
+            ) : (
+              <Button
+                variant={embedDone ? "outline" : "default"}
+                onClick={() =>
+                  toast({
+                    title: "Open Theme Editor from Shopify",
+                    description:
+                      "Go to Online Store → Themes → Customize → App embeds, then toggle on AI Art Studio Embed and Save.",
+                  })
+                }
+                data-testid="button-open-theme-editor"
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                {embedDone ? "Re-open Theme Editor" : "Open Theme Editor"}
+              </Button>
+            )}
             {!embedDone && (
               <Button
                 variant="secondary"
@@ -260,8 +262,9 @@ export default function AdminSetupPage() {
           </div>
           {!embedDone && (
             <p className="text-xs text-muted-foreground mt-2">
-              App Embeds (left sidebar) → toggle on &quot;AI Art Studio Embed&quot; → Save. Then use the
-              theme editor <strong>back arrow</strong> to return here and click I&apos;ve enabled it.
+              App Embeds (left sidebar) → toggle on &quot;AI Art Studio Embed&quot; → Save. Then use your
+              <strong> browser&apos;s back button</strong> (not the theme editor&apos;s back arrow) to
+              return here and click I&apos;ve enabled it.
             </p>
           )}
         </StepShell>

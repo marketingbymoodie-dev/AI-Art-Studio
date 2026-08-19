@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   formatTicketRef,
+  helpDemoShareUrl,
   isSupportCategory,
   isSupportStatus,
+  normalizeHelpDemoUrl,
   slugifyHelpTitle,
   ticketNeedsErrorContext,
   ticketNeedsGenerationId,
@@ -31,5 +33,18 @@ describe("support helpers", () => {
       "connect-printify-create-a-page",
     );
     expect(isSupportStatus("waiting_on_operator")).toBe(true);
+  });
+
+  it("normalizes Supademo share, embed, and iframe snippets", () => {
+    const id = "cmsy43d9r0ddqqmlambts1iec";
+    const embed = `https://app.supademo.com/embed/${id}`;
+    expect(normalizeHelpDemoUrl(`https://app.supademo.com/demo/${id}?utm_source=link`)).toBe(embed);
+    expect(normalizeHelpDemoUrl(embed)).toBe(embed);
+    expect(
+      normalizeHelpDemoUrl(`<iframe src="https://app.supademo.com/embed/${id}" allow="clipboard-write"></iframe>`),
+    ).toBe(embed);
+    expect(normalizeHelpDemoUrl("")).toBe(null);
+    expect(helpDemoShareUrl(embed)).toBe(`https://app.supademo.com/demo/${id}`);
+    expect(() => normalizeHelpDemoUrl("https://example.com/demo/abc")).toThrow(/app.supademo.com/);
   });
 });

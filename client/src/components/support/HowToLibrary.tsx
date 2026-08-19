@@ -4,10 +4,43 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
   HELP_ARTICLE_CATEGORY_LABELS,
+  helpDemoShareUrl,
   type HelpArticlePublic,
 } from "@shared/support";
 import type { SupportFetcher } from "./SupportTicketForm";
-import { BookOpen, Loader2, Search, Sparkles } from "lucide-react";
+import { BookOpen, ExternalLink, Loader2, Search, Sparkles } from "lucide-react";
+
+export function HowToDemoEmbed({
+  demoUrl,
+  title,
+}: {
+  demoUrl: string;
+  title: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="relative w-full overflow-hidden rounded-lg border bg-muted" style={{ aspectRatio: "16 / 10" }}>
+        <iframe
+          src={demoUrl}
+          title={`${title} walkthrough`}
+          className="absolute inset-0 h-full w-full border-0"
+          allow="clipboard-write; fullscreen"
+          allowFullScreen
+          loading="lazy"
+        />
+      </div>
+      <a
+        href={helpDemoShareUrl(demoUrl)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground underline-offset-4 hover:underline"
+      >
+        Open walkthrough in a new tab
+        <ExternalLink className="h-3.5 w-3.5" />
+      </a>
+    </div>
+  );
+}
 
 type Props = {
   audience: "creator" | "merchant";
@@ -110,6 +143,11 @@ export function HowToLibrary({ audience, fetcher, chrome = "admin" }: Props) {
               </h2>
               {selected.summary ? (
                 <p className="mt-2 text-sm text-muted-foreground">{selected.summary}</p>
+              ) : null}
+              {selected.demoUrl ? (
+                <div className="mt-4">
+                  <HowToDemoEmbed demoUrl={selected.demoUrl} title={selected.title} />
+                </div>
               ) : null}
               <div className="mt-4 whitespace-pre-wrap text-sm leading-6">{selected.body}</div>
             </article>

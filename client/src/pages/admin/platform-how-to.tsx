@@ -21,21 +21,34 @@ import {
   HELP_ARTICLE_CATEGORY_LABELS,
   HELP_AUDIENCE_LABELS,
   HELP_AUDIENCES,
+  normalizeHelpDemoUrl,
   type HelpArticleCategory,
   type HelpArticlePublic,
   type HelpAudience,
 } from "@shared/support";
+import { HowToDemoEmbed } from "@/components/support/HowToLibrary";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 
 const emptyDraft = {
   title: "",
   summary: "",
   body: "",
+  demoUrl: "",
   audience: "both" as HelpAudience,
   category: "setup" as HelpArticleCategory,
   published: false,
   sortOrder: 0,
 };
+
+function parseDraftDemoUrl(raw: string): { embed: string | null; error: string | null } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { embed: null, error: null };
+  try {
+    return { embed: normalizeHelpDemoUrl(trimmed), error: null };
+  } catch (err) {
+    return { embed: null, error: err instanceof Error ? err.message : "Invalid demo URL" };
+  }
+}
 
 export default function PlatformHowToPage() {
   const { toast } = useToast();
@@ -53,11 +66,15 @@ export default function PlatformHowToPage() {
 
   const saveMut = useMutation({
     mutationFn: async () => {
+      const payload = {
+        ...draft,
+        demoUrl: normalizeHelpDemoUrl(draft.demoUrl),
+      };
       if (editingId && editingId !== "new") {
-        const res = await apiRequest("PATCH", `/api/platform/help/articles/${editingId}`, draft);
+        const res = await apiRequest("PATCH", `/api/platform/help/articles/${editingId}`, payload);
         return res.json();
       }
-      const res = await apiRequest("POST", "/api/platform/help/articles", draft);
+      const res = await apiRequest("POST", "/api/platform/help/articles", payload);
       return res.json();
     },
     onSuccess: (data) => {
@@ -90,6 +107,7 @@ export default function PlatformHowToPage() {
   });
 
   const articles = list.data?.articles || [];
+  const demoPreview = parseDraftDemoUrl(draft.demoUrl);
 
   function startEdit(article: HelpArticlePublic) {
     setEditingId(article.id);
@@ -97,6 +115,7 @@ export default function PlatformHowToPage() {
       title: article.title,
       summary: article.summary || "",
       body: article.body,
+      demoUrl: article.demoUrl || "",
       audience: article.audience,
       category: article.category,
       published: article.published,
@@ -221,6 +240,24 @@ export default function PlatformHowToPage() {
                 onChange={(e) => setDraft({ ...draft, summary: e.target.value })}
                 placeholder="One-line preview"
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="howto-demo">Walkthrough (Supademo)</Label>
+              <Input
+                id="howto-demo"
+                value={draft.demoUrl}
+                onChange={(e) => setDraft({ ...draft, demoUrl: e.target.value })}
+                placeholder="https://app.supademo.com/demo/…"
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional. Paste a share link, embed link, or iframe snippet. Merchants and creators
+                see the walkthrough inline.
+              </p>
+              {demoPreview.error ? (
+                <p className="text-xs text-destructive">{demoPreview.error}</p>
+              ) : demoPreview.embed ? (
+                <HowToDemoEmbed demoUrl={demoPreview.embed} title={draft.title || "Walkthrough preview"} />
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label htmlFor="howto-body">Body</Label>

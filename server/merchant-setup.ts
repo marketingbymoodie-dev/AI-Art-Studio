@@ -14,7 +14,7 @@ import { getEffectivePlan } from "./customizer-plans";
 import { peekMerchantGenerationQuota } from "./generation-quota";
 import { isPrintifyConnected } from "./printify-connection";
 import { getAppUrl } from "./shopify";
-import { buildThemeEditorUrl } from "@shared/themeEditorUrl";
+import { buildThemeEditorShopifyHref, buildThemeEditorUrl } from "@shared/themeEditorUrl";
 import type { Merchant, ShopifyInstallation } from "@shared/schema";
 
 export { isPrintifyConnected };
@@ -105,6 +105,8 @@ export interface MerchantSetupStatus {
   reconnectUrl: string | null;
   /** Same-tab theme editor deep link (App embeds → our block). */
   themeEditorUrl: string | null;
+  /** App Bridge protocol href — keeps Setup in Admin history. */
+  themeEditorShopifyUrl: string | null;
 }
 
 function isShopAuthorized(installation: ShopifyInstallation): boolean {
@@ -169,5 +171,6 @@ export async function getMerchantSetupStatus(
     shopAuthorized,
     reconnectUrl: shopAuthorized ? null : buildReconnectUrl(installation.shopDomain),
     themeEditorUrl: buildThemeEditorUrl(installation.shopDomain, process.env.SHOPIFY_API_KEY || ""),
+    themeEditorShopifyUrl: buildThemeEditorShopifyHref(process.env.SHOPIFY_API_KEY || ""),
   };
 }
