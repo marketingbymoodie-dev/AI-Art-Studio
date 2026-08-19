@@ -11865,14 +11865,14 @@ ${orientationExtra}
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
 
-  // Daily: cancel 7-day-old Preview Studio / cart test drafts and leftover
-  // Mockup Preview / calibration products. Does not touch Saved Designs or
-  // published design_products Printify listings.
+  // Daily: delete unpublished Mockup Preview / probe leftovers (1h grace) and
+  // cancel 7-day-old Preview Studio test drafts. Never deletes published
+  // Printify store listings or design_products.
   setTimeout(() => {
     runPrintifyTestArtifactCleanup().catch((e: Error) =>
       console.error("[Printify Test Cleanup] Startup run error:", e),
     );
-  }, 20 * 60 * 1000);
+  }, 5 * 60 * 1000);
   setInterval(() => {
     runPrintifyTestArtifactCleanup().catch((e: Error) =>
       console.error("[Printify Test Cleanup] Interval error:", e),

@@ -1,16 +1,25 @@
 /**
- * Delete disposable Printify test-order drafts + leftover temp products after 7 days.
+ * Delete disposable Printify leftovers we created (mockup temps, cost probes,
+ * calibration blanks, Preview Studio / cart test drafts).
  *
  * Does NOT touch:
- *  - merchant Saved Designs / generation_jobs mockup URLs (those live in our DB + storage)
+ *  - classic Printify → Shopify published listings
+ *  - merchant Saved Designs / generation_jobs mockup URLs
  *  - published design_products.printify_product_id listings
  *  - any Printify order already sent to production / in production / fulfilled
+ *
+ * Catalog names like "Unisex Heavy Blend Hooded Sweatshirt" are never enough
+ * on their own. Those only go away when they belong to a known test-order
+ * submission we are cleaning, or they still have our temp description.
  */
 import { pool } from "./db";
 
 const TAG = "[Printify Test Cleanup]";
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
-const RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+/** Mockup / probe / calibration leftovers — next sweep after this grace. */
+const TEMP_RETAIN_MS = 60 * 60 * 1000;
+/** Draft test orders stay so the print file can still be opened. */
+const TEST_ORDER_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
 const PAGE_LIMIT = 50;
 const REQUEST_GAP_MS = 200;
 
@@ -30,31 +39,85 @@ export type PrintifyTestCleanupResult = {
   errors: number;
 };
 
+export type PrintifyTempProductHint = {
+  title?: string | null;
+  description?: string | null;
+  visible?: boolean | null;
+};
+
 type PrintifyCreds = { shopId: string; token: string };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Titles we create (or Printify auto-names from our test-order external_id). */
-export function isDisposablePrintifyTitle(title: string | null | undefined): boolean {
+export function isImmediateTempTitle(title: string | null | undefined): boolean {
   const t = String(title || "").trim();
   if (!t) return false;
-  if (/^Mockup Preview - \d+/i.test(t)) return true;
-  if (/^_cost_probe_\d+/i.test(t)) return true;
-  if (/^__appai_calibration_/i.test(t)) return true;
-  if (/^__appai_mapper_blank_/i.test(t)) return true;
+  return (
+    /^Mockup Preview - \d+/i.test(t) ||
+    /^_cost_probe_\d+/i.test(t) ||
+    /^__appai_calibration_/i.test(t) ||
+    /^__appai_mapper_blank_/i.test(t)
+  );
+}
+
+export function isTestOrderTitle(title: string | null | undefined): boolean {
+  const t = String(title || "").trim();
+  if (!t) return false;
   if (/flat-test-order/i.test(t) || /cart-test-order/i.test(t)) return true;
   if (/^API Shopify /i.test(t) && /test-order/i.test(t)) return true;
   if (/AppAI Test$/i.test(t) && /test-order/i.test(t)) return true;
   return false;
 }
 
-function isOlderThanRetention(createdAt: string | Date | null | undefined, now: Date): boolean {
+export function isDisposablePrintifyTitle(title: string | null | undefined): boolean {
+  return isImmediateTempTitle(title) || isTestOrderTitle(title);
+}
+
+export function isDisposablePrintifyDescription(description: string | null | undefined): boolean {
+  const d = String(description || "");
+  if (!d) return false;
+  return (
+    /temporary product for mockup generation/i.test(d) ||
+    /temporary product for cost lookup/i.test(d) ||
+    /will be deleted immediately/i.test(d) ||
+    /temp calibration product/i.test(d)
+  );
+}
+
+export function isPrintifyProductPublished(product: PrintifyTempProductHint | null | undefined): boolean {
+  return product?.visible === true;
+}
+
+/** True only for artifacts we created — never a catalog name alone. */
+export function isDisposablePrintifyProduct(product: PrintifyTempProductHint | null | undefined): boolean {
+  if (!product) return false;
+  return isDisposablePrintifyTitle(product.title) || isDisposablePrintifyDescription(product.description);
+}
+
+function isOlderThan(
+  createdAt: string | Date | null | undefined,
+  now: Date,
+  retainMs: number,
+): boolean {
   if (!createdAt) return false;
   const ts = createdAt instanceof Date ? createdAt.getTime() : Date.parse(String(createdAt));
   if (!Number.isFinite(ts)) return false;
-  return now.getTime() - ts >= RETAIN_MS;
+  return now.getTime() - ts >= retainMs;
+}
+
+function leftoverReadyToDelete(product: any, now: Date): boolean {
+  if (isPrintifyProductPublished(product)) return false;
+  if (!isDisposablePrintifyProduct(product)) return false;
+  if (isImmediateTempTitle(product.title) || isDisposablePrintifyDescription(product.description)) {
+    if (!product.created_at) return isImmediateTempTitle(product.title);
+    return isOlderThan(product.created_at, now, TEMP_RETAIN_MS);
+  }
+  if (isTestOrderTitle(product.title)) {
+    return isOlderThan(product.created_at, now, TEST_ORDER_RETAIN_MS);
+  }
+  return false;
 }
 
 async function printifyFetch<T = any>(
@@ -170,7 +233,6 @@ async function cancelOrderIfDraft(
     { method: "POST", body: "{}" },
   );
   if (cancel.ok || cancel.status === 404) return "canceled";
-  // Already canceled / not cancellable as draft
   if (cancel.status === 400 && /cancel/i.test(cancel.text)) return "canceled";
   console.warn(`${TAG} cancel order ${orderId} failed: ${cancel.status} ${cancel.text.slice(0, 160)}`);
   return "error";
@@ -180,10 +242,22 @@ async function deleteProductIfAllowed(
   creds: PrintifyCreds,
   productId: string,
   protectedIds: Set<string>,
-  title?: string,
+  hint?: PrintifyTempProductHint,
+  opts?: { fromKnownTestOrder?: boolean },
 ): Promise<"deleted" | "protected" | "error"> {
   if (protectedIds.has(productId)) return "protected";
-  if (title && !isDisposablePrintifyTitle(title)) return "protected";
+  const got = await printifyFetch<any>(
+    creds.token,
+    `/shops/${creds.shopId}/products/${productId}.json`,
+  );
+  if (got.status === 404) return "deleted";
+  const product: PrintifyTempProductHint = {
+    title: got.json?.title ?? hint?.title,
+    description: got.json?.description ?? hint?.description,
+    visible: got.json?.visible ?? hint?.visible,
+  };
+  if (isPrintifyProductPublished(product)) return "protected";
+  if (!opts?.fromKnownTestOrder && !isDisposablePrintifyProduct(product)) return "protected";
   const del = await printifyFetch(
     creds.token,
     `/shops/${creds.shopId}/products/${productId}.json`,
@@ -202,7 +276,7 @@ async function sweepLeftoverProducts(
   let deleted = 0;
   let skippedProtected = 0;
   let errors = 0;
-  for (let page = 1; page <= 40; page++) {
+  for (let page = 1; page <= 50; page++) {
     const list = await printifyFetch<any>(
       creds.token,
       `/shops/${creds.shopId}/products.json?limit=${PAGE_LIMIT}&page=${page}`,
@@ -222,15 +296,14 @@ async function sweepLeftoverProducts(
     if (rows.length === 0) break;
     for (const p of rows) {
       const id = String(p?.id || "").trim();
-      const title = String(p?.title || "");
-      if (!id || !isDisposablePrintifyTitle(title)) continue;
-      if (protectedIds.has(id)) {
-        skippedProtected++;
+      if (!id) continue;
+      if (protectedIds.has(id) || isPrintifyProductPublished(p)) {
+        if (isDisposablePrintifyProduct(p) || protectedIds.has(id)) skippedProtected++;
         continue;
       }
-      if (!isOlderThanRetention(p.created_at, now)) continue;
+      if (!leftoverReadyToDelete(p, now)) continue;
       await sleep(REQUEST_GAP_MS);
-      const result = await deleteProductIfAllowed(creds, id, protectedIds, title);
+      const result = await deleteProductIfAllowed(creds, id, protectedIds, p);
       if (result === "deleted") deleted++;
       else if (result === "protected") skippedProtected++;
       else errors++;
@@ -267,8 +340,21 @@ export async function runPrintifyTestArtifactCleanup(
   }
 
   result.shops = shops.length;
-  const credsByShop = new Map(shops.map((s) => [s.shopId, s]));
 
+  for (const creds of shops) {
+    try {
+      const leftover = await sweepLeftoverProducts(creds, protectedIds, now);
+      result.productsDeleted += leftover.deleted;
+      result.skippedProtected += leftover.skippedProtected;
+      result.errors += leftover.errors;
+    } catch (e: any) {
+      console.warn(`${TAG} leftover sweep shop ${creds.shopId}:`, e?.message || e);
+      result.errors++;
+    }
+    await sleep(REQUEST_GAP_MS);
+  }
+
+  const credsByShop = new Map(shops.map((s) => [s.shopId, s]));
   for (const row of expiredOrders) {
     const creds = credsByShop.get(row.printifyShopId);
     if (!creds) {
@@ -294,12 +380,9 @@ export async function runPrintifyTestArtifactCleanup(
       result.ordersCanceled++;
       for (const productId of productIds) {
         await sleep(REQUEST_GAP_MS);
-        const titleGot = await printifyFetch<any>(
-          creds.token,
-          `/shops/${creds.shopId}/products/${productId}.json`,
-        );
-        const title = titleGot.json?.title as string | undefined;
-        const del = await deleteProductIfAllowed(creds, productId, protectedIds, title);
+        const del = await deleteProductIfAllowed(creds, productId, protectedIds, undefined, {
+          fromKnownTestOrder: true,
+        });
         if (del === "deleted") result.productsDeleted++;
         else if (del === "protected") result.skippedProtected++;
         else result.errors++;
@@ -307,19 +390,6 @@ export async function runPrintifyTestArtifactCleanup(
       await markSubmissionCleaned(row.id);
     } catch (e: any) {
       console.warn(`${TAG} order ${row.printifyOrderId}:`, e?.message || e);
-      result.errors++;
-    }
-    await sleep(REQUEST_GAP_MS);
-  }
-
-  for (const creds of shops) {
-    try {
-      const leftover = await sweepLeftoverProducts(creds, protectedIds, now);
-      result.productsDeleted += leftover.deleted;
-      result.skippedProtected += leftover.skippedProtected;
-      result.errors += leftover.errors;
-    } catch (e: any) {
-      console.warn(`${TAG} leftover sweep shop ${creds.shopId}:`, e?.message || e);
       result.errors++;
     }
     await sleep(REQUEST_GAP_MS);
