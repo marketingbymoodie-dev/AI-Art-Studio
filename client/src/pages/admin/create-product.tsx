@@ -290,7 +290,7 @@ export default function AdminCreateProduct() {
       </div>
       {syncingPrintFiles ? (
         <p className="text-xs text-muted-foreground" data-testid="text-design-saving">
-          Building Printify print files — this can take a minute on all-over-print products.
+          Syncing placement for the test order — usually a few seconds.
         </p>
       ) : null}
       {needsPlacement ? (

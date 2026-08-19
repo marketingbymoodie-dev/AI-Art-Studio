@@ -2844,7 +2844,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   flatPlacerEditOpenRef.current = flatPlacerEditOpen;
   // Last status reported to the admin tester host (see TesterDesignStatus).
   const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
-  const lastTesterAopFlushArtRef = useRef<string | null>(null);
   const emitTesterDesignStatus = useCallback(
     (patch: Partial<TesterDesignStatus>) => {
       testerDesignStatusRef.current = { ...testerDesignStatusRef.current, ...patch };
@@ -8283,37 +8282,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return applied;
   }, []);
 
-  // Preview Studio: a second generate keeps HoodieAopPlacer mounted, so its
-  // one-shot auto-apply never runs again and test-order status stays "none".
-  useEffect(() => {
-    if (!isAdminTester || !useAopCustomizer || !generatedDesign?.imageUrl) return;
-    if (!savedJobIdRef.current) return;
-    const artwork = toAbsoluteImageUrl(generatedDesign.imageUrl);
-    if (lastTesterAopFlushArtRef.current === artwork) return;
-    lastTesterAopFlushArtRef.current = artwork;
-    const timer = window.setTimeout(() => {
-      if (!hoodieAopPlacerRef.current) {
-        lastTesterAopFlushArtRef.current = null;
-        return;
-      }
-      emitTesterDesignStatus({
-        jobId: savedJobIdRef.current,
-        aopPanels: "saving",
-      });
-      void flushHoodieAopPlacer({ force: true }).catch((err) => {
-        console.warn("[AdminTester] AOP auto-flush after generate failed:", err);
-        emitTesterDesignStatus({ aopPanels: "error" });
-      });
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [
-    isAdminTester,
-    useAopCustomizer,
-    generatedDesign?.imageUrl,
-    flushHoodieAopPlacer,
-    emitTesterDesignStatus,
-  ]);
-
   /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
   const openAopPlacer = useCallback(() => {
     if (generatedDesign?.imageUrl) {
@@ -8478,15 +8446,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const openTesterPlacementEditor = useCallback(() => {
     if (useAopCustomizer) {
       openAopPlacer();
-      window.setTimeout(() => {
-        void flushHoodieAopPlacer({ force: true });
-      }, 400);
       return;
     }
     if (usesFlatOnTheFlyPreview) {
       setFlatPlacerEditOpen(true);
     }
-  }, [useAopCustomizer, openAopPlacer, flushHoodieAopPlacer, usesFlatOnTheFlyPreview]);
+  }, [useAopCustomizer, openAopPlacer, usesFlatOnTheFlyPreview]);
 
   useEffect(() => {
     if (embeddedContext?.mode !== "admin-tester") return;
@@ -9239,6 +9204,101 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // the customer out of the placer. They leave via "Back".
 
     // Front is the canonical "preferred" mockup the cart references.
+    const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+    const mockupPanels = result.renderPrintPanels({
+      maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+    });
+    // Preview Studio only needs test-order readiness — use preview-size panels
+    // like the live store. Full-res bakes (3–5k px × every panel) blocked the
+    // button for a minute+ and overlapping applies aborted the persist.
+    const fullPrintPanels = isAdminTester
+      ? null
+      : result.renderPrintPanels();
+
+    const persistPrintPanels = async () => {
+      if (!(isStorefront || isAdminTester) || !savedJobIdRef.current || !panelSaveShop) {
+        return;
+      }
+      const panelJobId = savedJobIdRef.current;
+      const seq = ++aopPanelPersistSeqRef.current;
+      const isStale = () => seq !== aopPanelPersistSeqRef.current;
+      const panelCaptureSignature = JSON.stringify({
+        mode: result.state.mode,
+        artworkUrl: result.state.artworkUrl,
+        backgroundColor: result.state.backgroundColor,
+        tileSettings: result.state.tileSettings,
+        pocketsEnabled: result.state.pocketsEnabled,
+        placements: result.state.placements,
+        enabled: result.state.enabled,
+        sleevesMirrored: result.state.sleevesMirrored,
+        legsSynced: result.state.legsSynced,
+        legsMirrored: result.state.legsMirrored,
+      });
+      const panelsForSave = isAdminTester
+        ? mockupPanels
+        : (fullPrintPanels ?? result.renderPrintPanels());
+      if (!panelsForSave?.length) {
+        if (isAdminTester && !isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        return;
+      }
+      if (isAdminTester) {
+        emitTesterDesignStatus({ jobId: panelJobId, aopPanels: "saving" });
+      }
+      const persistWork = (async () => {
+        try {
+          if (isStale()) return;
+          const aopPrintPanelUrls = await Promise.all(
+            panelsForSave.map(async ({ position, dataUrl }) => ({
+              position,
+              url: await ensureHostedUrl(dataUrl),
+            })),
+          );
+          if (isStale()) return;
+          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId: panelJobId,
+              shop: panelSaveShop,
+              designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
+            }),
+          });
+          console.log(
+            "[HoodieAopApply] Saved aopPrintPanelUrls on job",
+            panelJobId,
+            aopPrintPanelUrls.map((p) => p.position).join(","),
+          );
+          if (!isStale()) emitTesterDesignStatus({ aopPanels: "saved" });
+        } catch (e) {
+          console.error("[HoodieAopApply] Failed to persist print panels:", e);
+          if (!isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        }
+      })();
+      aopPanelPersistPromiseRef.current = persistWork;
+      if (isAdminTester) await persistWork;
+    };
+
+    // Preview Studio: unlock Send a Test Order as soon as preview-size panels
+    // are hosted. Skip full-res bakes and Printify lifestyle mockups.
+    if (isAdminTester) {
+      await persistPrintPanels();
+      const frontCanvas = result.renderView("front");
+      if (frontCanvas) {
+        try {
+          const frontHosted = await ensureHostedUrl(frontCanvas.toDataURL("image/jpeg", 0.85));
+          setAopPatternUrl(frontHosted);
+          setPrintifyMockupImages([{ url: frontHosted, label: "front" }]);
+          setPrintifyMockups([frontHosted]);
+          setMockupFailed(false);
+          setMockupError(null);
+          setMockupsStale(false);
+        } catch (err: any) {
+          console.warn("[HoodieAopApply] Tester preview upload failed:", err);
+        }
+      }
+      return;
+    }
+
     const frontCanvas = result.renderView("front");
     const backCanvas = result.renderView("back");
     if (!frontCanvas) {
@@ -9247,19 +9307,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     const frontDataUrl = frontCanvas.toDataURL("image/png");
     const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
-    const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
-    const willPersistPanels =
-      (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
-    if (willPersistPanels) {
+    if (isStorefront && savedJobIdRef.current && panelSaveShop) {
       emitTesterDesignStatus({
         jobId: savedJobIdRef.current,
         aopPanels: "saving",
       });
     }
-    const mockupPanels = result.renderPrintPanels({
-      maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
-    });
-    const fullPrintPanels = result.renderPrintPanels();
 
     setMockupLoading(true);
     setMockupTriggered(true);
@@ -9325,64 +9378,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         );
       }
 
-      // Persist the flat per-panel PRINT files on the job's designState
-      // (aopPrintPanelUrls). This is what order fulfillment, the admin
-      // test-order flow, and permanent design-product publishing submit to
-      // Printify as print_areas — without it a placer-designed AOP product
-      // can never be auto-fulfilled. Runs non-blocking so the mockup upload
-      // (which gates ATC) isn't delayed by the heavier panel bake.
-      const panelSaveShopInner = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
-      if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShopInner) {
-        const panelJobId = savedJobIdRef.current;
-        // Versioned capture: bump the sequence for this apply; if a newer apply
-        // starts while this one is still baking/uploading, abort before the write
-        // so stale panels can never overwrite the latest state.
-        const seq = ++aopPanelPersistSeqRef.current;
-        const isStale = () => seq !== aopPanelPersistSeqRef.current;
-        const panelCaptureSignature = JSON.stringify({
-          mode: result.state.mode,
-          artworkUrl: result.state.artworkUrl,
-          backgroundColor: result.state.backgroundColor,
-          tileSettings: result.state.tileSettings,
-          pocketsEnabled: result.state.pocketsEnabled,
-          placements: result.state.placements,
-          enabled: result.state.enabled,
-          sleevesMirrored: result.state.sleevesMirrored,
-          legsSynced: result.state.legsSynced,
-          legsMirrored: result.state.legsMirrored,
-        });
-        aopPanelPersistPromiseRef.current = (async () => {
-          try {
-            const panelsForSave = fullPrintPanels ?? result.renderPrintPanels();
-            if (!panelsForSave?.length || isStale()) return;
-            const aopPrintPanelUrls = await Promise.all(
-              panelsForSave.map(async ({ position, dataUrl }) => ({
-                position,
-                url: await ensureHostedUrl(dataUrl),
-              })),
-            );
-            if (isStale()) return;
-            await safeFetch(`${API_BASE}/api/storefront/save-state`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                jobId: panelJobId,
-                shop: panelSaveShopInner,
-                designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
-              }),
-            });
-            console.log(
-              "[HoodieAopApply] Saved aopPrintPanelUrls on job",
-              panelJobId,
-              aopPrintPanelUrls.map((p) => p.position).join(","),
-            );
-            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
-          } catch (e) {
-            console.error("[HoodieAopApply] Failed to persist print panels:", e);
-            if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
-          }
-        })();
-      }
+      // Persist print panels in the background so ATC is not blocked.
+      void persistPrintPanels();
 
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
@@ -14696,7 +14693,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
-                      ...(hoodieAopPlacerState ?? {}),
+                      // New artwork remounts the placer. Spreading a prior
+                      // placement makes HoodieAopPlacer treat it as a resume
+                      // and skip the persist that unlocks Send a Test Order.
+                      ...(hoodieAopPlacerState?.artworkUrl === aopPendingMotifUrl
+                        ? hoodieAopPlacerState
+                        : {}),
                       // Always seed the latest AI-generated motif as the
                       // active artwork, even if the saved state pointed at
                       // an older one — fresh generations should take over.
@@ -14708,13 +14710,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         : {}),
                     }}
                     onChange={(s) => {
-                      if (
-                        isAdminTester &&
-                        hoodieAopPlacerState?.artworkUrl &&
-                        s.artworkUrl !== hoodieAopPlacerState.artworkUrl
-                      ) {
-                        emitTesterDesignStatus({ aopPanels: "none" });
-                      }
                       setHoodieAopPlacerState(s);
                       setAopPlacementDirty(true);
                     }}
@@ -14725,7 +14720,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     }}
                     // Resume: skip one-shot initial apply (mockup already persisted).
                     // Fresh designs still apply once for the first cart image.
-                    skipInitialAutoApply={!!hoodieAopPlacerState}
+                    skipInitialAutoApply={
+                      !!hoodieAopPlacerState &&
+                      hoodieAopPlacerState.artworkUrl === aopPendingMotifUrl
+                    }
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
                     onEngageLiveEditor={engageAopLiveEditor}
@@ -14959,7 +14957,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
                     void (async () => {
                       try {
-                        const printPanels = (isMerchantStudio || isAdminTester) && options.getPrintPanelUrls
+                        const printPanels = isMerchantStudio && options.getPrintPanelUrls
                           ? await options.getPrintPanelUrls()
                           : (options.printPanelUrls || options.panelUrls);
                         if (!printPanels?.length || isStale()) return;

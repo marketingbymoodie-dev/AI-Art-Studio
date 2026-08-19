@@ -1105,7 +1105,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         // suppressed.
         seededAsResumeRef.current = !!(
           initialState &&
-          Object.keys(initialState).some((k) => k !== "artworkUrl")
+          (initialState.placements ||
+            initialState.enabled ||
+            initialState.tileSettings)
         );
         return buildInitialState(data.template, initialState);
       }
@@ -1932,10 +1934,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     return outputSignature(state) !== lastAppliedSignatureRef.current;
   }, [state, artworkImg]);
 
+  const applyInFlightRef = useRef(false);
   const applyIfNeeded = useCallback(
     async (opts?: { force?: boolean }): Promise<boolean> => {
       if (!onApply || !state || !data || !artworkImg) return false;
+      if (applyInFlightRef.current) return false;
       if (!opts?.force && !hasPendingChanges()) return false;
+      applyInFlightRef.current = true;
       setApplyStatusBoth("saving");
       try {
         await Promise.resolve(
@@ -1953,6 +1958,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         console.error("[HoodieAopPlacer] apply error:", e);
         setApplyStatusBoth("error");
         throw e;
+      } finally {
+        applyInFlightRef.current = false;
       }
     },
     [
