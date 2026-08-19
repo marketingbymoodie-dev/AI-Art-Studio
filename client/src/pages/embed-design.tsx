@@ -68,7 +68,10 @@ import HoodieAopPlacer, {
   type HoodieAopPlacerApplyResult,
   type HoodieAopPlacerHandle,
 } from "@/components/designer/HoodieAopPlacer";
-import { MOCKUP_PANEL_MAX_LONG_EDGE_PX } from "@/components/hoodie-template-mapper/lib/aopPreview";
+import {
+  MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+  TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX,
+} from "@/components/hoodie-template-mapper/lib/aopPreview";
 import FlatProductPlacer, {
   type FlatApplyStatus,
   type FlatProductPlacerHandle,
@@ -9255,11 +9258,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Front is the canonical "preferred" mockup the cart references.
     const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
     const mockupPanels = result.renderPrintPanels({
-      maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+      maxLongEdgePx: isAdminTester
+        ? TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX
+        : MOCKUP_PANEL_MAX_LONG_EDGE_PX,
     });
-    // Preview Studio only needs test-order readiness — use preview-size panels
-    // like the live store. Full-res bakes (3–5k px × every panel) blocked the
-    // button for a minute+ and overlapping applies aborted the persist.
+    // Preview Studio: persist ~3200px panels (not mockup-only 1800). Full
+    // storefront bake still uses the uncapped path below so live orders
+    // keep print-ready files without blocking the tester button.
     const fullPrintPanels = isAdminTester
       ? null
       : result.renderPrintPanels();
@@ -9287,6 +9292,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         sleevesMirrored: result.state.sleevesMirrored,
         legsSynced: result.state.legsSynced,
         legsMirrored: result.state.legsMirrored,
+        wrapBackMode: result.state.wrapBackMode,
       });
       const panelsForSave = isAdminTester
         ? mockupPanels

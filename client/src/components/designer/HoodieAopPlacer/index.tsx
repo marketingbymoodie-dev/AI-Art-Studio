@@ -843,10 +843,12 @@ function buildEffectiveRenderConfig(
     if (state.wrapBackMode === "duplicate") {
       const frontPl = placements["front-face"];
       if (frontPl) {
-        placements["back-face"] = {
-          front: { ...frontPl.front },
-          back: { ...frontPl.back },
-        };
+        // Same print: the customer only edits the front face. Copy that
+        // placement onto both views of both groups — `frontPl.back` is
+        // usually still the default and would bake a different crop.
+        const shared = { ...frontPl.front };
+        placements["front-face"] = { front: { ...shared }, back: { ...shared } };
+        placements["back-face"] = { front: { ...shared }, back: { ...shared } };
       }
       enabled = { ...enabled, "front-face": true, "back-face": true };
     } else {

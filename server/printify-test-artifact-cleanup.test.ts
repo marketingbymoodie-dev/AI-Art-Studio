@@ -6,6 +6,7 @@ import {
   isImmediateTempTitle,
   isPrintifyProductPublished,
   isTestOrderTitle,
+  leftoverReadyToDelete,
 } from "./printify-test-artifact-cleanup";
 
 describe("Printify temp product matchers", () => {
@@ -35,6 +36,42 @@ describe("Printify temp product matchers", () => {
       }),
     ).toBe(true);
     expect(isDisposablePrintifyDescription("temp calibration product (auto-deleted)")).toBe(true);
+  });
+
+  it("deletes unpublished test-order products after 1 hour, not 7 days", () => {
+    const now = new Date("2026-08-19T22:00:00.000Z");
+    const twoHoursAgo = "2026-08-19T20:00:00.000Z";
+    const thirtyMinAgo = "2026-08-19T21:30:00.000Z";
+    expect(
+      leftoverReadyToDelete(
+        {
+          title: "API Shopify cart-test-order:gid://shopify/Cart/abc",
+          visible: false,
+          created_at: twoHoursAgo,
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      leftoverReadyToDelete(
+        {
+          title: "API Shopify flat-test-order:48:abc - AppAI Test",
+          visible: false,
+          created_at: thirtyMinAgo,
+        },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      leftoverReadyToDelete(
+        {
+          title: "API Shopify cart-test-order:gid://shopify/Cart/abc",
+          visible: true,
+          created_at: twoHoursAgo,
+        },
+        now,
+      ),
+    ).toBe(false);
   });
 
   it("does not match classic merchant listings", () => {

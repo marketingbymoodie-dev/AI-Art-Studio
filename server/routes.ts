@@ -11865,8 +11865,8 @@ ${orientationExtra}
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
 
-  // Daily: delete unpublished Mockup Preview / probe leftovers (1h grace) and
-  // cancel 7-day-old Preview Studio test drafts. Never deletes published
+  // Hourly: delete unpublished Mockup Preview / test-order products (1h grace).
+  // Draft test *orders* still cancel only after 7 days. Never deletes published
   // Printify store listings or design_products.
   setTimeout(() => {
     runPrintifyTestArtifactCleanup().catch((e: Error) =>
@@ -11877,7 +11877,7 @@ ${orientationExtra}
     runPrintifyTestArtifactCleanup().catch((e: Error) =>
       console.error("[Printify Test Cleanup] Interval error:", e),
     );
-  }, 24 * 60 * 60 * 1000);
+  }, 60 * 60 * 1000);
 
   // Daily Printify catalogue OOS scan + email digest. This in-process interval is the
   // primary trigger (no Railway Cron configured); the secured POST /api/internal/oos-catalogue-scan

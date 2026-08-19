@@ -8,6 +8,9 @@
  *  - published design_products.printify_product_id listings
  *  - any Printify order already sent to production / in production / fulfilled
  *
+ * Unpublished test-order *products* are removed after 1 hour (My Products).
+ * Draft test *orders* stay 7 days so print files can still be opened.
+ *
  * Catalog names like "Unisex Heavy Blend Hooded Sweatshirt" are never enough
  * on their own. Those only go away when they belong to a known test-order
  * submission we are cleaning, or they still have our temp description.
@@ -18,8 +21,9 @@ const TAG = "[Printify Test Cleanup]";
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 /** Mockup / probe / calibration leftovers — next sweep after this grace. */
 const TEMP_RETAIN_MS = 60 * 60 * 1000;
-/** Draft test orders stay so the print file can still be opened. */
-const TEST_ORDER_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+/** Unpublished test-order *products* (My Products clutter) — same 1h grace as temps.
+ *  Draft test *orders* stay 7 days (`INTERVAL '7 days'` below); print files live on the order. */
+const TEST_ORDER_PRODUCT_RETAIN_MS = TEMP_RETAIN_MS;
 const PAGE_LIMIT = 50;
 const REQUEST_GAP_MS = 200;
 
@@ -107,7 +111,8 @@ function isOlderThan(
   return now.getTime() - ts >= retainMs;
 }
 
-function leftoverReadyToDelete(product: any, now: Date): boolean {
+/** Unpublished disposable catalog rows ready for delete. Exported for unit tests. */
+export function leftoverReadyToDelete(product: any, now: Date): boolean {
   if (isPrintifyProductPublished(product)) return false;
   if (!isDisposablePrintifyProduct(product)) return false;
   if (isImmediateTempTitle(product.title) || isDisposablePrintifyDescription(product.description)) {
@@ -115,7 +120,8 @@ function leftoverReadyToDelete(product: any, now: Date): boolean {
     return isOlderThan(product.created_at, now, TEMP_RETAIN_MS);
   }
   if (isTestOrderTitle(product.title)) {
-    return isOlderThan(product.created_at, now, TEST_ORDER_RETAIN_MS);
+    if (!product.created_at) return true;
+    return isOlderThan(product.created_at, now, TEST_ORDER_PRODUCT_RETAIN_MS);
   }
   return false;
 }
