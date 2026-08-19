@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { DEFAULT_LANDING_CONTENT, type LandingContent } from "@shared/landingContent";
+import {
+  clampLandingTypeDelayMs,
+  DEFAULT_LANDING_CONTENT,
+  LANDING_TYPE_DELAY_FAST_MS,
+  LANDING_TYPE_DELAY_SLOW_MS,
+  type LandingContent,
+} from "@shared/landingContent";
 import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
 import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 
@@ -33,17 +39,18 @@ export default function LuxeLandingPage() {
   );
 }
 
-/** Fastest type delay (current production speed). Higher delay = slower typing. */
-const TYPE_DELAY_FAST_MS = 38;
-const TYPE_DELAY_SLOW_MS = 152;
-const TYPE_DELAY_DEFAULT_MS = 76; // half of the original 38ms tick
-
 function Splash({ content, onMore }: { content: LandingContent; onMore: () => void }) {
   const scenes = content.scenes;
   const [index, setIndex] = useState(0);
   const [typed, setTyped] = useState("");
   const [progress, setProgress] = useState(0);
-  const [typeDelayMs, setTypeDelayMs] = useState(TYPE_DELAY_DEFAULT_MS);
+  const [typeDelayMs, setTypeDelayMs] = useState(() =>
+    clampLandingTypeDelayMs(content.typeDelayMs),
+  );
+
+  useEffect(() => {
+    setTypeDelayMs(clampLandingTypeDelayMs(content.typeDelayMs));
+  }, [content.typeDelayMs]);
 
   useEffect(() => {
     if (!scenes.length) return;
@@ -97,8 +104,8 @@ function Splash({ content, onMore }: { content: LandingContent; onMore: () => vo
         <span>Type speed</span>
         <input
           type="range"
-          min={TYPE_DELAY_FAST_MS}
-          max={TYPE_DELAY_SLOW_MS}
+          min={LANDING_TYPE_DELAY_FAST_MS}
+          max={LANDING_TYPE_DELAY_SLOW_MS}
           step={2}
           value={typeDelayMs}
           onChange={(e) => setTypeDelayMs(Number(e.target.value))}

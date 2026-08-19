@@ -35,6 +35,13 @@ describe("mergeLandingContent", () => {
     });
     expect(merged.copy.landingHeadline).toBe("Promote. Prompt. Print.");
     expect(merged.copy.splashCaption).toBe(DEFAULT_LANDING_CONTENT.copy.splashCaption);
+    expect(merged.typeDelayMs).toBe(DEFAULT_LANDING_CONTENT.typeDelayMs);
+  });
+
+  it("clamps prompt type delay", () => {
+    expect(mergeLandingContent({ typeDelayMs: 10 }).typeDelayMs).toBe(38);
+    expect(mergeLandingContent({ typeDelayMs: 200 }).typeDelayMs).toBe(152);
+    expect(mergeLandingContent({ typeDelayMs: 90 }).typeDelayMs).toBe(90);
   });
 
   it("replaces scenes and drops empty prompts", () => {
