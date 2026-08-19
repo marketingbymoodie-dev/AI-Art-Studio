@@ -1343,6 +1343,8 @@ export interface EmbedDesignProps {
         flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Opens the AOP/flat placement editor (same UI as the live storefront). */
         openEditorRef?: React.MutableRefObject<(() => void) | null>;
+        /** Preview Studio: leave this product and return to the product list. */
+        onLeaveProduct?: () => void;
       }
     | {
         mode: 'merchant-studio';
@@ -14716,7 +14718,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 <div className="relative flex flex-col gap-2 min-h-0">
                   {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
                       (not on every nudge). */}
-                  {(isStorefront || isShopify) && (
+                  {(isStorefront || isShopify || isAdminTester) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
                         type="button"
@@ -14725,10 +14727,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         className="flex-1 min-w-0"
                         onClick={() => {
                           void flushHoodieAopPlacer().finally(() => {
+                            if (
+                              isAdminTester &&
+                              embeddedContext?.mode === "admin-tester" &&
+                              embeddedContext.onLeaveProduct
+                            ) {
+                              embeddedContext.onLeaveProduct();
+                              return;
+                            }
                             setShowPatternStep(false);
                           });
                         }}
-                        title="Save placement and return to product preview"
+                        title={
+                          isAdminTester
+                            ? "Return to the product list"
+                            : "Save placement and return to product preview"
+                        }
                         data-testid="button-back-from-hoodie-placer"
                       >
                         <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
@@ -15103,7 +15117,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               // mockup flow for calibrated flat/mesh products). Falls back to
               // the Printify flow automatically if the renderer/assets fail.
               <div className="flex min-h-0 flex-col gap-2">
-                {(isStorefront || isShopify) && (
+                {(isStorefront || isShopify || isAdminTester) && (
                   <div className="flex w-full gap-2 justify-stretch">
                     <Button
                       type="button"
@@ -15112,6 +15126,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       className="flex-1 min-w-0"
                       onClick={() => {
                         void flushFlatPlacer().finally(() => {
+                          if (
+                            isAdminTester &&
+                            embeddedContext?.mode === "admin-tester" &&
+                            embeddedContext.onLeaveProduct
+                          ) {
+                            embeddedContext.onLeaveProduct();
+                            return;
+                          }
                           setFlatPlacerEditOpen(false);
                           // Prefer Front composite over Artwork (avoids blank+art stack).
                           const frontIdx = postGenGalleryItems.findIndex(

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -35,10 +35,30 @@ interface DesignStudioIdentity {
 /** How long the Send button will wait for an in-flight print-panel upload before ordering anyway. */
 const PANEL_SAVE_WAIT_MS = 90_000;
 
+function clearPreviewStudioProductParams() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("productTypeId");
+    url.searchParams.delete("loadDesignId");
+    url.searchParams.delete("loadMockup");
+    url.searchParams.delete("loadProductName");
+    url.searchParams.delete("from");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function AdminCreateProduct() {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const searchParams = new URLSearchParams(window.location.search);
   const initialProductTypeId = searchParams.get("productTypeId");
+  const openedFromCatalog =
+    searchParams.get("from") === "catalog" ||
+    /\/admin\/platform\/catalog/.test(
+      typeof document !== "undefined" ? document.referrer : "",
+    );
 
   const [selectedProductTypeId, setSelectedProductTypeId] = useState<number | null>(
     initialProductTypeId ? parseInt(initialProductTypeId) : null
@@ -67,6 +87,33 @@ export default function AdminCreateProduct() {
     setPlacementEditorOpen(!!status.placementEditorOpen);
   }, []);
 
+  const leaveProduct = useCallback(() => {
+    testerStatusRef.current = {
+      jobId: null,
+      aopPanels: "none",
+      flatClipSides: [],
+    };
+    setTesterHasDesign(false);
+    setTesterPanelStatus("none");
+    setPlacementEditorOpen(false);
+    setClipConfirmOpen(false);
+    try {
+      const toRemove: string[] = [];
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const k = sessionStorage.key(i);
+        if (k && k.startsWith("aiart:design:")) toRemove.push(k);
+      }
+      for (const k of toRemove) sessionStorage.removeItem(k);
+    } catch {
+      /* sessionStorage may be unavailable */
+    }
+    clearPreviewStudioProductParams();
+    setSelectedProductTypeId(null);
+    if (openedFromCatalog) {
+      setLocation("/admin/platform/catalog");
+    }
+  }, [openedFromCatalog, setLocation]);
+
   const embeddedContext = useMemo(
     () =>
       selectedProductTypeId != null
@@ -77,9 +124,10 @@ export default function AdminCreateProduct() {
             saveDesignRef,
             flushDesignRef,
             openEditorRef,
+            onLeaveProduct: leaveProduct,
           }
         : undefined,
-    [selectedProductTypeId, handleTesterDesignStatus],
+    [selectedProductTypeId, handleTesterDesignStatus, leaveProduct],
   );
 
   const {
@@ -318,7 +366,20 @@ export default function AdminCreateProduct() {
     <AdminLayout>
       <div className="space-y-6">
         <div>
+            <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Preview Studio</h1>
+            {selectedProductTypeId != null ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={leaveProduct}
+                data-testid="button-preview-studio-back-to-products"
+              >
+                Back to products
+              </Button>
+            ) : null}
+            </div>
             <p className="text-muted-foreground max-w-2xl">
               Try the AI art studio on your imported products before creating a Live Customizer Page.
               Generate artwork{canSaveDesigns ? ", optionally save to My Designs," : ""} and send a draft
