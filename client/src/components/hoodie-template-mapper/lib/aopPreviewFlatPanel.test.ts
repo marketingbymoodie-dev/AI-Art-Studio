@@ -7,10 +7,17 @@ import {
   meshSourceFlipXForPanel,
   normalizeRotationDeg,
   printPanelOutputScale,
+  shouldComposePillowWrapPrintFile,
   sleevePanelHalfSourceRect,
   synthesiseLeggingsMirroredSourceRect,
   type DesignRectInfo,
 } from "./aopPreview";
+import {
+  BODY_PILLOW_WRAP_BLUEPRINT_ID,
+  createFreshAopTemplate,
+  FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  ZIP_HOODIE_BLUEPRINT_ID,
+} from "@shared/hoodieTemplate";
 
 describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
   it("normalizes to (-180, 180]", () => {
@@ -219,5 +226,48 @@ describe("sleevePanelHalfSourceRect", () => {
   it("returns null for non-sleeve panels", () => {
     expect(sleevePanelHalfSourceRect("left_hood", "front", W, H)).toBeNull();
     expect(sleevePanelHalfSourceRect("back", "back", W, H)).toBeNull();
+  });
+});
+
+describe("shouldComposePillowWrapPrintFile", () => {
+  const suede = createFreshAopTemplate({
+    name: "faux-suede-square-pillow",
+    blueprintId: FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
+  });
+  const body = createFreshAopTemplate({
+    name: "body-pillow",
+    blueprintId: BODY_PILLOW_WRAP_BLUEPRINT_ID,
+  });
+  const zip = createFreshAopTemplate({
+    name: "zip-hoodie",
+    blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+  });
+
+  it("composes wrap-single pillows when catalog dims are missing", () => {
+    expect(shouldComposePillowWrapPrintFile(suede)).toBe(true);
+    expect(shouldComposePillowWrapPrintFile(body)).toBe(false);
+    expect(shouldComposePillowWrapPrintFile(zip)).toBe(false);
+  });
+
+  it("sends separate front/back files when the catalog has a back placeholder", () => {
+    expect(
+      shouldComposePillowWrapPrintFile(suede, [
+        { position: "front", width: 3000, height: 3000 },
+        { position: "back", width: 3000, height: 3000 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("stitches side-by-side when the only placeholder is a wide wrap canvas", () => {
+    expect(
+      shouldComposePillowWrapPrintFile(suede, [
+        { position: "front", width: 6000, height: 3000 },
+      ]),
+    ).toBe(true);
+    expect(
+      shouldComposePillowWrapPrintFile(body, [
+        { position: "front", width: 8000, height: 3000 },
+      ]),
+    ).toBe(true);
   });
 });

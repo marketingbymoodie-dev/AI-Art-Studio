@@ -68,6 +68,9 @@ import {
   PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
+  isPillowWrapBlueprint,
+  isPillowWrapTemplate,
+  resolvePrintFileLayout,
   shouldForceSolidSweatshirtCollar,
   shouldRenderKangarooPocketArtwork,
   SWEATSHIRT_COLLAR_PRINT_DIMS,
@@ -2817,6 +2820,10 @@ function tiledFlatPanelBaseDims(
 
 /** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
 export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
+/** Preview Studio test-order persist. Above mockup-only 1800 so Printify's
+ *  enhance step is less likely to reject the draft as "unable to enhance".
+ *  Still far below storefront full bake (placeholder 8–12k). */
+export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = PRINT_PANEL_TARGET_LONG_EDGE_PX;
 /** Solid background-only panels compress to almost nothing; Printify scales
  *  the image to the placeholder, so a modest aspect-correct fill is enough.
  *  Keep this large enough that wide strips (collar ~11:1) retain a usable
@@ -3279,6 +3286,109 @@ export function finalizeSweatshirtPrintPanelsForPrintify(
   ];
 }
 
+type PlaceholderHint = { position: string; width?: number; height?: number };
+
+/**
+ * True when Printify wants one wide wrap canvas (front|back side-by-side)
+ * rather than separate front + back print files.
+ *
+ * Prefer live placeholder dims: a real `back` area means split; a wide
+ * `front` with no back means wrap. Fall back to the template's
+ * `printFileLayout` when catalog dims are missing.
+ */
+export function shouldComposePillowWrapPrintFile(
+  template: HoodieTemplate,
+  placeholders?: ReadonlyArray<PlaceholderHint> | null,
+): boolean {
+  if (!isPillowWrapTemplate(template) && !isPillowWrapBlueprint(template.blueprintId)) {
+    return false;
+  }
+  const list = placeholders ?? [];
+  const hasBack = list.some((p) => {
+    const pos = String(p.position || "").toLowerCase();
+    return pos === "back" && (p.width ?? 0) > 0 && (p.height ?? 0) > 0;
+  });
+  if (hasBack) return false;
+  const front = list.find((p) => {
+    const pos = String(p.position || "").toLowerCase();
+    return pos === "front" || pos === "default";
+  });
+  if (front && (front.width ?? 0) > 0 && (front.height ?? 0) > 0) {
+    return (front.width as number) / (front.height as number) > 1.5;
+  }
+  return resolvePrintFileLayout(template) === "wrap-single";
+}
+
+function findPillowFacePanel(
+  panels: FlatPrintPanelExport[],
+  face: "front" | "back",
+): FlatPrintPanelExport | undefined {
+  return panels.find(
+    (p) => p.panelKey === face || p.position.toLowerCase() === face,
+  );
+}
+
+/**
+ * Same print → duplicate the front face onto the right half.
+ * Solid back → artwork left, garment colour right.
+ * Output is a single `front` panel (Printify wrap placeholder).
+ */
+function finalizePillowWrapPrintPanels(
+  panels: FlatPrintPanelExport[],
+  template: HoodieTemplate,
+  placeholderList: RenderFlatPrintPanelsParams["placeholderPositions"],
+  placeholders: Map<string, { width: number; height: number }>,
+  backgroundColor: string,
+  maxLongEdgePx: number,
+): FlatPrintPanelExport[] {
+  if (!shouldComposePillowWrapPrintFile(template, placeholderList)) {
+    return panels;
+  }
+  const front = findPillowFacePanel(panels, "front");
+  if (!front) return panels;
+  const back = findPillowFacePanel(panels, "back");
+  const left = front.canvas;
+  const right = back?.canvas ?? front.canvas;
+
+  const wrapPh =
+    placeholders.get("front") ??
+    placeholders.get("default") ??
+    placeholderList?.find((p) => {
+      const pos = String(p.position || "").toLowerCase();
+      return pos === "front" || pos === "default";
+    });
+
+  let outW: number;
+  let outH: number;
+  const faceH = Math.max(left.height, right.height, 1);
+  if (wrapPh && wrapPh.width > 0 && wrapPh.height > 0 && wrapPh.width / wrapPh.height > 1.5) {
+    outH = faceH;
+    outW = Math.max(2, Math.round(faceH * (wrapPh.width / wrapPh.height)));
+  } else {
+    outH = faceH;
+    outW = faceH * 2;
+  }
+  const long = Math.max(outW, outH);
+  if (long > maxLongEdgePx) {
+    const s = maxLongEdgePx / long;
+    outW = Math.max(2, Math.round(outW * s));
+    outH = Math.max(1, Math.round(outH * s));
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return panels;
+  ctx.fillStyle = backgroundColor;
+  ctx.fillRect(0, 0, outW, outH);
+  const half = outW / 2;
+  ctx.drawImage(left, 0, 0, half, outH);
+  ctx.drawImage(right, half, 0, half, outH);
+
+  return [{ position: "front", panelKey: "front", canvas }];
+}
+
 /**
  * Export the flat per-panel print files for a template + customer state —
  * the "Phase 5 production export" counterpart of `renderAopPreview`. These
@@ -3656,7 +3766,15 @@ export function renderFlatPrintPanels(
     template,
     backgroundColor,
   );
-  return merged.map((p) => ({
+  const afterPillowWrap = finalizePillowWrapPrintPanels(
+    merged,
+    template,
+    params.placeholderPositions,
+    placeholders,
+    bg,
+    panelMaxLongEdge,
+  );
+  return afterPillowWrap.map((p) => ({
     ...p,
     canvas: extendPanelPrintBleed(p.canvas, p.panelKey, bg),
   }));

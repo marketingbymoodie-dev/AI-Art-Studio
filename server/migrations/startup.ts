@@ -643,6 +643,24 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "generation_logs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "generation_logs" (
+        "id" serial PRIMARY KEY,
+        "merchant_id" varchar,
+        "customer_id" varchar,
+        "design_id" integer,
+        "prompt_length" integer,
+        "had_reference_image" boolean NOT NULL DEFAULT false,
+        "style_preset" text,
+        "size" text,
+        "success" boolean NOT NULL DEFAULT true,
+        "error_message" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "published_products",
     sql: `
       CREATE TABLE IF NOT EXISTS "published_products" (
@@ -1429,6 +1447,56 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "studio_newsletter_subscribers",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "studio_newsletter_subscribers" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "email" text NOT NULL,
+        "source" text NOT NULL,
+        "shop_domain" text,
+        "creator_username" text,
+        "customer_id" varchar,
+        "credit_granted" boolean NOT NULL DEFAULT false,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "merchant_pack_variants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "merchant_pack_variants" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "pack_id" text NOT NULL,
+        "variant_id" text NOT NULL,
+        "product_id" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "merchant_pack_purchases",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "merchant_pack_purchases" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "customer_id" text NOT NULL,
+        "shopify_order_id" text NOT NULL,
+        "shopify_line_id" text NOT NULL,
+        "pack_id" text NOT NULL,
+        "credits" integer NOT NULL,
+        "price_cents" integer NOT NULL DEFAULT 0,
+        "wholesale_cents" integer NOT NULL DEFAULT 0,
+        "credits_clawed" integer NOT NULL DEFAULT 0,
+        "status" text NOT NULL DEFAULT 'paid',
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -1739,6 +1807,31 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "help_articles_audience_idx",
     sql: `CREATE INDEX IF NOT EXISTS "help_articles_audience_idx"
       ON "help_articles" ("audience", "published")`,
+  },
+  {
+    name: "studio_newsletter_email_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "studio_newsletter_email_uidx"
+      ON "studio_newsletter_subscribers" ("email")`,
+  },
+  {
+    name: "studio_newsletter_source_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "studio_newsletter_source_idx"
+      ON "studio_newsletter_subscribers" ("source", "created_at")`,
+  },
+  {
+    name: "merchant_pack_variants_shop_pack_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "merchant_pack_variants_shop_pack_uidx"
+      ON "merchant_pack_variants" ("shop_domain", "pack_id")`,
+  },
+  {
+    name: "merchant_pack_purchases_line_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "merchant_pack_purchases_line_uidx"
+      ON "merchant_pack_purchases" ("shopify_order_id", "shopify_line_id")`,
+  },
+  {
+    name: "merchant_pack_purchases_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "merchant_pack_purchases_shop_idx"
+      ON "merchant_pack_purchases" ("shop_domain", "created_at")`,
   },
 ];
 

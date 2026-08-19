@@ -16,11 +16,18 @@ import {
   styleIsPatternMaker,
   styleIsVintagePoster,
   useCylindricalWrapPrompt,
+  userPromptAsksToRecreateReference,
   userPromptRequestsMonochrome,
   userPromptRequestsText,
 } from "./generationPromptHints";
 
 describe("generationPromptHints", () => {
+  it("detects redo/recreate prompts for an uploaded reference", () => {
+    expect(userPromptAsksToRecreateReference("redo this image")).toBe(true);
+    expect(userPromptAsksToRecreateReference("recreate this artwork")).toBe(true);
+    expect(userPromptAsksToRecreateReference("add extra jungle around the leopard")).toBe(false);
+  });
+
   it("detects user artwork descriptions", () => {
     expect(hasUserArtworkDescription("black and white jungle patterns")).toBe(true);
     expect(hasUserArtworkDescription("  hi ")).toBe(false);

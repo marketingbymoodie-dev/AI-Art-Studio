@@ -164,7 +164,7 @@ export default function AdminCredits() {
           <CardHeader>
             <CardTitle>Studio Credits</CardTitle>
             <CardDescription>
-              Customers earn Studio Credits via the Reward Ladder (free generations, email signup, sharing a design, and optionally a purchase threshold). Earned credits and coupon redemptions come off your monthly allotment when spent. Merchant-sold credit packs (coming soon) are billed at wholesale and do not burn plan quota.
+              Customers earn Studio Credits via the Reward Ladder (free generations, Studio Art Class signup, sharing a design, and optionally a purchase threshold). Share and purchase rewards come off your monthly allotment when spent. Newsletter signup credits are issued by Studio. Generation packs customers buy on your store are billed to you at wholesale and do not burn plan quota.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">

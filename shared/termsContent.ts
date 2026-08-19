@@ -84,7 +84,7 @@ export const DEFAULT_TERMS_CONTENT: TermsContent = {
   revision: 1,
   pageTitle: "AI Art Studio Terms of Use",
   intro:
-    "These Terms of Use (“Terms”) govern AI Art Studio (also referred to as AppAI): AI artwork generation, product customisation, cart and checkout mockups, Studio Credits, merchant Shopify app features, and hosted creator storefronts.\n\nBy installing the app, applying as a creator or merchant, generating artwork, buying credits, or placing an order, you agree to these Terms and to the Privacy Policy.",
+    "These Terms of Use (“Terms”) govern AI Art Studio (the Studio): AI artwork generation, product customisation, cart and checkout mockups, Studio Credits, merchant Shopify app features, and hosted creator storefronts.\n\nBy installing the app, applying as a creator or merchant, generating artwork, buying credits, or placing an order, you agree to these Terms and to the Privacy Policy.",
   sections: {
     general: {
       title: "General",
