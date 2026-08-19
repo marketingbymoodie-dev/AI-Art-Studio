@@ -172,6 +172,7 @@ export type HelpArticlePublic = {
   slug: string;
   summary: string | null;
   body: string;
+  demoUrl: string | null;
   audience: HelpAudience;
   category: HelpArticleCategory;
   published: boolean;
@@ -179,3 +180,49 @@ export type HelpArticlePublic = {
   createdAt: string;
   updatedAt: string;
 };
+
+const SUPADEMO_HOSTS = new Set(["app.supademo.com"]);
+const SUPADEMO_ID_RE = /^[a-zA-Z0-9_-]{8,80}$/;
+
+/** Share-tab URL for the same demo (iframe uses /embed/). */
+export function helpDemoShareUrl(embedUrl: string): string {
+  return embedUrl.replace("/embed/", "/demo/");
+}
+
+/**
+ * Accept a Supademo share link, embed link, or iframe snippet.
+ * Stores/returns the https embed URL, or null when empty.
+ */
+export function normalizeHelpDemoUrl(raw: unknown): string | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+
+  const srcMatch = text.match(/\bsrc=["']([^"']+)["']/i);
+  const candidate = (srcMatch?.[1] || text).trim();
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw Object.assign(new Error("Paste a full https://app.supademo.com link."), { status: 400 });
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw Object.assign(new Error("Demo URL must use https."), { status: 400 });
+  }
+  if (!SUPADEMO_HOSTS.has(parsed.hostname.toLowerCase())) {
+    throw Object.assign(new Error("Only app.supademo.com walkthroughs can be embedded."), { status: 400 });
+  }
+
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  if (parts.length < 2 || (parts[0] !== "demo" && parts[0] !== "embed")) {
+    throw Object.assign(new Error("Use a Supademo share or embed link."), { status: 400 });
+  }
+  if (!SUPADEMO_ID_RE.test(parts[1])) {
+    throw Object.assign(new Error("That Supademo link does not look valid."), { status: 400 });
+  }
+
+  const extra = parts.slice(2).find((p) => SUPADEMO_ID_RE.test(p));
+  const embedPath = extra ? `/embed/${parts[1]}/${extra}` : `/embed/${parts[1]}`;
+  return `https://app.supademo.com${embedPath}`;
+}

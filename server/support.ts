@@ -15,6 +15,7 @@ import {
   isHelpAudience,
   isSupportCategory,
   isSupportStatus,
+  normalizeHelpDemoUrl,
   slugifyHelpTitle,
   type HelpArticleCategory,
   type HelpArticlePublic,
@@ -103,6 +104,7 @@ export function serializeHelpArticle(row: HelpArticleRow): HelpArticlePublic {
     slug: row.slug,
     summary: row.summary,
     body: row.body,
+    demoUrl: row.demoUrl || null,
     audience: row.audience as HelpAudience,
     category: row.category as HelpArticleCategory,
     published: row.published,
@@ -397,6 +399,7 @@ export async function createHelpArticle(input: {
   title: string;
   summary?: string | null;
   body: string;
+  demoUrl?: string | null;
   audience: HelpAudience;
   category: HelpArticleCategory;
   published?: boolean;
@@ -420,6 +423,7 @@ export async function createHelpArticle(input: {
       slug,
       summary: clipText(input.summary, 280) || null,
       body,
+      demoUrl: normalizeHelpDemoUrl(input.demoUrl),
       audience: input.audience,
       category: input.category,
       published: !!input.published,
@@ -435,6 +439,7 @@ export async function updateHelpArticle(
     title: string;
     summary: string | null;
     body: string;
+    demoUrl: string | null;
     audience: HelpAudience;
     category: HelpArticleCategory;
     published: boolean;
@@ -454,6 +459,7 @@ export async function updateHelpArticle(
     patch.body = clipText(input.body, ARTICLE_BODY_MAX);
     if (patch.body.length < 8) throw Object.assign(new Error("Body is too short."), { status: 400 });
   }
+  if (input.demoUrl !== undefined) patch.demoUrl = normalizeHelpDemoUrl(input.demoUrl);
   if (input.audience != null) {
     if (!isHelpAudience(input.audience)) throw Object.assign(new Error("Invalid audience."), { status: 400 });
     patch.audience = input.audience;
