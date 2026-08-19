@@ -215,21 +215,20 @@ export default function AdminCreateProduct() {
     },
   });
 
-  const preparingPrintFiles = testerPanelStatus === "none" && testerHasDesign;
-  const syncingPrintFiles = testerPanelStatus === "saving" || preparingPrintFiles;
+  const syncingPrintFiles = testerPanelStatus === "saving";
   const testerBusy =
     testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
   const testOrderLabel = testOrderMutation.isPending
     ? "Sending test order…"
     : testerPanelStatus === "saving"
       ? "Syncing print files…"
-      : preparingPrintFiles
-        ? "Preparing print files…"
-        : testerPanelStatus === "none"
-          ? "Generate artwork first"
-          : testerPanelStatus === "error"
-            ? "Print file sync failed"
-            : "Send a Test Order to Printify";
+      : testerPanelStatus === "none"
+        ? testerHasDesign
+          ? "Apply pattern to unlock test order"
+          : "Generate artwork first"
+        : testerPanelStatus === "error"
+          ? "Print file sync failed"
+          : "Send a Test Order to Printify";
   const testerActions = selectedProductTypeId ? (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -266,7 +265,7 @@ export default function AdminCreateProduct() {
           }
           data-testid="button-send-test-order"
         >
-          {testerBusy && testerPanelStatus !== "error" ? (
+          {testerBusy ? (
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
           ) : (
             <FlaskConical className="h-4 w-4 mr-2" />

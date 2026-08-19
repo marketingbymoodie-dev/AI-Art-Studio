@@ -2842,6 +2842,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   flatPlacerEditOpenRef.current = flatPlacerEditOpen;
   // Last status reported to the admin tester host (see TesterDesignStatus).
   const testerDesignStatusRef = useRef<TesterDesignStatus>({ jobId: null, aopPanels: 'none' });
+  const lastTesterAopFlushArtRef = useRef<string | null>(null);
   const emitTesterDesignStatus = useCallback(
     (patch: Partial<TesterDesignStatus>) => {
       testerDesignStatusRef.current = { ...testerDesignStatusRef.current, ...patch };
@@ -8277,6 +8278,37 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return applied;
   }, []);
 
+  // Preview Studio: a second generate keeps HoodieAopPlacer mounted, so its
+  // one-shot auto-apply never runs again and test-order status stays "none".
+  useEffect(() => {
+    if (!isAdminTester || !useAopCustomizer || !generatedDesign?.imageUrl) return;
+    if (!savedJobIdRef.current) return;
+    const artwork = toAbsoluteImageUrl(generatedDesign.imageUrl);
+    if (lastTesterAopFlushArtRef.current === artwork) return;
+    lastTesterAopFlushArtRef.current = artwork;
+    const timer = window.setTimeout(() => {
+      if (!hoodieAopPlacerRef.current) {
+        lastTesterAopFlushArtRef.current = null;
+        return;
+      }
+      emitTesterDesignStatus({
+        jobId: savedJobIdRef.current,
+        aopPanels: "saving",
+      });
+      void flushHoodieAopPlacer({ force: true }).catch((err) => {
+        console.warn("[AdminTester] AOP auto-flush after generate failed:", err);
+        emitTesterDesignStatus({ aopPanels: "error" });
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [
+    isAdminTester,
+    useAopCustomizer,
+    generatedDesign?.imageUrl,
+    flushHoodieAopPlacer,
+    emitTesterDesignStatus,
+  ]);
+
   /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
   const openAopPlacer = useCallback(() => {
     if (generatedDesign?.imageUrl) {
@@ -9187,7 +9219,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     const frontDataUrl = frontCanvas.toDataURL("image/png");
     const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
-    const panelSaveShop = shopDomain || savedJobShopRef.current;
+    const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
     const willPersistPanels =
       (isStorefront || isAdminTester) && !!savedJobIdRef.current && !!panelSaveShop;
     if (willPersistPanels) {
@@ -9271,7 +9303,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Printify as print_areas — without it a placer-designed AOP product
       // can never be auto-fulfilled. Runs non-blocking so the mockup upload
       // (which gates ATC) isn't delayed by the heavier panel bake.
-      const panelSaveShopInner = shopDomain || savedJobShopRef.current;
+      const panelSaveShopInner = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
       if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShopInner) {
         const panelJobId = savedJobIdRef.current;
         // Versioned capture: bump the sequence for this apply; if a newer apply
@@ -14890,7 +14922,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   // The admin Generator Tester also persists print-resolution panels (its job
                   // shop comes from the generate response) so "Send a Test Order to Printify"
                   // submits the same print files a real order would.
-                  const panelSaveShop = shopDomain || savedJobShopRef.current;
+                  const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
                   if ((isStorefront || isAdminTester) && savedJobIdRef.current && panelSaveShop) {
                     const panelJobId = savedJobIdRef.current;
                     // Versioned capture — see handleHoodieAopApply for the rationale.
