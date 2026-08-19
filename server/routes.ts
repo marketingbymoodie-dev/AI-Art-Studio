@@ -146,6 +146,7 @@ import {
 } from "./merchant-coupon-quota";
 import { recordGenerationOutcomeForFounder } from "./founder-generation-alerts";
 import { runOosCatalogueScan, scanProductTypeStock, parseOosProviderName } from "./oos-catalogue-report";
+import { runPrintifyTestArtifactCleanup } from "./printify-test-artifact-cleanup";
 import { clearZeroPriceAlertIfPriced, notifyZeroRetailPricePages } from "./zero-price-alerts";
 import {
   runCatalogueProductSync,
@@ -11845,6 +11846,15 @@ ${orientationExtra}
   }
 
   // Manual trigger endpoint
+  app.post("/api/admin/printify-test-artifact-cleanup", isAuthenticated, async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform admin only" });
+    }
+    const result = await runPrintifyTestArtifactCleanup();
+    res.json({ ok: true, ...result });
+  });
+
+  // Manual trigger endpoint
   app.post("/api/admin/shadow-product-cleanup", isAuthenticated, async (_req: any, res: Response) => {
     const result = await runShadowProductCleanup();
     res.json({ ok: true, ...result });
@@ -11854,6 +11864,20 @@ ${orientationExtra}
   setInterval(() => {
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
+
+  // Daily: cancel 7-day-old Preview Studio / cart test drafts and leftover
+  // Mockup Preview / calibration products. Does not touch Saved Designs or
+  // published design_products Printify listings.
+  setTimeout(() => {
+    runPrintifyTestArtifactCleanup().catch((e: Error) =>
+      console.error("[Printify Test Cleanup] Startup run error:", e),
+    );
+  }, 20 * 60 * 1000);
+  setInterval(() => {
+    runPrintifyTestArtifactCleanup().catch((e: Error) =>
+      console.error("[Printify Test Cleanup] Interval error:", e),
+    );
+  }, 24 * 60 * 60 * 1000);
 
   // Daily Printify catalogue OOS scan + email digest. This in-process interval is the
   // primary trigger (no Railway Cron configured); the secured POST /api/internal/oos-catalogue-scan
