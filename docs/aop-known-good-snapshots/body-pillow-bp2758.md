@@ -1,15 +1,15 @@
 # Body pillow AOP (bp 2758) — known-good snapshot
 
-**Status: VERIFIED WORKING (2026-08-20, merchant sign-off on staging).**
+**Status: VERIFIED WORKING (2026-08-20, merchant sign-off). Live on production.**
 
-Body pillow is **HoodieAopPlacer** (`front-back-face`), not the folded-tote flat editor. Size rows are stored as **20×54** (portrait) but the sewn pillow / mockup is **landscape**. Generate and Place must stay in the long orientation. Print files are **split front + back** at **150 DPI** (8100px on the 54" edge). Promote this stack to `production` on go-live.
+Body pillow is **HoodieAopPlacer** (`front-back-face`), not the folded-tote flat editor. Size rows are stored as **20×54** (portrait) but the sewn pillow / mockup is **landscape**. Generate and Place must stay in the long orientation. Print files are **split front + back** at **150 DPI** (8100px on the 54" edge).
 
-## Pin commit (staging → production on go-live)
+## Pin commit (production)
 
 | Field | Value |
 |-------|--------|
-| **Commit** | `4a2629c` (full SHA filled after production cherry-pick) |
-| **Branch** | `staging` until go-live, then `production` |
+| **Commit** | `ec80dcd` (staging equivalent `4a2629c`) |
+| **Branch** | `production` |
 | **Date** | 2026-08-20 |
 | **Message** | Lock adjustable tote known-good and open body-pillow Place on Item at 122%. |
 
@@ -17,8 +17,8 @@ Body pillow is **HoodieAopPlacer** (`front-back-face`), not the folded-tote flat
 
 | Commit | Summary |
 |--------|---------|
-| `4a2629c` | **This pin** — Place on Item opens at **122%** |
-| `808f6a5` | Print panels at **150 DPI** (8100px); tester persist uses print-ready files, not 1800px mockup rasters |
+| `ec80dcd` | **This pin** — Place on Item opens at **122%** |
+| `9bdd315` | Print panels at **150 DPI** (8100px); tester persist uses print-ready files, not 1800px mockup rasters |
 | `5f0b627` | Do not center-crop landscape gens through the stored 20:54 `targetDims`; clear leftover 90° when the file is landscape |
 | `a91c7ab` | Sample Place handles in the same space as the painted art |
 | `06a4202` | Rotate generation AR to landscape so Place no longer clips in a vertical mask |
@@ -81,4 +81,4 @@ Square / faux-suede / lumbar pillows stay on their own pins. Prefer **surgical**
 
 ---
 
-*Snapshot recorded: 2026-08-20. Owner sign-off: body pillow Place 122% + 150 DPI test order on staging `4a2629c`.*
+*Snapshot recorded: 2026-08-20. Owner sign-off: body pillow Place 122% + 150 DPI test order. Production pin `ec80dcd`.*
