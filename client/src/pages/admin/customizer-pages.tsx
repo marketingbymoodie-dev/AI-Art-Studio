@@ -39,6 +39,7 @@ import {
   type VariantComboPair,
 } from "@shared/variantCombinations";
 import { DEFAULT_MARKUP_PERCENT, resolveMarkupPercent } from "@shared/productIntelligence";
+import { displayRetailPrice, hasPositiveRetailPrice } from "@shared/shopifyVariantPriceSync";
 
 function selectionIdEq(a: string | undefined | null, b: string | undefined | null): boolean {
   return normalizeSelectionId(a) === normalizeSelectionId(b);
@@ -696,8 +697,27 @@ export default function AdminCustomizerPages() {
       const res = await apiRequest("PATCH", `/api/appai/customizer-pages/${id}`, { status });
       return res.json();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] }),
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+      if (vars.status === "active") {
+        toast({
+          title: "Page is Live",
+          description: "Shopify retail prices were confirmed (or applied) before going Live.",
+        });
+      }
+    },
+    onError: (err: any, vars) => {
+      const msg = parseApiErrorMessage(err);
+      toast({
+        title: vars.status === "active" ? "Can't set Live" : "Error",
+        description: msg,
+        variant: "destructive",
+      });
+      if (vars.status === "active") {
+        const page = (pagesData?.pages ?? []).find((p) => p.id === vars.id);
+        if (page) setSyncPricesTarget(page);
+      }
+    },
   });
 
   const scanStockMutation = useMutation({
@@ -1968,6 +1988,9 @@ export default function AdminCustomizerPages() {
   }, [catalogForFilters?.entries]);
 
   const pages = pagesData?.pages ?? [];
+  const priceMissingPages = pages.filter(
+    (p) => p.status !== "disabled" && !hasPositiveRetailPrice(p.baseProductPrice),
+  );
 
   /** productTypeId → Live / any customizer pages (for Create dropdown labels + uniqueness). */
   const pagesForProductType = useMemo(() => {
@@ -3514,6 +3537,41 @@ export default function AdminCustomizerPages() {
           )}
         </div>
 
+        {priceMissingPages.length > 0 && (
+          <Card className="border-destructive/40 bg-destructive/5">
+            <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-destructive mt-0.5 shrink-0" />
+              <div className="flex-1 space-y-1 min-w-0">
+                <p className="text-sm font-medium">
+                  {priceMissingPages.length === 1
+                    ? "1 product is hidden from the catalog — $0.00 price"
+                    : `${priceMissingPages.length} products are hidden from the catalog — $0.00 price`}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Customers will not see these until you set retail prices. An email is also sent to
+                  the founder alert inbox the first time each product is hidden.
+                </p>
+                <ul className="text-sm list-disc pl-5 space-y-0.5">
+                  {priceMissingPages.map((p) => (
+                    <li key={p.id}>
+                      <span className="font-medium">{p.title}</span>
+                      <span className="text-muted-foreground"> — /pages/{p.handle}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <Button
+                variant="outline"
+                className="shrink-0"
+                onClick={() => setSyncPricesTarget(priceMissingPages[0])}
+              >
+                <DollarSign className="h-4 w-4 mr-2" />
+                Resync Prices
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {!printifyConnected && (
           <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
             <CardContent className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
@@ -3699,6 +3757,8 @@ export default function AdminCustomizerPages() {
                   ]
                     .filter(Boolean)
                     .join(" — ");
+                  const retailPrice = displayRetailPrice(page.baseProductPrice);
+                  const priceMissing = !hasPositiveRetailPrice(page.baseProductPrice);
                   return (
                   <Card key={page.id}>
                     <CardContent className="pt-4 pb-4">
@@ -3727,6 +3787,16 @@ export default function AdminCustomizerPages() {
                                 {oosBadgeLabel}
                               </Badge>
                             )}
+                            {priceMissing && (
+                              <Badge
+                                variant="destructive"
+                                title="Shopify is still $0.00. Set Live will try to apply suggested retail, then open Resync Prices if it is still $0."
+                                className="flex items-center gap-1"
+                              >
+                                <AlertTriangle className="h-3 w-3" />
+                                Price missing
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-sm text-muted-foreground mt-0.5 font-mono">
                             /pages/{page.handle}
@@ -3735,7 +3805,9 @@ export default function AdminCustomizerPages() {
                             <p className="text-sm text-muted-foreground mt-1">
                               {page.baseProductTitle}
                               {page.baseVariantTitle && ` — ${page.baseVariantTitle}`}
-                              {page.baseProductPrice && ` · $${parseFloat(page.baseProductPrice).toFixed(2)}`}
+                              {retailPrice
+                                ? ` · $${retailPrice}`
+                                : " · $0.00 on Shopify — resync before Live"}
                             </p>
                           )}
                           {providerLabel && (
@@ -3774,14 +3846,6 @@ export default function AdminCustomizerPages() {
                             }
                             onClick={() => {
                               const nextStatus = page.status === "active" ? "disabled" : "active";
-                              if (nextStatus === "active" && parseFloat(page.baseProductPrice || "0") <= 0) {
-                                toast({
-                                  title: "Set prices via Resync Prices before going Live",
-                                  description: `"${page.title}" doesn't have a retail price yet.`,
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
                               toggleMutation.mutate({ id: page.id, status: nextStatus });
                             }}
                           >

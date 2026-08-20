@@ -164,6 +164,7 @@ import {
   unavailableVariantKeys,
   isVariantKeyAvailable,
   resolveEffectivePricingStrategy,
+  resolveMarkupPercent,
   suggestedRetailDollarsString,
 } from "@shared/productIntelligence";
 import { buildActivePrintifyVariantLabels } from "@shared/printifyVariantLabels";
@@ -20676,12 +20677,23 @@ ${orientationExtra}
             applied.successCount === 0 ||
             !allShopifyVariantsHavePositiveRetail(liveShopifyVariants)
           ) {
-            return res.status(400).json({
-              error:
-                "Retail prices did not apply on Shopify — variants are still $0.00. Resync Prices or check size/colour mapping, then try again.",
-              code: "PRICES_REQUIRED",
-              unresolvedCount: applied.unresolvedCount,
+            const retry = await ensureShopifyRetailForLive({
+              shop,
+              accessToken: installation.accessToken,
+              baseProductId: variant.product_id,
+              productType: matchedType || ptForSync,
             });
+            if (retry.ok && retry.cheapestPrice) {
+              variant = { ...variant, price: retry.cheapestPrice };
+            } else {
+              return res.status(400).json({
+                error:
+                  "Retail prices did not apply on Shopify — variants are still $0.00. Open Resync Prices, set every size/colour above $0, then create the page again.",
+                code: "PRICES_REQUIRED",
+                needsResync: true,
+                unresolvedCount: applied.unresolvedCount,
+              });
+            }
           }
         }
       }
@@ -20844,26 +20856,27 @@ ${orientationExtra}
             code: "PRINTIFY_NOT_CONNECTED",
           });
         }
-        if (!hasPositiveRetailPrice(dbPage.baseProductPrice)) {
+        const liveRetail = await ensureShopifyRetailForLive({
+          shop,
+          accessToken: installation.accessToken,
+          baseProductId: dbPage.baseProductId,
+          productType: linkedProductTypeEarly,
+          pageId: dbPage.id,
+        });
+        if (!liveRetail.ok) {
           return res.status(400).json({
-            error: "Set retail prices (Resync Prices or Create Page pricing) before setting a page Live.",
+            error: liveRetail.resynced
+              ? "Shopify prices are still $0.00 after an automatic resync. Open Resync Prices, set every size/colour above $0, then Set Live."
+              : "This product has no retail price on Shopify. Open Resync Prices and apply suggested retail, then Set Live.",
             code: "PRICES_REQUIRED",
+            needsResync: true,
           });
         }
-        if (dbPage.baseProductId) {
-          const livePriced = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${dbPage.baseProductId}.json?fields=id,variants`,
+        if (liveRetail.cheapestPrice) {
+          Object.assign(
+            updates,
+            clearZeroPriceAlertIfPriced({ baseProductPrice: liveRetail.cheapestPrice }, liveRetail.cheapestPrice),
           );
-          const liveVars = livePriced.data?.product?.variants ?? [];
-          if (!allShopifyVariantsHavePositiveRetail(liveVars)) {
-            return res.status(400).json({
-              error:
-                "Shopify variants are still $0.00. Use Resync Prices so every size/colour has a retail price, then set Live.",
-              code: "PRICES_REQUIRED",
-            });
-          }
         }
         if (linkedProductTypeEarly && !linkedProductTypeEarly.printifyProviderId) {
           return res.status(400).json({
@@ -21162,6 +21175,71 @@ ${orientationExtra}
     const successCount = updated.filter((u) => u.success).length;
     const unresolvedCount = updated.filter((u) => !u.success && u.variantId === 0).length;
     return { updated, successCount, totalCount: updated.length, unresolvedCount };
+  }
+
+  /** Fetch Shopify variants, auto-apply suggested retail if any are $0, then re-check. */
+  async function ensureShopifyRetailForLive(args: {
+    shop: string;
+    accessToken: string;
+    baseProductId: string | number | null | undefined;
+    productType: any;
+    pageId?: string;
+  }): Promise<{ ok: boolean; resynced: boolean; cheapestPrice?: string }> {
+    const productIdNum = parseInt(String(args.baseProductId ?? "").replace(/\D/g, ""), 10);
+    if (!productIdNum) return { ok: false, resynced: false };
+
+    const loadVariants = async () => {
+      const priced = await shopifyApiCall(
+        args.shop,
+        args.accessToken,
+        `products/${productIdNum}.json?fields=id,variants`,
+      );
+      return (priced.data?.product?.variants ?? []) as Array<{ id?: number; price?: string; title?: string }>;
+    };
+
+    let variants = await loadVariants();
+    if (allShopifyVariantsHavePositiveRetail(variants)) {
+      const cheapest = pickLowestPricedShopifyVariant(variants);
+      return { ok: true, resynced: false, cheapestPrice: cheapest?.price != null ? String(cheapest.price) : undefined };
+    }
+
+    const markup = resolveMarkupPercent(args.productType?.defaultMarkupPercent);
+    const { front } = parsePrintifyCostsCache(args.productType?.printifyCosts);
+    const variantPrices: Record<string, string> = {};
+    for (const [vid, cents] of Object.entries(front)) {
+      const suggested = suggestedRetailDollarsString(Number(cents), markup);
+      if (suggested) variantPrices[`printify:${vid}`] = suggested;
+    }
+    if (Object.keys(variantPrices).length === 0) {
+      return { ok: false, resynced: false };
+    }
+
+    await applyShopifyVariantPrices({
+      shop: args.shop,
+      accessToken: args.accessToken,
+      baseProductId: productIdNum,
+      productType: args.productType,
+      variantPrices,
+    });
+    variants = await loadVariants();
+    const cheapest = pickLowestPricedShopifyVariant(variants);
+    const ok = allShopifyVariantsHavePositiveRetail(variants);
+    if (ok && args.pageId && cheapest && hasPositiveRetailPrice(cheapest.price)) {
+      const pricedPatch: Record<string, unknown> = {
+        ...clearZeroPriceAlertIfPriced(
+          { baseProductPrice: String(cheapest.price) },
+          cheapest.price,
+        ),
+      };
+      if (cheapest.id != null) pricedPatch.baseVariantId = String(cheapest.id);
+      if (cheapest.title) pricedPatch.baseVariantTitle = cheapest.title;
+      await storage.updateCustomizerPage(args.pageId, pricedPatch as any);
+    }
+    return {
+      ok,
+      resynced: true,
+      cheapestPrice: cheapest && hasPositiveRetailPrice(cheapest.price) ? String(cheapest.price) : undefined,
+    };
   }
 
   app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
