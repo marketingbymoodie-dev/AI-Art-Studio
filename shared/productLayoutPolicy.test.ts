@@ -24,10 +24,31 @@ describe("productLayoutPolicy — flat vs AOP exclusivity", () => {
     expect(usesAopStorefrontCustomizer(product)).toBe(true);
   });
 
-  it("mesh panel-mapping template still wins over flat tier", () => {
+  it("folded tote stays flat even when a leftover AOP template is present", () => {
+    const product = {
+      isAllOverPrint: true,
+      printifyBlueprintId: 1300,
+      panelMappingTemplate: "unisex-zip-hoodie-aop-L",
+    };
+    expect(resolveStorefrontMockupMode(product)).toBe("flat");
+    expect(usesAopStorefrontCustomizer(product)).toBe(false);
+  });
+
+  it("harvested flat tote stays flat even when a leftover AOP template is present", () => {
     const product = {
       isAllOverPrint: true,
       onTheFlyTier: "flat",
+      printifyBlueprintId: 836,
+      panelMappingTemplate: "unisex-zip-hoodie-aop-L",
+    };
+    expect(resolveStorefrontMockupMode(product)).toBe("flat");
+    expect(usesAopStorefrontCustomizer(product)).toBe(false);
+  });
+
+  it("mesh-tier + panel template still uses the AOP customizer", () => {
+    const product = {
+      isAllOverPrint: true,
+      onTheFlyTier: "mesh",
       panelMappingTemplate: "unisex-zip-hoodie-aop-L",
     };
     expect(resolveStorefrontMockupMode(product)).toBe("aop");

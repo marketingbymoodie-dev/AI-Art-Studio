@@ -58,6 +58,16 @@ describe("productLayoutPolicy", () => {
     expect(usesAopStorefrontCustomizer(product)).toBe(false);
   });
 
+  it("does not let a leftover mesh template steal the folded tote editor", () => {
+    const product = {
+      isAllOverPrint: true,
+      printifyBlueprintId: ADJUSTABLE_TOTE_BLUEPRINT_ID,
+      panelMappingTemplate: "unisex-zip-hoodie-aop-L",
+    };
+    expect(resolveStorefrontMockupMode(product)).toBe("flat");
+    expect(usesAopStorefrontCustomizer(product)).toBe(false);
+  });
+
   it("respects explicit storefront override to AOP", () => {
     expect(
       usesAopStorefrontCustomizer({
