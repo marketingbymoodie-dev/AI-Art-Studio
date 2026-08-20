@@ -8842,6 +8842,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    const selectedShopifyPrice = parseFloat(
+      shopifyVariants.find((v) => String(v.id) === String(variantId))?.price || "0",
+    );
+    if (!(selectedShopifyPrice > 0)) {
+      setVariantError(
+        "This product is still $0.00. Retail prices must be set (Resync Prices) before adding to cart.",
+      );
+      return;
+    }
+
     setVariantError(null);
 
     // If the product needs mockups but none are loaded yet (e.g. older saved design

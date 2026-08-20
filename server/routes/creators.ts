@@ -1287,6 +1287,27 @@ export function registerCreatorMarketplaceRoutes(
         ? await storage.getShopifyInstallationByShop(platformShop)
         : undefined;
       if (installation?.accessToken && platformShop) {
+        const numericVid = String(variantId).replace(/\D/g, "");
+        if (numericVid) {
+          try {
+            const priceRes = await fetch(
+              `https://${platformShop}/admin/api/2025-10/variants/${numericVid}.json?fields=id,price`,
+              { headers: { "X-Shopify-Access-Token": installation.accessToken } },
+            );
+            if (priceRes.ok) {
+              const priced = await priceRes.json();
+              const dollars = parseFloat(String(priced?.variant?.price ?? "0"));
+              if (!(dollars > 0)) {
+                return res.status(400).json({
+                  error: "PRICES_REQUIRED",
+                  message: "This product is still $0.00. Set retail prices before adding to cart.",
+                });
+              }
+            }
+          } catch (priceErr: any) {
+            console.warn("[creators] checkout price guard skipped:", priceErr?.message || priceErr);
+          }
+        }
         try {
           await ensureVariantPublishedForStorefrontApi(
             platformShop,
