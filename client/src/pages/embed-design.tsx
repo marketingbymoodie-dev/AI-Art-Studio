@@ -2844,6 +2844,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const lastSyncedVariantKeyRef = useRef<string | null>(null);
   /** Mutex so overlapping force-Applies cannot stack. */
   const flatApplyInFlightRef = useRef(false);
+  /** Ignore Front/Back view-only placer updates when marking placement dirty. */
+  const lastPlacerOutputSigRef = useRef("");
   /** Live colour/size for save-time reads (avoid stale closures / "default" writes). */
   const selectedFrameColorRef = useRef(selectedFrameColor);
   const selectedSizeRef = useRef(selectedSize);
@@ -7331,36 +7333,41 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 freeGenerationLimit,
               });
 
-        console.log('[EmbedDesign] Updating balance — paid:', nextPaidCredits, 'freeUsed:', nextFreeUsed, 'remaining:', remaining);
+        // Preview Studio uses the merchant plan quota, not the storefront
+        // guest wallet. That leftover customers.credits=0 used to flash
+        // "All Free Generations Used" after a successful tester generate.
+        if (!isAdminTester) {
+          console.log('[EmbedDesign] Updating balance — paid:', nextPaidCredits, 'freeUsed:', nextFreeUsed, 'remaining:', remaining);
 
-        const updatedCust = {
-          ...(customer || {
-            id: storefrontCustomerId || 'anonymous',
-            isLoggedIn: false,
-          }),
-          credits: nextPaidCredits,
-          freeGenerationsUsed: nextFreeUsed,
-          isLoggedIn: customer?.isLoggedIn === true,
-        };
+          const updatedCust = {
+            ...(customer || {
+              id: storefrontCustomerId || 'anonymous',
+              isLoggedIn: false,
+            }),
+            credits: nextPaidCredits,
+            freeGenerationsUsed: nextFreeUsed,
+            isLoggedIn: customer?.isLoggedIn === true,
+          };
           setCustomer(updatedCust);
           persistCustomerRecord(updatedCust);
 
-        if (remaining > 0) {
-          const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
-          toast({
-            title: `${remaining} ${noun}${remaining === 1 ? '' : 's'} Remaining`,
-            description: storefrontCustomerId
-              ? 'Credits are refunded when you complete a purchase.'
-              : "Tap \u24D8 next to 'Free artworks' for details on getting more.",
-            duration: 5000,
-          });
-        } else {
-          toast({
-            title: "All Free Generations Used",
-            description: "Create an account or purchase more credits to continue designing.",
-            variant: "destructive",
-            duration: 8000,
-          });
+          if (remaining > 0) {
+            const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
+            toast({
+              title: `${remaining} ${noun}${remaining === 1 ? '' : 's'} Remaining`,
+              description: storefrontCustomerId
+                ? 'Credits are refunded when you complete a purchase.'
+                : "Tap \u24D8 next to 'Free artworks' for details on getting more.",
+              duration: 5000,
+            });
+          } else {
+            toast({
+              title: "All Free Generations Used",
+              description: "Create an account or purchase more credits to continue designing.",
+              variant: "destructive",
+              duration: 8000,
+            });
+          }
         }
       }
       // Use conditional default zoom based on product type for better coverage
@@ -7563,16 +7570,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
+      } else if (usesFlatOnTheFlyPreview && imageUrl) {
+        // Apron / tote / phone: open the live placer even when the product
+        // has no Printify mockup flag (that used to leave Edit Placement closed
+        // and "Syncing placement…" stuck forever).
+        setFlatPlacerEditOpen(true);
       } else if (shouldFetchMockups) {
-        if (usesFlatOnTheFlyPreview) {
-          setFlatPlacerEditOpen(true);
-        } else {
-          console.log('[Mockups] Triggering mockup generation');
-          // Set mockupTriggered synchronously so the overlay stays up between
-          // generateMutation.isPending=false and mockupLoading=true (no gap flash).
-          setMockupTriggered(true);
-          fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig!.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
-        }
+        console.log('[Mockups] Triggering mockup generation');
+        // Set mockupTriggered synchronously so the overlay stays up between
+        // generateMutation.isPending=false and mockupLoading=true (no gap flash).
+        setMockupTriggered(true);
+        fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig!.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
     },
     onError: (err: any) => {
@@ -8006,12 +8014,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
+      } else if (usesFlatOnTheFlyPreview && importedImageUrl) {
+        setFlatPlacerEditOpen(true);
       } else if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        if (usesFlatOnTheFlyPreview) {
-          setFlatPlacerEditOpen(true);
-        } else {
-          fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
-        }
+        fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
 
       toast({
@@ -9723,23 +9729,92 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    const persistTesterPlacement = async () => {
+      const jobId = savedJobIdRef.current;
+      const shop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+      const artworkUrl = generatedDesign?.imageUrl
+        ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+        : result.state.artworkUrl;
+      const liveColor = selectedFrameColorRef.current || selectedFrameColor;
+      const phoneColor =
+        isPhoneCaseProduct && !frameColorsArePhoneModels
+          ? "default"
+          : liveColor || undefined;
+      if (!jobId) return;
+      if (!shop) {
+        setFlatPlacementDirty(false);
+        setMockupsStale(false);
+        emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+        return;
+      }
+      emitTesterDesignStatus({ jobId, aopPanels: "saving" });
+      await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          shop,
+          designState: {
+            flatPlacerState: { ...result.state, artworkUrl },
+            selectedSize: selectedSizeRef.current || selectedSize || null,
+            selectedFrameColor: phoneColor ?? null,
+            artworkUrl: artworkUrl || null,
+            productTypeId: productTypeId || undefined,
+            pageHandle: activeProductContext.pageHandle || undefined,
+          },
+          productTypeId: productTypeId || undefined,
+          pageHandle: activeProductContext.pageHandle || undefined,
+        }),
+      });
+      setFlatPlacementDirty(false);
+      setMockupsStale(false);
+      emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+    };
+
+    // Preview Studio: print files bake from placement JSON + artwork URL.
+    // Do not upload front/back canvases (that is what made Syncing take a minute).
+    if (isAdminTester) {
+      try {
+        const pinLocal = (canvas: HTMLCanvasElement, label: string) => ({
+          url: canvas.toDataURL("image/jpeg", 0.72),
+          label,
+        });
+        const frontImages = [pinLocal(frontCanvas, "front")];
+        if (backCanvas) frontImages.push(pinLocal(backCanvas, "back"));
+        flatFrontMockupsRef.current = frontImages;
+        setPrintifyMockupImages((prev) => {
+          const seen = new Set(frontImages.map((i) => mockupImageUrlKey(i.url)));
+          const extras = prev.filter(
+            (img) =>
+              isPrintifyOnDemandMockupLabel(img.label) ||
+              (!/^(front|back|mockup 1|mockup 2)$/i.test(img.label || "") &&
+                !seen.has(mockupImageUrlKey(img.url))),
+          );
+          return [...frontImages, ...extras].slice(0, 4);
+        });
+        setPrintifyMockups(frontImages.map((i) => i.url));
+      } catch (e) {
+        console.warn("[FlatApply] Local tester preview pin failed:", e);
+      }
+      setSelectedMockupIndex((prev) => (flatPlacerEditOpen ? prev : prev === 0 ? 1 : prev));
+      setMockupFailed(false);
+      setMockupError(null);
+      setMockupsStale(false);
+      currentMockupColorRef.current = `${flatBlankColorId}::${selectedSize ?? ""}::${flatFabricWeave ? "weave" : "plain"}`;
+      try {
+        await persistTesterPlacement();
+      } catch (e) {
+        console.error("[FlatApply] Tester placement persist failed:", e);
+        emitTesterDesignStatus({ aopPanels: "error" });
+      }
+      return;
+    }
+
     let frontDataUrl: string;
     let backDataUrl: string | null = null;
     try {
-      const exportCanvas = (canvas: HTMLCanvasElement) => {
-        if (!isAdminTester) return canvas.toDataURL("image/png");
-        const max = MOCKUP_PANEL_MAX_LONG_EDGE_PX;
-        const long = Math.max(canvas.width, canvas.height);
-        if (long <= max) return canvas.toDataURL("image/jpeg", 0.85);
-        const scale = max / long;
-        const tmp = document.createElement("canvas");
-        tmp.width = Math.max(1, Math.round(canvas.width * scale));
-        tmp.height = Math.max(1, Math.round(canvas.height * scale));
-        tmp.getContext("2d")?.drawImage(canvas, 0, 0, tmp.width, tmp.height);
-        return tmp.toDataURL("image/jpeg", 0.85);
-      };
-      frontDataUrl = exportCanvas(frontCanvas);
-      backDataUrl = backCanvas ? exportCanvas(backCanvas) : null;
+      frontDataUrl = frontCanvas.toDataURL("image/png");
+      backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
     } catch (e) {
       // Tainted canvas (cross-origin asset without CORS) — can't export.
       // Fall back to the normal Printify mockup flow rather than hard-error.
@@ -9750,16 +9825,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
     const shouldPersist =
-      (isStorefront || isAdminTester) &&
+      isStorefront &&
       !!savedJobIdRef.current &&
       !!panelSaveShop &&
       !skipGalleryPersistRef.current;
-    if (shouldPersist) {
-      emitTesterDesignStatus({
-        jobId: savedJobIdRef.current,
-        aopPanels: "saving",
-      });
-    }
 
     try {
       const [frontHosted, backHosted] = await Promise.all([
@@ -9886,6 +9955,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     isPhoneCaseProduct,
     frameColorsArePhoneModels,
     flatPlacerEditOpen,
+    generatedDesign?.imageUrl,
+    productTypeId,
+    activeProductContext.pageHandle,
   ]);
 
   const handleFlatPlacerViewChange = useCallback(() => {
@@ -9912,9 +9984,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
       // Any edit while viewing Printers/Context → jump back to the live editor.
       setSelectedMockupIndex(0);
-      setFlatPlacementDirty(true);
+      const outputSig = JSON.stringify({
+        artworkUrl,
+        placements: s.placements,
+        enabled: s.enabled,
+        backgroundColor: s.backgroundColor ?? null,
+      });
+      if (outputSig !== lastPlacerOutputSigRef.current) {
+        lastPlacerOutputSigRef.current = outputSig;
+        setFlatPlacementDirty(true);
+      }
       // Persist only on ATC / test order / leave editor / Printers Mockup —
-      // not on every nudge (that reset the tester button to Syncing forever).
+      // not on every Front/Back view switch.
     },
     [generatedDesign?.imageUrl],
   );
@@ -12152,11 +12233,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           );
           if (cancelled || !dataUrl) continue;
           let hostedUrl = dataUrl;
-          try {
-            hostedUrl = await ensureHostedUrl(dataUrl);
-          } catch (e) {
-            console.warn("[Mockups] Flat mockup upload failed for", view, e);
-            continue;
+          if (!isAdminTester) {
+            try {
+              hostedUrl = await ensureHostedUrl(dataUrl);
+            } catch (e) {
+              console.warn("[Mockups] Flat mockup upload failed for", view, e);
+              continue;
+            }
           }
           if (cancelled || !isHttpsMockupUrl(hostedUrl)) continue;
           images.push({ url: hostedUrl, label: view });
@@ -12222,8 +12305,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       window.clearTimeout(t);
     };
   }, [
+    isAdminTester,
     flatPlacerEligible,
-    flatPlacerState,
+    flatPlacerState?.placements,
+    flatPlacerState?.enabled,
+    flatPlacerState?.artworkUrl,
+    flatPlacerState?.backgroundColor,
     productTypeConfig?.flatCalibration,
     generatedDesign?.imageUrl,
     flatBlankColorId,
