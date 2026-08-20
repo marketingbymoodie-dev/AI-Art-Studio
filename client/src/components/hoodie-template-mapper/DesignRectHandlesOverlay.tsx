@@ -330,6 +330,12 @@ export default function DesignRectHandlesOverlay({
   };
   const rotationDeg =
     placement.rotationDeg ?? info.rotationDeg ?? 0;
+  // 90° already swapped the design-rect aspect — CSS-rotating again
+  // would stand the landscape box back up (body pillow).
+  const cssRotateDeg =
+    Math.abs(Math.abs(normalizeRotationDeg(rotationDeg)) - 90) < 0.5
+      ? 0
+      : rotationDeg;
 
   const handleSize = 14;
   const cornerStyle = (
@@ -362,7 +368,7 @@ export default function DesignRectHandlesOverlay({
           top: `${pctRect.top}%`,
           width: `${pctRect.width}%`,
           height: `${pctRect.height}%`,
-          transform: rotationDeg ? `rotate(${rotationDeg}deg)` : undefined,
+          transform: cssRotateDeg ? `rotate(${cssRotateDeg}deg)` : undefined,
           transformOrigin: "50% 50%",
         }}
         // Stop clicks on the rect from bubbling to the canvas backdrop
