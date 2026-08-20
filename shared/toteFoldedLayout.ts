@@ -58,10 +58,13 @@ export type ToteFoldedArtBox = {
 };
 
 /**
- * Same cover-the-face math as client `flatArtBox` / server `flat-print-file`.
- * Scale 1 = smallest uniform size that covers one tote face; offsets are
- * fractions of the face (not the old 0.25 damp).
+ * Contain-fit the art in one tote face, then enlarge by
+ * {@link TOTE_FOLDED_CONTAIN_BOOST}. Full cover overshot the bag seams on
+ * Printify; the original contain bake was too small vs the app. Offsets are
+ * fractions of the face (same units as `flatArtBox`).
  */
+export const TOTE_FOLDED_CONTAIN_BOOST = 1.2;
+
 export function toteFoldedArtBox(
   sourceWidth: number,
   sourceHeight: number,
@@ -74,8 +77,8 @@ export function toteFoldedArtBox(
   const sh = sourceHeight > 0 ? sourceHeight : 1;
   const panelW = TOTE_FOLDED_PANEL_WIDTH;
   const panelH = TOTE_FOLDED_PANEL_HEIGHT;
-  const cover = Math.max(panelW / sw, panelH / sh);
-  const k = cover * scale;
+  const contain = Math.min(panelW / sw, panelH / sh);
+  const k = contain * TOTE_FOLDED_CONTAIN_BOOST * scale;
   const drawW = Math.max(1, Math.round(sw * k));
   const drawH = Math.max(1, Math.round(sh * k));
   const cx = panelW * (0.5 + offsetX);
