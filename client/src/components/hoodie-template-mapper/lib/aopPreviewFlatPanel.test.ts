@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  artworkSizeAfterPlacementRotation,
   bakeArtworkPlacementRotation,
+  remapSourceRectForPlacementRotation,
   buildFlatMeshTargetPoints,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
@@ -32,6 +34,39 @@ describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
     src.height = 20;
     expect(bakeArtworkPlacementRotation(src, 40, 20, 0)).toBe(src);
     expect(bakeArtworkPlacementRotation(src, 40, 20, 360)).toBe(src);
+  });
+
+  it("swaps canvas size at 90° so portrait art is not clipped", () => {
+    expect(artworkSizeAfterPlacementRotation(20, 54, 90)).toEqual({
+      width: 54,
+      height: 20,
+    });
+    expect(artworkSizeAfterPlacementRotation(20, 54, -90)).toEqual({
+      width: 54,
+      height: 20,
+    });
+    expect(artworkSizeAfterPlacementRotation(20, 54, 180)).toEqual({
+      width: 20,
+      height: 54,
+    });
+  });
+
+  it("remaps a full-frame sourceRect through 90° CW", () => {
+    expect(remapSourceRectForPlacementRotation({ x: 0, y: 0, width: 20, height: 54 }, 20, 54, 90)).toEqual({
+      x: 0,
+      y: 0,
+      width: 54,
+      height: 20,
+    });
+  });
+
+  it("remaps a full-frame sourceRect through 90° CCW", () => {
+    expect(remapSourceRectForPlacementRotation({ x: 0, y: 0, width: 20, height: 54 }, 20, 54, -90)).toEqual({
+      x: 0,
+      y: 0,
+      width: 54,
+      height: 20,
+    });
   });
 });
 

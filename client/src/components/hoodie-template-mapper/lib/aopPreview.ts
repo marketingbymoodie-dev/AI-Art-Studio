@@ -154,8 +154,68 @@ export function normalizeRotationDeg(deg: number): number {
   return d;
 }
 
+/** Pixel size of artwork after Place rotation (swap at 90°, AABB otherwise). */
+export function artworkSizeAfterPlacementRotation(
+  width: number,
+  height: number,
+  rotationDeg: number,
+): { width: number; height: number } {
+  const deg = normalizeRotationDeg(rotationDeg);
+  if (!deg || width <= 0 || height <= 0) return { width, height };
+  if (Math.abs(Math.abs(deg) - 90) < 0.5) {
+    return { width: height, height: width };
+  }
+  if (Math.abs(Math.abs(deg) - 180) < 0.5) {
+    return { width, height };
+  }
+  const rad = (Math.abs(deg) * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  return {
+    width: Math.max(1, Math.round(width * cos + height * sin)),
+    height: Math.max(1, Math.round(width * sin + height * cos)),
+  };
+}
+
+/** Map a sourceRect from unrotated artwork space into the baked rotated canvas. */
+export function remapSourceRectForPlacementRotation(
+  rect: { x: number; y: number; width: number; height: number },
+  srcW: number,
+  srcH: number,
+  rotationDeg: number,
+): { x: number; y: number; width: number; height: number } {
+  const deg = normalizeRotationDeg(rotationDeg);
+  if (!deg) return rect;
+  if (Math.abs(deg - 90) < 0.5) {
+    return {
+      x: srcH - rect.y - rect.height,
+      y: rect.x,
+      width: rect.height,
+      height: rect.width,
+    };
+  }
+  if (Math.abs(deg + 90) < 0.5) {
+    return {
+      x: rect.y,
+      y: srcW - rect.x - rect.width,
+      width: rect.height,
+      height: rect.width,
+    };
+  }
+  if (Math.abs(Math.abs(deg) - 180) < 0.5) {
+    return {
+      x: srcW - rect.x - rect.width,
+      y: srcH - rect.y - rect.height,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+  const baked = artworkSizeAfterPlacementRotation(srcW, srcH, deg);
+  return { x: 0, y: 0, width: baked.width, height: baked.height };
+}
+
 /**
- * Bake customer Place rotation into a same-sized artwork canvas (CW).
+ * Bake customer Place rotation into a canvas (CW).
  *
  * Must NOT be applied as per-panel mesh `sourceRotation`: linked leggings
  * each sample their own crop, so UV-spinning every panel around its own
@@ -163,8 +223,8 @@ export function normalizeRotationDeg(deg: number): number {
  * legs (and every other panel in the group) sampling the same upright
  * bitmap — same as if the customer had uploaded a pre-rotated image.
  *
- * Canvas size stays equal to the source so existing sourceRect / scale
- * math is unchanged; corners that leave the square become transparent.
+ * 90°/270° swap width/height so a portrait body-pillow gen is not clipped
+ * by a vertical mask. Other angles expand to the rotated AABB.
  */
 export function bakeArtworkPlacementRotation(
   artwork: CanvasImageSource,
@@ -175,16 +235,17 @@ export function bakeArtworkPlacementRotation(
   const deg = normalizeRotationDeg(rotationDeg);
   if (!deg || width <= 0 || height <= 0) return artwork;
   if (typeof document === "undefined") return artwork;
+  const size = artworkSizeAfterPlacementRotation(width, height, deg);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
+  canvas.width = Math.max(1, Math.round(size.width));
+  canvas.height = Math.max(1, Math.round(size.height));
   const ctx = canvas.getContext("2d");
   if (!ctx) return artwork;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((deg * Math.PI) / 180);
-  ctx.drawImage(artwork, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+  ctx.drawImage(artwork, -width / 2, -height / 2, width, height);
   return canvas;
 }
 
@@ -601,10 +662,12 @@ function computeGroupRect(
   // render time — not whether the group has a draggable design rect.
   const union = totalPrintAabb(visiblePrint);
   if (!union) return null;
-  const aspect = artwork
+  const rawAspect = artwork
     ? (artwork.naturalWidth || artwork.width) /
       (artwork.naturalHeight || artwork.height || 1)
     : union.width / Math.max(1, union.height);
+  const rot = Math.abs(normalizeRotationDeg(placement.rotationDeg ?? 0));
+  const aspect = Math.abs(rot - 90) < 0.5 ? 1 / rawAspect : rawAspect;
   const fitted = artwork ? fitAspectInside(union, aspect) : union;
   const { x: anchorX, hasSeamPair } = computeAnchorX(visiblePrint, union);
   // Re-centre the fitted rect on the anchor X so paired groups have
@@ -1249,21 +1312,19 @@ export function renderHoodFlatPanel(
 
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
-  const artSource = bakeArtworkPlacementRotation(
-    artwork,
-    aw,
-    ah,
-    frontRect.rotationDeg ?? 0,
-  );
+  const rotDeg = frontRect.rotationDeg ?? 0;
+  const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
+  const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
+  const bakedSlice = remapSourceRectForPlacementRotation(slice, aw, ah, rotDeg);
   // Bake through the same mesh topology the live preview uses, but with
   // targetPoints on a uniform flat grid so the entire Printify placeholder
   // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
   // into a fractional dest rect left most of the canvas white on Printify.
   // Customer Place rotation is pre-baked into `artSource` (not mesh UV).
-  drawMeshWarp(ctx, artSource, aw, ah, {
+  drawMeshWarp(ctx, artSource, bakedSize.width, bakedSize.height, {
     ...frontLayer.mesh,
     targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
-    sourceRect: slice,
+    sourceRect: bakedSlice,
     sourceFlipX: meshSourceFlipXForPanel(
       frontLayer.panelKey,
       frontLayer.mesh.sourceFlipX,
@@ -2515,15 +2576,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         synthSrc = { x: 0, y: 0, width: aw, height: ah };
       }
       if (synthSrc) {
-        const artSource = rotatedArtworkFor(
-          artwork,
-          aw,
-          ah,
-          layerRect?.rotationDeg ?? 0,
-        );
-        drawMeshWarp(pctx, artSource, aw, ah, {
+        const rotDeg = layerRect?.rotationDeg ?? 0;
+        const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+        const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
+        drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
           ...layer.mesh,
-          sourceRect: synthSrc,
+          sourceRect: remapSourceRectForPlacementRotation(synthSrc, aw, ah, rotDeg),
           // Keep calibration UV rotation only — Place rotation is baked
           // into artSource so linked legs share one upright bitmap.
           sourceRotation: layer.mesh.sourceRotation ?? 0,
@@ -2563,18 +2621,15 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             seamSideForLayer(layer),
             params.legsMirrored,
           );
-          const artSource = rotatedArtworkFor(
-            artwork,
-            aw,
-            ah,
-            layerRect.rotationDeg ?? 0,
-          );
+          const rotDeg = layerRect.rotationDeg ?? 0;
+          const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+          const bakedSlice = remapSourceRectForPlacementRotation(slice, aw, ah, rotDeg);
           pctx.drawImage(
             artSource,
-            slice.x,
-            slice.y,
-            slice.width,
-            slice.height,
+            bakedSlice.x,
+            bakedSlice.y,
+            bakedSlice.width,
+            bakedSlice.height,
             bb.x,
             bb.y,
             bb.width,
@@ -3676,18 +3731,15 @@ export function renderFlatPrintPanels(
                 cctx.translate(c.width, 0);
                 cctx.scale(-1, 1);
               }
-              const artSource = bakeArtworkPlacementRotation(
-                artwork,
-                aw,
-                ah,
-                rect.rotationDeg ?? 0,
-              );
+              const rotDeg = rect.rotationDeg ?? 0;
+              const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
+              const bakedSlice = remapSourceRectForPlacementRotation(slice, aw, ah, rotDeg);
               cctx.drawImage(
                 artSource,
-                slice.x,
-                slice.y,
-                slice.width,
-                slice.height,
+                bakedSlice.x,
+                bakedSlice.y,
+                bakedSlice.width,
+                bakedSlice.height,
                 0,
                 0,
                 c.width,

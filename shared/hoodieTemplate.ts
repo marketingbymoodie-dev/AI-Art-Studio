@@ -1042,6 +1042,20 @@ export function isPillowWrapBlueprint(blueprintId: number | null | undefined): b
   return PILLOW_WRAP_BLUEPRINT_IDS.includes(blueprintId);
 }
 
+export function isBodyPillowBlueprint(blueprintId: number | null | undefined): boolean {
+  return Number(blueprintId) === BODY_PILLOW_WRAP_BLUEPRINT_ID;
+}
+
+/**
+ * Size rows are stored as 20×54 (portrait), but the sewn body pillow / mockup
+ * is landscape. Generate and place in the long orientation.
+ */
+export function bodyPillowGenerationAspectRatio(stored: string): string {
+  const [w, h] = String(stored || "").split(":").map(Number);
+  if (w > 0 && h > 0 && w < h) return `${h}:${w}`;
+  return stored;
+}
+
 type PlacerEditorTemplateLike = Pick<
   HoodieTemplate,
   "placerEditor" | "blueprintId" | "hoodieType" | "designGroups"

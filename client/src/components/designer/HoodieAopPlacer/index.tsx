@@ -32,6 +32,7 @@ import {
 } from "@/components/designer/placerControlStyles";
 import {
   designGroupsForBlueprint,
+  isBodyPillowBlueprint,
   isLeggingsBlueprint,
   isPillowWrapTemplate,
   isPulloverHoodieBlueprint,
@@ -1219,6 +1220,40 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [state?.artworkUrl]);
+
+  // Body pillow mockup is landscape; portrait gens (20:54) must land on their side.
+  useEffect(() => {
+    if (!artworkImg || !data?.template || seededAsResumeRef.current) return;
+    if (!isBodyPillowBlueprint(data.template.blueprintId)) return;
+    const aw = artworkImg.naturalWidth || artworkImg.width;
+    const ah = artworkImg.naturalHeight || artworkImg.height;
+    if (!(aw > 0 && ah > 0) || aw >= ah) return;
+    setState((prev) => {
+      if (!prev) return prev;
+      const current = prev.placements["front-face"]?.front?.rotationDeg ?? 0;
+      if (current !== 0) return prev;
+      const apply = (p?: ArtworkPlacement): ArtworkPlacement => ({
+        ...(p ?? DEFAULT_ARTWORK_PLACEMENT),
+        rotationDeg: 90,
+      });
+      const frontFace = prev.placements["front-face"];
+      const backFace = prev.placements["back-face"];
+      return {
+        ...prev,
+        placements: {
+          ...prev.placements,
+          "front-face": {
+            front: apply(frontFace?.front),
+            back: apply(frontFace?.back),
+          },
+          "back-face": {
+            front: apply(backFace?.front),
+            back: apply(backFace?.back),
+          },
+        },
+      };
+    });
+  }, [artworkImg, data?.template]);
 
   // ---------- Canvas rendering ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
