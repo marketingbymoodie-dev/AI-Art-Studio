@@ -70,7 +70,6 @@ import HoodieAopPlacer, {
 } from "@/components/designer/HoodieAopPlacer";
 import {
   MOCKUP_PANEL_MAX_LONG_EDGE_PX,
-  TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import FlatProductPlacer, {
   type FlatApplyStatus,
@@ -9310,13 +9309,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Front is the canonical "preferred" mockup the cart references.
     const panelSaveShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
     const mockupPanels = result.renderPrintPanels({
-      maxLongEdgePx: isAdminTester
-        ? TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX
-        : MOCKUP_PANEL_MAX_LONG_EDGE_PX,
+      maxLongEdgePx: MOCKUP_PANEL_MAX_LONG_EDGE_PX,
     });
-    // Preview Studio: persist ~3200px panels (not mockup-only 1800). Full
-    // storefront bake still uses the uncapped path below so live orders
-    // keep print-ready files without blocking the tester button.
+    // Persist print-ready panels (body pillow → 150 DPI). Mockup API keeps
+    // the 1800px rasters so Printers Mockup stays fast. Tester renders the
+    // full files inside persistWork so Apply is not blocked.
     const fullPrintPanels = isAdminTester
       ? null
       : result.renderPrintPanels();
@@ -9347,7 +9344,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         wrapBackMode: result.state.wrapBackMode,
       });
       const panelsForSave = isAdminTester
-        ? mockupPanels
+        ? (result.renderPrintPanels() ?? mockupPanels)
         : (fullPrintPanels ?? result.renderPrintPanels());
       if (!panelsForSave?.length) {
         if (isAdminTester && !isStale()) emitTesterDesignStatus({ aopPanels: "error" });

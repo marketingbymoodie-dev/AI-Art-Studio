@@ -60,6 +60,7 @@ import {
   bomberPatternPrintTileScaleForPanel,
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isBodyPillowBlueprint,
   isBomberJacketBlueprint,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
@@ -2812,9 +2813,25 @@ const PRINT_PANEL_TARGET_LONG_EDGE_PX = 3200;
 /** Hard cap on exported panel long edge (memory / upload safety). */
 const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
 
+/** Printify enhance-step floor. Below this they show "Resolution will be enhanced". */
+export const PRINTIFY_MIN_PRINT_DPI = 150;
+/** Sewn body-pillow long edge (20×54). 1800px tester panels were ~32 DPI. */
+export const BODY_PILLOW_PRINT_LONG_INCHES = 54;
+
+export function printPanelLongEdgeCaps(blueprintId?: number | null): {
+  target: number;
+  max: number;
+} {
+  if (isBodyPillowBlueprint(blueprintId)) {
+    const target = Math.ceil(BODY_PILLOW_PRINT_LONG_INCHES * PRINTIFY_MIN_PRINT_DPI);
+    return { target, max: target };
+  }
+  return { target: PRINT_PANEL_TARGET_LONG_EDGE_PX, max: PRINT_PANEL_MAX_LONG_EDGE_PX };
+}
+
 /**
  * Scale factor so a flat canvas whose pre-scale long edge is `baseLongEdge`
- * lands near {@link PRINT_PANEL_TARGET_LONG_EDGE_PX}, never above `maxLongEdgePx`.
+ * lands near `targetLongEdgePx`, never above `maxLongEdgePx`.
  *
  * `baseLongEdge` MUST be the size `renderHoodFlatPanel` / `renderTiledFlatPanel`
  * actually use (mesh `sourceRect` / mesh bbox) — not Printify placeholder px.
@@ -2824,11 +2841,13 @@ const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
 export function printPanelOutputScale(
   baseLongEdge: number,
   maxLongEdgePx: number = PRINT_PANEL_MAX_LONG_EDGE_PX,
+  targetLongEdgePx: number = PRINT_PANEL_TARGET_LONG_EDGE_PX,
 ): number {
   const long = Math.max(1, baseLongEdge);
   const maxEdge = Math.max(1, maxLongEdgePx);
+  const target = Math.max(1, targetLongEdgePx);
   return Math.min(
-    Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / long),
+    Math.max(1, target / long),
     maxEdge / long,
   );
 }
@@ -2883,10 +2902,9 @@ function tiledFlatPanelBaseDims(
 
 /** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
 export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
-/** Preview Studio test-order persist. Above mockup-only 1800 so Printify's
- *  enhance step is less likely to reject the draft as "unable to enhance".
- *  Still far below storefront full bake (placeholder 8–12k). */
-export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = MOCKUP_PANEL_MAX_LONG_EDGE_PX;
+/** Preview Studio test-order persist uses uncapped `renderFlatPrintPanels`
+ *  (body pillow → 150 DPI). This leftover alias is the generic apparel max. */
+export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = PRINT_PANEL_MAX_LONG_EDGE_PX;
 /** Solid background-only panels compress to almost nothing; Printify scales
  *  the image to the placeholder, so a modest aspect-correct fill is enough.
  *  Keep this large enough that wide strips (collar ~11:1) retain a usable
@@ -3500,7 +3518,10 @@ export function renderFlatPrintPanels(
       designGroups: migrateFrontPocketOutOfTrimGroup(template.designGroups ?? []),
     };
   }
-  const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const caps = printPanelLongEdgeCaps(template.blueprintId);
+  const panelMaxLongEdge = maxLongEdgePx ?? caps.max;
+  const panelTargetLongEdge =
+    maxLongEdgePx != null ? Math.min(caps.target, maxLongEdgePx) : caps.target;
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
   const patternTileSamples =
     mode === "tile" ? collectPatternTileScaleSamples(template) : [];
@@ -3602,8 +3623,11 @@ export function renderFlatPrintPanels(
       const scaleBaseLong = Math.max(tileBase.width, tileBase.height, 1);
       const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
       const wanted = artworkLongEdge / tilePxBase;
-      const capped = Math.min(wanted, panelMaxLongEdge / scaleBaseLong);
-      const outputScale = Math.max(1, capped);
+      const densityScale = Math.max(1, Math.min(wanted, panelMaxLongEdge / scaleBaseLong));
+      const outputScale = Math.max(
+        densityScale,
+        printPanelOutputScale(scaleBaseLong, panelMaxLongEdge, panelTargetLongEdge),
+      );
       artCanvas = layer.mesh
         ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
             outputScale,
@@ -3685,6 +3709,7 @@ export function renderFlatPrintPanels(
       const outputScale = printPanelOutputScale(
         Math.max(scaleBase.width, scaleBase.height, 1),
         panelMaxLongEdge,
+        panelTargetLongEdge,
       );
       if (bakeLayer.mesh) {
         const panelBias = group
