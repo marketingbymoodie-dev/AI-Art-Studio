@@ -1221,20 +1221,28 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     };
   }, [state?.artworkUrl]);
 
-  // Body pillow mockup is landscape; portrait gens (20:54) must land on their side.
+  // Body pillow mockup is landscape. Portrait files (legacy 20:54 saves) get
+  // a 90° place; landscape files must stay at 0° — a leftover 90° from a
+  // prior gen stands the painting on its side and clips it.
   useEffect(() => {
-    if (!artworkImg || !data?.template || seededAsResumeRef.current) return;
+    if (!artworkImg || !data?.template) return;
     if (!isBodyPillowBlueprint(data.template.blueprintId)) return;
     const aw = artworkImg.naturalWidth || artworkImg.width;
     const ah = artworkImg.naturalHeight || artworkImg.height;
-    if (!(aw > 0 && ah > 0) || aw >= ah) return;
+    if (!(aw > 0 && ah > 0)) return;
+    const landscape = aw >= ah;
     setState((prev) => {
       if (!prev) return prev;
       const current = prev.placements["front-face"]?.front?.rotationDeg ?? 0;
-      if (current !== 0) return prev;
+      const quarterTurn = Math.abs(Math.abs(current) - 90) < 0.5;
+      if (landscape) {
+        if (!quarterTurn) return prev;
+      } else {
+        if (seededAsResumeRef.current || current !== 0) return prev;
+      }
       const apply = (p?: ArtworkPlacement): ArtworkPlacement => ({
         ...(p ?? DEFAULT_ARTWORK_PLACEMENT),
-        rotationDeg: 90,
+        rotationDeg: landscape ? 0 : 90,
       });
       const frontFace = prev.placements["front-face"];
       const backFace = prev.placements["back-face"];

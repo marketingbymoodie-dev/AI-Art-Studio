@@ -2892,11 +2892,13 @@ console.log("[api/generate] replicate returned", {
         return res.status(500).json({ error: "Failed to generate image" });
       }
 
-      // Get target dimensions for resizing - skip for apparel (keep square)
+      // Get target dimensions for resizing - skip for apparel (keep square).
+      // Body pillow: keep the landscape Gemini canvas. Saving against the
+      // stored 20:54 size row cropped the long painting into a portrait strip.
       let targetDims: TargetDimensions | undefined;
-      if (!isApparel) {
-        const genWidth = (finalSizeConfig as any).genWidth || 1024;
-        const genHeight = (finalSizeConfig as any).genHeight || 1024;
+      if (!isApparel && !isBodyPillowBlueprint(productType?.printifyBlueprintId)) {
+        const genWidth = (sizeConfig as any).genWidth || 1024;
+        const genHeight = (sizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };
       }
 
@@ -3764,7 +3766,7 @@ ${orientationExtra}
       
       // Get target dimensions for resizing - skip for apparel (keep square)
       let targetDims: TargetDimensions | undefined;
-      if (!isApparel) {
+      if (!isApparel && !isBodyPillowBlueprint(productType?.printifyBlueprintId)) {
         const genWidth = (sizeConfig as any).genWidth || 1024;
         const genHeight = (sizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };
@@ -8545,7 +8547,7 @@ ${orientationExtra}
       // Capture appUrl from request before responding (used for reference image resolution in worker)
       const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
       let targetDims: TargetDimensions | undefined;
-      if (!isApparel) {
+      if (!isApparel && !isBodyPillowBlueprint(productType?.printifyBlueprintId)) {
         const genWidth = (sizeConfig as any).genWidth || 1024;
         const genHeight = (sizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };
