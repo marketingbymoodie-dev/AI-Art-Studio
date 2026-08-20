@@ -49,7 +49,11 @@ import {
   resolveLeggingsAopAspectRatio,
   resolveStandardApparelAspectRatioFromPlaceholders,
 } from "@shared/apparelAspectRatio";
-import { isLeggingsBlueprint } from "@shared/hoodieTemplate";
+import {
+  bodyPillowGenerationAspectRatio,
+  isBodyPillowBlueprint,
+  isLeggingsBlueprint,
+} from "@shared/hoodieTemplate";
 import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
 import {
   cacheCoversVariantIds,
@@ -642,6 +646,9 @@ function resolveGenerationAspectRatio(
       parsePlaceholderPositionsForAspect(opts.placeholderPositions),
     );
   }
+  if (opts.isAllOverPrint && isBodyPillowBlueprint(opts.printifyBlueprintId)) {
+    return bodyPillowGenerationAspectRatio(aspectRatioStr);
+  }
   if (opts.isApparel && !opts.isAllOverPrint) {
     // Flat-calibrated tees/etc.: use harvested dashed-guide AR (probed on blank).
     // Other apparel: keep import-time per-size placeholder ratios (only fix landscape).
@@ -673,6 +680,9 @@ function designerDisplayAspectRatio(productType: {
     return resolveLeggingsAopAspectRatio(
       parsePlaceholderPositionsForAspect(productType.placeholderPositions),
     );
+  }
+  if (productType.isAllOverPrint && isBodyPillowBlueprint(productType.printifyBlueprintId)) {
+    return bodyPillowGenerationAspectRatio(productType.aspectRatio || "27:10");
   }
   const stored = productType.aspectRatio || "1:1";
   if (productType.designerType === "apparel" && !productType.isAllOverPrint) {
@@ -2883,11 +2893,13 @@ console.log("[api/generate] replicate returned", {
         return res.status(500).json({ error: "Failed to generate image" });
       }
 
-      // Get target dimensions for resizing - skip for apparel (keep square)
+      // Get target dimensions for resizing - skip for apparel (keep square).
+      // Body pillow: keep the landscape Gemini canvas. Saving against the
+      // stored 20:54 size row cropped the long painting into a portrait strip.
       let targetDims: TargetDimensions | undefined;
-      if (!isApparel) {
-        const genWidth = (finalSizeConfig as any).genWidth || 1024;
-        const genHeight = (finalSizeConfig as any).genHeight || 1024;
+      if (!isApparel && !isBodyPillowBlueprint(productType?.printifyBlueprintId)) {
+        const genWidth = (sizeConfig as any).genWidth || 1024;
+        const genHeight = (sizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };
       }
 
@@ -3561,7 +3573,8 @@ console.log("[shopify/session] installation ok", {
       if (
         (embedIsApparelEarly && !embedIsAllOverPrintEarly) ||
         (embedIsAllOverPrintEarly &&
-          isLeggingsBlueprint(productType?.printifyBlueprintId))
+          (isLeggingsBlueprint(productType?.printifyBlueprintId) ||
+            isBodyPillowBlueprint(productType?.printifyBlueprintId)))
       ) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
           isApparel: embedIsApparelEarly,
@@ -3754,7 +3767,7 @@ ${orientationExtra}
       
       // Get target dimensions for resizing - skip for apparel (keep square)
       let targetDims: TargetDimensions | undefined;
-      if (!isApparel) {
+      if (!isApparel && !isBodyPillowBlueprint(productType?.printifyBlueprintId)) {
         const genWidth = (sizeConfig as any).genWidth || 1024;
         const genHeight = (sizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };
@@ -8397,11 +8410,17 @@ ${orientationExtra}
         reqId,
         `matting flags isApparel=${isApparel} designerType=${productType?.designerType ?? "none"} isAOP=${isAllOverPrint} styleCat=${sfStyleCategory}`,
       );
-      if (sizeConfig && isApparel && !isAllOverPrint) {
+      if (
+        sizeConfig &&
+        ((isApparel && !isAllOverPrint) ||
+          (isAllOverPrint && isBodyPillowBlueprint(productType?.printifyBlueprintId)))
+      ) {
         const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
           isApparel,
           isAllOverPrint,
           flatCalibration: (productType as any)?.flatCalibration,
+          printifyBlueprintId: productType?.printifyBlueprintId,
+          placeholderPositions: (productType as any)?.placeholderPositions,
         });
         if (normalized !== sizeConfig.aspectRatio) {
           const genDims = calculateGenDimensions(normalized);
@@ -8527,7 +8546,7 @@ ${orientationExtra}
       // Capture appUrl from request before responding (used for reference image resolution in worker)
       const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
       let targetDims: TargetDimensions | undefined;
-      if (!isApparel) {
+      if (!isApparel && !isBodyPillowBlueprint(productType?.printifyBlueprintId)) {
         const genWidth = (sizeConfig as any).genWidth || 1024;
         const genHeight = (sizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };

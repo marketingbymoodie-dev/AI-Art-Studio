@@ -2,6 +2,7 @@
  * Copy platform canonical flat calibration onto a merchant product type when missing.
  */
 import { productLooksLikeFramedDecor } from "@shared/productVariantOptions";
+import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
 import {
   isUsableFlatCalibrationManifest,
   merchantManifestFromCanonical,
@@ -76,10 +77,27 @@ export async function syncProductTypeFromPlatformCatalogAop(
     isAllOverPrint?: boolean | null;
     panelMappingTemplate?: string | null;
     flatCalibrationStatus?: string | null;
+    fulfillmentLayout?: string | null;
+    onTheFlyTier?: string | null;
+    flatCalibration?: unknown;
   },
 ): Promise<{ synced: boolean; productType?: Awaited<ReturnType<typeof storage.getProductType>> }> {
   if (!productType.printifyBlueprintId) return { synced: false };
   if (productType.isAllOverPrint && productType.panelMappingTemplate) {
+    return { synced: false };
+  }
+  // Never stamp a hoodie mesh template onto folded tote / harvested flat products.
+  // Preview Studio used to lose FlatProductPlacer after this sync.
+  if (
+    usesToteFoldedFulfillment({
+      printifyBlueprintId: productType.printifyBlueprintId,
+      fulfillmentLayout: productType.fulfillmentLayout,
+      isAllOverPrint: productType.isAllOverPrint,
+    })
+  ) {
+    return { synced: false };
+  }
+  if (productType.onTheFlyTier === "flat" || productType.flatCalibration) {
     return { synced: false };
   }
 
@@ -116,6 +134,8 @@ export async function prepareProductTypeForDesigner(
     isAllOverPrint?: boolean | null;
     panelMappingTemplate?: string | null;
     flatCalibrationStatus?: string | null;
+    fulfillmentLayout?: string | null;
+    onTheFlyTier?: string | null;
     designerType?: string | null;
   } | null | undefined,
   options?: { allowUnpublishedHarvest?: boolean },

@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  artworkSizeAfterPlacementRotation,
   bakeArtworkPlacementRotation,
+  remapSourceRectForPlacementRotation,
   buildFlatMeshTargetPoints,
+  computeGroupRects,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
   normalizeRotationDeg,
+  printPanelLongEdgeCaps,
   printPanelOutputScale,
   shouldComposePillowWrapPrintFile,
   sleevePanelHalfSourceRect,
@@ -17,6 +21,7 @@ import {
   createFreshAopTemplate,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  type MaskLayer,
 } from "@shared/hoodieTemplate";
 
 describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
@@ -32,6 +37,94 @@ describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
     src.height = 20;
     expect(bakeArtworkPlacementRotation(src, 40, 20, 0)).toBe(src);
     expect(bakeArtworkPlacementRotation(src, 40, 20, 360)).toBe(src);
+  });
+
+  it("swaps canvas size at 90° so portrait art is not clipped", () => {
+    expect(artworkSizeAfterPlacementRotation(20, 54, 90)).toEqual({
+      width: 54,
+      height: 20,
+    });
+    expect(artworkSizeAfterPlacementRotation(20, 54, -90)).toEqual({
+      width: 54,
+      height: 20,
+    });
+    expect(artworkSizeAfterPlacementRotation(20, 54, 180)).toEqual({
+      width: 20,
+      height: 54,
+    });
+  });
+
+  it("remaps a full-frame sourceRect through 90° CW", () => {
+    expect(remapSourceRectForPlacementRotation({ x: 0, y: 0, width: 20, height: 54 }, 20, 54, 90)).toEqual({
+      x: 0,
+      y: 0,
+      width: 54,
+      height: 20,
+    });
+  });
+
+  it("remaps a full-frame sourceRect through 90° CCW", () => {
+    expect(remapSourceRectForPlacementRotation({ x: 0, y: 0, width: 20, height: 54 }, 20, 54, -90)).toEqual({
+      x: 0,
+      y: 0,
+      width: 54,
+      height: 20,
+    });
+  });
+
+  it("sizes the body-pillow place box from baked landscape art at 90°", () => {
+    const template = createFreshAopTemplate({
+      name: "body-pillow-rects",
+      blueprintId: BODY_PILLOW_WRAP_BLUEPRINT_ID,
+    });
+    const layer: MaskLayer = {
+      id: "front",
+      view: "front",
+      panelKey: "front",
+      kind: "panel",
+      name: "Front",
+      visible: true,
+      locked: false,
+      zIndex: 1,
+      opacity: 1,
+      blendMode: "normal",
+      maskPath: "M0,0 L540,0 L540,200 L0,200 Z",
+      cornerPins: null,
+      mesh: null,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0 },
+      productionPanelAssignment: null,
+      productionPanelSrc: null,
+      isExclusion: false,
+    };
+    template.views.front.layers = [layer];
+    const artwork = {
+      naturalWidth: 20,
+      naturalHeight: 54,
+      width: 20,
+      height: 54,
+    } as HTMLImageElement;
+    const map = computeGroupRects(template, "front", artwork, {
+      placementOverrides: {
+        "front-face": {
+          front: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 90 },
+          back: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 90 },
+        },
+      },
+    });
+    const rect = map.get("front-face");
+    expect(rect).toBeDefined();
+    expect(rect!.effective.width / rect!.effective.height).toBeCloseTo(54 / 20, 2);
+    expect(rect!.effective.width).toBeGreaterThan(rect!.effective.height);
+    const nudged = computeGroupRects(template, "front", artwork, {
+      placementOverrides: {
+        "front-face": {
+          front: { scale: 1, offsetX: 40, offsetY: 0, rotationDeg: 90 },
+          back: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 90 },
+        },
+      },
+    }).get("front-face");
+    expect(nudged!.effective.x).toBeCloseTo(rect!.effective.x + 40, 5);
+    expect(nudged!.effective.y).toBeCloseTo(rect!.effective.y, 5);
   });
 });
 
@@ -53,6 +146,17 @@ describe("printPanelOutputScale", () => {
 
   it("leaves mid-size bases (≥3200, ≤4800) at scale 1", () => {
     expect(printPanelOutputScale(4000)).toBe(1);
+  });
+
+  it("body pillow targets 150 DPI on the 54in long edge", () => {
+    const { target, max } = printPanelLongEdgeCaps(BODY_PILLOW_WRAP_BLUEPRINT_ID);
+    expect(target).toBe(8100);
+    expect(max).toBe(8100);
+    const sourceRectLong = 750;
+    expect(
+      Math.round(sourceRectLong * printPanelOutputScale(sourceRectLong, max, target)),
+    ).toBe(8100);
+    expect(printPanelLongEdgeCaps(ZIP_HOODIE_BLUEPRINT_ID).target).toBe(3200);
   });
 });
 

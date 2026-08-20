@@ -79,16 +79,17 @@ export function resolveStorefrontMockupMode(
   const explicit = normMode(product.storefrontMockupMode) ?? normMode(catalog?.storefrontMockupMode);
   if (explicit) return explicit;
 
-  // Mesh AOP panel mapper always wins when published.
-  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return "aop";
-
-  // Harvested flat/mesh calibration → FlatProductPlacer, not PatternCustomizer.
-  // Products titled "(AOP)" can still be flat-panel (e.g. shoulder tote) once calibrated.
-  if (hasOnTheFlyFlatOrMesh(product, catalog)) return "flat";
-
-  const fulfillment =
-    resolveFulfillmentLayout(product, catalog);
+  // Folded tote and harvested *flat* beat a leftover AOP panel-mapping name.
+  // Catalog sync used to stamp hoodie templates onto totes titled (AOP).
+  // Mesh-tier + template still means HoodieAopPlacer (zip/pullover).
+  const fulfillment = resolveFulfillmentLayout(product, catalog);
   if (fulfillment === TOTE_FOLDED_V1_TEMPLATE) return "flat";
+  const tier = product.onTheFlyTier ?? catalog?.onTheFlyTier ?? null;
+  if (tier === "flat") return "flat";
+
+  // Mesh AOP panel mapper when this is actually a mesh product.
+  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return "aop";
+  if (hasOnTheFlyFlatOrMesh(product, catalog)) return "flat";
 
   if (product.isAllOverPrint || catalog?.isAllOverPrint) {
     return "aop";
@@ -116,14 +117,19 @@ export function usesAopStorefrontCustomizer(
   product: LayoutPolicySource,
   catalog?: LayoutPolicySource | null,
 ): boolean {
-  // Published mesh panel-mapping template → HoodieAopPlacer.
-  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return true;
   // Explicit operator override wins over harvest heuristics.
   const explicit =
     normMode(product.storefrontMockupMode) ?? normMode(catalog?.storefrontMockupMode);
   if (explicit === "aop") return true;
   if (explicit === "flat" || explicit === "printify") return false;
-  // Flat/mesh on-the-fly harvest → FlatProductPlacer only (never both editors).
+  // Folded tote / harvested flat never share the mesh PatternCustomizer.
+  if (resolveFulfillmentLayout(product, catalog) === TOTE_FOLDED_V1_TEMPLATE) {
+    return false;
+  }
+  const tier = product.onTheFlyTier ?? catalog?.onTheFlyTier ?? null;
+  if (tier === "flat") return false;
+  // Published mesh panel-mapping template → HoodieAopPlacer.
+  if (product.panelMappingTemplate || catalog?.panelMappingTemplate) return true;
   if (hasOnTheFlyFlatOrMesh(product, catalog)) return false;
   const mode = resolveStorefrontMockupMode(product, catalog);
   if (mode === "aop") return true;

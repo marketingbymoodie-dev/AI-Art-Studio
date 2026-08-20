@@ -60,6 +60,7 @@ import {
   bomberPatternPrintTileScaleForPanel,
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isBodyPillowBlueprint,
   isBomberJacketBlueprint,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
@@ -154,8 +155,68 @@ export function normalizeRotationDeg(deg: number): number {
   return d;
 }
 
+/** Pixel size of artwork after Place rotation (swap at 90°, AABB otherwise). */
+export function artworkSizeAfterPlacementRotation(
+  width: number,
+  height: number,
+  rotationDeg: number,
+): { width: number; height: number } {
+  const deg = normalizeRotationDeg(rotationDeg);
+  if (!deg || width <= 0 || height <= 0) return { width, height };
+  if (Math.abs(Math.abs(deg) - 90) < 0.5) {
+    return { width: height, height: width };
+  }
+  if (Math.abs(Math.abs(deg) - 180) < 0.5) {
+    return { width, height };
+  }
+  const rad = (Math.abs(deg) * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  return {
+    width: Math.max(1, Math.round(width * cos + height * sin)),
+    height: Math.max(1, Math.round(width * sin + height * cos)),
+  };
+}
+
+/** Map a sourceRect from unrotated artwork space into the baked rotated canvas. */
+export function remapSourceRectForPlacementRotation(
+  rect: { x: number; y: number; width: number; height: number },
+  srcW: number,
+  srcH: number,
+  rotationDeg: number,
+): { x: number; y: number; width: number; height: number } {
+  const deg = normalizeRotationDeg(rotationDeg);
+  if (!deg) return rect;
+  if (Math.abs(deg - 90) < 0.5) {
+    return {
+      x: srcH - rect.y - rect.height,
+      y: rect.x,
+      width: rect.height,
+      height: rect.width,
+    };
+  }
+  if (Math.abs(deg + 90) < 0.5) {
+    return {
+      x: rect.y,
+      y: srcW - rect.x - rect.width,
+      width: rect.height,
+      height: rect.width,
+    };
+  }
+  if (Math.abs(Math.abs(deg) - 180) < 0.5) {
+    return {
+      x: srcW - rect.x - rect.width,
+      y: srcH - rect.y - rect.height,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+  const baked = artworkSizeAfterPlacementRotation(srcW, srcH, deg);
+  return { x: 0, y: 0, width: baked.width, height: baked.height };
+}
+
 /**
- * Bake customer Place rotation into a same-sized artwork canvas (CW).
+ * Bake customer Place rotation into a canvas (CW).
  *
  * Must NOT be applied as per-panel mesh `sourceRotation`: linked leggings
  * each sample their own crop, so UV-spinning every panel around its own
@@ -163,8 +224,8 @@ export function normalizeRotationDeg(deg: number): number {
  * legs (and every other panel in the group) sampling the same upright
  * bitmap — same as if the customer had uploaded a pre-rotated image.
  *
- * Canvas size stays equal to the source so existing sourceRect / scale
- * math is unchanged; corners that leave the square become transparent.
+ * 90°/270° swap width/height so a portrait body-pillow gen is not clipped
+ * by a vertical mask. Other angles expand to the rotated AABB.
  */
 export function bakeArtworkPlacementRotation(
   artwork: CanvasImageSource,
@@ -175,16 +236,17 @@ export function bakeArtworkPlacementRotation(
   const deg = normalizeRotationDeg(rotationDeg);
   if (!deg || width <= 0 || height <= 0) return artwork;
   if (typeof document === "undefined") return artwork;
+  const size = artworkSizeAfterPlacementRotation(width, height, deg);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
+  canvas.width = Math.max(1, Math.round(size.width));
+  canvas.height = Math.max(1, Math.round(size.height));
   const ctx = canvas.getContext("2d");
   if (!ctx) return artwork;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((deg * Math.PI) / 180);
-  ctx.drawImage(artwork, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+  ctx.drawImage(artwork, -width / 2, -height / 2, width, height);
   return canvas;
 }
 
@@ -601,10 +663,13 @@ function computeGroupRect(
   // render time — not whether the group has a draggable design rect.
   const union = totalPrintAabb(visiblePrint);
   if (!union) return null;
-  const aspect = artwork
-    ? (artwork.naturalWidth || artwork.width) /
-      (artwork.naturalHeight || artwork.height || 1)
-    : union.width / Math.max(1, union.height);
+  const rotDeg = normalizeRotationDeg(placement.rotationDeg ?? 0);
+  const rawW = artwork ? artwork.naturalWidth || artwork.width : 0;
+  const rawH = artwork ? artwork.naturalHeight || artwork.height : 0;
+  const baked = rawW > 0 && rawH > 0
+    ? artworkSizeAfterPlacementRotation(rawW, rawH, rotDeg)
+    : { width: union.width, height: union.height };
+  const aspect = baked.width / Math.max(1, baked.height);
   const fitted = artwork ? fitAspectInside(union, aspect) : union;
   const { x: anchorX, hasSeamPair } = computeAnchorX(visiblePrint, union);
   // Re-centre the fitted rect on the anchor X so paired groups have
@@ -1235,12 +1300,14 @@ export function renderHoodFlatPanel(
       frontRect,
       options?.panelPlacementBias,
     );
+    const rotForSlice = frontRect.rotationDeg ?? 0;
+    const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
     slice = artworkSourceRectForPanel(
       sampleBb,
       frontLayer.panelKey,
       frontRect,
-      aw,
-      ah,
+      bakedForSlice.width,
+      bakedForSlice.height,
       side,
       options?.legsMirrored,
     );
@@ -1249,21 +1316,19 @@ export function renderHoodFlatPanel(
 
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
-  const artSource = bakeArtworkPlacementRotation(
-    artwork,
-    aw,
-    ah,
-    frontRect.rotationDeg ?? 0,
-  );
+  const rotDeg = frontRect.rotationDeg ?? 0;
+  const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
+  const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
+  const bakedSlice = slice;
   // Bake through the same mesh topology the live preview uses, but with
   // targetPoints on a uniform flat grid so the entire Printify placeholder
   // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
   // into a fractional dest rect left most of the canvas white on Printify.
   // Customer Place rotation is pre-baked into `artSource` (not mesh UV).
-  drawMeshWarp(ctx, artSource, aw, ah, {
+  drawMeshWarp(ctx, artSource, bakedSize.width, bakedSize.height, {
     ...frontLayer.mesh,
     targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
-    sourceRect: slice,
+    sourceRect: bakedSlice,
     sourceFlipX: meshSourceFlipXForPanel(
       frontLayer.panelKey,
       frontLayer.mesh.sourceFlipX,
@@ -2500,28 +2565,29 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             template,
             params.groupPanelBiasOverrides,
           );
+          const rotForSlice = layerRect.rotationDeg ?? 0;
+          const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
           synthSrc = artworkSourceRectForPanel(
             sampleBb,
             layer.panelKey,
             layerRect,
-            aw,
-            ah,
+            bakedForSlice.width,
+            bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
           );
         }
       } else {
-        // per-panel-stretch — every panel reads the full artwork.
-        synthSrc = { x: 0, y: 0, width: aw, height: ah };
+        // per-panel-stretch — every panel reads the full (baked) artwork.
+        const rotForSlice = layerRect?.rotationDeg ?? 0;
+        const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
+        synthSrc = { x: 0, y: 0, width: bakedForSlice.width, height: bakedForSlice.height };
       }
       if (synthSrc) {
-        const artSource = rotatedArtworkFor(
-          artwork,
-          aw,
-          ah,
-          layerRect?.rotationDeg ?? 0,
-        );
-        drawMeshWarp(pctx, artSource, aw, ah, {
+        const rotDeg = layerRect?.rotationDeg ?? 0;
+        const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+        const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
+        drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
           ...layer.mesh,
           sourceRect: synthSrc,
           // Keep calibration UV rotation only — Place rotation is baked
@@ -2554,27 +2620,25 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             template,
             params.groupPanelBiasOverrides,
           );
+          const rotDeg = layerRect.rotationDeg ?? 0;
+          const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
             sampleBb,
             layer.panelKey,
             layerRect,
-            aw,
-            ah,
+            bakedForSlice.width,
+            bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
           );
-          const artSource = rotatedArtworkFor(
-            artwork,
-            aw,
-            ah,
-            layerRect.rotationDeg ?? 0,
-          );
+          const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+          const bakedSlice = slice;
           pctx.drawImage(
             artSource,
-            slice.x,
-            slice.y,
-            slice.width,
-            slice.height,
+            bakedSlice.x,
+            bakedSlice.y,
+            bakedSlice.width,
+            bakedSlice.height,
             bb.x,
             bb.y,
             bb.width,
@@ -2749,9 +2813,25 @@ const PRINT_PANEL_TARGET_LONG_EDGE_PX = 3200;
 /** Hard cap on exported panel long edge (memory / upload safety). */
 const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
 
+/** Printify enhance-step floor. Below this they show "Resolution will be enhanced". */
+export const PRINTIFY_MIN_PRINT_DPI = 150;
+/** Sewn body-pillow long edge (20×54). 1800px tester panels were ~32 DPI. */
+export const BODY_PILLOW_PRINT_LONG_INCHES = 54;
+
+export function printPanelLongEdgeCaps(blueprintId?: number | null): {
+  target: number;
+  max: number;
+} {
+  if (isBodyPillowBlueprint(blueprintId)) {
+    const target = Math.ceil(BODY_PILLOW_PRINT_LONG_INCHES * PRINTIFY_MIN_PRINT_DPI);
+    return { target, max: target };
+  }
+  return { target: PRINT_PANEL_TARGET_LONG_EDGE_PX, max: PRINT_PANEL_MAX_LONG_EDGE_PX };
+}
+
 /**
  * Scale factor so a flat canvas whose pre-scale long edge is `baseLongEdge`
- * lands near {@link PRINT_PANEL_TARGET_LONG_EDGE_PX}, never above `maxLongEdgePx`.
+ * lands near `targetLongEdgePx`, never above `maxLongEdgePx`.
  *
  * `baseLongEdge` MUST be the size `renderHoodFlatPanel` / `renderTiledFlatPanel`
  * actually use (mesh `sourceRect` / mesh bbox) — not Printify placeholder px.
@@ -2761,11 +2841,13 @@ const PRINT_PANEL_MAX_LONG_EDGE_PX = 4800;
 export function printPanelOutputScale(
   baseLongEdge: number,
   maxLongEdgePx: number = PRINT_PANEL_MAX_LONG_EDGE_PX,
+  targetLongEdgePx: number = PRINT_PANEL_TARGET_LONG_EDGE_PX,
 ): number {
   const long = Math.max(1, baseLongEdge);
   const maxEdge = Math.max(1, maxLongEdgePx);
+  const target = Math.max(1, targetLongEdgePx);
   return Math.min(
-    Math.max(1, PRINT_PANEL_TARGET_LONG_EDGE_PX / long),
+    Math.max(1, target / long),
     maxEdge / long,
   );
 }
@@ -2820,10 +2902,9 @@ function tiledFlatPanelBaseDims(
 
 /** Lighter panels for Printify mockup API — full-res print files are 10–40× larger. */
 export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
-/** Preview Studio test-order persist. Above mockup-only 1800 so Printify's
- *  enhance step is less likely to reject the draft as "unable to enhance".
- *  Still far below storefront full bake (placeholder 8–12k). */
-export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = PRINT_PANEL_TARGET_LONG_EDGE_PX;
+/** Preview Studio test-order persist uses uncapped `renderFlatPrintPanels`
+ *  (body pillow → 150 DPI). This leftover alias is the generic apparel max. */
+export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = PRINT_PANEL_MAX_LONG_EDGE_PX;
 /** Solid background-only panels compress to almost nothing; Printify scales
  *  the image to the placeholder, so a modest aspect-correct fill is enough.
  *  Keep this large enough that wide strips (collar ~11:1) retain a usable
@@ -3437,7 +3518,10 @@ export function renderFlatPrintPanels(
       designGroups: migrateFrontPocketOutOfTrimGroup(template.designGroups ?? []),
     };
   }
-  const panelMaxLongEdge = maxLongEdgePx ?? PRINT_PANEL_MAX_LONG_EDGE_PX;
+  const caps = printPanelLongEdgeCaps(template.blueprintId);
+  const panelMaxLongEdge = maxLongEdgePx ?? caps.max;
+  const panelTargetLongEdge =
+    maxLongEdgePx != null ? Math.min(caps.target, maxLongEdgePx) : caps.target;
   const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
   const patternTileSamples =
     mode === "tile" ? collectPatternTileScaleSamples(template) : [];
@@ -3539,8 +3623,11 @@ export function renderFlatPrintPanels(
       const scaleBaseLong = Math.max(tileBase.width, tileBase.height, 1);
       const tilePxBase = Math.max(1, tileSettings.tileSizeInches * ppi);
       const wanted = artworkLongEdge / tilePxBase;
-      const capped = Math.min(wanted, panelMaxLongEdge / scaleBaseLong);
-      const outputScale = Math.max(1, capped);
+      const densityScale = Math.max(1, Math.min(wanted, panelMaxLongEdge / scaleBaseLong));
+      const outputScale = Math.max(
+        densityScale,
+        printPanelOutputScale(scaleBaseLong, panelMaxLongEdge, panelTargetLongEdge),
+      );
       artCanvas = layer.mesh
         ? renderTiledFlatPanel(layer, artwork, tileSettings, ppi, canvasW, {
             outputScale,
@@ -3622,6 +3709,7 @@ export function renderFlatPrintPanels(
       const outputScale = printPanelOutputScale(
         Math.max(scaleBase.width, scaleBase.height, 1),
         panelMaxLongEdge,
+        panelTargetLongEdge,
       );
       if (bakeLayer.mesh) {
         const panelBias = group
@@ -3651,12 +3739,14 @@ export function renderFlatPrintPanels(
           const sampleBb = rect
             ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
             : bb;
+          const rotDeg = rect.rotationDeg ?? 0;
+          const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
             sampleBb,
             panelKey,
             rect,
-            aw,
-            ah,
+            bakedForSlice.width,
+            bakedForSlice.height,
             side,
             params.legsMirrored,
           );
@@ -3676,18 +3766,14 @@ export function renderFlatPrintPanels(
                 cctx.translate(c.width, 0);
                 cctx.scale(-1, 1);
               }
-              const artSource = bakeArtworkPlacementRotation(
-                artwork,
-                aw,
-                ah,
-                rect.rotationDeg ?? 0,
-              );
+              const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
+              const bakedSlice = slice;
               cctx.drawImage(
                 artSource,
-                slice.x,
-                slice.y,
-                slice.width,
-                slice.height,
+                bakedSlice.x,
+                bakedSlice.y,
+                bakedSlice.width,
+                bakedSlice.height,
                 0,
                 0,
                 c.width,

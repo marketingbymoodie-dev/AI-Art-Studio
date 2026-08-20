@@ -23,6 +23,7 @@ import {
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
+  loadFlatImageRelaxed,
   flatCalibrationSwappedToLandscape,
   orientFlatHarvestPixelsForLandscape,
   resolveFlatBlank,
@@ -225,8 +226,14 @@ function applyPlacementToState(
   next: ArtworkPlacement,
   _availableViews: ViewName[],
 ): FlatProductPlacerState {
-  // Front/back are always independent — never mirror/scale the other face.
-  return { ...prev, linkSides: false, placements: { ...prev.placements, [view]: next } };
+  const placements = { ...prev.placements, [view]: next };
+  // Print-on-back uses the same artwork — keep scale matched to the side being edited.
+  if (prev.enabled.front && prev.enabled.back) {
+    const other: ViewName = view === "front" ? "back" : "front";
+    const otherCur = placements[other] ?? next;
+    placements[other] = { ...otherCur, scale: next.scale };
+  }
+  return { ...prev, linkSides: false, placements };
 }
 
 function buildInitialState(
@@ -371,19 +378,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         // canonical URLs are overwritten on re-harvest and a stale cached
         // mask silently desyncs the clip from the fresh guide geometry.
         const [b, m, s] = await Promise.all([
-          loadFlatImage(
+          loadFlatImageRelaxed(
             isOverrideBlank
               ? blankUrl
               : withFlatAssetVersion(blankUrl, manifest.generatedAt),
           ),
           !refitCatalogSizeGuide && calib.maskUrl
-            ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
+            ? loadFlatImageRelaxed(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
             !!calib.printBoundsNormalized)
-            ? loadFlatImage(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
+            ? loadFlatImageRelaxed(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
             : Promise.resolve(null),
         ]);
         if (
@@ -463,7 +470,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const back =
         typeof parentEnabledBack === "boolean" ? parentEnabledBack : prev.enabled.back;
       if (prev.enabled.front === front && prev.enabled.back === back) return prev;
-      return { ...prev, enabled: { ...prev.enabled, front, back } };
+      const placements = { ...prev.placements };
+      if (back && !prev.enabled.back) {
+        placements.back = { ...placements.back, scale: placements.front.scale };
+      }
+      return { ...prev, enabled: { ...prev.enabled, front, back }, placements };
     });
   }, [parentEnabledFront, parentEnabledBack]);
 
@@ -805,9 +816,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, []);
 
   const setEnabled = useCallback((view: ViewName, on: boolean) => {
-    setState((prev) =>
-      prev ? { ...prev, enabled: { ...prev.enabled, [view]: on } } : prev,
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      const enabled = { ...prev.enabled, [view]: on };
+      const placements = { ...prev.placements };
+      if (view === "back" && on && !prev.enabled.back) {
+        placements.back = { ...placements.back, scale: placements.front.scale };
+      }
+      return { ...prev, enabled, placements };
+    });
   }, []);
 
   const updatePlacement = useCallback(
