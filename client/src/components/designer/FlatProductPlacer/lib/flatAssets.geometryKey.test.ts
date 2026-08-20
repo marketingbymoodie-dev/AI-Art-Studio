@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findGeometryBlankKey, resolveFlatViewCalibration } from "./flatAssets";
+import { findGeometryBlankKey, resolveFlatBlank, resolveFlatViewCalibration } from "./flatAssets";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 
 function posterManifest(): FlatCalibrationManifest {
@@ -121,5 +121,23 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
     expect(r.width / r.height).toBeCloseTo(4 / 3, 2);
     expect(r.width).toBeCloseTo(0.75 * 0.965, 3);
     expect(r.width / r.height).not.toBeCloseTo(1.5, 2);
+  });
+});
+
+describe("resolveFlatBlank", () => {
+  it("uses the only harvested blank when the size/option id does not match", () => {
+    const manifest = {
+      ...posterManifest(),
+      blanks: { white: { front: "https://example.com/tote-white.png" } },
+      geometryByBlank: {},
+    };
+    expect(resolveFlatBlank(manifest, "18x18")).toEqual({
+      front: "https://example.com/tote-white.png",
+    });
+  });
+
+  it("does not swap a different colour when several blanks exist", () => {
+    const manifest = posterManifest();
+    expect(resolveFlatBlank(manifest, "navy")).toEqual({});
   });
 });
