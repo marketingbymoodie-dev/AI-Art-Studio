@@ -79,6 +79,9 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
     // Slash colorways: "BLACK/ RED" ↔ "BLACK/RED"
     const compactSlash = norm.replace(/\s*\/\s*/g, "/");
     if (compactSlash && !byNormLabel.has(compactSlash)) byNormLabel.set(compactSlash, shopifyId);
+    // Printify SKUs / ids: "one_size" / "one-size" ↔ Shopify "One Size"
+    const unsnake = normalizeVariantLabelForCostMatch(norm.replace(/[_-]+/g, " "));
+    if (unsnake && !byNormLabel.has(unsnake)) byNormLabel.set(unsnake, shopifyId);
   };
 
   for (const sv of shopifyVariants) {
@@ -152,6 +155,17 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
     put(printifyId, shopifyId);
   }
 
+  // One Size / single-SKU blanks: only one Shopify variant — map every Printify id to it.
+  if (shopifyVariants.length === 1) {
+    const onlyId = Number(shopifyVariants[0].id);
+    if (Number.isFinite(onlyId) && onlyId > 0) {
+      for (const entry of Object.values(vm)) {
+        const e = entry as { printifyVariantId?: number | string } | null;
+        put(e?.printifyVariantId, onlyId);
+      }
+    }
+  }
+
   return out;
 }
 
@@ -163,6 +177,14 @@ export function parseShopifyVariantPrice(price: string | number | null | undefin
 /** True only when the cached/Shopify price is a real retail amount. */
 export function hasPositiveRetailPrice(price: string | number | null | undefined): boolean {
   return parseShopifyVariantPrice(price) > 0;
+}
+
+/** Every Shopify variant on the product has a real retail price. Empty list is not priced. */
+export function allShopifyVariantsHavePositiveRetail(
+  variants: Array<{ price?: string | number | null }> | null | undefined,
+): boolean {
+  if (!Array.isArray(variants) || variants.length === 0) return false;
+  return variants.every((v) => hasPositiveRetailPrice(v.price));
 }
 
 /**
