@@ -185,7 +185,10 @@ export default function CatalogActivateSection({
     onSuccess: ({ blueprintId, result }) => {
       setPendingBlueprintId(null);
       invalidateAfterActivate(blueprintId, result);
-      navigate(result.openInAppPath || `/admin/create-product?productTypeId=${result.productTypeId}`);
+      navigate(
+        result.openInAppPath ||
+          `/admin/create-product?productTypeId=${result.productTypeId}&from=catalog`,
+      );
     },
     onError: (err: Error) => {
       setPendingBlueprintId(null);
@@ -219,7 +222,7 @@ export default function CatalogActivateSection({
       return {
         productTypeId: entry.existingProductType.id,
         productTypeName: entry.existingProductType.name,
-        openInAppPath: `/admin/create-product?productTypeId=${entry.existingProductType.id}`,
+        openInAppPath: `/admin/create-product?productTypeId=${entry.existingProductType.id}&from=catalog`,
         reused: true,
       };
     }
