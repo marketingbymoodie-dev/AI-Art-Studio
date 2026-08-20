@@ -18,8 +18,9 @@ Per-product **signed-off** pins for flat-placer products (framed decor, tapestry
 | Unisex Heavy Blend™ Crewneck Sweatshirt | 49 | 2026-07-28 | `d677610` | [unisex-heavy-blend-crewneck-sweatshirt-bp49.md](./unisex-heavy-blend-crewneck-sweatshirt-bp49.md) |
 | Unisex Heavy Blend™ Hooded Sweatshirt | 77 | 2026-07-28 | `d677610` | [unisex-heavy-blend-hooded-sweatshirt-bp77.md](./unisex-heavy-blend-hooded-sweatshirt-bp77.md) |
 | Slim Phone Cases (edge-wrap) | 421 | 2026-07-29 | `f253677` | [slim-phone-cases-bp421.md](./slim-phone-cases-bp421.md) |
+| Adjustable Tote (AOP, folded) | 1300 | 2026-08-20 (staging) | `808f6a5` | [adjustable-tote-bp1300.md](./adjustable-tote-bp1300.md) |
 
-VFP / HFP / tapestry share pin `23bfaab`. Shoulder Tote is pinned later at `c09b062`. Crew tee is pinned at `eafd244` (85% default scale, Print Side sync, dashed-guide AR). Fashion tee (bp 26) + baseball tee (bp 79) share `7d163e6`. Heavy Blend crewneck (bp 49) + hooded sweatshirt (bp 77) share `d677610` — **opaque-touch** trim warning baseline. Slim Phone Cases (bp **421**) pinned at `f253677` — mask-only preview bg, full-canvas bake / Printers Mockup. Prefer **surgical** reverts if only one product regresses.
+VFP / HFP / tapestry share pin `23bfaab`. Shoulder Tote **836** is pinned at `c09b062`. Adjustable Tote **1300** is a different product (folded 2650×5250 fulfillment) pinned at staging `808f6a5`. Crew tee is pinned at `eafd244` (85% default scale, Print Side sync, dashed-guide AR). Fashion tee (bp 26) + baseball tee (bp 79) share `7d163e6`. Heavy Blend crewneck (bp 49) + hooded sweatshirt (bp 77) share `d677610` — **opaque-touch** trim warning baseline. Slim Phone Cases (bp **421**) pinned at `f253677` — mask-only preview bg, full-canvas bake / Printers Mockup. Prefer **surgical** reverts if only one product regresses.
 
 ## Related
 
