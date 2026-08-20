@@ -9,6 +9,7 @@ import {
   leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
   normalizeRotationDeg,
+  printPanelLongEdgeCaps,
   printPanelOutputScale,
   shouldComposePillowWrapPrintFile,
   sleevePanelHalfSourceRect,
@@ -145,6 +146,17 @@ describe("printPanelOutputScale", () => {
 
   it("leaves mid-size bases (≥3200, ≤4800) at scale 1", () => {
     expect(printPanelOutputScale(4000)).toBe(1);
+  });
+
+  it("body pillow targets 150 DPI on the 54in long edge", () => {
+    const { target, max } = printPanelLongEdgeCaps(BODY_PILLOW_WRAP_BLUEPRINT_ID);
+    expect(target).toBe(8100);
+    expect(max).toBe(8100);
+    const sourceRectLong = 750;
+    expect(
+      Math.round(sourceRectLong * printPanelOutputScale(sourceRectLong, max, target)),
+    ).toBe(8100);
+    expect(printPanelLongEdgeCaps(ZIP_HOODIE_BLUEPRINT_ID).target).toBe(3200);
   });
 });
 
