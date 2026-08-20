@@ -335,12 +335,27 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       return;
     }
     if (!row.selfServe) {
-      const subject = encodeURIComponent(`AI Art Studio — ${row.displayName} plan enquiry`);
-      window.open(
-        `mailto:hello@aiartstudio.app?subject=${subject}`,
-        "_blank",
-        "noopener,noreferrer",
-      );
+      setLoadingPlan(row.planName);
+      void apiRequest("POST", "/api/appai/billing/plan-enquiry", {
+        plan: row.planName,
+        pageUrl: typeof window !== "undefined" ? window.location.href : "",
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || "Could not send enquiry");
+          toast({
+            title: "Request sent",
+            description: `We'll follow up about the ${row.displayName} plan. You can also reply in Support.`,
+          });
+        })
+        .catch((err: Error) => {
+          toast({
+            title: "Could not send request",
+            description: parseApiErrorMessage(err),
+            variant: "destructive",
+          });
+        })
+        .finally(() => setLoadingPlan(null));
       return;
     }
     handlePaid(row.planName);
