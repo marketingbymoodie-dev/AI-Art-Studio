@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allShopifyVariantsHavePositiveRetail,
   buildPrintifyToShopifyVariantIdMap,
   displayRetailPrice,
   hasPositiveRetailPrice,
@@ -78,6 +79,17 @@ describe("buildPrintifyToShopifyVariantIdMap", () => {
     });
     expect(map["77"]).toBe(7001);
   });
+
+  it("maps one_size Printify ids onto a single One Size Shopify variant", () => {
+    const map = buildPrintifyToShopifyVariantIdMap({
+      variantMap: { "one_size:default": { printifyVariantId: 41801 } },
+      shopifyVariantIds: {},
+      sizes: [{ id: "one_size", name: "One Size" }],
+      frameColors: [],
+      shopifyVariants: [{ id: 88001, title: "One Size", option1: "One Size" }],
+    });
+    expect(map["41801"]).toBe(88001);
+  });
 });
 
 describe("pickLowestPricedShopifyVariant", () => {
@@ -107,6 +119,9 @@ describe("displayRetailPrice / hasPositiveRetailPrice", () => {
     expect(displayRetailPrice("")).toBeNull();
     expect(displayRetailPrice(null)).toBeNull();
     expect(hasPositiveRetailPrice("0.00")).toBe(false);
+    expect(allShopifyVariantsHavePositiveRetail([{ price: "0.00" }])).toBe(false);
+    expect(allShopifyVariantsHavePositiveRetail([{ price: "21.95" }])).toBe(true);
+    expect(allShopifyVariantsHavePositiveRetail([])).toBe(false);
   });
 
   it("formats a real retail amount", () => {

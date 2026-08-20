@@ -60,7 +60,7 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
-import { buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
+import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
@@ -10124,6 +10124,13 @@ ${orientationExtra}
         return res.status(variantLookupRes.status).json({ success: false, error: "Failed to fetch variant", fallback: true, variantId: String(variantId) });
       }
       const { variant: baseVariantRecord } = await variantLookupRes.json();
+      if (!hasPriceOverride && !hasPositiveRetailPrice(baseVariantRecord?.price)) {
+        return res.status(400).json({
+          success: false,
+          error: "This product is still $0.00. Set retail prices before adding to cart.",
+          code: "PRICES_REQUIRED",
+        });
+      }
       const productId = baseVariantRecord?.product_id ? String(baseVariantRecord.product_id) : "";
       if (!productId) {
         console.warn(`[ShadowProduct] Variant ${variantId} missing product_id`);
@@ -20629,11 +20636,10 @@ ${orientationExtra}
       } as any);
     }
 
-    // ── Write variant prices to Shopify ──────────────────────────────────────
+    // ── Write variant prices to Shopify (same mapper as Resync Prices) ──────
     if (variantPrices && typeof variantPrices === "object") {
       const priceEntries = Object.entries(variantPrices);
       if (priceEntries.length > 0) {
-        // Validate all prices before writing any
         for (const [vid, price] of priceEntries) {
           const num = parseFloat(String(price));
           if (isNaN(num) || num <= 0) {
@@ -20641,139 +20647,47 @@ ${orientationExtra}
           }
         }
 
-        // Build a printifyVariantId → shopifyVariantId mapping for products that
-        // were just sent to Shopify (variantPrices keyed by "printify:XXXXX").
-        // Strategy: use shopifyVariantIds (sizeName:colorName → shopifyVid) + variantMap
-        // (sizeId:colorId → printifyVariantId) + sizes/frameColors to bridge the gap.
-        const printifyToShopifyVariantId: Record<string, number> = {};
-        if (matchedType?.variantMap) {
-          const storedVm = typeof matchedType.variantMap === "string"
-            ? JSON.parse(matchedType.variantMap || "{}")
-            : (matchedType.variantMap || {});
-          const svIds = (typeof matchedType.shopifyVariantIds === "string"
-            ? JSON.parse(matchedType.shopifyVariantIds || "{}")
-            : (matchedType.shopifyVariantIds || {})) as Record<string, number>;
-          const ptSizes = (typeof (matchedType as any).sizes === "string"
-            ? JSON.parse((matchedType as any).sizes || "[]")
-            : ((matchedType as any).sizes || [])) as Array<{id: string; name: string}>;
-          const ptColors = (typeof (matchedType as any).frameColors === "string"
-            ? JSON.parse((matchedType as any).frameColors || "[]")
-            : ((matchedType as any).frameColors || [])) as Array<{id: string; name: string}>;
-
-          // Build sizeName:colorName → shopifyVariantId from stored shopifyVariantIds
-          // (keys may be either sizeName:colorName or sizeId:colorId depending on when stored)
-          // Also build sizeId:colorId → shopifyVariantId via name bridging
-          const nameToShopifyId: Record<string, number> = {};
-          for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-            nameToShopifyId[mapKey] = shopifyVid as number;
-            // Try to also add a name-based key if mapKey looks like IDs
-            const [kSizeId, kColorId] = mapKey.split(":");
-            const sizeName = ptSizes.find((s: any) => String(s.id) === kSizeId)?.name;
-            const colorName = ptColors.find((c: any) => String(c.id) === kColorId)?.name;
-            if (sizeName) {
-              const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
-              nameToShopifyId[nameKey] = shopifyVid as number;
+        const applied = await applyShopifyVariantPrices({
+          shop,
+          accessToken: installation.accessToken,
+          baseProductId: variant.product_id,
+          productType: matchedType || ptForSync,
+          variantPrices,
+          onBaseVariantUpdated: async (formatted, variantNum) => {
+            if (String(variantNum) === String(variant.id)) {
+              variant = { ...variant, price: formatted };
             }
-          }
-
-          // Map printifyVariantId → shopifyVariantId via variantMap
-          for (const [vmKey, entry] of Object.entries(storedVm)) {
-            const e = entry as any;
-            if (!e.printifyVariantId) continue;
-            const [sizeId, colorId] = vmKey.split(":");
-            const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-            const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
-            // Try multiple key formats to find the shopify variant ID
-            const candidates = [
-              vmKey,                                                          // sizeId:colorId
-              colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`, // sizeName:colorName
-              `${sizeName}:${colorId}`,                                        // sizeName:colorId
-              `${sizeId}:${colorName ?? colorId}`,                             // sizeId:colorName
-            ];
-            for (const candidate of candidates) {
-              if (nameToShopifyId[candidate]) {
-                printifyToShopifyVariantId[String(e.printifyVariantId)] = nameToShopifyId[candidate];
-                break;
-              }
-            }
-          }
-
-          // Fallback: match by Shopify variant title (handles material variants like Polyester/Microfiber)
-          if (Object.keys(printifyToShopifyVariantId).length === 0) {
-            const allVariantsResult = await shopifyApiCall(
-              shop, installation.accessToken,
-              `products/${variant.product_id}.json?fields=id,variants`,
-            );
-            const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-            // Build title → shopify variant ID map (full title, option1, and option1 / option2)
-            const titleToShopifyId: Record<string, number> = {};
-            for (const sv of allShopifyVariants) {
-              if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
-              if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
-              if (sv.option1 && sv.option2) titleToShopifyId[`${sv.option1} / ${sv.option2}`.toLowerCase()] = sv.id;
-            }
-            for (const [vmKey, entry] of Object.entries(storedVm)) {
-              const e = entry as any;
-              if (!e.printifyVariantId) continue;
-              const [sizeId, colorId] = vmKey.split(":");
-              const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-              const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
-              // Try size / material first, then size alone
-              const shopifyId = (colorName ? titleToShopifyId[`${sizeName} / ${colorName}`.toLowerCase()] : undefined)
-                ?? titleToShopifyId[sizeName.toLowerCase()];
-              if (shopifyId) {
-                printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
-              }
-            }
-          }
-
-          console.log(`[customizer-pages] printifyToShopifyVariantId mapping built: ${JSON.stringify(printifyToShopifyVariantId)}`);
-        }
-
-        // Write prices to Shopify
-        for (const [vid, price] of priceEntries) {
-          let variantNum: number;
-          if (String(vid).startsWith("printify:")) {
-            // Map printify:XXXXX → real Shopify variant ID
-            const printifyId = String(vid).replace("printify:", "");
-            variantNum = printifyToShopifyVariantId[printifyId] ?? 0;
-          } else {
-            variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
-          }
-          if (!variantNum) continue;
-          const formatted = parseFloat(String(price)).toFixed(2);
-          const priceResult = await shopifyApiCall(shop, installation.accessToken, `variants/${variantNum}.json`, {
-            method: "PUT",
-            body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
-          });
-          if (!priceResult.ok) {
-            console.warn(`[customizer-pages] Failed to update price for variant ${vid}: ${priceResult.error}`);
-          }
-          // If this variant is the one we're using as the base, update local record
-          if (String(variantNum) === String(variant.id)) {
-            variant = { ...variant, price: formatted };
-          }
-        }
+          },
+        });
         const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
+        let liveShopifyVariants: Array<{ id?: number; price?: string; title?: string }> = [];
         if (productIdNum) {
           const priced = await shopifyApiCall(
             shop,
             installation.accessToken,
             `products/${productIdNum}.json?fields=id,title,handle,variants`,
           );
-          const cheapestAfter = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+          liveShopifyVariants = priced.data?.product?.variants ?? [];
+          const cheapestAfter = pickLowestPricedShopifyVariant(liveShopifyVariants);
           if (cheapestAfter && hasPositiveRetailPrice(cheapestAfter.price)) variant = cheapestAfter;
+        }
+        if (initialStatus === "active") {
+          if (
+            applied.successCount === 0 ||
+            !allShopifyVariantsHavePositiveRetail(liveShopifyVariants)
+          ) {
+            return res.status(400).json({
+              error:
+                "Retail prices did not apply on Shopify — variants are still $0.00. Resync Prices or check size/colour mapping, then try again.",
+              code: "PRICES_REQUIRED",
+              unresolvedCount: applied.unresolvedCount,
+            });
+          }
         }
       }
     }
 
-    const fromWizard = minPositiveRetailPrice(variantPrices);
-    const cachedFromPrice = hasPositiveRetailPrice(variant.price)
-      ? String(variant.price)
-      : fromWizard != null
-        ? fromWizard.toFixed(2)
-        : null;
-    if (initialStatus === "active" && !hasPositiveRetailPrice(cachedFromPrice)) {
+    if (initialStatus === "active" && !hasPositiveRetailPrice(variant.price)) {
       return res.status(400).json({
         error: "Set retail prices (Create Page pricing) before creating a Live customizer page.",
         code: "PRICES_REQUIRED",
@@ -20935,6 +20849,21 @@ ${orientationExtra}
             error: "Set retail prices (Resync Prices or Create Page pricing) before setting a page Live.",
             code: "PRICES_REQUIRED",
           });
+        }
+        if (dbPage.baseProductId) {
+          const livePriced = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${dbPage.baseProductId}.json?fields=id,variants`,
+          );
+          const liveVars = livePriced.data?.product?.variants ?? [];
+          if (!allShopifyVariantsHavePositiveRetail(liveVars)) {
+            return res.status(400).json({
+              error:
+                "Shopify variants are still $0.00. Use Resync Prices so every size/colour has a retail price, then set Live.",
+              code: "PRICES_REQUIRED",
+            });
+          }
         }
         if (linkedProductTypeEarly && !linkedProductTypeEarly.printifyProviderId) {
           return res.status(400).json({
