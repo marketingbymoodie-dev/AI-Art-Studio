@@ -42,8 +42,6 @@ export default function AdminSettings() {
   const [printifyShopId, setPrintifyShopId] = useState("");
   const [detectShopLoading, setDetectShopLoading] = useState(false);
   const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string; recommended?: boolean }[]; instructions?: string[] } | null>(null);
-  const [useBuiltIn, setUseBuiltIn] = useState(true);
-  const [customToken, setCustomToken] = useState("");
   const [freeGensPerVisitor, setFreeGensPerVisitor] = useState(String(STOREFRONT_FREE_GENERATION_DEFAULT));
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
@@ -227,8 +225,6 @@ export default function AdminSettings() {
     if (merchant) {
       setPrintifyToken(merchant.printifyApiToken || "");
       setPrintifyShopId(merchant.printifyShopId || "");
-      setUseBuiltIn(merchant.useBuiltInNanoBanana ?? true);
-      setCustomToken(merchant.customNanoBananaToken || "");
     }
   }, [merchant]);
 
@@ -266,8 +262,6 @@ export default function AdminSettings() {
     updateMerchantMutation.mutate({
       printifyApiToken: printifyToken,
       printifyShopId: printifyShopId,
-      useBuiltInNanoBanana: useBuiltIn,
-      customNanoBananaToken: customToken,
     });
   };
 
@@ -662,46 +656,6 @@ export default function AdminSettings() {
               source="merchant"
               shopDomain={storefrontSettings?.shopDomain || undefined}
             />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileCode className="h-5 w-5" />
-              AI Integration
-            </CardTitle>
-            <CardDescription>
-              Configure AI image generation settings
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="use-builtin">USE BUILT-IN AI</Label>
-                <p className="text-xs text-muted-foreground">
-                  Use the default AI provider (recommended)
-                </p>
-              </div>
-              <Switch
-                id="use-builtin"
-                checked={useBuiltIn}
-                onCheckedChange={setUseBuiltIn}
-              />
-            </div>
-
-            {!useBuiltIn && (
-              <div className="space-y-2 pt-2">
-                <Label htmlFor="custom-token">CUSTOM API TOKEN</Label>
-                <Input
-                  id="custom-token"
-                  type="password"
-                  placeholder="Enter your custom API token"
-                  value={customToken}
-                  onChange={(e) => setCustomToken(e.target.value)}
-                />
-              </div>
-            )}
           </CardContent>
         </Card>
 

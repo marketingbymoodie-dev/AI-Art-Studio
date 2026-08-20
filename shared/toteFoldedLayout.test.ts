@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   composeToteFoldedCanvas,
   normalizeToteFoldedPanelDims,
+  TOTE_FOLDED_CONTAIN_BOOST,
+  toteFoldedArtBox,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
@@ -44,6 +46,25 @@ describe("composeToteFoldedCanvas", () => {
     expect(out.pixels[topIdx]).toBe(255);
     expect(out.pixels[bottomIdx]).toBe(0);
   });
+
+  it("is 10% smaller than the 0.96 bake (does not cover the face)", () => {
+    const box = toteFoldedArtBox(512, 1024, { scale: 0.6, offsetX: 0, offsetY: 0 });
+    const containK = Math.min(TOTE_FOLDED_PANEL_WIDTH / 512, TOTE_FOLDED_PANEL_HEIGHT / 1024) * 0.6;
+    const containH = Math.round(1024 * containK);
+    const prior096H = Math.round(1024 * containK * 0.96);
+    expect(box.drawH).toBe(Math.round(1024 * containK * TOTE_FOLDED_CONTAIN_BOOST));
+    expect(TOTE_FOLDED_CONTAIN_BOOST).toBeCloseTo(0.864, 5);
+    expect(box.drawH).toBeLessThan(containH);
+    expect(box.drawH).toBeLessThan(prior096H);
+    expect(box.drawH).toBeLessThan(TOTE_FOLDED_PANEL_HEIGHT);
+  });
+
+  it("uses full-face offset fractions with no print-only Y lift", () => {
+    const a = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
+    const b = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0.1, offsetY: 0 });
+    expect(b.left - a.left).toBe(Math.round(TOTE_FOLDED_PANEL_WIDTH * 0.1));
+    expect(a.top).toBe(Math.round(TOTE_FOLDED_PANEL_HEIGHT * 0.5 - a.drawH / 2));
+  });
 });
 
 describe("productLayoutPolicy", () => {
@@ -55,6 +76,16 @@ describe("productLayoutPolicy", () => {
     expect(resolveFulfillmentLayout(product)).toBe("tote_folded_v1");
     expect(resolveStorefrontMockupMode(product)).toBe("flat");
     expect(usesToteFoldedFulfillment(product)).toBe(true);
+    expect(usesAopStorefrontCustomizer(product)).toBe(false);
+  });
+
+  it("does not let a leftover mesh template steal the folded tote editor", () => {
+    const product = {
+      isAllOverPrint: true,
+      printifyBlueprintId: ADJUSTABLE_TOTE_BLUEPRINT_ID,
+      panelMappingTemplate: "unisex-zip-hoodie-aop-L",
+    };
+    expect(resolveStorefrontMockupMode(product)).toBe("flat");
     expect(usesAopStorefrontCustomizer(product)).toBe(false);
   });
 

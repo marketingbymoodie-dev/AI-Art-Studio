@@ -31,7 +31,10 @@ import {
   PlacerToggle,
 } from "@/components/designer/placerControlStyles";
 import {
+  BODY_PILLOW_DEFAULT_PLACE_SCALE,
+  defaultAopPlaceScale,
   designGroupsForBlueprint,
+  isBodyPillowBlueprint,
   isLeggingsBlueprint,
   isPillowWrapTemplate,
   isPulloverHoodieBlueprint,
@@ -621,9 +624,11 @@ function buildInitialState(
     isPulloverHoodieBlueprint(template.blueprintId);
   const leggings = isLeggingsBlueprint(template.blueprintId);
   const pillow = isPillowWrapTemplate(template);
-  const defaultPlacement: ArtworkPlacement = pillow
-    ? { ...DEFAULT_ARTWORK_PLACEMENT, scale: 1.1 }
-    : DEFAULT_ARTWORK_PLACEMENT;
+  const bodyPillow = isBodyPillowBlueprint(template.blueprintId);
+  const defaultPlacement: ArtworkPlacement = {
+    ...DEFAULT_ARTWORK_PLACEMENT,
+    scale: defaultAopPlaceScale(template.blueprintId),
+  };
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
   for (const g of groups) {
@@ -631,10 +636,15 @@ function buildInitialState(
       const locked = leggingsDefaultPlacementForGroup(g.id);
       placements[g.id] = { front: { ...locked }, back: { ...locked } };
     } else {
-      placements[g.id] = {
-        front: { ...(g.placement?.front ?? defaultPlacement) },
-        back: { ...(g.placement?.back ?? defaultPlacement) },
-      };
+      const front = { ...(g.placement?.front ?? defaultPlacement) };
+      const back = { ...(g.placement?.back ?? defaultPlacement) };
+      // Body pillow Place-on-item always opens at 122% unless the customer
+      // already saved a placement (merged later from `saved`).
+      if (bodyPillow) {
+        front.scale = BODY_PILLOW_DEFAULT_PLACE_SCALE;
+        back.scale = BODY_PILLOW_DEFAULT_PLACE_SCALE;
+      }
+      placements[g.id] = { front, back };
     }
     enabled[g.id] = customerGroupEnabledByDefault(g.id, template, g);
   }
@@ -1219,6 +1229,48 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [state?.artworkUrl]);
+
+  // Body pillow mockup is landscape. Portrait files (legacy 20:54 saves) get
+  // a 90° place; landscape files must stay at 0° — a leftover 90° from a
+  // prior gen stands the painting on its side and clips it.
+  useEffect(() => {
+    if (!artworkImg || !data?.template) return;
+    if (!isBodyPillowBlueprint(data.template.blueprintId)) return;
+    const aw = artworkImg.naturalWidth || artworkImg.width;
+    const ah = artworkImg.naturalHeight || artworkImg.height;
+    if (!(aw > 0 && ah > 0)) return;
+    const landscape = aw >= ah;
+    setState((prev) => {
+      if (!prev) return prev;
+      const current = prev.placements["front-face"]?.front?.rotationDeg ?? 0;
+      const quarterTurn = Math.abs(Math.abs(current) - 90) < 0.5;
+      if (landscape) {
+        if (!quarterTurn) return prev;
+      } else {
+        if (seededAsResumeRef.current || current !== 0) return prev;
+      }
+      const apply = (p?: ArtworkPlacement): ArtworkPlacement => ({
+        ...(p ?? DEFAULT_ARTWORK_PLACEMENT),
+        rotationDeg: landscape ? 0 : 90,
+      });
+      const frontFace = prev.placements["front-face"];
+      const backFace = prev.placements["back-face"];
+      return {
+        ...prev,
+        placements: {
+          ...prev.placements,
+          "front-face": {
+            front: apply(frontFace?.front),
+            back: apply(frontFace?.back),
+          },
+          "back-face": {
+            front: apply(backFace?.front),
+            back: apply(backFace?.back),
+          },
+        },
+      };
+    });
+  }, [artworkImg, data?.template]);
 
   // ---------- Canvas rendering ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1828,10 +1880,17 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       const enabled = { ...prev.enabled };
       for (const id of ids) {
         const g = groups.find((x) => x.id === id);
-        placements[id] = {
-          front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
-          back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+        const fallback: ArtworkPlacement = {
+          ...DEFAULT_ARTWORK_PLACEMENT,
+          scale: defaultAopPlaceScale(data.template.blueprintId),
         };
+        const front = { ...(g?.placement?.front ?? fallback) };
+        const back = { ...(g?.placement?.back ?? fallback) };
+        if (isBodyPillowBlueprint(data.template.blueprintId)) {
+          front.scale = BODY_PILLOW_DEFAULT_PLACE_SCALE;
+          back.scale = BODY_PILLOW_DEFAULT_PLACE_SCALE;
+        }
+        placements[id] = { front, back };
         enabled[id] = true;
       }
       return { ...prev, placements, enabled };

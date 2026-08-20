@@ -277,9 +277,7 @@ export default function AdminCreateProduct() {
     },
   });
 
-  const syncingPrintFiles =
-    testerPanelStatus === "saving" ||
-    (testerPanelStatus === "none" && testerHasDesign && placementEditorOpen);
+  const syncingPrintFiles = testerPanelStatus === "saving";
   const testerBusy =
     testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
   const needsPlacement =
@@ -290,11 +288,11 @@ export default function AdminCreateProduct() {
       ? "Syncing placement…"
       : needsPlacement
         ? "Open placement editor"
-        : testerPanelStatus === "none"
-          ? "Generate artwork first"
-          : testerPanelStatus === "error"
-            ? "Retry placement"
-            : "Send a Test Order to Printify";
+        : testerPanelStatus === "error"
+          ? "Retry placement"
+          : testerHasDesign
+            ? "Send a Test Order to Printify"
+            : "Generate artwork first";
   const testerActions = selectedProductTypeId ? (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">

@@ -28,6 +28,8 @@ export type ToteFoldedPlacement = {
   scale?: number;
   offsetX?: number;
   offsetY?: number;
+  /** When false, only the top (front) panel is printed. Default true. */
+  printBack?: boolean;
 };
 
 export type ToteFoldedBuildInput = {
@@ -48,28 +50,97 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+export type ToteFoldedArtBox = {
+  drawW: number;
+  drawH: number;
+  left: number;
+  top: number;
+};
+
+/**
+ * Contain-fit the art in one tote face, then apply {@link TOTE_FOLDED_CONTAIN_BOOST}.
+ * Print-only Y nudges broke front/back replica alignment (bottom panel is
+ * the same box rotated 180°), so offsets stay exactly what the editor sent.
+ */
+export const TOTE_FOLDED_CONTAIN_BOOST = 0.864;
+
+export function toteFoldedArtBox(
+  sourceWidth: number,
+  sourceHeight: number,
+  placement?: ToteFoldedPlacement,
+): ToteFoldedArtBox {
+  const scale = clamp(placement?.scale ?? 1, 0.05, 4);
+  const offsetX = placement?.offsetX ?? 0;
+  const offsetY = placement?.offsetY ?? 0;
+  const sw = sourceWidth > 0 ? sourceWidth : 1;
+  const sh = sourceHeight > 0 ? sourceHeight : 1;
+  const panelW = TOTE_FOLDED_PANEL_WIDTH;
+  const panelH = TOTE_FOLDED_PANEL_HEIGHT;
+  const contain = Math.min(panelW / sw, panelH / sh);
+  const k = contain * TOTE_FOLDED_CONTAIN_BOOST * scale;
+  const drawW = Math.max(1, Math.round(sw * k));
+  const drawH = Math.max(1, Math.round(sh * k));
+  const cx = panelW * (0.5 + offsetX);
+  const cy = panelH * (0.5 + offsetY);
+  return {
+    drawW,
+    drawH,
+    left: Math.round(cx - drawW / 2),
+    top: Math.round(cy - drawH / 2),
+  };
+}
+
+/** Visible intersection of a (possibly overflowing) art box with one face panel. */
+export function clipToteArtBoxToPanel(
+  box: ToteFoldedArtBox,
+): {
+  srcLeft: number;
+  srcTop: number;
+  dstLeft: number;
+  dstTop: number;
+  width: number;
+  height: number;
+} | null {
+  const panelW = TOTE_FOLDED_PANEL_WIDTH;
+  const panelH = TOTE_FOLDED_PANEL_HEIGHT;
+  let srcLeft = 0;
+  let srcTop = 0;
+  let dstLeft = box.left;
+  let dstTop = box.top;
+  let width = box.drawW;
+  let height = box.drawH;
+  if (dstLeft < 0) {
+    srcLeft = -dstLeft;
+    width += dstLeft;
+    dstLeft = 0;
+  }
+  if (dstTop < 0) {
+    srcTop = -dstTop;
+    height += dstTop;
+    dstTop = 0;
+  }
+  if (dstLeft + width > panelW) width = panelW - dstLeft;
+  if (dstTop + height > panelH) height = panelH - dstTop;
+  if (width < 1 || height < 1) return null;
+  return { srcLeft, srcTop, dstLeft, dstTop, width, height };
+}
+
 /**
  * Pure math: compose top panel + 180°-rotated bottom panel into one RGBA buffer.
  * Used by server sharp pipeline and unit tests.
  */
 export function composeToteFoldedCanvas(input: ToteFoldedBuildInput): ToteFoldedBuildResult {
   const { sourceWidth, sourceHeight, pixels } = input;
-  const scale = clamp(input.placement?.scale ?? 1, 0.05, 4);
-  const offsetX = input.placement?.offsetX ?? 0;
-  const offsetY = input.placement?.offsetY ?? 0;
+  const { drawW, drawH, left, top } = toteFoldedArtBox(
+    sourceWidth,
+    sourceHeight,
+    input.placement,
+  );
 
   const panelW = TOTE_FOLDED_PANEL_WIDTH;
   const panelH = TOTE_FOLDED_PANEL_HEIGHT;
   const canvasW = TOTE_FOLDED_CANVAS_WIDTH;
   const canvasH = TOTE_FOLDED_CANVAS_HEIGHT;
-
-  const fit = Math.min(panelW / sourceWidth, panelH / sourceHeight) * scale;
-  const drawW = Math.max(1, Math.round(sourceWidth * fit));
-  const drawH = Math.max(1, Math.round(sourceHeight * fit));
-  const cx = panelW / 2 + offsetX * panelW * 0.25;
-  const cy = panelH / 2 + offsetY * panelH * 0.25;
-  const left = Math.round(cx - drawW / 2);
-  const top = Math.round(cy - drawH / 2);
 
   const out = Buffer.alloc(canvasW * canvasH * 4, 0);
 
@@ -104,7 +175,9 @@ export function composeToteFoldedCanvas(input: ToteFoldedBuildInput): ToteFolded
   };
 
   writePanel(0, false);
-  writePanel(panelH, true);
+  if (input.placement?.printBack !== false) {
+    writePanel(panelH, true);
+  }
 
   return { width: canvasW, height: canvasH, pixels: out };
 }

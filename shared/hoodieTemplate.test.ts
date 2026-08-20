@@ -21,6 +21,10 @@ import {
   PILLOW_WRAP_BLUEPRINT_ID,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
+  BODY_PILLOW_DEFAULT_PLACE_SCALE,
+  bodyPillowGenerationAspectRatio,
+  defaultAopPlaceScale,
+  isBodyPillowBlueprint,
   createFreshAopTemplate,
   createDefaultMesh,
   defaultHoodieTypeForBlueprint,
@@ -158,6 +162,19 @@ describe("pillow wrap blueprints", () => {
     expect(t.designGroups?.find((g) => g.id === "front-face")).toBeDefined();
     expect(panelsEligibleForView("front", 996, "front-back-face")).toContain("front");
     expect(panelsEligibleForView("front", 996, "front-back-face")).not.toContain("front_left");
+  });
+
+  it("forces body-pillow generation AR to landscape", () => {
+    expect(isBodyPillowBlueprint(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe(true);
+    expect(bodyPillowGenerationAspectRatio("20:54")).toBe("54:20");
+    expect(bodyPillowGenerationAspectRatio("27:10")).toBe("27:10");
+  });
+
+  it("defaults body-pillow Place on Item to 122%", () => {
+    expect(defaultAopPlaceScale(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBe(BODY_PILLOW_DEFAULT_PLACE_SCALE);
+    expect(defaultAopPlaceScale(BODY_PILLOW_WRAP_BLUEPRINT_ID)).toBeCloseTo(1.22, 5);
+    expect(defaultAopPlaceScale(FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID)).toBe(1.1);
+    expect(defaultAopPlaceScale(ZIP_HOODIE_BLUEPRINT_ID)).toBe(1);
   });
 
   it("defaultPrintFileLayoutForBlueprint maps body pillow to split", () => {
