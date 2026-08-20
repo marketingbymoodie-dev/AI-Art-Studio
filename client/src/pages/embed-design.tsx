@@ -2145,6 +2145,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       productTypeConfig?.flatCalibration
     );
     if (!hasFlatAssets) return false;
+    // Adjustable tote: name/mode is often "AOP" but fulfillment is folded flat.
+    if (productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1") return true;
     const mode = productTypeConfig?.effectiveStorefrontMockupMode;
     if (mode === "aop") return false;
     // HFP/VFP/pillows with calibration: always use VFP-style placer + local mockups
@@ -2174,6 +2176,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     productTypeConfig?.designerType,
     productTypeConfig?.name,
     productTypeConfig?.printifyBlueprintId,
+    productTypeConfig?.effectiveFulfillmentLayout,
   ]);
 
   // When OPTION duplicates SIZE (tapestry orientations), keep frameColor aligned for variantMap.
@@ -3157,7 +3160,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Flat/mesh on-the-fly products must never also open PatternCustomizer —
     // both button bars used to render when isAllOverPrint + flatCalibration coexisted.
     productTypeConfig?.onTheFlyTier !== "flat" &&
-    productTypeConfig?.onTheFlyTier !== "mesh"
+    productTypeConfig?.onTheFlyTier !== "mesh" &&
+    productTypeConfig?.effectiveFulfillmentLayout !== "tote_folded_v1"
   );
   /** Drag-to-scale artwork overlay — Printify mockup products only (not AOP/flat/mesh). */
   const printifyTransformEligible = !!(
@@ -9722,8 +9726,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     let frontDataUrl: string;
     let backDataUrl: string | null = null;
     try {
-      frontDataUrl = frontCanvas.toDataURL("image/png");
-      backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+      const exportCanvas = (canvas: HTMLCanvasElement) => {
+        if (!isAdminTester) return canvas.toDataURL("image/png");
+        const max = MOCKUP_PANEL_MAX_LONG_EDGE_PX;
+        const long = Math.max(canvas.width, canvas.height);
+        if (long <= max) return canvas.toDataURL("image/jpeg", 0.85);
+        const scale = max / long;
+        const tmp = document.createElement("canvas");
+        tmp.width = Math.max(1, Math.round(canvas.width * scale));
+        tmp.height = Math.max(1, Math.round(canvas.height * scale));
+        tmp.getContext("2d")?.drawImage(canvas, 0, 0, tmp.width, tmp.height);
+        return tmp.toDataURL("image/jpeg", 0.85);
+      };
+      frontDataUrl = exportCanvas(frontCanvas);
+      backDataUrl = backCanvas ? exportCanvas(backCanvas) : null;
     } catch (e) {
       // Tainted canvas (cross-origin asset without CORS) — can't export.
       // Fall back to the normal Printify mockup flow rather than hard-error.
@@ -9897,20 +9913,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Any edit while viewing Printers/Context → jump back to the live editor.
       setSelectedMockupIndex(0);
       setFlatPlacementDirty(true);
-      if (isAdminTester && savedJobIdRef.current) {
-        emitTesterDesignStatus({
-          jobId: savedJobIdRef.current,
-          aopPanels: "none",
-        });
-      }
       // Persist only on ATC / test order / leave editor / Printers Mockup —
-      // not on every nudge (that flashed "Saving design…" constantly).
+      // not on every nudge (that reset the tester button to Syncing forever).
     },
-    [
-      generatedDesign?.imageUrl,
-      isAdminTester,
-      emitTesterDesignStatus,
-    ],
+    [generatedDesign?.imageUrl],
   );
 
   const handleFlatAssetsFailed = useCallback((reason: string) => {

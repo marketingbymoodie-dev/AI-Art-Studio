@@ -2823,7 +2823,7 @@ export const MOCKUP_PANEL_MAX_LONG_EDGE_PX = 1800;
 /** Preview Studio test-order persist. Above mockup-only 1800 so Printify's
  *  enhance step is less likely to reject the draft as "unable to enhance".
  *  Still far below storefront full bake (placeholder 8–12k). */
-export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = PRINT_PANEL_TARGET_LONG_EDGE_PX;
+export const TESTER_PRINT_PANEL_MAX_LONG_EDGE_PX = MOCKUP_PANEL_MAX_LONG_EDGE_PX;
 /** Solid background-only panels compress to almost nothing; Printify scales
  *  the image to the placeholder, so a modest aspect-correct fill is enough.
  *  Keep this large enough that wide strips (collar ~11:1) retain a usable
