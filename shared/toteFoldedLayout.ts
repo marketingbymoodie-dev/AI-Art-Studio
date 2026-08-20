@@ -58,12 +58,17 @@ export type ToteFoldedArtBox = {
 };
 
 /**
- * Contain-fit the art in one tote face, then enlarge by
- * {@link TOTE_FOLDED_CONTAIN_BOOST}. Full cover overshot the bag seams on
- * Printify; the original contain bake was too small vs the app. Offsets are
- * fractions of the face (same units as `flatArtBox`).
+ * Contain-fit the art in one tote face, then apply {@link TOTE_FOLDED_CONTAIN_BOOST}.
+ * 1.2 filled the Printify bag to the seams; 0.96 is 20% smaller than that.
+ * Offsets are fractions of the face (same units as `flatArtBox`).
  */
-export const TOTE_FOLDED_CONTAIN_BOOST = 1.2;
+export const TOTE_FOLDED_CONTAIN_BOOST = 0.96;
+
+/**
+ * Printify's bag face sits a little lower than the app mockup.
+ * One Fine Position nudge is ~1.1% of the face; lift by three nudges.
+ */
+export const TOTE_FOLDED_PRINT_OFFSET_Y = -0.033;
 
 export function toteFoldedArtBox(
   sourceWidth: number,
@@ -72,7 +77,7 @@ export function toteFoldedArtBox(
 ): ToteFoldedArtBox {
   const scale = clamp(placement?.scale ?? 1, 0.05, 4);
   const offsetX = placement?.offsetX ?? 0;
-  const offsetY = placement?.offsetY ?? 0;
+  const offsetY = (placement?.offsetY ?? 0) + TOTE_FOLDED_PRINT_OFFSET_Y;
   const sw = sourceWidth > 0 ? sourceWidth : 1;
   const sh = sourceHeight > 0 ? sourceHeight : 1;
   const panelW = TOTE_FOLDED_PANEL_WIDTH;

@@ -3,6 +3,7 @@ import {
   composeToteFoldedCanvas,
   normalizeToteFoldedPanelDims,
   TOTE_FOLDED_CONTAIN_BOOST,
+  TOTE_FOLDED_PRINT_OFFSET_Y,
   toteFoldedArtBox,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
@@ -47,21 +48,28 @@ describe("composeToteFoldedCanvas", () => {
     expect(out.pixels[bottomIdx]).toBe(0);
   });
 
-  it("is 20% larger than contain-fit, not a full cover of the face", () => {
+  it("is 20% smaller than the 1.2 contain boost (does not cover the face)", () => {
     const box = toteFoldedArtBox(512, 1024, { scale: 0.6, offsetX: 0, offsetY: 0 });
     const containK = Math.min(TOTE_FOLDED_PANEL_WIDTH / 512, TOTE_FOLDED_PANEL_HEIGHT / 1024) * 0.6;
     const containH = Math.round(1024 * containK);
-    const coverH = Math.round(1024 * Math.max(TOTE_FOLDED_PANEL_WIDTH / 512, TOTE_FOLDED_PANEL_HEIGHT / 1024) * 0.6);
+    const priorBoostH = Math.round(1024 * containK * 1.2);
     expect(box.drawH).toBe(Math.round(1024 * containK * TOTE_FOLDED_CONTAIN_BOOST));
-    expect(box.drawH).toBeGreaterThan(containH);
-    expect(box.drawH).toBeLessThan(coverH);
+    expect(box.drawH).toBeLessThan(containH);
+    expect(box.drawH).toBeLessThan(priorBoostH);
     expect(box.drawH).toBeLessThan(TOTE_FOLDED_PANEL_HEIGHT);
   });
 
   it("uses full-face offset fractions (same as flatArtBox)", () => {
-    const centered = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
-    const shifted = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0.1, offsetY: 0 });
-    expect(shifted.left - centered.left).toBe(Math.round(TOTE_FOLDED_PANEL_WIDTH * 0.1));
+    const a = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
+    const b = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0.1, offsetY: 0 });
+    expect(b.left - a.left).toBe(Math.round(TOTE_FOLDED_PANEL_WIDTH * 0.1));
+  });
+
+  it("lifts print placement by three Fine Position nudges", () => {
+    const box = toteFoldedArtBox(100, 100, { scale: 0.5, offsetX: 0, offsetY: 0 });
+    const cy = box.top + box.drawH / 2;
+    expect(cy).toBeCloseTo(TOTE_FOLDED_PANEL_HEIGHT * (0.5 + TOTE_FOLDED_PRINT_OFFSET_Y), 0);
+    expect(TOTE_FOLDED_PRINT_OFFSET_Y).toBeCloseTo(-0.033, 5);
   });
 });
 
