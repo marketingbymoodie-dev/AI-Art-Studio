@@ -3,6 +3,7 @@
  */
 import { storage } from "./storage";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
+import { prepareBakeUploadBuffer } from "./flat-print-file";
 import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
 import { generatePrintifyMockup } from "./printify-mockups";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
@@ -90,8 +91,13 @@ export async function submitToteFoldedTestOrder(args: {
 
   try {
     const foldedPng = await buildToteFoldedPrintPngFromUrl(artworkUrl);
-    const path = `tote-folded-orders/${productType.id}/${job.id}-${Date.now()}.png`;
-    const printFileUrl = await uploadToFlatCalibrationBucket(path, foldedPng, "image/png");
+    const prepared = await prepareBakeUploadBuffer(foldedPng);
+    const path = `tote-folded-orders/${productType.id}/${job.id}-${Date.now()}.${prepared.ext}`;
+    const printFileUrl = await uploadToFlatCalibrationBucket(
+      path,
+      prepared.buffer,
+      prepared.contentType,
+    );
 
     const mockup = await generatePrintifyMockup({
       blueprintId,

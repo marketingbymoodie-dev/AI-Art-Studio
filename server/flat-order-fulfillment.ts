@@ -52,6 +52,7 @@ import { storage } from "./storage";
 import {
   bakeFlatPrintFile,
   persistBakedPrintFile,
+  prepareBakeUploadBuffer,
   type FlatPlacement,
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
@@ -857,8 +858,9 @@ async function buildToteFoldedPrintAreasForDesign(
     artworkUrl = `${base.replace(/\/$/, "")}${artworkUrl}`;
   }
   const foldedPng = await buildToteFoldedPrintPngFromUrl(artworkUrl, design.placement);
-  const path = `tote-folded-orders/${design.productType.id}/${design.designId}-${Date.now()}.png`;
-  const url = await uploadToFlatCalibrationBucket(path, foldedPng, "image/png");
+  const prepared = await prepareBakeUploadBuffer(foldedPng);
+  const path = `tote-folded-orders/${design.productType.id}/${design.designId}-${Date.now()}.${prepared.ext}`;
+  const url = await uploadToFlatCalibrationBucket(path, prepared.buffer, prepared.contentType);
   if (!url) {
     throw new Error(
       "Supabase flat-calibration bucket not configured — cannot host the folded tote print file for Printify",
