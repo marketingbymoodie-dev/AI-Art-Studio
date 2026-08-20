@@ -1046,6 +1046,18 @@ export function isBodyPillowBlueprint(blueprintId: number | null | undefined): b
   return Number(blueprintId) === BODY_PILLOW_WRAP_BLUEPRINT_ID;
 }
 
+/** Place-on-item opening scale for square / lumbar / faux-suede pillows. */
+export const OTHER_PILLOW_DEFAULT_PLACE_SCALE = 1.1;
+/** Place-on-item opening scale for body pillow (bp 2758). */
+export const BODY_PILLOW_DEFAULT_PLACE_SCALE = 1.22;
+
+/** Customer Place-on-item seed scale when no saved placement exists. */
+export function defaultAopPlaceScale(blueprintId?: number | null): number {
+  if (isBodyPillowBlueprint(blueprintId)) return BODY_PILLOW_DEFAULT_PLACE_SCALE;
+  if (isPillowWrapBlueprint(blueprintId)) return OTHER_PILLOW_DEFAULT_PLACE_SCALE;
+  return 1;
+}
+
 /**
  * Size rows are stored as 20×54 (portrait), but the sewn body pillow / mockup
  * is landscape. Generate and place in the long orientation.
