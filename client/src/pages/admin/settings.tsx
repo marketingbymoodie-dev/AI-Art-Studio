@@ -61,6 +61,11 @@ export default function AdminSettings() {
     queryKey: ["/api/admin/storefront-settings"],
   });
 
+  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
+    queryKey: ["/api/platform/admin/status"],
+  });
+  const isOperator = !!platformStatus?.isPlatformAdmin;
+
   const { data: termsData } = useQuery<{ content: TermsContent }>({
     queryKey: ["/api/terms"],
     staleTime: 60_000,
@@ -166,35 +171,35 @@ export default function AdminSettings() {
     }
   };
 
-  const handleSyncUrls = async () => {
+  const handleSyncUrls = async (shopDomain: string) => {
     try {
-      const res = await apiRequest("POST", "/api/shopify/sync-urls");
+      const res = await apiRequest("POST", "/api/shopify/sync-metafields", { shopDomain });
       const data = await res.json();
       toast({
-        title: "Success",
-        description: data.message || "App URLs synced with Shopify successfully",
+        title: "App URLs rewritten",
+        description: data.message || "Product metafields now point at the current Railway app URL.",
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to sync app URLs with Shopify",
+        title: "Sync failed",
+        description: error instanceof Error ? error.message : "Could not rewrite product app URLs.",
         variant: "destructive",
       });
     }
   };
 
-  const handleRegisterScript = async () => {
+  const handleRegisterScript = async (shopDomain: string) => {
     try {
-      const res = await apiRequest("POST", "/api/shopify/register-script");
+      const res = await apiRequest("POST", "/api/shopify/register-script", { shopDomain });
       const data = await res.json();
       toast({
-        title: "Success",
-        description: data.message || "Script tag registered successfully",
+        title: "Legacy cart script registered",
+        description: data.message || "Script tag registered.",
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to register script tag",
+        title: "Register failed",
+        description: error instanceof Error ? error.message : "Could not register the cart script tag.",
         variant: "destructive",
       });
     }
@@ -666,7 +671,9 @@ export default function AdminSettings() {
               Shopify Integration
             </CardTitle>
             <CardDescription>
-              Manage your connected Shopify stores
+              The Shopify shop this app is installed on. The{" "}
+              <span className="font-mono">.myshopify.com</span> handle is the store id —
+              your custom domain (if any) is separate.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -685,34 +692,40 @@ export default function AdminSettings() {
                         <p className="text-xs text-muted-foreground capitalize">{inst.status}</p>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="gap-2"
-                        onClick={handleSyncUrls}
-                        title="Update all AI Art Studio products to use the current app URL"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        Sync URLs
-                      </Button>
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="gap-2"
-                        onClick={handleRegisterScript}
-                      >
-                        <FileCode className="h-3.5 w-3.5" />
-                        Register Script
-                      </Button>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {isOperator ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-2"
+                            onClick={() => handleSyncUrls(inst.shopDomain)}
+                            title="Rewrite AI Art Studio product metafields to the current Railway app URL after a host change"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            Rewrite app URLs
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-2"
+                            onClick={() => handleRegisterScript(inst.shopDomain)}
+                            title="Re-inject the legacy cart ScriptTag. Theme App Embed is the normal path."
+                          >
+                            <FileCode className="h-3.5 w-3.5" />
+                            Register legacy script
+                          </Button>
+                        </>
+                      ) : null}
                       <Button 
                         size="sm" 
                         variant="outline" 
                         className="gap-2"
                         onClick={() => handleReconnectStore(inst.shopDomain)}
+                        title="Re-authorize the app if Shopify access was lost"
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
-                        Reconnect
+                        Reconnect store
                       </Button>
                       <Button size="sm" variant="ghost" asChild>
                         <a href={`https://${inst.shopDomain}/admin/apps/ai-art-studio`} target="_blank" rel="noreferrer">

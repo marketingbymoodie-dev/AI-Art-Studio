@@ -215,7 +215,7 @@ import {
   buildPreviewUrl,
   verifyPreviewToken,
 } from "./merchant-setup";
-import { isPlatformAdminRequest } from "./platformAdmin";
+import { isPlatformAdminRequest, requirePlatformAdmin } from "./platformAdmin";
 import {
   adminProductTypeAccessError,
 } from "./adminProductTypeAccess";
@@ -5066,6 +5066,7 @@ ${orientationExtra}
   // Bulk update metafields for all AI Art Studio products in a shop
   // This is useful when the app URL changes (e.g., migrating from Replit to Railway)
   app.post("/api/shopify/sync-metafields", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
     try {
       const userId = req.user.claims.sub;
       const merchant = await storage.getMerchantByUserId(userId);
@@ -5839,6 +5840,7 @@ ${orientationExtra}
 
   // Register cart script for a Shopify shop
   app.post("/api/shopify/register-script", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
     try {
       const userId = req.user.claims.sub;
       const { shopDomain } = req.body;
