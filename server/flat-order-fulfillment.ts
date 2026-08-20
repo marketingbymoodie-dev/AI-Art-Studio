@@ -474,14 +474,32 @@ export async function resolveDesignForOrderLine(
     }
 
     const lineTote = decodeToteLinePlacement(line.properties[LINE_TOTE_PLACEMENT_KEY]);
+    const fps = designState?.flatPlacerState as
+      | {
+          placements?: { front?: { scale?: number; offsetX?: number; offsetY?: number } };
+          enabled?: { front?: boolean; back?: boolean };
+        }
+      | undefined;
+    const front = fps?.placements?.front;
+    const printBack = fps?.enabled?.back !== false;
     const dsScale = Number(designState?.scale ?? 100);
     const dsX = Number(designState?.x ?? 50);
     const dsY = Number(designState?.y ?? 50);
-    const placement: ToteFoldedPlacement = lineTote ?? {
-      scale: Math.max(0.05, Math.min(4, dsScale / 100)),
-      offsetX: (dsX - 50) / 50,
-      offsetY: (dsY - 50) / 50,
-    };
+    const placement: ToteFoldedPlacement = lineTote
+      ? { ...lineTote, printBack }
+      : front && Number.isFinite(Number(front.scale))
+        ? {
+            scale: Number(front.scale),
+            offsetX: Number(front.offsetX) || 0,
+            offsetY: Number(front.offsetY) || 0,
+            printBack,
+          }
+        : {
+            scale: Math.max(0.05, Math.min(4, dsScale / 100)),
+            offsetX: (dsX - 50) / 50,
+            offsetY: (dsY - 50) / 50,
+            printBack,
+          };
     const { sizeId, colorId } = pickFlatOrderSizeColor({
       designProductSizeId: designProductOverride?.sizeId,
       designProductColorId: designProductOverride?.colorId,
@@ -806,8 +824,32 @@ async function buildPrintAreasForDesign(
   return { printAreas, urls };
 }
 
+function pickToteOrderPrintPosition(
+  placeholders: Array<{ position: string; width?: number; height?: number }> | null,
+  productType: ProductType,
+): string {
+  const stored = parseJson<Array<{ position?: string } | string>>(
+    (productType as any).placeholderPositions,
+    [],
+  );
+  const storedNames = stored
+    .map((p) => (typeof p === "string" ? p : p?.position))
+    .filter((p): p is string => !!p);
+  const list =
+    placeholders && placeholders.length > 0
+      ? placeholders
+      : storedNames.map((position) => ({ position }));
+  const named =
+    list.find((p) => /^(front|default)$/i.test(p.position)) ||
+    [...list].sort(
+      (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
+    )[0];
+  return named?.position || storedNames[0] || "front";
+}
+
 async function buildToteFoldedPrintAreasForDesign(
   design: ResolvedToteFoldedDesign,
+  printPosition: string,
 ): Promise<{ printAreas: Record<string, PrintAreaImage[]>; urls: Record<string, string> }> {
   let artworkUrl = design.artworkUrl;
   if (artworkUrl.startsWith("/")) {
@@ -823,8 +865,8 @@ async function buildToteFoldedPrintAreasForDesign(
     );
   }
   return {
-    printAreas: { front: [{ src: url, scale: 1, x: 0.5, y: 0.5, angle: 0 }] },
-    urls: { front: url },
+    printAreas: { [printPosition]: [{ src: url, scale: 1, x: 0.5, y: 0.5, angle: 0 }] },
+    urls: { [printPosition]: url },
   };
 }
 
@@ -1053,10 +1095,21 @@ export async function submitFlatOrderToPrintify(
 
     let built: { printAreas: Record<string, PrintAreaImage[]>; urls: Record<string, string> } | null = null;
     try {
-      built =
-        resolved.kind === "tote_folded"
-          ? await buildToteFoldedPrintAreasForDesign(resolved.design)
-          : await buildPrintAreasForDesign(resolved.design);
+      if (resolved.kind === "tote_folded") {
+        const totePlaceholders = await getBlueprintVariantPlaceholders(
+          target.blueprintId,
+          target.providerId,
+          target.printifyVariantId,
+          printifyToken!,
+        );
+        const totePosition = pickToteOrderPrintPosition(totePlaceholders, productType);
+        console.log(
+          `[flat-order-fulfillment] tote_folded print slot "${totePosition}" for bp ${target.blueprintId} variant ${target.printifyVariantId}`,
+        );
+        built = await buildToteFoldedPrintAreasForDesign(resolved.design, totePosition);
+      } else {
+        built = await buildPrintAreasForDesign(resolved.design);
+      }
     } catch (e: any) {
       // Flat/mesh/tote_folded design products fall back to their persistent Printify
       // product (if publish created one) rather than dropping the line entirely.

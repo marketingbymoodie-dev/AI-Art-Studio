@@ -28,6 +28,8 @@ export type ToteFoldedPlacement = {
   scale?: number;
   offsetX?: number;
   offsetY?: number;
+  /** When false, only the top (front) panel is printed. Default true. */
+  printBack?: boolean;
 };
 
 export type ToteFoldedBuildInput = {
@@ -104,7 +106,9 @@ export function composeToteFoldedCanvas(input: ToteFoldedBuildInput): ToteFolded
   };
 
   writePanel(0, false);
-  writePanel(panelH, true);
+  if (input.placement?.printBack !== false) {
+    writePanel(panelH, true);
+  }
 
   return { width: canvasW, height: canvasH, pixels: out };
 }
