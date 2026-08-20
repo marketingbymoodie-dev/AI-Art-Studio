@@ -7580,6 +7580,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Apron / tote / phone: open the live placer even when the product
         // has no Printify mockup flag (that used to leave Edit Placement closed
         // and "Syncing placement…" stuck forever).
+        setFlatRenderFailed(false);
         setFlatPlacerEditOpen(true);
       } else if (shouldFetchMockups) {
         console.log('[Mockups] Triggering mockup generation');
@@ -11667,7 +11668,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const flatPlacerEligible = !!(
     usesFlatOnTheFlyPreview &&
     generatedDesign?.imageUrl &&
-    !flatRenderFailed
+    // Keep an already-open editor mounted. Gallery raster / harvest misses
+    // used to set flatRenderFailed and fall back to the raw art file.
+    (!flatRenderFailed || flatPlacerEditOpen)
   );
   const flatPlacerActive = flatPlacerEligible && flatPlacerEditOpen;
 
@@ -12245,17 +12248,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               continue;
             }
           }
-          if (cancelled || !isHttpsMockupUrl(hostedUrl)) continue;
+          if (cancelled) continue;
+          // Preview Studio pins local data-URL rasters (no upload). Do not
+          // require https here — that discarded every tote/apron slide and
+          // then unmounted the live placer.
+          if (!isAdminTester && !isHttpsMockupUrl(hostedUrl)) continue;
           images.push({ url: hostedUrl, label: view });
         }
         if (cancelled) return;
         if (images.length === 0) {
           console.warn('[Mockups] Flat mockup raster failed for', flatBlankColorId);
-          // Do not keep showing the previous colour/size mockup after a failed swap.
+          // Gallery slides are optional. Never flip flatRenderFailed — that
+          // unmounts FlatProductPlacer and leaves only the raw art file.
           flatFrontMockupsRef.current = [];
           setPrintifyMockupImages([]);
           setPrintifyMockups([]);
-          setFlatRenderFailed(true);
           setMockupsStale(true);
           setFlatMockupRefreshing(false);
           return;
@@ -15493,7 +15500,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               </div>
             ) : (<>
             {/* Edit / Reuse / Share — above the viewing window (closed preview) */}
-            {generatedDesign?.imageUrl && !showPatternStep && !flatPlacerEditOpen && (
+            {generatedDesign?.imageUrl && !showPatternStep && !flatPlacerActive && (
               <div
                 className="flex items-center justify-between gap-2 flex-wrap pb-2"
                 data-testid="container-artwork-actions-top"
@@ -15511,11 +15518,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       <span className="text-xs">Edit Pattern</span>
                     </Button>
                   )}
-                  {flatPlacerEligible && (
+                  {(flatPlacerEligible ||
+                    (usesFlatOnTheFlyPreview && !!productTypeConfig?.flatCalibration)) && (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setFlatPlacerEditOpen(true)}
+                      onClick={() => {
+                        setFlatRenderFailed(false);
+                        setFlatPlacerEditOpen(true);
+                      }}
                       className="shrink-0"
                       data-testid="button-edit-flat-placement"
                     >
