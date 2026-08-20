@@ -258,7 +258,12 @@ export function resolveFlatBlank(
   const blanks = manifest.blanks || {};
   const hit = colorId ? findBlankKey(manifest, colorId) : null;
   if (hit && flatBlankHasViews(blanks[hit])) return blanks[hit];
+  const usable = Object.keys(blanks).filter((k) => flatBlankHasViews(blanks[k]));
   if (colorId) {
+    // One harvest (tote / single-colour apron): use it even if the size/option
+    // id does not match the blank key. Multiple colours still refuse a swap.
+    if (usable.length === 1) return blanks[usable[0]];
+    if (usable.includes("default")) return blanks.default;
     // Never silently swap in another colour's blank (Navy must not show the
     // first harvested brown hoodie). Caller can override with a Shopify image.
     return {};

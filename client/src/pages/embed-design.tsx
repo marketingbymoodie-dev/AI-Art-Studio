@@ -10003,13 +10003,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const handleFlatAssetsFailed = useCallback((reason: string) => {
     console.warn("[FlatPlacer] assets failed:", reason);
+    // Preview Studio: keep the placer mounted. Falling back to Printify used
+    // to unmount it and leave only the raw art file (tote looked "reverted").
+    if (isAdminTester) return;
     setFlatRenderFailed(true);
-    setFlatPlacerEditOpen(false);
-    const jobId = savedJobIdRef.current;
-    if (isAdminTester && jobId) {
-      emitTesterDesignStatus({ jobId, aopPanels: "saved" });
-    }
-  }, [isAdminTester, emitTesterDesignStatus]);
+  }, [isAdminTester]);
 
   // A failed blank swap must not permanently disable flat tier for other models/colours.
   useEffect(() => {

@@ -23,6 +23,7 @@ import {
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
+  loadFlatImageRelaxed,
   flatCalibrationSwappedToLandscape,
   orientFlatHarvestPixelsForLandscape,
   resolveFlatBlank,
@@ -377,19 +378,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         // canonical URLs are overwritten on re-harvest and a stale cached
         // mask silently desyncs the clip from the fresh guide geometry.
         const [b, m, s] = await Promise.all([
-          loadFlatImage(
+          loadFlatImageRelaxed(
             isOverrideBlank
               ? blankUrl
               : withFlatAssetVersion(blankUrl, manifest.generatedAt),
           ),
           !refitCatalogSizeGuide && calib.maskUrl
-            ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
+            ? loadFlatImageRelaxed(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
             !!calib.printBoundsNormalized)
-            ? loadFlatImage(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
+            ? loadFlatImageRelaxed(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
             : Promise.resolve(null),
         ]);
         if (
