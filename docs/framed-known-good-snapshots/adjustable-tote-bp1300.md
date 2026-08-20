@@ -1,17 +1,17 @@
 # Adjustable Tote (AOP) (bp 1300) — known-good snapshot
 
-**Status: VERIFIED WORKING (2026-08-20, merchant sign-off on staging).**
+**Status: VERIFIED WORKING (2026-08-20, merchant sign-off). Live on production.**
 
 Adjustable Tote is **flat on-the-fly** in the storefront editor (`FlatProductPlacer` — not `HoodieAopPlacer`) and fulfills as a **single folded Printify canvas** (`tote_folded_v1`): top panel = front, bottom panel = the same art box rotated 180°. Printers Mockup and test orders must bake that folded file first, then submit at scale 1 / center. Do **not** send raw customer art onto the full 1:2 slot.
 
-This pin is the staging commit the merchant signed off. Promote the same SHA (or its merge) to `production` on go-live — do not “improve” print scale with extra Y nudges.
+Do not “improve” print scale with extra Y nudges.
 
-## Pin commit (staging → production on go-live)
+## Pin commit (production)
 
 | Field | Value |
 |-------|--------|
-| **Commit** | `808f6a5efae7447522b4500088de68a8b59dedb2` (`808f6a5`) |
-| **Branch** | `staging` (Railway staging / demo store). Copy to `production` only after explicit go-live. |
+| **Commit** | `9bdd315` (staging equivalent `808f6a5`) |
+| **Branch** | `production` (Railway live merchants) |
 | **Date** | 2026-08-20 |
 | **Message** | Fix body-pillow Printify DPI and restore tote front/back replica placement. |
 
@@ -21,7 +21,7 @@ The tote-specific invariants in this pin: `TOTE_FOLDED_CONTAIN_BOOST = 0.864`, *
 
 | Commit | Summary |
 |--------|---------|
-| `808f6a5` | **This pin** — contain boost **0.864**; drop print-only Y lift so front/back stay replicas |
+| `9bdd315` | **This pin** — contain boost **0.864**; drop print-only Y lift so front/back stay replicas |
 | `3364596` | 0.96 boost + three Fine Position lifts — **rejected** (sides no longer mirrored) |
 | `5f0b627` | Compress folded PNG before Supabase upload so test orders are not rejected as too large |
 | `90a82a7` | contain × 1.2 (overshot seams) |
@@ -87,4 +87,4 @@ Shoulder Tote **836** remains a different product (`c09b062`). Prefer **surgical
 
 ---
 
-*Snapshot recorded: 2026-08-20. Owner sign-off: Adjustable Tote 18×18 Printers Mockup + replica fold on staging `808f6a5`.*
+*Snapshot recorded: 2026-08-20. Owner sign-off: Adjustable Tote 18×18 Printers Mockup + replica fold. Production pin `9bdd315`.*
