@@ -225,8 +225,14 @@ function applyPlacementToState(
   next: ArtworkPlacement,
   _availableViews: ViewName[],
 ): FlatProductPlacerState {
-  // Front/back are always independent — never mirror/scale the other face.
-  return { ...prev, linkSides: false, placements: { ...prev.placements, [view]: next } };
+  const placements = { ...prev.placements, [view]: next };
+  // Print-on-back uses the same artwork — keep scale matched to the side being edited.
+  if (prev.enabled.front && prev.enabled.back) {
+    const other: ViewName = view === "front" ? "back" : "front";
+    const otherCur = placements[other] ?? next;
+    placements[other] = { ...otherCur, scale: next.scale };
+  }
+  return { ...prev, linkSides: false, placements };
 }
 
 function buildInitialState(
@@ -463,7 +469,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const back =
         typeof parentEnabledBack === "boolean" ? parentEnabledBack : prev.enabled.back;
       if (prev.enabled.front === front && prev.enabled.back === back) return prev;
-      return { ...prev, enabled: { ...prev.enabled, front, back } };
+      const placements = { ...prev.placements };
+      if (back && !prev.enabled.back) {
+        placements.back = { ...placements.back, scale: placements.front.scale };
+      }
+      return { ...prev, enabled: { ...prev.enabled, front, back }, placements };
     });
   }, [parentEnabledFront, parentEnabledBack]);
 
@@ -805,9 +815,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, []);
 
   const setEnabled = useCallback((view: ViewName, on: boolean) => {
-    setState((prev) =>
-      prev ? { ...prev, enabled: { ...prev.enabled, [view]: on } } : prev,
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      const enabled = { ...prev.enabled, [view]: on };
+      const placements = { ...prev.placements };
+      if (view === "back" && on && !prev.enabled.back) {
+        placements.back = { ...placements.back, scale: placements.front.scale };
+      }
+      return { ...prev, enabled, placements };
+    });
   }, []);
 
   const updatePlacement = useCallback(
