@@ -7267,7 +7267,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (!response.ok) {
         if (data.requiresLogin) {
           setLoginError("Please log in to your account to create designs.");
-        } else if (data.requiresCredits) {
+        } else if (data.requiresCredits || data.needsCredits) {
           setLoginError("No credits remaining. Please purchase more credits to continue.");
         } else if (data.error === 'GALLERY_FULL' || data.galleryFull) {
           setShowGalleryFullModal(true);
@@ -7575,6 +7575,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       console.error('[EmbedDesign] Generation error:', err?.message ?? err);
       const msg: string = err?.message ?? '';
       if (/credit/i.test(msg)) {
+        let description = "No AppAI generation credits left on this shop. That is not your Replicate balance.";
+        const raw = msg.replace(/^HTTP \d+:\s*/, "");
+        try {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed?.error === "string") description = parsed.error;
+        } catch {
+          if (raw && !raw.startsWith("{")) description = raw;
+        }
+        toast({ title: "Could not generate", description, variant: "destructive" });
         return;
       }
       if (msg.startsWith('SHOP_NEEDS_REINSTALL:')) {

@@ -2426,13 +2426,13 @@ export async function registerRoutes(
         });
       }
 
-      // Owner bypass: app creator gets unlimited generations
-      const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
-      const isOwner = !!(ownerShop && (req as any).shopDomain?.toLowerCase() === ownerShop);
-      if (isOwner) console.log(`[/api/generate] Owner bypass active for shop: ${(req as any).shopDomain}`);
+      const genShopDomain = (req as any).shopDomain as string | undefined;
+      const isOwner = isOwnerQuotaBypassShop(genShopDomain);
+      if (isOwner) console.log(`[/api/generate] Owner bypass active for shop: ${genShopDomain}`);
 
-      // Check credits (bypassed for app owner)
-      if (!isOwner && customer.credits <= 0) {
+      // Legacy /designs wallet. Shop-connected Preview Studio uses the merchant
+      // plan quota below — do not block it on leftover customers.credits = 0.
+      if (!isOwner && !genShopDomain && customer.credits <= 0) {
         return res.status(400).json({ 
           error: "No credits remaining. Please purchase more credits.",
           needsCredits: true 
@@ -2445,7 +2445,6 @@ export async function registerRoutes(
       //     saved via "Save to My Designs" — same counter the UI shows (30 cap).
       // The tester previously checked the legacy table, so merchants with 4 saved
       // studio designs but 50+ old tester rows hit a false "gallery full" error.
-      const genShopDomain = (req as any).shopDomain as string | undefined;
       if (genShopDomain && !isOwner) {
         const genInstall = await getAuthorizedInstallation(
           genShopDomain.toLowerCase().replace(/^https?:\/\//, ""),

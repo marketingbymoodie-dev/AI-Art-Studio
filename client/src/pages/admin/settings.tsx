@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2, Sparkles, Copy, Scale } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, Link2, Sparkles, Copy, Scale } from "lucide-react";
 import { DEFAULT_TERMS_CONTENT, type TermsContent } from "@shared/termsContent";
 import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
@@ -60,11 +60,6 @@ export default function AdminSettings() {
   const { data: storefrontSettings } = useQuery<StorefrontSettings>({
     queryKey: ["/api/admin/storefront-settings"],
   });
-
-  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
-    queryKey: ["/api/platform/admin/status"],
-  });
-  const isOperator = !!platformStatus?.isPlatformAdmin;
 
   const { data: termsData } = useQuery<{ content: TermsContent }>({
     queryKey: ["/api/terms"],
@@ -168,40 +163,6 @@ export default function AdminSettings() {
       }
     } catch {
       window.open(`${window.location.origin}/shopify/install?shop=${encodeURIComponent(shopDomain)}`, '_blank');
-    }
-  };
-
-  const handleSyncUrls = async (shopDomain: string) => {
-    try {
-      const res = await apiRequest("POST", "/api/shopify/sync-metafields", { shopDomain });
-      const data = await res.json();
-      toast({
-        title: "App URLs rewritten",
-        description: data.message || "Product metafields now point at the current Railway app URL.",
-      });
-    } catch (error) {
-      toast({
-        title: "Sync failed",
-        description: error instanceof Error ? error.message : "Could not rewrite product app URLs.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleRegisterScript = async (shopDomain: string) => {
-    try {
-      const res = await apiRequest("POST", "/api/shopify/register-script", { shopDomain });
-      const data = await res.json();
-      toast({
-        title: "Legacy cart script registered",
-        description: data.message || "Script tag registered.",
-      });
-    } catch (error) {
-      toast({
-        title: "Register failed",
-        description: error instanceof Error ? error.message : "Could not register the cart script tag.",
-        variant: "destructive",
-      });
     }
   };
 
@@ -693,30 +654,6 @@ export default function AdminSettings() {
                       </div>
                     </div>
                     <div className="flex flex-wrap justify-end gap-2">
-                      {isOperator ? (
-                        <>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-2"
-                            onClick={() => handleSyncUrls(inst.shopDomain)}
-                            title="Rewrite AI Art Studio product metafields to the current Railway app URL after a host change"
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" />
-                            Rewrite app URLs
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-2"
-                            onClick={() => handleRegisterScript(inst.shopDomain)}
-                            title="Re-inject the legacy cart ScriptTag. Theme App Embed is the normal path."
-                          >
-                            <FileCode className="h-3.5 w-3.5" />
-                            Register legacy script
-                          </Button>
-                        </>
-                      ) : null}
                       <Button 
                         size="sm" 
                         variant="outline" 
