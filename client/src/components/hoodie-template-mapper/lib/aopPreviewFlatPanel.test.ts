@@ -4,6 +4,7 @@ import {
   bakeArtworkPlacementRotation,
   remapSourceRectForPlacementRotation,
   buildFlatMeshTargetPoints,
+  computeGroupRects,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
@@ -19,6 +20,7 @@ import {
   createFreshAopTemplate,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  type MaskLayer,
 } from "@shared/hoodieTemplate";
 
 describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
@@ -67,6 +69,61 @@ describe("normalizeRotationDeg / bakeArtworkPlacementRotation", () => {
       width: 54,
       height: 20,
     });
+  });
+
+  it("sizes the body-pillow place box from baked landscape art at 90°", () => {
+    const template = createFreshAopTemplate({
+      name: "body-pillow-rects",
+      blueprintId: BODY_PILLOW_WRAP_BLUEPRINT_ID,
+    });
+    const layer: MaskLayer = {
+      id: "front",
+      view: "front",
+      panelKey: "front",
+      kind: "panel",
+      name: "Front",
+      visible: true,
+      locked: false,
+      zIndex: 1,
+      opacity: 1,
+      blendMode: "normal",
+      maskPath: "M0,0 L540,0 L540,200 L0,200 Z",
+      cornerPins: null,
+      mesh: null,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0 },
+      productionPanelAssignment: null,
+      productionPanelSrc: null,
+      isExclusion: false,
+    };
+    template.views.front.layers = [layer];
+    const artwork = {
+      naturalWidth: 20,
+      naturalHeight: 54,
+      width: 20,
+      height: 54,
+    } as HTMLImageElement;
+    const map = computeGroupRects(template, "front", artwork, {
+      placementOverrides: {
+        "front-face": {
+          front: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 90 },
+          back: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 90 },
+        },
+      },
+    });
+    const rect = map.get("front-face");
+    expect(rect).toBeDefined();
+    expect(rect!.effective.width / rect!.effective.height).toBeCloseTo(54 / 20, 2);
+    expect(rect!.effective.width).toBeGreaterThan(rect!.effective.height);
+    const nudged = computeGroupRects(template, "front", artwork, {
+      placementOverrides: {
+        "front-face": {
+          front: { scale: 1, offsetX: 40, offsetY: 0, rotationDeg: 90 },
+          back: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 90 },
+        },
+      },
+    }).get("front-face");
+    expect(nudged!.effective.x).toBeCloseTo(rect!.effective.x + 40, 5);
+    expect(nudged!.effective.y).toBeCloseTo(rect!.effective.y, 5);
   });
 });
 

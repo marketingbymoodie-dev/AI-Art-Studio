@@ -3,15 +3,12 @@ import {
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
-  TOTE_FOLDED_PANEL_WIDTH,
+  clipToteArtBoxToPanel,
+  toteFoldedArtBox,
   type ToteFoldedPlacement,
 } from "@shared/toteFoldedLayout";
 
 export type { ToteFoldedPlacement };
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
 
 /**
  * Build the single Printify fulfillment PNG (2650×5250):
@@ -22,27 +19,44 @@ export async function buildToteFoldedPrintPng(
   source: Buffer,
   placement?: ToteFoldedPlacement,
 ): Promise<Buffer> {
-  const scale = clamp(placement?.scale ?? 1, 0.05, 4);
-  const offsetX = placement?.offsetX ?? 0;
-  const offsetY = placement?.offsetY ?? 0;
   const printBack = placement?.printBack !== false;
 
   const meta = await sharp(source).ensureAlpha().metadata();
   const sw = Math.max(1, meta.width || 1);
   const sh = Math.max(1, meta.height || 1);
-  const panelW = TOTE_FOLDED_PANEL_WIDTH;
-  const panelH = TOTE_FOLDED_PANEL_HEIGHT;
-  const fit = Math.min(panelW / sw, panelH / sh) * scale;
-  const drawW = Math.max(1, Math.round(sw * fit));
-  const drawH = Math.max(1, Math.round(sh * fit));
-  const left = Math.round(panelW / 2 + offsetX * panelW * 0.25 - drawW / 2);
-  const top = Math.round(panelH / 2 + offsetY * panelH * 0.25 - drawH / 2);
+  const box = toteFoldedArtBox(sw, sh, placement);
+  const visible = clipToteArtBoxToPanel(box);
 
-  const art = await sharp(source).ensureAlpha().resize(drawW, drawH).png().toBuffer();
-  const composites: sharp.OverlayOptions[] = [{ input: art, left, top }];
-  if (printBack) {
-    const art180 = await sharp(art).rotate(180).png().toBuffer();
-    composites.push({ input: art180, left, top: panelH + top });
+  const art = await sharp(source).ensureAlpha().resize(box.drawW, box.drawH).png().toBuffer();
+  const composites: sharp.OverlayOptions[] = [];
+  if (visible) {
+    const face = await sharp(art)
+      .extract({
+        left: visible.srcLeft,
+        top: visible.srcTop,
+        width: visible.width,
+        height: visible.height,
+      })
+      .png()
+      .toBuffer();
+    composites.push({ input: face, left: visible.dstLeft, top: visible.dstTop });
+    if (printBack) {
+      const art180 = await sharp(art).rotate(180).png().toBuffer();
+      const face180 = await sharp(art180)
+        .extract({
+          left: visible.srcLeft,
+          top: visible.srcTop,
+          width: visible.width,
+          height: visible.height,
+        })
+        .png()
+        .toBuffer();
+      composites.push({
+        input: face180,
+        left: visible.dstLeft,
+        top: TOTE_FOLDED_PANEL_HEIGHT + visible.dstTop,
+      });
+    }
   }
 
   return sharp({

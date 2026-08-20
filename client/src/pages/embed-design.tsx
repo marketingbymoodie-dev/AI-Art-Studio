@@ -11958,7 +11958,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Phone cases + aprons: bake the same print file as order fulfillment,
       // then ask Printify at scale=1 center. Raw art + cover-scale made Lifestyle
       // Woman/Man much smaller than the in-app Artwork slide.
-      const bakeLifestylePrint = flatEdgeWrapMode || looksLikeApron;
+      const bakeLifestylePrint = flatEdgeWrapMode || looksLikeApron || toteFoldedLayout;
       if (bakeLifestylePrint) {
         const bakeEndpoint = isStorefront
           ? `${API_BASE}/api/storefront/bake-flat-print`
@@ -12079,6 +12079,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     flatFabricWeave,
     flatEdgeWrapMode,
     looksLikeApron,
+    toteFoldedLayout,
     isStorefront,
     shopDomain,
     isPhoneCaseProduct,
