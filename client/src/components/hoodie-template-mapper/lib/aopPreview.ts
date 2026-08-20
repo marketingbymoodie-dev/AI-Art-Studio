@@ -662,12 +662,13 @@ function computeGroupRect(
   // render time — not whether the group has a draggable design rect.
   const union = totalPrintAabb(visiblePrint);
   if (!union) return null;
-  const rawAspect = artwork
-    ? (artwork.naturalWidth || artwork.width) /
-      (artwork.naturalHeight || artwork.height || 1)
-    : union.width / Math.max(1, union.height);
-  const rot = Math.abs(normalizeRotationDeg(placement.rotationDeg ?? 0));
-  const aspect = Math.abs(rot - 90) < 0.5 ? 1 / rawAspect : rawAspect;
+  const rotDeg = normalizeRotationDeg(placement.rotationDeg ?? 0);
+  const rawW = artwork ? artwork.naturalWidth || artwork.width : 0;
+  const rawH = artwork ? artwork.naturalHeight || artwork.height : 0;
+  const baked = rawW > 0 && rawH > 0
+    ? artworkSizeAfterPlacementRotation(rawW, rawH, rotDeg)
+    : { width: union.width, height: union.height };
+  const aspect = baked.width / Math.max(1, baked.height);
   const fitted = artwork ? fitAspectInside(union, aspect) : union;
   const { x: anchorX, hasSeamPair } = computeAnchorX(visiblePrint, union);
   // Re-centre the fitted rect on the anchor X so paired groups have
@@ -1298,12 +1299,14 @@ export function renderHoodFlatPanel(
       frontRect,
       options?.panelPlacementBias,
     );
+    const rotForSlice = frontRect.rotationDeg ?? 0;
+    const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
     slice = artworkSourceRectForPanel(
       sampleBb,
       frontLayer.panelKey,
       frontRect,
-      aw,
-      ah,
+      bakedForSlice.width,
+      bakedForSlice.height,
       side,
       options?.legsMirrored,
     );
@@ -1315,7 +1318,7 @@ export function renderHoodFlatPanel(
   const rotDeg = frontRect.rotationDeg ?? 0;
   const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
   const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
-  const bakedSlice = remapSourceRectForPlacementRotation(slice, aw, ah, rotDeg);
+  const bakedSlice = slice;
   // Bake through the same mesh topology the live preview uses, but with
   // targetPoints on a uniform flat grid so the entire Printify placeholder
   // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
@@ -2561,19 +2564,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             template,
             params.groupPanelBiasOverrides,
           );
+          const rotForSlice = layerRect.rotationDeg ?? 0;
+          const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
           synthSrc = artworkSourceRectForPanel(
             sampleBb,
             layer.panelKey,
             layerRect,
-            aw,
-            ah,
+            bakedForSlice.width,
+            bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
           );
         }
       } else {
-        // per-panel-stretch — every panel reads the full artwork.
-        synthSrc = { x: 0, y: 0, width: aw, height: ah };
+        // per-panel-stretch — every panel reads the full (baked) artwork.
+        const rotForSlice = layerRect?.rotationDeg ?? 0;
+        const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
+        synthSrc = { x: 0, y: 0, width: bakedForSlice.width, height: bakedForSlice.height };
       }
       if (synthSrc) {
         const rotDeg = layerRect?.rotationDeg ?? 0;
@@ -2581,7 +2588,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
         drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
           ...layer.mesh,
-          sourceRect: remapSourceRectForPlacementRotation(synthSrc, aw, ah, rotDeg),
+          sourceRect: synthSrc,
           // Keep calibration UV rotation only — Place rotation is baked
           // into artSource so linked legs share one upright bitmap.
           sourceRotation: layer.mesh.sourceRotation ?? 0,
@@ -2612,18 +2619,19 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             template,
             params.groupPanelBiasOverrides,
           );
+          const rotDeg = layerRect.rotationDeg ?? 0;
+          const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
             sampleBb,
             layer.panelKey,
             layerRect,
-            aw,
-            ah,
+            bakedForSlice.width,
+            bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
           );
-          const rotDeg = layerRect.rotationDeg ?? 0;
           const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
-          const bakedSlice = remapSourceRectForPlacementRotation(slice, aw, ah, rotDeg);
+          const bakedSlice = slice;
           pctx.drawImage(
             artSource,
             bakedSlice.x,
@@ -3706,12 +3714,14 @@ export function renderFlatPrintPanels(
           const sampleBb = rect
             ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
             : bb;
+          const rotDeg = rect.rotationDeg ?? 0;
+          const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
             sampleBb,
             panelKey,
             rect,
-            aw,
-            ah,
+            bakedForSlice.width,
+            bakedForSlice.height,
             side,
             params.legsMirrored,
           );
@@ -3731,9 +3741,8 @@ export function renderFlatPrintPanels(
                 cctx.translate(c.width, 0);
                 cctx.scale(-1, 1);
               }
-              const rotDeg = rect.rotationDeg ?? 0;
               const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
-              const bakedSlice = remapSourceRectForPlacementRotation(slice, aw, ah, rotDeg);
+              const bakedSlice = slice;
               cctx.drawImage(
                 artSource,
                 bakedSlice.x,

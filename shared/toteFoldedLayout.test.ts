@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeToteFoldedCanvas,
   normalizeToteFoldedPanelDims,
+  toteFoldedArtBox,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
@@ -43,6 +44,24 @@ describe("composeToteFoldedCanvas", () => {
     const bottomIdx = (bottomRow * TOTE_FOLDED_CANVAS_WIDTH + cx) * 4;
     expect(out.pixels[topIdx]).toBe(255);
     expect(out.pixels[bottomIdx]).toBe(0);
+  });
+
+  it("cover-fits tall art so scale 0.6 fills the face like the app placer", () => {
+    // Saved tote art is often 1:2 (folded-canvas targetDims) on a ~1:1 face.
+    // Contain at 0.6 → 60% of face height; cover at 0.6 still overflows the face
+    // (matches flatArtBox on the visible bag).
+    const box = toteFoldedArtBox(512, 1024, { scale: 0.6, offsetX: 0, offsetY: 0 });
+    const containH = Math.round(1024 * Math.min(TOTE_FOLDED_PANEL_WIDTH / 512, TOTE_FOLDED_PANEL_HEIGHT / 1024) * 0.6);
+    expect(box.drawH).toBeGreaterThan(containH);
+    expect(box.drawH).toBeGreaterThan(TOTE_FOLDED_PANEL_HEIGHT);
+    expect(box.top).toBeLessThan(0);
+    expect(box.top + box.drawH).toBeGreaterThan(TOTE_FOLDED_PANEL_HEIGHT);
+  });
+
+  it("uses full-face offset fractions (same as flatArtBox)", () => {
+    const centered = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
+    const shifted = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0.1, offsetY: 0 });
+    expect(shifted.left - centered.left).toBe(Math.round(TOTE_FOLDED_PANEL_WIDTH * 0.1));
   });
 });
 

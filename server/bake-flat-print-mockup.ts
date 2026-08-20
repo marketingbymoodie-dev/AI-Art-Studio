@@ -16,6 +16,12 @@ import {
   looksLikeApronProduct,
   placementForPrintMatch,
 } from "./flat-order-fulfillment";
+import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
+import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
+import {
+  TOTE_FOLDED_CANVAS_HEIGHT,
+  TOTE_FOLDED_CANVAS_WIDTH,
+} from "@shared/toteFoldedLayout";
 
 type ViewName = "front" | "back";
 
@@ -53,6 +59,10 @@ export type BakeFlatPrintForMockupArgs = {
     name?: string | null;
     designerType?: string | null;
     flatCalibration?: unknown;
+    isAllOverPrint?: boolean | null;
+    storefrontMockupMode?: string | null;
+    fulfillmentLayout?: string | null;
+    printifyBlueprintId?: number | null;
   };
   artworkUrl: string;
   sizeId?: string;
@@ -75,6 +85,64 @@ export type BakeFlatPrintForMockupResult =
 export async function bakeFlatPrintForMockup(
   args: BakeFlatPrintForMockupArgs,
 ): Promise<BakeFlatPrintForMockupResult> {
+  let artworkUrl = String(args.artworkUrl || "").trim();
+  if (!artworkUrl) {
+    return { ok: false, error: "artworkUrl required" };
+  }
+  if (artworkUrl.startsWith("/") && args.publicOrigin) {
+    artworkUrl = `${args.publicOrigin.replace(/\/$/, "")}${artworkUrl}`;
+  }
+  if (
+    !artworkUrl.startsWith("http://") &&
+    !artworkUrl.startsWith("https://") &&
+    !artworkUrl.startsWith("data:")
+  ) {
+    return { ok: false, error: "artworkUrl must be https, /objects/, or data:" };
+  }
+
+  const toteFolded = usesToteFoldedFulfillment({
+    isAllOverPrint: args.productType.isAllOverPrint,
+    storefrontMockupMode: args.productType.storefrontMockupMode,
+    fulfillmentLayout: args.productType.fulfillmentLayout,
+    printifyBlueprintId: args.productType.printifyBlueprintId,
+  });
+  if (toteFolded) {
+    try {
+      const placement = normalizePlacement(args.placement);
+      const buffer = await buildToteFoldedPrintPngFromUrl(artworkUrl, {
+        scale: placement.scale,
+        offsetX: placement.offsetX,
+        offsetY: placement.offsetY,
+        printBack: true,
+      });
+      const designKey = `mockup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const url = await persistBakedPrintFile(
+        args.productType.id,
+        designKey,
+        "tote-folded",
+        buffer,
+      );
+      if (!url) {
+        return {
+          ok: false,
+          error:
+            "Could not host baked print file — Supabase flat-calibration bucket is not configured",
+        };
+      }
+      return {
+        ok: true,
+        url,
+        width: TOTE_FOLDED_CANVAS_WIDTH,
+        height: TOTE_FOLDED_CANVAS_HEIGHT,
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.message || "Failed to bake folded tote print file for mockup",
+      };
+    }
+  }
+
   const manifest = parseJson<FlatCalibrationManifest | null>(
     args.productType.flatCalibration,
     null,
@@ -92,21 +160,6 @@ export async function bakeFlatPrintForMockup(
   });
   if (!dims?.width || !dims.height) {
     return { ok: false, error: `No printFileDims for view=${view}` };
-  }
-
-  let artworkUrl = String(args.artworkUrl || "").trim();
-  if (!artworkUrl) {
-    return { ok: false, error: "artworkUrl required" };
-  }
-  if (artworkUrl.startsWith("/") && args.publicOrigin) {
-    artworkUrl = `${args.publicOrigin.replace(/\/$/, "")}${artworkUrl}`;
-  }
-  if (
-    !artworkUrl.startsWith("http://") &&
-    !artworkUrl.startsWith("https://") &&
-    !artworkUrl.startsWith("data:")
-  ) {
-    return { ok: false, error: "artworkUrl must be https, /objects/, or data:" };
   }
 
   const placement = placementForPrintMatch(
