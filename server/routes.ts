@@ -23163,6 +23163,65 @@ ${orientationExtra}
     });
   }));
 
+  /**
+   * POST /api/appai/billing/plan-enquiry — one-click Contact us for non-self-serve
+   * plans (e.g. Mogul). Opens a support ticket + founder email; no mailto.
+   */
+  app.post("/api/appai/billing/plan-enquiry", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) {
+      return res.status(resolved.status).json({
+        error: resolved.error,
+        ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}),
+      });
+    }
+    const { installation } = resolved;
+    const shop = String(installation.shopDomain || "").toLowerCase();
+    const planKey = String(req.body?.plan || "").trim().toLowerCase();
+    const active = await getActiveCatalogue();
+    const offer = findCataloguePlan(active, planKey);
+    if (!offer || offer.planKey === "trial" || offer.selfServe) {
+      return res.status(400).json({ error: "That plan is not a contact-us enquiry." });
+    }
+    const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+    const rl = checkCreatorRateLimit({
+      key: `plan-enquiry:${shop || clientIpFromReq(req)}`,
+      limit: 5,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return res.status(429).json({ error: "Enquiry already sent. We'll be in touch shortly." });
+    }
+    const handle = shop.replace(/\.myshopify\.com$/, "") || "shop";
+    const claimsEmail = String(req.user?.claims?.email || "").trim();
+    const reporterEmail = claimsEmail.includes("@")
+      ? claimsEmail
+      : `billing+${handle}@aiartstudio.app`;
+    const current = getEffectivePlan(installation as any, shop);
+    const { createSupportTicket, serializeTicket } = await import("./support");
+    const { notifyFounderNewTicket } = await import("./support-mail");
+    const row = await createSupportTicket({
+      source: "merchant",
+      category: "billing",
+      subject: `${offer.displayName} plan enquiry`,
+      body: [
+        `Merchant requested the ${offer.displayName} plan from Plan & Billing.`,
+        `Shop: ${shop || "unknown"}`,
+        `Current plan: ${current.displayName || current.planName || "none"}`,
+        `Requested: ${offer.displayName} ($${offer.priceUsd}/mo, ${offer.generationQuota} gens, ${offer.pageLimit} pages).`,
+      ].join("\n"),
+      reporterEmail,
+      reporterName: handle,
+      shopDomain: shop || null,
+      pageUrl: typeof req.body?.pageUrl === "string" ? req.body.pageUrl : null,
+      userAgent: req.headers["user-agent"] || null,
+    });
+    const ticket = serializeTicket(row);
+    void notifyFounderNewTicket(ticket);
+    res.status(201).json({ ok: true, ticketRef: ticket.ref });
+  }));
+
   /** GET /api/appai/billing/upgrade-preview?plan=starter — confirm before Shopify redirect */
   app.get("/api/appai/billing/upgrade-preview", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
