@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   clampLandingAutoMs,
@@ -21,7 +21,6 @@ const FALLBACK_ART = [
 ];
 
 export default function LuxeLandingPage() {
-  const [, setLocation] = useLocation();
   const { data, isFetched } = useQuery<{ content: LandingContent }>({
     queryKey: ["/api/creators/landing"],
   });
@@ -35,13 +34,11 @@ export default function LuxeLandingPage() {
       {!content ? null : view === "gallery" ? (
         <Gallery
           content={content}
-          onApply={() => setLocation("/creators/apply?track=creator")}
           onBack={() => setView("landing")}
         />
       ) : (
         <Landing
           content={content}
-          onApply={(track) => setLocation(`/creators/apply?track=${track}`)}
           onGallery={() => setView("gallery")}
         />
       )}
@@ -53,12 +50,20 @@ function useDeckPager(count: number, autoMs: number) {
   const [index, setIndex] = useState(0);
   const [hovered, setHovered] = useState(false);
   const startX = useRef<number | null>(null);
+  const skipClick = useRef(false);
 
   const wrap = (next: number) => {
     if (count <= 0) return 0;
     return ((next % count) + count) % count;
   };
   const go = (next: number) => setIndex(wrap(next));
+  const select = (next: number) => {
+    if (skipClick.current) {
+      skipClick.current = false;
+      return;
+    }
+    go(next);
+  };
 
   useEffect(() => {
     if (hovered || count < 2) return;
@@ -71,48 +76,43 @@ function useDeckPager(count: number, autoMs: number) {
     onPointerLeave: () => setHovered(false),
     onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
       startX.current = e.clientX;
+      skipClick.current = false;
       e.currentTarget.setPointerCapture(e.pointerId);
     },
     onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => {
       if (startX.current == null) return;
       const dx = e.clientX - startX.current;
-      const clientX = e.clientX;
-      const el = e.currentTarget;
       startX.current = null;
-      if (dx > 40) return go(index - 1);
-      if (dx < -40) return go(index + 1);
-      const rect = el.getBoundingClientRect();
-      const mid = rect.left + rect.width / 2;
-      const dead = rect.width * 0.16;
-      if (clientX < mid - dead) go(index - 1);
-      else if (clientX > mid + dead) go(index + 1);
+      if (Math.abs(dx) > 40) {
+        skipClick.current = true;
+        if (dx > 0) go(index - 1);
+        else go(index + 1);
+      }
     },
   };
 
-  return { index, go, pointer };
+  return { index, go, select, pointer };
 }
 
 function Landing({
   content,
-  onApply,
   onGallery,
 }: {
   content: LandingContent;
-  onApply: (track: "creator" | "shopify") => void;
   onGallery: () => void;
 }) {
   const cards = content.cards;
   const autoMs = clampLandingAutoMs(content.heroAutoMs, LANDING_HERO_AUTO_DEFAULT_MS);
-  const { index, go, pointer } = useDeckPager(cards.length, autoMs);
+  const { index, go, select, pointer } = useDeckPager(cards.length, autoMs);
 
   const cta = (
     <div className="luxe-cta">
-      <button type="button" className="luxe-btn-white" onClick={() => onApply("creator")}>
+      <a className="luxe-btn-white" href="/creators/apply?track=creator">
         {content.copy.ctaCreator}
-      </button>
-      <button type="button" className="luxe-btn-ghost" onClick={() => onApply("shopify")}>
+      </a>
+      <a className="luxe-btn-ghost" href="/creators/apply?track=shopify">
         {content.copy.ctaShopify}
-      </button>
+      </a>
     </div>
   );
 
@@ -133,6 +133,7 @@ function Landing({
               <article
                 key={card.id}
                 className="luxe-album"
+                onClick={() => select(i)}
                 style={{
                   transform: `translate(-50%, -50%) translateX(${offset * 36}%) translateZ(${-abs * 140}px) rotateY(${offset * -26}deg) scale(${1 - abs * 0.08})`,
                   opacity: abs > 2 ? 0 : 1 - abs * 0.18,
@@ -214,17 +215,15 @@ function Landing({
 
 function Gallery({
   content,
-  onApply,
   onBack,
 }: {
   content: LandingContent;
-  onApply: () => void;
   onBack: () => void;
 }) {
   const scenes = content.scenes;
   const typeDelayMs = clampLandingTypeDelayMs(content.typeDelayMs);
   const autoMs = clampLandingAutoMs(content.galleryAutoMs, LANDING_GALLERY_AUTO_DEFAULT_MS);
-  const { index, go, pointer } = useDeckPager(scenes.length, autoMs);
+  const { index, go, select, pointer } = useDeckPager(scenes.length, autoMs);
   const [typed, setTyped] = useState("");
   const [progress, setProgress] = useState(0);
   const copy = content.copy;
@@ -246,8 +245,10 @@ function Gallery({
 
   return (
     <section className="luxe-page luxe-gallery">
-      <h1 className="luxe-h1">{copy.splashTitle}</h1>
-      <p className="luxe-slogan">{copy.splashCaption}</p>
+      <header className="luxe-gallery-head">
+        <h1 className="luxe-h1">{copy.splashTitle}</h1>
+        <p className="luxe-slogan">{copy.splashCaption}</p>
+      </header>
       <div className="luxe-stage luxe-gallery-stage">
         <div className="luxe-flow luxe-flow-lg" {...pointer}>
           <div className="luxe-deck">
@@ -259,9 +260,10 @@ function Gallery({
                 <article
                   key={scene.id}
                   className="luxe-album luxe-album-lg"
+                  onClick={() => select(i)}
                   style={{
-                    transform: `translate(-50%, -50%) translateX(${offset * 28}%) translateZ(${-abs * 160}px) rotateY(${offset * -22}deg) scale(${1 - abs * 0.07})`,
-                    opacity: abs > 2 ? 0 : 1 - abs * 0.16,
+                    transform: `translate(-50%, -50%) translateX(${offset * 64}%) translateZ(${-abs * 90}px) rotateY(${offset * -14}deg) scale(${1 - abs * 0.04})`,
+                    opacity: abs > 2 ? 0 : 1 - abs * 0.14,
                     zIndex: 20 - abs,
                   }}
                 >
@@ -287,6 +289,8 @@ function Gallery({
             })}
           </div>
         </div>
+      </div>
+      <footer className="luxe-gallery-foot">
         <div className="flex justify-center gap-2">
           {scenes.map((scene, i) => (
             <button
@@ -298,29 +302,29 @@ function Gallery({
             />
           ))}
         </div>
-      </div>
-      <div className="luxe-cta luxe-gallery-cta">
-        <button type="button" className="luxe-btn-white" onClick={onApply}>
-          {copy.ctaCreator}
-        </button>
-        <button type="button" className="luxe-btn-ghost" onClick={onBack}>
-          {copy.galleryBack}
-        </button>
-      </div>
+        <div className="luxe-cta luxe-gallery-cta">
+          <a className="luxe-btn-white" href="/creators/apply?track=creator">
+            {copy.ctaCreator}
+          </a>
+          <button type="button" className="luxe-btn-ghost" onClick={onBack}>
+            {copy.galleryBack}
+          </button>
+        </div>
+        <p className="luxe-portal">
+          <Link href="/portal/login" className="underline underline-offset-2">
+            Creator Portal
+          </Link>
+          {" · "}
+          <a href="/terms" className="underline underline-offset-2">
+            Terms
+          </a>
+          {" · "}
+          <a href="/privacy" className="underline underline-offset-2">
+            Privacy
+          </a>
+        </p>
+      </footer>
       <LandingKeys onLeft={() => go(index - 1)} onRight={() => go(index + 1)} />
-      <p className="luxe-portal">
-        <Link href="/portal/login" className="underline underline-offset-2">
-          Creator Portal
-        </Link>
-        {" · "}
-        <a href="/terms" className="underline underline-offset-2">
-          Terms
-        </a>
-        {" · "}
-        <a href="/privacy" className="underline underline-offset-2">
-          Privacy
-        </a>
-      </p>
     </section>
   );
 }
@@ -359,6 +363,7 @@ const LUXE_CSS = `
       radial-gradient(ellipse at 80% 80%, rgba(20, 80, 120, 0.18), transparent 45%),
       #07070b;
     font-family: Inter, system-ui, sans-serif;
+    overflow-x: hidden;
   }
   .luxe-page { max-width: min(1440px, 94vw); margin: 0 auto; }
   .luxe-landing, .luxe-gallery {
@@ -369,7 +374,15 @@ const LUXE_CSS = `
     padding: 24px 28px 18px;
     box-sizing: border-box;
   }
-  .luxe-gallery { align-items: center; text-align: center; padding-top: 20px; padding-bottom: 16px; }
+  .luxe-gallery {
+    height: 100svh;
+    justify-content: stretch;
+    align-items: center;
+    text-align: center;
+    padding: 14px 20px 16px;
+  }
+  .luxe-gallery-head { flex: 0 0 auto; }
+  .luxe-gallery-foot { flex: 0 0 auto; width: 100%; }
   .luxe-gallery .luxe-h1 { font-size: clamp(28px, 3.6vw, 48px); }
   .luxe-landing-grid { display: grid; gap: 20px; align-items: center; }
   .luxe-landing-copy { position: relative; z-index: 2; }
@@ -394,6 +407,8 @@ const LUXE_CSS = `
   .luxe-btn-white, .luxe-btn-ghost {
     border-radius: 999px; padding: 12px 22px; cursor: pointer; letter-spacing: 0.06em;
     text-transform: uppercase; font-size: 11px; font-weight: 700;
+    text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+    box-sizing: border-box;
   }
   .luxe-btn-white { border: 0; background: #fff; color: #111; box-shadow: 0 0 28px rgba(190, 150, 255, 0.55); }
   .luxe-btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.55); }
@@ -409,10 +424,16 @@ const LUXE_CSS = `
   .luxe-caret { display: inline-block; width: 2px; height: 1em; background: #fff; margin-left: 2px; vertical-align: -2px; animation: luxe-blink 1s step-end infinite; }
   @keyframes luxe-blink { 50% { opacity: 0; } }
   .luxe-stage { min-width: 0; overflow: hidden; }
-  .luxe-gallery-stage { width: 100%; margin-top: 16px; }
-  .luxe-gallery-cta { justify-content: center; margin-top: 14px; }
+  .luxe-gallery-stage {
+    flex: 1 1 auto; min-height: 0; width: 100%; margin-top: 8px;
+    overflow: visible; display: flex; flex-direction: column;
+  }
+  .luxe-gallery-cta { justify-content: center; margin-top: 12px; }
   .luxe-flow { perspective: 1200px; margin: 0 0 10px; height: min(420px, 58vh); user-select: none; touch-action: pan-y; cursor: pointer; }
-  .luxe-flow-lg { height: min(460px, 54vh); }
+  .luxe-flow-lg {
+    flex: 1 1 auto; height: auto; min-height: 0; margin: 0;
+    overflow: visible;
+  }
   .luxe-deck { position: relative; height: 100%; transform-style: preserve-3d; pointer-events: none; }
   .luxe-album {
     position: absolute; top: 50%; left: 50%; width: min(400px, 28vw); height: auto;
@@ -420,6 +441,7 @@ const LUXE_CSS = `
     background: linear-gradient(180deg, #16161f, #0b0b10); border: 1px solid rgba(255,255,255,0.16);
     box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 14px;
     transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease;
+    pointer-events: auto; cursor: pointer;
   }
   .luxe-album-lg { width: min(320px, 58vw); padding: 12px; }
   .luxe-album h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: -0.03em; }
@@ -451,7 +473,6 @@ const LUXE_CSS = `
     .luxe-album { width: min(440px, 26vw); }
     .luxe-flow { height: min(460px, 60vh); }
     .luxe-album-lg { width: min(340px, 24vw); }
-    .luxe-flow-lg { height: min(500px, 52vh); }
   }
   @media (max-width: 959px) {
     .luxe-landing, .luxe-gallery { padding: 16px 16px 12px; justify-content: flex-start; }
@@ -464,7 +485,7 @@ const LUXE_CSS = `
     .luxe-cta-desktop { display: none; }
     .luxe-cta-mobile { display: block; margin-top: 12px; }
     .luxe-cta { flex-direction: column; }
-    .luxe-cta button { width: 100%; }
+    .luxe-cta button, .luxe-cta a { width: 100%; }
     .luxe-gallery-cta { flex-direction: row; flex-wrap: nowrap; }
     .luxe-gallery-cta button { width: auto; flex: 1; }
     .luxe-art-class { margin-left: auto; margin-right: auto; text-align: left; }
@@ -473,11 +494,10 @@ const LUXE_CSS = `
     .luxe-album { width: min(300px, 78vw); padding: 12px; }
     .luxe-album h2 { font-size: 18px; }
     .luxe-album p { font-size: 13px; -webkit-line-clamp: 2; }
-    .luxe-gallery { padding: 10px 16px 8px; }
-    .luxe-gallery-stage { margin-top: 10px; }
+    .luxe-gallery { height: 100svh; padding: 10px 16px 10px; justify-content: stretch; }
+    .luxe-gallery-stage { margin-top: 6px; }
     .luxe-gallery-cta { margin-top: 10px; flex-direction: row; flex-wrap: nowrap; }
-    .luxe-gallery-cta button { width: auto; flex: 1; }
-    .luxe-flow-lg { height: min(340px, 46svh); }
+    .luxe-gallery-cta a, .luxe-gallery-cta button { width: auto; flex: 1; }
     .luxe-album-lg { width: min(228px, 62vw, 32svh); padding: 10px; }
     .luxe-gallery-prompt { height: 6.6rem; padding: 8px 10px; }
     .luxe-prompt { font-size: 13px; }

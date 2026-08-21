@@ -45,7 +45,12 @@ type Track = "creator" | "shopify";
 
 function applyTrackFromSearch(search: string): Track {
   const query = search.startsWith("?") ? search.slice(1) : search;
-  return new URLSearchParams(query).get("track") === "shopify" ? "shopify" : "creator";
+  const fromQuery = new URLSearchParams(query).get("track");
+  const fromWindow =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("track")
+      : null;
+  return fromQuery === "shopify" || fromWindow === "shopify" ? "shopify" : "creator";
 }
 
 const APPLY_PRIVACY: Record<Track, { title: string; body: string }> = {
