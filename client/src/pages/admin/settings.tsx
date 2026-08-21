@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2, Sparkles, Copy, Scale } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, Link2, Sparkles, Copy, Scale } from "lucide-react";
 import { DEFAULT_TERMS_CONTENT, type TermsContent } from "@shared/termsContent";
 import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
@@ -163,40 +163,6 @@ export default function AdminSettings() {
       }
     } catch {
       window.open(`${window.location.origin}/shopify/install?shop=${encodeURIComponent(shopDomain)}`, '_blank');
-    }
-  };
-
-  const handleSyncUrls = async () => {
-    try {
-      const res = await apiRequest("POST", "/api/shopify/sync-urls");
-      const data = await res.json();
-      toast({
-        title: "Success",
-        description: data.message || "App URLs synced with Shopify successfully",
-      });
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to sync app URLs with Shopify",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleRegisterScript = async () => {
-    try {
-      const res = await apiRequest("POST", "/api/shopify/register-script");
-      const data = await res.json();
-      toast({
-        title: "Success",
-        description: data.message || "Script tag registered successfully",
-      });
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to register script tag",
-        variant: "destructive",
-      });
     }
   };
 
@@ -666,7 +632,9 @@ export default function AdminSettings() {
               Shopify Integration
             </CardTitle>
             <CardDescription>
-              Manage your connected Shopify stores
+              The Shopify shop this app is installed on. The{" "}
+              <span className="font-mono">.myshopify.com</span> handle is the store id —
+              your custom domain (if any) is separate.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -685,34 +653,16 @@ export default function AdminSettings() {
                         <p className="text-xs text-muted-foreground capitalize">{inst.status}</p>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="gap-2"
-                        onClick={handleSyncUrls}
-                        title="Update all AI Art Studio products to use the current app URL"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        Sync URLs
-                      </Button>
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="gap-2"
-                        onClick={handleRegisterScript}
-                      >
-                        <FileCode className="h-3.5 w-3.5" />
-                        Register Script
-                      </Button>
+                    <div className="flex flex-wrap justify-end gap-2">
                       <Button 
                         size="sm" 
                         variant="outline" 
                         className="gap-2"
                         onClick={() => handleReconnectStore(inst.shopDomain)}
+                        title="Re-authorize the app if Shopify access was lost"
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
-                        Reconnect
+                        Reconnect store
                       </Button>
                       <Button size="sm" variant="ghost" asChild>
                         <a href={`https://${inst.shopDomain}/admin/apps/ai-art-studio`} target="_blank" rel="noreferrer">
