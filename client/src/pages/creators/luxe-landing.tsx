@@ -266,22 +266,21 @@ function Gallery({
                   }}
                 >
                   <div className="luxe-gallery-pair">
-                    <div className="luxe-square luxe-square-prompt">
+                    <div
+                      className="luxe-gallery-art"
+                      style={{
+                        opacity: active ? Math.min(1, progress * 1.15) : 0.72,
+                        background: scene.imageUrl ? undefined : FALLBACK_ART[i % FALLBACK_ART.length],
+                        backgroundImage: scene.imageUrl ? `url(${scene.imageUrl})` : undefined,
+                      }}
+                    />
+                    <div className="luxe-gallery-prompt">
                       <div className="luxe-who">Prompt</div>
                       <div className="luxe-prompt">
                         {active ? typed : scene.prompt}
                         {active ? <span className="luxe-caret" /> : null}
                       </div>
                     </div>
-                    <div
-                      className="luxe-square luxe-square-art"
-                      style={{
-                        opacity: active ? Math.min(1, progress * 1.15) : 0.72,
-                        transform: active ? `scale(${0.96 + progress * 0.04})` : "scale(1)",
-                        background: scene.imageUrl ? undefined : FALLBACK_ART[i % FALLBACK_ART.length],
-                        backgroundImage: scene.imageUrl ? `url(${scene.imageUrl})` : undefined,
-                      }}
-                    />
                   </div>
                 </article>
               );
@@ -370,7 +369,8 @@ const LUXE_CSS = `
     padding: 24px 28px 18px;
     box-sizing: border-box;
   }
-  .luxe-gallery { align-items: center; text-align: center; }
+  .luxe-gallery { align-items: center; text-align: center; padding-top: 20px; padding-bottom: 16px; }
+  .luxe-gallery .luxe-h1 { font-size: clamp(28px, 3.6vw, 48px); }
   .luxe-landing-grid { display: grid; gap: 20px; align-items: center; }
   .luxe-landing-copy { position: relative; z-index: 2; }
   .luxe-cta { display: flex; flex-wrap: wrap; gap: 12px; }
@@ -382,8 +382,8 @@ const LUXE_CSS = `
   .luxe-eyebrow { margin: 0 0 10px; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(245,245,247,0.62); }
   .luxe-h1 { margin: 0; font-size: clamp(32px, 4.2vw, 58px); line-height: 0.98; letter-spacing: -0.04em; font-weight: 800; }
   .luxe-slogan {
-    margin: 12px 0 0;
-    font-size: clamp(22px, 2.9vw, 38px);
+    margin: 8px 0 0;
+    font-size: clamp(20px, 2.4vw, 32px);
     line-height: 1.05;
     letter-spacing: -0.03em;
     font-weight: 600;
@@ -401,15 +401,18 @@ const LUXE_CSS = `
   .luxe-btn-gallery {
     display: block; width: min(420px, 100%); margin: 18px auto 0; padding: 16px 28px; font-size: 13px;
   }
-  .luxe-who { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(245,245,247,0.62); margin-bottom: 10px; }
-  .luxe-prompt { font-size: clamp(16px, 1.7vw, 22px); line-height: 1.35; letter-spacing: -0.02em; text-align: left; }
+  .luxe-who { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(245,245,247,0.62); margin-bottom: 6px; }
+  .luxe-prompt {
+    font-size: 15px; line-height: 1.35; letter-spacing: -0.02em; text-align: left;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  }
   .luxe-caret { display: inline-block; width: 2px; height: 1em; background: #fff; margin-left: 2px; vertical-align: -2px; animation: luxe-blink 1s step-end infinite; }
   @keyframes luxe-blink { 50% { opacity: 0; } }
   .luxe-stage { min-width: 0; overflow: hidden; }
-  .luxe-gallery-stage { width: 100%; margin-top: 28px; }
-  .luxe-gallery-cta { justify-content: center; margin-top: 22px; }
+  .luxe-gallery-stage { width: 100%; margin-top: 16px; }
+  .luxe-gallery-cta { justify-content: center; margin-top: 14px; }
   .luxe-flow { perspective: 1200px; margin: 0 0 10px; height: min(420px, 58vh); user-select: none; touch-action: pan-y; cursor: pointer; }
-  .luxe-flow-lg { height: min(620px, 68vh); }
+  .luxe-flow-lg { height: min(460px, 54vh); }
   .luxe-deck { position: relative; height: 100%; transform-style: preserve-3d; pointer-events: none; }
   .luxe-album {
     position: absolute; top: 50%; left: 50%; width: min(400px, 28vw); height: auto;
@@ -418,7 +421,7 @@ const LUXE_CSS = `
     box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 14px;
     transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease;
   }
-  .luxe-album-lg { width: min(920px, 86vw); padding: 18px; }
+  .luxe-album-lg { width: min(320px, 58vw); padding: 12px; }
   .luxe-album h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: -0.03em; }
   .luxe-album p { margin: 0; color: rgba(245,245,247,0.62); line-height: 1.4; font-size: 14px;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -427,17 +430,17 @@ const LUXE_CSS = `
     border: 1px solid rgba(255,255,255,0.1); background-color: #0a0a10;
     background-size: contain; background-repeat: no-repeat; background-position: center;
   }
-  .luxe-gallery-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
-  .luxe-square {
-    aspect-ratio: 1; border-radius: 18px; border: 1px solid rgba(255,255,255,0.12);
-    min-width: 0;
-  }
-  .luxe-square-prompt {
-    text-align: left; background: #16161f; padding: 18px 20px; overflow: auto;
-  }
-  .luxe-square-art {
+  .luxe-gallery-pair { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+  .luxe-gallery-art {
+    width: 100%; aspect-ratio: 1; flex: none;
+    border-radius: 16px; border: 1px solid rgba(255,255,255,0.12);
     background-size: cover; background-position: center; background-color: #14141c;
-    transition: opacity 320ms ease, transform 320ms ease;
+    transition: opacity 320ms ease;
+  }
+  .luxe-gallery-prompt {
+    width: 100%; height: 7.4rem; flex: none; box-sizing: border-box;
+    text-align: left; background: #16161f; padding: 10px 12px;
+    border-radius: 14px; border: 1px solid rgba(255,255,255,0.12); overflow: hidden;
   }
   .luxe-dot { width: 7px; height: 7px; border-radius: 99px; border: 0; padding: 0; background: rgba(255,255,255,0.22); cursor: pointer; }
   .luxe-dot.is-on { background: #fff; width: 22px; }
@@ -447,31 +450,37 @@ const LUXE_CSS = `
   @media (min-width: 1400px) {
     .luxe-album { width: min(440px, 26vw); }
     .luxe-flow { height: min(460px, 60vh); }
-    .luxe-album-lg { width: min(980px, 78vw); }
-    .luxe-flow-lg { height: min(680px, 70vh); }
+    .luxe-album-lg { width: min(340px, 24vw); }
+    .luxe-flow-lg { height: min(500px, 52vh); }
   }
   @media (max-width: 959px) {
     .luxe-landing, .luxe-gallery { padding: 16px 16px 12px; justify-content: flex-start; }
     .luxe-landing-grid { flex: 1; grid-template-rows: auto 1fr; gap: 12px; }
     .luxe-landing-copy { text-align: center; }
     .luxe-h1 { font-size: clamp(28px, 8.2vw, 40px); }
-    .luxe-slogan { font-size: clamp(18px, 5.6vw, 26px); }
+    .luxe-gallery .luxe-h1 { font-size: clamp(24px, 6.6vw, 32px); }
+    .luxe-slogan { font-size: clamp(16px, 4.6vw, 22px); }
     .luxe-lede { display: none; }
     .luxe-cta-desktop { display: none; }
     .luxe-cta-mobile { display: block; margin-top: 12px; }
     .luxe-cta { flex-direction: column; }
     .luxe-cta button { width: 100%; }
+    .luxe-gallery-cta { flex-direction: row; flex-wrap: nowrap; }
+    .luxe-gallery-cta button { width: auto; flex: 1; }
     .luxe-art-class { margin-left: auto; margin-right: auto; text-align: left; }
     .luxe-landing-bottom { display: flex; flex-direction: column; min-height: 0; }
     .luxe-flow { height: min(320px, 46svh); }
     .luxe-album { width: min(300px, 78vw); padding: 12px; }
     .luxe-album h2 { font-size: 18px; }
     .luxe-album p { font-size: 13px; -webkit-line-clamp: 2; }
-    .luxe-flow-lg { height: min(380px, 54svh); }
-    .luxe-album-lg { width: min(340px, 90vw); }
-    .luxe-gallery-pair { gap: 10px; }
-    .luxe-square-prompt { padding: 12px 14px; }
-    .luxe-prompt { font-size: 14px; }
+    .luxe-gallery { padding: 10px 16px 8px; }
+    .luxe-gallery-stage { margin-top: 10px; }
+    .luxe-gallery-cta { margin-top: 10px; flex-direction: row; flex-wrap: nowrap; }
+    .luxe-gallery-cta button { width: auto; flex: 1; }
+    .luxe-flow-lg { height: min(340px, 46svh); }
+    .luxe-album-lg { width: min(228px, 62vw, 32svh); padding: 10px; }
+    .luxe-gallery-prompt { height: 6.6rem; padding: 8px 10px; }
+    .luxe-prompt { font-size: 13px; }
     .luxe-portal { display: none; }
   }
 `;
