@@ -4,10 +4,12 @@
  */
 
 export const LANDING_COPY_FIELDS = [
-  ["splashEyebrow", "Splash eyebrow"],
-  ["splashTitle", "Splash title"],
-  ["splashCaption", "Text under viewing window"],
-  ["splashCta", "Splash button"],
+  ["splashEyebrow", "Gallery eyebrow"],
+  ["splashTitle", "Gallery header"],
+  ["splashCaption", "Gallery slogan"],
+  ["splashCta", "Legacy splash button"],
+  ["galleryCta", "Product Prompt Gallery button"],
+  ["galleryBack", "Gallery back button"],
   ["landingEyebrow", "Landing eyebrow"],
   ["landingHeadline", "Landing headline"],
   ["landingLede", "Landing supporting line"],
@@ -59,19 +61,37 @@ export function clampLandingTypeDelayMs(raw: unknown): number {
   );
 }
 
+/** Auto-advance interval for swipe decks (ms). */
+export const LANDING_AUTO_MS_MIN = 2500;
+export const LANDING_AUTO_MS_MAX = 20000;
+export const LANDING_HERO_AUTO_DEFAULT_MS = 5500;
+export const LANDING_GALLERY_AUTO_DEFAULT_MS = 8000;
+
+export function clampLandingAutoMs(raw: unknown, fallback: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(LANDING_AUTO_MS_MAX, Math.max(LANDING_AUTO_MS_MIN, Math.round(n)));
+}
+
 export type LandingContent = {
   copy: LandingCopy;
   scenes: LandingScene[];
   cards: LandingCard[];
-  /** Splash prompt typewriter delay in ms per character. */
+  /** Gallery prompt typewriter delay in ms per character. */
   typeDelayMs: number;
+  /** Hero info-card auto-advance interval in ms. */
+  heroAutoMs: number;
+  /** Product Prompt Gallery auto-advance interval in ms. */
+  galleryAutoMs: number;
 };
 
 export const DEFAULT_LANDING_COPY: LandingCopy = {
   splashEyebrow: "AI Art Studio",
   splashTitle: "AI Art Studio",
-  splashCaption: "From Prompt to Print...",
+  splashCaption: "From Prompt to Print",
   splashCta: "Show me more",
+  galleryCta: "Product Prompt Gallery",
+  galleryBack: "Back",
   landingEyebrow: "Two ways in",
   landingHeadline: "You Promote it, Your Audience Prompts it, We Print it.",
   landingLede:
@@ -156,6 +176,8 @@ export const DEFAULT_LANDING_CONTENT: LandingContent = {
   scenes: DEFAULT_LANDING_SCENES,
   cards: DEFAULT_LANDING_CARDS,
   typeDelayMs: LANDING_TYPE_DELAY_DEFAULT_MS,
+  heroAutoMs: LANDING_HERO_AUTO_DEFAULT_MS,
+  galleryAutoMs: LANDING_GALLERY_AUTO_DEFAULT_MS,
 };
 
 const MAX_SCENES = 12;
@@ -240,6 +262,8 @@ export function mergeLandingContent(raw: unknown): LandingContent {
     scenes: sanitizeScenes(src.scenes),
     cards: sanitizeCards(src.cards),
     typeDelayMs: clampLandingTypeDelayMs(src.typeDelayMs),
+    heroAutoMs: clampLandingAutoMs(src.heroAutoMs, LANDING_HERO_AUTO_DEFAULT_MS),
+    galleryAutoMs: clampLandingAutoMs(src.galleryAutoMs, LANDING_GALLERY_AUTO_DEFAULT_MS),
   };
 }
 

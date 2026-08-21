@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useSearch } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -44,8 +44,15 @@ import { Loader2 } from "lucide-react";
 type Track = "creator" | "shopify";
 
 function applyTrackFromSearch(search: string): Track {
-  const query = search.startsWith("?") ? search.slice(1) : search;
-  return new URLSearchParams(query).get("track") === "shopify" ? "shopify" : "creator";
+  const sources = [search, typeof window !== "undefined" ? window.location.search : ""];
+  for (const raw of sources) {
+    if (!raw) continue;
+    const query = raw.startsWith("?") ? raw.slice(1) : raw;
+    const track = new URLSearchParams(query).get("track");
+    if (track === "shopify") return "shopify";
+    if (track === "creator") return "creator";
+  }
+  return "creator";
 }
 
 const APPLY_PRIVACY: Record<Track, { title: string; body: string }> = {
@@ -69,7 +76,7 @@ We use the details on this form — including your name, email, and Shopify stor
 
 export default function CreatorApplyPage() {
   const [search] = useSearch();
-  const track = useMemo(() => applyTrackFromSearch(search), [search]);
+  const track = applyTrackFromSearch(search);
 
   const { data } = useQuery<{ content: LandingContent }>({
     queryKey: ["/api/creators/landing"],
@@ -204,13 +211,13 @@ export default function CreatorApplyPage() {
         <p className="mt-3 text-white/60">{lede}</p>
         <p className="mt-2 text-sm text-white/40">
           {track === "shopify" ? (
-            <Link href="/creators/apply" className="underline underline-offset-2">
+            <a href="/creators/apply?track=creator" className="underline underline-offset-2">
               Apply as a creator instead
-            </Link>
+            </a>
           ) : (
-            <Link href="/creators/apply?track=shopify" className="underline underline-offset-2">
+            <a href="/creators/apply?track=shopify" className="underline underline-offset-2">
               Already have a Shopify store?
-            </Link>
+            </a>
           )}
         </p>
 
