@@ -9,7 +9,6 @@ import {
   LANDING_HERO_AUTO_DEFAULT_MS,
   type LandingContent,
 } from "@shared/landingContent";
-import { LastCreatorReturnButton } from "@/components/creators/LastCreatorReturnButton";
 import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 
 const FALLBACK_ART = [
@@ -173,9 +172,6 @@ function Landing({
           <div className="luxe-cta-desktop">
             <p className="luxe-eyebrow">{content.copy.landingEyebrow}</p>
             {cta}
-            <div className="mt-3">
-              <LastCreatorReturnButton variant="luxe" />
-            </div>
             {artClass}
           </div>
         </div>
