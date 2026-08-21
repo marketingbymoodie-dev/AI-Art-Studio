@@ -36,12 +36,22 @@ describe("mergeLandingContent", () => {
     expect(merged.copy.landingHeadline).toBe("Promote. Prompt. Print.");
     expect(merged.copy.splashCaption).toBe(DEFAULT_LANDING_CONTENT.copy.splashCaption);
     expect(merged.typeDelayMs).toBe(DEFAULT_LANDING_CONTENT.typeDelayMs);
+    expect(merged.heroAutoMs).toBe(DEFAULT_LANDING_CONTENT.heroAutoMs);
+    expect(merged.galleryAutoMs).toBe(DEFAULT_LANDING_CONTENT.galleryAutoMs);
   });
 
   it("clamps prompt type delay", () => {
     expect(mergeLandingContent({ typeDelayMs: 10 }).typeDelayMs).toBe(38);
     expect(mergeLandingContent({ typeDelayMs: 200 }).typeDelayMs).toBe(152);
     expect(mergeLandingContent({ typeDelayMs: 90 }).typeDelayMs).toBe(90);
+  });
+
+  it("clamps hero and gallery auto-scroll independently", () => {
+    expect(mergeLandingContent({ heroAutoMs: 100 }).heroAutoMs).toBe(2500);
+    expect(mergeLandingContent({ heroAutoMs: 30000 }).heroAutoMs).toBe(20000);
+    expect(mergeLandingContent({ galleryAutoMs: 7000 }).galleryAutoMs).toBe(7000);
+    expect(mergeLandingContent({ heroAutoMs: 4000, galleryAutoMs: 12000 }).heroAutoMs).toBe(4000);
+    expect(mergeLandingContent({ heroAutoMs: 4000, galleryAutoMs: 12000 }).galleryAutoMs).toBe(12000);
   });
 
   it("replaces scenes and drops empty prompts", () => {

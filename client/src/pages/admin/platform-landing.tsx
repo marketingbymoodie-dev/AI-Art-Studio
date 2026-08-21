@@ -8,9 +8,14 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
+  clampLandingAutoMs,
   clampLandingTypeDelayMs,
   DEFAULT_LANDING_CONTENT,
+  LANDING_AUTO_MS_MAX,
+  LANDING_AUTO_MS_MIN,
   LANDING_COPY_FIELDS,
+  LANDING_GALLERY_AUTO_DEFAULT_MS,
+  LANDING_HERO_AUTO_DEFAULT_MS,
   LANDING_TYPE_DELAY_FAST_MS,
   LANDING_TYPE_DELAY_SLOW_MS,
   type LandingCard,
@@ -26,6 +31,45 @@ function moveItem<T>(items: T[], from: number, to: number): T[] {
   const [row] = next.splice(from, 1);
   next.splice(to, 0, row);
   return next;
+}
+
+function AutoScrollSlider({
+  id,
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  hint: string;
+  value: number;
+  onChange: (ms: number) => void;
+}) {
+  const seconds = (value / 1000).toFixed(1);
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>
+        {label} <span className="font-normal text-muted-foreground">({seconds}s)</span>
+      </Label>
+      <p className="text-xs text-muted-foreground">{hint}</p>
+      <input
+        id={id}
+        type="range"
+        min={LANDING_AUTO_MS_MIN}
+        max={LANDING_AUTO_MS_MAX}
+        step={500}
+        value={value}
+        onChange={(e) => onChange(clampLandingAutoMs(Number(e.target.value), value))}
+        className="w-full accent-foreground"
+        aria-label={label}
+      />
+      <div className="flex justify-between text-[11px] uppercase tracking-wide text-muted-foreground">
+        <span>2.5s</span>
+        <span>20s</span>
+      </div>
+    </div>
+  );
 }
 
 function ReorderButtons({
@@ -119,8 +163,8 @@ export default function PlatformLandingPage() {
           <div>
             <h1 className="text-2xl font-bold">Landing page</h1>
             <p className="text-sm text-muted-foreground">
-              Edit splash, coverflow cards, prompts, and apply-form wording. Upload product mockups
-              with customizer art already on them for the prompt-to-print reveal.
+              Edit hero copy, coverflow cards, Product Prompt Gallery slides, and apply-form wording.
+              Auto-scroll timers for the hero and gallery are independent.
             </p>
           </div>
           <div className="flex gap-2">
@@ -140,7 +184,7 @@ export default function PlatformLandingPage() {
           {(
             [
               ["text", "Page text"],
-              ["scenes", "Reveal slides"],
+              ["scenes", "Prompt gallery"],
               ["cards", "Info cards"],
             ] as const
           ).map(([id, label]) => (
@@ -157,8 +201,8 @@ export default function PlatformLandingPage() {
             <div className="space-y-2 md:col-span-2 max-w-md">
               <Label htmlFor="typeDelayMs">Prompt type speed</Label>
               <p className="text-xs text-muted-foreground">
-                How fast the splash window types each prompt. Fast is the original speed; the
-                default is half that. Save, then check /beta.
+                How fast the Product Prompt Gallery types each prompt. Fast is the original speed;
+                the default is half that.
               </p>
               <input
                 id="typeDelayMs"
@@ -181,6 +225,20 @@ export default function PlatformLandingPage() {
                 <span>Slow</span>
               </div>
             </div>
+            <AutoScrollSlider
+              id="heroAutoMs"
+              label="Hero cards auto-scroll"
+              hint="How long each info card stays on the first page before advancing. Pauses while the visitor hovers."
+              value={clampLandingAutoMs(draft.heroAutoMs, LANDING_HERO_AUTO_DEFAULT_MS)}
+              onChange={(heroAutoMs) => setDraft((d) => ({ ...d, heroAutoMs }))}
+            />
+            <AutoScrollSlider
+              id="galleryAutoMs"
+              label="Prompt gallery auto-scroll"
+              hint="How long each gallery card stays before advancing. Independent of the hero timer. Pauses on hover."
+              value={clampLandingAutoMs(draft.galleryAutoMs, LANDING_GALLERY_AUTO_DEFAULT_MS)}
+              onChange={(galleryAutoMs) => setDraft((d) => ({ ...d, galleryAutoMs }))}
+            />
             {LANDING_COPY_FIELDS.map(([key, label]) => (
               <div key={key} className="space-y-2">
                 <Label htmlFor={key}>{label}</Label>
@@ -286,7 +344,7 @@ function MediaList({
       ))}
       <Button variant="outline" onClick={onAdd}>
         <Plus className="mr-2 h-4 w-4" />
-        Add reveal slide
+        Add gallery slide
       </Button>
     </div>
   );
