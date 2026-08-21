@@ -50,20 +50,12 @@ function useDeckPager(count: number, autoMs: number) {
   const [index, setIndex] = useState(0);
   const [hovered, setHovered] = useState(false);
   const startX = useRef<number | null>(null);
-  const skipClick = useRef(false);
 
   const wrap = (next: number) => {
     if (count <= 0) return 0;
     return ((next % count) + count) % count;
   };
   const go = (next: number) => setIndex(wrap(next));
-  const select = (next: number) => {
-    if (skipClick.current) {
-      skipClick.current = false;
-      return;
-    }
-    go(next);
-  };
 
   useEffect(() => {
     if (hovered || count < 2) return;
@@ -76,22 +68,24 @@ function useDeckPager(count: number, autoMs: number) {
     onPointerLeave: () => setHovered(false),
     onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
       startX.current = e.clientX;
-      skipClick.current = false;
       e.currentTarget.setPointerCapture(e.pointerId);
     },
     onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => {
       if (startX.current == null) return;
-      const dx = e.clientX - startX.current;
+      const start = startX.current;
       startX.current = null;
-      if (Math.abs(dx) > 40) {
-        skipClick.current = true;
-        if (dx > 0) go(index - 1);
-        else go(index + 1);
-      }
+      const dx = e.clientX - start;
+      if (dx > 40) return go(index - 1);
+      if (dx < -40) return go(index + 1);
+      const rect = e.currentTarget.getBoundingClientRect();
+      const mid = rect.left + rect.width / 2;
+      const dead = rect.width * 0.16;
+      if (e.clientX < mid - dead) go(index - 1);
+      else if (e.clientX > mid + dead) go(index + 1);
     },
   };
 
-  return { index, go, select, pointer };
+  return { index, go, pointer };
 }
 
 function Landing({
@@ -103,7 +97,7 @@ function Landing({
 }) {
   const cards = content.cards;
   const autoMs = clampLandingAutoMs(content.heroAutoMs, LANDING_HERO_AUTO_DEFAULT_MS);
-  const { index, go, select, pointer } = useDeckPager(cards.length, autoMs);
+  const { index, go, pointer } = useDeckPager(cards.length, autoMs);
 
   const cta = (
     <div className="luxe-cta">
@@ -133,7 +127,6 @@ function Landing({
               <article
                 key={card.id}
                 className="luxe-album"
-                onClick={() => select(i)}
                 style={{
                   transform: `translate(-50%, -50%) translateX(${offset * 36}%) translateZ(${-abs * 140}px) rotateY(${offset * -26}deg) scale(${1 - abs * 0.08})`,
                   opacity: abs > 2 ? 0 : 1 - abs * 0.18,
@@ -223,7 +216,7 @@ function Gallery({
   const scenes = content.scenes;
   const typeDelayMs = clampLandingTypeDelayMs(content.typeDelayMs);
   const autoMs = clampLandingAutoMs(content.galleryAutoMs, LANDING_GALLERY_AUTO_DEFAULT_MS);
-  const { index, go, select, pointer } = useDeckPager(scenes.length, autoMs);
+  const { index, go, pointer } = useDeckPager(scenes.length, autoMs);
   const [typed, setTyped] = useState("");
   const [progress, setProgress] = useState(0);
   const copy = content.copy;
@@ -260,7 +253,6 @@ function Gallery({
                 <article
                   key={scene.id}
                   className="luxe-album luxe-album-lg"
-                  onClick={() => select(i)}
                   style={{
                     transform: `translate(-50%, -50%) translateX(${offset * 64}%) translateZ(${-abs * 90}px) rotateY(${offset * -14}deg) scale(${1 - abs * 0.04})`,
                     opacity: abs > 2 ? 0 : 1 - abs * 0.14,
@@ -441,7 +433,6 @@ const LUXE_CSS = `
     background: linear-gradient(180deg, #16161f, #0b0b10); border: 1px solid rgba(255,255,255,0.16);
     box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 14px;
     transition: transform 420ms cubic-bezier(.2,.8,.2,1), opacity 420ms ease;
-    pointer-events: auto; cursor: pointer;
   }
   .luxe-album-lg { width: min(320px, 58vw); padding: 12px; }
   .luxe-album h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: -0.03em; }
