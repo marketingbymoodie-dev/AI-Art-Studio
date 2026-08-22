@@ -20,6 +20,7 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, creators, creatorCustomizerPages } from "@shared/schema";
@@ -352,25 +353,16 @@ function kickoffFlatCalibration(args: {
  * Returns false when the secret/header is missing or the digest mismatches.
  */
 function verifyShopifyWebhookHmac(req: Request): boolean {
-  const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
   const hmacHeader = req.headers["x-shopify-hmac-sha256"];
   const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
-  if (!SHOPIFY_API_SECRET || !hmac) return false;
+  if (!hmac) return false;
   const rawBody = (req as any).rawBody;
   const buf: Buffer = Buffer.isBuffer(rawBody)
     ? rawBody
     : typeof rawBody === "string"
       ? Buffer.from(rawBody, "utf8")
       : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-  const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(buf).digest("base64");
-  try {
-    return (
-      digest.length === hmac.length &&
-      crypto.timingSafeEqual(Buffer.from(digest, "utf8"), Buffer.from(hmac, "utf8"))
-    );
-  } catch {
-    return false;
-  }
+  return hmacBase64MatchesAnySecret(buf, hmac);
 }
 
 function toUint8Array(buf: Buffer) {
@@ -21906,24 +21898,7 @@ ${orientationExtra}
   // ─────────────────────────────────────────────────────────────────────────
 
   function verifyProxySignature(query: Record<string, string>): boolean {
-    const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET ?? "";
-    if (!SHOPIFY_API_SECRET) return false;
-    const { signature, ...rest } = query;
-    if (!signature) return false;
-    // Sort keys, join as key=value with NO separator between pairs
-    const message = Object.keys(rest)
-      .sort()
-      .map((k) => `${k}=${rest[k]}`)
-      .join("");
-    const computed = crypto
-      .createHmac("sha256", SHOPIFY_API_SECRET)
-      .update(message)
-      .digest("hex");
-    try {
-      return crypto.timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(signature, "hex"));
-    } catch {
-      return false;
-    }
+    return verifyAppProxySignature(query);
   }
 
   /**

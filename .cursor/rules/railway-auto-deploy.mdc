@@ -30,3 +30,4 @@ User has **auto-keep** enabled. Do **not** ask them to click Keep All, confirm k
 - Never point staging `DATABASE_URL` at production Postgres.
 - Never run `shopify:deploy:production` or merge to `production` without an explicit go-live answer.
 - Prefer `npm run shopify:deploy:staging` / `shopify:dev:staging` over bare `shopify:deploy` / `shopify:dev`.
+- Do **not** run `shopify:deploy:creators` on the automatic path. That clone is config/OAuth only unless the user asks for checkout UI on the creator checkout shop.
