@@ -169,6 +169,58 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
   return out;
 }
 
+/**
+ * Resolve a wizard / resync price-map key to a live Shopify variant id.
+ * Wizard keys are `size:{sizeId}:{colorId}` (e.g. `size:2xl:black`). Digit-stripping
+ * those keys used to yield Shopify ids 2–5 and 404 every 2XL–5XL PUT.
+ */
+export function resolveShopifyVariantIdFromPriceKey(args: {
+  priceKey: string;
+  printifyToShopify: Record<string, number>;
+  variantMap?: unknown;
+  knownShopifyVariantIds?: Iterable<number>;
+}): number {
+  const vid = String(args.priceKey ?? "").trim();
+  if (!vid) return 0;
+  const map = args.printifyToShopify ?? {};
+  const known = args.knownShopifyVariantIds
+    ? new Set(
+        [...args.knownShopifyVariantIds]
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      )
+    : null;
+
+  const fromPrintify = (printifyId: string) => {
+    const n = map[printifyId];
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+
+  if (vid.startsWith("printify:")) {
+    return fromPrintify(vid.slice("printify:".length));
+  }
+
+  if (vid.startsWith("size:")) {
+    const rest = vid.slice("size:".length);
+    const vm = parseJsonObject(args.variantMap);
+    const candidates = rest.includes(":") ? [rest] : [rest, `${rest}:default`];
+    for (const key of candidates) {
+      const entry = vm[key] as { printifyVariantId?: number | string } | null;
+      if (entry?.printifyVariantId == null) continue;
+      const shopifyId = fromPrintify(String(entry.printifyVariantId));
+      if (shopifyId) return shopifyId;
+    }
+    return fromPrintify(rest);
+  }
+
+  const digits = parseInt(vid.replace(/\D/g, ""), 10);
+  if (!Number.isFinite(digits) || digits <= 0) return 0;
+  if (known && known.size > 0) return known.has(digits) ? digits : 0;
+  // Bare "2" from `size:2xl` digit-stripping must never become a Shopify PUT target.
+  if (digits < 1000) return 0;
+  return digits;
+}
+
 export function parseShopifyVariantPrice(price: string | number | null | undefined): number {
   const n = parseFloat(String(price ?? "").replace(/[^0-9.+-]/g, ""));
   return Number.isFinite(n) ? n : 0;
