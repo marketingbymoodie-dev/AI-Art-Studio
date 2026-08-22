@@ -1,6 +1,7 @@
 import type { Express, RequestHandler } from "express";
 import * as jwt from "jsonwebtoken";
 import { shopDomainFromSessionClaim } from "../../shopDomain";
+import { listShopifyAppCredentials } from "../../shopify-app-credentials";
 
 /**
  * Shopify-native auth (NO Replit OIDC)
@@ -70,6 +71,27 @@ function getShopifyApiSecret() {
   return secret;
 }
 
+function verifySessionJwt(token: string): ShopifySessionTokenPayload | null {
+  const apps = listShopifyAppCredentials();
+  const secrets = apps.length
+    ? apps.map((c) => c.apiSecret)
+    : [getShopifyApiSecret()];
+  const allowedAud = new Set(apps.length ? apps.map((c) => c.apiKey) : [getShopifyApiKey()]);
+
+  for (const secret of secrets) {
+    try {
+      const decoded = jwt.verify(token, secret, { algorithms: ["HS256"] });
+      if (!decoded || typeof decoded !== "object") continue;
+      const payload = decoded as ShopifySessionTokenPayload;
+      if (payload.aud && !allowedAud.has(String(payload.aud))) continue;
+      return payload;
+    } catch {
+      // try next app secret
+    }
+  }
+  return null;
+}
+
 function getBearerToken(req: any): string | null {
   const header = req.headers?.authorization || req.headers?.Authorization;
   if (!header || typeof header !== "string") return null;
@@ -88,28 +110,9 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
     return res.status(401).json({ message: "Unauthorized: missing session token" });
   }
 
-  let payload: ShopifySessionTokenPayload;
-
-  try {
-    // Verify signature + exp/nbf
-    const decoded = jwt.verify(token, getShopifyApiSecret(), {
-      algorithms: ["HS256"],
-    });
-
-    // jsonwebtoken can return string | object
-    if (!decoded || typeof decoded !== "object") {
-      return res.status(401).json({ message: "Unauthorized: invalid token" });
-    }
-
-    payload = decoded as ShopifySessionTokenPayload;
-  } catch (_err) {
+  const payload = verifySessionJwt(token);
+  if (!payload) {
     return res.status(401).json({ message: "Unauthorized: invalid token" });
-  }
-
-  // Validate audience matches our API key (Shopify sets aud = API key)
-  const expectedAud = getShopifyApiKey();
-  if (payload.aud !== expectedAud) {
-    return res.status(401).json({ message: "Unauthorized: invalid audience" });
   }
 
   // Attach shop info for later handlers.

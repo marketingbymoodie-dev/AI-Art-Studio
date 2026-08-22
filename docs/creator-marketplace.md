@@ -10,6 +10,8 @@ Phased feature. See the Cursor plan for full architecture. This doc tracks ops p
 | `CREATOR_PLATFORM_SHOP_DOMAIN` | Platform Shopify shop (`{handle}.myshopify.com`) that backs creator checkouts |
 | `CREATOR_STOREFRONT_API_TOKEN` | Preferred Storefront API access token (custom app on the platform shop) |
 | `CREATOR_PLATFORM_STOREFRONT_TOKEN` | Legacy alias for the same token (optional) |
+| `CREATOR_SHOPIFY_API_KEY` | Client ID of the custom-distribution Studio clone (embedded admin on the platform shop) |
+| `CREATOR_SHOPIFY_API_SECRET` | Client secret of that clone — do not replace `SHOPIFY_API_*` |
 | `CREATOR_EMAILS_ENABLED` | `true` to actually send beta/partner emails (default: log only) |
 | `CREATOR_PACK_GENS_BURN_ALLOWANCE` | `true` if pack-paid gens should burn creator monthly allowance |
 | `CREATOR_PACK_VARIANTS_JSON` | Optional `{"5":"variantId",…}` override for pack SKUs |
@@ -18,10 +20,11 @@ Seeded on boot (idempotent): `platform_config.AI_GENERATION_COST_USD = 0.05`.
 
 ## Phase 0 checklist (manual — do not automate without approval)
 
-1. **Choose platform store** — preferably a dedicated Shopify store (or staging demo) for all creator subdomain checkouts. Set `CREATOR_PLATFORM_SHOP_DOMAIN`.
+1. **Choose platform store** — preferably a dedicated Shopify store (or staging demo) for all creator subdomain checkouts. Set `CREATOR_PLATFORM_SHOP_DOMAIN`. Live checkout shop: see `docs/creator-studio-clone.md`.
 2. **Storefront API token** — store admin → Settings → Apps → Develop apps → custom app → Storefront API scopes → Install → copy token → set `CREATOR_STOREFRONT_API_TOKEN` on Railway (staging first).
-3. **Shopify Protected Customer Data** — production `orders/paid` / `refunds/create` webhooks stay commented in `shopify.app.production.toml` until PCD approval. File/renew the request so the creator revenue ledger can go live.
-4. **Wildcard DNS** (later phase, approval required):
+3. **Studio clone (live shop)** — custom-distribution embedded app + `CREATOR_SHOPIFY_API_KEY` / `CREATOR_SHOPIFY_API_SECRET`. Do not install the in-review public app on the live shop. Checklist: `docs/creator-studio-clone.md`.
+4. **Shopify Protected Customer Data** — production `orders/paid` / `refunds/create` webhooks stay commented in `shopify.app.production.toml` until PCD approval. The creators clone toml already subscribes those topics for the platform shop.
+5. **Wildcard DNS** (later phase, approval required):
    - Railway custom domain: `*.aiartstudio.app`
    - DNS `CNAME *` → Railway target
    - Staging can use path fallback `/c/:username` until a staging wildcard exists

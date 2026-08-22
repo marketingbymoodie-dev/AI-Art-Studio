@@ -6,8 +6,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import path from "path";
 import fs from "fs";
-import crypto from "crypto";
 import { registerRoutes } from "./routes";
+import { verifyAppProxySignature } from "./shopify-app-credentials";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
@@ -48,17 +48,7 @@ const app = express();
 //   /api/proxy/s/designer              → /s/designer (handled specially below)
 // ============================================================
 function verifyShopifyProxyHmac(query: Record<string, string>): boolean {
-  const secret = process.env.SHOPIFY_API_SECRET ?? "";
-  if (!secret) return false;
-  const { signature, ...rest } = query;
-  if (!signature) return false;
-  const message = Object.keys(rest).sort().map(k => `${k}=${rest[k]}`).join("");
-  const computed = crypto.createHmac("sha256", secret).update(message).digest("hex");
-  try {
-    return crypto.timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(signature, "hex"));
-  } catch {
-    return false;
-  }
+  return verifyAppProxySignature(query);
 }
 
 // Proxy root: /apps/appai/ → redirect to /apps/appai/s/designer

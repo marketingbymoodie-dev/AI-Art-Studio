@@ -3,10 +3,26 @@ import crypto from "crypto";
 import { storage } from "./storage";
 import { registerShopifyGdprRoutes } from "./shopify-gdpr";
 import { exchangeAuthorizationCode } from "./shopify-offline-token";
+import {
+  credentialsForInstallHint,
+  getPrimaryShopifyCredentials,
+  hasShopifyAppCredentials,
+  hmacBase64MatchesAnySecret,
+  listShopifyAppCredentials,
+  reinstallKeyForShop,
+  verifyOAuthQueryHmac,
+  verifyReinstallKey,
+} from "./shopify-app-credentials";
 
-const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
 const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders";
+
+function primaryKey(): string {
+  return getPrimaryShopifyCredentials()?.apiKey || "";
+}
+
+function primarySecret(): string {
+  return getPrimaryShopifyCredentials()?.apiSecret || "";
+}
 
 export async function registerCartScript(shop: string, accessToken: string): Promise<void> {
   const appUrl = getAppUrl();
@@ -77,7 +93,7 @@ export function getAppUrl(): string {
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /** Cookie-independent CSRF token: HMAC(shop + timestamp + nonce). */
-export function createOAuthState(shop: string, secret = SHOPIFY_API_SECRET): string {
+export function createOAuthState(shop: string, secret = primarySecret()): string {
   const payload = Buffer.from(
     JSON.stringify({ s: shop, t: Date.now(), n: crypto.randomBytes(16).toString("hex") }),
   ).toString("base64url");
@@ -88,7 +104,7 @@ export function createOAuthState(shop: string, secret = SHOPIFY_API_SECRET): str
 export function verifyOAuthState(
   state: string | undefined,
   shop: string,
-  secret = SHOPIFY_API_SECRET,
+  secret = primarySecret(),
   now = Date.now(),
 ): boolean {
   if (!state || !shop || !secret) return false;
@@ -115,34 +131,12 @@ export function verifyOAuthState(
   }
 }
 
+function verifyOAuthStateAny(state: string | undefined, shop: string): boolean {
+  return listShopifyAppCredentials().some((c) => verifyOAuthState(state, shop, c.apiSecret));
+}
+
 function verifyHmac(query: Record<string, any>): boolean {
-  if (!SHOPIFY_API_SECRET) return false;
-  
-  const hmac = query.hmac;
-  if (!hmac) return false;
-
-  const params = { ...query };
-  delete params.hmac;
-  delete params.signature;
-
-  const message = Object.keys(params)
-    .sort()
-    .map(key => `${key}=${params[key]}`)
-    .join("&");
-
-  const generatedHash = crypto
-    .createHmac("sha256", SHOPIFY_API_SECRET)
-    .update(message)
-    .digest("hex");
-
-  if (generatedHash.length !== hmac.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(
-    Buffer.from(generatedHash, "hex"),
-    Buffer.from(hmac, "hex")
-  );
+  return verifyOAuthQueryHmac(query);
 }
 
 function isValidShopDomain(shop: string): boolean {
@@ -228,7 +222,7 @@ export function registerShopifyRoutes(app: Express): void {
   console.log(`[shopify] OAuth scopes configured: ${SHOPIFY_SCOPES}`);
   registerShopifyGdprRoutes(app);
 
-  if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+  if (!hasShopifyAppCredentials()) {
     console.log("Shopify OAuth disabled - SHOPIFY_API_KEY/SECRET not configured");
     
     app.get("/shopify/install", (_req: Request, res: Response) => {
@@ -238,6 +232,7 @@ export function registerShopifyRoutes(app: Express): void {
         <ul>
           <li>SHOPIFY_API_KEY</li>
           <li>SHOPIFY_API_SECRET</li>
+          <li>CREATOR_SHOPIFY_API_KEY / CREATOR_SHOPIFY_API_SECRET (optional clone)</li>
         </ul>
         <p>Create a Shopify app in your <a href="https://partners.shopify.com">Shopify Partners Dashboard</a> to get these credentials.</p>
       `);
@@ -255,11 +250,15 @@ export function registerShopifyRoutes(app: Express): void {
       `);
     }
 
-    const state = createOAuthState(shop);
+    const creds = credentialsForInstallHint(req.query.app as string | undefined);
+    if (!creds) {
+      return res.status(503).send("Shopify API credentials are not configured");
+    }
+    const state = createOAuthState(shop, creds.apiSecret);
     const redirectUri = `${getAppUrl()}/shopify/callback`;
 
     const authUrl = `https://${shop}/admin/oauth/authorize?` +
-      `client_id=${SHOPIFY_API_KEY}&` +
+      `client_id=${creds.apiKey}&` +
       `scope=${SHOPIFY_SCOPES}&` +
       `redirect_uri=${encodeURIComponent(redirectUri)}&` +
       `state=${state}`;
@@ -301,7 +300,7 @@ if (res.locals.shopify?.session?.shop) {
       return res.status(400).send("Invalid shop domain");
     }
 
-    const signedStateOk = verifyOAuthState(state, shop);
+    const signedStateOk = verifyOAuthStateAny(state, shop);
     const cookieStateOk = !!storedState && storedState === state;
     if (!signedStateOk && !cookieStateOk) {
       console.warn(
@@ -385,8 +384,9 @@ if (res.locals.shopify?.session?.shop) {
       // reinstalls of an already-configured shop — completed steps just show
       // as done (see docs/merchant-setup-rail.md).
       const setupPath = "/admin/setup";
-      const redirectUrl = SHOPIFY_API_KEY
-        ? `https://${shop}/admin/apps/${SHOPIFY_API_KEY}${setupPath}`
+      const embedKey = tokenResult.credentials?.apiKey || primaryKey();
+      const redirectUrl = embedKey
+        ? `https://${shop}/admin/apps/${embedKey}${setupPath}`
         : `https://${shop}/admin/apps`;
       res.redirect(redirectUrl);
     } catch (error) {
@@ -466,13 +466,13 @@ if (res.locals.shopify?.session?.shop) {
       return res.status(200).send("OK");
     }
 
-    const body = JSON.stringify(req.body);
-    const generatedHash = crypto
-      .createHmac("sha256", SHOPIFY_API_SECRET)
-      .update(body, "utf8")
-      .digest("base64");
-
-    if (generatedHash !== hmacHeader) {
+    const rawBody = (req as { rawBody?: Buffer | string }).rawBody;
+    const bodyBuf = Buffer.isBuffer(rawBody)
+      ? rawBody
+      : typeof rawBody === "string"
+        ? Buffer.from(rawBody, "utf8")
+        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
+    if (!hmacHeader || !hmacBase64MatchesAnySecret(bodyBuf, hmacHeader)) {
       return res.status(401).send("HMAC verification failed");
     }
 
@@ -523,9 +523,7 @@ if (res.locals.shopify?.session?.shop) {
     if (!shop || !isValidShopDomain(shop)) {
       return res.status(400).json({ error: "Invalid or missing shop domain" });
     }
-    const key = SHOPIFY_API_SECRET
-      ? crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(shop).digest("hex")
-      : "dev";
+    const key = reinstallKeyForShop(shop) || "dev";
     const url = `/shopify/reinstall?shop=${encodeURIComponent(shop)}&key=${key}`;
     res.json({ url });
   });
@@ -544,16 +542,8 @@ if (res.locals.shopify?.session?.shop) {
 
     // Require a time-stable HMAC(secret, shop) so only someone with the API
     // secret (i.e. the server / admin UI) can trigger token revocation.
-    if (SHOPIFY_API_SECRET) {
-      const expected = crypto
-        .createHmac("sha256", SHOPIFY_API_SECRET)
-        .update(shop)
-        .digest("hex");
-      const provided = key || "";
-      const valid =
-        provided.length === expected.length &&
-        crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
-      if (!valid) {
+    if (hasShopifyAppCredentials()) {
+      if (!verifyReinstallKey(shop, key)) {
         console.warn(`[shopify/reinstall] Blocked unauthenticated request for ${shop} from ${req.ip}`);
         return res.status(403).send("Forbidden — reinstall requires a valid key");
       }

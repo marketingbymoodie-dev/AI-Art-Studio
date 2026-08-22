@@ -11,9 +11,11 @@
  */
 import type { ShopifyInstallation } from "@shared/schema";
 import { storage } from "./storage";
-
-const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
+import {
+  hasShopifyAppCredentials,
+  listShopifyAppCredentials,
+  type ShopifyAppCredentials,
+} from "./shopify-app-credentials";
 
 /** Refresh ~2 minutes before expiry to avoid mid-request 401s. */
 const REFRESH_SKEW_MS = 2 * 60 * 1000;
@@ -88,27 +90,47 @@ async function postTokenForm(
   }
 }
 
+async function postWithEachApp(
+  shop: string,
+  bodyWithoutClient: Record<string, string>,
+): Promise<
+  | { ok: true; data: ShopifyOfflineTokenPayload; credentials: ShopifyAppCredentials }
+  | { ok: false; status: number; error: string }
+> {
+  const apps = listShopifyAppCredentials();
+  if (apps.length === 0) {
+    return { ok: false, status: 500, error: "Shopify API credentials not configured" };
+  }
+  let last: { ok: false; status: number; error: string } | null = null;
+  for (const credentials of apps) {
+    const result = await postTokenForm(shop, {
+      ...bodyWithoutClient,
+      client_id: credentials.apiKey,
+      client_secret: credentials.apiSecret,
+    });
+    if (result.ok) return { ok: true, data: result.data, credentials };
+    last = result;
+  }
+  return last || { ok: false, status: 500, error: "Token request failed" };
+}
+
 export async function exchangeAuthorizationCode(
   shop: string,
   code: string,
-): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postTokenForm(shop, {
-    client_id: SHOPIFY_API_KEY,
-    client_secret: SHOPIFY_API_SECRET,
-    code,
-    expiring: "1",
-  });
+): Promise<
+  | { ok: true; fields: OfflineTokenPersist; credentials: ShopifyAppCredentials }
+  | { ok: false; status: number; error: string }
+> {
+  const result = await postWithEachApp(shop, { code, expiring: "1" });
   if (!result.ok) return result;
-  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data) };
+  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data), credentials: result.credentials };
 }
 
 async function refreshOfflineToken(
   shop: string,
   refreshToken: string,
 ): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postTokenForm(shop, {
-    client_id: SHOPIFY_API_KEY,
-    client_secret: SHOPIFY_API_SECRET,
+  const result = await postWithEachApp(shop, {
     grant_type: "refresh_token",
     refresh_token: refreshToken,
   });
@@ -121,9 +143,7 @@ async function migrateToExpiringOfflineToken(
   shop: string,
   nonExpiringAccessToken: string,
 ): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postTokenForm(shop, {
-    client_id: SHOPIFY_API_KEY,
-    client_secret: SHOPIFY_API_SECRET,
+  const result = await postWithEachApp(shop, {
     grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
     subject_token: nonExpiringAccessToken,
     subject_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
@@ -139,9 +159,7 @@ export async function exchangeSessionTokenForOffline(
   shop: string,
   sessionToken: string,
 ): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postTokenForm(shop, {
-    client_id: SHOPIFY_API_KEY,
-    client_secret: SHOPIFY_API_SECRET,
+  const result = await postWithEachApp(shop, {
     grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
     subject_token: sessionToken,
     subject_token_type: "urn:ietf:params:oauth:token-type:id_token",
@@ -210,7 +228,7 @@ export async function ensureValidOfflineAccessToken(
   const shop = installation.shopDomain;
   const sessionToken = options.sessionToken?.trim() || null;
 
-  if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+  if (!hasShopifyAppCredentials()) {
     return { ok: false, needsReinstall: false, error: "Shopify API credentials not configured" };
   }
 
@@ -331,7 +349,7 @@ export async function recoverOrCreateInstallationFromSession(
   if (!sessionToken) {
     return { ok: false, needsReinstall: true, error: "No installation and no session token" };
   }
-  if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
+  if (!hasShopifyAppCredentials()) {
     return { ok: false, needsReinstall: false, error: "Shopify API credentials not configured" };
   }
 
