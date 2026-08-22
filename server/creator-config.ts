@@ -54,10 +54,42 @@ export function requestLooksLikeStagingHost(req: {
   return host.includes("staging");
 }
 
+function normalizePlatformShop(shop: string | null | undefined): string {
+  return String(shop || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
+}
+
+/** Original handle stays the OAuth / token key after the store was renamed. */
+const CREATOR_PLATFORM_SHOP_RENAME_ALIASES: Record<string, string[]> = {
+  "whi6jd-nv.myshopify.com": ["aiartstudio-creators.myshopify.com"],
+  "aiartstudio-creators.myshopify.com": ["whi6jd-nv.myshopify.com"],
+};
+
 /** Platform Shopify shop that backs all creator storefront checkouts. */
 export function getCreatorPlatformShopDomain(): string | null {
   const d = (process.env.CREATOR_PLATFORM_SHOP_DOMAIN || "").trim().toLowerCase();
   return d || null;
+}
+
+/** Env shop plus rename / CREATOR_PLATFORM_SHOP_ALIASES — used for token lookup and webhook shop matching. */
+export function getCreatorPlatformShopCandidates(): string[] {
+  const primary = normalizePlatformShop(getCreatorPlatformShopDomain());
+  if (!primary) return [];
+  const extras = (process.env.CREATOR_PLATFORM_SHOP_ALIASES || "")
+    .split(",")
+    .map((s) => normalizePlatformShop(s))
+    .filter(Boolean);
+  const known = CREATOR_PLATFORM_SHOP_RENAME_ALIASES[primary] || [];
+  const out: string[] = [];
+  for (const shop of [primary, ...known, ...extras]) {
+    if (shop && !out.includes(shop)) out.push(shop);
+    const handle = shop.replace(/\.myshopify\.com$/, "");
+    if (handle && handle !== shop && !out.includes(handle)) out.push(handle);
+  }
+  return out;
 }
 
 /**
