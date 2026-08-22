@@ -170,6 +170,75 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
 }
 
 /**
+ * Wizard retail map uses `size:2xl:black` / `printify:123`. Shopify product
+ * create historically looked up only `2xl:black`, so every variant was born $0.
+ */
+export function lookupWizardRetailPrice(
+  priceMap: Record<string, string> | null | undefined,
+  args: {
+    variantKey: string;
+    printifyVariantId?: string | number | null;
+  },
+): string | null {
+  if (!priceMap || typeof priceMap !== "object") return null;
+  const variantKey = String(args.variantKey ?? "").trim();
+  if (!variantKey) return null;
+  const [sizeId] = variantKey.split(":");
+  const candidates = [
+    variantKey,
+    `size:${variantKey}`,
+    sizeId ? `size:${sizeId}` : "",
+    args.printifyVariantId != null ? `printify:${args.printifyVariantId}` : "",
+  ].filter(Boolean);
+  for (const key of candidates) {
+    const raw = priceMap[key];
+    const n = parseShopifyVariantPrice(raw);
+    if (n > 0) return n.toFixed(2);
+  }
+  return null;
+}
+
+function matchShopifyVariantIdBySizeColorKey(args: {
+  sizeColorKey: string;
+  sizes?: unknown;
+  frameColors?: unknown;
+  shopifyVariants?: ShopifyVariantForPriceSync[];
+}): number {
+  const rest = String(args.sizeColorKey ?? "").trim();
+  if (!rest) return 0;
+  const [sizeId, colorId] = rest.includes(":") ? rest.split(":") : [rest, "default"];
+  const sizes = parseJsonArray(args.sizes);
+  const colors = parseJsonArray(args.frameColors);
+  const sizeName = sizes.find((s) => String(s.id) === sizeId)?.name ?? sizeId;
+  const colorName =
+    colorId && colorId !== "default"
+      ? colors.find((c) => String(c.id) === colorId)?.name ?? colorId
+      : null;
+  const targets = new Set(
+    [
+      colorName ? `${sizeName} / ${colorName}` : sizeName,
+      colorName ? `${sizeName}:${colorName}` : sizeName,
+    ]
+      .map((label) => normalizeVariantLabelForCostMatch(label))
+      .filter(Boolean),
+  );
+  for (const sv of args.shopifyVariants ?? []) {
+    const id = Number(sv.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const labels = [
+      sv.title,
+      sv.option1 && sv.option2 ? `${sv.option1} / ${sv.option2}` : "",
+      sv.option1 && sv.option2 ? `${sv.option1}:${sv.option2}` : "",
+      sv.option1 && !sv.option2 ? sv.option1 : "",
+    ];
+    for (const label of labels) {
+      if (label && targets.has(normalizeVariantLabelForCostMatch(label))) return id;
+    }
+  }
+  return 0;
+}
+
+/**
  * Resolve a wizard / resync price-map key to a live Shopify variant id.
  * Wizard keys are `size:{sizeId}:{colorId}` (e.g. `size:2xl:black`). Digit-stripping
  * those keys used to yield Shopify ids 2–5 and 404 every 2XL–5XL PUT.
@@ -179,6 +248,9 @@ export function resolveShopifyVariantIdFromPriceKey(args: {
   printifyToShopify: Record<string, number>;
   variantMap?: unknown;
   knownShopifyVariantIds?: Iterable<number>;
+  sizes?: unknown;
+  frameColors?: unknown;
+  shopifyVariants?: ShopifyVariantForPriceSync[];
 }): number {
   const vid = String(args.priceKey ?? "").trim();
   if (!vid) return 0;
@@ -210,6 +282,13 @@ export function resolveShopifyVariantIdFromPriceKey(args: {
       const shopifyId = fromPrintify(String(entry.printifyVariantId));
       if (shopifyId) return shopifyId;
     }
+    const fromLive = matchShopifyVariantIdBySizeColorKey({
+      sizeColorKey: rest.includes(":") ? rest : `${rest}:default`,
+      sizes: args.sizes,
+      frameColors: args.frameColors,
+      shopifyVariants: args.shopifyVariants,
+    });
+    if (fromLive) return fromLive;
     return fromPrintify(rest);
   }
 

@@ -1951,9 +1951,9 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
-    // For products on Shopify: pass their shopify productId.
-    // For products not yet on Shopify: pass the productTypeId so the backend can auto-send.
-    const isSync = selectedBlank?.needsShopifySync;
+    // Always send productTypeId when we have it so a leftover $0 Shopify product
+    // (from a failed Create Page) can be recreated with this form's retail prices.
+    const productTypeId = selectedBlank?.productTypeId;
     const curated = buildCuratedPlaceholderPayload(
       formPrimaryPlaceholder,
       formGalleryPlaceholders,
@@ -1963,8 +1963,8 @@ export default function AdminCustomizerPages() {
     createMutation.mutate({
       title: stripProviderSuffix(formTitle.trim()) || formTitle.trim(),
       handle: formHandle,
-      baseProductId: isSync ? undefined : formProductId,
-      productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
+      baseProductId: productTypeId ? undefined : formProductId,
+      productTypeId,
       variantPrices,
       ...(supportsBothSidePricing ? { variantPricesBoth } : {}),
       defaultMarkupPercent: markupPercent,
