@@ -68,4 +68,13 @@ describe("creator-host Phase 10 helpers", () => {
     if (prev === undefined) delete process.env.CREATOR_PLATFORM_SHOP_DOMAIN;
     else process.env.CREATOR_PLATFORM_SHOP_DOMAIN = prev;
   });
+
+  it("isCreatorPlatformShop accepts the checkout-shop rename alias", () => {
+    const prev = process.env.CREATOR_PLATFORM_SHOP_DOMAIN;
+    process.env.CREATOR_PLATFORM_SHOP_DOMAIN = "whi6jd-nv.myshopify.com";
+    expect(isCreatorPlatformShop("aiartstudio-creators.myshopify.com")).toBe(true);
+    expect(isCreatorPlatformShop("other.myshopify.com")).toBe(false);
+    if (prev === undefined) delete process.env.CREATOR_PLATFORM_SHOP_DOMAIN;
+    else process.env.CREATOR_PLATFORM_SHOP_DOMAIN = prev;
+  });
 });

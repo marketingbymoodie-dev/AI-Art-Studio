@@ -13,6 +13,7 @@ import {
   verifyOAuthQueryHmac,
   verifyReinstallKey,
 } from "./shopify-app-credentials";
+import { ensureCreatorCheckoutWebhooks } from "./creator-checkout-webhooks";
 
 const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders";
 
@@ -375,6 +376,9 @@ if (res.locals.shopify?.session?.shop) {
       }
 
       await registerCartScript(shop, access_token);
+      void ensureCreatorCheckoutWebhooks({ shop, accessToken: access_token }).catch((e: any) =>
+        console.warn("[creator-webhooks] post-OAuth register failed:", e?.message || e),
+      );
 
       res.clearCookie("shopify_state");
       res.clearCookie("shopify_merchant");
