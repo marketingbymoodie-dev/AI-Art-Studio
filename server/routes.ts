@@ -74,8 +74,13 @@ import {
   STOREFRONT_FREE_GENERATION_MAX,
   STOREFRONT_FREE_GENERATION_MIN,
   clampStorefrontFreeGens,
+  pickStorefrontGenerationSpend,
   storefrontArtworksRemaining,
 } from "@shared/storefront-credits";
+import {
+  creatorContextFromRequest,
+  resolveStorefrontWalletView,
+} from "./storefront-wallet-view";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
@@ -8098,39 +8103,49 @@ ${orientationExtra}
         if (customer) {
           resolvedJobCustomerId = customer.id;
           const balance = await storage.ensureCustomerBalance(customer.id);
-          if (balance.credits > 0) {
-            usedCustomerPaidCredit = true;
-            storefrontBillingMode = "customer_paid";
-            console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits — will deduct on success`);
-          } else if (creatorCtx) {
+          let shopFreeRemaining = Math.max(0, FREE_GENERATION_LIMIT - (balance.freeGenerationsUsed || 0));
+          let shopFreeUsed = balance.freeGenerationsUsed || 0;
+          if (creatorCtx) {
             const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
             const freePeek = await peekCreatorCustomerFreeGens({
               creatorId: creatorCtx.id,
               customerId: customer.id,
               freeGensPerCustomer: FREE_GENERATION_LIMIT,
             });
-            if (!freePeek.allowed) {
-              return res.status(403).json({
-                error: "FREE_LIMIT_REACHED",
-                message: `You've used all ${freePeek.limit} free generations on this creator shop. Purchase credits to continue.`,
-                generationsUsed: freePeek.used,
-                limit: freePeek.limit,
-              });
-            }
+            shopFreeRemaining = freePeek.remaining;
+            shopFreeUsed = freePeek.used;
+          }
+          const spend = pickStorefrontGenerationSpend({
+            shopFreeRemaining,
+            paidCredits: balance.credits,
+          });
+          if (spend === "customer_free") {
             storefrontBillingMode = "customer_free";
-            console.log(P, reqId, `creator free gen ${freePeek.used + 1}/${freePeek.limit}`);
+            console.log(
+              P,
+              reqId,
+              creatorCtx
+                ? `creator free gen ${shopFreeUsed + 1}/${FREE_GENERATION_LIMIT} (shop free first)`
+                : `customer ${customer.id} will use shop free generation on success (${shopFreeUsed + 1}/${FREE_GENERATION_LIMIT})`,
+            );
+          } else if (spend === "customer_paid") {
+            usedCustomerPaidCredit = true;
+            storefrontBillingMode = "customer_paid";
+            console.log(P, reqId, `customer ${customer.id} shop free exhausted — will deduct ${balance.credits} ledger credits on success`);
+          } else if (creatorCtx) {
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: `You've used all ${FREE_GENERATION_LIMIT} free generations on this creator shop. Purchase credits to continue.`,
+              generationsUsed: shopFreeUsed,
+              limit: FREE_GENERATION_LIMIT,
+            });
           } else {
-            const freeUsed = balance.freeGenerationsUsed || 0;
-            if (freeUsed >= FREE_GENERATION_LIMIT) {
-              return res.status(403).json({
-                error: "FREE_LIMIT_REACHED",
-                message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Purchase credits to continue.`,
-                generationsUsed: freeUsed,
-                limit: FREE_GENERATION_LIMIT,
-              });
-            }
-            storefrontBillingMode = "customer_free";
-            console.log(P, reqId, `customer ${customer.id} will use free generation on success (${freeUsed + 1}/${FREE_GENERATION_LIMIT})`);
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: `You've used all ${FREE_GENERATION_LIMIT} free generations. Purchase credits to continue.`,
+              generationsUsed: shopFreeUsed,
+              limit: FREE_GENERATION_LIMIT,
+            });
           }
         }
       } else if (sessionId) {
@@ -8915,24 +8930,39 @@ ${orientationExtra}
         let creditsRemaining = 0;
         let freeGenerationsUsed = 0;
         let artworksRemaining = 0;
+        let earnedCredits = 0;
+        let packCredits = 0;
+        let shopFreeRemaining = 0;
         // One-shot on complete (not every pending poll) — need merchant free-gens setting.
         const completeInstall = await getAuthorizedInstallation(shop);
         const freeLimit = clampStorefrontFreeGens(
           (completeInstall as any)?.storefrontFreeGensPerVisitor ?? STOREFRONT_FREE_GENERATION_DEFAULT,
         );
+        let walletFreeLimit = freeLimit;
         if (job.customerId) {
-          const balance = await storage.ensureCustomerBalance(job.customerId);
-          creditsRemaining = balance.credits;
-          freeGenerationsUsed = balance.freeGenerationsUsed || 0;
+          const wallet = await resolveStorefrontWalletView({
+            shop,
+            customerId: job.customerId,
+            merchantFreeLimit: freeLimit,
+            knownCreatorId: job.creatorId,
+          });
+          creditsRemaining = wallet.credits;
+          earnedCredits = wallet.earnedCredits;
+          packCredits = wallet.packCredits;
+          shopFreeRemaining = wallet.shopFreeRemaining;
+          walletFreeLimit = wallet.freeGenerationLimit;
+          freeGenerationsUsed = wallet.freeGenerationsUsed;
           artworksRemaining = storefrontArtworksRemaining({
-            freeGenerationsUsed,
-            paidCredits: balance.credits,
-            freeGenerationLimit: freeLimit,
+            shopFreeRemaining: wallet.shopFreeRemaining,
+            freeGenerationsUsed: wallet.freeGenerationsUsed,
+            paidCredits: wallet.credits,
+            freeGenerationLimit: wallet.freeGenerationLimit,
           });
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
           freeGenerationsUsed = count;
           creditsRemaining = Math.max(0, freeLimit - count);
+          shopFreeRemaining = creditsRemaining;
           artworksRemaining = creditsRemaining;
         }
 
@@ -8942,6 +8972,10 @@ ${orientationExtra}
           thumbnailUrl: job.thumbnailUrl,
           designId: job.designId,
           creditsRemaining,
+          earnedCredits,
+          packCredits,
+          shopFreeRemaining,
+          freeGenerationLimit: walletFreeLimit,
           freeGenerationsUsed,
           artworksRemaining,
           mockupUrls: (job as any).mockupUrls || null,
@@ -10947,15 +10981,21 @@ ${orientationExtra}
         }
       }
 
-      const balance = await storage.getCreditBalance(customer.id);
+      const creatorCtx = creatorContextFromRequest(req);
+      const wallet = await resolveStorefrontWalletView({
+        shop,
+        customerId: customer.id,
+        merchantFreeLimit: (installation as any).storefrontFreeGensPerVisitor,
+        creatorUsername: creatorCtx.creatorUsername,
+        creatorId: creatorCtx.creatorId,
+      });
       console.log(`[Google Auth] Signed in ${emailNorm || googleSub} for shop ${shop}, customer ${customer.id}`);
 
       return res.json({
         ok: true,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: balance?.credits ?? customer.credits,
-        freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
+        ...wallet,
         email: emailNorm || undefined,
         name: payload.name,
       });
@@ -11084,13 +11124,20 @@ ${orientationExtra}
         console.warn(`[OTP] newsletter credit grant failed:`, rewardErr?.message);
       }
 
-      const balance = await storage.getCreditBalance(customer.id);
+      const creatorCtx = creatorContextFromRequest(req);
+      const installation = await getAuthorizedInstallation(shop);
+      const wallet = await resolveStorefrontWalletView({
+        shop,
+        customerId: customer.id,
+        merchantFreeLimit: (installation as any)?.storefrontFreeGensPerVisitor,
+        creatorUsername: creatorCtx.creatorUsername,
+        creatorId: creatorCtx.creatorId,
+      });
       res.json({
         ok: true,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: balance?.credits ?? customer.credits,
-        freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
+        ...wallet,
       });
     } catch (error: any) {
       console.error("[OTP] verify-otp error:", error);
@@ -11115,7 +11162,14 @@ ${orientationExtra}
         shopifyCustomerId: typeof shopifyCustomerId === "string" ? shopifyCustomerId : null,
         anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
       });
-      const balance = await storage.ensureCustomerBalance(customer.id);
+      const creatorCtx = creatorContextFromRequest(req);
+      const wallet = await resolveStorefrontWalletView({
+        shop,
+        customerId: customer.id,
+        merchantFreeLimit: (installation as any).storefrontFreeGensPerVisitor,
+        creatorUsername: creatorCtx.creatorUsername,
+        creatorId: creatorCtx.creatorId,
+      });
       const aliases = await storage.getCustomerAliases(customer.id).catch(() => []);
       const emailAlias = aliases.find((a) => a.aliasType === "otp_email");
       let email = emailAlias?.aliasValue || null;
@@ -11135,8 +11189,7 @@ ${orientationExtra}
         ok: true,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: balance.credits,
-        freeGenerationsUsed: balance.freeGenerationsUsed,
+        ...wallet,
         email,
         signedIn,
       });
@@ -11266,14 +11319,20 @@ ${orientationExtra}
         console.warn("[Credits Status] customer not found for", customerId);
         return res.status(404).json({ error: "Customer not found" });
       }
-      const balance = await storage.ensureCustomerBalance(customer.id);
-      console.log("[Credits Status] returning balance", balance.credits, "for customerId", customer.id);
+      const creatorCtx = creatorContextFromRequest(req);
+      const wallet = await resolveStorefrontWalletView({
+        shop,
+        customerId: customer.id,
+        merchantFreeLimit: (installation as any).storefrontFreeGensPerVisitor,
+        creatorUsername: creatorCtx.creatorUsername,
+        creatorId: creatorCtx.creatorId,
+      });
+      console.log("[Credits Status] returning balance", wallet.credits, "for customerId", customer.id);
       return res.json({
         ok: true,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: balance.credits,
-        freeGenerationsUsed: balance.freeGenerationsUsed,
+        ...wallet,
       });
     } catch (error: any) {
       console.error("[Credits Status] error:", error);

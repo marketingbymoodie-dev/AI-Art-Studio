@@ -34,6 +34,8 @@ export default function StorefrontGoogleAuthPage() {
   const shop = readSearchParam("shop");
   const openerOrigin = readSearchParam("openerOrigin");
   const nonce = readSearchParam("nonce");
+  const creatorUsername = readSearchParam("creatorUsername");
+  const creatorId = readSearchParam("creatorId");
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "working" | "done" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +59,10 @@ export default function StorefrontGoogleAuthPage() {
       customerId?: string;
       identityToken?: string;
       credits?: number;
+      earnedCredits?: number;
+      packCredits?: number;
+      shopFreeRemaining?: number;
+      freeGenerationLimit?: number;
       freeGenerationsUsed?: number;
       email?: string;
       error?: string;
@@ -91,7 +97,12 @@ export default function StorefrontGoogleAuthPage() {
       fetch("/api/storefront/auth/google", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ credential, shop }),
+        body: JSON.stringify({
+          credential,
+          shop,
+          ...(creatorUsername ? { creatorUsername } : {}),
+          ...(creatorId ? { creatorId } : {}),
+        }),
       })
         .then((res) => res.json())
         .then((data) => {
@@ -102,6 +113,10 @@ export default function StorefrontGoogleAuthPage() {
               customerId: data.customerId,
               identityToken: data.identityToken,
               credits: data.credits,
+              earnedCredits: data.earnedCredits,
+              packCredits: data.packCredits,
+              shopFreeRemaining: data.shopFreeRemaining,
+              freeGenerationLimit: data.freeGenerationLimit,
               freeGenerationsUsed: data.freeGenerationsUsed,
               email: data.email,
             });
