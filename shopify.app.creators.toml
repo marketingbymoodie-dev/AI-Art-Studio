@@ -1,0 +1,63 @@
+# Custom-distribution clone for the creator checkout shop only
+# (aiartstudio-creators.myshopify.com). Same Railway production backend as
+# AI Art Studio. Not listed on the App Store — no review install gate.
+#
+# Fill client_id after you create / convert the app in Dev Dashboard.
+# Deploy config from the Dashboard (Release a version). Do NOT run
+# `shopify:deploy:creators` unless you later want checkout UI on this shop.
+# Creator "Back to shop" is the homepage button on aiartstudio.app, not checkout UI.
+
+client_id = "698a882c93395b5f87adad7856e3f5a3"
+name = "AI Art Studio Creators"
+application_url = "https://appai-pod-production.up.railway.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/data_request" ]
+uri = "/shopify/webhooks/customers-data-request"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/redact" ]
+uri = "/shopify/webhooks/customers-redact"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "shop/redact" ]
+uri = "/shopify/webhooks/shop-redact"
+
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/shopify/webhooks/uninstall"
+
+# Custom distribution on our shop — order webhooks for pack grants / refund clawback.
+[[webhooks.subscriptions]]
+topics = [ "orders/paid" ]
+uri = "/shopify/webhooks/orders-paid"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/cancelled" ]
+uri = "/shopify/webhooks/orders-cancelled"
+
+[[webhooks.subscriptions]]
+topics = [ "refunds/create" ]
+uri = "/shopify/webhooks/refunds-create"
+
+[access_scopes]
+scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks"
+
+[app_proxy]
+prefix = "apps"
+subpath = "appai"
+url = "https://appai-pod-production.up.railway.app/api/proxy"
+
+[auth]
+redirect_urls = [
+  "https://appai-pod-production.up.railway.app/auth/callback",
+  "https://appai-pod-production.up.railway.app/shopify/callback",
+  "https://appai-pod-production.up.railway.app/api/auth/callback"
+]
