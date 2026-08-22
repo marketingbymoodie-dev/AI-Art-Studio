@@ -110,6 +110,8 @@ import {
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
+import { ensureShopifyCarrierService } from "./printify-checkout-shipping";
+import { isCreatorPlatformShop } from "./creator-host";
 import { ensureValidOfflineAccessToken, getBearerTokenFromRequest, recoverOrCreateInstallationFromSession } from "./shopify-offline-token";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
@@ -23036,7 +23038,22 @@ ${orientationExtra}
     const installation = await ensureTrialStarted(resolved.installation);
     const merchant = await storage.getMerchantByShop(installation.shopDomain);
     const status = await getMerchantSetupStatus(installation, merchant);
-    return res.json(status);
+    const creatorCheckout = isCreatorPlatformShop(installation.shopDomain);
+    let carrierShipping: { ok: boolean; reason?: string } | null = null;
+    if (creatorCheckout && installation.accessToken) {
+      carrierShipping = await ensureShopifyCarrierService({
+        shop: installation.shopDomain,
+        accessToken: installation.accessToken,
+      });
+      if (status.nextStep === "enable_embed" || status.nextStep === "connect_printify") {
+        status.nextStep = "done";
+      }
+    }
+    return res.json({
+      ...status,
+      isCreatorCheckoutShop: creatorCheckout,
+      carrierShipping,
+    });
   }));
 
   /** POST /api/appai/setup/confirm-embed — merchant clicked "I've enabled it" on the App Embed step. */

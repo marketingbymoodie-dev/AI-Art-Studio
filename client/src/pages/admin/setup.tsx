@@ -145,7 +145,10 @@ export default function AdminSetupPage() {
 
   const embedDone = !!status?.embedEnabledGuess;
   const printifyDone = !!status?.printifyConnected;
-  const setupComplete = embedDone && printifyDone;
+  const creatorCheckout = !!status?.isCreatorCheckoutShop;
+  const setupComplete = creatorCheckout
+    ? status?.shopAuthorized !== false
+    : embedDone && printifyDone;
 
   const normalizedShop = shopDomain
     ? shopDomain.includes(".")
@@ -197,6 +200,26 @@ export default function AdminSetupPage() {
           )}
         </StepShell>
 
+        {creatorCheckout ? (
+        <StepShell number={2} title="Printify shipping quotes" done={!!status?.carrierShipping?.ok}>
+          {status?.carrierShipping?.ok ? (
+            <p className="text-sm text-muted-foreground">
+              Carrier registered. In Settings → Shipping and delivery, open General profile → a zone →
+              Add rate → Carrier or app calculated, and choose <strong>AI Art Studio</strong>.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                Shopify has not created the AI Art Studio carrier yet, so it will not appear in the
+                Carrier or app list. Opening this page retries registration.
+              </p>
+              {status?.carrierShipping?.reason && (
+                <p className="text-sm text-destructive">{status.carrierShipping.reason}</p>
+              )}
+            </div>
+          )}
+        </StepShell>
+        ) : (
         <StepShell number={2} title="Enable the App Embed" done={embedDone}>
           <div className="flex items-start gap-2 mb-3">
             <p className="text-sm text-muted-foreground flex-1">
@@ -268,7 +291,9 @@ export default function AdminSetupPage() {
             </p>
           )}
         </StepShell>
+        )}
 
+        {!creatorCheckout && (
         <StepShell number={3} title="Connect Printify to go Live" done={printifyDone} locked={!embedDone}>
           {!embedDone ? (
             <p className="text-sm text-muted-foreground">Enable the App Embed above to unlock this step.</p>
@@ -292,6 +317,7 @@ export default function AdminSetupPage() {
             </div>
           )}
         </StepShell>
+        )}
 
         {setupComplete && (
           <Card className="border-primary/30 bg-primary/5">
