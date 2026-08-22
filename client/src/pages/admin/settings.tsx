@@ -101,19 +101,11 @@ export default function AdminSettings() {
 
   useEffect(() => {
     if (!rewardLadder?.rungs?.length) return;
-    setRewardDrafts((prev) => {
-      const next: Record<string, RewardRungDraft> = {};
-      for (const rung of rewardLadder.rungs) {
-        const existing = prev[rung.rungKey];
-        const server = draftFromRung(rung);
-        const dirty =
-          !!existing &&
-          (existing.creditAmount !== server.creditAmount ||
-            existing.thresholdDollars !== server.thresholdDollars);
-        next[rung.rungKey] = dirty ? existing : server;
-      }
-      return next;
-    });
+    const next: Record<string, RewardRungDraft> = {};
+    for (const rung of rewardLadder.rungs) {
+      next[rung.rungKey] = draftFromRung(rung);
+    }
+    setRewardDrafts(next);
   }, [rewardLadder]);
 
   type RewardRungPatch = {
@@ -163,11 +155,13 @@ export default function AdminSettings() {
     },
   });
 
-  const saveRewardRungAmounts = (rung: RewardRung) => {
-    const draft = rewardDrafts[rung.rungKey];
-    if (!draft) return;
+  const patchFromDraft = (
+    rung: RewardRung,
+    extra?: Partial<RewardRungPatch>,
+  ): RewardRungPatch | null => {
+    const draft = rewardDrafts[rung.rungKey] ?? draftFromRung(rung);
     const creditAmount = Math.max(0, Math.min(50, Math.floor(Number(draft.creditAmount) || 0)));
-    const patch: RewardRungPatch = { rungKey: rung.rungKey, creditAmount };
+    const patch: RewardRungPatch = { rungKey: rung.rungKey, creditAmount, ...extra };
     if (rung.rungKey === "purchase_threshold") {
       const dollars = Number(draft.thresholdDollars);
       if (!Number.isFinite(dollars) || dollars < 1) {
@@ -176,11 +170,16 @@ export default function AdminSettings() {
           description: "Purchase threshold must be at least $1.",
           variant: "destructive",
         });
-        return;
+        return null;
       }
       patch.thresholdCents = Math.round(dollars * 100);
     }
-    updateRewardLadderMutation.mutate(patch);
+    return patch;
+  };
+
+  const saveRewardRungAmounts = (rung: RewardRung) => {
+    const patch = patchFromDraft(rung);
+    if (patch) updateRewardLadderMutation.mutate(patch);
   };
 
   const handleReconnectStore = async (shopDomain: string) => {
@@ -506,6 +505,11 @@ export default function AdminSettings() {
             <CardDescription>
               Share-design and purchase rewards come off your shop plan quota when spent.
               Studio Art Class signup credits are issued by Studio, not your quota.
+              {rewardLadder?.shopDomain ? (
+                <span className="block mt-1">
+                  Applies to {rewardLadder.shopDomain}. Creator shops share the checkout store’s ladder.
+                </span>
+              ) : null}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -554,12 +558,10 @@ export default function AdminSettings() {
                         <Switch
                           checked={rung.enabled && !disabled}
                           disabled={disabled || updateRewardLadderMutation.isPending}
-                          onCheckedChange={(checked) =>
-                            updateRewardLadderMutation.mutate({
-                              rungKey: rung.rungKey,
-                              enabled: checked,
-                            })
-                          }
+                          onCheckedChange={(checked) => {
+                            const patch = patchFromDraft(rung, { enabled: checked });
+                            if (patch) updateRewardLadderMutation.mutate(patch);
+                          }}
                         />
                       </div>
                       <div className="flex flex-wrap items-end gap-3">
@@ -585,6 +587,11 @@ export default function AdminSettings() {
                                 },
                               }))
                             }
+                            onBlur={() => {
+                              if (Number(draft.creditAmount) !== rung.creditAmount) {
+                                saveRewardRungAmounts(rung);
+                              }
+                            }}
                           />
                         </div>
                         {rung.rungKey === "purchase_threshold" && (
@@ -610,6 +617,14 @@ export default function AdminSettings() {
                                   },
                                 }))
                               }
+                              onBlur={() => {
+                                if (
+                                  Math.round(Number(draft.thresholdDollars) * 100) !==
+                                  (rung.thresholdCents ?? 0)
+                                ) {
+                                  saveRewardRungAmounts(rung);
+                                }
+                              }}
                             />
                           </div>
                         )}
