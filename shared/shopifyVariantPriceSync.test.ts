@@ -6,6 +6,7 @@ import {
   hasPositiveRetailPrice,
   minPositiveRetailPrice,
   pickLowestPricedShopifyVariant,
+  resolveShopifyVariantIdFromPriceKey,
   resolveStorefrontHeadlinePrice,
 } from "./shopifyVariantPriceSync";
 
@@ -89,6 +90,60 @@ describe("buildPrintifyToShopifyVariantIdMap", () => {
       shopifyVariants: [{ id: 88001, title: "One Size", option1: "One Size" }],
     });
     expect(map["41801"]).toBe(88001);
+  });
+});
+
+describe("resolveShopifyVariantIdFromPriceKey", () => {
+  const printifyToShopify = { "12128": 9000000002 };
+  const variantMap = { "2xl:black": { printifyVariantId: 12128 } };
+
+  it("maps wizard size:2xl:color keys via variantMap, not digit-stripped 2", () => {
+    expect(
+      resolveShopifyVariantIdFromPriceKey({
+        priceKey: "size:2xl:black",
+        printifyToShopify,
+        variantMap,
+        knownShopifyVariantIds: [9000000002],
+      }),
+    ).toBe(9000000002);
+  });
+
+  it("maps printify: prefixed keys", () => {
+    expect(
+      resolveShopifyVariantIdFromPriceKey({
+        priceKey: "printify:12128",
+        printifyToShopify,
+        variantMap,
+      }),
+    ).toBe(9000000002);
+  });
+
+  it("refuses bare size tokens that used to 404 as Shopify variant 2–5", () => {
+    expect(
+      resolveShopifyVariantIdFromPriceKey({
+        priceKey: "size:2xl:black",
+        printifyToShopify: {},
+        variantMap: {},
+        knownShopifyVariantIds: [9000000002],
+      }),
+    ).toBe(0);
+    expect(
+      resolveShopifyVariantIdFromPriceKey({
+        priceKey: "2",
+        printifyToShopify: {},
+        knownShopifyVariantIds: [9000000002],
+      }),
+    ).toBe(0);
+  });
+
+  it("accepts a real Shopify variant id when it is on the product", () => {
+    expect(
+      resolveShopifyVariantIdFromPriceKey({
+        priceKey: "9000000002",
+        printifyToShopify: {},
+        knownShopifyVariantIds: [9000000002],
+      }),
+    ).toBe(9000000002);
   });
 });
 

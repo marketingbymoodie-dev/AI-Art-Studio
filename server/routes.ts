@@ -65,7 +65,7 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
-import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant } from "@shared/shopifyVariantPriceSync";
+import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant, resolveShopifyVariantIdFromPriceKey } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
@@ -20803,7 +20803,7 @@ ${orientationExtra}
       baseProductHandle: productHandle,
       baseProductTitle: productTitle,
       baseVariantTitle: variant.title ?? "",
-      baseProductPrice: cachedFromPrice,
+      baseProductPrice: hasPositiveRetailPrice(variant?.price) ? String(variant.price) : "",
       productTypeId: resolvedProductTypeId,
       styleConfig: styleConfig as any,
       status: initialStatus,
@@ -21111,6 +21111,10 @@ ${orientationExtra}
       shopifyVariants,
     });
 
+    const knownShopifyVariantIds = shopifyVariants
+      .map((sv) => Number(sv.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
     console.log(
       `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}`,
     );
@@ -21155,13 +21159,12 @@ ${orientationExtra}
         continue;
       }
 
-      let variantNum: number;
-      if (String(vid).startsWith("printify:")) {
-        const printifyId = String(vid).replace("printify:", "");
-        variantNum = printifyToShopifyVariantId[printifyId] ?? 0;
-      } else {
-        variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
-      }
+      const variantNum = resolveShopifyVariantIdFromPriceKey({
+        priceKey: String(vid),
+        printifyToShopify: printifyToShopifyVariantId,
+        variantMap: productType?.variantMap,
+        knownShopifyVariantIds,
+      });
       if (!variantNum) {
         updated.push({
           variantId: 0,
