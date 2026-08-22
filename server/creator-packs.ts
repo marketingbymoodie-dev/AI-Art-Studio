@@ -18,7 +18,7 @@ import {
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "./shopify-storefront";
 import { publishProductToCheckoutChannels } from "./shopify-publications";
 import { clawbackStudioCredits, grantStudioCredits } from "./studio-credits";
-import { creatorReturnCheckoutAttributes, lookupCreatorByUsername } from "./creator-host";
+import { creatorReturnCheckoutAttributes, isCreatorPlatformShop, lookupCreatorByUsername } from "./creator-host";
 import { normalizeShopifyOrderLine } from "./flat-order-fulfillment";
 import { storage } from "./storage";
 
@@ -44,10 +44,7 @@ function normalizeShop(shop: string | null | undefined): string {
 }
 
 function isPlatformShop(shop: string): boolean {
-  const platform = normalizeShop(getCreatorPlatformShopDomain());
-  if (!platform) return false;
-  const s = normalizeShop(shop);
-  return s === platform || s === platform.replace(/\.myshopify\.com$/, "");
+  return isCreatorPlatformShop(shop);
 }
 
 /** Env override: CREATOR_PACK_VARIANTS_JSON={"5":"123456","10":"789"} */

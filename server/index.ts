@@ -420,5 +420,12 @@ app.use((req, res, next) => {
   const PORT = process.env.PORT || 5000;
   httpServer.listen(PORT, () => {
     log(`serving on port ${PORT}`);
+    void import("./creator-checkout-webhooks")
+      .then(({ ensureCreatorCheckoutWebhooksForPlatformShop }) =>
+        ensureCreatorCheckoutWebhooksForPlatformShop(),
+      )
+      .catch((e: any) =>
+        console.warn("[creator-webhooks] startup register failed:", e?.message || e),
+      );
   });
 })();
