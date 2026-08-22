@@ -18,11 +18,12 @@
  *     so the underlying wallet mutation never double-applies even under retries.
  */
 import { and, eq } from "drizzle-orm";
-import { db } from "./db";
+import { db, pool } from "./db";
 import { rewardGrants, rewardLadderRungs, type RewardLadderRung } from "@shared/schema";
 import { grantStudioCredits, clawbackStudioCredits, type CreditSource } from "./studio-credits";
 import { storage } from "./storage";
 import { clampStorefrontFreeGens, STOREFRONT_FREE_GENERATION_DEFAULT } from "@shared/storefront-credits";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
 
 export type RewardRungKey =
   | "free_anonymous"
@@ -70,7 +71,45 @@ export const DEFAULT_RUNGS: RewardRungConfig[] = [
 ];
 
 function normalizeShop(shop: string): string {
-  return String(shop || "").trim().toLowerCase();
+  return normalizeMyshopifyShopDomain(shop) || String(shop || "").trim().toLowerCase();
+}
+
+export function serializeRewardRung(r: RewardLadderRung) {
+  return {
+    id: r.id,
+    shop: r.shop,
+    rungKey: r.rungKey as RewardRungKey,
+    enabled: !!r.enabled,
+    creditAmount: Math.max(0, Math.floor(Number(r.creditAmount) || 0)),
+    thresholdCents:
+      r.thresholdCents == null ? null : Math.max(0, Math.floor(Number(r.thresholdCents))),
+    sortOrder: Number(r.sortOrder) || 0,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  };
+}
+
+/** Move legacy shop-key rows onto the canonical `{handle}.myshopify.com`. */
+async function migrateRewardLadderShopAliases(normShop: string, rawShop: string): Promise<void> {
+  const aliases = Array.from(
+    new Set(
+      [rawShop, String(rawShop || "").trim().toLowerCase()]
+        .map((s) => String(s || "").trim())
+        .filter((s) => s && s !== normShop),
+    ),
+  );
+  for (const alias of aliases) {
+    await pool.query(
+      `UPDATE reward_ladder_rungs AS src
+          SET shop = $1, updated_at = NOW()
+        WHERE src.shop = $2
+          AND NOT EXISTS (
+            SELECT 1 FROM reward_ladder_rungs dst
+             WHERE dst.shop = $1 AND dst.rung_key = src.rung_key
+          )`,
+      [normShop, alias],
+    );
+  }
 }
 
 /** Small blocklist of common disposable inbox domains (best-effort spam guard). */
@@ -139,6 +178,7 @@ export function normalizeEmail(email: string | null | undefined): string | null 
 export async function ensureRewardLadder(shop: string): Promise<RewardLadderRung[]> {
   const normShop = normalizeShop(shop);
   if (!normShop) return [];
+  await migrateRewardLadderShopAliases(normShop, shop);
 
   const existing = await db.select().from(rewardLadderRungs).where(eq(rewardLadderRungs.shop, normShop));
   const existingKeys = new Set(existing.map((r) => r.rungKey));
@@ -209,30 +249,52 @@ export async function patchRewardLadder(
     if (rungKey === "purchase_threshold" && sanitized.enabled === true && !PURCHASE_REWARDS_ENABLED()) {
       sanitized.enabled = false;
     }
-    const updated = await db
-      .update(rewardLadderRungs)
-      .set({ ...sanitized, updatedAt: new Date() })
-      .where(and(eq(rewardLadderRungs.shop, normShop), eq(rewardLadderRungs.rungKey, rungKey)))
-      .returning({ id: rewardLadderRungs.id });
-    if (updated.length === 0) {
+    const sets: string[] = ["updated_at = NOW()"];
+    const vals: unknown[] = [];
+    if (sanitized.enabled !== undefined) {
+      vals.push(sanitized.enabled);
+      sets.push(`enabled = $${vals.length}`);
+    }
+    if (sanitized.creditAmount !== undefined) {
+      vals.push(sanitized.creditAmount);
+      sets.push(`credit_amount = $${vals.length}`);
+    }
+    if (sanitized.thresholdCents !== undefined) {
+      vals.push(sanitized.thresholdCents);
+      sets.push(`threshold_cents = $${vals.length}`);
+    }
+    vals.push(normShop, rungKey);
+    const shopIdx = vals.length - 1;
+    const keyIdx = vals.length;
+    const updated = await pool.query<{ id: number; credit_amount: number }>(
+      `UPDATE reward_ladder_rungs
+          SET ${sets.join(", ")}
+        WHERE shop = $${shopIdx} AND rung_key = $${keyIdx}
+    RETURNING id, credit_amount`,
+      vals,
+    );
+    if (updated.rowCount === 0) {
       const fallback = DEFAULT_RUNGS.find((r) => r.rungKey === rungKey);
-      await db
-        .insert(rewardLadderRungs)
-        .values({
-          shop: normShop,
+      await pool.query(
+        `INSERT INTO reward_ladder_rungs
+           (shop, rung_key, enabled, credit_amount, threshold_cents, sort_order, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+         ON CONFLICT (shop, rung_key) DO UPDATE SET
+           enabled = COALESCE($3, reward_ladder_rungs.enabled),
+           credit_amount = COALESCE($4, reward_ladder_rungs.credit_amount),
+           threshold_cents = COALESCE($5, reward_ladder_rungs.threshold_cents),
+           updated_at = NOW()`,
+        [
+          normShop,
           rungKey,
-          enabled: sanitized.enabled ?? fallback?.enabled ?? true,
-          creditAmount: sanitized.creditAmount ?? fallback?.creditAmount ?? 1,
-          thresholdCents:
-            sanitized.thresholdCents !== undefined
-              ? sanitized.thresholdCents
-              : (fallback?.thresholdCents ?? null),
-          sortOrder: fallback?.sortOrder ?? 0,
-        })
-        .onConflictDoUpdate({
-          target: [rewardLadderRungs.shop, rewardLadderRungs.rungKey],
-          set: { ...sanitized, updatedAt: new Date() },
-        });
+          sanitized.enabled ?? fallback?.enabled ?? true,
+          sanitized.creditAmount ?? fallback?.creditAmount ?? 1,
+          sanitized.thresholdCents !== undefined
+            ? sanitized.thresholdCents
+            : (fallback?.thresholdCents ?? null),
+          fallback?.sortOrder ?? 0,
+        ],
+      );
     }
   }
   return getRewardLadder(normShop);

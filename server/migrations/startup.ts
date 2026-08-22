@@ -109,6 +109,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "credit_ledger",          column: "quota_bucket_key",           type: "TEXT" },
   { table: "shared_designs",         column: "owner_customer_id",          type: "VARCHAR" },
   { table: "shared_designs",         column: "creator_id",                 type: "VARCHAR" },
+  { table: "reward_ladder_rungs",    column: "credit_amount",              type: "INTEGER NOT NULL DEFAULT 1" },
+  { table: "reward_ladder_rungs",    column: "threshold_cents",            type: "INTEGER" },
   { table: "creator_applications",   column: "apply_track",                type: "TEXT NOT NULL DEFAULT 'creator'" },
   { table: "creator_applications",   column: "payout_method",              type: "TEXT" },
   { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },

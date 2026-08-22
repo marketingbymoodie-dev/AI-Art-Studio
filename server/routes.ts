@@ -144,6 +144,7 @@ import {
   ensureRewardLadder,
   getRewardLadder,
   patchRewardLadder,
+  serializeRewardRung,
   tryGrantShareDesign,
   tryGrantPurchaseThreshold,
   clawbackPurchaseThresholdForOrder,
@@ -10923,13 +10924,16 @@ ${orientationExtra}
           r.rungKey === "share_design" ||
           r.rungKey === "purchase_threshold",
         )
-        .map((r) => ({
-          rungKey: r.rungKey,
-          enabled: !!r.enabled,
-          creditAmount: Math.max(0, Math.floor(r.creditAmount || 0)),
-          thresholdCents: r.thresholdCents ?? null,
-          sortOrder: r.sortOrder,
-        }));
+        .map((r) => {
+          const row = serializeRewardRung(r);
+          return {
+            rungKey: row.rungKey,
+            enabled: row.enabled,
+            creditAmount: row.creditAmount,
+            thresholdCents: row.thresholdCents,
+            sortOrder: row.sortOrder,
+          };
+        });
       return res.json({
         googleClientId: getGoogleOAuthClientId(),
         freeGenerationLimit: clampStorefrontFreeGens(
@@ -24030,7 +24034,7 @@ ${orientationExtra}
     return res.json({
       shopDomain: installation.shopDomain,
       purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
-      rungs,
+      rungs: rungs.map(serializeRewardRung),
     });
   }));
 
@@ -24067,7 +24071,7 @@ ${orientationExtra}
     return res.json({
       shopDomain: installation.shopDomain,
       purchaseRewardsEnabled: process.env.PURCHASE_REWARDS_ENABLED !== "false",
-      rungs,
+      rungs: rungs.map(serializeRewardRung),
     });
   }));
 
