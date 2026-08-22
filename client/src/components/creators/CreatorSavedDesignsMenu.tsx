@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Images, X } from "lucide-react";
 import { API_BASE } from "@/lib/urlBase";
+import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 
 type SavedDesign = {
   id: string;
@@ -244,9 +245,20 @@ export function CreatorSavedDesignsMenu({
   const [designs, setDesigns] = useState<SavedDesign[]>([]);
   const [pages, setPages] = useState<ShopPage[]>([]);
   const [galleryLimit, setGalleryLimit] = useState(20);
+  const [visitedShops, setVisitedShops] = useState<VisitedShopLink[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const customerId = readLoggedInCustomerId();
+
+  useEffect(() => {
+    const loggedIn = readLoggedInCustomer();
+    if (!username || !loggedIn?.id) return;
+    fetch(`${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/visit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customerId: loggedIn.id }),
+    }).catch(() => {});
+  }, [username, customerId]);
 
   useEffect(() => {
     if (!open) return;
@@ -279,6 +291,7 @@ export function CreatorSavedDesignsMenu({
         if (typeof designData?.limit === "number" && designData.limit > 0) {
           setGalleryLimit(designData.limit);
         }
+        setVisitedShops(Array.isArray(designData?.visitedShops) ? designData.visitedShops : []);
         setPages(Array.isArray(pageData?.pages) ? pageData.pages : []);
       })
       .catch(() => {
@@ -390,6 +403,7 @@ export function CreatorSavedDesignsMenu({
               <X className="h-4 w-4" />
             </button>
           </div>
+          <CreatorVisitedShops currentUsername={username} shops={visitedShops} />
           {slotCount >= galleryLimit - 4 && slotCount < galleryLimit ? (
             <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.

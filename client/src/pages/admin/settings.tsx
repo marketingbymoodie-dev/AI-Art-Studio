@@ -84,24 +84,36 @@ export default function AdminSettings() {
 
   const { data: rewardLadder } = useQuery<RewardLadderResponse>({
     queryKey: ["/api/admin/reward-ladder"],
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   type RewardRungDraft = { creditAmount: string; thresholdDollars: string };
   const [rewardDrafts, setRewardDrafts] = useState<Record<string, RewardRungDraft>>({});
 
+  const draftFromRung = (rung: RewardRung): RewardRungDraft => ({
+    creditAmount: String(rung.creditAmount ?? 0),
+    thresholdDollars:
+      rung.thresholdCents != null && rung.thresholdCents > 0
+        ? String(Math.round(rung.thresholdCents) / 100)
+        : "50",
+  });
+
   useEffect(() => {
     if (!rewardLadder?.rungs?.length) return;
-    const next: Record<string, RewardRungDraft> = {};
-    for (const rung of rewardLadder.rungs) {
-      next[rung.rungKey] = {
-        creditAmount: String(rung.creditAmount ?? 0),
-        thresholdDollars:
-          rung.thresholdCents != null && rung.thresholdCents > 0
-            ? String(Math.round(rung.thresholdCents) / 100)
-            : "50",
-      };
-    }
-    setRewardDrafts(next);
+    setRewardDrafts((prev) => {
+      const next: Record<string, RewardRungDraft> = {};
+      for (const rung of rewardLadder.rungs) {
+        const existing = prev[rung.rungKey];
+        const server = draftFromRung(rung);
+        const dirty =
+          !!existing &&
+          (existing.creditAmount !== server.creditAmount ||
+            existing.thresholdDollars !== server.thresholdDollars);
+        next[rung.rungKey] = dirty ? existing : server;
+      }
+      return next;
+    });
   }, [rewardLadder]);
 
   type RewardRungPatch = {
@@ -118,10 +130,28 @@ export default function AdminSettings() {
       });
       return res.json() as Promise<RewardLadderResponse>;
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/reward-ladder"] });
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(["/api/admin/reward-ladder"], data);
+      if (data?.rungs?.length) {
+        setRewardDrafts((prev) => {
+          const next = { ...prev };
+          for (const rung of data.rungs) {
+            next[rung.rungKey] = draftFromRung(rung);
+          }
+          return next;
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["/api/admin/reward-ladder"] });
       if (variables.creditAmount !== undefined || variables.thresholdCents !== undefined) {
-        toast({ title: "Saved", description: "Reward Ladder updated." });
+        const saved = data?.rungs?.find((r) => r.rungKey === variables.rungKey);
+        const credits = saved?.creditAmount ?? variables.creditAmount;
+        toast({
+          title: "Saved",
+          description:
+            credits != null
+              ? `Reward Ladder updated — ${credits} credit${credits === 1 ? "" : "s"}.`
+              : "Reward Ladder updated.",
+        });
       }
     },
     onError: (error: Error) => {

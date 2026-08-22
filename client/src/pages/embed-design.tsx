@@ -7,6 +7,7 @@ import {
 } from "@/lib/creator-analytics";
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { shadowDesignIdForCart } from "@shared/shadowDesignId";
 import {
   LINE_FLAT_PLACEMENT_KEY,
@@ -2752,6 +2753,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
+  const [visitedCreatorShops, setVisitedCreatorShops] = useState<VisitedShopLink[]>([]);
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [showArtClassSignup, setShowArtClassSignup] = useState(false);
   const [couponCode, setCouponCode] = useState('');
@@ -2763,6 +2765,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     Array<{ packId: string; credits: number; priceInCents: number; label: string }>
   >([]);
   const [packCheckoutLoadingId, setPackCheckoutLoadingId] = useState<string | null>(null);
+  const [packCheckoutError, setPackCheckoutError] = useState<string | null>(null);
   const paidCredits = customer?.credits ?? 0;
   const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
   const creditBreakdown = storefrontCreditBreakdown({
@@ -2776,6 +2779,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const artworksRemaining = creditBreakdown.total;
   const hasGenerationCapacity = artworksRemaining > 0;
   const storefrontLoggedIn = customer?.isLoggedIn === true;
+  useEffect(() => {
+    if (!isCreatorStorefront || !creatorUsernameParam || !storefrontCustomerId || !storefrontLoggedIn) {
+      return;
+    }
+    safeFetch(`${API_BASE}/api/creators/storefront/${encodeURIComponent(creatorUsernameParam)}/visit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customerId: storefrontCustomerId }),
+    }).catch(() => {});
+  }, [isCreatorStorefront, creatorUsernameParam, storefrontCustomerId, storefrontLoggedIn]);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -3032,7 +3045,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const buyCreatorCreditPack = useCallback(
     async (packId: string) => {
       const customerId = storefrontCustomerId || customer?.id;
+      setPackCheckoutError(null);
+      if (!storefrontLoggedIn) {
+        setPackCheckoutError("Sign in first so these credits land on your account.");
+        setCreditsPopoverOpen(false);
+        setShowOtpLogin(true);
+        return;
+      }
       if (!customerId) {
+        setPackCheckoutError("Finish loading your session, then try buying credits again.");
         toast({
           title: "Almost ready",
           description: "Finish loading your session, then try buying credits again.",
@@ -3041,19 +3062,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return;
       }
       if (isCreatorStorefront && !creatorUsernameParam) {
-        toast({
-          title: "Unavailable",
-          description: "Credit packs need a creator shop.",
-          variant: "destructive",
-        });
+        setPackCheckoutError("Credit packs need a creator shop.");
         return;
       }
       if (!isCreatorStorefront && !shopDomain) {
-        toast({
-          title: "Unavailable",
-          description: "Credit packs need a shop.",
-          variant: "destructive",
-        });
+        setPackCheckoutError("Credit packs need a shop.");
         return;
       }
       setPackCheckoutLoadingId(packId);
@@ -3082,8 +3095,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!res.ok || !data?.checkoutUrl) {
           throw new Error(data?.error || data?.message || "Could not start checkout");
         }
-        const target = window.top || window;
-        target.location.href = isCreatorStorefront
+        const dest = isCreatorStorefront
           ? creatorCheckoutRememberUrl({
               checkoutUrl: String(data.checkoutUrl),
               username: creatorUsernameParam,
@@ -3091,17 +3103,38 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
             })
           : String(data.checkoutUrl);
+        try {
+          const target = window.top || window;
+          target.location.assign(dest);
+        } catch {
+          window.location.assign(dest);
+        }
+        window.setTimeout(() => {
+          if (document.visibilityState === "visible") {
+            window.location.assign(dest);
+          }
+        }, 400);
       } catch (e: any) {
+        const message = e?.message || "Please try again.";
+        setPackCheckoutError(message);
         toast({
           title: "Pack checkout failed",
-          description: e?.message || "Please try again.",
+          description: message,
           variant: "destructive",
         });
       } finally {
         setPackCheckoutLoadingId(null);
       }
     },
-    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast, isCreatorStorefront, shopDomain],
+    [
+      storefrontCustomerId,
+      customer?.id,
+      creatorUsernameParam,
+      toast,
+      isCreatorStorefront,
+      shopDomain,
+      storefrontLoggedIn,
+    ],
   );
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
@@ -10111,6 +10144,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           productId: productId || null,
           productHandle: productHandle || null,
           customerId: storefrontCustomerId || customer?.id || null,
+          creatorId: creatorIdParam || null,
+          creatorUsername: creatorUsernameParam || null,
         }),
       });
 
@@ -12569,6 +12604,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       .then(data => {
         if (data.designs) setSavedDesigns(data.designs);
         if (data.limit) setGalleryLimit(data.limit);
+        if (Array.isArray(data.visitedShops)) setVisitedCreatorShops(data.visitedShops);
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
@@ -13258,7 +13294,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
+      <Dialog
+        open={creditsPopoverOpen}
+        onOpenChange={(open) => {
+          setCreditsPopoverOpen(open);
+          if (open) setPackCheckoutError(null);
+        }}
+      >
         <DialogContent className="text-sm space-y-3 sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Studio Credits</DialogTitle>
@@ -13346,6 +13388,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 </Button>
               ))}
             </div>
+            {packCheckoutError ? (
+              <p className="text-xs text-destructive">{packCheckoutError}</p>
+            ) : null}
           </div>
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (
@@ -13825,6 +13870,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
+                        {isCreatorStorefront ? (
+                          <CreatorVisitedShops
+                            currentUsername={creatorUsernameParam}
+                            shops={visitedCreatorShops}
+                          />
+                        ) : null}
                         <div className="mb-3 rounded-md border bg-muted/50 p-3">
                           <p className="text-sm font-medium mb-1">Studio Art Class</p>
                           <StudioNewsletterSignup

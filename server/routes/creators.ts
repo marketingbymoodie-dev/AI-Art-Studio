@@ -221,6 +221,29 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  app.post("/api/creators/storefront/:username/visit", async (req, res) => {
+    if (!isCreatorMarketplaceEnabled()) {
+      return res.status(404).json({ error: "Creator Marketplace is not enabled." });
+    }
+    try {
+      const customerId = String(req.body?.customerId || "").trim();
+      if (!customerId) return res.status(400).json({ error: "customerId is required" });
+      const boot = await getCreatorStorefrontByUsername(req.params.username);
+      if (!boot) return res.status(404).json({ error: "Creator storefront not found." });
+      const { rememberCreatorShopVisit } = await import("../creator-shop-visits");
+      await rememberCreatorShopVisit({
+        customerId,
+        creatorId: boot.id,
+        creatorUsername: boot.username,
+        shopName: boot.publicName || boot.username,
+      });
+      return res.json({ ok: true });
+    } catch (e: any) {
+      console.error("[creators] remember visit failed:", e);
+      return res.status(500).json({ error: e?.message || "Failed to remember shop visit" });
+    }
+  });
+
   app.get("/api/creators/shop-name-available", async (req, res) => {
     if (!marketplaceGate(res)) return;
     const rl = checkCreatorRateLimit({
