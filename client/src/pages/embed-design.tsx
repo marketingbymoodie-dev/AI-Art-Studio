@@ -10123,6 +10123,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           productId: productId || null,
           productHandle: productHandle || null,
           customerId: storefrontCustomerId || customer?.id || null,
+          creatorId: creatorIdParam || null,
+          creatorUsername: creatorUsernameParam || null,
         }),
       });
 

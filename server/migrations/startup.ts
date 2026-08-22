@@ -108,6 +108,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "credit_ledger",          column: "related_entity_id",          type: "TEXT" },
   { table: "credit_ledger",          column: "quota_bucket_key",           type: "TEXT" },
   { table: "shared_designs",         column: "owner_customer_id",          type: "VARCHAR" },
+  { table: "shared_designs",         column: "creator_id",                 type: "VARCHAR" },
   { table: "creator_applications",   column: "apply_track",                type: "TEXT NOT NULL DEFAULT 'creator'" },
   { table: "creator_applications",   column: "payout_method",              type: "TEXT" },
   { table: "creator_applications",   column: "payout_detail",              type: "TEXT" },
@@ -1207,6 +1208,18 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "creator_customer_earned",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_customer_earned" (
+        "creator_id" varchar NOT NULL,
+        "customer_id" text NOT NULL,
+        "earned_credits" integer NOT NULL DEFAULT 0,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        UNIQUE ("creator_id", "customer_id")
+      )
+    `,
+  },
+  {
     name: "creator_generation_costs",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
@@ -1741,6 +1754,11 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_customer_free_gens_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_free_gens_uidx"
       ON "creator_customer_free_gens" ("creator_id", "customer_id")`,
+  },
+  {
+    name: "creator_customer_earned_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_earned_uidx"
+      ON "creator_customer_earned" ("creator_id", "customer_id")`,
   },
   {
     name: "creator_customer_shop_visits_uidx",

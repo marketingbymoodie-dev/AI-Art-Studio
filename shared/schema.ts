@@ -795,6 +795,8 @@ export const sharedDesigns = pgTable("shared_designs", {
   viewCount: integer("view_count").notNull().default(0),
   /** Internal customer id of the sharer, if known — used by the Reward Ladder share_design rung. */
   ownerCustomerId: varchar("owner_customer_id"),
+  /** Creator shop that issued the share (keeps share rewards on that store). */
+  creatorId: varchar("creator_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -1589,6 +1591,20 @@ export const creatorCustomerFreeGens = pgTable(
   },
   (table) => [
     uniqueIndex("creator_customer_free_gens_uidx").on(table.creatorId, table.customerId),
+  ],
+);
+
+/** Reward-ladder credits that must stay on the creator shop that issued them. */
+export const creatorCustomerEarned = pgTable(
+  "creator_customer_earned",
+  {
+    creatorId: varchar("creator_id").notNull(),
+    customerId: text("customer_id").notNull(),
+    earnedCredits: integer("earned_credits").notNull().default(0),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_customer_earned_uidx").on(table.creatorId, table.customerId),
   ],
 );
 

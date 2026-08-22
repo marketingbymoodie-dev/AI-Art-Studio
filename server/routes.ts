@@ -8115,9 +8115,18 @@ ${orientationExtra}
             shopFreeRemaining = freePeek.remaining;
             shopFreeUsed = freePeek.used;
           }
+          let paidCredits = balance.credits;
+          if (creatorCtx) {
+            const { peekCreatorEarned } = await import("./creator-earned");
+            const creatorEarned = await peekCreatorEarned({
+              creatorId: creatorCtx.id,
+              customerId: customer.id,
+            });
+            paidCredits = creatorEarned + (balance.packCredits ?? 0);
+          }
           const spend = pickStorefrontGenerationSpend({
             shopFreeRemaining,
-            paidCredits: balance.credits,
+            paidCredits,
           });
           if (spend === "customer_free") {
             storefrontBillingMode = "customer_free";
@@ -8784,14 +8793,27 @@ ${orientationExtra}
             const { packGensBurnCreatorAllowance } = await import("./creator-packs");
             let spentCreditSource: "pack" | "earned" | null = null;
             if (workerBillingMode === "customer_paid" && workerCustomerId) {
-              const paid = await applyCustomerBillingOnSuccess({
+              const { spendCreatorEarned } = await import("./creator-earned");
+              const { spendStudioCredit } = await import("./studio-credits");
+              const earned = await spendCreatorEarned({
+                creatorId: workerCreatorCtx.id,
                 customerId: workerCustomerId,
-                mode: "customer_paid",
-                idempotencyKey: reqId.toString(),
-                externalRef: reqId.toString(),
+                idempotencyKey: `${reqId}:creator-earned`,
                 shop,
+                externalRef: reqId.toString(),
               });
-              spentCreditSource = paid.source;
+              if (earned.spent) {
+                spentCreditSource = "earned";
+              } else {
+                const paid = await spendStudioCredit({
+                  customerId: workerCustomerId,
+                  idempotencyKey: reqId.toString(),
+                  externalRef: reqId.toString(),
+                  shop,
+                  preferSource: "pack",
+                });
+                spentCreditSource = paid.source;
+              }
             } else if (workerBillingMode === "customer_free" && workerCustomerId) {
               await consumeCreatorCustomerFreeGen({
                 creatorId: workerCreatorCtx.id,
@@ -11383,11 +11405,22 @@ ${orientationExtra}
                 shopifyCustomerId,
               }).catch(() => null);
               if (!resolved) return;
+              let orderCreatorId: string | null = null;
+              if (Array.isArray(order.line_items)) {
+                for (const raw of order.line_items) {
+                  const props = normalizeShopifyOrderLine(raw).properties || {};
+                  if (props._creator_id) {
+                    orderCreatorId = String(props._creator_id);
+                    break;
+                  }
+                }
+              }
               const r = await tryGrantPurchaseThreshold({
                 shop,
                 customerId: resolved.id,
                 orderId: String(orderId),
                 subtotalCents,
+                creatorId: orderCreatorId,
               });
               if (r.granted) {
                 console.log(`[Shopify Orders Paid] granted purchase_threshold rung to ${resolved.id} for order ${orderId}`);
@@ -12634,6 +12667,8 @@ ${orientationExtra}
         productId,
         productHandle,
         customerId: rawOwnerCustomerId,
+        creatorId: rawShareCreatorId,
+        creatorUsername: rawShareCreatorUsername,
       } = req.body;
 
       if (!rawImageUrl || !prompt) {
@@ -12666,6 +12701,22 @@ ${orientationExtra}
         if (resolved) ownerCustomerId = resolved.id;
       }
 
+      let shareCreatorId: string | null = null;
+      if (rawShareCreatorId || rawShareCreatorUsername) {
+        try {
+          const { assertPublicCreatorApiContext } = await import("./creator-host");
+          const asserted = await assertPublicCreatorApiContext({
+            shop: shopDomain ? String(shopDomain) : null,
+            creatorId: rawShareCreatorId ? String(rawShareCreatorId) : null,
+            creatorUsername: rawShareCreatorUsername ? String(rawShareCreatorUsername) : null,
+            requirePlatformShop: true,
+          });
+          if (asserted.ok) shareCreatorId = asserted.creator.id;
+        } catch {
+          shareCreatorId = rawShareCreatorId ? String(rawShareCreatorId) : null;
+        }
+      }
+
       const sharedDesign = await storage.createSharedDesign({
         designId: null, // Nullable for unsaved designs
         shareToken,
@@ -12683,6 +12734,7 @@ ${orientationExtra}
         productId: productId || null,
         productHandle: productHandle || null,
         ownerCustomerId,
+        creatorId: shareCreatorId,
         expiresAt,
         viewCount: 0,
       });
@@ -12739,6 +12791,9 @@ ${orientationExtra}
           visitorCustomerId,
           visitorKey,
           shareId: sharedDesign.id,
+          creatorId:
+            (sharedDesign as any).creatorId ||
+            (typeof req.query.creatorId === "string" ? req.query.creatorId : null),
         }).catch((err: any) => console.warn(`[Share View] share_design grant failed:`, err?.message));
       }
 

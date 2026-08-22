@@ -36,6 +36,8 @@ export type SpendStudioCreditParams = {
   /** Merchant generation bucket key when burning earned credit quota. */
   quotaBucketKey?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Creator shops pass "pack" so shared earned rewards cannot leave the issuing store. */
+  preferSource?: CreditSource;
 };
 
 export type ClawbackStudioCreditsParams = {
@@ -188,7 +190,13 @@ export async function spendStudioCredit(params: SpendStudioCreditParams): Promis
       return { spent: false, source: null, balance: current, duplicate: false };
     }
 
-    const source: CreditSource = current.earnedCredits > 0 ? "earned" : "pack";
+    let source: CreditSource = current.earnedCredits > 0 ? "earned" : "pack";
+    if (params.preferSource === "pack") {
+      if (current.packCredits <= 0) {
+        return { spent: false, source: null, balance: current, duplicate: false };
+      }
+      source = "pack";
+    }
     if (source === "pack" && current.packCredits <= 0) {
       // Total credits > 0 but buckets empty (legacy row) — treat as earned for quota safety.
       // Still debit total.
