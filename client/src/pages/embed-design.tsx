@@ -2765,6 +2765,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     Array<{ packId: string; credits: number; priceInCents: number; label: string }>
   >([]);
   const [packCheckoutLoadingId, setPackCheckoutLoadingId] = useState<string | null>(null);
+  const [packCheckoutError, setPackCheckoutError] = useState<string | null>(null);
   const paidCredits = customer?.credits ?? 0;
   const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
   const creditBreakdown = storefrontCreditBreakdown({
@@ -3044,7 +3045,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const buyCreatorCreditPack = useCallback(
     async (packId: string) => {
       const customerId = storefrontCustomerId || customer?.id;
+      setPackCheckoutError(null);
+      if (!storefrontLoggedIn) {
+        setPackCheckoutError("Sign in first so these credits land on your account.");
+        setCreditsPopoverOpen(false);
+        setShowOtpLogin(true);
+        return;
+      }
       if (!customerId) {
+        setPackCheckoutError("Finish loading your session, then try buying credits again.");
         toast({
           title: "Almost ready",
           description: "Finish loading your session, then try buying credits again.",
@@ -3053,19 +3062,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return;
       }
       if (isCreatorStorefront && !creatorUsernameParam) {
-        toast({
-          title: "Unavailable",
-          description: "Credit packs need a creator shop.",
-          variant: "destructive",
-        });
+        setPackCheckoutError("Credit packs need a creator shop.");
         return;
       }
       if (!isCreatorStorefront && !shopDomain) {
-        toast({
-          title: "Unavailable",
-          description: "Credit packs need a shop.",
-          variant: "destructive",
-        });
+        setPackCheckoutError("Credit packs need a shop.");
         return;
       }
       setPackCheckoutLoadingId(packId);
@@ -3094,8 +3095,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!res.ok || !data?.checkoutUrl) {
           throw new Error(data?.error || data?.message || "Could not start checkout");
         }
-        const target = window.top || window;
-        target.location.href = isCreatorStorefront
+        const dest = isCreatorStorefront
           ? creatorCheckoutRememberUrl({
               checkoutUrl: String(data.checkoutUrl),
               username: creatorUsernameParam,
@@ -3103,17 +3103,38 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               returnUrl: currentCreatorReturnUrl(creatorUsernameParam),
             })
           : String(data.checkoutUrl);
+        try {
+          const target = window.top || window;
+          target.location.assign(dest);
+        } catch {
+          window.location.assign(dest);
+        }
+        window.setTimeout(() => {
+          if (document.visibilityState === "visible") {
+            window.location.assign(dest);
+          }
+        }, 400);
       } catch (e: any) {
+        const message = e?.message || "Please try again.";
+        setPackCheckoutError(message);
         toast({
           title: "Pack checkout failed",
-          description: e?.message || "Please try again.",
+          description: message,
           variant: "destructive",
         });
       } finally {
         setPackCheckoutLoadingId(null);
       }
     },
-    [storefrontCustomerId, customer?.id, creatorUsernameParam, toast, isCreatorStorefront, shopDomain],
+    [
+      storefrontCustomerId,
+      customer?.id,
+      creatorUsernameParam,
+      toast,
+      isCreatorStorefront,
+      shopDomain,
+      storefrontLoggedIn,
+    ],
   );
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
@@ -13273,7 +13294,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
+      <Dialog
+        open={creditsPopoverOpen}
+        onOpenChange={(open) => {
+          setCreditsPopoverOpen(open);
+          if (open) setPackCheckoutError(null);
+        }}
+      >
         <DialogContent className="text-sm space-y-3 sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Studio Credits</DialogTitle>
@@ -13361,6 +13388,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 </Button>
               ))}
             </div>
+            {packCheckoutError ? (
+              <p className="text-xs text-destructive">{packCheckoutError}</p>
+            ) : null}
           </div>
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (

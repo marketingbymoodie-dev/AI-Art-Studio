@@ -209,10 +209,31 @@ export async function patchRewardLadder(
     if (rungKey === "purchase_threshold" && sanitized.enabled === true && !PURCHASE_REWARDS_ENABLED()) {
       sanitized.enabled = false;
     }
-    await db
+    const updated = await db
       .update(rewardLadderRungs)
       .set({ ...sanitized, updatedAt: new Date() })
-      .where(and(eq(rewardLadderRungs.shop, normShop), eq(rewardLadderRungs.rungKey, rungKey)));
+      .where(and(eq(rewardLadderRungs.shop, normShop), eq(rewardLadderRungs.rungKey, rungKey)))
+      .returning({ id: rewardLadderRungs.id });
+    if (updated.length === 0) {
+      const fallback = DEFAULT_RUNGS.find((r) => r.rungKey === rungKey);
+      await db
+        .insert(rewardLadderRungs)
+        .values({
+          shop: normShop,
+          rungKey,
+          enabled: sanitized.enabled ?? fallback?.enabled ?? true,
+          creditAmount: sanitized.creditAmount ?? fallback?.creditAmount ?? 1,
+          thresholdCents:
+            sanitized.thresholdCents !== undefined
+              ? sanitized.thresholdCents
+              : (fallback?.thresholdCents ?? null),
+          sortOrder: fallback?.sortOrder ?? 0,
+        })
+        .onConflictDoUpdate({
+          target: [rewardLadderRungs.shop, rewardLadderRungs.rungKey],
+          set: { ...sanitized, updatedAt: new Date() },
+        });
+    }
   }
   return getRewardLadder(normShop);
 }
