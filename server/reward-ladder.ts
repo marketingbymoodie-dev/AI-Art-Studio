@@ -209,10 +209,31 @@ export async function patchRewardLadder(
     if (rungKey === "purchase_threshold" && sanitized.enabled === true && !PURCHASE_REWARDS_ENABLED()) {
       sanitized.enabled = false;
     }
-    await db
+    const updated = await db
       .update(rewardLadderRungs)
       .set({ ...sanitized, updatedAt: new Date() })
-      .where(and(eq(rewardLadderRungs.shop, normShop), eq(rewardLadderRungs.rungKey, rungKey)));
+      .where(and(eq(rewardLadderRungs.shop, normShop), eq(rewardLadderRungs.rungKey, rungKey)))
+      .returning({ id: rewardLadderRungs.id });
+    if (updated.length === 0) {
+      const fallback = DEFAULT_RUNGS.find((r) => r.rungKey === rungKey);
+      await db
+        .insert(rewardLadderRungs)
+        .values({
+          shop: normShop,
+          rungKey,
+          enabled: sanitized.enabled ?? fallback?.enabled ?? true,
+          creditAmount: sanitized.creditAmount ?? fallback?.creditAmount ?? 1,
+          thresholdCents:
+            sanitized.thresholdCents !== undefined
+              ? sanitized.thresholdCents
+              : (fallback?.thresholdCents ?? null),
+          sortOrder: fallback?.sortOrder ?? 0,
+        })
+        .onConflictDoUpdate({
+          target: [rewardLadderRungs.shop, rewardLadderRungs.rungKey],
+          set: { ...sanitized, updatedAt: new Date() },
+        });
+    }
   }
   return getRewardLadder(normShop);
 }
@@ -230,6 +251,8 @@ export type GrantRungInput = {
   metadata?: Record<string, unknown> | null;
   /** Default earned (burns merchant/creator quota). Newsletter uses pack (platform-funded). */
   creditSource?: CreditSource;
+  /** When set, earned rewards stay on this creator shop. */
+  creatorId?: string | null;
 };
 
 export type GrantRungResult = {
@@ -253,13 +276,18 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
   const amount = Math.max(0, rung.creditAmount || 0);
   if (amount <= 0) return { granted: false, duplicate: false, amount: 0, reason: "amount is zero" };
 
+  const { rewardGrantShopScope } = await import("./creator-earned");
+  const source = input.creditSource ?? "earned";
+  const isolateToCreator = !!input.creatorId && source === "earned";
+  const grantShop = isolateToCreator ? rewardGrantShopScope(shop, input.creatorId) : shop;
+
   // Ledger key: for share_design we want ONE grant per sharer (unique on shop+customer+rung),
   // but the specific viewer visit is captured in relatedEntityId. For purchase_threshold we
   // deliberately want per-order grants — the caller supplies a per-order rung customization
   // by passing a rungKey that includes the order id (see tryGrantPurchaseThreshold).
   const relatedEntityId = input.relatedEntityId ?? null;
   const idempotencySuffix = relatedEntityId ? `:${relatedEntityId}` : "";
-  const idempotencyKey = `reward:${input.rungKey}:${shop}:${input.customerId}${idempotencySuffix}`;
+  const idempotencyKey = `reward:${input.rungKey}:${grantShop}:${input.customerId}${idempotencySuffix}`;
 
   // Fast pre-check: bail if we already recorded a reward_grant for this rung.
   const [existingGrant] = await db
@@ -267,7 +295,7 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
     .from(rewardGrants)
     .where(
       and(
-        eq(rewardGrants.shop, shop),
+        eq(rewardGrants.shop, grantShop),
         eq(rewardGrants.customerId, input.customerId),
         eq(rewardGrants.rungKey, input.rungKey),
       ),
@@ -280,7 +308,7 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
   const [inserted] = await db
     .insert(rewardGrants)
     .values({
-      shop,
+      shop: grantShop,
       customerId: input.customerId,
       rungKey: input.rungKey,
       creditsGranted: amount,
@@ -293,10 +321,25 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
     return { granted: false, duplicate: true, amount, reason: "grant race lost" };
   }
 
+  if (isolateToCreator && input.creatorId) {
+    const { grantCreatorEarned } = await import("./creator-earned");
+    const grant = await grantCreatorEarned({
+      creatorId: input.creatorId,
+      customerId: input.customerId,
+      amount,
+      idempotencyKey,
+      shop: grantShop,
+      reason: `reward:${input.rungKey}`,
+      relatedEntityId,
+      metadata: { ...(input.metadata ?? { rungKey: input.rungKey }), creatorId: input.creatorId },
+    });
+    return { granted: true, duplicate: !grant.inserted, amount };
+  }
+
   const grant = await grantStudioCredits({
     customerId: input.customerId,
     amount,
-    source: input.creditSource ?? "earned",
+    source,
     shop,
     reason: `reward:${input.rungKey}`,
     idempotencyKey,
@@ -338,6 +381,7 @@ export async function tryGrantShareDesign(params: {
   visitorCustomerId?: string | null;
   visitorKey: string | null | undefined;
   shareId: string;
+  creatorId?: string | null;
 }): Promise<GrantRungResult> {
   const { shop, ownerCustomerId, visitorCustomerId, visitorKey, shareId } = params;
   if (!ownerCustomerId) return { granted: false, duplicate: false, amount: 0, reason: "no owner" };
@@ -357,6 +401,7 @@ export async function tryGrantShareDesign(params: {
     rungKey: "share_design",
     relatedEntityId: `${shareId}:${visitorKey ?? visitorCustomerId ?? "anon"}`,
     metadata: { shareId, visitorCustomerId: visitorCustomerId ?? null, visitorKey: visitorKey ?? null },
+    creatorId: params.creatorId,
   });
 }
 
@@ -369,6 +414,7 @@ export async function tryGrantPurchaseThreshold(params: {
   customerId: string;
   orderId: string;
   subtotalCents: number;
+  creatorId?: string | null;
 }): Promise<GrantRungResult> {
   if (!PURCHASE_REWARDS_ENABLED()) {
     return { granted: false, duplicate: false, amount: 0, reason: "purchase rewards disabled" };
@@ -388,6 +434,7 @@ export async function tryGrantPurchaseThreshold(params: {
     rungKey: "purchase_threshold",
     relatedEntityId: params.orderId,
     metadata: { orderId: params.orderId, subtotalCents: params.subtotalCents },
+    creatorId: params.creatorId,
   });
 }
 
@@ -410,7 +457,6 @@ export async function clawbackPurchaseThresholdForOrder(params: {
     .from(rewardGrants)
     .where(
       and(
-        eq(rewardGrants.shop, shop),
         eq(rewardGrants.rungKey, "purchase_threshold"),
         eq(rewardGrants.relatedEntityId, params.orderId),
       ),
@@ -418,6 +464,22 @@ export async function clawbackPurchaseThresholdForOrder(params: {
   let clawed = 0;
   for (const g of grants) {
     if ((g.creditsGranted ?? 0) <= 0) continue;
+    const { creatorIdFromRewardGrantShop, clawbackCreatorEarned } = await import("./creator-earned");
+    const creatorId = creatorIdFromRewardGrantShop(g.shop);
+    if (creatorId) {
+      await clawbackCreatorEarned({
+        creatorId,
+        customerId: g.customerId,
+        amount: g.creditsGranted,
+        idempotencyKey: `${params.idempotencyKey}:${g.customerId}`,
+        shop: g.shop,
+        reason: params.reason,
+        relatedEntityId: params.orderId,
+      });
+      clawed++;
+      continue;
+    }
+    if (g.shop !== shop) continue;
     await clawbackStudioCredits({
       customerId: g.customerId,
       amount: g.creditsGranted,

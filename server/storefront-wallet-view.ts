@@ -67,8 +67,13 @@ export async function resolveStorefrontWalletView(params: {
   let freeGenerationLimit = merchantLimit;
   let shopFreeRemaining = Math.max(0, freeGenerationLimit - freeGenerationsUsed);
 
+  const packCredits = balance.packCredits ?? 0;
+  const onCreatorShop = !!(params.knownCreatorId || params.creatorId || params.creatorUsername);
+  let earnedCredits = onCreatorShop ? 0 : (balance.earnedCredits ?? 0);
+
   const applyCreatorPeek = async (creatorId: string, freeGensPerCustomer: number) => {
     const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
+    const { peekCreatorEarned } = await import("./creator-earned");
     const peek = await peekCreatorCustomerFreeGens({
       creatorId,
       customerId: params.customerId,
@@ -77,6 +82,10 @@ export async function resolveStorefrontWalletView(params: {
     freeGenerationsUsed = peek.used;
     freeGenerationLimit = peek.limit;
     shopFreeRemaining = peek.remaining;
+    earnedCredits = await peekCreatorEarned({
+      creatorId,
+      customerId: params.customerId,
+    });
   };
 
   if (params.knownCreatorId) {
@@ -106,9 +115,9 @@ export async function resolveStorefrontWalletView(params: {
   }
 
   return {
-    credits: balance.credits,
-    earnedCredits: balance.earnedCredits ?? 0,
-    packCredits: balance.packCredits ?? 0,
+    credits: earnedCredits + packCredits,
+    earnedCredits,
+    packCredits,
     freeGenerationsUsed,
     shopFreeRemaining,
     freeGenerationLimit,
