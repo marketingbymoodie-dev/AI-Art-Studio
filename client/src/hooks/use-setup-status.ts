@@ -19,11 +19,16 @@ export interface MerchantSetupStatus {
   reconnectUrl?: string | null;
   themeEditorUrl?: string | null;
   themeEditorShopifyUrl?: string | null;
+  isCreatorCheckoutShop?: boolean;
+  carrierShipping?: { ok: boolean; reason?: string } | null;
 }
 
 /** Fresh install: still need store access or the theme embed. Printify can wait. */
 export function needsFirstRunSetup(status: MerchantSetupStatus | undefined): boolean {
   if (!status) return true;
+  if (status.isCreatorCheckoutShop) {
+    return status.shopAuthorized === false || status.nextStep === "connect_shopify";
+  }
   return (
     status.shopAuthorized === false ||
     status.nextStep === "connect_shopify" ||
