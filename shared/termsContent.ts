@@ -79,9 +79,38 @@ function clipKeepNewlines(raw: unknown, max: number): string {
     .slice(0, max);
 }
 
+/** Appended to live / stored customer terms if an older revision is still in the DB. */
+export const CUSTOMER_RETURNS_BLOCK = `## Custom products and returns
+Creator-storefront items are print-on-demand and made after you order. They are custom goods.
+
+We do not accept returns or refunds for:
+- change of mind
+- you selected the wrong size, colour, or product
+- you dislike the AI artwork after you approved the preview and ordered
+- ordinary print-on-demand variation (colour, scale, or placement that reasonably matches the mockup)
+
+Check the size chart, colour, and preview before you buy.
+
+If an item arrives with a genuine manufacturing or shipping defect (wrong item sent, damaged in transit, or a print error caused by production), contact the support channel listed with the platform shop so a reprint or refund can be arranged. Statutory consumer guarantees still apply where the law does not allow them to be excluded.`;
+
+export const CUSTOMER_SHIPPING_BLOCK = `## Shipping and delivery
+Physical products are printed and shipped by third-party print partners (via Printify). We do not hold stock.
+
+Production and delivery times are not fixed. They vary by the product, which print partner fulfils the order, where that partner is located, your delivery country, and the shipping method offered at checkout.
+
+Printify can provide shipping rates, destinations, and sometimes a handling-time estimate for a specific product and country. Those figures are estimates only — not a guaranteed arrival date. We cannot publish one worldwide delivery window that is true for every product and destination.
+
+Checkout shows the shipping rate for your address when you enter it. An order may ship in more than one parcel if different partners fulfil different items.`;
+
+export const ADDENDUM_RETURNS_BLOCK = `8. Custom / made-to-order
+Items are printed after you order. They are not returnable for change of mind, or because you chose the wrong size, colour, or product. Check the size chart and preview before you buy.
+
+9. Shipping
+Print partners (via Printify) manufacture and ship. Times vary by product, print partner, partner location, destination, and method. Any handling or transit figure is an estimate, not a guarantee. Checkout shows the shipping charge for your address.`;
+
 export const DEFAULT_TERMS_CONTENT: TermsContent = {
-  lastUpdated: "2026-08-16",
-  revision: 1,
+  lastUpdated: "2026-08-22",
+  revision: 2,
   pageTitle: "AI Art Studio Terms of Use",
   intro:
     "These Terms of Use (“Terms”) govern AI Art Studio (the Studio): AI artwork generation, product customisation, cart and checkout mockups, Studio Credits, merchant Shopify app features, and hosted creator storefronts.\n\nBy installing the app, applying as a creator or merchant, generating artwork, buying credits, or placing an order, you agree to these Terms and to the Privacy Policy.",
@@ -140,6 +169,8 @@ If an item arrives with a genuine manufacturing or shipping defect (wrong item, 
 
 We do not reprint or refund because you dislike the AI result, because a prompt was refused, because you ordered a design that is unclear, offensive, or rights-infringing, or because the order cannot be produced or delivered due to misuse of the Studio.
 
+` + CUSTOMER_RETURNS_BLOCK + "\n\n" + CUSTOMER_SHIPPING_BLOCK + `
+
 ## Seller
 For a merchant’s Shopify store, contact that store for order issues. For a creator storefront, contact the support channel listed with the platform shop.`,
     },
@@ -197,7 +228,7 @@ Attempts to manipulate generation, credits, rankings, analytics, or payouts are 
     applyMerchant:
       "I agree to the AI Art Studio Merchant Terms and confirm I own this Shopify store.",
     storefrontAccept:
-      "I agree that prompts may be refused for sensitive or inappropriate subject matter, and that attempts to override or manipulate the Studio can result in account removal with no refund of paid generation packs or undeliverable products.",
+      "I agree to the generation and custom-product terms: prompts may be refused; made-to-order items are not returnable for change of mind or the wrong size; shipping times vary by print partner.",
     readFullTermsLabel: "Read the full terms",
   },
   merchantStoreAddendum: `AI ART STUDIO — ADDITIONAL TERMS
@@ -225,7 +256,9 @@ If an item arrives with a genuine manufacturing or shipping defect (wrong item, 
 We do not reprint or refund because you dislike the AI result, because a prompt was refused, because you ordered a design that is unclear, offensive, or rights-infringing, or because the order cannot be produced or delivered due to your misuse of the Studio (“malpractice”).
 
 7. Your responsibility
-You are responsible for your prompts and uploaded images. Do not submit content you do not have the right to use. The store and AI Art Studio may refuse fulfilment of any order that appears unlawful or in breach.`,
+You are responsible for your prompts and uploaded images. Do not submit content you do not have the right to use. The store and AI Art Studio may refuse fulfilment of any order that appears unlawful or in breach.
+
+` + ADDENDUM_RETURNS_BLOCK,
 };
 
 export function escapeHtml(s: string): string {
@@ -323,7 +356,8 @@ export function renderTermsBodyHtml(body: string): string {
     if (line.startsWith("## ")) {
       flushList();
       flushPara();
-      out.push(`<h3>${escapeHtml(line.slice(3).trim())}</h3>`);
+      const title = line.slice(3).trim();
+      out.push(`<h3 id="${escapeHtml(termsHeadingId(title))}">${escapeHtml(title)}</h3>`);
       continue;
     }
     if (line.startsWith("- ")) {
@@ -390,10 +424,59 @@ export function mergeTermsContent(raw: unknown): TermsContent {
   };
 }
 
+export function termsHeadingId(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+const OLD_STOREFRONT_ACCEPT =
+  "I agree that prompts may be refused for sensitive or inappropriate subject matter, and that attempts to override or manipulate the Studio can result in account removal with no refund of paid generation packs or undeliverable products.";
+
+function appendBlockIfMissing(body: string, marker: string, block: string): string {
+  if (body.includes(marker)) return body;
+  return `${body.trimEnd()}\n\n${block}`;
+}
+
+/** Older platform_config rows keep generation copy; this adds commerce clauses without wiping edits. */
+export function ensureCustomerCommerceTerms(content: TermsContent): TermsContent {
+  let body = content.sections.customers.body;
+  body = appendBlockIfMissing(body, "## Custom products and returns", CUSTOMER_RETURNS_BLOCK);
+  body = appendBlockIfMissing(body, "## Shipping and delivery", CUSTOMER_SHIPPING_BLOCK);
+  let addendum = content.merchantStoreAddendum;
+  if (!addendum.includes("8. Custom / made-to-order")) {
+    addendum = `${addendum.trimEnd()}\n\n${ADDENDUM_RETURNS_BLOCK}`;
+  }
+  const checkboxes = { ...content.checkboxes };
+  if (checkboxes.storefrontAccept === OLD_STOREFRONT_ACCEPT) {
+    checkboxes.storefrontAccept = DEFAULT_TERMS_CONTENT.checkboxes.storefrontAccept;
+  }
+  if (
+    body === content.sections.customers.body &&
+    addendum === content.merchantStoreAddendum &&
+    checkboxes.storefrontAccept === content.checkboxes.storefrontAccept
+  ) {
+    return content;
+  }
+  return {
+    ...content,
+    lastUpdated: content.lastUpdated >= "2026-08-22" ? content.lastUpdated : "2026-08-22",
+    revision: Math.max(2, content.revision),
+    checkboxes,
+    merchantStoreAddendum: addendum,
+    sections: {
+      ...content.sections,
+      customers: { ...content.sections.customers, body },
+    },
+  };
+}
+
 export function parseTermsContentJson(json: string | null | undefined): TermsContent {
   if (!json) return structuredClone(DEFAULT_TERMS_CONTENT);
   try {
-    return mergeTermsContent(JSON.parse(json));
+    return ensureCustomerCommerceTerms(mergeTermsContent(JSON.parse(json)));
   } catch {
     return structuredClone(DEFAULT_TERMS_CONTENT);
   }

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  CUSTOMER_RETURNS_BLOCK,
+  CUSTOMER_SHIPPING_BLOCK,
   DEFAULT_TERMS_CONTENT,
   DEFAULT_TERMS_ORIGIN,
+  ensureCustomerCommerceTerms,
   escapeHtml,
   formatTermsDate,
   isAppHostedTermsOrigin,
@@ -54,7 +57,7 @@ describe("isSafeTermsHref", () => {
 describe("renderTermsBodyHtml", () => {
   it("renders headings, bullets, and escaped text", () => {
     const html = renderTermsBodyHtml("## Safety\n- No <script>\n\nSee [Privacy](/privacy).");
-    expect(html).toContain("<h3>Safety</h3>");
+    expect(html).toContain('<h3 id="safety">Safety</h3>');
     expect(html).toContain("<li>No &lt;script&gt;</li>");
     expect(html).toContain('<a href="/privacy">Privacy</a>');
     expect(html).not.toContain("<script>");
@@ -103,6 +106,45 @@ describe("stampTermsOnSave", () => {
 describe("parseTermsContentJson", () => {
   it("falls back on invalid JSON", () => {
     expect(parseTermsContentJson("{not json").pageTitle).toBe(DEFAULT_TERMS_CONTENT.pageTitle);
+  });
+});
+
+describe("ensureCustomerCommerceTerms", () => {
+  it("appends shipping and returns to an older customer section", () => {
+    const upgraded = ensureCustomerCommerceTerms({
+      ...DEFAULT_TERMS_CONTENT,
+      sections: {
+        ...DEFAULT_TERMS_CONTENT.sections,
+        customers: {
+          title: "End customers",
+          body: "These terms apply when you use the customizer.\n\n## Seller\nContact the store.",
+        },
+      },
+      merchantStoreAddendum: "AI ART STUDIO — ADDITIONAL TERMS\n\n1. Acceptance\nBy generating you agree.",
+    });
+    expect(upgraded.sections.customers.body).toContain(CUSTOMER_RETURNS_BLOCK);
+    expect(upgraded.sections.customers.body).toContain(CUSTOMER_SHIPPING_BLOCK);
+    expect(upgraded.merchantStoreAddendum).toContain("8. Custom / made-to-order");
+  });
+
+  it("does not duplicate blocks already present", () => {
+    const once = ensureCustomerCommerceTerms(DEFAULT_TERMS_CONTENT);
+    const twice = ensureCustomerCommerceTerms(once);
+    expect(twice.sections.customers.body).toBe(once.sections.customers.body);
+  });
+
+  it("upgrades stored JSON that predates the commerce clauses", () => {
+    const parsed = parseTermsContentJson(
+      JSON.stringify({
+        revision: 1,
+        lastUpdated: "2026-08-16",
+        sections: {
+          customers: { title: "End customers", body: "Prompts may be refused." },
+        },
+      }),
+    );
+    expect(parsed.sections.customers.body).toContain("## Custom products and returns");
+    expect(parsed.sections.customers.body).toContain("## Shipping and delivery");
   });
 });
 
