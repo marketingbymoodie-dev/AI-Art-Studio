@@ -1,8 +1,6 @@
 import type { Express, Request, Response } from "express";
-import crypto from "crypto";
 import { pool } from "./db";
-
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
+import { hmacBase64MatchesAnySecret } from "./shopify-app-credentials";
 
 type ShopifyGdprCustomer = {
   id?: number | string;
@@ -28,21 +26,8 @@ function rawBodyForHmac(req: Request): Buffer {
 function verifyShopifyWebhookHmac(req: Request): boolean {
   const hmacHeader = req.headers["x-shopify-hmac-sha256"];
   const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
-  if (!SHOPIFY_API_SECRET || !hmac) return false;
-
-  const digest = crypto
-    .createHmac("sha256", SHOPIFY_API_SECRET)
-    .update(rawBodyForHmac(req))
-    .digest("base64");
-
-  try {
-    return (
-      digest.length === hmac.length &&
-      crypto.timingSafeEqual(Buffer.from(digest, "utf8"), Buffer.from(hmac, "utf8"))
-    );
-  } catch {
-    return false;
-  }
+  if (!hmac) return false;
+  return hmacBase64MatchesAnySecret(rawBodyForHmac(req), hmac);
 }
 
 function normalizeShopDomain(req: Request, payload: ShopifyGdprPayload): string {
