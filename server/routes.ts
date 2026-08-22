@@ -20341,7 +20341,7 @@ ${orientationExtra}
         try {
           const shopifyProdCheck = await shopifyApiCall(
             shop, installation.accessToken,
-            `products/${ptForSync.shopifyProductId}.json?fields=id,variants`,
+            `products/${ptForSync.shopifyProductId}.json`,
           );
 
           if (!shopifyProdCheck.ok || !shopifyProdCheck.data?.product) {
@@ -20694,25 +20694,41 @@ ${orientationExtra}
           }
         }
 
-        const applied = await applyShopifyVariantPrices({
-          shop,
-          accessToken: installation.accessToken,
-          baseProductId: variant.product_id,
-          productType: matchedType || ptForSync,
-          variantPrices,
-          onBaseVariantUpdated: async (formatted, variantNum) => {
-            if (String(variantNum) === String(variant.id)) {
-              variant = { ...variant, price: formatted };
-            }
-          },
-        });
         const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
         let liveShopifyVariants: Array<{ id?: number; price?: string; title?: string }> = [];
+        if (productIdNum) {
+          const alreadyPriced = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${productIdNum}.json`,
+          );
+          liveShopifyVariants = alreadyPriced.data?.product?.variants ?? [];
+        }
+        const alreadyHasRetail = allShopifyVariantsHavePositiveRetail(liveShopifyVariants);
+        if (alreadyHasRetail) {
+          console.log(
+            `[customizer-pages] Shopify product ${productIdNum} already has retail on ${liveShopifyVariants.length} variants — skipping PUT sync`,
+          );
+        }
+        const applied = alreadyHasRetail
+          ? { successCount: liveShopifyVariants.length, unresolvedCount: 0 }
+          : await applyShopifyVariantPrices({
+              shop,
+              accessToken: installation.accessToken,
+              baseProductId: variant.product_id,
+              productType: matchedType || ptForSync,
+              variantPrices,
+              onBaseVariantUpdated: async (formatted, variantNum) => {
+                if (String(variantNum) === String(variant.id)) {
+                  variant = { ...variant, price: formatted };
+                }
+              },
+            });
         if (productIdNum) {
           const priced = await shopifyApiCall(
             shop,
             installation.accessToken,
-            `products/${productIdNum}.json?fields=id,title,handle,variants`,
+            `products/${productIdNum}.json`,
           );
           liveShopifyVariants = priced.data?.product?.variants ?? [];
           const cheapestAfter = pickLowestPricedShopifyVariant(liveShopifyVariants);
@@ -21105,6 +21121,65 @@ ${orientationExtra}
     return res.json({ success: true });
   }));
 
+  /** One GraphQL call instead of N REST PUTs — 96 apparel variants otherwise 429. */
+  async function bulkUpdateShopifyVariantPrices(
+    shop: string,
+    accessToken: string,
+    productId: number,
+    prices: Map<number, string>,
+  ): Promise<boolean> {
+    if (prices.size === 0) return true;
+    const entries = [...prices.entries()];
+    const gqlEndpoint = `https://${shop}/admin/api/2025-10/graphql.json`;
+    const gqlHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
+    const productGid = `gid://shopify/Product/${productId}`;
+    for (let i = 0; i < entries.length; i += 100) {
+      const chunk = entries.slice(i, i + 100);
+      const res = await fetch(gqlEndpoint, {
+        method: "POST",
+        headers: gqlHeaders,
+        body: JSON.stringify({
+          query: `mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              productVariants { id price }
+              userErrors { field message }
+            }
+          }`,
+          variables: {
+            productId: productGid,
+            variants: chunk.map(([id, price]) => ({
+              id: `gid://shopify/ProductVariant/${id}`,
+              price,
+            })),
+          },
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        errors?: Array<{ message?: string }>;
+        data?: {
+          productVariantsBulkUpdate?: {
+            productVariants?: Array<{ id?: string }>;
+            userErrors?: Array<{ message?: string }>;
+          };
+        };
+      };
+      const userErrors = json.data?.productVariantsBulkUpdate?.userErrors ?? [];
+      const updated = json.data?.productVariantsBulkUpdate?.productVariants?.length ?? 0;
+      if (!res.ok || json.errors?.length || userErrors.length || updated < chunk.length) {
+        console.warn(
+          `[sync-prices] GraphQL bulk price update failed (${updated}/${chunk.length}): ${
+            json.errors?.map((e) => e.message).join("; ") ||
+            userErrors.map((e) => e.message).join("; ") ||
+            `HTTP ${res.status}`
+          }`,
+        );
+        return false;
+      }
+    }
+    console.log(`[sync-prices] GraphQL bulk-updated ${entries.length} variant prices`);
+    return true;
+  }
+
   /** Shared Shopify variant price sync used by customizer pages and Products admin. */
   async function applyShopifyVariantPrices(args: {
     shop: string;
@@ -21133,9 +21208,15 @@ ${orientationExtra}
     const allVariantsResult = await shopifyApiCall(
       shop,
       accessToken,
-      `products/${baseProductId}.json?fields=id,variants`,
+      `products/${baseProductId}.json`,
     );
     shopifyVariants = allVariantsResult.data?.product?.variants ?? [];
+    const livePriceById = new Map<number, number>();
+    for (const sv of shopifyVariants) {
+      const id = Number(sv.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      livePriceById.set(id, parseShopifyVariantPrice((sv as { price?: string }).price));
+    }
 
     const printifyToShopifyVariantId = buildPrintifyToShopifyVariantIdMap({
       variantMap: productType?.variantMap,
@@ -21149,35 +21230,7 @@ ${orientationExtra}
       .map((sv) => Number(sv.id))
       .filter((id) => Number.isFinite(id) && id > 0);
 
-    console.log(
-      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}`,
-    );
-
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const putVariantPriceWithRetry = async (variantNum: number, formatted: string) => {
-      // Shopify REST leaky-bucket: large apparel catalogs (96 PUTs) often 429 without backoff.
-      let lastError = "Unknown error";
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
-          method: "PUT",
-          body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
-        });
-        if (priceResult.ok) return priceResult;
-        lastError = priceResult.error || "Unknown error";
-        const isRateLimited =
-          /API error 429\b/i.test(lastError) ||
-          /rate limit/i.test(lastError) ||
-          /Exceeded 2 calls per second/i.test(lastError);
-        if (!isRateLimited || attempt === 5) break;
-        const waitMs = Math.min(8000, 400 * Math.pow(2, attempt));
-        console.warn(
-          `[sync-prices] rate-limited updating variant ${variantNum}; retry ${attempt + 1}/5 in ${waitMs}ms`,
-        );
-        await sleep(waitMs);
-      }
-      return { ok: false as const, error: lastError };
-    };
-
+    const uniquePuts = new Map<number, string>();
     const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
 
     for (const [vid, price] of Object.entries(variantPrices)) {
@@ -21212,15 +21265,67 @@ ${orientationExtra}
         continue;
       }
       const formatted = num.toFixed(2);
-      const priceResult = await putVariantPriceWithRetry(variantNum, formatted);
-      if (priceResult.ok) {
+      const current = livePriceById.get(variantNum) ?? 0;
+      if (current > 0 && Math.abs(current - num) < 0.005) {
         updated.push({ variantId: variantNum, price: formatted, success: true });
-        if (onBaseVariantUpdated) {
-          await onBaseVariantUpdated(formatted, variantNum);
+        continue;
+      }
+      uniquePuts.set(variantNum, formatted);
+    }
+
+    console.log(
+      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}; uniquePuts=${uniquePuts.size}`,
+    );
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const productIdNum = parseInt(String(baseProductId).replace(/\D/g, ""), 10);
+
+    const markPutSuccess = async (variantNum: number, formatted: string) => {
+      updated.push({ variantId: variantNum, price: formatted, success: true });
+      if (onBaseVariantUpdated) {
+        await onBaseVariantUpdated(formatted, variantNum);
+      }
+    };
+
+    if (uniquePuts.size > 0 && productIdNum) {
+      const bulkOk = await bulkUpdateShopifyVariantPrices(shop, accessToken, productIdNum, uniquePuts);
+      if (bulkOk) {
+        for (const [variantNum, formatted] of uniquePuts) {
+          await markPutSuccess(variantNum, formatted);
         }
       } else {
-        updated.push({ variantId: variantNum, price: formatted, success: false, error: priceResult.error });
-        console.warn(`[sync-prices] Failed to update variant ${variantNum}: ${priceResult.error}`);
+        const putVariantPriceWithRetry = async (variantNum: number, formatted: string) => {
+          let lastError = "Unknown error";
+          for (let attempt = 0; attempt < 6; attempt++) {
+            const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
+              method: "PUT",
+              body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+            });
+            if (priceResult.ok) return priceResult;
+            lastError = priceResult.error || "Unknown error";
+            const isRateLimited =
+              /API error 429\b/i.test(lastError) ||
+              /rate limit/i.test(lastError) ||
+              /Exceeded 2 calls per second/i.test(lastError);
+            if (!isRateLimited || attempt === 5) break;
+            const waitMs = Math.min(16000, 2000 * Math.pow(2, attempt));
+            console.warn(
+              `[sync-prices] rate-limited updating variant ${variantNum}; retry ${attempt + 1}/5 in ${waitMs}ms`,
+            );
+            await sleep(waitMs);
+          }
+          return { ok: false as const, error: lastError };
+        };
+        for (const [variantNum, formatted] of uniquePuts) {
+          await sleep(600);
+          const priceResult = await putVariantPriceWithRetry(variantNum, formatted);
+          if (priceResult.ok) {
+            await markPutSuccess(variantNum, formatted);
+          } else {
+            updated.push({ variantId: variantNum, price: formatted, success: false, error: priceResult.error });
+            console.warn(`[sync-prices] Failed to update variant ${variantNum}: ${priceResult.error}`);
+          }
+        }
       }
     }
 
@@ -21244,7 +21349,7 @@ ${orientationExtra}
       const priced = await shopifyApiCall(
         args.shop,
         args.accessToken,
-        `products/${productIdNum}.json?fields=id,variants`,
+        `products/${productIdNum}.json`,
       );
       return (priced.data?.product?.variants ?? []) as Array<{ id?: number; price?: string; title?: string }>;
     };
@@ -21257,10 +21362,25 @@ ${orientationExtra}
 
     const markup = resolveMarkupPercent(args.productType?.defaultMarkupPercent);
     const { front } = parsePrintifyCostsCache(args.productType?.printifyCosts);
+    const printifyToShopify = buildPrintifyToShopifyVariantIdMap({
+      variantMap: args.productType?.variantMap,
+      shopifyVariantIds: args.productType?.shopifyVariantIds,
+      sizes: args.productType?.sizes,
+      frameColors: args.productType?.frameColors,
+      shopifyVariants: variants as Array<{ id: number; title?: string; option1?: string; option2?: string }>,
+    });
+    const shopifyToSuggested = new Map<number, string>();
+    for (const [printifyId, shopifyId] of Object.entries(printifyToShopify)) {
+      const suggested = suggestedRetailDollarsString(Number(front[printifyId]), markup);
+      if (suggested) shopifyToSuggested.set(shopifyId, suggested);
+    }
     const variantPrices: Record<string, string> = {};
-    for (const [vid, cents] of Object.entries(front)) {
-      const suggested = suggestedRetailDollarsString(Number(cents), markup);
-      if (suggested) variantPrices[`printify:${vid}`] = suggested;
+    for (const v of variants) {
+      if (hasPositiveRetailPrice(v.price)) continue;
+      const id = Number(v.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const suggested = shopifyToSuggested.get(id);
+      if (suggested) variantPrices[String(id)] = suggested;
     }
     if (Object.keys(variantPrices).length === 0) {
       return { ok: false, resynced: false };
