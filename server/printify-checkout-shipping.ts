@@ -14,7 +14,11 @@ import { resolveVariantFromMap } from "@shared/variantMapResolve";
 import { isCreatorCreditPackLine } from "./creator-packs";
 import { isMerchantCreditPackLine } from "./merchant-packs";
 import { isCreatorPlatformShop } from "./creator-host";
-import { getCreatorPlatformShopDomain, isCreatorMarketplaceEnabled } from "./creator-config";
+import {
+  getCreatorPlatformShopCandidates,
+  getCreatorPlatformShopDomain,
+  isCreatorMarketplaceEnabled,
+} from "./creator-config";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
 import { storage } from "./storage";
@@ -385,6 +389,200 @@ export async function quoteShopifyCarrierRates(params: {
   return rates;
 }
 
+type GqlCarrier = { id: string; name?: string | null; callbackUrl?: string | null; active?: boolean | null };
+
+function scopeDenied(text: string): boolean {
+  return /access denied|write_shipping|insufficient|forbidden/i.test(text);
+}
+
+function planBlocked(text: string): boolean {
+  return /not available|plan|upgrade|advanced|annual/i.test(text) && /carrier|shipping/i.test(text);
+}
+
+async function shopifyAdminGraphql<T>(
+  shop: string,
+  accessToken: string,
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<{ ok: true; data: T } | { ok: false; reason: string }> {
+  const res = await fetch(`https://${shop}/admin/api/${ADMIN_API}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": accessToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = (await res.json().catch(() => ({}))) as {
+    data?: T;
+    errors?: Array<{ message?: string }>;
+  };
+  const errText = (json.errors || []).map((e) => e.message || "").filter(Boolean).join("; ");
+  if (res.status === 403 || scopeDenied(errText)) {
+    return { ok: false, reason: "missing write_shipping scope — reinstall the Creators app" };
+  }
+  if (!res.ok) return { ok: false, reason: `graphql ${res.status} ${errText.slice(0, 180)}` };
+  if (errText) {
+    if (planBlocked(errText)) {
+      return {
+        ok: false,
+        reason:
+          "Shopify only allows app carriers on Advanced (or higher), annual billing, or a development store. Check Settings → Plan.",
+      };
+    }
+    return { ok: false, reason: errText.slice(0, 240) };
+  }
+  return { ok: true, data: json.data as T };
+}
+
+async function attachCarrierToShippingProfiles(params: {
+  shop: string;
+  accessToken: string;
+  carrierId: string;
+}): Promise<string> {
+  const listed = await shopifyAdminGraphql<{
+    deliveryProfiles: {
+      edges: Array<{
+        node: {
+          id: string;
+          profileLocationGroups: Array<{
+            locationGroup: { id: string };
+            locationGroupZones: {
+              edges: Array<{
+                node: {
+                  zone: { id: string; name?: string | null };
+                  methodDefinitions: {
+                    edges: Array<{
+                      node: {
+                        id: string;
+                        rateProvider?: { carrierService?: { id?: string } | null } | null;
+                      };
+                    }>;
+                  };
+                };
+              }>;
+            };
+          }>;
+        };
+      }>;
+    };
+  }>(
+    params.shop,
+    params.accessToken,
+    `query {
+      deliveryProfiles(first: 8) {
+        edges {
+          node {
+            id
+            profileLocationGroups {
+              locationGroup { id }
+              locationGroupZones(first: 40) {
+                edges {
+                  node {
+                    zone { id name }
+                    methodDefinitions(first: 30) {
+                      edges {
+                        node {
+                          id
+                          rateProvider {
+                            ... on DeliveryParticipant {
+                              carrierService { id }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }`,
+  );
+  if (!listed.ok) return `profiles ${listed.reason}`;
+
+  let attached = 0;
+  for (const profileEdge of listed.data.deliveryProfiles?.edges || []) {
+    const profile = profileEdge.node;
+    for (const group of profile.profileLocationGroups || []) {
+      const zonesToUpdate = [];
+      for (const zoneEdge of group.locationGroupZones?.edges || []) {
+        const zoneNode = zoneEdge.node;
+        const already = (zoneNode.methodDefinitions?.edges || []).some(
+          (edge) => edge.node.rateProvider?.carrierService?.id === params.carrierId,
+        );
+        if (already || !zoneNode.zone?.id) continue;
+        zonesToUpdate.push({
+          id: zoneNode.zone.id,
+          methodDefinitionsToCreate: [
+            {
+              name: CARRIER_NAME,
+              active: true,
+              participant: {
+                carrierServiceId: params.carrierId,
+                adaptToNewServices: true,
+              },
+            },
+          ],
+        });
+      }
+      if (!zonesToUpdate.length) continue;
+      const updated = await shopifyAdminGraphql(
+        params.shop,
+        params.accessToken,
+        `mutation AttachCarrier($id: ID!, $profile: DeliveryProfileInput!) {
+          deliveryProfileUpdate(id: $id, profile: $profile) {
+            userErrors { message }
+          }
+        }`,
+        {
+          id: profile.id,
+          profile: {
+            locationGroupsToUpdate: [{ id: group.locationGroup.id, zonesToUpdate }],
+          },
+        },
+      );
+      if (updated.ok) attached += zonesToUpdate.length;
+    }
+  }
+  return attached ? `attached:${attached}` : "profiles unchanged";
+}
+
+async function restListCarriers(
+  shop: string,
+  accessToken: string,
+): Promise<
+  | { ok: true; carriers: Array<{ id: number; name?: string; callback_url?: string }> }
+  | { ok: false; reason: string }
+> {
+  const res = await fetch(`https://${shop}/admin/api/${ADMIN_API}/carrier_services.json`, {
+    headers: {
+      "X-Shopify-Access-Token": accessToken,
+      "Content-Type": "application/json",
+    },
+  });
+  if (res.status === 403) {
+    return { ok: false, reason: "missing write_shipping scope — reinstall the Creators app" };
+  }
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    if (planBlocked(errText) || /not available|plan/i.test(errText)) {
+      return {
+        ok: false,
+        reason:
+          "Shopify only allows app carriers on Advanced (or higher), annual billing, or a development store. Check Settings → Plan.",
+      };
+    }
+    return { ok: false, reason: `list ${res.status} ${errText.slice(0, 160)}` };
+  }
+  const listed = (await res.json()) as {
+    carrier_services?: Array<{ id: number; name?: string; callback_url?: string }>;
+  };
+  return { ok: true, carriers: listed.carrier_services || [] };
+}
+
 export async function ensureShopifyCarrierService(params: {
   shop: string;
   accessToken: string;
@@ -398,58 +596,114 @@ export async function ensureShopifyCarrierService(params: {
     return { ok: false, reason: "origin not allowed for this shop" };
   }
   const callback = carrierServiceCallbackUrl(origin);
-  const headers = {
-    "X-Shopify-Access-Token": params.accessToken,
-    "Content-Type": "application/json",
-  };
-  const listRes = await fetch(`https://${shop}/admin/api/${ADMIN_API}/carrier_services.json`, { headers });
-  if (listRes.status === 403) {
-    return { ok: false, reason: "missing write_shipping scope — reinstall the app" };
-  }
-  if (!listRes.ok) {
-    return { ok: false, reason: `list ${listRes.status}` };
-  }
-  const listed = (await listRes.json()) as {
-    carrier_services?: Array<{ id: number; name?: string; callback_url?: string }>;
-  };
-  const existing = (listed.carrier_services || []).find(
+  const listed = await restListCarriers(shop, params.accessToken);
+  if (!listed.ok) return listed;
+
+  const existing = listed.carriers.find(
     (c) => c.name === CARRIER_NAME || String(c.callback_url || "").includes("/shopify/carrier-service/"),
   );
-  const body = {
-    carrier_service: {
-      name: CARRIER_NAME,
-      callback_url: callback,
-      service_discovery: true,
-    },
-  };
-  if (existing?.id) {
-    if (String(existing.callback_url || "") === callback) return { ok: true, reason: "exists" };
-    const put = await fetch(
-      `https://${shop}/admin/api/${ADMIN_API}/carrier_services/${existing.id}.json`,
-      { method: "PUT", headers, body: JSON.stringify(body) },
+  const existingGid = existing?.id ? `gid://shopify/DeliveryCarrierService/${existing.id}` : "";
+
+  let carrierId = existingGid;
+  let action = "exists";
+  if (existing?.id && String(existing.callback_url || "") !== callback) {
+    const updated = await shopifyAdminGraphql<{
+      carrierServiceUpdate?: { carrierService?: GqlCarrier; userErrors?: Array<{ message?: string }> };
+    }>(
+      shop,
+      params.accessToken,
+      `mutation UpdateCarrier($input: DeliveryCarrierServiceUpdateInput!) {
+        carrierServiceUpdate(input: $input) {
+          carrierService { id name callbackUrl active }
+          userErrors { message }
+        }
+      }`,
+      {
+        input: {
+          id: existingGid,
+          name: CARRIER_NAME,
+          callbackUrl: callback,
+          active: true,
+          supportsServiceDiscovery: true,
+        },
+      },
     );
-    return put.ok ? { ok: true, reason: "updated" } : { ok: false, reason: `update ${put.status}` };
+    const err = updated.ok
+      ? (updated.data.carrierServiceUpdate?.userErrors || []).map((e) => e.message).filter(Boolean).join("; ")
+      : updated.reason;
+    if (err) return { ok: false, reason: err.slice(0, 240) };
+    carrierId = updated.ok ? updated.data.carrierServiceUpdate?.carrierService?.id || existingGid : existingGid;
+    action = "updated";
+  } else if (!existing?.id) {
+    const created = await shopifyAdminGraphql<{
+      carrierServiceCreate?: { carrierService?: GqlCarrier; userErrors?: Array<{ message?: string }> };
+    }>(
+      shop,
+      params.accessToken,
+      `mutation CreateCarrier($input: DeliveryCarrierServiceCreateInput!) {
+        carrierServiceCreate(input: $input) {
+          carrierService { id name callbackUrl active }
+          userErrors { message }
+        }
+      }`,
+      {
+        input: {
+          name: CARRIER_NAME,
+          callbackUrl: callback,
+          active: true,
+          supportsServiceDiscovery: true,
+        },
+      },
+    );
+    const err = created.ok
+      ? (created.data.carrierServiceCreate?.userErrors || []).map((e) => e.message).filter(Boolean).join("; ")
+      : created.reason;
+    if (err) {
+      if (planBlocked(err) || /not available|plan/i.test(err)) {
+        return {
+          ok: false,
+          reason:
+            "Shopify only allows app carriers on Advanced (or higher), annual billing, or a development store. Check Settings → Plan.",
+        };
+      }
+      return { ok: false, reason: err.slice(0, 240) };
+    }
+    carrierId = created.ok ? created.data.carrierServiceCreate?.carrierService?.id || "" : "";
+    if (!carrierId) return { ok: false, reason: "carrier create returned no id" };
+    action = "created";
   }
-  const create = await fetch(`https://${shop}/admin/api/${ADMIN_API}/carrier_services.json`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-  if (create.ok) return { ok: true, reason: "created" };
-  const errText = await create.text().catch(() => "");
-  return { ok: false, reason: `create ${create.status} ${errText.slice(0, 180)}` };
+
+  const profiles = await attachCarrierToShippingProfiles({
+    shop,
+    accessToken: params.accessToken,
+    carrierId,
+  }).catch((e: any) => e?.message || "profiles failed");
+  return { ok: true, reason: `${action}; ${profiles}` };
 }
 
 export async function ensurePlatformCarrierService(): Promise<{ ok: boolean; reason?: string }> {
   if (!isCreatorMarketplaceEnabled()) return { ok: false, reason: "marketplace off" };
-  const shop = normalizeMyshopifyShopDomain(getCreatorPlatformShopDomain());
-  if (!shop) return { ok: false, reason: "no platform shop" };
-  const installation = await storage.getShopifyInstallationByShop(shop);
+  const candidates = getCreatorPlatformShopCandidates()
+    .map((s) => normalizeMyshopifyShopDomain(s))
+    .filter((s) => s.endsWith(".myshopify.com"));
+  if (!candidates.length) {
+    const shop = normalizeMyshopifyShopDomain(getCreatorPlatformShopDomain());
+    if (!shop) return { ok: false, reason: "no platform shop" };
+    candidates.push(shop);
+  }
+  let installation = null;
+  for (const candidate of candidates) {
+    const row = await storage.getShopifyInstallationByShop(candidate);
+    if (row?.accessToken && row.accessToken !== "NEEDS_RECONNECT") {
+      installation = row;
+      break;
+    }
+  }
   if (!installation?.accessToken) return { ok: false, reason: "no install token" };
   const refreshed = await ensureValidOfflineAccessToken(installation);
   const accessToken = refreshed.ok ? refreshed.accessToken : installation.accessToken;
   if (!accessToken) return { ok: false, reason: "no install token" };
-  return ensureShopifyCarrierService({ shop, accessToken });
+  return ensureShopifyCarrierService({ shop: installation.shopDomain, accessToken });
 }
 
 export function parseCarrierRateRequest(body: any): {
