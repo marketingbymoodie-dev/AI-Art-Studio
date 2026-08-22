@@ -658,18 +658,42 @@ export async function ensureShopifyCarrierService(params: {
     const err = created.ok
       ? (created.data.carrierServiceCreate?.userErrors || []).map((e) => e.message).filter(Boolean).join("; ")
       : created.reason;
-    if (err) {
-      if (planBlocked(err) || /not available|plan/i.test(err)) {
-        return {
-          ok: false,
-          reason:
-            "Shopify only allows app carriers on Advanced (or higher), annual billing, or a development store. Check Settings → Plan.",
-        };
-      }
-      return { ok: false, reason: err.slice(0, 240) };
-    }
     carrierId = created.ok ? created.data.carrierServiceCreate?.carrierService?.id || "" : "";
-    if (!carrierId) return { ok: false, reason: "carrier create returned no id" };
+    if (!carrierId) {
+      const restCreate = await fetch(`https://${shop}/admin/api/${ADMIN_API}/carrier_services.json`, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": params.accessToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          carrier_service: {
+            name: CARRIER_NAME,
+            callback_url: callback,
+            service_discovery: true,
+            active: true,
+          },
+        }),
+      });
+      const restText = await restCreate.text().catch(() => "");
+      if (restCreate.ok) {
+        const body = JSON.parse(restText || "{}") as { carrier_service?: { id?: number } };
+        carrierId = body.carrier_service?.id
+          ? `gid://shopify/DeliveryCarrierService/${body.carrier_service.id}`
+          : "";
+      }
+      if (!carrierId) {
+        const combined = `${err || ""} ${restText}`.trim();
+        if (planBlocked(combined) || /not available|plan/i.test(combined)) {
+          return {
+            ok: false,
+            reason:
+              "Shopify only allows app carriers on Advanced (or higher), annual billing, or a development store. Check Settings → Plan.",
+          };
+        }
+        return { ok: false, reason: (combined || "carrier create returned no id").slice(0, 280) };
+      }
+    }
     action = "created";
   }
 
