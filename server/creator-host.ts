@@ -25,6 +25,7 @@ import {
   shopNameToHandle,
 } from "@shared/creatorMarketplace";
 import {
+  getCreatorPlatformShopCandidates,
   getCreatorPlatformShopDomain,
   isCreatorMarketplaceEnabled,
 } from "./creator-config";
@@ -55,10 +56,11 @@ function normalizeShopDomain(shop: string | null | undefined): string {
 }
 
 export function isCreatorPlatformShop(shop: string | null | undefined): boolean {
-  const platform = normalizeShopDomain(getCreatorPlatformShopDomain());
-  if (!platform) return false;
   const s = normalizeShopDomain(shop);
-  return s === platform || s === platform.replace(/\.myshopify\.com$/, "");
+  if (!s) return false;
+  const candidates = getCreatorPlatformShopCandidates();
+  if (candidates.includes(s)) return true;
+  return candidates.includes(s.replace(/\.myshopify\.com$/, ""));
 }
 
 /**
