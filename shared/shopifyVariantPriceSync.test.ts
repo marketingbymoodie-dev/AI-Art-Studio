@@ -4,6 +4,7 @@ import {
   buildPrintifyToShopifyVariantIdMap,
   displayRetailPrice,
   hasPositiveRetailPrice,
+  lookupWizardRetailPrice,
   minPositiveRetailPrice,
   pickLowestPricedShopifyVariant,
   resolveShopifyVariantIdFromPriceKey,
@@ -144,6 +145,42 @@ describe("resolveShopifyVariantIdFromPriceKey", () => {
         knownShopifyVariantIds: [9000000002],
       }),
     ).toBe(9000000002);
+  });
+
+  it("matches live Shopify option names when the printify map is empty", () => {
+    expect(
+      resolveShopifyVariantIdFromPriceKey({
+        priceKey: "size:2xl:black",
+        printifyToShopify: {},
+        variantMap: { "2xl:black": { printifyVariantId: 12128 } },
+        sizes: [{ id: "2xl", name: "2XL" }],
+        frameColors: [{ id: "black", name: "Black" }],
+        shopifyVariants: [
+          { id: 9000000002, title: "2XL / Black", option1: "2XL", option2: "Black" },
+        ],
+      }),
+    ).toBe(9000000002);
+  });
+});
+
+describe("lookupWizardRetailPrice", () => {
+  it("reads wizard size:sizeId:colorId keys used by Create Page", () => {
+    expect(
+      lookupWizardRetailPrice(
+        { "size:2xl:black": "16.95", "2xl:black": "0.00" },
+        { variantKey: "2xl:black", printifyVariantId: 12128 },
+      ),
+    ).toBe("16.95");
+  });
+
+  it("falls back to printify: keys and ignores zeros", () => {
+    expect(
+      lookupWizardRetailPrice(
+        { "2xl:black": "0.00", "printify:12128": "26.95" },
+        { variantKey: "2xl:black", printifyVariantId: 12128 },
+      ),
+    ).toBe("26.95");
+    expect(lookupWizardRetailPrice({}, { variantKey: "2xl:black" })).toBeNull();
   });
 });
 

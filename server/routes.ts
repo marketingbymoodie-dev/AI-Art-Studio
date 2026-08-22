@@ -65,7 +65,7 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
-import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant, resolveShopifyVariantIdFromPriceKey } from "@shared/shopifyVariantPriceSync";
+import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, lookupWizardRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant, resolveShopifyVariantIdFromPriceKey } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
 import {
@@ -4022,8 +4022,11 @@ ${orientationExtra}
         for (const color of colorsToUse) {
           const variantKey = `${size.id}:${color.id}`;
           if (variantMap[variantKey]) {
-            const p = priceMap[variantKey];
-            shopifyVariants.push({ option1: size.name, option2: color.name, price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: 'continue' });
+            const p = lookupWizardRetailPrice(priceMap, {
+              variantKey,
+              printifyVariantId: variantMap[variantKey]?.printifyVariantId,
+            });
+            shopifyVariants.push({ option1: size.name, option2: color.name, price: p ?? '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: 'continue' });
           }
         }
       }
@@ -4036,8 +4039,11 @@ ${orientationExtra}
       for (const size of sizesToUse) {
         const variantKey = `${size.id}:default`;
         if (variantMap[variantKey]) {
-          const p = priceMap[variantKey];
-          shopifyVariants.push({ option1: size.name, price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: 'continue' });
+          const p = lookupWizardRetailPrice(priceMap, {
+            variantKey,
+            printifyVariantId: variantMap[variantKey]?.printifyVariantId,
+          });
+          shopifyVariants.push({ option1: size.name, price: p ?? '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: 'continue' });
         }
       }
     }
@@ -4162,9 +4168,10 @@ ${orientationExtra}
     installation: any,
     productType: any,
     merchant: any,
+    variantPrices?: Record<string, string>,
   ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
     try {
-      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, []);
+      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, [], variantPrices);
     } catch (e: any) {
       if (!isShopifyAuthError(e)) throw e;
       const retried = await ensureValidOfflineAccessToken(installation, {
@@ -4177,7 +4184,7 @@ ${orientationExtra}
         throw err;
       }
       Object.assign(installation, retried.installation);
-      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, []);
+      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, [], variantPrices);
     }
   }
 
@@ -4381,11 +4388,14 @@ ${orientationExtra}
           for (const color of colorsToUse) {
             const variantKey = `${size.id}:${color.id}`;
             if (variantMap[variantKey]) {
-              const p = priceMap[variantKey];
+              const p = lookupWizardRetailPrice(priceMap, {
+                variantKey,
+                printifyVariantId: variantMap[variantKey]?.printifyVariantId,
+              });
               shopifyVariants.push({
                 option1: size.name,
                 option2: color.name,
-                price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : "0.00",
+                price: p ?? "0.00",
                 sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`,
                 inventory_management: null,
                 inventory_policy: "continue",
@@ -4397,10 +4407,13 @@ ${orientationExtra}
         for (const size of sizesToUse) {
           const variantKey = `${size.id}:default`;
           if (variantMap[variantKey]) {
-            const p = priceMap[variantKey];
+            const p = lookupWizardRetailPrice(priceMap, {
+              variantKey,
+              printifyVariantId: variantMap[variantKey]?.printifyVariantId,
+            });
             shopifyVariants.push({
               option1: size.name,
-              price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : "0.00",
+              price: p ?? "0.00",
               sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`,
               inventory_management: null,
               inventory_policy: "continue", // Allow overselling (POD)
@@ -20365,6 +20378,25 @@ ${orientationExtra}
                 shopifyVariantIds: null,
               });
               ptForSync.shopifyProductId = null;
+            } else if (
+              variantPrices &&
+              typeof variantPrices === "object" &&
+              Object.keys(variantPrices).length > 0 &&
+              !allShopifyVariantsHavePositiveRetail(shopifyProdCheck.data.product.variants)
+            ) {
+              // Leftover $0 product from a failed Create Page — recreate with wizard retail.
+              console.log(
+                `[customizer-pages] Product ${ptForSync.shopifyProductId} still has $0.00 variants. Recreating with wizard retail.`,
+              );
+              await deleteShopifyProductBestEffort(shop, installation.accessToken, ptForSync.shopifyProductId);
+              await storage.updateProductType(incomingProductTypeId!, {
+                shopifyProductId: null,
+                shopifyProductHandle: null,
+                shopifyProductUrl: null,
+                shopifyShopDomain: null,
+                shopifyVariantIds: null,
+              });
+              ptForSync.shopifyProductId = null;
             }
           }
         } catch (syncCheckErr: any) {
@@ -20383,6 +20415,7 @@ ${orientationExtra}
             installation,
             ptForSync,
             merchant,
+            variantPrices,
           );
           resolvedBaseProductId = shopifyProductId;
         } catch (e: any) {
@@ -20517,6 +20550,7 @@ ${orientationExtra}
               installation,
               recoveryPt,
               merchant,
+              variantPrices,
             );
             resolvedBaseProductId = shopifyProductId;
           } catch (e: any) {
@@ -21164,6 +21198,9 @@ ${orientationExtra}
         printifyToShopify: printifyToShopifyVariantId,
         variantMap: productType?.variantMap,
         knownShopifyVariantIds,
+        sizes: productType?.sizes,
+        frameColors: productType?.frameColors,
+        shopifyVariants,
       });
       if (!variantNum) {
         updated.push({
