@@ -17,6 +17,10 @@ export type StorefrontGoogleAuthMessage = {
   customerId?: string;
   identityToken?: string;
   credits?: number;
+  earnedCredits?: number;
+  packCredits?: number;
+  shopFreeRemaining?: number;
+  freeGenerationLimit?: number;
   freeGenerationsUsed?: number;
   email?: string;
   error?: string;
