@@ -3444,9 +3444,20 @@ export default function AdminCustomizerPages() {
                         </div>
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      This will create the customizer page on your Online Store.
-                    </p>
+                    {createMutation.isPending ? (
+                      <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 mt-0.5" />
+                        <p className="text-xs text-muted-foreground">
+                          Creating your customizer page — this can take up to 2 minutes (Shopify product,
+                          prices, and storefront page). Keep this window open.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        This will create the customizer page on your Online Store. It can take up to 2
+                        minutes — keep this window open while it finishes.
+                      </p>
+                    )}
                     </div>
                     <div className="flex gap-2 shrink-0 pt-2">
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(4)} disabled={createMutation.isPending}>
