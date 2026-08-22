@@ -46,6 +46,7 @@ import {
 } from "@/components/terms/StorefrontTermsAccept";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
+import { CreatorProductTermsNote } from "@/components/creators/CreatorProductTermsNote";
 import { getSizeChartByBlueprintId, type NormalizedSizeChart } from "@/lib/printifySizeCharts";
 import {
   ProductMockup,
@@ -372,6 +373,9 @@ type ProductInfoSectionsProps = {
   sizeChartLoading?: boolean;
   blueprintId?: number;
   className?: string;
+  /** Creator storefront: shipping / made-to-order returns on the product page. */
+  commerceTerms?: boolean;
+  commerceTermsOrigin?: string | null;
 };
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
@@ -1280,14 +1284,22 @@ function ProductInfoSections({
   blueprintId,
   className,
   productName,
+  commerceTerms,
+  commerceTermsOrigin,
 }: ProductInfoSectionsProps & { productName?: string | null }) {
   const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
   const hasDetails = !!safeDescription;
   const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
-  if (!hasDetails && !hasSizeChartArea) return null;
+  const showCommerce = !!commerceTerms;
+  if (!hasDetails && !hasSizeChartArea && !showCommerce) return null;
 
   return (
     <div className={`space-y-2 ${className || ""}`} data-testid="container-product-info-sections">
+      {showCommerce && (
+        <InfoCollapsible title="Shipping & returns">
+          <CreatorProductTermsNote appOrigin={commerceTermsOrigin || undefined} />
+        </InfoCollapsible>
+      )}
       {hasDetails && (
         <InfoCollapsible title="Product Details">
           <div
@@ -14832,6 +14844,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   sizeChart={sizeChart}
                   sizeChartLoading={sizeChartLoading}
                   blueprintId={productTypeConfig?.printifyBlueprintId}
+                  commerceTerms={isStorefront}
+                  commerceTermsOrigin={centralAppUrl}
                 />
               )}
 
@@ -16169,6 +16183,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 sizeChart={sizeChart}
                 sizeChartLoading={sizeChartLoading}
                 blueprintId={productTypeConfig?.printifyBlueprintId}
+                commerceTerms={isStorefront}
+                commerceTermsOrigin={centralAppUrl}
               />
             )}
           </>)}

@@ -26,6 +26,7 @@ import {
   socialPlatformLabel,
 } from "@shared/creatorMarketplace";
 import { displayRetailPrice, hasPositiveRetailPrice } from "@shared/shopifyVariantPriceSync";
+import { CreatorProductTermsNote } from "@/components/creators/CreatorProductTermsNote";
 
 export type CreatorBoot = {
   id: string;
@@ -269,8 +270,16 @@ function StoreShell({
         <div className="mx-auto max-w-5xl px-4 py-6 text-center text-xs text-muted-foreground">
           Powered by AI Art Studio · Personalized merch for {storeName(creator)}
           {" · "}
-          <a href="/terms" className="underline underline-offset-2 hover:text-foreground">
+          <a href="/terms#customers" className="underline underline-offset-2 hover:text-foreground">
             Terms
+          </a>
+          {" · "}
+          <a href="/terms#shipping-and-delivery" className="underline underline-offset-2 hover:text-foreground">
+            Shipping
+          </a>
+          {" · "}
+          <a href="/terms#custom-products-and-returns" className="underline underline-offset-2 hover:text-foreground">
+            Returns
           </a>
           {" · "}
           <a href="/privacy" className="underline underline-offset-2 hover:text-foreground">
@@ -465,17 +474,17 @@ function ProductCard({
         </div>
       ) : null}
       <div className="p-5">
-      <div className="font-semibold">{page.title}</div>
-      {page.baseProductTitle ? (
-        <div className="mt-1 text-sm text-muted-foreground">{page.baseProductTitle}</div>
-      ) : null}
-      {fromPrice ? (
-        <div className="mt-2 text-sm font-medium">From {fromPrice}</div>
-      ) : null}
-      {page.description ? (
-        <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{page.description}</p>
-      ) : null}
-      <div className="mt-4 text-sm font-medium text-primary">Customize →</div>
+        <div className="font-semibold">{page.title}</div>
+        {page.baseProductTitle ? (
+          <div className="mt-1 text-sm text-muted-foreground">{page.baseProductTitle}</div>
+        ) : null}
+        {fromPrice ? (
+          <div className="mt-2 text-sm font-medium">From {fromPrice}</div>
+        ) : null}
+        {page.description ? (
+          <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{page.description}</p>
+        ) : null}
+        <div className="mt-4 text-sm font-medium text-primary">Customize →</div>
       </div>
     </a>
   );
@@ -507,6 +516,9 @@ function ProductsView({
       <p className={backgroundUrl ? "text-white/80" : "text-muted-foreground"}>
         Pick a product and generate a design curated by {storeName(creator)}.
       </p>
+      <div className={backgroundUrl ? "mt-3 text-white/70 [&_a]:text-white [&_a]:underline" : "mt-3"}>
+        <CreatorProductTermsNote />
+      </div>
     </>
   );
 
@@ -799,6 +811,7 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
       {checkoutError ? (
         <p className="text-sm text-destructive">{checkoutError}</p>
       ) : null}
+      {itemCount > 0 ? <CreatorProductTermsNote /> : null}
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button asChild variant="outline" className="flex-1">
           <Link href={`${basePath}/products`}>Continue shopping</Link>
