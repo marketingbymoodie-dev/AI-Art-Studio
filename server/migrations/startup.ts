@@ -1344,6 +1344,20 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "creator_customer_shop_visits",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "creator_customer_shop_visits" (
+        "id" serial PRIMARY KEY,
+        "customer_id" varchar NOT NULL,
+        "creator_id" varchar NOT NULL,
+        "creator_username" text NOT NULL,
+        "shop_name" text,
+        "last_seen_at" timestamp DEFAULT NOW() NOT NULL,
+        UNIQUE ("customer_id", "creator_id")
+      )
+    `,
+  },
+  {
     name: "creator_style_assignments",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_style_assignments" (
@@ -1727,6 +1741,11 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_customer_free_gens_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_free_gens_uidx"
       ON "creator_customer_free_gens" ("creator_id", "customer_id")`,
+  },
+  {
+    name: "creator_customer_shop_visits_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_shop_visits_uidx"
+      ON "creator_customer_shop_visits" ("customer_id", "creator_id")`,
   },
   {
     name: "creator_generation_costs_job_uidx",

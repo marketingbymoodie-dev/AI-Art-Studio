@@ -155,6 +155,7 @@ async function redactCustomerData(shop: string, customer: ShopifyGdprCustomer | 
       ["generation_jobs", "DELETE FROM generation_jobs WHERE customer_id = ANY($1::text[])", [customerIds]],
       ["published_products", "DELETE FROM published_products WHERE shop = $2 AND customer_key = ANY($1::text[])", [customerKeys, shop]],
       ["customizer_designs", "DELETE FROM customizer_designs WHERE shop = $2 AND (shopify_customer_id = ANY($3::text[]) OR customer_key = ANY($1::text[]))", [customerKeys, shop, shopifyIds]],
+      ["creator_customer_shop_visits", "DELETE FROM creator_customer_shop_visits WHERE customer_id = ANY($1::text[])", [customerIds]],
       ["customer_aliases", "DELETE FROM customer_aliases WHERE customer_id = ANY($1::text[])", [customerIds]],
       ["customers", "DELETE FROM customers WHERE id = ANY($1::text[])", [customerIds]],
     ];

@@ -7,6 +7,7 @@ import {
 } from "@/lib/creator-analytics";
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { shadowDesignIdForCart } from "@shared/shadowDesignId";
 import {
   LINE_FLAT_PLACEMENT_KEY,
@@ -2752,6 +2753,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
+  const [visitedCreatorShops, setVisitedCreatorShops] = useState<VisitedShopLink[]>([]);
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [showArtClassSignup, setShowArtClassSignup] = useState(false);
   const [couponCode, setCouponCode] = useState('');
@@ -2776,6 +2778,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const artworksRemaining = creditBreakdown.total;
   const hasGenerationCapacity = artworksRemaining > 0;
   const storefrontLoggedIn = customer?.isLoggedIn === true;
+  useEffect(() => {
+    if (!isCreatorStorefront || !creatorUsernameParam || !storefrontCustomerId || !storefrontLoggedIn) {
+      return;
+    }
+    safeFetch(`${API_BASE}/api/creators/storefront/${encodeURIComponent(creatorUsernameParam)}/visit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customerId: storefrontCustomerId }),
+    }).catch(() => {});
+  }, [isCreatorStorefront, creatorUsernameParam, storefrontCustomerId, storefrontLoggedIn]);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -12569,6 +12581,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       .then(data => {
         if (data.designs) setSavedDesigns(data.designs);
         if (data.limit) setGalleryLimit(data.limit);
+        if (Array.isArray(data.visitedShops)) setVisitedCreatorShops(data.visitedShops);
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
@@ -13825,6 +13838,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
+                        {isCreatorStorefront ? (
+                          <CreatorVisitedShops
+                            currentUsername={creatorUsernameParam}
+                            shops={visitedCreatorShops}
+                          />
+                        ) : null}
                         <div className="mb-3 rounded-md border bg-muted/50 p-3">
                           <p className="text-sm font-medium mb-1">Studio Art Class</p>
                           <StudioNewsletterSignup

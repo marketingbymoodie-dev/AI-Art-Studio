@@ -6,6 +6,8 @@ import {
 
 export const LAST_CREATOR_STORAGE_KEY = "appai_last_creator";
 export const LAST_CREATOR_COOKIE = "appai_last_creator";
+export const CREATOR_SHOPS_STORAGE_KEY = "appai_creator_shops";
+export const MAX_CREATOR_SHOP_VISITS = 20;
 
 export type LastCreatorVisit = {
   username: string;
@@ -82,7 +84,71 @@ export function writeLastCreatorVisit(input: {
       /* ignore quota */
     }
   }
+  upsertCreatorShopVisit(visit);
   return visit;
+}
+
+export function parseCreatorShopVisits(raw: unknown): LastCreatorVisit[] {
+  let list: unknown[] = [];
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed;
+    } catch {
+      return [];
+    }
+  } else if (Array.isArray(raw)) {
+    list = raw;
+  }
+  const out: LastCreatorVisit[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    const visit = parseLastCreatorVisit(item);
+    if (!visit || seen.has(visit.username)) continue;
+    seen.add(visit.username);
+    out.push(visit);
+  }
+  return out
+    .sort((a, b) => b.visitedAt - a.visitedAt)
+    .slice(0, MAX_CREATOR_SHOP_VISITS);
+}
+
+export function readCreatorShopVisits(): LastCreatorVisit[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const listed = parseCreatorShopVisits(window.localStorage.getItem(CREATOR_SHOPS_STORAGE_KEY));
+    const last = readLastCreatorVisit();
+    if (!last) return listed;
+    return parseCreatorShopVisits([last, ...listed]);
+  } catch {
+    return [];
+  }
+}
+
+export function upsertCreatorShopVisit(visit: LastCreatorVisit): LastCreatorVisit[] {
+  const next = parseCreatorShopVisits([visit, ...readCreatorShopVisits()]);
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(
+        CREATOR_SHOPS_STORAGE_KEY,
+        JSON.stringify(next.map((v) => JSON.parse(serializeLastCreatorVisit(v)))),
+      );
+    } catch {
+      /* ignore quota */
+    }
+  }
+  return next;
+}
+
+export function otherCreatorShopVisits(currentUsername: string): LastCreatorVisit[] {
+  const current = normalizeCreatorUsername(currentUsername);
+  return readCreatorShopVisits().filter((v) => v.username && v.username !== current);
+}
+
+/** Same-origin shop home. Open with target=_top from the designer iframe. */
+export function creatorShopPath(username: string): string {
+  const handle = normalizeCreatorUsername(username);
+  return handle ? `/c/${handle}` : "/";
 }
 
 /** Bounce through the shop app proxy so a cookie is set on the Shopify origin. */

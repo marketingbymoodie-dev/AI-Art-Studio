@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   creatorCheckoutRememberUrl,
+  creatorShopPath,
   isHandleLikeShopName,
   isSafeShopifyCheckoutNext,
+  parseCreatorShopVisits,
   parseLastCreatorVisit,
   serializeLastCreatorVisit,
 } from "./lastCreatorVisit";
@@ -55,5 +57,23 @@ describe("lastCreatorVisit", () => {
     expect(isSafeShopifyCheckoutNext("https://evil.com/checkouts/x", "ai-art-studio-staging.myshopify.com")).toBe(
       false,
     );
+  });
+
+  it("keeps a unique newest-first shop list and drops the current shop", () => {
+    const a = {
+      username: "alice",
+      shopName: "Alice Shop",
+      returnUrl: "https://aiartstudio.app/c/alice",
+      visitedAt: 20,
+    };
+    const b = {
+      username: "bob",
+      shopName: "Bob Shop",
+      returnUrl: "https://aiartstudio.app/c/bob",
+      visitedAt: 10,
+    };
+    const listed = parseCreatorShopVisits([b, a, { ...a, visitedAt: 5 }]);
+    expect(listed.map((v) => v.username)).toEqual(["alice", "bob"]);
+    expect(creatorShopPath("bob")).toBe("/c/bob");
   });
 });

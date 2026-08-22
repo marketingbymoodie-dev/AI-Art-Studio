@@ -1961,3 +1961,22 @@ export const merchantPackPurchases = pgTable(
 );
 
 export type MerchantPackPurchase = typeof merchantPackPurchases.$inferSelect;
+
+/** Creator shops a signed-in customer has opened (gallery “shops you've used”). */
+export const creatorCustomerShopVisits = pgTable(
+  "creator_customer_shop_visits",
+  {
+    id: serial("id").primaryKey(),
+    customerId: varchar("customer_id").notNull(),
+    creatorId: varchar("creator_id").notNull(),
+    creatorUsername: text("creator_username").notNull(),
+    shopName: text("shop_name"),
+    lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("creator_customer_shop_visits_uidx").on(table.customerId, table.creatorId),
+    index("creator_customer_shop_visits_customer_idx").on(table.customerId, table.lastSeenAt),
+  ],
+);
+
+export type CreatorCustomerShopVisit = typeof creatorCustomerShopVisits.$inferSelect;

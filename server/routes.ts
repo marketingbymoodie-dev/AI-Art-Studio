@@ -10807,9 +10807,18 @@ ${orientationExtra}
         return { handle: pages[0].handle, title: pages[0].title };
       };
 
+      let visitedShops: Array<{ username: string; shopName: string; href: string; visitedAt: number }> = [];
+      try {
+        const { listCreatorShopVisits } = await import("./creator-shop-visits");
+        visitedShops = await listCreatorShopVisits(customerId);
+      } catch {
+        visitedShops = [];
+      }
+
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
+        visitedShops,
         designs: rows.map(d => {
           const ds =
             d.designState && typeof d.designState === "object" && !Array.isArray(d.designState)
