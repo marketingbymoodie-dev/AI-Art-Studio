@@ -14,8 +14,13 @@ import {
   verifyReinstallKey,
 } from "./shopify-app-credentials";
 import { ensureCreatorCheckoutWebhooks } from "./creator-checkout-webhooks";
+import {
+  ensureShopifyCarrierService,
+  parseCarrierRateRequest,
+  quoteShopifyCarrierRates,
+} from "./printify-checkout-shipping";
 
-const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders";
+const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders,write_shipping";
 
 function primaryKey(): string {
   return getPrimaryShopifyCredentials()?.apiKey || "";
@@ -223,6 +228,33 @@ export function registerShopifyRoutes(app: Express): void {
   console.log(`[shopify] OAuth scopes configured: ${SHOPIFY_SCOPES}`);
   registerShopifyGdprRoutes(app);
 
+  app.post("/shopify/carrier-service/rates", async (req: Request, res: Response) => {
+    const hmacHeader = req.headers["x-shopify-hmac-sha256"] as string;
+    const shopHeader = req.headers["x-shopify-shop-domain"] as string;
+    const rawBody = (req as { rawBody?: Buffer | string }).rawBody;
+    const bodyBuf = Buffer.isBuffer(rawBody)
+      ? rawBody
+      : typeof rawBody === "string"
+        ? Buffer.from(rawBody, "utf8")
+        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
+    if (!hmacHeader || !hmacBase64MatchesAnySecret(bodyBuf, hmacHeader)) {
+      return res.status(401).send("HMAC verification failed");
+    }
+    const parsed = parseCarrierRateRequest(req.body);
+    try {
+      const rates = await quoteShopifyCarrierRates({
+        shop: shopHeader || "",
+        destinationCountry: parsed.destinationCountry,
+        currency: parsed.currency,
+        items: parsed.items,
+      });
+      return res.status(200).json({ rates });
+    } catch (e: any) {
+      console.warn("[carrier-shipping] quote failed:", e?.message || e);
+      return res.status(200).json({ rates: [] });
+    }
+  });
+
   if (!hasShopifyAppCredentials()) {
     console.log("Shopify OAuth disabled - SHOPIFY_API_KEY/SECRET not configured");
     
@@ -379,6 +411,10 @@ if (res.locals.shopify?.session?.shop) {
       void ensureCreatorCheckoutWebhooks({ shop, accessToken: access_token }).catch((e: any) =>
         console.warn("[creator-webhooks] post-OAuth register failed:", e?.message || e),
       );
+      void ensureShopifyCarrierService({ shop, accessToken: access_token }).then((r) => {
+        if (!r.ok) console.warn("[carrier-shipping] post-OAuth register:", r.reason);
+        else console.log("[carrier-shipping] post-OAuth", r.reason, shop);
+      });
 
       res.clearCookie("shopify_state");
       res.clearCookie("shopify_merchant");

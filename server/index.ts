@@ -427,5 +427,14 @@ app.use((req, res, next) => {
       .catch((e: any) =>
         console.warn("[creator-webhooks] startup register failed:", e?.message || e),
       );
+    void import("./printify-checkout-shipping")
+      .then(({ ensurePlatformCarrierService }) => ensurePlatformCarrierService())
+      .then((r) => {
+        if (!r.ok) console.warn("[carrier-shipping] startup:", r.reason);
+        else console.log("[carrier-shipping] startup", r.reason);
+      })
+      .catch((e: any) =>
+        console.warn("[carrier-shipping] startup register failed:", e?.message || e),
+      );
   });
 })();

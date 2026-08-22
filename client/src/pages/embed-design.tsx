@@ -194,7 +194,8 @@ import {
   lifestyleMockupPreferenceRank,
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
-import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
+import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
+import { hasExactVariantMapping, hasVariantMappingForColor, resolveVariantFromMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
@@ -203,6 +204,31 @@ import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
   return `${sizeId || "default"}:${colorId || "default"}`;
+}
+
+/** Hidden cart props so Shopify checkout can quote Printify first/additional shipping. */
+function stampPrintifyShippingProps(
+  properties: Record<string, string>,
+  cfg: {
+    id?: number;
+    printifyBlueprintId?: number;
+    printifyProviderId?: number;
+    variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number | string }>;
+  } | null | undefined,
+  sizeId: string | undefined,
+  colorId: string | undefined,
+  fallbackProductTypeId?: number | string | null,
+) {
+  const resolved = resolveVariantFromMap(cfg?.variantMap, sizeId, colorId || "default");
+  Object.assign(
+    properties,
+    printifyShippingLineProps({
+      productTypeId: cfg?.id ?? fallbackProductTypeId,
+      blueprintId: cfg?.printifyBlueprintId,
+      providerId: cfg?.printifyProviderId ?? resolved?.entry?.providerId,
+      printifyVariantId: resolved?.entry?.printifyVariantId,
+    }),
+  );
 }
 
 declare global {
@@ -386,6 +412,7 @@ interface ProductTypeConfig {
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
   printifyBlueprintId?: number;
+  printifyProviderId?: number;
   /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
   fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
@@ -3796,6 +3823,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
       printifyBlueprintId: dc.printifyBlueprintId,
+      printifyProviderId: dc.printifyProviderId,
       fabricWeaveTexture: dc.fabricWeaveTexture ?? null,
       sizeChart: dc.sizeChart || null,
     });
@@ -7175,6 +7203,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (showFrameColorSelector && selectedFrameColor) {
       properties['_color'] = selectedFrameColor;
     }
+    stampPrintifyShippingProps(
+      properties,
+      productTypeConfig,
+      selectedSize,
+      selectedFrameColor,
+      productTypeId,
+    );
     const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnap = encodeFlatLinePlacement(liveFlat);
     if (flatSnap) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnap;
@@ -9118,6 +9153,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (showFrameColorSelector && selectedFrameColor) {
       properties['_color'] = selectedFrameColor;
     }
+    stampPrintifyShippingProps(
+      properties,
+      productTypeConfig,
+      selectedSize,
+      selectedFrameColor,
+      productTypeId,
+    );
     const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnapAtc = encodeFlatLinePlacement(liveFlatAtc);
     if (flatSnapAtc) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnapAtc;
