@@ -442,8 +442,8 @@ function HomeView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         <section className="rounded-lg border bg-muted/30 p-6">
           <h2 className="font-semibold">Products coming soon</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            This creator is still onboarding. Customizer products will appear here once assigned
-            in Creator Marketplace admin.
+            This creator is still onboarding. Customizer products will appear here once this
+            storefront is set up.
           </p>
         </section>
       )}
