@@ -286,7 +286,7 @@ export function isAppHostedTermsOrigin(origin: string): boolean {
 }
 
 export function publicTermsHref(
-  section: TermsSectionId | "" = "customers",
+  section: TermsSectionId | "" | "shipping-and-delivery" | "custom-products-and-returns" = "customers",
   origin?: string,
 ): string {
   const hash = section ? `#${section}` : "";

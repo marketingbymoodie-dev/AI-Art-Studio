@@ -35,6 +35,9 @@ describe("publicTermsHref", () => {
     expect(publicTermsHref("customers", "https://aiartstudio-gizsmzs2.myshopify.com")).toBe(
       `${DEFAULT_TERMS_ORIGIN}/terms#customers`,
     );
+    expect(publicTermsHref("shipping-and-delivery", "https://ai-art-studio-staging.myshopify.com")).toBe(
+      `${DEFAULT_TERMS_ORIGIN}/terms#shipping-and-delivery`,
+    );
     expect(isAppHostedTermsOrigin("https://max.aiartstudio.app")).toBe(true);
     expect(isAppHostedTermsOrigin("https://shop.aiartstudio.app")).toBe(false);
   });

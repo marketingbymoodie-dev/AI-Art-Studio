@@ -375,6 +375,7 @@ type ProductInfoSectionsProps = {
   className?: string;
   /** Creator storefront: shipping / made-to-order returns on the product page. */
   commerceTerms?: boolean;
+  commerceTermsOrigin?: string | null;
 };
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
@@ -1284,6 +1285,7 @@ function ProductInfoSections({
   className,
   productName,
   commerceTerms,
+  commerceTermsOrigin,
 }: ProductInfoSectionsProps & { productName?: string | null }) {
   const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
   const hasDetails = !!safeDescription;
@@ -1295,7 +1297,7 @@ function ProductInfoSections({
     <div className={`space-y-2 ${className || ""}`} data-testid="container-product-info-sections">
       {showCommerce && (
         <InfoCollapsible title="Shipping & returns">
-          <CreatorProductTermsNote />
+          <CreatorProductTermsNote appOrigin={commerceTermsOrigin || undefined} />
         </InfoCollapsible>
       )}
       {hasDetails && (
@@ -14843,6 +14845,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   sizeChartLoading={sizeChartLoading}
                   blueprintId={productTypeConfig?.printifyBlueprintId}
                   commerceTerms={isStorefront}
+                  commerceTermsOrigin={centralAppUrl}
                 />
               )}
 
@@ -16181,6 +16184,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 sizeChartLoading={sizeChartLoading}
                 blueprintId={productTypeConfig?.printifyBlueprintId}
                 commerceTerms={isStorefront}
+                commerceTermsOrigin={centralAppUrl}
               />
             )}
           </>)}
