@@ -60,18 +60,109 @@ export function clampStorefrontFreeGens(n: unknown): number {
   );
 }
 
+export type StorefrontCreditBreakdown = {
+  shopFreeRemaining: number;
+  shopEarned: number;
+  pack: number;
+  paidTotal: number;
+  total: number;
+};
+
+export type StorefrontGenerationSpend = "customer_free" | "customer_paid" | "exhausted";
+
+function nonNegInt(n: unknown): number {
+  const v = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.floor(v));
+}
+
+/**
+ * Shop-local free gens remaining. Allows a 0 limit (creator shops can disable
+ * free gens). When `shopFreeRemaining` is supplied, that value wins.
+ */
+export function storefrontShopFreeRemaining(args: {
+  shopFreeRemaining?: number;
+  freeGenerationsUsed?: number;
+  freeGenerationLimit?: number;
+}): number {
+  if (args.shopFreeRemaining != null && Number.isFinite(args.shopFreeRemaining)) {
+    return nonNegInt(args.shopFreeRemaining);
+  }
+  const raw = args.freeGenerationLimit;
+  const limit =
+    raw == null || (typeof raw === "number" && !Number.isFinite(raw))
+      ? STOREFRONT_FREE_GENERATION_DEFAULT
+      : Math.min(
+          STOREFRONT_FREE_GENERATION_MAX,
+          Math.max(0, Math.round(Number(raw))),
+        );
+  return Math.max(0, limit - nonNegInt(args.freeGenerationsUsed));
+}
+
+/**
+ * Split a wallet so the customer can see this-shop free vs rewards vs packs.
+ * If bucket fields are missing, paid credits are treated as shop rewards.
+ */
+export function storefrontCreditBreakdown(args: {
+  shopFreeRemaining?: number;
+  freeGenerationsUsed?: number;
+  freeGenerationLimit?: number;
+  earnedCredits?: number | null;
+  packCredits?: number | null;
+  paidCredits?: number;
+}): StorefrontCreditBreakdown {
+  const shopFreeRemaining = storefrontShopFreeRemaining(args);
+  const paidTotal = nonNegInt(args.paidCredits);
+  const hasBuckets = args.earnedCredits != null || args.packCredits != null;
+  let shopEarned = nonNegInt(args.earnedCredits);
+  let pack = nonNegInt(args.packCredits);
+  if (!hasBuckets) {
+    shopEarned = paidTotal;
+    pack = 0;
+  } else if (shopEarned + pack === 0 && paidTotal > 0) {
+    shopEarned = paidTotal;
+  }
+  return {
+    shopFreeRemaining,
+    shopEarned,
+    pack,
+    paidTotal,
+    total: shopFreeRemaining + paidTotal,
+  };
+}
+
+/** Shop free first, then paid (earned then pack at spend time). */
+export function pickStorefrontGenerationSpend(args: {
+  shopFreeRemaining: number;
+  paidCredits: number;
+}): StorefrontGenerationSpend {
+  if (nonNegInt(args.shopFreeRemaining) > 0) return "customer_free";
+  if (nonNegInt(args.paidCredits) > 0) return "customer_paid";
+  return "exhausted";
+}
+
+export function formatStorefrontCreditsSplit(b: StorefrontCreditBreakdown): string {
+  const parts: string[] = [];
+  if (b.shopFreeRemaining > 0) {
+    parts.push(`${b.shopFreeRemaining} free on this shop`);
+  }
+  if (b.shopEarned > 0) {
+    parts.push(`${b.shopEarned} shop reward${b.shopEarned === 1 ? "" : "s"}`);
+  }
+  if (b.pack > 0) {
+    parts.push(`${b.pack} pack`);
+  }
+  if (parts.length === 0) return "0 artworks remaining";
+  return `${parts.join(" · ")} remaining`;
+}
+
 export function storefrontArtworksRemaining(args: {
+  shopFreeRemaining?: number;
   freeGenerationsUsed?: number;
   paidCredits?: number;
   freeGenerationLimit?: number;
 }): number {
-  const freeUsed = args.freeGenerationsUsed ?? 0;
-  const paid = args.paidCredits ?? 0;
-  const limit = clampStorefrontFreeGens(
-    args.freeGenerationLimit ?? STOREFRONT_FREE_GENERATION_DEFAULT,
-  );
-  const freeRemaining = Math.max(0, limit - freeUsed);
-  return freeRemaining + paid;
+  return storefrontCreditBreakdown(args).total;
 }
 
 export function getCreditPackDefinition(packId: string | null | undefined): CreditPackDefinition | null {

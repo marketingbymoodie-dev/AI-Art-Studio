@@ -129,7 +129,9 @@ import {
 import {
   STOREFRONT_FREE_GENERATION_DEFAULT,
   STOREFRONT_FREE_GENERATION_LIMIT,
+  formatStorefrontCreditsSplit,
   storefrontArtworksRemaining,
+  storefrontCreditBreakdown,
 } from "@shared/storefront-credits";
 import {
   CREATOR_ARTWORK_LIMIT,
@@ -212,8 +214,34 @@ interface CustomerInfo {
   id: string;
   email?: string;
   credits: number;
+  earnedCredits?: number;
+  packCredits?: number;
   freeGenerationsUsed?: number;
+  shopFreeRemaining?: number;
   isLoggedIn: boolean;
+}
+
+function customerWalletFromApi(
+  data: {
+    credits?: number;
+    creditsRemaining?: number;
+    earnedCredits?: number;
+    packCredits?: number;
+    freeGenerationsUsed?: number;
+    shopFreeRemaining?: number;
+  },
+  prev?: CustomerInfo | null,
+): Pick<
+  CustomerInfo,
+  "credits" | "earnedCredits" | "packCredits" | "freeGenerationsUsed" | "shopFreeRemaining"
+> {
+  return {
+    credits: data.credits ?? data.creditsRemaining ?? prev?.credits ?? 0,
+    earnedCredits: data.earnedCredits ?? prev?.earnedCredits ?? 0,
+    packCredits: data.packCredits ?? prev?.packCredits ?? 0,
+    freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed ?? 0,
+    shopFreeRemaining: data.shopFreeRemaining ?? prev?.shopFreeRemaining,
+  };
 }
 
 interface GeneratedDesign {
@@ -2376,6 +2404,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         customerId: storefrontCustomerId,
         shopifyCustomerId,
         anonSessionId,
+        ...(creatorUsernameParam ? { creatorUsername: creatorUsernameParam } : {}),
+        ...(creatorIdParam ? { creatorId: creatorIdParam } : {}),
       }),
     })
       .then((res) => res.json())
@@ -2383,6 +2413,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!data?.ok || !data.customerId) return;
         setStorefrontCustomerId(data.customerId);
         setStorefrontIdentityToken(data.identityToken || null);
+        if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
+          setFreeGenerationLimit(data.freeGenerationLimit);
+        }
         setCustomer((prev) => {
           const stored = readStoredCustomerRecord();
           const email =
@@ -2400,12 +2433,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             ...(prev || stored || { id: data.customerId, isLoggedIn: false }),
             id: data.customerId,
             email,
-            credits: data.credits ?? prev?.credits ?? stored?.credits ?? 0,
-            freeGenerationsUsed:
-              data.freeGenerationsUsed ??
-              prev?.freeGenerationsUsed ??
-              stored?.freeGenerationsUsed ??
-              0,
+            ...customerWalletFromApi(data, prev || stored),
             isLoggedIn: isKnownLoggedInCustomer,
           };
           try {
@@ -2504,19 +2532,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     customerId: string;
     identityToken?: string;
     credits?: number;
+    earnedCredits?: number;
+    packCredits?: number;
+    shopFreeRemaining?: number;
+    freeGenerationLimit?: number;
     freeGenerationsUsed?: number;
     email?: string;
     galleryLimit?: number;
   }) => {
     const newCustomerId = data.customerId;
     const loginEmail = data.email || otpEmail.trim() || undefined;
+    const wallet = customerWalletFromApi(data);
     setStorefrontCustomerId(newCustomerId);
     if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
+    if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
+      setFreeGenerationLimit(data.freeGenerationLimit);
+    }
     setCustomer({
       email: loginEmail,
       id: newCustomerId,
-      credits: data.credits ?? 0,
-      freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
+      ...wallet,
       isLoggedIn: true,
     });
     setGalleryLimit(data.galleryLimit || 10);
@@ -2531,8 +2566,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       persistCustomerRecord({
         email: loginEmail,
         id: newCustomerId,
-        credits: data.credits ?? 0,
-        freeGenerationsUsed: data.freeGenerationsUsed ?? 0,
+        ...wallet,
         isLoggedIn: true,
       });
     } catch {}
@@ -2625,6 +2659,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           customerId: event.data.customerId,
           identityToken: event.data.identityToken,
           credits: event.data.credits,
+          earnedCredits: event.data.earnedCredits,
+          packCredits: event.data.packCredits,
+          shopFreeRemaining: event.data.shopFreeRemaining,
+          freeGenerationLimit: event.data.freeGenerationLimit,
           freeGenerationsUsed: event.data.freeGenerationsUsed,
           email: event.data.email,
         });
@@ -2661,6 +2699,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     })();
     popupUrl.searchParams.set("openerOrigin", returnOrigin);
     popupUrl.searchParams.set("nonce", nonce);
+    if (creatorUsernameParam) popupUrl.searchParams.set("creatorUsername", creatorUsernameParam);
+    if (creatorIdParam) popupUrl.searchParams.set("creatorId", creatorIdParam);
 
     const url = popupUrl.toString();
     const inIframe = (() => {
@@ -2725,11 +2765,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [packCheckoutLoadingId, setPackCheckoutLoadingId] = useState<string | null>(null);
   const paidCredits = customer?.credits ?? 0;
   const freeGenerationsUsedCount = customer?.freeGenerationsUsed ?? 0;
-  const artworksRemaining = storefrontArtworksRemaining({
+  const creditBreakdown = storefrontCreditBreakdown({
+    shopFreeRemaining: customer?.shopFreeRemaining,
     freeGenerationsUsed: freeGenerationsUsedCount,
-    paidCredits,
     freeGenerationLimit,
+    earnedCredits: customer?.earnedCredits,
+    packCredits: customer?.packCredits,
+    paidCredits,
   });
+  const artworksRemaining = creditBreakdown.total;
   const hasGenerationCapacity = artworksRemaining > 0;
   const storefrontLoggedIn = customer?.isLoggedIn === true;
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
@@ -2940,7 +2984,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (isCreatorStorefront) {
       toast({
         title: "No artwork credits remaining",
-        description: "Buy a Studio Credits pack to keep generating, or earn credits if rewards are enabled.",
+        description: "Buy a Studio Credits pack below to keep generating.",
         duration: 8000,
       });
       return;
@@ -7203,7 +7247,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!jobRes.ok) {
           if (jobData.error === 'FREE_LIMIT_REACHED') {
             setFreeLimitReached(true);
-            setCreditsPopoverOpen(true);
+            notifyInsufficientCredits();
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
           }
           if (jobData.error === 'CREATOR_MONTHLY_EXHAUSTED' || jobData.error === 'CREATOR_STORE_PAUSED') {
@@ -7342,6 +7386,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           typeof data.artworksRemaining === 'number'
             ? data.artworksRemaining
             : storefrontArtworksRemaining({
+                shopFreeRemaining: data.shopFreeRemaining,
                 freeGenerationsUsed: nextFreeUsed,
                 paidCredits: nextPaidCredits,
                 freeGenerationLimit,
@@ -7358,29 +7403,40 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               id: storefrontCustomerId || 'anonymous',
               isLoggedIn: false,
             }),
-            credits: nextPaidCredits,
-            freeGenerationsUsed: nextFreeUsed,
+            ...customerWalletFromApi(
+              {
+                credits: nextPaidCredits,
+                earnedCredits: data.earnedCredits,
+                packCredits: data.packCredits,
+                freeGenerationsUsed: nextFreeUsed,
+                shopFreeRemaining: data.shopFreeRemaining,
+              },
+              customer,
+            ),
             isLoggedIn: customer?.isLoggedIn === true,
           };
           setCustomer(updatedCust);
           persistCustomerRecord(updatedCust);
 
           if (remaining > 0) {
-            const noun = storefrontCustomerId && nextPaidCredits > 0 ? 'Artwork' : 'Free Artwork';
             toast({
-              title: `${remaining} ${noun}${remaining === 1 ? '' : 's'} Remaining`,
+              title: formatStorefrontCreditsSplit(
+                storefrontCreditBreakdown({
+                  shopFreeRemaining: data.shopFreeRemaining ?? updatedCust.shopFreeRemaining,
+                  freeGenerationsUsed: nextFreeUsed,
+                  freeGenerationLimit,
+                  earnedCredits: updatedCust.earnedCredits,
+                  packCredits: updatedCust.packCredits,
+                  paidCredits: nextPaidCredits,
+                }),
+              ),
               description: storefrontCustomerId
-                ? 'Credits are refunded when you complete a purchase.'
+                ? "This shop's free generations are used first, then rewards, then packs."
                 : "Tap \u24D8 next to 'Free artworks' for details on getting more.",
               duration: 5000,
             });
           } else {
-            toast({
-              title: "All Free Generations Used",
-              description: "Create an account or purchase more credits to continue designing.",
-              variant: "destructive",
-              duration: 8000,
-            });
+            notifyInsufficientCredits();
           }
         }
       }
@@ -12492,16 +12548,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // Fetch saved designs when logged in
   const isLoggedIn = storefrontLoggedIn;
-  const credits = paidCredits;
   const artworksRemainingLabel = (() => {
     if (sessionLoading && !customer) {
       return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
     }
-    if (artworksRemaining > 0) {
-      const noun = isLoggedIn ? 'artwork' : 'free artwork';
-      return `${artworksRemaining} ${noun}${artworksRemaining !== 1 ? 's' : ''} remaining`;
+    if (!isLoggedIn && creditBreakdown.paidTotal === 0 && creditBreakdown.shopFreeRemaining > 0) {
+      return `${creditBreakdown.shopFreeRemaining} free artwork${creditBreakdown.shopFreeRemaining !== 1 ? "s" : ""} remaining`;
     }
-    return '0 artworks remaining';
+    return formatStorefrontCreditsSplit(creditBreakdown);
   })();
   useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
@@ -13209,15 +13263,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           <DialogHeader>
             <DialogTitle>Studio Credits</DialogTitle>
           </DialogHeader>
-          <p className="text-muted-foreground">
-            Balance: {paidCredits} Studio Credit{paidCredits === 1 ? "" : "s"}.
+          <p className="text-xs text-muted-foreground">
+            This shop uses free generations first, then shop rewards, then packs.
           </p>
-          <p className="text-muted-foreground">
-            {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount)} free generation
-            {Math.max(0, freeGenerationLimit - freeGenerationsUsedCount) === 1 ? "" : "s"} remaining.
-          </p>
+          <div className="space-y-1 text-muted-foreground">
+            <p>
+              This shop: {creditBreakdown.shopFreeRemaining} free
+              {creditBreakdown.shopEarned > 0
+                ? ` · ${creditBreakdown.shopEarned} reward${creditBreakdown.shopEarned === 1 ? "" : "s"}`
+                : ""}
+            </p>
+            <p>
+              Packs: {creditBreakdown.pack} Studio Credit{creditBreakdown.pack === 1 ? "" : "s"}
+            </p>
+          </div>
           <div className="rounded-md bg-muted p-3 space-y-2">
-            <p className="font-medium text-foreground">Need more generations</p>
+            <p className="font-medium text-foreground">
+              {creditBreakdown.total === 0 ? "Buy a pack to keep generating" : "Need more generations"}
+            </p>
             <p className="text-muted-foreground text-xs">
               Studio Credit Packs available below. Or get some free credits other ways:
             </p>
@@ -13362,7 +13425,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
             <CardContent className="py-3">
               <p className="text-orange-700 dark:text-orange-300 text-sm font-medium">
-                You've used all {freeGenerationLimit} free generations. Create an account to continue designing!
+                {storefrontLoggedIn
+                  ? "No free generations or shop rewards left on this shop. Buy a pack below to keep generating."
+                  : `You've used all ${freeGenerationLimit} free generations. Create an account or buy a pack to continue designing!`}
               </p>
             </CardContent>
           </Card>
@@ -13553,9 +13618,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     }}
                   />
                   <StudioMenuIconButton
-                    label={credits > 0 ? `${credits} Studio Credit${credits === 1 ? "" : "s"}` : "Studio Credits"}
+                    label={
+                      artworksRemaining > 0
+                        ? `${artworksRemaining} remaining`
+                        : "Studio Credits"
+                    }
                     icon={Sparkles}
-                    badge={credits > 0 ? credits : null}
+                    badge={artworksRemaining > 0 ? artworksRemaining : null}
                     onClick={() => {
                       setCreditsPopoverOpen(true);
                       setShowSavedDesigns(false);
@@ -13685,7 +13754,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                     safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
+                                      body: JSON.stringify({
+                                      email: otpEmail.trim(),
+                                      code: otpCode,
+                                      shop: shopDomain,
+                                      ...(creatorUsernameParam ? { creatorUsername: creatorUsernameParam } : {}),
+                                      ...(creatorIdParam ? { creatorId: creatorIdParam } : {}),
+                                    }),
                                     })
                                       .then(r => r.json())
                                       .then(data => {
@@ -13709,7 +13784,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                   safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
+                                    body: JSON.stringify({
+                                      email: otpEmail.trim(),
+                                      code: otpCode,
+                                      shop: shopDomain,
+                                      ...(creatorUsernameParam ? { creatorUsername: creatorUsernameParam } : {}),
+                                      ...(creatorIdParam ? { creatorId: creatorIdParam } : {}),
+                                    }),
                                   })
                                     .then(r => r.json())
                                     .then(data => {
