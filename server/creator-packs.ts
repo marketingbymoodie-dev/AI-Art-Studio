@@ -16,6 +16,7 @@ import {
   setPlatformConfig,
 } from "./creator-config";
 import { createCreatorCheckoutCart, isCreatorStorefrontConfigured } from "./shopify-storefront";
+import { publishProductToCheckoutChannels } from "./shopify-publications";
 import { clawbackStudioCredits, grantStudioCredits } from "./studio-credits";
 import { creatorReturnCheckoutAttributes, lookupCreatorByUsername } from "./creator-host";
 import { normalizeShopifyOrderLine } from "./flat-order-fulfillment";
@@ -133,28 +134,16 @@ async function findVariantIdBySku(
   return { variantId, productId };
 }
 
-async function publishProductToOnlineStore(
+async function publishPackToCheckoutChannels(
   shop: string,
   accessToken: string,
-  productGid: string,
+  productId: string | number | null | undefined,
 ): Promise<void> {
-  const pubData = await adminGraphql<{
-    publications: { edges: Array<{ node: { id: string; name: string } }> };
-  }>(shop, accessToken, `{ publications(first: 20) { edges { node { id name } } } }`);
-  const onlineStore = (pubData?.publications?.edges || []).find((e) =>
-    /online store/i.test(e.node.name),
+  const id = String(productId || "").replace(/\D/g, "");
+  if (!id) return;
+  await publishProductToCheckoutChannels(shop, accessToken, id).catch((e) =>
+    console.warn("[creator-packs] checkout-channel publish failed:", e?.message || e),
   );
-  if (!onlineStore) return;
-  await adminGraphql(shop, accessToken, `
-    mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
-      publishablePublish(id: $id, input: $input) {
-        userErrors { message }
-      }
-    }
-  `, {
-    id: productGid,
-    input: [{ publicationId: onlineStore.node.id }],
-  });
 }
 
 /**
@@ -195,6 +184,7 @@ export async function ensureCreatorPackVariants(): Promise<
     const existing = await findVariantIdBySku(shop, token, sku).catch(() => null);
     if (existing?.variantId) {
       await setPlatformConfig(`${VARIANT_CONFIG_PREFIX}${pack.packId}`, existing.variantId);
+      await publishPackToCheckoutChannels(shop, token, existing.productId);
       out.push({ ...pack, variantId: existing.variantId });
       continue;
     }
@@ -238,11 +228,7 @@ export async function ensureCreatorPackVariants(): Promise<
       (product?.id != null ? `gid://shopify/Product/${product.id}` : "");
     if (!vid) throw new Error(`Pack product ${pack.packId} created without variant`);
     await setPlatformConfig(`${VARIANT_CONFIG_PREFIX}${pack.packId}`, vid);
-    if (productGid) {
-      await publishProductToOnlineStore(shop, token, productGid).catch((e) =>
-        console.warn("[creator-packs] publish failed:", e?.message || e),
-      );
-    }
+    await publishPackToCheckoutChannels(shop, token, product?.id || productGid);
     out.push({ ...pack, variantId: vid });
   }
   return out;
