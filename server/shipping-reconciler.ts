@@ -747,6 +747,15 @@ export async function reconcileShopShipping(
     return summary;
   }
 
+  // Mark the run in progress so the operator UI can poll: a full apply can
+  // outlive the HTTP request (Railway edge 502s after ~5 min while the run
+  // continues server-side), so status is the source of truth, not the response.
+  await updateStoreShippingSettings(shop, {
+    lastReconcileAt: new Date(),
+    lastReconcileStatus: "running",
+    lastReconcileError: null,
+  });
+
   // Table mode must not run the CarrierService — detach participant methods.
   try {
     const detached = await detachCarrierMethods(shop, token);
@@ -1031,6 +1040,11 @@ async function applyProfile(
     result.variantsAssociated += ids.length;
   }
   const now = new Date();
+  // weightWrittenAt: writeVariantWeights ran (and threw on any failure) before
+  // this insert existed to stamp, so record it here — "weights verified/written
+  // on Shopify as of now" whenever weight management is on.
+  const { manageVariantWeights } = await getStoreShippingSettings(shop);
+  const weightStamp = manageVariantWeights ? now : null;
   for (const v of desired.variants) {
     await db
       .insert(shippingStoreVariants)
@@ -1041,6 +1055,7 @@ async function applyProfile(
         source: v.source,
         pseudoWeightGrams: v.pseudoWeightGrams,
         associatedAt: now,
+        weightWrittenAt: weightStamp,
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -1050,6 +1065,7 @@ async function applyProfile(
           source: v.source,
           pseudoWeightGrams: v.pseudoWeightGrams,
           associatedAt: now,
+          ...(weightStamp ? { weightWrittenAt: weightStamp } : {}),
           updatedAt: now,
         },
       });

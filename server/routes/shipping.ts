@@ -487,8 +487,11 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
 
   /**
    * POST /api/platform/shipping/stores/:shop/reconcile { dryRun }
-   * dryRun=true → plan counts only, no Shopify writes.
-   * dryRun=false → full apply (requires shippingMode=table).
+   * dryRun=true → plan counts only, synchronous response with the summary.
+   * dryRun=false → full apply (requires shippingMode=table). Runs in the
+   * BACKGROUND and returns 202 immediately: a 22-profile apply takes ~6 min,
+   * which outlives Railway's edge timeout — the client polls the store's
+   * lastReconcileStatus ("running" → "ok"/"partial") instead.
    */
   app.post(
     "/api/platform/shipping/stores/:shop/reconcile",
@@ -499,8 +502,30 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
         const shop = normalizeMyshopifyShopDomain(String(req.params.shop || ""));
         if (!shop) return res.status(400).json({ error: "Invalid shop" });
         const dryRun = req.body?.dryRun !== false;
-        const summary = await reconcileShopShipping(shop, { dryRun, source: "operator" });
-        return res.json({ ok: summary.errors.length === 0, summary });
+        if (dryRun) {
+          const summary = await reconcileShopShipping(shop, { dryRun: true, source: "operator" });
+          return res.json({ ok: summary.errors.length === 0, summary });
+        }
+        const settings = await getStoreShippingSettings(shop);
+        if (settings.lastReconcileStatus === "running") {
+          return res.status(409).json({ error: "A reconcile is already running for this shop" });
+        }
+        reconcileShopShipping(shop, { dryRun: false, source: "operator" })
+          .then((summary) =>
+            console.log(
+              `[shipping-routes] background apply for ${shop} finished: ${summary.status}`,
+            ),
+          )
+          .catch(async (e) => {
+            console.error(`[shipping-routes] background apply for ${shop} failed:`, e?.message || e);
+            // Never leave status stuck on "running" after an unhandled throw.
+            await updateStoreShippingSettings(shop, {
+              lastReconcileAt: new Date(),
+              lastReconcileStatus: "error",
+              lastReconcileError: String(e?.message || e).slice(0, 1000),
+            }).catch(() => {});
+          });
+        return res.status(202).json({ ok: true, started: true });
       } catch (e: any) {
         console.error("[shipping-routes] reconcile failed:", e?.message || e);
         return res.status(500).json({ error: e?.message || "Reconcile failed" });

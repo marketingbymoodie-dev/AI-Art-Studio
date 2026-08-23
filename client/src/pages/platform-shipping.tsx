@@ -184,6 +184,12 @@ export default function PlatformShippingPage() {
   const storesQ = useQuery<{ stores: StoreRow[] }>({
     queryKey: ["/api/platform/shipping/stores"],
     queryFn: () => getJson("/api/platform/shipping/stores"),
+    // Applies run in the background server-side (they outlive the HTTP
+    // request) — poll while any store reports a run in progress.
+    refetchInterval: (query) =>
+      (query.state.data?.stores || []).some((s) => s.lastReconcileStatus === "running")
+        ? 5000
+        : false,
   });
 
   const storePatchMutation = useMutation({
@@ -218,18 +224,19 @@ export default function PlatformShippingPage() {
       return { ...body, shop: payload.shop, dryRun: payload.dryRun };
     },
     onSuccess: (r: any) => {
-      const s: ReconcileSummary = r.summary;
       if (r.dryRun) {
+        const s: ReconcileSummary = r.summary;
         setLastDryRun({ shop: r.shop, summary: s });
         toast({
           title: "Dry-run complete",
           description: `${s.desiredProfiles} profiles desired (+${s.createdProfiles} new, ~${s.updatedProfiles} changed, ${s.removedProfiles} to GC).`,
         });
       } else {
+        // Apply runs in the background (202) — status column polls until done.
         toast({
-          title: `Reconcile ${s.status}`,
-          description: `+${s.createdProfiles}/~${s.updatedProfiles}/=${s.unchangedProfiles} profiles, ${s.variantsAssociated} variants, ${s.weightsWritten} weights.`,
-          variant: s.errors.length ? "destructive" : "default",
+          title: "Apply started",
+          description:
+            "Running in the background — the status column will update when it finishes (a full apply can take several minutes).",
         });
       }
       queryClient.invalidateQueries({ queryKey: ["/api/platform/shipping/stores"] });
@@ -654,9 +661,16 @@ export default function PlatformShippingPage() {
                                   {new Date(s.lastReconcileAt).toLocaleString()}{" "}
                                   <Badge
                                     variant={
-                                      s.lastReconcileStatus === "ok" ? "secondary" : "destructive"
+                                      s.lastReconcileStatus === "ok"
+                                        ? "secondary"
+                                        : s.lastReconcileStatus === "running"
+                                          ? "outline"
+                                          : "destructive"
                                     }
                                   >
+                                    {s.lastReconcileStatus === "running" && (
+                                      <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                                    )}
                                     {s.lastReconcileStatus}
                                   </Badge>
                                 </div>
@@ -684,12 +698,17 @@ export default function PlatformShippingPage() {
                               </Button>
                               <Button
                                 size="sm"
-                                disabled={reconcileMutation.isPending || s.shippingMode !== "table"}
+                                disabled={
+                                  reconcileMutation.isPending ||
+                                  s.shippingMode !== "table" ||
+                                  s.lastReconcileStatus === "running"
+                                }
                                 onClick={() =>
                                   reconcileMutation.mutate({ shop: s.shopDomain, dryRun: false })
                                 }
                               >
-                                {reconcileMutation.isPending && (
+                                {(reconcileMutation.isPending ||
+                                  s.lastReconcileStatus === "running") && (
                                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                 )}
                                 Apply

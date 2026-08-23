@@ -89,6 +89,14 @@ export type DesiredShopState = {
   unresolvedVariants: MembershipVariant[];
 };
 
+/**
+ * ISO codes present in Printify shipping tables that Shopify's delivery-zone
+ * country list rejects (deliveryProfileCreate: "BV is not a supported country
+ * or region code"). They can be neither zoned nor blocked, so they are dropped
+ * entirely and fall through to Rest-of-world pricing where a ROW zone exists.
+ */
+export const SHOPIFY_UNSUPPORTED_COUNTRY_CODES = new Set(["BV"]);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** FNV-1a — stable, dependency-free hash for desired-state comparison. */
@@ -169,7 +177,7 @@ export function buildShopDesiredState(params: {
 
       // Explicit table zones (minus ROW), each rendered through the band engine.
       const explicitCountries = Object.keys(table.rates)
-        .filter((z) => z !== ROW_ZONE)
+        .filter((z) => z !== ROW_ZONE && !SHOPIFY_UNSUPPORTED_COUNTRY_CODES.has(z))
         .sort();
       const rowBands = table.rates[ROW_ZONE]
         ? generateProfileZoneBands(table, profile, ROW_ZONE, excluded, config)
