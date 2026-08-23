@@ -8,7 +8,7 @@ import {
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
-import { shadowDesignIdForCart } from "@shared/shadowDesignId";
+import { reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import {
   LINE_FLAT_PLACEMENT_KEY,
   LINE_TOTE_PLACEMENT_KEY,
@@ -7222,6 +7222,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
     }
+    const cartStateJob = String(savedJobIdRef.current || rawId || "").trim();
+    if (cartStateJob) {
+      properties["_shadow_design_id"] = reusableShadowDesignId(cartStateJob);
+    }
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
@@ -9181,11 +9185,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return Math.abs(h).toString(36).slice(0, 4);
     })();
     const _readableDesignId = [_productLabel, _styleLabel].filter(Boolean).join(' · ') + (_shortHash ? ` #${_shortHash}` : '');
+    const shadowDesignId = String(savedJobIdRef.current || generatedDesign.id || "").trim();
     const properties: Record<string, string> = {
       '_design_id': _readableDesignId || _rawId,
     };
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
+    }
+    if (shadowDesignId) {
+      properties["_shadow_design_id"] = reusableShadowDesignId(shadowDesignId);
     }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) {
@@ -9241,7 +9249,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
 
-    const shadowDesignId = String(savedJobIdRef.current || generatedDesign.id || "").trim();
     const preShadowMatchesJob =
       !!preShadowVariantId &&
       !!shadowDesignId &&
@@ -9288,7 +9295,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               shop: shopDomain,
               ...(productId ? { productId } : {}),
               variantId: normalizedVariant,
-              designId: shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
+              designId: reusableShadowDesignId(shadowDesignId) || shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
               mockupUrl: mockupFullUrl,
               productTypeId: productTypeConfig?.id ?? productTypeId,
               sizeId: selectedSize,
@@ -9302,7 +9309,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             const data = await resolveRes.json();
             if (data.success && data.variantId) {
               finalVariantId = data.variantId;
-              console.log("[Design Studio] Resolved unique variant (on demand):", finalVariantId);
+              console.log("[Design Studio] Resolved unique variant (on demand):", {
+                variantId: finalVariantId,
+                reused: !!data.reused,
+                created: !!data.created,
+                persistDesignId: data.designId,
+                matchedKey: data.matchedKey,
+              });
               if (normalizeVariantId(finalVariantId) !== normalizedVariant) break;
             }
           } else {
@@ -9312,6 +9325,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           console.warn("[Design Studio] resolve-design-variant error/timeout:", e?.message || e);
         }
       }
+    }
+
+    try {
+      const lastAtcVariant =
+        typeof sessionStorage !== "undefined"
+          ? sessionStorage.getItem("appai:lastAtcVariant")
+          : null;
+      console.log("[Design Studio] ATC variant compare", {
+        finalVariantId,
+        baseVariantId: normalizedVariant,
+        preShadowVariantId,
+        usedPreShadow: preShadowMatchesJob && !isCreatorStorefront,
+        shadowDesignId: properties._shadow_design_id || shadowDesignId,
+        lastAtcVariantId: lastAtcVariant,
+        sameAsLastAdd: lastAtcVariant === String(finalVariantId),
+        isShadow: String(finalVariantId) !== String(normalizedVariant),
+      });
+      sessionStorage.setItem("appai:lastAtcVariant", String(finalVariantId));
+    } catch (_) {
+      /* sessionStorage may be blocked in the iframe */
     }
 
     // Creator Marketplace: Storefront API cart on platform shop → checkout URL.

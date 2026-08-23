@@ -22,6 +22,7 @@ It is the companion to the implementation in code; see also **`.cursor/rules/sha
    - Resolve the **canonical `productId`** from the base variant.
    - Create a **separate, hidden / unlisted Shopify product** (a “shadow” product) whose **image is the mockup**, and a **single purchasable variant** priced from the base variant, published to the **Online Store** sales channel.
    - Store the mapping (design → shadow `variantId`) so repeat visits can reuse the same row.
+   - **Reuse model:** one shadow per **generation job** (`published_products.designId` = job id). Re-adding the same design increments the existing cart line. A new generation (new job) mints a new shadow. Do **not** key shadows by mockup URL — URL churn was creating a new product every preview refresh. Legacy `job::urlhash` rows are still found via lookup fallback.
 4. The **add-to-cart** path adds **the shadow variant’s id**, not the base catalog variant, so the **native** cart and checkout show the **shadow variant’s image** — i.e. the custom mockup.
 
 **Why not “just unique product IDs in the admin”?**

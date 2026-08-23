@@ -20,6 +20,11 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import {
+  reusableShadowDesignId,
+  shadowLookupKeys,
+} from "@shared/shadowDesignId";
+import { ensureShadowVariantUntracked } from "./shadow-variant-purchasable";
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
@@ -9263,9 +9268,18 @@ ${orientationExtra}
               return;
             }
 
-            // Check published_products table (existing shadow product for this designId)
-            const designId = jobId; // generationJob.id is used as designId in published_products
-            const existing = await storage.getPublishedProduct(shop, designId);
+            // Check published_products table (job id, plus legacy job::mockupHash)
+            const designId = reusableShadowDesignId(jobId);
+            let existing = await storage.getPublishedProduct(shop, designId);
+            if (!existing || existing.status !== "active") {
+              for (const key of shadowLookupKeys(jobId, primaryMockupUrl)) {
+                const row = await storage.getPublishedProduct(shop, key);
+                if (row?.status === "active") {
+                  existing = row;
+                  break;
+                }
+              }
+            }
             if (existing && existing.status === 'active') {
               // Reuse existing shadow product — just store the IDs on the job
               console.log(`[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId}`);
@@ -9333,6 +9347,11 @@ ${orientationExtra}
             const { product: shadowProduct } = await createRes.json();
             const shadowVariant = shadowProduct.variants[0];
             console.log(`[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId}`);
+            await ensureShadowVariantUntracked({
+              shop,
+              token,
+              variantId: shadowVariant.id,
+            });
 
             // Publish to Online Store channel
             try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
@@ -10134,6 +10153,13 @@ ${orientationExtra}
             Object.keys(avail).length > 0 &&
             !isVariantKeyAvailable(avail, String(sizeId), String(colorId || "default"))
           ) {
+            console.warn("[ShadowProduct] App-side OOS guard blocked resolve", {
+              shop,
+              designId,
+              sizeId,
+              colorId,
+              productTypeId: ptId,
+            });
             return res.status(409).json({
               success: false,
               error: "Selected size/color is out of stock",
@@ -10160,10 +10186,29 @@ ${orientationExtra}
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
 
       // ── Shadow product path ────────────────────────────────────────────────
-      // 1. Check if a shadow product already exists for this designId
-      const existing = await storage.getPublishedProduct(shop, designId);
+      // 1. Reuse by job id (canonical), incoming key, or legacy job::mockupHash.
+      //    URL-hashed keys used to mint a new product on every mockup refresh.
+      const persistDesignId = reusableShadowDesignId(String(designId));
+      const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl));
+      let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
+      let existingKey: string | undefined;
+      for (const key of lookupKeys) {
+        const row = await storage.getPublishedProduct(shop, key);
+        if (row?.status === "active") {
+          existing = row;
+          existingKey = key;
+          break;
+        }
+      }
       if (existing && existing.status === "active") {
-        console.log(`[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} for design ${designId}`);
+        console.log(
+          `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
+        );
+        await ensureShadowVariantUntracked({
+          shop,
+          token,
+          variantId: existing.shopifyVariantId,
+        });
         // Refresh expiry: if not yet cart-added, reset the 6h window from now
         if (!existing.cartAddedAt) {
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
@@ -10213,7 +10258,13 @@ ${orientationExtra}
             );
           }
         }
-        return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
+        return res.json({
+          success: true,
+          variantId: existing.shopifyVariantId,
+          reused: true,
+          designId: persistDesignId,
+          matchedKey: existingKey,
+        });
       }
 
       // 2. Canonical source of truth: resolve productId from variantId.
@@ -10324,7 +10375,12 @@ ${orientationExtra}
       }
       const { product: shadowProduct } = await createProductRes.json();
       const shadowVariant = shadowProduct.variants[0];
-      console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId}`);
+      console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId} (persist=${persistDesignId})`);
+      await ensureShadowVariantUntracked({
+        shop,
+        token,
+        variantId: shadowVariant.id,
+      });
 
       // 6. Ensure the shadow product is published to the Online Store sales channel
       //    (required for unlisted products to be accessible via the storefront cart API)
@@ -10343,7 +10399,7 @@ ${orientationExtra}
       // 8. Persist the shadow product record in our DB
       await storage.createPublishedProduct({
         shop,
-        designId,
+        designId: persistDesignId,
         customerKey: null,
         shopifyProductId: String(shadowProduct.id),
         shopifyVariantId: String(shadowVariant.id),
@@ -10370,7 +10426,12 @@ ${orientationExtra}
           console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
         );
 
-      return res.json({ success: true, variantId: String(shadowVariant.id), created: true });
+      return res.json({
+        success: true,
+        variantId: String(shadowVariant.id),
+        created: true,
+        designId: persistDesignId,
+      });
     } catch (error: any) {
       console.error("[ShadowProduct] Error:", error);
       res.status(500).json({ success: false, error: error?.message || "Internal server error" });

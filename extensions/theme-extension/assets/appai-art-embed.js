@@ -1155,6 +1155,71 @@
       });
     }
 
+    function shadowDesignIdFromProps(properties) {
+      var p = properties || {};
+      return String(p['_shadow_design_id'] || p['_appai_job_id'] || '').trim();
+    }
+
+    function findMatchingCartLine(cart, variantId, properties) {
+      var items = (cart && cart.items) || [];
+      var job = shadowDesignIdFromProps(properties);
+      var size = properties && properties['_size'] ? String(properties['_size']) : '';
+      var color = properties && properties['_color'] ? String(properties['_color']) : '';
+      var match = null;
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var p = item.properties || {};
+        var sameJob = job && (
+          String(p['_shadow_design_id'] || '') === job ||
+          String(p['_appai_job_id'] || '') === job
+        );
+        var sameVariant = String(item.variant_id) === String(variantId);
+        var sameSize = !size || String(p['_size'] || '') === size;
+        var sameColor = !color || String(p['_color'] || '') === color;
+        if ((sameJob || sameVariant) && sameSize && sameColor) {
+          match = item;
+          break;
+        }
+      }
+      return match;
+    }
+
+    function postCartJson(url, body, timeoutMs) {
+      var controller = new AbortController();
+      var tid = setTimeout(function() { controller.abort(); }, timeoutMs || 15000);
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
+        credentials: 'same-origin',
+        signal: controller.signal
+      }).then(function(res) {
+        clearTimeout(tid);
+        return res.text().then(function(text) {
+          var json;
+          try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
+          return { res: res, json: json, text: text };
+        });
+      }).catch(function(err) {
+        clearTimeout(tid);
+        if (err && err.name === 'AbortError') throw new Error('Cart request timed out after 15s');
+        throw err;
+      });
+    }
+
+    function logCartFailure(source, variantId, res, json, text) {
+      console.error(B, '[' + source + ' FAIL]', {
+        httpStatus: res && res.status,
+        variantId: variantId,
+        description: json && json.description,
+        message: json && json.message,
+        errors: json && json.errors,
+        statusField: json && json.status,
+        body: json && json.raw ? String(json.raw).substring(0, 400) : json,
+        raw: text ? String(text).substring(0, 400) : ''
+      });
+    }
+
     // --- Cart add via Shopify Ajax API ---
     function addToCart(variantId, quantity, properties) {
       if (!variantId) return Promise.reject(new Error('Missing variantId'));
@@ -1167,50 +1232,71 @@
         delete safeProps['mockup_url'];
       }
 
-      var body = { items: [{ id: Number(variantId), quantity: quantity || 1, properties: safeProps }] };
-      console.log(B, '_mockup_url being sent:', properties && properties['_mockup_url'] ? properties['_mockup_url'] : '(none)');
-      console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
+      var qty = quantity || 1;
+      console.log(B, '_mockup_url being sent:', safeProps['_mockup_url'] ? safeProps['_mockup_url'] : '(none)');
+      console.log(B, 'ATC request', {
+        variantId: variantId,
+        quantity: qty,
+        shadowDesignId: shadowDesignIdFromProps(safeProps),
+        size: safeProps['_size'] || '',
+        color: safeProps['_color'] || '',
+        displayDesignId: safeProps['_design_id'] || ''
+      });
 
-      var controller = new AbortController();
-      var tid = setTimeout(function() { controller.abort(); }, 15000);
-
-      return fetch('/cart/add.js', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body),
-        credentials: 'same-origin',
-        signal: controller.signal
-      }).then(function(res) {
-        clearTimeout(tid);
-        console.log(B, '/cart/add.js status:', res.status);
-        return res.text().then(function(text) {
-          var json;
-          try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
-          if (!res.ok) {
-            var errMsg = (json && (json.description || json.message)) || text || 'HTTP ' + res.status;
-            if (res.status === 422 && (errMsg.toLowerCase().includes('cannot find') || errMsg.toLowerCase().includes('not found'))) {
-              console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying once after 3s...');
-              throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
-            }
-            throw new Error('Cart add failed: ' + errMsg);
+      return fetch('/cart.js', { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .catch(function() { return { items: [] }; })
+        .then(function(cart) {
+          var existing = findMatchingCartLine(cart, variantId, safeProps);
+          if (existing) {
+            var nextQty = (existing.quantity || 1) + qty;
+            console.log(B, 'Re-add of same design — incrementing line', {
+              lineKey: existing.key,
+              existingVariantId: existing.variant_id,
+              requestedVariantId: variantId,
+              sameVariant: String(existing.variant_id) === String(variantId),
+              fromQty: existing.quantity,
+              toQty: nextQty
+            });
+            return postCartJson('/cart/change.js', { id: existing.key, quantity: nextQty }, 15000)
+              .then(function(out) {
+                if (!out.res.ok) {
+                  logCartFailure('cart/change.js', existing.variant_id, out.res, out.json, out.text);
+                  var changeMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
+                  throw new Error('Cart change failed: ' + changeMsg);
+                }
+                console.log(B, '/cart/change.js status:', out.res.status, 'item_count:', out.json && out.json.item_count);
+                return out.json;
+              });
           }
 
-          // After successful add, fetch full cart state for diagnostics
-          fetch('/cart.js', { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(cart) {
-              var lastItem = cart.items && cart.items.length > 0 ? cart.items[cart.items.length - 1] : null;
-              console.log(B, '/cart.js after add — item_count:', cart.item_count, 'last_item:', lastItem ? { title: lastItem.title, variant_id: lastItem.variant_id, has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url']) } : null);
-            })
-            .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
+          var body = { items: [{ id: Number(variantId), quantity: qty, properties: safeProps }] };
+          console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
+          return postCartJson('/cart/add.js', body, 15000)
+            .then(function(out) {
+              console.log(B, '/cart/add.js status:', out.res.status);
+              if (!out.res.ok) {
+                logCartFailure('cart/add.js', variantId, out.res, out.json, out.text);
+                var errMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
+                var lower = String(errMsg).toLowerCase();
+                if (out.res.status === 422 && (lower.indexOf('cannot find') !== -1 || lower.indexOf('not found') !== -1)) {
+                  console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying once after 3s...');
+                  throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
+                }
+                throw new Error('Cart add failed: ' + errMsg);
+              }
 
-          return json;
+              fetch('/cart.js', { credentials: 'same-origin' })
+                .then(function(r) { return r.json(); })
+                .then(function(after) {
+                  var lastItem = after.items && after.items.length > 0 ? after.items[after.items.length - 1] : null;
+                  console.log(B, '/cart.js after add — item_count:', after.item_count, 'last_item:', lastItem ? { title: lastItem.title, variant_id: lastItem.variant_id, has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url']) } : null);
+                })
+                .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
+
+              return out.json;
+            });
         });
-      }).catch(function(err) {
-        clearTimeout(tid);
-        if (err.name === 'AbortError') throw new Error('Cart request timed out after 15s');
-        throw err;
-      });
     }
 
     // --- Refresh cart UI after successful add ---
@@ -1583,7 +1669,8 @@
           console.warn(B, 'Ignoring data: mockup for shadow-SKU resolve');
           atcMockupUrl = '';
         }
-        var atcDesignId = (data.properties && data.properties['_design_id']) || '';
+        var atcDesignId = shadowDesignIdFromProps(data.properties) ||
+          (data.properties && data.properties['_design_id']) || '';
         // Prefer the iframe's already-resolved shadow variant when it differs from
         // the base catalog variant (avoids a second Shopify Admin create ~5–15s).
         // If that shadow is expired / not published, fall back to resolveDesignSku
@@ -1638,7 +1725,17 @@
         if (alreadyShadow) {
           console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId);
           addPromise = addWithPublishRetry(data.variantId).catch(function(err) {
-            console.warn(B, 'Shadow variant unavailable — re-resolving from base:', (err && err.message) || err);
+            var msg = (err && err.message) || String(err || '');
+            var soldOut = /sold out|cannot add more/i.test(msg);
+            if (soldOut) {
+              console.error(B, 'Shadow add sold-out — NOT falling back to base catalog variant', {
+                shadowVariantId: data.variantId,
+                baseVariantId: atcBaseVariantId,
+                message: msg
+              });
+              throw err;
+            }
+            console.warn(B, 'Shadow variant unavailable — re-resolving from base:', msg);
             return resolveFromBaseThenAdd();
           });
         } else {
@@ -1896,7 +1993,8 @@
           } catch(_) {}
         }
 
-        var btnDesignId = (payload.properties && payload.properties['_design_id']) || '';
+        var btnDesignId = shadowDesignIdFromProps(payload.properties) ||
+          (payload.properties && payload.properties['_design_id']) || '';
         resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '')
           .then(function(sku) {
             return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {});
