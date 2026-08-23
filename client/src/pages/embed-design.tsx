@@ -195,7 +195,7 @@ import {
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
-import { hasExactVariantMapping, hasVariantMappingForColor, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
@@ -738,6 +738,24 @@ type VariantCatalogEntry = {
 /** Normalize size/color tokens for fuzzy matching (red ↔ Red, light_pink ↔ Light Pink). */
 function normalizeVariantToken(value: string): string {
   return value.toLowerCase().trim().replace(/[\s_-]+/g, "_");
+}
+
+/** Resolve a saved size value (id, name, or XL / X-Large alias) to the config size id. */
+function resolvePrintSizeId(
+  stored: string | null | undefined,
+  sizes: Array<{ id: string; name: string }>,
+): string | null {
+  if (!stored?.trim() || sizes.length === 0) return stored?.trim() || null;
+  const trimmed = stored.trim();
+  if (sizes.some((s) => s.id === trimmed)) return trimmed;
+  const want = normalizeApparelSizeId(normalizeVariantToken(trimmed));
+  const hit = sizes.find((s) => {
+    if (s.name.toLowerCase() === trimmed.toLowerCase()) return true;
+    const idNorm = normalizeApparelSizeId(normalizeVariantToken(s.id));
+    const nameNorm = normalizeApparelSizeId(normalizeVariantToken(s.name));
+    return idNorm === want || nameNorm === want;
+  });
+  return hit?.id ?? null;
 }
 
 /** Resolve a saved frameColor value (id, name, or slug) to the config color id. */
@@ -4613,8 +4631,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         initialTransformRef.current = restoredTransform;
       }
       if (ds.selectedSize) {
-        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === ds.selectedSize);
-        if (sizeOk) setSelectedSize(ds.selectedSize);
+        const nextSize = resolvePrintSizeId(ds.selectedSize, printSizes);
+        if (nextSize) setSelectedSize(nextSize);
       }
       const storedColor =
         (typeof ds.selectedFrameColor === "string" && ds.selectedFrameColor.trim()) ||
@@ -4780,8 +4798,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     } else {
       if (topLevel.size) {
-        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
-        if (sizeOk) setSelectedSize(topLevel.size);
+        const nextSize = resolvePrintSizeId(topLevel.size, printSizes);
+        if (nextSize) setSelectedSize(nextSize);
       }
       if (topLevel.frameColor) {
         pendingRestoreColorRef.current = topLevel.frameColor;
@@ -4801,8 +4819,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // size/color/style live on the top-level saved-design row. Always fall back to
     // those values so Edit Pattern -> Apply can regenerate mockups.
     if (!ds?.selectedSize && topLevel.size) {
-      const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
-      if (sizeOk) setSelectedSize(topLevel.size);
+      const nextSize = resolvePrintSizeId(topLevel.size, printSizes);
+      if (nextSize) setSelectedSize(nextSize);
     }
     if (!pendingRestoreColorRef.current && topLevel.frameColor) {
       pendingRestoreColorRef.current = topLevel.frameColor;
@@ -7280,12 +7298,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const rawVariantId = findVariantId();
     if (!rawVariantId) {
+      // Keep the parent button clickable so a match miss is not a dead click.
       window.parent.postMessage({
         type: 'AI_ART_STUDIO_CART_STATE',
-        ready: false,
-        disabled: true,
-        label: 'Select options to continue',
-        payload: null,
+        ready: true,
+        disabled: false,
+        label: 'Add to Cart',
+        payload: { variantId: '', matchFailed: true },
       }, '*');
       return;
     }
@@ -9223,6 +9242,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         ? "Unable to find matching product variant. Please select a valid size and color combination."
         : "Unable to find matching product variant. Please select a valid size.";
       setVariantError(errorMsg);
+      toast({
+        variant: "destructive",
+        title: "Couldn’t add to cart",
+        description: errorMsg,
+      });
       return;
     }
 

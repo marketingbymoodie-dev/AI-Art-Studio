@@ -1,3 +1,5 @@
+import { normalizeApparelSizeId } from "./variantMapResolve";
+
 /**
  * Match a Shopify variant catalog entry by human-readable size + color.
  * Used for storefront blank images (embed-design) so slash colorways like
@@ -35,7 +37,10 @@ export function shopifyColorTokensEqual(a: string, b: string): boolean {
   // "white_navy" vs "white/navy" after slash→underscore
   const aSlashAsUnderscore = na.replace(/\//g, "_");
   const bSlashAsUnderscore = nb.replace(/\//g, "_");
-  return aSlashAsUnderscore === bSlashAsUnderscore;
+  if (aSlashAsUnderscore === bSlashAsUnderscore) return true;
+  // Printify "Heather Grey" vs Shopify "Heather Gray"
+  const grey = (s: string) => s.replace(/gray/g, "grey");
+  return grey(aSlashAsUnderscore) === grey(bSlashAsUnderscore);
 }
 
 function sizeTokensMatch(a: string, b: string): boolean {
@@ -43,9 +48,11 @@ function sizeTokensMatch(a: string, b: string): boolean {
   const nb = normalizeShopifyVariantToken(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
-  // Allow "2xl" ↔ "xxl" style only via equality of compact forms; avoid loose includes
-  // that would match "s" inside "asphalt". Size names are short tokens.
-  return false;
+  // "XL" ↔ "X-Large" ↔ "x_large"; "2XL" ↔ "XXL". Do not substring-match
+  // ("s" must not hit "asphalt").
+  const ca = normalizeApparelSizeId(na);
+  const cb = normalizeApparelSizeId(nb);
+  return !!ca && ca === cb;
 }
 
 /** Match a Shopify option/title fragment to a frame colour id or display name. */

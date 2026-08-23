@@ -97,6 +97,29 @@ describe("matchShopifyVariantBySizeColor", () => {
     ).toBeNull();
   });
 
+  it("matches XL to X-Large and 2XL to XXL", () => {
+    const catalog = [
+      { id: 1, title: "Heather Grey / X-Large", option1: "Heather Grey", option2: "X-Large" },
+      { id: 2, title: "Heather Grey / S", option1: "Heather Grey", option2: "S" },
+      { id: 3, title: "Navy / XXL", option1: "Navy", option2: "XXL" },
+    ];
+    expect(
+      matchShopifyVariantBySizeColor(catalog, "XL", "Heather Grey", true, "heather_grey"),
+    ).toBe("1");
+    expect(
+      matchShopifyVariantBySizeColor(catalog, "2XL", "Navy", true, "navy"),
+    ).toBe("3");
+  });
+
+  it("matches Heather Gray to Heather Grey", () => {
+    const catalog = [
+      { id: 1, title: "Heather Gray / XL", option1: "Heather Gray", option2: "XL" },
+    ];
+    expect(
+      matchShopifyVariantBySizeColor(catalog, "XL", "Heather Grey", true, "heather_grey"),
+    ).toBe("1");
+  });
+
   it("does not treat an empty size as a match (no silent Small / PDP default)", () => {
     expect(
       matchShopifyVariantBySizeColor(baseballCatalog, "", "White/Navy", true, "white_navy"),

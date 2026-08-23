@@ -1975,7 +1975,29 @@
         var payloadJson = atcBtn.dataset.payload || '{}';
         var payload;
         try { payload = JSON.parse(payloadJson); } catch(e) { payload = {}; }
-        if (!payload.variantId) return;
+        if (!payload.variantId) {
+          var miss = payload.matchFailed
+            ? 'Could not match that size/color. Try picking size and color again.'
+            : 'Select a size and color first.';
+          atcBtn.textContent = 'Error \u2014 Try Again';
+          atcBtn.style.background = '#c0392b';
+          atcBtn.disabled = false;
+          atcBtn.style.opacity = '1';
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+              correlationId: payload.correlationId || '',
+              ok: false, success: false,
+              error: miss,
+              _bridgeVersion: BRIDGE_VERSION
+            }, '*');
+          } catch (_) {}
+          setTimeout(function() {
+            atcBtn.style.background = '';
+            atcBtn.textContent = 'Add to Cart';
+          }, 3000);
+          return;
+        }
 
         atcBtn.textContent = 'Adding to Cart\u2026';
         atcBtn.disabled = true;
