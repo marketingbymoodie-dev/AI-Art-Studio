@@ -25,6 +25,7 @@ import {
   shadowLookupKeys,
 } from "@shared/shadowDesignId";
 import { ensureShadowVariantUntracked } from "./shadow-variant-purchasable";
+import { syncShadowVariantPrice } from "./shadow-variant-price";
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
@@ -9265,6 +9266,12 @@ ${orientationExtra}
             if (freshJob?.shadowVariantId && freshJob?.shadowProductId) {
               console.log(`[PreShadow] jobId=${jobId} already has shadow product ${freshJob.shadowProductId}`);
               await refreshShadowImage(freshJob.shadowProductId, freshJob.shadowVariantId);
+              await syncShadowVariantPrice({
+                shop,
+                token,
+                shadowVariantId: freshJob.shadowVariantId,
+                baseVariantId,
+              });
               return;
             }
 
@@ -9290,6 +9297,12 @@ ${orientationExtra}
               } as any);
               if (existing.shopifyProductId && existing.shopifyVariantId) {
                 await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
+                await syncShadowVariantPrice({
+                  shop,
+                  token,
+                  shadowVariantId: existing.shopifyVariantId,
+                  baseVariantId,
+                });
               }
               return;
             }
@@ -10214,18 +10227,17 @@ ${orientationExtra}
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
           await storage.updatePublishedProduct(existing.id, { expiresAt: sixHours });
         }
-        // Keep shadow price in sync when Print Side / surcharge tier changes for the same design.
-        if (overridePriceFormatted && existing.shopifyVariantId) {
-          try {
-            await fetch(`${apiBase}/variants/${existing.shopifyVariantId}.json`, {
-              method: "PUT",
-              headers,
-              body: JSON.stringify({ variant: { id: Number(existing.shopifyVariantId), price: overridePriceFormatted } }),
-            });
-          } catch (priceErr: any) {
-            console.warn(`[ShadowProduct] Failed to update reused shadow price:`, priceErr?.message || priceErr);
-          }
-        }
+        // Re-read live base FRONT price, then apply both-tier override if sent.
+        // A stale $27 shadow must become $18.95 on next front reuse; Both must stay both-tier.
+        const synced = existing.shopifyVariantId
+          ? await syncShadowVariantPrice({
+              shop,
+              token,
+              shadowVariantId: existing.shopifyVariantId,
+              baseVariantId: String(variantId),
+              priceOverride: overridePriceFormatted,
+            })
+          : null;
         // Placement edits reuse the same designId — replace the variant image
         // so cart/checkout thumbnails match the latest mockup.
         if (existing.shopifyProductId && existing.shopifyVariantId) {
@@ -10264,6 +10276,9 @@ ${orientationExtra}
           reused: true,
           designId: persistDesignId,
           matchedKey: existingKey,
+          price: synced?.written ?? null,
+          priceSource: synced?.source ?? null,
+          liveFrontPrice: synced?.front ?? null,
         });
       }
 
@@ -10431,6 +10446,9 @@ ${orientationExtra}
         variantId: String(shadowVariant.id),
         created: true,
         designId: persistDesignId,
+        price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
+        priceSource: overridePriceFormatted ? "both" : "front",
+        liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
       });
     } catch (error: any) {
       console.error("[ShadowProduct] Error:", error);

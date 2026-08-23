@@ -9252,26 +9252,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const preShadowMatchesJob =
       !!preShadowVariantId &&
       !!shadowDesignId &&
-      preShadowJobIdRef.current === shadowDesignId &&
-      !bothPriceOverride;
+      preShadowJobIdRef.current === shadowDesignId;
 
     let finalVariantId = normalizedVariant;
-    // Creator checkout thumbnails come from the shadow product image, not
-    // `_mockup_url`. Always re-resolve so a second design cannot reuse the
-    // previous job's variant (cart page would look right, checkout would not).
-    if (preShadowMatchesJob && !isCreatorStorefront) {
-      // Instant — shadow product was pre-created in the background
-      finalVariantId = preShadowVariantId;
-      console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
-      // Extend the shadow product expiry to 7 days now that it's been added to cart
-      if (preShadowProductId && shopDomain) {
-        safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
-        }).catch(() => {});
-      }
-    } else if (shopDomain) {
+    // Always resolve before ATC so reuse re-reads the live base front price
+    // (then both-tier override). Skipping resolve left stale $27 shadows in cart.
+    if (shopDomain) {
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) {
           await new Promise((r) => setTimeout(r, 1200 * attempt));
@@ -9315,6 +9301,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 created: !!data.created,
                 persistDesignId: data.designId,
                 matchedKey: data.matchedKey,
+                price: data.price,
+                priceSource: data.priceSource,
+                liveFrontPrice: data.liveFrontPrice,
               });
               if (normalizeVariantId(finalVariantId) !== normalizedVariant) break;
             }
@@ -9324,6 +9313,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         } catch (e: any) {
           console.warn("[Design Studio] resolve-design-variant error/timeout:", e?.message || e);
         }
+      }
+      if (
+        preShadowMatchesJob &&
+        preShadowVariantId &&
+        normalizeVariantId(finalVariantId) === normalizedVariant
+      ) {
+        finalVariantId = preShadowVariantId;
+        console.warn("[Design Studio] Resolve did not return a shadow — falling back to pre-created variant", finalVariantId);
+      }
+      if (preShadowProductId && shopDomain && normalizeVariantId(finalVariantId) !== normalizedVariant) {
+        safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
+        }).catch(() => {});
       }
     }
 
@@ -9336,7 +9340,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         finalVariantId,
         baseVariantId: normalizedVariant,
         preShadowVariantId,
-        usedPreShadow: preShadowMatchesJob && !isCreatorStorefront,
+        usedPreShadowFallback:
+          preShadowMatchesJob && String(finalVariantId) === String(preShadowVariantId),
         shadowDesignId: properties._shadow_design_id || shadowDesignId,
         lastAtcVariantId: lastAtcVariant,
         sameAsLastAdd: lastAtcVariant === String(finalVariantId),
