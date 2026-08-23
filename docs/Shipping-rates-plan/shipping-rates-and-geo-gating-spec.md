@@ -230,10 +230,24 @@ All derive from the matrix in 0.3; cache-busted by tableHash.
 
 1. **Foundation**: Printify table ingestion, schema, nightly diff sync, coverage matrix + exclusion rules, operator UI for thresholds/blocklists.
 2. **Band engine + simulator**: weight algorithm, band generator, test harness with tolerance report. Gate phase 3 on green property tests.
-3. **Profile reconciler**: Shopify delivery profile create/update/diff, variant weight writes, wired to the custom checkout store first (safe sandbox), then behind the merchant app import pipeline.
+3. **Profile reconciler**: Shopify delivery profile create/update/diff, variant weight writes, wired to the custom checkout store first (safe sandbox), then behind the merchant app import pipeline (⚠ merchant wiring gated on the products/update launch-blocker below).
 4. **Geo-gating, creator platform**: Cloudflare/geo middleware, country selector + cookie, filtered queries, customizer server gate, direct-link states.
 5. **Geo-gating, merchant app**: Markets publication sync, app-proxy coverage endpoint, customizer gate, merchant settings + ship-to visibility.
 6. **Hardening**: nightly simulator alerts, resync buttons, uninstall cleanup, docs/onboarding copy for merchants (weight management + how rates are calculated).
+
+### Merchant-app launch blockers (tracked here so they gate phase 3's merchant wiring, not buried)
+
+- **LAUNCH-BLOCKER (merchant app only — cannot occur on the creator store, platform-only
+  product edits): products/update webhook + map refresh.** The reconcile resolves variant
+  IDs from the stored shopifyVariantIds map, which only import flows write and no reconcile
+  re-reads from live Shopify — so a merchant hand-editing variants in Shopify admin (esp.
+  colour swaps, which Shopify does as delete+create) leaves the replacement on empty General
+  with no shipping, and NO reconcile self-heals it. This is merchant-visible broken checkout
+  with no self-heal. Fix = subscribe products/update (4 tomls + creator runtime,
+  HMAC-verified), hard-filter to app-managed products with a changed variant set, rebuild
+  the map from the payload, refresh variant_shipping via normalizeVariantKeyLoose, then
+  debounced per-shop reconcile. Merchant-phase only; must land before merchants get admin
+  access to app-imported products.
 
 ## Acceptance criteria (condensed)
 
@@ -243,3 +257,4 @@ All derive from the matrix in 0.3; cache-busted by tableHash.
 - A visitor from an excluded country cannot: see the product in listings (default mode), generate art for it (server-enforced, both surfaces), or check out with it.
 - A visitor with a direct link to an unshippable product sees an informative state with the ship-to list, not an error.
 - Removing a zone via exclusion rules removes it everywhere (profiles, coverage, Markets) in one sync.
+- A merchant hand-editing variants in Shopify admin (including colour swaps) results in the new variants being costed within the webhook debounce window, never stranded on General.
