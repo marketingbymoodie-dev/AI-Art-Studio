@@ -1,9 +1,13 @@
-/** Strip `job::mockupHash` / `job::size::color` down to the generation job id. */
+/** Strip `job::mockupHash` / `job::variantId` / `job::size::color` down to the generation job id. */
 export function shadowJobPrefix(designId: string): string {
   const raw = String(designId || "").trim();
   if (!raw) return "";
   const idx = raw.indexOf("::");
   return idx === -1 ? raw : raw.slice(0, idx);
+}
+
+function numericVariantId(raw: string | number | null | undefined): string {
+  return String(raw ?? "").replace(/\D/g, "");
 }
 
 /** Legacy key: one Shopify shadow per job + mockup URL (URL churn minted duplicates). */
@@ -19,21 +23,43 @@ export function shadowDesignIdForCart(jobId: string, mockupUrl: string): string 
 }
 
 /**
- * Canonical reusable shadow key: one variant per generation job.
- * Size/colour live on the base variant used at create time; placement edits
- * reuse this row and refresh the mockup image (see resolve-design-variant).
+ * Canonical reusable shadow key: one variant per generation job + catalog size/colour.
+ * Same job+variant increments the cart line. A different size/colour mints its own
+ * shadow so cart title and price match what the customer picked.
  */
-export function reusableShadowDesignId(jobId: string): string {
-  return shadowJobPrefix(jobId) || String(jobId || "").trim() || "design";
+export function reusableShadowDesignId(
+  jobId: string,
+  baseVariantId?: string | number | null,
+): string {
+  const job = shadowJobPrefix(jobId) || String(jobId || "").trim() || "design";
+  const vid = numericVariantId(baseVariantId);
+  return vid ? `${job}::${vid}` : job;
 }
 
-/** Lookup order: incoming id, legacy URL-hash, bare job (PreShadow). */
-export function shadowLookupKeys(designId: string, mockupUrl?: string): string[] {
+/** Lookup order: incoming id, job+variant, legacy URL-hash, bare job (PreShadow). */
+export function shadowLookupKeys(
+  designId: string,
+  mockupUrl?: string,
+  baseVariantId?: string | number | null,
+): string[] {
   const incoming = String(designId || "").trim();
   const job = shadowJobPrefix(incoming) || incoming;
+  const vid = numericVariantId(baseVariantId);
+  const keyed = vid ? `${job}::${vid}` : "";
   const keys: string[] = [];
   if (incoming) keys.push(incoming);
+  if (keyed && keyed !== incoming) keys.push(keyed);
   if (job && mockupUrl) keys.push(shadowDesignIdForCart(job, mockupUrl));
   if (job) keys.push(job);
   return [...new Set(keys.filter(Boolean))];
+}
+
+/** True when a stored shadow was created for this catalog variant. */
+export function shadowMatchesBaseVariant(
+  storedBaseVariantId: string | number | null | undefined,
+  incomingVariantId: string | number | null | undefined,
+): boolean {
+  const a = numericVariantId(storedBaseVariantId);
+  const b = numericVariantId(incomingVariantId);
+  return !!a && !!b && a === b;
 }

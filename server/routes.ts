@@ -23,6 +23,7 @@ import { storage } from "./storage";
 import {
   reusableShadowDesignId,
   shadowLookupKeys,
+  shadowMatchesBaseVariant,
 } from "@shared/shadowDesignId";
 import { ensureShadowVariantUntracked } from "./shadow-variant-purchasable";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
@@ -71,6 +72,7 @@ import {
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
 import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
+import { buildShadowProductTitle, stripProviderSuffix } from "@shared/planEstimator";
 import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, lookupWizardRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant, resolveShopifyVariantIdFromPriceKey } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
@@ -9276,18 +9278,22 @@ ${orientationExtra}
             }
 
             // Check published_products table (job id, plus legacy job::mockupHash)
-            const designId = reusableShadowDesignId(jobId);
+            const designId = reusableShadowDesignId(jobId, baseVariantId);
             let existing = await storage.getPublishedProduct(shop, designId);
             if (!existing || existing.status !== "active") {
-              for (const key of shadowLookupKeys(jobId, primaryMockupUrl)) {
+              for (const key of shadowLookupKeys(jobId, primaryMockupUrl, baseVariantId)) {
                 const row = await storage.getPublishedProduct(shop, key);
-                if (row?.status === "active") {
-                  existing = row;
-                  break;
-                }
+                if (row?.status !== "active") continue;
+                if (!shadowMatchesBaseVariant(row.baseVariantId, baseVariantId)) continue;
+                existing = row;
+                break;
               }
             }
-            if (existing && existing.status === 'active') {
+            if (
+              existing &&
+              existing.status === "active" &&
+              shadowMatchesBaseVariant(existing.baseVariantId, baseVariantId)
+            ) {
               // Reuse existing shadow product — just store the IDs on the job
               console.log(`[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId}`);
               await storage.updateGenerationJob(jobId, {
@@ -9324,7 +9330,7 @@ ${orientationExtra}
             const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
               .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
               .join(' / ');
-            const shadowTitle = `${baseProduct.title}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
+            const shadowTitle = buildShadowProductTitle(baseProduct.title, variantOptionParts);
 
             // Create the shadow product — expires in 1 hour if not added to cart
             const oneHourFromNow = new Date(Date.now() + 1 * 60 * 60 * 1000);
@@ -10199,19 +10205,22 @@ ${orientationExtra}
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
 
       // ── Shadow product path ────────────────────────────────────────────────
-      // 1. Reuse by job id (canonical), incoming key, or legacy job::mockupHash.
-      //    URL-hashed keys used to mint a new product on every mockup refresh.
-      const persistDesignId = reusableShadowDesignId(String(designId));
-      const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl));
+      // 1. Reuse by job+catalog-variant (canonical), incoming key, or legacy
+      //    job / job::mockupHash. URL-hashed keys used to mint a new product on
+      //    every mockup refresh. A bare-job hit from a *different* size/colour
+      //    must not be reused — that left S / Navy at $93 after the customer
+      //    picked 2XL at $64.95.
+      const persistDesignId = reusableShadowDesignId(String(designId), String(variantId));
+      const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
       let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
       let existingKey: string | undefined;
       for (const key of lookupKeys) {
         const row = await storage.getPublishedProduct(shop, key);
-        if (row?.status === "active") {
-          existing = row;
-          existingKey = key;
-          break;
-        }
+        if (row?.status !== "active") continue;
+        if (!shadowMatchesBaseVariant(row.baseVariantId, variantId)) continue;
+        existing = row;
+        existingKey = key;
+        break;
       }
       if (existing && existing.status === "active") {
         console.log(
@@ -10267,6 +10276,31 @@ ${orientationExtra}
             console.warn(
               `[ShadowProduct] Failed to refresh reused shadow image:`,
               imgErr?.message || imgErr,
+            );
+          }
+          try {
+            const titleRes = await fetch(
+              `${apiBase}/products/${existing.shopifyProductId}.json?fields=id,title`,
+              { headers },
+            );
+            if (titleRes.ok) {
+              const titleBody = (await titleRes.json()) as { product?: { title?: string } };
+              const currentTitle = String(titleBody?.product?.title || "");
+              const cleanedTitle = stripProviderSuffix(currentTitle);
+              if (cleanedTitle && cleanedTitle !== currentTitle) {
+                await fetch(`${apiBase}/products/${existing.shopifyProductId}.json`, {
+                  method: "PUT",
+                  headers,
+                  body: JSON.stringify({
+                    product: { id: Number(existing.shopifyProductId), title: cleanedTitle },
+                  }),
+                });
+              }
+            }
+          } catch (titleErr: any) {
+            console.warn(
+              `[ShadowProduct] Failed to strip provider from reused shadow title:`,
+              titleErr?.message || titleErr,
             );
           }
         }
@@ -10342,7 +10376,7 @@ ${orientationExtra}
       const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
         .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
         .join(' / ');
-      const shadowTitle = `${baseProductTitle}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
+      const shadowTitle = buildShadowProductTitle(baseProductTitle, variantOptionParts);
 
       // 5. Create the shadow product in Shopify
       // Must be status=active + published=true so the storefront cart API can add it.

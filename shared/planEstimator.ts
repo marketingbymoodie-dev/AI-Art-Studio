@@ -741,8 +741,21 @@ export function collapseBlankTitlesToSizes(
 /** Strip " — Printify Choice" / similar provider suffixes from product titles. */
 export function stripProviderSuffix(name: string): string {
   return String(name || "")
-    .replace(/\s*[—–-]\s*(Printify Choice|Monster Digital|Fulfill Engine|Printify|MWW On Demand)\s*$/i, "")
+    .replace(
+      /\s*[—–-]\s*(Printify Choice|Monster Digital|Fulfill Engine|Printify|MWW On Demand)(?=\s*[—–-]|$)/gi,
+      "",
+    )
     .trim();
+}
+
+/** Cart / shadow title: clean catalog name + size / colour, never the print provider. */
+export function buildShadowProductTitle(
+  baseTitle: string,
+  optionParts?: string | null,
+): string {
+  const clean = stripProviderSuffix(baseTitle);
+  const opts = String(optionParts || "").trim();
+  return opts ? `${clean} — ${opts}` : clean;
 }
 
 function labelForVariantId(

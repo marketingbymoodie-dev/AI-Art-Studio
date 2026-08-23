@@ -1107,7 +1107,7 @@
     // This ensures each cart line item has its own variant image at checkout
     // without requiring Shopify Plus. Falls back to the original variantId if
     // the endpoint is unavailable or returns an error.
-    function resolveDesignSku(sourceVariantId, designId, mockupUrl) {
+    function resolveDesignSku(sourceVariantId, designId, mockupUrl, retailPrice) {
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
       var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
@@ -1134,6 +1134,7 @@
         mockupUrl: mockupUrl
       };
       if (productId) resolveBody.productId = String(productId);
+      if (retailPrice) resolveBody.price = String(retailPrice);
       return fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1703,7 +1704,7 @@
         }
 
         function resolveFromBaseThenAdd() {
-          return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl)
+          return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl, data.price)
             .then(function(sku) {
               return addToCart(sku.variantId, data.quantity, data.properties);
             });
@@ -1998,7 +1999,7 @@
 
         var btnDesignId = shadowDesignIdFromProps(payload.properties) ||
           (payload.properties && payload.properties['_design_id']) || '';
-        resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '')
+        resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '', payload.price)
           .then(function(sku) {
             return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {});
           })

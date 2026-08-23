@@ -28,8 +28,11 @@ describe("shadowLookupKeys", () => {
     expect(keys).toContain("job-1");
   });
 
-  it("canonical reusable id is the job, not a per-mockup hash", () => {
-    expect(reusableShadowDesignId("job-1::abc")).toBe("job-1");
+  it("canonical reusable id is job + catalog variant, not a per-mockup hash", () => {
+    expect(reusableShadowDesignId("job-1::abc", "46172379185386")).toBe(
+      "job-1::46172379185386",
+    );
+    expect(reusableShadowDesignId("job-1", "4617")).toBe("job-1::4617");
     expect(shadowJobPrefix("job-1::M::black")).toBe("job-1");
   });
 });

@@ -15,6 +15,7 @@ import {
   recommendPlan,
   scaleUnitsToTotal,
   stripProviderSuffix,
+  buildShadowProductTitle,
   totalMonthlyUnits,
 } from "./planEstimator";
 
@@ -309,6 +310,12 @@ describe("priceDriversFromCostsPayload / One size filter", () => {
     expect(stripProviderSuffix("Unisex Cotton Crew Tee — Printify Choice")).toBe(
       "Unisex Cotton Crew Tee",
     );
+    expect(
+      stripProviderSuffix("Custom Unisex Cotton Crew Tee — Printify Choice — XL / Heather Grey"),
+    ).toBe("Custom Unisex Cotton Crew Tee — XL / Heather Grey");
+    expect(
+      buildShadowProductTitle("Unisex Cotton Crew Tee — Printify Choice", "XL / Heather Grey"),
+    ).toBe("Unisex Cotton Crew Tee — XL / Heather Grey");
   });
 
   it("builds size rows from labels when COGS are missing", () => {

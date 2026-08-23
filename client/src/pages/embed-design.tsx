@@ -7304,7 +7304,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     const cartStateJob = String(savedJobIdRef.current || rawId || "").trim();
     if (cartStateJob) {
-      properties["_shadow_design_id"] = reusableShadowDesignId(cartStateJob);
+      properties["_shadow_design_id"] = reusableShadowDesignId(cartStateJob, variantId);
     }
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
@@ -7375,6 +7375,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           ? "Refresh Mockups to Continue"
           : "Add to Cart";
 
+    const cartFrontPrice = parseFloat(
+      shopifyVariants.find((v) => String(v.id) === String(variantId))?.price || "0",
+    );
+    const cartRetail = cartFrontPrice > 0 ? cartFrontPrice.toFixed(2) : null;
+
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
       ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
@@ -7383,8 +7388,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       label,
       payload: {
         variantId,
+        baseVariantId: variantId,
         quantity: 1,
         properties,
+        ...(cartRetail ? { price: cartRetail } : {}),
       },
     }, '*');
   }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y]);
@@ -8513,6 +8520,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     baseVariantId?: string;
     quantity: number;
     properties: Record<string, string>;
+    price?: string | null;
   }): Promise<{ success: boolean; error?: string }> => {
     // Log bridge state for diagnostics but don't fail fast — allow postMessage attempt
     // The parent sends BRIDGE_READY every 500ms, so React state may lag real connectivity
@@ -8522,7 +8530,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const TIMEOUT_MS = 12_000;
+      const TIMEOUT_MS = 30_000;
 
       const cleanup = () => {
         window.removeEventListener('message', handler);
@@ -8572,6 +8580,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         baseVariantId: payload.baseVariantId,
         quantity: payload.quantity,
         properties: payload.properties,
+        ...(payload.price ? { price: payload.price } : {}),
         _bridgeVersion: '1.0.0',
       };
 
@@ -9306,7 +9315,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       properties["_appai_job_id"] = savedJobIdRef.current;
     }
     if (shadowDesignId) {
-      properties["_shadow_design_id"] = reusableShadowDesignId(shadowDesignId);
+      properties["_shadow_design_id"] = reusableShadowDesignId(shadowDesignId, normalizedVariant);
     }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) {
@@ -9361,6 +9370,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       : null;
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
+    const displayedRetailForAtc =
+      bothPriceOverride ||
+      (atcFrontPrice > 0 ? atcFrontPrice.toFixed(2) : null);
 
     const preShadowMatchesJob =
       !!preShadowVariantId &&
@@ -9394,12 +9406,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               shop: shopDomain,
               ...(productId ? { productId } : {}),
               variantId: normalizedVariant,
-              designId: reusableShadowDesignId(shadowDesignId) || shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
+              designId: reusableShadowDesignId(shadowDesignId, normalizedVariant) || shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
               mockupUrl: mockupFullUrl,
               productTypeId: productTypeConfig?.id ?? productTypeId,
               sizeId: selectedSize,
               colorId: selectedFrameColor || "default",
-              ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
+              ...(displayedRetailForAtc ? { price: displayedRetailForAtc } : {}),
             }),
             signal: controller.signal,
           });
@@ -9539,6 +9551,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           baseVariantId: normalizedVariant,
           quantity: 1,
           properties,
+          price: displayedRetailForAtc,
         });
 
         if (result.success) {
