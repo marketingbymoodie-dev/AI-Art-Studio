@@ -847,6 +847,14 @@ export const customizerPages = pgTable("customizer_pages", {
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
   styleConfig: json("style_config"),
+  /**
+   * Regional sibling group link (PARKED design — docs/Shipping-rates-plan/
+   * regional-siblings-choice-and-slugs-design-notes.md §1). Pure linking
+   * metadata; resolution/redirect logic lands with Phase 4 geo-gating.
+   */
+  productGroupId: text("product_group_id"),
+  /** Intended zones for this sibling (e.g. ["AU"]) — human/ops metadata, never enforcement. */
+  intendedZones: jsonb("intended_zones").$type<string[]>(),
   /** preview = merchant-only draft; active = Live; disabled = off (settings retained). */
   status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

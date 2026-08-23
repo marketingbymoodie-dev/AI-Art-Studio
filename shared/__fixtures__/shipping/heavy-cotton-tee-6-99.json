@@ -1,0 +1,9790 @@
+{
+  "classKey": "6:99",
+  "blueprintId": 6,
+  "providerId": 99,
+  "name": "Unisex Heavy Cotton Tee — provider 99",
+  "method": "standard",
+  "typicalRetailCentsOverride": null,
+  "absoluteCapCentsOverride": null,
+  "groups": [
+    {
+      "group": "g1",
+      "label": "l, m, s, xl, 2xl, 3xl, …",
+      "printifyVariantIds": [
+        "11812",
+        "11813",
+        "11814",
+        "11815",
+        "11816",
+        "11817",
+        "11818",
+        "11819",
+        "11820",
+        "11821",
+        "11822",
+        "11823",
+        "11824",
+        "11825",
+        "11826",
+        "11827",
+        "11828",
+        "11829",
+        "11830",
+        "11831",
+        "11832",
+        "11833",
+        "11834",
+        "11835",
+        "11836",
+        "11837",
+        "11838",
+        "11839",
+        "11840",
+        "11841",
+        "11842",
+        "11843",
+        "11844",
+        "11845",
+        "11846",
+        "11847",
+        "11848",
+        "11849",
+        "11850",
+        "11851",
+        "11852",
+        "11853",
+        "11854",
+        "11855",
+        "11856",
+        "11857",
+        "11858",
+        "11859",
+        "11860",
+        "11861",
+        "11862",
+        "11863",
+        "11864",
+        "11865",
+        "11866",
+        "11867",
+        "11868",
+        "11869",
+        "11870",
+        "11871",
+        "11872",
+        "11873",
+        "11874",
+        "11875",
+        "11876",
+        "11877",
+        "11878",
+        "11879",
+        "11880",
+        "11881",
+        "11882",
+        "11883",
+        "11884",
+        "11885",
+        "11886",
+        "11887",
+        "11888",
+        "11889",
+        "11890",
+        "11891",
+        "11892",
+        "11893",
+        "11894",
+        "11895",
+        "11896",
+        "11897",
+        "11898",
+        "11899",
+        "11900",
+        "11901",
+        "11902",
+        "11903",
+        "11904",
+        "11905",
+        "11906",
+        "11907",
+        "11908",
+        "11909",
+        "11910",
+        "11911",
+        "11912",
+        "11913",
+        "11914",
+        "11915",
+        "11916",
+        "11917",
+        "11918",
+        "11919",
+        "11920",
+        "11921",
+        "11922",
+        "11923",
+        "11924",
+        "11925",
+        "11926",
+        "11927",
+        "11928",
+        "11929",
+        "11930",
+        "11931",
+        "11932",
+        "11933",
+        "11934",
+        "11935",
+        "11936",
+        "11937",
+        "11938",
+        "11939",
+        "11940",
+        "11941",
+        "11942",
+        "11943",
+        "11944",
+        "11945",
+        "11946",
+        "11947",
+        "11948",
+        "11949",
+        "11950",
+        "11951",
+        "11952",
+        "11953",
+        "11954",
+        "11955",
+        "11956",
+        "11957",
+        "11958",
+        "11959",
+        "11960",
+        "11961",
+        "11962",
+        "11963",
+        "11964",
+        "11965",
+        "11966",
+        "11967",
+        "11968",
+        "11969",
+        "11970",
+        "11971",
+        "11972",
+        "11973",
+        "11974",
+        "11975",
+        "11976",
+        "11977",
+        "11978",
+        "11979",
+        "11980",
+        "11981",
+        "11982",
+        "11983",
+        "11984",
+        "11985",
+        "11986",
+        "11987",
+        "11988",
+        "11989",
+        "11990",
+        "11991",
+        "11992",
+        "11993",
+        "11994",
+        "11995",
+        "11996",
+        "11997",
+        "11998",
+        "11999",
+        "12000",
+        "12001",
+        "12002",
+        "12003",
+        "12004",
+        "12005",
+        "12006",
+        "12007",
+        "12008",
+        "12009",
+        "12010",
+        "12011",
+        "12012",
+        "12013",
+        "12014",
+        "12015",
+        "12016",
+        "12017",
+        "12018",
+        "12019",
+        "12020",
+        "12021",
+        "12022",
+        "12023",
+        "12024",
+        "12025",
+        "12026",
+        "12027",
+        "12028",
+        "12029",
+        "12030",
+        "12031",
+        "12032",
+        "12033",
+        "12040",
+        "12041",
+        "12042",
+        "12043",
+        "12044",
+        "12045",
+        "12046",
+        "12047",
+        "12048",
+        "12049",
+        "12050",
+        "12051",
+        "12052",
+        "12053",
+        "12054",
+        "12055",
+        "12056",
+        "12057",
+        "12058",
+        "12059",
+        "12060",
+        "12061",
+        "12062",
+        "12063",
+        "12064",
+        "12065",
+        "12066",
+        "12067",
+        "12068",
+        "12069",
+        "12070",
+        "12071",
+        "12072",
+        "12073",
+        "12074",
+        "12075",
+        "12076",
+        "12077",
+        "12078",
+        "12079",
+        "12080",
+        "12081",
+        "12082",
+        "12083",
+        "12084",
+        "12085",
+        "12086",
+        "12087",
+        "12088",
+        "12089",
+        "12090",
+        "12091",
+        "12092",
+        "12093",
+        "12094",
+        "12095",
+        "12096",
+        "12097",
+        "12098",
+        "12099",
+        "12100",
+        "12101",
+        "12102",
+        "12103",
+        "12104",
+        "12105",
+        "12106",
+        "12107",
+        "12108",
+        "12109",
+        "12110",
+        "12111",
+        "12112",
+        "12113",
+        "12114",
+        "12115",
+        "12116",
+        "12117",
+        "12118",
+        "12119",
+        "12120",
+        "12121",
+        "12122",
+        "12123",
+        "12124",
+        "12125",
+        "12126",
+        "12127",
+        "12128",
+        "12129",
+        "12130",
+        "12131",
+        "12132",
+        "12133",
+        "12134",
+        "12135",
+        "12136",
+        "12137",
+        "12138",
+        "12139",
+        "12140",
+        "12141",
+        "12142",
+        "12143",
+        "12144",
+        "12145",
+        "12146",
+        "12147",
+        "12148",
+        "12149",
+        "12150",
+        "12151",
+        "12152",
+        "12153",
+        "12154",
+        "12155",
+        "12156",
+        "12157",
+        "12158",
+        "12159",
+        "12160",
+        "12161",
+        "12162",
+        "12163",
+        "12164",
+        "12165",
+        "12166",
+        "12167",
+        "12168",
+        "12169",
+        "12170",
+        "12171",
+        "12172",
+        "12173",
+        "12174",
+        "12175",
+        "12176",
+        "12177",
+        "12178",
+        "12179",
+        "12180",
+        "12181",
+        "12182",
+        "12183",
+        "12184",
+        "12185",
+        "12186",
+        "12187",
+        "12188",
+        "12189",
+        "12190",
+        "12191",
+        "12192",
+        "12193",
+        "12194",
+        "12195",
+        "12196",
+        "12197",
+        "12198",
+        "12199",
+        "12200",
+        "12201",
+        "12202",
+        "12203",
+        "12204",
+        "12205",
+        "12206",
+        "12207",
+        "12208",
+        "12209",
+        "12210",
+        "12211",
+        "12212",
+        "12213",
+        "12214",
+        "12215",
+        "12216",
+        "12217",
+        "12218",
+        "12219",
+        "23939",
+        "23941",
+        "23947",
+        "23953",
+        "23955",
+        "23957",
+        "23961",
+        "23963",
+        "23965",
+        "23967",
+        "23969",
+        "23971",
+        "23973",
+        "23975",
+        "23977",
+        "23979",
+        "23981",
+        "23983",
+        "23985",
+        "23989",
+        "23991",
+        "23993",
+        "24001",
+        "24003",
+        "24005",
+        "24007",
+        "24011",
+        "24015",
+        "24017",
+        "24019",
+        "24021",
+        "24023",
+        "24024",
+        "24026",
+        "24028",
+        "24031",
+        "24033",
+        "24035",
+        "24037",
+        "24039",
+        "24041",
+        "24045",
+        "24046",
+        "24048",
+        "24050",
+        "24053",
+        "24055",
+        "24056",
+        "24060",
+        "24062",
+        "24065",
+        "24081",
+        "24086",
+        "24088",
+        "24090",
+        "24095",
+        "24097",
+        "24099",
+        "24101",
+        "24103",
+        "24105",
+        "24108",
+        "24110",
+        "24112",
+        "24114",
+        "24116",
+        "24118",
+        "24122",
+        "24124",
+        "24126",
+        "24134",
+        "24136",
+        "24138",
+        "24140",
+        "24144",
+        "24147",
+        "24150",
+        "24151",
+        "24153",
+        "24157",
+        "24161",
+        "24164",
+        "24166",
+        "24169",
+        "24171",
+        "24173",
+        "24178",
+        "24180",
+        "24182",
+        "24186",
+        "24190",
+        "24194",
+        "24196",
+        "24198",
+        "42716",
+        "42717",
+        "42718",
+        "42719",
+        "42720",
+        "42721",
+        "42722",
+        "42723",
+        "64727",
+        "64728",
+        "64729",
+        "64730",
+        "64731",
+        "64732",
+        "64733",
+        "64734"
+      ]
+    }
+  ],
+  "byVariant": {
+    "11812": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11813": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11814": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11815": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11816": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11817": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11818": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11819": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11820": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11821": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11822": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11823": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11824": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11825": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11826": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11827": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11828": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11829": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11830": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11831": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11832": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11833": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11834": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11835": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11836": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11837": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11838": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11839": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11840": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11841": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11842": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11843": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11844": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11845": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11846": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11847": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11848": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11849": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11850": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11851": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11852": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11853": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11854": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11855": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11856": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11857": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11858": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11859": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11860": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11861": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11862": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11863": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11864": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11865": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11866": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11867": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11868": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11869": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11870": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11871": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11872": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11873": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11874": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11875": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11876": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11877": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11878": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11879": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11880": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11881": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11882": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11883": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11884": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11885": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11886": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11887": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11888": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11889": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11890": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11891": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11892": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11893": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11894": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11895": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11896": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11897": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11898": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11899": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11900": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11901": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11902": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11903": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11904": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11905": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11906": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11907": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11908": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11909": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11910": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11911": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11912": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11913": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11914": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11915": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11916": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11917": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11918": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11919": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11920": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11921": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11922": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11923": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11924": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11925": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11926": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11927": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11928": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11929": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11930": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11931": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11932": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11933": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11934": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11935": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11936": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11937": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11938": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11939": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11940": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11941": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11942": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11943": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11944": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11945": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11946": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11947": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11948": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11949": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11950": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11951": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11952": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11953": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11954": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11955": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11956": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11957": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11958": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11959": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11960": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11961": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11962": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11963": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11964": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11965": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11966": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11967": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11968": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11969": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11970": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11971": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11972": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11973": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11974": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11975": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11976": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11977": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11978": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11979": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11980": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11981": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11982": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11983": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11984": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11985": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11986": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11987": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11988": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11989": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11990": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11991": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11992": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11993": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11994": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11995": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11996": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11997": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11998": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "11999": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12000": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12001": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12002": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12003": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12004": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12005": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12006": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12007": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12008": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12009": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12010": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12011": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12012": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12013": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12014": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12015": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12016": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12017": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12018": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12019": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12020": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12021": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12022": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12023": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12024": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12025": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12026": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12027": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12028": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12029": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12030": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12031": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12032": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12033": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12040": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12041": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12042": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12043": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12044": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12045": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12046": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12047": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12048": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12049": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12050": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12051": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12052": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12053": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12054": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12055": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12056": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12057": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12058": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12059": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12060": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12061": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12062": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12063": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12064": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12065": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12066": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12067": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12068": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12069": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12070": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12071": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12072": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12073": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12074": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12075": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12076": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12077": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12078": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12079": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12080": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12081": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12082": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12083": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12084": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12085": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12086": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12087": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12088": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12089": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12090": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12091": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12092": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12093": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12094": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12095": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12096": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12097": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12098": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12099": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12100": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12101": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12102": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12103": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12104": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12105": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12106": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12107": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12108": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12109": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12110": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12111": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12112": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12113": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12114": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12115": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12116": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12117": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12118": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12119": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12120": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12121": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12122": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12123": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12124": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12125": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12126": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12127": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12128": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12129": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12130": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12131": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12132": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12133": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12134": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12135": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12136": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12137": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12138": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12139": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12140": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12141": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12142": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12143": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12144": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12145": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12146": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12147": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12148": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12149": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12150": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12151": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12152": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12153": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12154": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12155": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12156": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12157": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12158": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12159": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12160": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12161": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12162": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12163": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12164": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12165": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12166": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12167": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12168": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12169": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12170": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12171": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12172": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12173": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12174": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12175": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12176": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12177": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12178": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12179": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12180": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12181": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12182": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12183": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12184": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12185": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12186": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12187": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12188": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12189": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12190": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12191": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12192": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12193": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12194": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12195": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12196": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12197": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12198": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12199": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12200": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12201": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12202": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12203": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12204": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12205": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12206": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12207": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12208": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12209": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12210": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12211": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12212": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12213": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12214": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12215": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12216": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12217": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12218": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "12219": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23939": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23941": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23947": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23953": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23955": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23957": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23961": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23963": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23965": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23967": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23969": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23971": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23973": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23975": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23977": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23979": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23981": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23983": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23985": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23989": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23991": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "23993": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24001": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24003": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24005": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24007": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24011": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24015": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24017": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24019": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24021": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24023": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24024": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24026": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24028": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24031": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24033": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24035": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24037": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24039": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24041": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24045": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24046": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24048": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24050": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24053": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24055": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24056": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24060": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24062": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24065": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24081": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24086": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24088": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24090": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24095": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24097": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24099": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24101": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24103": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24105": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24108": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24110": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24112": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24114": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24116": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24118": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24122": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24124": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24126": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24134": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24136": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24138": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24140": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24144": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24147": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24150": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24151": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24153": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24157": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24161": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24164": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24166": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24169": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24171": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24173": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24178": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24180": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24182": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24186": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24190": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24194": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24196": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "24198": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42716": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42717": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42718": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42719": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42720": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42721": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42722": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "42723": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64727": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64728": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64729": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64730": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64731": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64732": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64733": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    },
+    "64734": {
+      "US": {
+        "first": 475,
+        "additional": 240
+      },
+      "ROW": {
+        "first": 1000,
+        "additional": 400
+      },
+      "CA": {
+        "first": 939,
+        "additional": 439
+      },
+      "AU": {
+        "first": 1249,
+        "additional": 499
+      }
+    }
+  },
+  "rates": [
+    {
+      "zone": "AU",
+      "group": "g1",
+      "first": 1249,
+      "additional": 499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "no_retail",
+      "typicalRetailCents": null
+    },
+    {
+      "zone": "CA",
+      "group": "g1",
+      "first": 939,
+      "additional": 439,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "no_retail",
+      "typicalRetailCents": null
+    },
+    {
+      "zone": "ROW",
+      "group": "g1",
+      "first": 1000,
+      "additional": 400,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "no_retail",
+      "typicalRetailCents": null
+    },
+    {
+      "zone": "US",
+      "group": "g1",
+      "first": 475,
+      "additional": 240,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "no_retail",
+      "typicalRetailCents": null
+    }
+  ],
+  "exportedAt": "2026-08-23T04:12:46.904Z"
+}

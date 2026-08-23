@@ -1,0 +1,509 @@
+{
+  "classKey": "540:99",
+  "blueprintId": 540,
+  "providerId": 99,
+  "name": "Framed Vertical Poster (Choice)",
+  "method": "standard",
+  "typicalRetailCentsOverride": 8995,
+  "absoluteCapCentsOverride": null,
+  "groups": [
+    {
+      "group": "g1",
+      "label": "11\" x 14\"",
+      "printifyVariantIds": [
+        "69663",
+        "69670",
+        "69677"
+      ]
+    },
+    {
+      "group": "g2",
+      "label": "12″ x 16″, 16″ x 16″",
+      "printifyVariantIds": [
+        "69664",
+        "69666",
+        "69671",
+        "69673",
+        "69678",
+        "69680"
+      ]
+    },
+    {
+      "group": "g3",
+      "label": "16″ x 20″, 16″ x 24″",
+      "printifyVariantIds": [
+        "69667",
+        "69668",
+        "69674",
+        "69675",
+        "69681",
+        "69682"
+      ]
+    },
+    {
+      "group": "g4",
+      "label": "12″ x 36″, 20\" x 30\"",
+      "printifyVariantIds": [
+        "69665",
+        "69669",
+        "69672",
+        "69676",
+        "69679",
+        "69683"
+      ]
+    }
+  ],
+  "byVariant": {
+    "69663": {
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4589,
+        "additional": 2399
+      },
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      }
+    },
+    "69664": {
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      },
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4679,
+        "additional": 2499
+      }
+    },
+    "69665": {
+      "ROW": {
+        "first": 20799,
+        "additional": 19999
+      },
+      "CA": {
+        "first": 6719,
+        "additional": 4999
+      },
+      "AU": {
+        "first": 19759,
+        "additional": 18999
+      },
+      "US": {
+        "first": 2079,
+        "additional": 999
+      }
+    },
+    "69666": {
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      },
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4679,
+        "additional": 2499
+      }
+    },
+    "69667": {
+      "US": {
+        "first": 1639,
+        "additional": 589
+      },
+      "CA": {
+        "first": 4879,
+        "additional": 2499
+      },
+      "ROW": {
+        "first": 7149,
+        "additional": 6589
+      }
+    },
+    "69668": {
+      "US": {
+        "first": 1639,
+        "additional": 589
+      },
+      "CA": {
+        "first": 4879,
+        "additional": 2499
+      },
+      "ROW": {
+        "first": 7149,
+        "additional": 6589
+      }
+    },
+    "69669": {
+      "ROW": {
+        "first": 20799,
+        "additional": 19999
+      },
+      "CA": {
+        "first": 6719,
+        "additional": 4999
+      },
+      "AU": {
+        "first": 19759,
+        "additional": 18999
+      },
+      "US": {
+        "first": 2079,
+        "additional": 999
+      }
+    },
+    "69670": {
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4589,
+        "additional": 2399
+      },
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      }
+    },
+    "69671": {
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      },
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4679,
+        "additional": 2499
+      }
+    },
+    "69672": {
+      "ROW": {
+        "first": 20799,
+        "additional": 19999
+      },
+      "CA": {
+        "first": 6719,
+        "additional": 4999
+      },
+      "AU": {
+        "first": 19759,
+        "additional": 18999
+      },
+      "US": {
+        "first": 2079,
+        "additional": 999
+      }
+    },
+    "69673": {
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      },
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4679,
+        "additional": 2499
+      }
+    },
+    "69674": {
+      "US": {
+        "first": 1639,
+        "additional": 589
+      },
+      "CA": {
+        "first": 4879,
+        "additional": 2499
+      },
+      "ROW": {
+        "first": 7149,
+        "additional": 6589
+      }
+    },
+    "69675": {
+      "US": {
+        "first": 1639,
+        "additional": 589
+      },
+      "CA": {
+        "first": 4879,
+        "additional": 2499
+      },
+      "ROW": {
+        "first": 7149,
+        "additional": 6589
+      }
+    },
+    "69676": {
+      "ROW": {
+        "first": 20799,
+        "additional": 19999
+      },
+      "CA": {
+        "first": 6719,
+        "additional": 4999
+      },
+      "AU": {
+        "first": 19759,
+        "additional": 18999
+      },
+      "US": {
+        "first": 2079,
+        "additional": 999
+      }
+    },
+    "69677": {
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4589,
+        "additional": 2399
+      },
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      }
+    },
+    "69678": {
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      },
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4679,
+        "additional": 2499
+      }
+    },
+    "69679": {
+      "ROW": {
+        "first": 20799,
+        "additional": 19999
+      },
+      "CA": {
+        "first": 6719,
+        "additional": 4999
+      },
+      "AU": {
+        "first": 19759,
+        "additional": 18999
+      },
+      "US": {
+        "first": 2079,
+        "additional": 999
+      }
+    },
+    "69680": {
+      "ROW": {
+        "first": 5439,
+        "additional": 5229
+      },
+      "US": {
+        "first": 1189,
+        "additional": 599
+      },
+      "CA": {
+        "first": 4679,
+        "additional": 2499
+      }
+    },
+    "69681": {
+      "US": {
+        "first": 1639,
+        "additional": 589
+      },
+      "CA": {
+        "first": 4879,
+        "additional": 2499
+      },
+      "ROW": {
+        "first": 7149,
+        "additional": 6589
+      }
+    },
+    "69682": {
+      "US": {
+        "first": 1639,
+        "additional": 589
+      },
+      "CA": {
+        "first": 4879,
+        "additional": 2499
+      },
+      "ROW": {
+        "first": 7149,
+        "additional": 6589
+      }
+    },
+    "69683": {
+      "ROW": {
+        "first": 20799,
+        "additional": 19999
+      },
+      "CA": {
+        "first": 6719,
+        "additional": 4999
+      },
+      "AU": {
+        "first": 19759,
+        "additional": 18999
+      },
+      "US": {
+        "first": 2079,
+        "additional": 999
+      }
+    }
+  },
+  "rates": [
+    {
+      "zone": "CA",
+      "group": "g1",
+      "first": 4589,
+      "additional": 2399,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "ROW",
+      "group": "g1",
+      "first": 5439,
+      "additional": 5229,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "US",
+      "group": "g1",
+      "first": 1189,
+      "additional": 599,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "CA",
+      "group": "g2",
+      "first": 4679,
+      "additional": 2499,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "ROW",
+      "group": "g2",
+      "first": 5439,
+      "additional": 5229,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "US",
+      "group": "g2",
+      "first": 1189,
+      "additional": 599,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "CA",
+      "group": "g3",
+      "first": 4879,
+      "additional": 2499,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "ROW",
+      "group": "g3",
+      "first": 7149,
+      "additional": 6589,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "US",
+      "group": "g3",
+      "first": 1639,
+      "additional": 589,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "AU",
+      "group": "g4",
+      "first": 19759,
+      "additional": 18999,
+      "tier": "excluded",
+      "shippable": false,
+      "tierReason": "absolute_cap",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "CA",
+      "group": "g4",
+      "first": 6719,
+      "additional": 4999,
+      "tier": "warned",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "ROW",
+      "group": "g4",
+      "first": 20799,
+      "additional": 19999,
+      "tier": "excluded",
+      "shippable": false,
+      "tierReason": "absolute_cap",
+      "typicalRetailCents": 8995
+    },
+    {
+      "zone": "US",
+      "group": "g4",
+      "first": 2079,
+      "additional": 999,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8995
+    }
+  ],
+  "exportedAt": "2026-08-23T04:12:44.851Z"
+}

@@ -37,6 +37,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
   { table: "customizer_pages",      column: "style_config",                type: "JSONB" },
   { table: "customizer_pages",      column: "zero_price_alert_sent_at",    type: "TIMESTAMP" },
+  { table: "customizer_pages",      column: "product_group_id",            type: "TEXT" },
+  { table: "customizer_pages",      column: "intended_zones",              type: "JSONB" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
   { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },

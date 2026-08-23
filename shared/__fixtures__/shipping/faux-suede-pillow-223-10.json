@@ -1,0 +1,1676 @@
+{
+  "classKey": "223:10",
+  "blueprintId": 223,
+  "providerId": 10,
+  "name": "Faux Suede Square Pillow — provider 10",
+  "method": "standard",
+  "typicalRetailCentsOverride": null,
+  "absoluteCapCentsOverride": null,
+  "groups": [
+    {
+      "group": "g1",
+      "label": "14-14",
+      "printifyVariantIds": [
+        "41674"
+      ]
+    },
+    {
+      "group": "g2",
+      "label": "16-16",
+      "printifyVariantIds": [
+        "41677"
+      ]
+    },
+    {
+      "group": "g3",
+      "label": "18-18",
+      "printifyVariantIds": [
+        "41680"
+      ]
+    },
+    {
+      "group": "g4",
+      "label": "20-20",
+      "printifyVariantIds": [
+        "41683"
+      ]
+    }
+  ],
+  "byVariant": {
+    "41674": {
+      "CA": {
+        "first": 1159,
+        "additional": 499
+      },
+      "US": {
+        "first": 979,
+        "additional": 979
+      },
+      "ROW": {
+        "first": 1229,
+        "additional": 689
+      },
+      "AT": {
+        "first": 1579,
+        "additional": 689
+      },
+      "BE": {
+        "first": 1579,
+        "additional": 689
+      },
+      "BG": {
+        "first": 1579,
+        "additional": 689
+      },
+      "HR": {
+        "first": 1579,
+        "additional": 689
+      },
+      "CY": {
+        "first": 1579,
+        "additional": 689
+      },
+      "CZ": {
+        "first": 1579,
+        "additional": 689
+      },
+      "FR": {
+        "first": 1579,
+        "additional": 689
+      },
+      "GR": {
+        "first": 1579,
+        "additional": 689
+      },
+      "HU": {
+        "first": 1579,
+        "additional": 689
+      },
+      "IE": {
+        "first": 1579,
+        "additional": 689
+      },
+      "IT": {
+        "first": 1579,
+        "additional": 689
+      },
+      "MT": {
+        "first": 1579,
+        "additional": 689
+      },
+      "NL": {
+        "first": 1579,
+        "additional": 689
+      },
+      "PL": {
+        "first": 1579,
+        "additional": 689
+      },
+      "PT": {
+        "first": 1579,
+        "additional": 689
+      },
+      "RO": {
+        "first": 1579,
+        "additional": 689
+      },
+      "SK": {
+        "first": 1579,
+        "additional": 689
+      },
+      "SI": {
+        "first": 1579,
+        "additional": 689
+      },
+      "ES": {
+        "first": 1579,
+        "additional": 689
+      },
+      "LU": {
+        "first": 1579,
+        "additional": 689
+      },
+      "DK": {
+        "first": 1579,
+        "additional": 689
+      },
+      "EE": {
+        "first": 1579,
+        "additional": 689
+      },
+      "FI": {
+        "first": 1579,
+        "additional": 689
+      },
+      "LV": {
+        "first": 1579,
+        "additional": 689
+      },
+      "LT": {
+        "first": 1579,
+        "additional": 689
+      },
+      "SE": {
+        "first": 1579,
+        "additional": 689
+      }
+    },
+    "41677": {
+      "US": {
+        "first": 1039,
+        "additional": 1039
+      },
+      "CA": {
+        "first": 1419,
+        "additional": 799
+      },
+      "ROW": {
+        "first": 1669,
+        "additional": 919
+      },
+      "AT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "BE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "BG": {
+        "first": 2019,
+        "additional": 919
+      },
+      "HR": {
+        "first": 2019,
+        "additional": 919
+      },
+      "CY": {
+        "first": 2019,
+        "additional": 919
+      },
+      "CZ": {
+        "first": 2019,
+        "additional": 919
+      },
+      "FR": {
+        "first": 2019,
+        "additional": 919
+      },
+      "GR": {
+        "first": 2019,
+        "additional": 919
+      },
+      "HU": {
+        "first": 2019,
+        "additional": 919
+      },
+      "IE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "IT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "MT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "NL": {
+        "first": 2019,
+        "additional": 919
+      },
+      "PL": {
+        "first": 2019,
+        "additional": 919
+      },
+      "PT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "RO": {
+        "first": 2019,
+        "additional": 919
+      },
+      "SK": {
+        "first": 2019,
+        "additional": 919
+      },
+      "SI": {
+        "first": 2019,
+        "additional": 919
+      },
+      "ES": {
+        "first": 2019,
+        "additional": 919
+      },
+      "LU": {
+        "first": 2019,
+        "additional": 919
+      },
+      "DK": {
+        "first": 2019,
+        "additional": 919
+      },
+      "EE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "FI": {
+        "first": 2019,
+        "additional": 919
+      },
+      "LV": {
+        "first": 2019,
+        "additional": 919
+      },
+      "LT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "SE": {
+        "first": 2019,
+        "additional": 919
+      }
+    },
+    "41680": {
+      "ROW": {
+        "first": 1669,
+        "additional": 919
+      },
+      "AT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "BE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "BG": {
+        "first": 2019,
+        "additional": 919
+      },
+      "HR": {
+        "first": 2019,
+        "additional": 919
+      },
+      "CY": {
+        "first": 2019,
+        "additional": 919
+      },
+      "CZ": {
+        "first": 2019,
+        "additional": 919
+      },
+      "FR": {
+        "first": 2019,
+        "additional": 919
+      },
+      "GR": {
+        "first": 2019,
+        "additional": 919
+      },
+      "HU": {
+        "first": 2019,
+        "additional": 919
+      },
+      "IE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "IT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "MT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "NL": {
+        "first": 2019,
+        "additional": 919
+      },
+      "PL": {
+        "first": 2019,
+        "additional": 919
+      },
+      "PT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "RO": {
+        "first": 2019,
+        "additional": 919
+      },
+      "SK": {
+        "first": 2019,
+        "additional": 919
+      },
+      "SI": {
+        "first": 2019,
+        "additional": 919
+      },
+      "ES": {
+        "first": 2019,
+        "additional": 919
+      },
+      "LU": {
+        "first": 2019,
+        "additional": 919
+      },
+      "DK": {
+        "first": 2019,
+        "additional": 919
+      },
+      "EE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "FI": {
+        "first": 2019,
+        "additional": 919
+      },
+      "LV": {
+        "first": 2019,
+        "additional": 919
+      },
+      "LT": {
+        "first": 2019,
+        "additional": 919
+      },
+      "SE": {
+        "first": 2019,
+        "additional": 919
+      },
+      "US": {
+        "first": 1159,
+        "additional": 1159
+      },
+      "CA": {
+        "first": 1419,
+        "additional": 799
+      }
+    },
+    "41683": {
+      "CA": {
+        "first": 2499,
+        "additional": 2499
+      },
+      "US": {
+        "first": 1699,
+        "additional": 1699
+      },
+      "ROW": {
+        "first": 2599,
+        "additional": 2499
+      },
+      "AT": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "BE": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "BG": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "HR": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "CY": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "CZ": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "FR": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "GR": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "HU": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "IE": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "IT": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "MT": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "NL": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "PL": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "PT": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "RO": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "SK": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "SI": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "ES": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "LU": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "DK": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "EE": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "FI": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "LV": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "LT": {
+        "first": 2949,
+        "additional": 2499
+      },
+      "SE": {
+        "first": 2949,
+        "additional": 2499
+      }
+    }
+  },
+  "rates": [
+    {
+      "zone": "AT",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "BE",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "BG",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "CA",
+      "group": "g1",
+      "first": 1159,
+      "additional": 499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "CY",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "CZ",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "DK",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "EE",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "ES",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "FI",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "FR",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "GR",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "HR",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "HU",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "IE",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "IT",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "LT",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "LU",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "LV",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "MT",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "NL",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "PL",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "PT",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "RO",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "ROW",
+      "group": "g1",
+      "first": 1229,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "SE",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "SI",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "SK",
+      "group": "g1",
+      "first": 1579,
+      "additional": 689,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "US",
+      "group": "g1",
+      "first": 979,
+      "additional": 979,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 5151
+    },
+    {
+      "zone": "AT",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "BE",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "BG",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "CA",
+      "group": "g2",
+      "first": 1419,
+      "additional": 799,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "CY",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "CZ",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "DK",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "EE",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "ES",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "FI",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "FR",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "GR",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "HR",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "HU",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "IE",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "IT",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "LT",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "LU",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "LV",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "MT",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "NL",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "PL",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "PT",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "RO",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "ROW",
+      "group": "g2",
+      "first": 1669,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "SE",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "SI",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "SK",
+      "group": "g2",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "US",
+      "group": "g2",
+      "first": 1039,
+      "additional": 1039,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 6117
+    },
+    {
+      "zone": "AT",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "BE",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "BG",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "CA",
+      "group": "g3",
+      "first": 1419,
+      "additional": 799,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "CY",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "CZ",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "DK",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "EE",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "ES",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "FI",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "FR",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "GR",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "HR",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "HU",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "IE",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "IT",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "LT",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "LU",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "LV",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "MT",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "NL",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "PL",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "PT",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "RO",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "ROW",
+      "group": "g3",
+      "first": 1669,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "SE",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "SI",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "SK",
+      "group": "g3",
+      "first": 2019,
+      "additional": 919,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "US",
+      "group": "g3",
+      "first": 1159,
+      "additional": 1159,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 7512
+    },
+    {
+      "zone": "AT",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "BE",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "BG",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "CA",
+      "group": "g4",
+      "first": 2499,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "CY",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "CZ",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "DK",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "EE",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "ES",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "FI",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "FR",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "GR",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "HR",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "HU",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "IE",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "IT",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "LT",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "LU",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "LV",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "MT",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "NL",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "PL",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "PT",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "RO",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "ROW",
+      "group": "g4",
+      "first": 2599,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "SE",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "SI",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "SK",
+      "group": "g4",
+      "first": 2949,
+      "additional": 2499,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    },
+    {
+      "zone": "US",
+      "group": "g4",
+      "first": 1699,
+      "additional": 1699,
+      "tier": "normal",
+      "shippable": true,
+      "tierReason": "threshold",
+      "typicalRetailCents": 8226
+    }
+  ],
+  "exportedAt": "2026-08-23T04:12:45.695Z"
+}
