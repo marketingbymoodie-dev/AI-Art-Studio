@@ -94,6 +94,19 @@ export async function subscribeToStudioNewsletter(
 
   if (!row) return { ok: false, reason: "Could not save your email." };
 
+  const alreadySubscribed = existing.length > 0;
+
+  // Already on the list: return immediately so the UI can flag the duplicate.
+  // Do not block this request on a credit grant (that path was hanging the spinner).
+  if (alreadySubscribed) {
+    return {
+      ok: true,
+      alreadySubscribed: true,
+      creditGranted: !!row.creditGranted,
+      creditAmount: 0,
+    };
+  }
+
   const grantShop = shopDomain || row.shopDomain;
   const grantCustomer = customerId || row.customerId;
   let creditGranted = row.creditGranted;
@@ -124,7 +137,7 @@ export async function subscribeToStudioNewsletter(
 
   return {
     ok: true,
-    alreadySubscribed: existing.length > 0,
+    alreadySubscribed: false,
     creditGranted,
     creditAmount,
   };
