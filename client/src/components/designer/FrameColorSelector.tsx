@@ -52,7 +52,7 @@ export function FrameColorSelector({
   return (
     <div className="space-y-1">
       {showLabel && <Label className="text-xs">{colorLabel}</Label>}
-      <Select value={selectedFrameColor} onValueChange={onFrameColorChange}>
+      <Select value={selected?.id || undefined} onValueChange={onFrameColorChange}>
         <SelectTrigger data-testid="select-frame-color" className="h-9">
           <SelectValue placeholder={`Select ${colorLabel.toLowerCase()}`}>
             {selected && (

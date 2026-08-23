@@ -195,7 +195,7 @@ import {
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
-import { hasExactVariantMapping, hasVariantMappingForColor, resolveVariantFromMap } from "@shared/variantMapResolve";
+import { hasExactVariantMapping, hasVariantMappingForColor, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
@@ -759,6 +759,19 @@ function resolveFrameColorId(
       normalizeVariantToken(f.name) === slug,
   );
   return bySlug?.id ?? null;
+}
+
+/** First colour that is actually sellable on this product (mapped, else first). */
+function pickFallbackFrameColorId(
+  frameColors: Array<{ id: string; name: string }>,
+  variantMap?: VariantMap | null,
+): string {
+  if (!frameColors.length) return "";
+  if (variantMap) {
+    const mapped = frameColors.find((c) => hasVariantMappingForColor(variantMap, c.id));
+    if (mapped) return mapped.id;
+  }
+  return frameColors[0].id;
 }
 
 /** Match a Shopify variant from a catalog by human-readable size + color names. */
@@ -4538,7 +4551,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       (typeof ds?.artworkUrl === "string" ? ds.artworkUrl : "") ||
       "";
     const absUrl = abs(preferredUrl);
-    if (!absUrl) return;
+    if (!absUrl) {
+      const storedColor =
+        (typeof ds?.selectedFrameColor === "string" && ds.selectedFrameColor.trim()) ||
+        (typeof topLevel.frameColor === "string" && topLevel.frameColor.trim()) ||
+        "";
+      if (storedColor) pendingRestoreColorRef.current = storedColor;
+      else restoringSavedDesignRef.current = false;
+      return;
+    }
     lastAopPanelUrlsRef.current = null;
     aopPersonMockupsRef.current = [];
     aopBaseMockupsRef.current = [];
@@ -4600,8 +4621,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (storedColor) {
         pendingRestoreColorRef.current = storedColor;
         const resolved = resolveFrameColorId(storedColor, frameColorObjects);
-        if (resolved) {
-          setSelectedFrameColor(resolved);
+        const next =
+          resolved ||
+          pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+        if (next) {
+          setSelectedFrameColor(next);
           pendingRestoreColorRef.current = null;
           restoringSavedDesignRef.current = false;
         }
@@ -4760,8 +4784,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (topLevel.frameColor) {
         pendingRestoreColorRef.current = topLevel.frameColor;
         const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
-        if (resolved) {
-          setSelectedFrameColor(resolved);
+        const next =
+          resolved ||
+          pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+        if (next) {
+          setSelectedFrameColor(next);
           pendingRestoreColorRef.current = null;
           restoringSavedDesignRef.current = false;
         }
@@ -4778,13 +4805,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!pendingRestoreColorRef.current && topLevel.frameColor) {
       pendingRestoreColorRef.current = topLevel.frameColor;
       const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
-      if (resolved) {
-        setSelectedFrameColor(resolved);
+      const next =
+        resolved ||
+        pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+      if (next) {
+        setSelectedFrameColor(next);
         pendingRestoreColorRef.current = null;
         restoringSavedDesignRef.current = false;
       }
     }
     if (!pendingRestoreColorRef.current && !topLevel.frameColor && !ds?.selectedFrameColor) {
+      const next = pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+      if (next) setSelectedFrameColor(next);
       restoringSavedDesignRef.current = false;
     }
     if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
@@ -4969,6 +5001,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setIsInAppProductSwitching(true);
     setConfigLoading(true);
     restoringSavedDesignRef.current = true;
+    setSelectedFrameColor("");
     setProductTypeError(null);
     setGeneratedDesign(null);
     setDesignSource(null);
@@ -5167,6 +5200,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     loadDesignAppliedRef.current = false;
     setBridgeLoadDesignId("");
     setSelectedSize("");
+    setSelectedFrameColor("");
     setSelectedPreset("");
     setSelectedStyleOption("");
 
@@ -5486,14 +5520,29 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId, productTypeConfig]);
 
   useEffect(() => {
+    if (frameColorObjects.length === 0) return;
     const pending = pendingRestoreColorRef.current;
-    if (!pending || frameColorObjects.length === 0) return;
-    const resolved = resolveFrameColorId(pending, frameColorObjects);
-    if (!resolved) return;
-    setSelectedFrameColor(resolved);
-    pendingRestoreColorRef.current = null;
-    restoringSavedDesignRef.current = false;
-  }, [frameColorObjects]);
+    if (pending) {
+      const resolved = resolveFrameColorId(pending, frameColorObjects);
+      const next =
+        resolved ||
+        pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+      if (next) setSelectedFrameColor(next);
+      pendingRestoreColorRef.current = null;
+      restoringSavedDesignRef.current = false;
+      return;
+    }
+    const currentOk = selectedFrameColor
+      ? resolveFrameColorId(selectedFrameColor, frameColorObjects)
+      : null;
+    if (!currentOk) {
+      const next = pickFallbackFrameColorId(
+        frameColorObjects,
+        productTypeConfig?.variantMap,
+      );
+      if (next) setSelectedFrameColor(next);
+    }
+  }, [frameColorObjects, productTypeConfig?.variantMap, selectedFrameColor]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -6695,14 +6744,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // absent while s:red exists (the mockup server resolves it via size fallback).
   useEffect(() => {
     const colors = productTypeConfig?.frameColors || [];
-    if (!productTypeConfig?.variantMap || colors.length === 0) return;
+    if (colors.length === 0) return;
     if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) return;
-    if (hasVariantMappingForColor(productTypeConfig.variantMap, selectedFrameColor)) return;
-    const fallback = colors.find((c) =>
-      hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
-    );
-    if (fallback) setSelectedFrameColor(fallback.id);
-    else if (!selectedFrameColor && colors[0]) setSelectedFrameColor(colors[0].id);
+    const currentOk = selectedFrameColor
+      ? resolveFrameColorId(selectedFrameColor, colors)
+      : null;
+    if (
+      currentOk &&
+      (!productTypeConfig?.variantMap ||
+        hasVariantMappingForColor(productTypeConfig.variantMap, currentOk))
+    ) {
+      return;
+    }
+    const fallback = pickFallbackFrameColorId(colors, productTypeConfig?.variantMap);
+    if (fallback && fallback !== selectedFrameColor) setSelectedFrameColor(fallback);
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
   useEffect(() => {
