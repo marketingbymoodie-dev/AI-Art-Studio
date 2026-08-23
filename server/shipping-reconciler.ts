@@ -239,7 +239,10 @@ async function loadClassInputs(): Promise<Map<string, DesiredClassInput>> {
  *    design_sku_mappings rows; each inherits the class/group of its base variant.
  * Credit packs / non-POD products are never in variant_shipping → excluded.
  */
-async function loadShopMemberships(shop: string): Promise<MembershipVariant[]> {
+async function loadShopMemberships(
+  shop: string,
+  warnings?: string[],
+): Promise<MembershipVariant[]> {
   const bare = shop.replace(/\.myshopify\.com$/i, "");
   const rows = await db
     .select({
@@ -247,6 +250,7 @@ async function loadShopMemberships(shop: string): Promise<MembershipVariant[]> {
       sizeColorKey: variantShipping.sizeColorKey,
       shopifyVariantId: variantShipping.shopifyVariantId,
       variantGroup: variantShipping.variantGroup,
+      productTypeName: productTypes.name,
       shopifyVariantIdsJson: productTypes.shopifyVariantIds,
       blueprintId: shippingClasses.blueprintId,
       providerId: shippingClasses.providerId,
@@ -283,12 +287,23 @@ async function loadShopMemberships(shop: string): Promise<MembershipVariant[]> {
 
   const memberships: MembershipVariant[] = [];
   const byVariantId = new Map<string, MembershipVariant>();
+  const statsByType = new Map<number, { name: string; unresolved: number; total: number }>();
   for (const r of rows) {
+    const stats = statsByType.get(r.productTypeId) || {
+      name: r.productTypeName || String(r.productTypeId),
+      unresolved: 0,
+      total: 0,
+    };
+    stats.total++;
+    statsByType.set(r.productTypeId, stats);
     const live = shopifyIdsOf(r.productTypeId, r.shopifyVariantIdsJson).get(
       normalizeVariantKeyLoose(r.sizeColorKey),
     );
     const vid = String(live ?? r.shopifyVariantId ?? "").replace(/\D/g, "");
-    if (!vid) continue;
+    if (!vid) {
+      stats.unresolved++;
+      continue;
+    }
     const m: MembershipVariant = {
       classKey: `${r.blueprintId}:${r.providerId}`,
       group: r.variantGroup,
@@ -345,6 +360,20 @@ async function loadShopMemberships(shop: string): Promise<MembershipVariant[]> {
     byVariantId.set(shadowVid, m);
     memberships.push(m);
   }
+
+  for (const { name, unresolved, total } of Array.from(statsByType.values())) {
+    if (unresolved === 0) continue;
+    // All rows unresolved = key-format drift between variantMap and
+    // shopifyVariantIds (whole product silently unprofiled — must be loud).
+    // Partial = size/colors that were never imported to Shopify (100-variant
+    // cap trim); those combos are not purchasable, skipping them is correct.
+    const msg =
+      unresolved === total
+        ? `${name}: ALL ${total} variants resolved to no Shopify variant id (variantMap/shopifyVariantIds key drift) — product left on General profile`
+        : `${name}: ${unresolved}/${total} catalogue variants have no Shopify variant (not imported / variant-cap trim) — skipped from profile membership`;
+    warnings?.push(msg);
+    console.warn(`[shipping-reconciler] ${shop} ${msg}`);
+  }
   return memberships;
 }
 
@@ -389,10 +418,10 @@ async function resolveFxRate(
 
 export async function loadDesiredShopState(
   shop: string,
-  opts: { shopCurrency: string; fxRate: number },
+  opts: { shopCurrency: string; fxRate: number; warnings?: string[] },
 ): Promise<DesiredShopState> {
   const classInputs = await loadClassInputs();
-  const memberships = await loadShopMemberships(shop);
+  const memberships = await loadShopMemberships(shop, opts.warnings);
   return buildShopDesiredState({
     classes: Array.from(classInputs.values()),
     memberships,
@@ -635,6 +664,7 @@ export async function reconcileShopShipping(
   const desired = await loadDesiredShopState(shop, {
     shopCurrency: basics.currencyCode,
     fxRate,
+    warnings: summary.warnings,
   });
   summary.desiredProfiles = desired.profiles.length;
   summary.unresolvedVariants = desired.unresolvedVariants.length;

@@ -182,10 +182,12 @@ export function resolveVariantForSizeOnly(
 /**
  * Loose canonical form for matching keys across the two parallel maps on a
  * product type: `variantMap` uses id-style keys (`s:heather_grey`,
- * `14-x-14:default`) while `shopifyVariantIds` uses display labels
- * (`S:Black`, `14" × 14":default`). Lowercase, alias apparel sizes, map × → x,
- * then strip everything non-alphanumeric so both spellings collapse to the
- * same token (`s:heathergrey`, `14x14:default`).
+ * `14-x-14:default`, legacy `14-14:default`) while `shopifyVariantIds` uses
+ * display labels (`S:Black`, `14" × 14":default`). Lowercase, alias apparel
+ * sizes, map × → x, strip everything non-alphanumeric, then drop an `x`
+ * sitting between digit groups so all dimension spellings collapse to one
+ * token (`14x14`, `14-x-14`, `14-14`, `14" × 14"` → `1414`). Safe because the
+ * two maps on a product type are parallel key sets in a single size format.
  */
 export function normalizeVariantKeyLoose(key: string): string {
   const idx = key.indexOf(":");
@@ -195,6 +197,7 @@ export function normalizeVariantKeyLoose(key: string): string {
     let s = String(raw || "default").trim().toLowerCase().replace(/×/g, "x");
     if (isSize) s = normalizeApparelSizeId(s);
     s = s.replace(/[^a-z0-9]+/g, "");
+    if (isSize) s = s.replace(/(\d)x(?=\d)/g, "$1");
     return s || "default";
   };
   return `${part(rawSize, true)}:${part(rawColor, false)}`;
