@@ -196,7 +196,7 @@ import {
 } from "@shared/printifyMockupLabels";
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
 import { hasExactVariantMapping, hasVariantMappingForColor, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
-import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
+import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
@@ -2972,6 +2972,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Always-current base variant ID for shadow product pre-creation.
   // Updated by a useEffect so fetchPrintifyMockups (which has limited deps) can read it.
   const baseVariantForShadowRef = useRef<string>('');
+  /** Retail the size dropdown / headline is showing — PreShadow must mint at this, not Admin drift. */
+  const displayedRetailRef = useRef<string | null>(null);
   const variantsLoadedKeyRef = useRef("");
   const variantsFetchingKeyRef = useRef("");
   // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
@@ -6203,6 +6205,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     ? {
                         baseProductId: productId,
                         baseVariantId: baseVariantForShadowRef.current,
+                        ...(displayedRetailRef.current
+                          ? { price: displayedRetailRef.current }
+                          : {}),
                       }
                     : {}),
                 }),
@@ -6307,7 +6312,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               jobId: savedJobIdRef.current,
               shop: shopDomain,
               mockupUrls: urlsToPersist,
-              ...(productId && baseVariantForShadow ? { baseProductId: productId, baseVariantId: baseVariantForShadow } : {}),
+              ...(productId && baseVariantForShadow
+                ? {
+                    baseProductId: productId,
+                    baseVariantId: baseVariantForShadow,
+                    ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                  }
+                : {}),
             }),
           }).then(r => r.json()).then(saved => {
             console.log('[Mockups] save-mockups response:', saved);
@@ -7378,7 +7389,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const cartFrontPrice = parseFloat(
       shopifyVariants.find((v) => String(v.id) === String(variantId))?.price || "0",
     );
-    const cartRetail = cartFrontPrice > 0 ? cartFrontPrice.toFixed(2) : null;
+    const cartMappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
+    const cartRetail =
+      (cartMappedCents > 0 ? (cartMappedCents / 100).toFixed(2) : null) ||
+      (cartFrontPrice > 0 ? cartFrontPrice.toFixed(2) : null);
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
@@ -8457,6 +8471,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return fromShopify;
     }
 
+    if (sizeName) {
+      const titleHit = matchShopifyVariantBySizeTitle(
+        shopifyVariants,
+        sizeName,
+        frameName,
+        selectedFrameColor || undefined,
+      );
+      if (titleHit) {
+        console.log('[Design Studio] Matched variant from shopifyVariants title:', titleHit);
+        return titleHit;
+      }
+    }
+
     const fromVariants = variants.length > 0
       ? matchVariantBySizeColor(
           variants.map((v: any) => ({
@@ -8480,6 +8507,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ...shopifyVariants.map(v => String(v.id)),
       ...variants.map((v: any) => String(v.id)),
     ]);
+
+    // Size (and colour, when required) were picked but did not match the catalog.
+    // Do NOT fall back to the PDP / URL default — that is how XL at $18.95
+    // silently added Small at $27.
+    if (printSizes.length > 0 && String(selectedSize || "").trim()) {
+      console.log("[Design Studio] No variant found for selected size/color — refusing PDP default");
+      return null;
+    }
 
     // Only trust parent-provided IDs when they belong to the current product catalog.
     // Never fall back when the catalog is empty — that would reuse a stale ID from
@@ -9370,9 +9405,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       : null;
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
+    const mappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
+    const displayedFromSizeDropdown =
+      mappedCents > 0 ? (mappedCents / 100).toFixed(2) : null;
+    // Charge exactly what the size dropdown / headline showed — never a
+    // leftover Admin GET of a different variant ($18.95 on page → $27 in cart).
     const displayedRetailForAtc =
       bothPriceOverride ||
+      displayedFromSizeDropdown ||
       (atcFrontPrice > 0 ? atcFrontPrice.toFixed(2) : null);
+    console.log("[Design Studio] ATC retail lock", {
+      displayedRetailForAtc,
+      displayedFromSizeDropdown,
+      bothPriceOverride,
+      atcFrontPrice,
+      variantId: normalizedVariant,
+      size: atcSizeName,
+      color: atcColorName,
+    });
 
     const preShadowMatchesJob =
       !!preShadowVariantId &&
@@ -10020,7 +10070,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             // Same PreShadow kickoff as Printify mockup save — ATC can use
             // preShadowVariantId instantly once the poll lands.
             ...(productId && baseVariantForShadow
-              ? { baseProductId: productId, baseVariantId: baseVariantForShadow }
+              ? {
+                  baseProductId: productId,
+                  baseVariantId: baseVariantForShadow,
+                  ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                }
               : {}),
           }),
         });
@@ -12750,11 +12804,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         matchedVariant = shopifyVariants.find((v) => String(v.id) === matchedId);
       }
       if (!matchedVariant) {
-        matchedVariant = shopifyVariants.find((v) => {
-          const t = (v.title || "").toLowerCase();
-          const sn = size.name.toLowerCase();
-          return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
-        });
+        const titleId = matchShopifyVariantBySizeTitle(
+          shopifyVariants,
+          size.name,
+          frameName,
+          selectedFrameColor || undefined,
+        );
+        if (titleId) {
+          matchedVariant = shopifyVariants.find((v) => String(v.id) === titleId);
+        }
       }
 
       if (matchedVariant?.price) {
@@ -12809,20 +12867,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor || undefined,
     );
     // Same size-title fallback as buildPriceMap so the headline / ATC variant
-    // stay in sync when option matching misses (e.g. "3XL / Dark Heather").
+    // stay in sync when option matching misses (e.g. "Heather Grey / XL").
     if (!matchedId && sizeName) {
-      const sn = sizeName.toLowerCase();
-      const fallback = shopifyVariants.find((v) => {
-        const t = (v.title || "").toLowerCase();
-        return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
-      });
-      if (fallback) matchedId = String(fallback.id);
+      matchedId = matchShopifyVariantBySizeTitle(
+        shopifyVariants,
+        sizeName,
+        frameName,
+        selectedFrameColor || undefined,
+      );
     }
 
     if (matchedId) {
       setShopifyVariantId(matchedId);
       setOverrideVariantId(matchedId);
     }
+    const mappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
+    displayedRetailRef.current =
+      mappedCents > 0 ? (mappedCents / 100).toFixed(2) : null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
 

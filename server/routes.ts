@@ -9201,7 +9201,12 @@ ${orientationExtra}
   // in the background, so Add to Cart is instant when the user clicks it.
   app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, mockupUrls, baseProductId, baseVariantId, productTypeId } = req.body;
+      const { shop, jobId, mockupUrls, baseProductId, baseVariantId, productTypeId, price } = req.body;
+      const preShadowPriceNum = parseFloat(String(price ?? ""));
+      const preShadowClientPrice =
+        Number.isFinite(preShadowPriceNum) && preShadowPriceNum > 0
+          ? preShadowPriceNum.toFixed(2)
+          : null;
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
@@ -9273,6 +9278,7 @@ ${orientationExtra}
                 token,
                 shadowVariantId: freshJob.shadowVariantId,
                 baseVariantId,
+                priceOverride: preShadowClientPrice,
               });
               return;
             }
@@ -9308,6 +9314,7 @@ ${orientationExtra}
                   token,
                   shadowVariantId: existing.shopifyVariantId,
                   baseVariantId,
+                  priceOverride: preShadowClientPrice,
                 });
               }
               return;
@@ -9344,7 +9351,7 @@ ${orientationExtra}
                   published: false,
                   tags: 'appai-shadow',
                   variants: [{
-                    price: baseVariant.price,
+                    price: preShadowClientPrice || baseVariant.price,
                     compare_at_price: baseVariant.compare_at_price || null,
                     taxable: baseVariant.taxable,
                     requires_shipping: baseVariant.requires_shipping,

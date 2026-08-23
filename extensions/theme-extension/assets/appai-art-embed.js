@@ -1281,7 +1281,7 @@
                 var errMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
                 var lower = String(errMsg).toLowerCase();
                 if (out.res.status === 422 && (lower.indexOf('cannot find') !== -1 || lower.indexOf('not found') !== -1)) {
-                  console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying once after 3s...');
+                  console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying shortly...');
                   throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
                 }
                 throw new Error('Cart add failed: ' + errMsg);
@@ -1711,15 +1711,17 @@
         }
 
         function addWithPublishRetry(variantId) {
-          return addToCart(variantId, data.quantity, data.properties)
-            .catch(function(err) {
-              if (!(err && err.__retryable)) throw err;
-              console.log(B, 'Retrying ATC in 3s for variant', err.variantId);
-              return new Promise(function(resolve) { setTimeout(resolve, 3000); })
-                .then(function() {
-                  return addToCart(err.variantId, data.quantity, data.properties);
-                });
-            });
+          function attempt(n) {
+            return addToCart(variantId, data.quantity, data.properties)
+              .catch(function(err) {
+                if (!(err && err.__retryable) || n >= 3) throw err;
+                var wait = n === 0 ? 600 : n === 1 ? 1200 : 2000;
+                console.log(B, 'Retrying ATC in', wait, 'ms for variant', err.variantId, 'attempt', n + 1);
+                return new Promise(function(resolve) { setTimeout(resolve, wait); })
+                  .then(function() { return attempt(n + 1); });
+              });
+          }
+          return attempt(0);
         }
 
         var addPromise;
@@ -2001,7 +2003,14 @@
           (payload.properties && payload.properties['_design_id']) || '';
         resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '', payload.price)
           .then(function(sku) {
-            return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {});
+            return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {})
+              .catch(function(err) {
+                if (!(err && err.__retryable)) throw err;
+                return new Promise(function(resolve) { setTimeout(resolve, 600); })
+                  .then(function() {
+                    return addToCart(err.variantId, payload.quantity || 1, payload.properties || {});
+                  });
+              });
           })
           .then(function(cart) {
             // Notify iframe of success so it can show its success state

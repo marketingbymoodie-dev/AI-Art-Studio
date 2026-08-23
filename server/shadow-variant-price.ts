@@ -59,6 +59,18 @@ export async function syncShadowVariantPrice(opts: {
     );
   }
 
+  // Client-sent retail is the customizer price the buyer saw. Do not replace
+  // it with a live Admin GET — that is how $18.95 pages became $27 carts
+  // when Admin had drifted (or we resolved a different variant).
+  if (opts.priceOverride == null || String(opts.priceOverride).trim() === "") {
+    console.log(
+      `[ShadowProduct] Skip Admin price sync — no client retail (keep existing shadow ${opts.shadowVariantId})`,
+    );
+    const frontN = parseFloat(String(liveFront ?? ""));
+    const front = Number.isFinite(frontN) && frontN > 0 ? frontN.toFixed(2) : null;
+    return { front, written: null, source: null };
+  }
+
   const decided = resolveShadowSellPrice(liveFront, opts.priceOverride);
   if (!decided.written) {
     console.warn(

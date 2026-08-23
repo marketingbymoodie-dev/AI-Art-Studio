@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   matchShopifyVariantBySizeColor,
+  matchShopifyVariantBySizeTitle,
   normalizeShopifyVariantToken,
   shopifyColorTokensEqual,
 } from "./shopifyVariantMatch";
@@ -131,5 +132,25 @@ describe("matchShopifyVariantBySizeColor", () => {
         "white_true_royal",
       ),
     ).toBe("11");
+  });
+});
+
+describe("matchShopifyVariantBySizeTitle", () => {
+  const teeCatalog = [
+    { id: 27, title: "Navy / XL", option1: "Navy", option2: "XL", price: "27.00" },
+    { id: 18, title: "Heather Grey / XL", option1: "Heather Grey", option2: "XL", price: "18.95" },
+    { id: 9, title: "Heather Grey / S", option1: "Heather Grey", option2: "S", price: "18.95" },
+  ];
+
+  it("picks Heather Grey / XL, not the first XL row", () => {
+    expect(
+      matchShopifyVariantBySizeTitle(teeCatalog, "XL", "Heather Grey", "heather_grey"),
+    ).toBe("18");
+  });
+
+  it("does not fall back to a different colour when the requested colour is absent", () => {
+    expect(
+      matchShopifyVariantBySizeTitle(teeCatalog, "XL", "Does Not Exist", "missing"),
+    ).toBeNull();
   });
 });

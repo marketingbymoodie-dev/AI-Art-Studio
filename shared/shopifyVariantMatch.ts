@@ -161,3 +161,43 @@ export function matchShopifyVariantBySizeColor(
 
   return match ? String(match.id) : null;
 }
+
+/**
+ * Last-resort title match when structured options missed.
+ * Prefers Color / Size (Shopify default) and the requested colour — never the
+ * first "XL / …" row, which is how Heather Grey $18.95 became Navy/Small $27.
+ */
+export function matchShopifyVariantBySizeTitle(
+  catalog: ShopifyVariantMatchEntry[],
+  sizeName: string,
+  frameName?: string,
+  frameColorId?: string,
+): string | null {
+  const sizeNorm = normalizeShopifyVariantToken(sizeName);
+  if (!sizeNorm || catalog.length === 0) return null;
+
+  const sizeInTitle = (v: ShopifyVariantMatchEntry): boolean => {
+    const title = v.title || "";
+    if (!title.trim()) return false;
+    const parts = title.split(/\s*\/\s*/).map((p) => p.trim()).filter(Boolean);
+    const last = parts[parts.length - 1] || title;
+    return sizeTokensMatch(last, sizeName) || parts.some((p) => sizeTokensMatch(p, sizeName));
+  };
+
+  const candidates = catalog.filter(sizeInTitle);
+  if (candidates.length === 0) return null;
+
+  const wantsColor = !!(frameName?.trim() || frameColorId?.trim());
+  if (wantsColor) {
+    const colored = candidates.find((v) => {
+      const title = v.title || "";
+      const options = [v.option1, v.option2].filter(Boolean).map((o) => String(o));
+      if (colorMatchesFrame(title, frameName || "", frameColorId)) return true;
+      return options.some((opt) => colorMatchesFrame(opt, frameName || "", frameColorId));
+    });
+    if (colored) return String(colored.id);
+    return null;
+  }
+
+  return String(candidates[0].id);
+}
