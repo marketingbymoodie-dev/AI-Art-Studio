@@ -554,6 +554,7 @@ export const RESERVED_CREATOR_SUBDOMAINS = new Set([
   "blog",
   "shop",
   "store",
+  "checkout",
   "creators",
   "beta",
   "creator",
