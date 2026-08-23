@@ -656,6 +656,28 @@ export async function reconcileShopShipping(
   }
 
   const token = await getShopAccessToken(shop);
+
+  // Pre-flight scopes: verify the GRANTED token (not just our config) carries
+  // everything this run will use. Configs can be aligned while a store's token
+  // predates a scope addition — that gap caused the write_shipping and
+  // write_inventory ACCESS_DENIED failures. Fail apply before any write; on
+  // dry-run surface it as a warning so the plan is still visible.
+  {
+    const required = ["write_shipping", "read_locations"];
+    if (settings.manageVariantWeights) required.push("write_inventory");
+    const { checkGrantedScopes } = await import("./shopify-scope-drift");
+    const scopeCheck = await checkGrantedScopes(shop, token, required);
+    if (scopeCheck.error) {
+      summary.warnings.push(`scope pre-flight inconclusive (${scopeCheck.error}) — proceeding`);
+    } else if (scopeCheck.missing.length) {
+      const msg =
+        `token for ${shop} is missing scope(s): ${scopeCheck.missing.join(", ")} — ` +
+        `re-authorize the app on this store (Partner app config must already declare them)`;
+      if (!opts.dryRun) throw new Error(`Pre-flight: ${msg}`);
+      summary.warnings.push(`SCOPES: ${msg}`);
+    }
+  }
+
   const basics = await fetchShopBasics(shop, token);
   summary.customProfilesUsed = basics.customProfileCount;
   if (basics.locationIds.length === 0) throw new Error(`No active locations on ${shop}`);

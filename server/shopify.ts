@@ -20,7 +20,10 @@ import {
   quoteShopifyCarrierRates,
 } from "./printify-checkout-shipping";
 
-const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders,write_shipping";
+// Must stay in sync with the scopes line in every shopify.app*.toml (managed
+// installs grant what the toml declares, not this list). Drift is checked at
+// startup and in the shipping reconciler pre-flight — see shopify-scope-drift.ts.
+export const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping";
 
 function primaryKey(): string {
   return getPrimaryShopifyCredentials()?.apiKey || "";
@@ -226,6 +229,10 @@ export async function shopifyApiCall(
 
 export function registerShopifyRoutes(app: Express): void {
   console.log(`[shopify] OAuth scopes configured: ${SHOPIFY_SCOPES}`);
+  // Startup drift check: server scope constant vs shopify.app*.toml declarations.
+  import("./shopify-scope-drift")
+    .then((m) => m.logScopeDriftReport(m.checkShopifyScopeDrift(SHOPIFY_SCOPES)))
+    .catch((e) => console.warn("[scope-drift] startup check failed:", e?.message || e));
   registerShopifyGdprRoutes(app);
 
   app.post("/shopify/carrier-service/rates", async (req: Request, res: Response) => {
