@@ -507,9 +507,22 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
           return res.json({ ok: summary.errors.length === 0, summary });
         }
         const settings = await getStoreShippingSettings(shop);
-        if (settings.lastReconcileStatus === "running") {
+        const runningAgeMs = settings.lastReconcileAt
+          ? Date.now() - new Date(settings.lastReconcileAt).getTime()
+          : Infinity;
+        // Staleness escape: a process crash mid-run could strand "running";
+        // don't let that block applies forever (a real full apply is ~6 min).
+        if (settings.lastReconcileStatus === "running" && runningAgeMs < 30 * 60 * 1000) {
           return res.status(409).json({ error: "A reconcile is already running for this shop" });
         }
+        // Mark "running" BEFORE responding so the client's immediate refetch
+        // is guaranteed to see it and arm its polling (the background run
+        // re-writes the same marker — harmless).
+        await updateStoreShippingSettings(shop, {
+          lastReconcileAt: new Date(),
+          lastReconcileStatus: "running",
+          lastReconcileError: null,
+        });
         reconcileShopShipping(shop, { dryRun: false, source: "operator" })
           .then((summary) =>
             console.log(

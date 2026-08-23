@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -191,6 +191,25 @@ export default function PlatformShippingPage() {
         ? 5000
         : false,
   });
+
+  // Completion toast: when a store's status leaves "running", announce the
+  // outcome — the background apply has no request/response to hang a toast on.
+  const prevStatusesRef = useRef<Record<string, string | null>>({});
+  useEffect(() => {
+    for (const s of storesQ.data?.stores || []) {
+      const prev = prevStatusesRef.current[s.shopDomain];
+      if (prev === "running" && s.lastReconcileStatus !== "running") {
+        toast({
+          title: `Apply ${s.lastReconcileStatus} — ${s.shopDomain}`,
+          description:
+            s.lastReconcileError?.slice(0, 200) ||
+            "Delivery profiles reconciled.",
+          variant: s.lastReconcileStatus === "ok" ? "default" : "destructive",
+        });
+      }
+      prevStatusesRef.current[s.shopDomain] = s.lastReconcileStatus;
+    }
+  }, [storesQ.data, toast]);
 
   const storePatchMutation = useMutation({
     mutationFn: async (payload: {

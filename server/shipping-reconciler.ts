@@ -628,6 +628,35 @@ export async function reconcileShopShipping(
   opts: { dryRun: boolean; source?: string },
 ): Promise<ReconcileSummary> {
   const shop = normalizeMyshopifyShopDomain(shopRaw);
+  if (!opts.dryRun) {
+    // Mark "running" FIRST — before preflight. The operator UI polls this
+    // status; writing it mid-run left a window where the client's refetch saw
+    // the previous status and never armed polling (2026-08 staging apply).
+    await updateStoreShippingSettings(shop, {
+      lastReconcileAt: new Date(),
+      lastReconcileStatus: "running",
+      lastReconcileError: null,
+    });
+    try {
+      return await reconcileShopShippingCore(shop, opts);
+    } catch (e: any) {
+      // Any throw (preflight included) must not strand status on "running" —
+      // that would 409-block future applies and freeze the UI badge.
+      await updateStoreShippingSettings(shop, {
+        lastReconcileAt: new Date(),
+        lastReconcileStatus: "error",
+        lastReconcileError: String(e?.message || e).slice(0, 1000),
+      }).catch(() => {});
+      throw e;
+    }
+  }
+  return reconcileShopShippingCore(shop, opts);
+}
+
+async function reconcileShopShippingCore(
+  shop: string,
+  opts: { dryRun: boolean; source?: string },
+): Promise<ReconcileSummary> {
   const summary: ReconcileSummary = {
     shop,
     dryRun: opts.dryRun,
@@ -746,15 +775,6 @@ export async function reconcileShopShipping(
     summary.status = "noop";
     return summary;
   }
-
-  // Mark the run in progress so the operator UI can poll: a full apply can
-  // outlive the HTTP request (Railway edge 502s after ~5 min while the run
-  // continues server-side), so status is the source of truth, not the response.
-  await updateStoreShippingSettings(shop, {
-    lastReconcileAt: new Date(),
-    lastReconcileStatus: "running",
-    lastReconcileError: null,
-  });
 
   // Table mode must not run the CarrierService — detach participant methods.
   try {
