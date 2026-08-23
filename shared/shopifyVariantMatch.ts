@@ -102,7 +102,9 @@ export function matchShopifyVariantBySizeColor(
     const options = [v.option1, v.option2].filter(Boolean).map((o) => String(o));
     if (options.length === 0) return false;
 
-    let sizeMatch = !sizeNorm;
+    // Empty size is not a wildcard — otherwise Navy + no size picks the
+    // first catalog row (usually Small / the PDP default variant).
+    let sizeMatch = false;
     if (sizeNorm) {
       sizeMatch = options.some((opt) => sizeTokensMatch(opt, sizeName));
     }
@@ -119,7 +121,7 @@ export function matchShopifyVariantBySizeColor(
     if (!title.trim()) return false;
     const parts = title.split(/\s*\/\s*/).map((p) => p.trim()).filter(Boolean);
 
-    let sizeMatch = !sizeNorm;
+    let sizeMatch = false;
     if (sizeNorm) {
       // Prefer last segment as size (Shopify often "Color / Size")
       const last = parts[parts.length - 1] || title;

@@ -7187,6 +7187,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_CART_STATE',
+        ready: false,
+        disabled: true,
+        label: isPhoneCaseProduct ? 'Select a model' : 'Select a size',
+        payload: null,
+      }, '*');
+      return;
+    }
+    if (
+      showFrameColorSelector &&
+      !frameOptionsRedundantWithSizes &&
+      !String(selectedFrameColor || "").trim()
+    ) {
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_CART_STATE',
+        ready: false,
+        disabled: true,
+        label: 'Select a color',
+        payload: null,
+      }, '*');
+      return;
+    }
+
     const rawVariantId = findVariantId();
     if (!rawVariantId) {
       window.parent.postMessage({
@@ -7307,7 +7332,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -8327,6 +8352,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
+    // Never resolve a catalog / URL default variant when the customer has not
+    // picked a required size (reuse-artwork + hoodie left selectedSize blank
+    // and still matched the PDP selectedVariant — Small at the wrong price).
+    if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
+      console.log("[Design Studio] No variant found — size not selected");
+      return null;
+    }
+    if (
+      showFrameColorSelector &&
+      !frameOptionsRedundantWithSizes &&
+      !String(selectedFrameColor || "").trim()
+    ) {
+      console.log("[Design Studio] No variant found — color not selected");
+      return null;
+    }
+
     const hasColors = showFrameColorSelector;
     const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
@@ -8930,6 +8971,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
     skipGalleryPersistRef.current = false;
+
+    if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
+      setVariantError(
+        isPhoneCaseProduct
+          ? "Please select a model before adding to cart."
+          : "Please select a size before adding to cart.",
+      );
+      return;
+    }
+    if (
+      showFrameColorSelector &&
+      !frameOptionsRedundantWithSizes &&
+      !String(selectedFrameColor || "").trim()
+    ) {
+      setVariantError("Please select a color before adding to cart.");
+      return;
+    }
 
     // Product Intelligence: refuse OOS size/colour before shadow resolve / cart.
     if (selectedSize && outOfStockSizeIds.includes(selectedSize)) {
@@ -10782,9 +10840,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       setReuseRegenerateBasePrompt(null);
       if (originalPrompt) setPrompt(originalPrompt);
-      if (!selectedSize && printSizes[0]?.id) {
-        setSelectedSize(printSizes[0].id);
-      }
       if (useAopCustomizer) {
         setAopPendingMotifUrl(abs);
         setAopPatternUrl(null);

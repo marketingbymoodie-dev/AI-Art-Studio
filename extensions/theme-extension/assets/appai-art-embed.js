@@ -1922,6 +1922,8 @@
           atcBtnEl.style.cursor = data.disabled ? 'not-allowed' : 'pointer';
           if (data.payload) {
             atcBtnEl.dataset.payload = JSON.stringify(data.payload);
+          } else {
+            delete atcBtnEl.dataset.payload;
           }
         }
 
@@ -1966,6 +1968,7 @@
     var atcBtn = container.querySelector('#ai-art-atc-btn');
     if (atcBtn) {
       atcBtn.addEventListener('click', function() {
+        if (atcBtn.disabled) return;
         var payloadJson = atcBtn.dataset.payload || '{}';
         var payload;
         try { payload = JSON.parse(payloadJson); } catch(e) { payload = {}; }

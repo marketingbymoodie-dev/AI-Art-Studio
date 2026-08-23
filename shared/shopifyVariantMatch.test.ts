@@ -96,6 +96,16 @@ describe("matchShopifyVariantBySizeColor", () => {
     ).toBeNull();
   });
 
+  it("does not treat an empty size as a match (no silent Small / PDP default)", () => {
+    expect(
+      matchShopifyVariantBySizeColor(baseballCatalog, "", "White/Navy", true, "white_navy"),
+    ).toBeNull();
+    expect(
+      matchShopifyVariantBySizeColor(baseballCatalog, "", "", true, "white_navy"),
+    ).toBeNull();
+    expect(matchShopifyVariantBySizeColor(baseballCatalog, "", "", false)).toBeNull();
+  });
+
   it("allows size-only fallback when product has no color axis", () => {
     const sizeOnly = [
       { id: 1, title: "S", option1: "S", option2: null },
