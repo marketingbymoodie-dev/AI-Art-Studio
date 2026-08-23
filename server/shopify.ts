@@ -549,6 +549,16 @@ if (res.locals.shopify?.session?.shop) {
         embedConfirmedAt: null,
       });
       console.log(`[uninstall-webhook] Marked ${shop} as uninstalled`);
+
+      // Phase 3 shipping cleanup: token is revoked so no Shopify calls — clear
+      // the delivery-profile ID map + flip mode off (Shopify removes app-owned
+      // shipping resources itself). Never block the webhook response.
+      import("./shipping-reconciler")
+        .then((m) => m.clearShopShippingState(shop))
+        .then(() => console.log(`[uninstall-webhook] Cleared shipping state for ${shop}`))
+        .catch((e) =>
+          console.error(`[uninstall-webhook] shipping cleanup failed for ${shop}:`, e?.message || e),
+        );
     }
 
     res.status(200).send("OK");

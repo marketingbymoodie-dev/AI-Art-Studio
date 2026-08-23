@@ -179,6 +179,27 @@ export function resolveVariantForSizeOnly(
   return null;
 }
 
+/**
+ * Loose canonical form for matching keys across the two parallel maps on a
+ * product type: `variantMap` uses id-style keys (`s:heather_grey`,
+ * `14-x-14:default`) while `shopifyVariantIds` uses display labels
+ * (`S:Black`, `14" × 14":default`). Lowercase, alias apparel sizes, map × → x,
+ * then strip everything non-alphanumeric so both spellings collapse to the
+ * same token (`s:heathergrey`, `14x14:default`).
+ */
+export function normalizeVariantKeyLoose(key: string): string {
+  const idx = key.indexOf(":");
+  const rawSize = idx >= 0 ? key.slice(0, idx) : key;
+  const rawColor = idx >= 0 ? key.slice(idx + 1) : "default";
+  const part = (raw: string, isSize: boolean): string => {
+    let s = String(raw || "default").trim().toLowerCase().replace(/×/g, "x");
+    if (isSize) s = normalizeApparelSizeId(s);
+    s = s.replace(/[^a-z0-9]+/g, "");
+    return s || "default";
+  };
+  return `${part(rawSize, true)}:${part(rawColor, false)}`;
+}
+
 export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 100;
 
 /** Count variantMap entries that match the merchant's selected size/color filters. */

@@ -9358,6 +9358,21 @@ ${orientationExtra}
               shadowExpiresAt: oneHourFromNow,
             } as any);
 
+            // Phase 3 shipping: associate the pre-created shadow into its base
+            // variant's delivery profile (no-op unless shop is in table mode).
+            import("./shipping-reconciler")
+              .then((m) =>
+                m.attachVariantToShipping({
+                  shop,
+                  shopifyVariantId: String(shadowVariant.id),
+                  sourceVariantId: String(baseVariantId),
+                  source: "shadow",
+                }),
+              )
+              .catch((e: any) =>
+                console.warn(`[PreShadow] shipping attach failed for ${shadowVariant.id}:`, e?.message),
+              );
+
             console.log(`[PreShadow] jobId=${jobId} shadow product ready — variantId=${shadowVariant.id}`);
           } catch (bgErr: any) {
             console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
@@ -10329,6 +10344,22 @@ ${orientationExtra}
         expiresAt: sixHoursFromNow,
         cartAddedAt: null,
       } as any);
+
+      // 9. Phase 3 shipping: associate the new shadow into its base variant's
+      // delivery profile (no-op unless the shop is in table mode). Fire and
+      // forget — never delays add-to-cart.
+      import("./shipping-reconciler")
+        .then((m) =>
+          m.attachVariantToShipping({
+            shop,
+            shopifyVariantId: String(shadowVariant.id),
+            sourceVariantId: String(variantId),
+            source: "shadow",
+          }),
+        )
+        .catch((e: any) =>
+          console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
+        );
 
       return res.json({ success: true, variantId: String(shadowVariant.id), created: true });
     } catch (error: any) {

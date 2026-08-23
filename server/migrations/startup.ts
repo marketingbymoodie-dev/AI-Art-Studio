@@ -39,6 +39,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customizer_pages",      column: "zero_price_alert_sent_at",    type: "TIMESTAMP" },
   { table: "customizer_pages",      column: "product_group_id",            type: "TEXT" },
   { table: "customizer_pages",      column: "intended_zones",              type: "JSONB" },
+  { table: "shipping_classes",      column: "group_delta_split_threshold_cents", type: "INTEGER" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
   { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
@@ -1542,6 +1543,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "variant_groups_json" text NOT NULL DEFAULT '[]',
         "absolute_cap_cents_override" integer,
         "typical_retail_cents_override" integer,
+        "group_delta_split_threshold_cents" integer,
         "last_fetched_at" timestamp,
         "last_changed_at" timestamp,
         "last_error" text,
@@ -1661,9 +1663,131 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  // ── Phase 3: per-shop delivery-profile reconciler ──────────────────────────
+  {
+    name: "shipping_store_settings",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_settings" (
+        "id" serial PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "shipping_mode" text NOT NULL DEFAULT 'off',
+        "manage_variant_weights" boolean NOT NULL DEFAULT true,
+        "probed_max_rates_per_zone" integer,
+        "probed_at" timestamp,
+        "pinned_fx_rate" text,
+        "pinned_fx_at" timestamp,
+        "last_reconcile_at" timestamp,
+        "last_reconcile_status" text,
+        "last_reconcile_error" text,
+        "last_reconcile_summary_json" text NOT NULL DEFAULT '{}',
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_profiles",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_profiles" (
+        "id" serial PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "profile_key" text NOT NULL,
+        "shipping_class_id" integer NOT NULL,
+        "variant_group" text,
+        "shopify_profile_id" text,
+        "shopify_location_group_id" text,
+        "desired_hash" text,
+        "status" text NOT NULL DEFAULT 'pending',
+        "last_error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_zones",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_zones" (
+        "id" serial PRIMARY KEY,
+        "store_profile_id" integer NOT NULL,
+        "zone_key" text NOT NULL,
+        "shopify_zone_id" text,
+        "countries_json" text NOT NULL DEFAULT '[]',
+        "rest_of_world" boolean NOT NULL DEFAULT false,
+        "desired_hash" text,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_rates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_rates" (
+        "id" serial PRIMARY KEY,
+        "store_zone_id" integer NOT NULL,
+        "band_index" integer NOT NULL,
+        "shopify_method_definition_id" text,
+        "lower_grams" integer NOT NULL,
+        "upper_grams" integer,
+        "price_cents" integer NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_variants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_variants" (
+        "id" serial PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "store_profile_id" integer NOT NULL,
+        "shopify_variant_id" text NOT NULL,
+        "source" text NOT NULL DEFAULT 'base',
+        "pseudo_weight_grams" integer,
+        "weight_written_at" timestamp,
+        "associated_at" timestamp,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "shipping_store_settings_shop_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_settings_shop_uidx"
+      ON "shipping_store_settings" ("shop_domain")`,
+  },
+  {
+    name: "shipping_store_profiles_shop_key_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_profiles_shop_key_uidx"
+      ON "shipping_store_profiles" ("shop_domain", "profile_key")`,
+  },
+  {
+    name: "shipping_store_profiles_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_store_profiles_shop_idx"
+      ON "shipping_store_profiles" ("shop_domain")`,
+  },
+  {
+    name: "shipping_store_zones_profile_key_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_zones_profile_key_uidx"
+      ON "shipping_store_zones" ("store_profile_id", "zone_key")`,
+  },
+  {
+    name: "shipping_store_rates_zone_band_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_rates_zone_band_uidx"
+      ON "shipping_store_rates" ("store_zone_id", "band_index")`,
+  },
+  {
+    name: "shipping_store_variants_shop_variant_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_variants_shop_variant_uidx"
+      ON "shipping_store_variants" ("shop_domain", "shopify_variant_id")`,
+  },
+  {
+    name: "shipping_store_variants_profile_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_store_variants_profile_idx"
+      ON "shipping_store_variants" ("store_profile_id")`,
+  },
   {
     name: "customer_aliases_alias_unique",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "customer_aliases_alias_unique"

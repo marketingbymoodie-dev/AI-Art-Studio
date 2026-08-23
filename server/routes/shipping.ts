@@ -26,6 +26,14 @@ import {
   setShippingTierConfig,
   type VariantGroupDef,
 } from "../shipping-tables";
+import {
+  getStoreShippingSettings,
+  reconcileShopShipping,
+  removeAllShopShippingProfiles,
+  updateStoreShippingSettings,
+} from "../shipping-reconciler";
+import { shippingStoreProfiles, shippingStoreSettings, shippingStoreVariants } from "@shared/schema";
+import { normalizeMyshopifyShopDomain } from "../shopDomain";
 
 type AuthMw = RequestHandler;
 
@@ -400,6 +408,136 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
       return res.status(500).json({ error: e?.message || "Rule update failed" });
     }
   });
+
+  // ── Phase 3: per-store delivery-profile reconciler ─────────────────────────
+
+  /** GET /api/platform/shipping/stores — settings + budget for every known store. */
+  app.get("/api/platform/shipping/stores", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const rows = await db.select().from(shippingStoreSettings);
+      const stores = [];
+      for (const s of rows) {
+        const profiles = await db
+          .select({ id: shippingStoreProfiles.id, status: shippingStoreProfiles.status })
+          .from(shippingStoreProfiles)
+          .where(eq(shippingStoreProfiles.shopDomain, s.shopDomain));
+        const [variantCount] = await db
+          .select({ count: shippingStoreVariants.id })
+          .from(shippingStoreVariants)
+          .where(eq(shippingStoreVariants.shopDomain, s.shopDomain));
+        let summary: Record<string, unknown> = {};
+        try {
+          summary = JSON.parse(s.lastReconcileSummaryJson || "{}");
+        } catch {
+          /* ignore */
+        }
+        stores.push({
+          shopDomain: s.shopDomain,
+          shippingMode: s.shippingMode,
+          manageVariantWeights: s.manageVariantWeights,
+          probedMaxRatesPerZone: s.probedMaxRatesPerZone,
+          lastReconcileAt: s.lastReconcileAt,
+          lastReconcileStatus: s.lastReconcileStatus,
+          lastReconcileError: s.lastReconcileError,
+          mappedProfiles: profiles.length,
+          erroredProfiles: profiles.filter((p) => p.status === "error").length,
+          hasVariants: !!variantCount,
+          /** Budget surfacing (amendment B): used/90, warn at 70. */
+          customProfilesUsed: (summary as any).customProfilesUsed ?? null,
+          profileBudget: 90,
+          profileWarnAt: 70,
+        });
+      }
+      return res.json({ stores });
+    } catch (e: any) {
+      console.error("[shipping-routes] stores failed:", e?.message || e);
+      return res.status(500).json({ error: e?.message || "Stores lookup failed" });
+    }
+  });
+
+  /** PATCH /api/platform/shipping/stores/:shop — mode + weight toggles. */
+  app.patch(
+    "/api/platform/shipping/stores/:shop",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const shop = normalizeMyshopifyShopDomain(String(req.params.shop || ""));
+        if (!shop) return res.status(400).json({ error: "Invalid shop" });
+        const body = req.body ?? {};
+        const patch: Record<string, unknown> = {};
+        if ("shippingMode" in body) {
+          const mode = String(body.shippingMode);
+          if (!["off", "table", "exact"].includes(mode)) {
+            return res.status(400).json({ error: "shippingMode must be off|table|exact" });
+          }
+          patch.shippingMode = mode;
+        }
+        if ("manageVariantWeights" in body) {
+          patch.manageVariantWeights = !!body.manageVariantWeights;
+        }
+        const settings = await updateStoreShippingSettings(shop, patch);
+        return res.json({ ok: true, settings });
+      } catch (e: any) {
+        return res.status(500).json({ error: e?.message || "Store update failed" });
+      }
+    },
+  );
+
+  /**
+   * POST /api/platform/shipping/stores/:shop/reconcile { dryRun }
+   * dryRun=true → plan counts only, no Shopify writes.
+   * dryRun=false → full apply (requires shippingMode=table).
+   */
+  app.post(
+    "/api/platform/shipping/stores/:shop/reconcile",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const shop = normalizeMyshopifyShopDomain(String(req.params.shop || ""));
+        if (!shop) return res.status(400).json({ error: "Invalid shop" });
+        const dryRun = req.body?.dryRun !== false;
+        const summary = await reconcileShopShipping(shop, { dryRun, source: "operator" });
+        return res.json({ ok: summary.errors.length === 0, summary });
+      } catch (e: any) {
+        console.error("[shipping-routes] reconcile failed:", e?.message || e);
+        return res.status(500).json({ error: e?.message || "Reconcile failed" });
+      }
+    },
+  );
+
+  /** POST /api/platform/shipping/stores/:shop/disable — kill switch. */
+  app.post(
+    "/api/platform/shipping/stores/:shop/disable",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      try {
+        const shop = normalizeMyshopifyShopDomain(String(req.params.shop || ""));
+        if (!shop) return res.status(400).json({ error: "Invalid shop" });
+        await updateStoreShippingSettings(shop, { shippingMode: "off" });
+        const removed = await removeAllShopShippingProfiles(shop);
+        return res.json({ ok: true, removedProfiles: removed });
+      } catch (e: any) {
+        return res.status(500).json({ error: e?.message || "Disable failed" });
+      }
+    },
+  );
+
+  /** GET /api/platform/shipping/stores/:shop — one store's settings. */
+  app.get(
+    "/api/platform/shipping/stores/:shop",
+    isAuthenticated,
+    async (req: any, res: Response) => {
+      if (!requirePlatformAdmin(req, res)) return;
+      const shop = normalizeMyshopifyShopDomain(String(req.params.shop || ""));
+      if (!shop) return res.status(400).json({ error: "Invalid shop" });
+      const settings = await getStoreShippingSettings(shop);
+      return res.json({ settings });
+    },
+  );
 
   /** DELETE /api/platform/shipping/rules/:id */
   app.delete("/api/platform/shipping/rules/:id", isAuthenticated, async (req: any, res: Response) => {

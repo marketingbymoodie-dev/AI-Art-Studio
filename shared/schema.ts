@@ -2030,6 +2030,15 @@ export const shippingClasses = pgTable(
     /** Manual per-class overrides for tier evaluation (null = platform defaults). */
     absoluteCapCentsOverride: integer("absolute_cap_cents_override"),
     typicalRetailCentsOverride: integer("typical_retail_cents_override"),
+    /**
+     * Per-class override of BandConfig.groupDeltaSplitThresholdCents (null =
+     * default 200). Interim merge lever for profile-budget pressure: raising it
+     * merges a class's per-group profiles into shared ones (cheaper on the
+     * 99-profile cap, worse tolerance). 493:36 (Framed Vertical, Choice) stays
+     * 6-way split by default — monitor mixed-size framed cart frequency
+     * post-launch before touching this.
+     */
+    groupDeltaSplitThresholdCents: integer("group_delta_split_threshold_cents"),
     lastFetchedAt: timestamp("last_fetched_at"),
     lastChangedAt: timestamp("last_changed_at"),
     lastError: text("last_error"),
@@ -2201,3 +2210,147 @@ export const shippingSyncRuns = pgTable("shipping_sync_runs", {
 });
 
 export type ShippingSyncRun = typeof shippingSyncRuns.$inferSelect;
+
+// ── Phase 3: Shopify delivery-profile reconciler (per-shop) ──────────────────
+
+/** Per-shop shipping sync mode + reconcile bookkeeping. */
+export const shippingStoreSettings = pgTable(
+  "shipping_store_settings",
+  {
+    id: serial("id").primaryKey(),
+    shopDomain: text("shop_domain").notNull(),
+    /**
+     * off   → reconciler never applies (dry-run allowed); checkout unchanged.
+     * table → weight-banded delivery profiles managed by the reconciler.
+     * exact → CarrierService quotes (Exact Mode, later). Mutually exclusive
+     *         with table: table mode must not attach the carrier.
+     */
+    shippingMode: text("shipping_mode").notNull().default("off"),
+    /** When ON, reconciler writes pseudo-weights to app-created variants. */
+    manageVariantWeights: boolean("manage_variant_weights").notNull().default(true),
+    /** Per-shop re-validated rates-per-zone cap (scratch-profile probe on first apply). */
+    probedMaxRatesPerZone: integer("probed_max_rates_per_zone"),
+    probedAt: timestamp("probed_at"),
+    /**
+     * Pinned buffered USD→shop-unit FX rate (string decimal; "1" for USD).
+     * Pinned so daily FX noise does not rewrite every rate; re-pinned only
+     * when drift exceeds SHIPPING_FX_REPIN_DRIFT (default 7.5%).
+     */
+    pinnedFxRate: text("pinned_fx_rate"),
+    pinnedFxAt: timestamp("pinned_fx_at"),
+    lastReconcileAt: timestamp("last_reconcile_at"),
+    /** ok | error | partial */
+    lastReconcileStatus: text("last_reconcile_status"),
+    lastReconcileError: text("last_reconcile_error"),
+    lastReconcileSummaryJson: text("last_reconcile_summary_json").notNull().default("{}"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("shipping_store_settings_shop_uidx").on(table.shopDomain)],
+);
+
+export type ShippingStoreSettings = typeof shippingStoreSettings.$inferSelect;
+
+/** ID map: one app-owned Shopify delivery profile per (shop, profileKey). */
+export const shippingStoreProfiles = pgTable(
+  "shipping_store_profiles",
+  {
+    id: serial("id").primaryKey(),
+    shopDomain: text("shop_domain").notNull(),
+    /** Phase 2 profile key, e.g. "540:99#g4" or "6:99#all". */
+    profileKey: text("profile_key").notNull(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    /** null = shared "#all" profile. */
+    variantGroup: text("variant_group"),
+    shopifyProfileId: text("shopify_profile_id"),
+    shopifyLocationGroupId: text("shopify_location_group_id"),
+    /** Hash of the desired zones+rates+name; matching hash → zones/rates are a no-op. */
+    desiredHash: text("desired_hash"),
+    /** pending | synced | error */
+    status: text("status").notNull().default("pending"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_profiles_shop_key_uidx").on(table.shopDomain, table.profileKey),
+    index("shipping_store_profiles_shop_idx").on(table.shopDomain),
+  ],
+);
+
+export type ShippingStoreProfile = typeof shippingStoreProfiles.$inferSelect;
+
+/** ID map: zones inside an app-owned profile (collapsed country groups / ROW). */
+export const shippingStoreZones = pgTable(
+  "shipping_store_zones",
+  {
+    id: serial("id").primaryKey(),
+    storeProfileId: integer("store_profile_id").notNull(),
+    /** Stable key: "ROW", "BLOCKED", or sha1 of the sorted country list. */
+    zoneKey: text("zone_key").notNull(),
+    shopifyZoneId: text("shopify_zone_id"),
+    countriesJson: text("countries_json").notNull().default("[]"),
+    restOfWorld: boolean("rest_of_world").notNull().default(false),
+    /** Hash of the zone's rate list — skip method-definition writes when equal. */
+    desiredHash: text("desired_hash"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_zones_profile_key_uidx").on(table.storeProfileId, table.zoneKey),
+  ],
+);
+
+export type ShippingStoreZone = typeof shippingStoreZones.$inferSelect;
+
+/** ID map: weight-band method definitions inside a zone. */
+export const shippingStoreRates = pgTable(
+  "shipping_store_rates",
+  {
+    id: serial("id").primaryKey(),
+    storeZoneId: integer("store_zone_id").notNull(),
+    /** 0-based band index; the final open band is the highest index. */
+    bandIndex: integer("band_index").notNull(),
+    shopifyMethodDefinitionId: text("shopify_method_definition_id"),
+    lowerGrams: integer("lower_grams").notNull(),
+    /** null = unbounded open band. */
+    upperGrams: integer("upper_grams"),
+    /** Price in the SHOP's currency minor units (post-FX). */
+    priceCents: integer("price_cents").notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_rates_zone_band_uidx").on(table.storeZoneId, table.bandIndex),
+  ],
+);
+
+export type ShippingStoreRate = typeof shippingStoreRates.$inferSelect;
+
+/**
+ * Variants the reconciler has associated into an app profile (base + shadow).
+ * Needed for GC / kill-switch dissociation and idempotent weight writes.
+ */
+export const shippingStoreVariants = pgTable(
+  "shipping_store_variants",
+  {
+    id: serial("id").primaryKey(),
+    shopDomain: text("shop_domain").notNull(),
+    storeProfileId: integer("store_profile_id").notNull(),
+    /** Numeric Shopify variant id (no gid prefix). */
+    shopifyVariantId: text("shopify_variant_id").notNull(),
+    /** base | shadow */
+    source: text("source").notNull().default("base"),
+    pseudoWeightGrams: integer("pseudo_weight_grams"),
+    weightWrittenAt: timestamp("weight_written_at"),
+    associatedAt: timestamp("associated_at"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_variants_shop_variant_uidx").on(
+      table.shopDomain,
+      table.shopifyVariantId,
+    ),
+    index("shipping_store_variants_profile_idx").on(table.storeProfileId),
+  ],
+);
+
+export type ShippingStoreVariant = typeof shippingStoreVariants.$inferSelect;

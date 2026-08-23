@@ -29,6 +29,7 @@ import {
   type ShippingClass,
   type ShippingZoneRule,
 } from "@shared/schema";
+import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -542,9 +543,14 @@ async function rebuildVariantShipping(
     } catch {
       continue;
     }
-    let shopifyIds: Record<string, unknown> = {};
+    // shopifyVariantIds is keyed by display labels ("S:Black", `14" × 14":default`)
+    // while variantMap uses id keys ("s:black", "14-x-14:default") — bridge via
+    // the loose normalized form or the ids never match.
+    const shopifyIdsByLooseKey = new Map<string, string>();
     if (p.shopifyVariantIds && typeof p.shopifyVariantIds === "object") {
-      shopifyIds = p.shopifyVariantIds as Record<string, unknown>;
+      for (const [label, vid] of Object.entries(p.shopifyVariantIds as Record<string, unknown>)) {
+        if (vid != null) shopifyIdsByLooseKey.set(normalizeVariantKeyLoose(label), String(vid));
+      }
     }
     let matched = 0;
     for (const [key, entry] of Object.entries(map)) {
@@ -558,7 +564,7 @@ async function rebuildVariantShipping(
         productTypeId: p.id,
         sizeColorKey: key,
         printifyVariantId: pvid,
-        shopifyVariantId: shopifyIds[key] != null ? String(shopifyIds[key]) : null,
+        shopifyVariantId: shopifyIdsByLooseKey.get(normalizeVariantKeyLoose(key)) ?? null,
         variantGroup: group,
         updatedAt: new Date(),
       });
@@ -1075,6 +1081,15 @@ export async function runShippingTablesSync(opts: {
     console.log(
       `[shipping-tables] sync ${source} done: checked=${results.length} changed=${changed} failed=${failed}`,
     );
+    // Phase 3: reconcile table-mode shops after every sync — pushes new bands
+    // when tables changed, and even on no-change runs handles membership drift
+    // + GC of profiles whose last product left (amendment A). Idempotent and
+    // cheap when hashes match. Dynamic import avoids a module cycle.
+    import("./shipping-reconciler")
+      .then((m) => m.reconcileAllTableModeShops(`tables-sync:${source}`))
+      .catch((e) =>
+        console.error("[shipping-tables] post-sync reconcile failed:", e?.message || e),
+      );
     return { ok: true, runId: run.id, checked: results.length, changed, failed, results };
   } catch (e: any) {
     await db

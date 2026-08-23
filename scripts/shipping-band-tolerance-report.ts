@@ -55,7 +55,9 @@ type ClassData = {
 
 async function loadClasses(): Promise<ClassData[]> {
   const clsRes = await db.execute(sql`
-    select id, blueprint_id, provider_id, name, variant_groups_json from shipping_classes
+    select id, blueprint_id, provider_id, name, variant_groups_json,
+           group_delta_split_threshold_cents
+    from shipping_classes
     where last_error is null order by id`);
   const classes = ((clsRes as any).rows ?? clsRes) as any[];
   const out: ClassData[] = [];
@@ -85,13 +87,21 @@ async function loadClasses(): Promise<ClassData[]> {
     const shippableZones = new Set<string>(
       rates.filter((r) => r.shippable).map((r) => r.country_code),
     );
+    // Per-class merge lever (493:36 monitor note): overrides the default
+    // group-delta split threshold when set. The simulator below still runs the
+    // platform default config; no class sets an override today, and the Phase 3
+    // desired-state generator is where per-class configs are applied for real.
+    const classConfig: BandConfig =
+      cls.group_delta_split_threshold_cents != null
+        ? { ...DEFAULT_BAND_CONFIG, groupDeltaSplitThresholdCents: cls.group_delta_split_threshold_cents }
+        : DEFAULT_BAND_CONFIG;
     out.push({
       classKey,
       name: cls.name,
       table,
       excluded,
       shippableZones,
-      profileCount: planClassProfiles(table, excluded).length,
+      profileCount: planClassProfiles(table, excluded, classConfig).length,
     });
   }
   return out;

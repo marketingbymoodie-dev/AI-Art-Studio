@@ -31,6 +31,15 @@ export type ClassRateTable = {
 };
 
 export type BandConfig = {
+  /**
+   * Closed weight bands per profile zone; the engine always appends one open
+   * band on top, so a zone writes maxBands + 1 Shopify method definitions.
+   * Capped by the probed rates-per-zone limit (R2 probe 2026-08-23 on the
+   * staging demo store: 40 same-named weight rates in one zone accepted and
+   * persisted, 41 zones per profile, no errors — the "12 rates" figure in
+   * Printify/Printful docs is their publisher convention, not a Shopify cap).
+   * The reconciler still re-validates the cap per target shop on first apply.
+   */
   maxBands: number;
   /** Split into per-group profiles when ref-zone delta spread exceeds this. */
   groupDeltaSplitThresholdCents: number;
@@ -46,7 +55,7 @@ export type BandConfig = {
 };
 
 export const DEFAULT_BAND_CONFIG: BandConfig = {
-  maxBands: 12,
+  maxBands: 20,
   groupDeltaSplitThresholdCents: 200,
   zoneScaleDivergenceMax: 1.15,
   rounding: "up95",

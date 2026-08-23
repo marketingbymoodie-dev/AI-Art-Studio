@@ -252,15 +252,18 @@ describe("golden bp540:99 framed vertical (Choice)", () => {
   });
 
   it("caps runaway carts in the open band, still ≥ true cost", () => {
+    // Quantity pinned above maxBands so this stays the deterministic open-band
+    // coverage regardless of the configured band count (maxBands=20 post-probe).
+    const qty = DEFAULT_BAND_CONFIG.maxBands + 3;
     const sim = simulateCart(
-      [{ classKey: framed.classKey, group: "g1", quantity: 15 }],
+      [{ classKey: framed.classKey, group: "g1", quantity: qty }],
       "US",
       tables,
       NONE,
       exclusions,
     ) as SimOk;
     expect(sim.hitOpenBand).toBe(true);
-    expect(sim.trueCents).toBe(1189 + 14 * 599);
+    expect(sim.trueCents).toBe(1189 + (qty - 1) * 599);
     expect(sim.chargedCents).toBeGreaterThanOrEqual(sim.trueCents);
   });
 });
@@ -447,10 +450,13 @@ describe(`property harness (seed ${SEED}, ${ITERATIONS} carts)`, () => {
         allowedOvershootCents(sim95, DEFAULT_BAND_CONFIG),
       );
     }
-    // The harness must exercise all three outcomes.
+    // The harness must exercise ok and blocked. With maxBands=20 (post-probe)
+    // the spec cart profile (≤15 units) rarely reaches the open band — heavy
+    // groups on shared profiles can still hit it, so it is tracked but not
+    // required; deterministic open-band coverage lives in the runaway golden.
     expect(ok).toBeGreaterThan(ITERATIONS / 2);
     expect(blocked).toBeGreaterThan(0);
-    expect(openBand).toBeGreaterThan(0);
+    expect(openBand).toBeGreaterThanOrEqual(0);
   });
 
   it("same-group carts on single-group profiles are penny-exact (rounding none)", () => {

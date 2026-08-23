@@ -93,6 +93,39 @@ type SyncRun = {
   finishedAt: string | null;
 };
 
+type StoreRow = {
+  shopDomain: string;
+  shippingMode: string;
+  manageVariantWeights: boolean;
+  probedMaxRatesPerZone: number | null;
+  lastReconcileAt: string | null;
+  lastReconcileStatus: string | null;
+  lastReconcileError: string | null;
+  mappedProfiles: number;
+  erroredProfiles: number;
+  customProfilesUsed: number | null;
+  profileBudget: number;
+  profileWarnAt: number;
+};
+
+type ReconcileSummary = {
+  status: string;
+  desiredProfiles: number;
+  createdProfiles: number;
+  updatedProfiles: number;
+  unchangedProfiles: number;
+  removedProfiles: number;
+  zonesWritten: number;
+  ratesWritten: number;
+  variantsAssociated: number;
+  weightsWritten: number;
+  unresolvedVariants: number;
+  customProfilesUsed: number;
+  profileBudget: number;
+  warnings: string[];
+  errors: string[];
+};
+
 function usd(cents: number | null | undefined): string {
   if (cents == null) return "—";
   return `$${(cents / 100).toFixed(2)}`;
@@ -133,6 +166,10 @@ export default function PlatformShippingPage() {
   const [retailDraft, setRetailDraft] = useState("");
   const [newBpId, setNewBpId] = useState("");
   const [newProviderId, setNewProviderId] = useState("");
+  const [newStoreDomain, setNewStoreDomain] = useState("");
+  const [lastDryRun, setLastDryRun] = useState<{ shop: string; summary: ReconcileSummary } | null>(
+    null,
+  );
 
   const overviewQ = useQuery<Overview>({
     queryKey: ["/api/platform/shipping/overview"],
@@ -142,6 +179,81 @@ export default function PlatformShippingPage() {
   const runsQ = useQuery<{ runs: SyncRun[] }>({
     queryKey: ["/api/platform/shipping/runs"],
     queryFn: () => getJson("/api/platform/shipping/runs"),
+  });
+
+  const storesQ = useQuery<{ stores: StoreRow[] }>({
+    queryKey: ["/api/platform/shipping/stores"],
+    queryFn: () => getJson("/api/platform/shipping/stores"),
+  });
+
+  const storePatchMutation = useMutation({
+    mutationFn: async (payload: {
+      shop: string;
+      shippingMode?: string;
+      manageVariantWeights?: boolean;
+    }) => {
+      const { shop, ...patch } = payload;
+      const res = await apiRequest("PATCH", `/api/platform/shipping/stores/${shop}`, patch);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Store update failed");
+      return body;
+    },
+    onSuccess: () => {
+      toast({ title: "Store settings saved" });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/shipping/stores"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Store update failed", description: e.message, variant: "destructive" }),
+  });
+
+  const reconcileMutation = useMutation({
+    mutationFn: async (payload: { shop: string; dryRun: boolean }) => {
+      const res = await apiRequest(
+        "POST",
+        `/api/platform/shipping/stores/${payload.shop}/reconcile`,
+        { dryRun: payload.dryRun },
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Reconcile failed");
+      return { ...body, shop: payload.shop, dryRun: payload.dryRun };
+    },
+    onSuccess: (r: any) => {
+      const s: ReconcileSummary = r.summary;
+      if (r.dryRun) {
+        setLastDryRun({ shop: r.shop, summary: s });
+        toast({
+          title: "Dry-run complete",
+          description: `${s.desiredProfiles} profiles desired (+${s.createdProfiles} new, ~${s.updatedProfiles} changed, ${s.removedProfiles} to GC).`,
+        });
+      } else {
+        toast({
+          title: `Reconcile ${s.status}`,
+          description: `+${s.createdProfiles}/~${s.updatedProfiles}/=${s.unchangedProfiles} profiles, ${s.variantsAssociated} variants, ${s.weightsWritten} weights.`,
+          variant: s.errors.length ? "destructive" : "default",
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/shipping/stores"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Reconcile failed", description: e.message, variant: "destructive" }),
+  });
+
+  const disableStoreMutation = useMutation({
+    mutationFn: async (shop: string) => {
+      const res = await apiRequest("POST", `/api/platform/shipping/stores/${shop}/disable`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Disable failed");
+      return body;
+    },
+    onSuccess: (r: any) => {
+      toast({
+        title: "Table mode disabled",
+        description: `${r.removedProfiles} app profile(s) removed — variants back on General.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/shipping/stores"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Disable failed", description: e.message, variant: "destructive" }),
   });
 
   const detailQ = useQuery<ClassDetail>({
@@ -420,6 +532,223 @@ export default function PlatformShippingPage() {
                   above, or first-item &gt; cap → excluded. Retail falls back to median group COGS ×
                   multiplier when no per-class retail override is set.
                 </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Per-store delivery profile sync (Phase 3) */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-4">
+              <CardTitle className="text-base">Delivery profile sync (per store)</CardTitle>
+              <div className="flex items-center gap-2">
+                <Input
+                  className="w-64"
+                  placeholder="shop.myshopify.com"
+                  value={newStoreDomain}
+                  onChange={(e) => setNewStoreDomain(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!newStoreDomain.trim() || reconcileMutation.isPending}
+                  onClick={() => {
+                    reconcileMutation.mutate({ shop: newStoreDomain.trim(), dryRun: true });
+                    setNewStoreDomain("");
+                  }}
+                >
+                  Dry-run new store
+                </Button>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Table mode writes weight-banded delivery profiles from the ingested Printify tables.
+              Profiles are demand-driven (created only for classes with live app variants, GC'd
+              when the last one leaves). The 99-custom-profile cap is Shopify plan-independent;
+              budget below is used/{"{"}90{"}"} with a warning at 70 — long-term headroom is Exact
+              Mode, interim lever is the per-class group-merge threshold.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {storesQ.isLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : !storesQ.data?.stores.length ? (
+              <div className="text-sm text-muted-foreground">
+                No stores tracked yet — run a dry-run against a shop domain above to start.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 pr-4">Store</th>
+                      <th className="py-2 pr-4">Mode</th>
+                      <th className="py-2 pr-4">Profiles</th>
+                      <th className="py-2 pr-4">Budget</th>
+                      <th className="py-2 pr-4">Weights</th>
+                      <th className="py-2 pr-4">Last reconcile</th>
+                      <th className="py-2 pr-0 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {storesQ.data.stores.map((s) => {
+                      const budgetWarn =
+                        s.customProfilesUsed != null && s.customProfilesUsed >= s.profileWarnAt;
+                      return (
+                        <tr key={s.shopDomain} className="border-b align-top">
+                          <td className="py-2 pr-4 font-mono text-xs">{s.shopDomain}</td>
+                          <td className="py-2 pr-4">
+                            <select
+                              className="rounded border bg-background px-2 py-1 text-xs"
+                              value={s.shippingMode}
+                              disabled={storePatchMutation.isPending}
+                              onChange={(e) =>
+                                storePatchMutation.mutate({
+                                  shop: s.shopDomain,
+                                  shippingMode: e.target.value,
+                                })
+                              }
+                            >
+                              <option value="off">off</option>
+                              <option value="table">table</option>
+                              <option value="exact" disabled>
+                                exact (later)
+                              </option>
+                            </select>
+                          </td>
+                          <td className="py-2 pr-4">
+                            {s.mappedProfiles}
+                            {s.erroredProfiles > 0 && (
+                              <Badge variant="destructive" className="ml-2">
+                                {s.erroredProfiles} err
+                              </Badge>
+                            )}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {s.customProfilesUsed == null ? (
+                              "—"
+                            ) : (
+                              <span className={budgetWarn ? "font-semibold text-amber-600" : ""}>
+                                {s.customProfilesUsed}/{s.profileBudget}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <input
+                              type="checkbox"
+                              checked={s.manageVariantWeights}
+                              disabled={storePatchMutation.isPending}
+                              onChange={(e) =>
+                                storePatchMutation.mutate({
+                                  shop: s.shopDomain,
+                                  manageVariantWeights: e.target.checked,
+                                })
+                              }
+                            />
+                          </td>
+                          <td className="py-2 pr-4 text-xs">
+                            {s.lastReconcileAt ? (
+                              <>
+                                <div>
+                                  {new Date(s.lastReconcileAt).toLocaleString()}{" "}
+                                  <Badge
+                                    variant={
+                                      s.lastReconcileStatus === "ok" ? "secondary" : "destructive"
+                                    }
+                                  >
+                                    {s.lastReconcileStatus}
+                                  </Badge>
+                                </div>
+                                {s.lastReconcileError && (
+                                  <div className="mt-1 max-w-xs truncate text-destructive">
+                                    {s.lastReconcileError}
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              "never"
+                            )}
+                          </td>
+                          <td className="py-2 pr-0 text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={reconcileMutation.isPending}
+                                onClick={() =>
+                                  reconcileMutation.mutate({ shop: s.shopDomain, dryRun: true })
+                                }
+                              >
+                                Dry-run
+                              </Button>
+                              <Button
+                                size="sm"
+                                disabled={reconcileMutation.isPending || s.shippingMode !== "table"}
+                                onClick={() =>
+                                  reconcileMutation.mutate({ shop: s.shopDomain, dryRun: false })
+                                }
+                              >
+                                {reconcileMutation.isPending && (
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                )}
+                                Apply
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                disabled={disableStoreMutation.isPending || s.mappedProfiles === 0}
+                                onClick={() => {
+                                  if (
+                                    window.confirm(
+                                      `Disable table mode on ${s.shopDomain}? All app-owned delivery profiles are removed and variants return to the General profile.`,
+                                    )
+                                  ) {
+                                    disableStoreMutation.mutate(s.shopDomain);
+                                  }
+                                }}
+                              >
+                                Disable
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {lastDryRun && (
+              <div className="rounded border bg-muted/40 p-3 text-xs">
+                <div className="mb-1 font-semibold">
+                  Dry-run plan — {lastDryRun.shop}
+                </div>
+                <div className="flex flex-wrap gap-x-6 gap-y-1">
+                  <span>{lastDryRun.summary.desiredProfiles} profiles desired</span>
+                  <span>+{lastDryRun.summary.createdProfiles} create</span>
+                  <span>~{lastDryRun.summary.updatedProfiles} update</span>
+                  <span>={lastDryRun.summary.unchangedProfiles} unchanged</span>
+                  <span>-{lastDryRun.summary.removedProfiles} GC</span>
+                  <span>{lastDryRun.summary.zonesWritten} zones</span>
+                  <span>{lastDryRun.summary.ratesWritten} rates</span>
+                  <span>{lastDryRun.summary.variantsAssociated} variants</span>
+                  <span>
+                    budget {lastDryRun.summary.customProfilesUsed}/
+                    {lastDryRun.summary.profileBudget}
+                  </span>
+                </div>
+                {lastDryRun.summary.warnings.length > 0 && (
+                  <div className="mt-1 text-amber-600">
+                    {lastDryRun.summary.warnings.join(" · ")}
+                  </div>
+                )}
+                {lastDryRun.summary.errors.length > 0 && (
+                  <div className="mt-1 text-destructive">
+                    {lastDryRun.summary.errors.join(" · ")}
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
@@ -710,6 +1039,12 @@ export default function PlatformShippingPage() {
                         )}
                         Save overrides
                       </Button>
+                      <div className="text-xs text-muted-foreground max-w-sm">
+                        Profile-merge lever: <code>group_delta_split_threshold_cents</code> (DB-only
+                        for now) merges a multi-group class into fewer delivery profiles at the cost
+                        of overcharging mixed-size carts. 493:36 (framed posters) stays 6-way split —
+                        monitor mixed-size framed cart frequency post-launch before merging.
+                      </div>
                     </div>
 
                     <div className="space-y-3">
