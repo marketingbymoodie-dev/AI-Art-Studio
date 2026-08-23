@@ -1526,6 +1526,139 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  // ── Shipping Coverage Service (Printify table ingestion + geo-gating) ──────
+  {
+    name: "shipping_classes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_classes" (
+        "id" serial PRIMARY KEY,
+        "blueprint_id" integer NOT NULL,
+        "provider_id" integer NOT NULL,
+        "name" text NOT NULL DEFAULT '',
+        "shipping_method" text NOT NULL DEFAULT 'standard',
+        "table_hash" text,
+        "variant_groups_json" text NOT NULL DEFAULT '[]',
+        "absolute_cap_cents_override" integer,
+        "typical_retail_cents_override" integer,
+        "last_fetched_at" timestamp,
+        "last_changed_at" timestamp,
+        "last_error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_rates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_rates" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "country_code" text NOT NULL,
+        "variant_group" text NOT NULL,
+        "first_item_cents" integer NOT NULL,
+        "additional_cents" integer NOT NULL,
+        "currency" text NOT NULL DEFAULT 'USD',
+        "shippable" boolean NOT NULL DEFAULT TRUE,
+        "tier" text NOT NULL DEFAULT 'normal',
+        "ratio_bp" integer,
+        "typical_retail_cents" integer,
+        "tier_reason" text,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "variant_shipping",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "variant_shipping" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "product_type_id" integer NOT NULL,
+        "size_color_key" text NOT NULL,
+        "printify_variant_id" text NOT NULL,
+        "shopify_variant_id" text,
+        "variant_group" text NOT NULL,
+        "pseudo_weight_grams" integer,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_table_snapshots",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_table_snapshots" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "table_hash" text NOT NULL,
+        "raw_json" text NOT NULL,
+        "fetched_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_rate_audit",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_rate_audit" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "sync_run_id" integer,
+        "country_code" text,
+        "variant_group" text,
+        "change_type" text NOT NULL,
+        "old_value" text,
+        "new_value" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_zone_rules",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_zone_rules" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL DEFAULT 0,
+        "country_code" text NOT NULL,
+        "action" text NOT NULL,
+        "note" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_coverage",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_coverage" (
+        "id" serial PRIMARY KEY,
+        "product_type_id" integer NOT NULL,
+        "country_code" text NOT NULL,
+        "shippable" boolean NOT NULL,
+        "tier" text NOT NULL,
+        "first_item_cents" integer,
+        "additional_cents" integer,
+        "shipping_class_id" integer NOT NULL,
+        "table_hash" text,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_sync_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_sync_runs" (
+        "id" serial PRIMARY KEY,
+        "source" text NOT NULL DEFAULT 'manual',
+        "status" text NOT NULL DEFAULT 'running',
+        "classes_checked" integer NOT NULL DEFAULT 0,
+        "classes_changed" integer NOT NULL DEFAULT 0,
+        "classes_failed" integer NOT NULL DEFAULT 0,
+        "summary_json" text NOT NULL DEFAULT '{}',
+        "error" text,
+        "started_at" timestamp DEFAULT NOW() NOT NULL,
+        "finished_at" timestamp
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -1871,6 +2004,56 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "merchant_pack_purchases_shop_idx",
     sql: `CREATE INDEX IF NOT EXISTS "merchant_pack_purchases_shop_idx"
       ON "merchant_pack_purchases" ("shop_domain", "created_at")`,
+  },
+  {
+    name: "shipping_classes_bp_provider_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_classes_bp_provider_uidx"
+      ON "shipping_classes" ("blueprint_id", "provider_id")`,
+  },
+  {
+    name: "shipping_rates_class_country_group_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_rates_class_country_group_uidx"
+      ON "shipping_rates" ("shipping_class_id", "country_code", "variant_group")`,
+  },
+  {
+    name: "shipping_rates_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_rates_class_idx"
+      ON "shipping_rates" ("shipping_class_id")`,
+  },
+  {
+    name: "variant_shipping_product_variant_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "variant_shipping_product_variant_uidx"
+      ON "variant_shipping" ("product_type_id", "printify_variant_id")`,
+  },
+  {
+    name: "variant_shipping_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "variant_shipping_class_idx"
+      ON "variant_shipping" ("shipping_class_id")`,
+  },
+  {
+    name: "shipping_table_snapshots_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_table_snapshots_class_idx"
+      ON "shipping_table_snapshots" ("shipping_class_id", "fetched_at")`,
+  },
+  {
+    name: "shipping_rate_audit_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_rate_audit_class_idx"
+      ON "shipping_rate_audit" ("shipping_class_id", "created_at")`,
+  },
+  {
+    name: "shipping_zone_rules_class_country_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_zone_rules_class_country_uidx"
+      ON "shipping_zone_rules" ("shipping_class_id", "country_code")`,
+  },
+  {
+    name: "shipping_coverage_product_country_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_coverage_product_country_uidx"
+      ON "shipping_coverage" ("product_type_id", "country_code")`,
+  },
+  {
+    name: "shipping_coverage_country_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_coverage_country_idx"
+      ON "shipping_coverage" ("country_code", "shippable")`,
   },
 ];
 

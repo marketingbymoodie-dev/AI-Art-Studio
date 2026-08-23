@@ -21,6 +21,7 @@ import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
 import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
+import PlatformShippingPage from "@/pages/platform-shipping";
 import PlatformPricingModellerPage from "@/pages/admin/platform-pricing-modeller";
 import NotFound from "@/pages/not-found";
 
@@ -96,6 +97,7 @@ function AppRouter() {
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
+      <Route path="/admin/platform/shipping" component={PlatformShippingPage} />
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
       <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/landing" component={PlatformLandingPage} />

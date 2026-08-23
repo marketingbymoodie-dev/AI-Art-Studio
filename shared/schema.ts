@@ -1996,3 +1996,200 @@ export const creatorCustomerShopVisits = pgTable(
 );
 
 export type CreatorCustomerShopVisit = typeof creatorCustomerShopVisits.$inferSelect;
+
+// ── Shipping Coverage Service (Printify table ingestion + geo-gating) ─────────
+// See docs/Shipping-rates-plan/shipping-rates-and-geo-gating-spec.md.
+// All money columns are USD cents (Printify v2 ceiling table). Standard tier only.
+
+/** One (blueprint, print provider) pair = one shipping class. */
+export const shippingClasses = pgTable(
+  "shipping_classes",
+  {
+    id: serial("id").primaryKey(),
+    blueprintId: integer("blueprint_id").notNull(),
+    providerId: integer("provider_id").notNull(),
+    name: text("name").notNull().default(""),
+    /** Printify shipping method actually ingested (e.g. "standard"). */
+    shippingMethod: text("shipping_method").notNull().default("standard"),
+    tableHash: text("table_hash"),
+    /**
+     * Cross-zone variant groups (JSON): [{ group: "g1", label: "11\" x 14\"…",
+     * printifyVariantIds: [..] }] sorted cheapest-first by US first-item rate.
+     * Two variants share a group iff their (first, additional) pair matches in
+     * EVERY zone of the table.
+     */
+    variantGroupsJson: text("variant_groups_json").notNull().default("[]"),
+    /** Manual per-class overrides for tier evaluation (null = platform defaults). */
+    absoluteCapCentsOverride: integer("absolute_cap_cents_override"),
+    typicalRetailCentsOverride: integer("typical_retail_cents_override"),
+    lastFetchedAt: timestamp("last_fetched_at"),
+    lastChangedAt: timestamp("last_changed_at"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_classes_bp_provider_uidx").on(table.blueprintId, table.providerId),
+  ],
+);
+
+export type ShippingClass = typeof shippingClasses.$inferSelect;
+
+/** Normalised per-zone per-variant-group rate with exclusion-tier verdict. */
+export const shippingRates = pgTable(
+  "shipping_rates",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    /** ISO 3166-1 alpha-2, or "ROW" for rest-of-world. */
+    countryCode: text("country_code").notNull(),
+    /** Cross-zone variant group key ("g1"…), never null — single-group classes use "g1". */
+    variantGroup: text("variant_group").notNull(),
+    firstItemCents: integer("first_item_cents").notNull(),
+    additionalCents: integer("additional_cents").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    shippable: boolean("shippable").notNull().default(true),
+    /** normal | warned | excluded (spec 0.4 tiers). */
+    tier: text("tier").notNull().default("normal"),
+    /** Diagnostics: firstItem / typicalRetail in basis points; null when retail unknown. */
+    ratioBp: integer("ratio_bp"),
+    /** Typical retail used for the ratio (median group retail or COGS fallback). */
+    typicalRetailCents: integer("typical_retail_cents"),
+    /** Why this tier: threshold | absolute_cap | manual_block | manual_allow | no_retail. */
+    tierReason: text("tier_reason"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_rates_class_country_group_uidx").on(
+      table.shippingClassId,
+      table.countryCode,
+      table.variantGroup,
+    ),
+    index("shipping_rates_class_idx").on(table.shippingClassId),
+  ],
+);
+
+export type ShippingRate = typeof shippingRates.$inferSelect;
+
+/** Our catalogue variant → shipping class/group mapping (+ Phase 2 pseudo-weight). */
+export const variantShipping = pgTable(
+  "variant_shipping",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    productTypeId: integer("product_type_id").notNull(),
+    /** variantMap key on the product type, e.g. "sizeId:colorId". */
+    sizeColorKey: text("size_color_key").notNull(),
+    printifyVariantId: text("printify_variant_id").notNull(),
+    shopifyVariantId: text("shopify_variant_id"),
+    variantGroup: text("variant_group").notNull(),
+    /** Phase 2: additionalCents in the reference zone (1 gram = 1 cent). */
+    pseudoWeightGrams: integer("pseudo_weight_grams"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("variant_shipping_product_variant_uidx").on(
+      table.productTypeId,
+      table.printifyVariantId,
+    ),
+    index("variant_shipping_class_idx").on(table.shippingClassId),
+  ],
+);
+
+export type VariantShipping = typeof variantShipping.$inferSelect;
+
+/** Raw Printify table snapshots (one per hash change) for audit/replay. */
+export const shippingTableSnapshots = pgTable(
+  "shipping_table_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    tableHash: text("table_hash").notNull(),
+    rawJson: text("raw_json").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [index("shipping_table_snapshots_class_idx").on(table.shippingClassId, table.fetchedAt)],
+);
+
+export type ShippingTableSnapshot = typeof shippingTableSnapshots.$inferSelect;
+
+/** Audit log: every rate/zone/group/tier change from a sync (spec 0.1). */
+export const shippingRateAudit = pgTable(
+  "shipping_rate_audit",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    syncRunId: integer("sync_run_id"),
+    countryCode: text("country_code"),
+    variantGroup: text("variant_group"),
+    /** class_added | rate_changed | zone_added | zone_removed | grouping_changed | tier_changed */
+    changeType: text("change_type").notNull(),
+    oldValue: text("old_value"),
+    newValue: text("new_value"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("shipping_rate_audit_class_idx").on(table.shippingClassId, table.createdAt)],
+);
+
+export type ShippingRateAudit = typeof shippingRateAudit.$inferSelect;
+
+/** Manual per-class (or global, shippingClassId=0) country block/allow overrides. */
+export const shippingZoneRules = pgTable(
+  "shipping_zone_rules",
+  {
+    id: serial("id").primaryKey(),
+    /** 0 = applies to every class. */
+    shippingClassId: integer("shipping_class_id").notNull().default(0),
+    countryCode: text("country_code").notNull(),
+    /** block | allow — overrides tier thresholds in both directions. */
+    action: text("action").notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_zone_rules_class_country_uidx").on(table.shippingClassId, table.countryCode),
+  ],
+);
+
+export type ShippingZoneRule = typeof shippingZoneRules.$inferSelect;
+
+/** Materialised coverage matrix: (product, country) → shippable/tier/from-price. */
+export const shippingCoverage = pgTable(
+  "shipping_coverage",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id").notNull(),
+    countryCode: text("country_code").notNull(),
+    shippable: boolean("shippable").notNull(),
+    /** normal | warned | excluded — best (least severe) tier among the product's shippable groups. */
+    tier: text("tier").notNull(),
+    /** "from $X" price: min first-item cents among the product's shippable groups. */
+    firstItemCents: integer("first_item_cents"),
+    additionalCents: integer("additional_cents"),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    tableHash: text("table_hash"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_coverage_product_country_uidx").on(table.productTypeId, table.countryCode),
+    index("shipping_coverage_country_idx").on(table.countryCode, table.shippable),
+  ],
+);
+
+export type ShippingCoverage = typeof shippingCoverage.$inferSelect;
+
+/** One shipping-tables sync run (nightly | boot | manual | seed). */
+export const shippingSyncRuns = pgTable("shipping_sync_runs", {
+  id: serial("id").primaryKey(),
+  source: text("source").notNull().default("manual"),
+  status: text("status").notNull().default("running"), // running | complete | failed
+  classesChecked: integer("classes_checked").notNull().default(0),
+  classesChanged: integer("classes_changed").notNull().default(0),
+  classesFailed: integer("classes_failed").notNull().default(0),
+  summaryJson: text("summary_json").notNull().default("{}"),
+  error: text("error"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+});
+
+export type ShippingSyncRun = typeof shippingSyncRuns.$inferSelect;

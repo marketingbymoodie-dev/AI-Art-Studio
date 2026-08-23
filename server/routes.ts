@@ -24128,6 +24128,11 @@ ${orientationExtra}
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   const { registerCreatorMarketplaceRoutes } = await import("./routes/creators");
   registerCreatorMarketplaceRoutes(app, { isAuthenticated });
+  const { registerShippingRoutes } = await import("./routes/shipping");
+  registerShippingRoutes(app, { isAuthenticated });
+  // Shipping Coverage Service: boot catch-up (lastRunAt-guarded) + nightly diff sync.
+  const { scheduleShippingTablesSync } = await import("./shipping-tables");
+  scheduleShippingTablesSync();
   const { registerCreatorPortalRoutes } = await import("./routes/creator-portal");
   registerCreatorPortalRoutes(app);
   const { registerSupportRoutes } = await import("./routes/support");
