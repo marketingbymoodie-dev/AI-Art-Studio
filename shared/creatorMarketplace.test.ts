@@ -46,6 +46,11 @@ describe("normalizeCreatorUsername", () => {
     expect(normalizeCreatorUsername("admin")).toBeNull();
     expect(normalizeCreatorUsername("checkout")).toBeNull();
     expect(normalizeCreatorUsername("shop")).toBeNull();
+    expect(normalizeCreatorUsername("account")).toBeNull();
+    expect(normalizeCreatorUsername("accounts")).toBeNull();
+    expect(normalizeCreatorUsername("orders")).toBeNull();
+    expect(normalizeCreatorUsername("signin")).toBeNull();
+    expect(normalizeCreatorUsername("aiartstudio")).toBeNull();
     expect(normalizeCreatorUsername("")).toBeNull();
     // Leading/trailing hyphens are stripped → valid "bad"
     expect(normalizeCreatorUsername("-bad-")).toBe("bad");
@@ -65,6 +70,8 @@ describe("shop name → handle", () => {
     expect(isApplyShopNameAllowed("Shop 2")).toBe(false);
     expect(isApplyShopNameAllowed("www")).toBe(false);
     expect(isApplyShopNameAllowed("Checkout")).toBe(false);
+    expect(isApplyShopNameAllowed("Account")).toBe(false);
+    expect(isApplyShopNameAllowed("Official")).toBe(false);
     expect(sanitizeApplyShopNameInput("Mad Clown 2!")).toBe("Mad Clown ");
   });
 
