@@ -80,6 +80,7 @@ import {
 import {
   creatorContextFromRequest,
   resolveStorefrontWalletView,
+  walletJson,
 } from "./storefront-wallet-view";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
@@ -8145,7 +8146,13 @@ ${orientationExtra}
           } else if (spend === "customer_paid") {
             usedCustomerPaidCredit = true;
             storefrontBillingMode = "customer_paid";
-            console.log(P, reqId, `customer ${customer.id} shop free exhausted — will deduct ${balance.credits} ledger credits on success`);
+            console.log(
+              P,
+              reqId,
+              creatorCtx
+                ? `customer ${customer.id} shop free exhausted — will spend creator-earned then pack (${paidCredits} visible paid)`
+                : `customer ${customer.id} shop free exhausted — will spend earned then pack (${paidCredits} visible paid)`,
+            );
           } else if (creatorCtx) {
             return res.status(403).json({
               error: "FREE_LIMIT_REACHED",
@@ -8982,6 +8989,8 @@ ${orientationExtra}
           artworksRemaining = storefrontArtworksRemaining({
             shopFreeRemaining: wallet.shopFreeRemaining,
             freeGenerationsUsed: wallet.freeGenerationsUsed,
+            earnedCredits: wallet.earnedCredits,
+            packCredits: wallet.packCredits,
             paidCredits: wallet.credits,
             freeGenerationLimit: wallet.freeGenerationLimit,
           });
@@ -11329,6 +11338,7 @@ ${orientationExtra}
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
+        source: "pack",
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -11352,10 +11362,19 @@ ${orientationExtra}
         amount: coupon.creditAmount,
         description: `Redeemed coupon: ${coupon.code}`,
       });
+      const creatorCtx = creatorContextFromRequest(req);
+      const wallet = await resolveStorefrontWalletView({
+        shop,
+        customerId: customer.id,
+        merchantFreeLimit: (installation as any).storefrontFreeGensPerVisitor,
+        creatorUsername: creatorCtx.creatorUsername,
+        creatorId: creatorCtx.creatorId,
+      });
       res.json({
         ok: true,
         creditsAdded: coupon.creditAmount,
-        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
+        newBalance: wallet.credits,
+        ...walletJson(wallet),
       });
     } catch (error: any) {
       console.error("[Storefront Coupon] redeem error:", error);
@@ -13647,6 +13666,7 @@ ${orientationExtra}
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
+        source: "pack",
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -13674,10 +13694,28 @@ ${orientationExtra}
         description: `Redeemed coupon: ${coupon.code}`,
       });
 
+      const shop = installation?.shopDomain || "";
+      const wallet = shop
+        ? await resolveStorefrontWalletView({
+            shop,
+            customerId: customer.id,
+            merchantFreeLimit: (installation as any)?.storefrontFreeGensPerVisitor,
+          })
+        : null;
+      const visible =
+        wallet?.credits ??
+        (ledgerResult.balance?.earnedCredits ?? 0) + (ledgerResult.balance?.packCredits ?? 0);
       res.json({
         success: true,
         creditsAdded: coupon.creditAmount,
-        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
+        newBalance: visible,
+        ...(wallet
+          ? walletJson(wallet)
+          : {
+              credits: visible,
+              earnedCredits: ledgerResult.balance?.earnedCredits ?? 0,
+              packCredits: ledgerResult.balance?.packCredits ?? 0,
+            }),
       });
     } catch (error) {
       console.error("Error redeeming coupon:", error);

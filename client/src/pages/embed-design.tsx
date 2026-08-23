@@ -2617,6 +2617,46 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [anonSessionId, shopDomain, otpEmail]);
 
+  const refreshStorefrontWallet = useCallback(async () => {
+    if (!shopDomain || !storefrontCustomerId) return;
+    try {
+      const qs = new URLSearchParams({
+        customerId: storefrontCustomerId,
+        shop: shopDomain,
+      });
+      if (creatorUsernameParam) qs.set("creatorUsername", creatorUsernameParam);
+      if (creatorIdParam) qs.set("creatorId", creatorIdParam);
+      const res = await safeFetch(`${API_BASE}/api/storefront/credits/status?${qs}`, {
+        headers: storefrontIdentityToken
+          ? { Authorization: `Bearer ${storefrontIdentityToken}` }
+          : {},
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) return;
+      setCustomer((prev) => {
+        const next = {
+          ...(prev || { id: storefrontCustomerId, isLoggedIn: false }),
+          id: data.customerId || storefrontCustomerId,
+          ...customerWalletFromApi(data, prev),
+          isLoggedIn: prev?.isLoggedIn === true,
+        };
+        persistCustomerRecord(next);
+        return next;
+      });
+      if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
+        setFreeGenerationLimit(data.freeGenerationLimit);
+      }
+    } catch {
+      /* badge refresh is best-effort */
+    }
+  }, [
+    shopDomain,
+    storefrontCustomerId,
+    storefrontIdentityToken,
+    creatorUsernameParam,
+    creatorIdParam,
+  ]);
+
   useEffect(() => {
     if (!isStorefront || !shopDomain) return;
     safeFetch(`${API_BASE}/api/storefront/auth/config?shop=${encodeURIComponent(shopDomain)}`)
@@ -7456,6 +7496,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             : storefrontArtworksRemaining({
                 shopFreeRemaining: data.shopFreeRemaining,
                 freeGenerationsUsed: nextFreeUsed,
+                earnedCredits: data.earnedCredits,
+                packCredits: data.packCredits,
                 paidCredits: nextPaidCredits,
                 freeGenerationLimit,
               });
@@ -13927,6 +13969,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             customerId={storefrontCustomerId || customer?.id}
                             variant="compact"
                             hideIntro
+                            onCreditGranted={() => void refreshStorefrontWallet()}
                           />
                         </div>
                         <div className="flex items-center justify-between mb-3">
@@ -14170,7 +14213,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                 .then(data => {
                                   if (data.ok && data.creditsAdded > 0) {
                                     setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
-                                    setCustomer(prev => prev ? { ...prev, credits: data.newBalance } : prev);
+                                    setCustomer((prev) => {
+                                      if (!prev) return prev;
+                                      const next = { ...prev, ...customerWalletFromApi(data, prev) };
+                                      persistCustomerRecord(next);
+                                      return next;
+                                    });
                                     setCouponCode('');
                                   } else {
                                     setCouponError(data.error || 'Invalid code');
@@ -14207,6 +14255,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           creatorUsername={creatorUsernameParam}
                           customerId={storefrontCustomerId || customer?.id}
                           variant="compact"
+                          onCreditGranted={() => void refreshStorefrontWallet()}
                         />
                       </CardContent>
                     </Card>

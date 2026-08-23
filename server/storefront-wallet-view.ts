@@ -8,6 +8,7 @@ import { db } from "./db";
 import { storage } from "./storage";
 
 export type StorefrontWalletView = {
+  /** Spendable paid credits: creatorEarned + pack (never the unbucketed total). */
   credits: number;
   earnedCredits: number;
   packCredits: number;
@@ -15,6 +16,18 @@ export type StorefrontWalletView = {
   shopFreeRemaining: number;
   freeGenerationLimit: number;
 };
+
+/** JSON shape every storefront credit response must use (login, status, redeem, generate). */
+export function walletJson(wallet: StorefrontWalletView) {
+  return {
+    credits: wallet.credits,
+    earnedCredits: wallet.earnedCredits,
+    packCredits: wallet.packCredits,
+    freeGenerationsUsed: wallet.freeGenerationsUsed,
+    shopFreeRemaining: wallet.shopFreeRemaining,
+    freeGenerationLimit: wallet.freeGenerationLimit,
+  };
+}
 
 function creatorIdsFromUnknown(source: Record<string, unknown> | null | undefined): {
   creatorUsername?: string;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2 } from "lucide-react";
+import { API_BASE } from "@/lib/urlBase";
 
 export type NewsletterSignupSource = "merchant" | "creator" | "store_user";
 
@@ -13,7 +14,11 @@ type Props = {
   variant?: "default" | "muted" | "luxe" | "compact";
   className?: string;
   hideIntro?: boolean;
+  /** Fired when a Studio Credit was actually granted (so the badge can refresh). */
+  onCreditGranted?: (amount: number) => void;
 };
+
+const SUBSCRIBE_TIMEOUT_MS = 15_000;
 
 export function StudioNewsletterSignup({
   source,
@@ -23,6 +28,7 @@ export function StudioNewsletterSignup({
   variant = "default",
   className = "",
   hideIntro = false,
+  onCreditGranted,
 }: Props) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
@@ -32,8 +38,10 @@ export function StudioNewsletterSignup({
   const join = async () => {
     setLoading(true);
     setError(null);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), SUBSCRIBE_TIMEOUT_MS);
     try {
-      const res = await fetch("/api/studio/newsletter/subscribe", {
+      const res = await fetch(`${API_BASE}/api/studio/newsletter/subscribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -43,11 +51,13 @@ export function StudioNewsletterSignup({
           creatorUsername: creatorUsername || undefined,
           customerId: customerId || undefined,
         }),
+        signal: ac.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Could not join the list.");
       if (data.creditGranted && data.creditAmount > 0) {
         setDone(`You're on the list — ${data.creditAmount} Studio Credit added.`);
+        onCreditGranted?.(Number(data.creditAmount) || 1);
       } else if (data.alreadySubscribed) {
         setDone("You're already on the Studio Art Class list.");
       } else if (source === "store_user" && !customerId) {
@@ -56,8 +66,13 @@ export function StudioNewsletterSignup({
         setDone("You're on the Studio Art Class list.");
       }
     } catch (err: any) {
-      setError(err?.message || "Could not join the list.");
+      if (err?.name === "AbortError") {
+        setError("That took too long. Check your connection and try again.");
+      } else {
+        setError(err?.message || "Could not join the list.");
+      }
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   };

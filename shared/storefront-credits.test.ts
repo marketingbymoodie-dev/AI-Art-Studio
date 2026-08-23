@@ -39,16 +39,17 @@ describe("storefront credit split + spend order", () => {
     );
   });
 
-  it("treats unbucketed paid credits as shop rewards", () => {
+  it("does not treat an unbucketed paid total as spendable", () => {
     const b = storefrontCreditBreakdown({
       freeGenerationsUsed: 0,
       freeGenerationLimit: 2,
       paidCredits: 4,
     });
     expect(b.shopFreeRemaining).toBe(2);
-    expect(b.shopEarned).toBe(4);
+    expect(b.shopEarned).toBe(0);
     expect(b.pack).toBe(0);
-    expect(b.total).toBe(6);
+    expect(b.paidTotal).toBe(0);
+    expect(b.total).toBe(2);
   });
 
   it("allows a creator shop with zero free gens", () => {
@@ -61,6 +62,7 @@ describe("storefront credit split + spend order", () => {
     expect(
       storefrontArtworksRemaining({
         shopFreeRemaining: 0,
+        packCredits: 5,
         paidCredits: 5,
       }),
     ).toBe(5);

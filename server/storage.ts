@@ -497,14 +497,27 @@ export class DatabaseStorage implements IStorage {
         return { inserted: false, balance };
       }
 
+      // Positive grants MUST land in a bucket creator-spend / wallet-view can see.
+      // Coupon is paid (merchant-quota at redeem) → pack. Any other unsourced
+      // credit would orphan in `credits` and vanish on the next generate/status.
+      let source = entry.source === "earned" || entry.source === "pack" ? entry.source : null;
+      if (entry.deltaCredits > 0 && !source) {
+        if (entry.reason === "coupon") source = "pack";
+        else {
+          throw new Error(
+            `applyCreditLedgerEntry: positive grant requires source earned|pack (reason=${entry.reason})`,
+          );
+        }
+      }
+
       const [balance] = await tx
         .update(creditBalances)
         .set({
           credits: sql`GREATEST(0, ${creditBalances.credits} + ${entry.deltaCredits})`,
-          ...(entry.source === "earned"
+          ...(source === "earned"
             ? { earnedCredits: sql`GREATEST(0, ${creditBalances.earnedCredits} + ${entry.deltaCredits})` }
             : {}),
-          ...(entry.source === "pack"
+          ...(source === "pack"
             ? { packCredits: sql`GREATEST(0, ${creditBalances.packCredits} + ${entry.deltaCredits})` }
             : {}),
           version: sql`${creditBalances.version} + 1`,
@@ -1105,10 +1118,18 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
         .where(eq(creditLedger.idempotencyKey, idempotencyKey));
       if (!original || original.deltaCredits >= 0) return { refunded: false };
 
+      const refundSource =
+        original.source === "earned" || original.source === "pack" ? original.source : null;
       const [balance] = await tx
         .update(creditBalances)
         .set({
           credits: sql`${creditBalances.credits} + 1`,
+          ...(refundSource === "earned"
+            ? { earnedCredits: sql`${creditBalances.earnedCredits} + 1` }
+            : {}),
+          ...(refundSource === "pack"
+            ? { packCredits: sql`${creditBalances.packCredits} + 1` }
+            : {}),
           version: sql`${creditBalances.version} + 1`,
           updatedAt: new Date(),
         })
@@ -1120,6 +1141,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       await tx.insert(creditLedger).values({
         customerId,
         deltaCredits: 1,
+        source: refundSource,
         reason: "generation_refund",
         idempotencyKey: refundKey,
         externalRef: externalRef ?? idempotencyKey,
