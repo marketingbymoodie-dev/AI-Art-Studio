@@ -16,6 +16,17 @@ import {
 } from "@shared/schema";
 import { requirePlatformAdmin } from "../platformAdmin";
 import {
+  DEFAULT_SHIP_COUNTRY,
+  normalizeShipCountry,
+  SHIP_COUNTRY_OPTIONS,
+} from "@shared/ship-country";
+import {
+  resolvedShipCountryFromReq,
+  writeShipCountryCookie,
+} from "../ship-country-middleware";
+import { getGeoLite2Status } from "../geoip";
+import { listSizeCoverageForProduct } from "../shipping-size-coverage";
+import {
   getCoverageForProducts,
   getShippableProductIdSet,
   getShippingTierConfig,
@@ -48,6 +59,54 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
   // ── Internal coverage API (spec 0.3 / 2.4) ────────────────────────────────
   // Consumed by storefront listing filters + the customizer gate in later
   // phases. Non-sensitive derived data; no merchant secrets.
+
+  /** Current resolved ship-to country (cookie > IP > US). Same value generate uses. */
+  app.get("/api/storefront/ship-country", (req, res: Response) => {
+    const resolved = resolvedShipCountryFromReq(req);
+    const geo = getGeoLite2Status();
+    return res.json({
+      shipCountry: resolved.country,
+      source: resolved.source,
+      options: SHIP_COUNTRY_OPTIONS,
+      geo: {
+        ready: geo.readerOpen,
+        ageDays: geo.ageDays,
+      },
+    });
+  });
+
+  /** Per-size coverage for the resolved country (same normalizer as generate). */
+  app.get("/api/storefront/size-coverage", async (req, res: Response) => {
+    try {
+      const productTypeId = parseInt(String(req.query.productTypeId || ""), 10);
+      if (!Number.isFinite(productTypeId) || productTypeId <= 0) {
+        return res.status(400).json({ error: "productTypeId is required" });
+      }
+      const resolved = resolvedShipCountryFromReq(req);
+      const sizes = await listSizeCoverageForProduct(productTypeId, resolved.country);
+      return res.json({
+        country: resolved.country,
+        source: resolved.source,
+        productTypeId,
+        sizes,
+      });
+    } catch (e: any) {
+      console.error("[shipping-routes] size-coverage failed:", e?.message || e);
+      return res.status(500).json({ error: "Size coverage lookup failed" });
+    }
+  });
+
+  /** Selector override — persists host-wide on .aiartstudio.app. */
+  app.put("/api/storefront/ship-country", (req, res: Response) => {
+    const next = normalizeShipCountry(req.body?.country) || DEFAULT_SHIP_COUNTRY;
+    const country = next === "ROW" ? DEFAULT_SHIP_COUNTRY : next;
+    writeShipCountryCookie(req, res, country);
+    return res.json({
+      shipCountry: country,
+      source: "cookie" as const,
+      options: SHIP_COUNTRY_OPTIONS,
+    });
+  });
 
   /** GET /api/shipping/coverage?country=CA&productIds=1,2,3 */
   app.get("/api/shipping/coverage", async (req, res: Response) => {
@@ -140,6 +199,7 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
 
       const config = await getShippingTierConfig();
       return res.json({
+        geo: getGeoLite2Status(),
         config,
         classes: classes.map((c) => {
           let groups: VariantGroupDef[] = [];

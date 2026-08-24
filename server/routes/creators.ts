@@ -904,6 +904,8 @@ export function registerCreatorMarketplaceRoutes(
       if (links.length === 0) {
         return res.json({
           platformShopDomain: getCreatorPlatformShopDomain(),
+          shipCountry: (req as { shipCountry?: string }).shipCountry || "US",
+          shipCountrySource: (req as { shipCountrySource?: string }).shipCountrySource || "default",
           pages: [],
         });
       }
@@ -935,6 +937,11 @@ export function registerCreatorMarketplaceRoutes(
         types.map((t) => [t.id, primaryMockupUrl(t.baseMockupImages)]),
       );
 
+      const shipCountry =
+        (req as { shipCountry?: string }).shipCountry || "US";
+      const shipCountrySource =
+        (req as { shipCountrySource?: string }).shipCountrySource || "default";
+
       const out = links
         .map((link) => {
           const page = byId.get(link.customizerPageId);
@@ -956,9 +963,27 @@ export function registerCreatorMarketplaceRoutes(
         })
         .filter(Boolean);
 
+      const listedTypeIds = [
+        ...new Set(
+          (out as Array<{ productTypeId: number | null }>)
+            .map((p) => p.productTypeId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        ),
+      ];
+      let hidden = new Set<number>();
+      if (listedTypeIds.length > 0) {
+        const { productTypeIdsHiddenForCountry } = await import("../shipping-size-coverage");
+        hidden = await productTypeIdsHiddenForCountry(shipCountry, listedTypeIds);
+      }
+      const visiblePages = (out as Array<{ productTypeId: number | null }>).filter(
+        (p) => p.productTypeId == null || !hidden.has(p.productTypeId),
+      );
+
       res.json({
         platformShopDomain: getCreatorPlatformShopDomain(),
-        pages: out,
+        shipCountry,
+        shipCountrySource,
+        pages: visiblePages,
       });
     } catch (e: any) {
       console.error("[creators] storefront pages failed:", e);

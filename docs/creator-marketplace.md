@@ -147,7 +147,8 @@ Line attrs on pack cart: `_credit_pack_id`, `_appai_customer_id`, `_creator_id`,
 3. Optional: `CREATOR_EMAILS_ENABLED=true` only after reviewing templates
 4. Wildcard DNS `*.aiartstudio.app` → Railway production (path `/c/:username` works without it)
 5. E2E smoke: apply → onboard → storefront → generate → ATC → checkout → ledger → pack buy → portal rank
-6. Explicit **yes, go live** before merging `production`
+6. Production env: `MAXMIND_LICENSE_KEY` (IP-geo for creator storefronts). Confirm **IP geolocation** on platform Shipping Coverage is not “no license” / 14-day stale. Consider a volume on `GEOIP_DB_PATH` so deploys do not re-download the GeoLite2 DB at boot.
+7. Explicit **yes, go live** before merging `production`
 
 ## Phase 6 — Creator Portal
 

@@ -162,6 +162,16 @@ declare module "http" {
 
 app.use(cookieParser());
 
+// Phase 4 Slice B: one ship-to country for listing + generate (cookie > IP > US).
+app.use((req, res, next) => {
+  void import("./ship-country-middleware")
+    .then(({ attachShipCountry }) => attachShipCountry(req, res, next))
+    .catch((err) => {
+      console.warn("[ship-country] middleware failed:", err);
+      next();
+    });
+});
+
 // Creator Marketplace host / path resolution (sets req.creatorStorefront for SPA HTML).
 app.use(async (req, res, next) => {
   if (
@@ -436,5 +446,8 @@ app.use((req, res, next) => {
       .catch((e: any) =>
         console.warn("[carrier-shipping] startup register failed:", e?.message || e),
       );
+    void import("./geoip")
+      .then(({ startGeoLite2Refresh }) => startGeoLite2Refresh())
+      .catch((e: any) => console.warn("[geoip] startup refresh failed:", e?.message || e));
   });
 })();

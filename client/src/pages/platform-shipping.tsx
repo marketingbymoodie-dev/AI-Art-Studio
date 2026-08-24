@@ -37,7 +37,19 @@ type ClassSummary = {
   lastError: string | null;
 };
 
-type Overview = { config: TierConfig; classes: ClassSummary[] };
+type GeoIpStatus = {
+  path: string;
+  exists: boolean;
+  ageDays: number | null;
+  lastRefreshAt: string | null;
+  lastError: string | null;
+  readerOpen: boolean;
+  licenseKeyPresent: boolean;
+  stale: boolean;
+  status: "ok" | "no_license" | "db_missing" | "stale" | "error";
+};
+
+type Overview = { config: TierConfig; classes: ClassSummary[]; geo?: GeoIpStatus };
 
 type GroupDef = { group: string; label: string; printifyVariantIds: string[] };
 
@@ -1188,6 +1200,19 @@ export default function PlatformShippingPage() {
           </Card>
         )}
 
+        <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">IP geolocation</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {overviewQ.isLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : (
+              <GeoIpStatusPanel geo={overviewQ.data?.geo} />
+            )}
+          </CardContent>
+        </Card>
         {/* Sync runs */}
         <Card>
           <CardHeader>
@@ -1220,7 +1245,61 @@ export default function PlatformShippingPage() {
             )}
           </CardContent>
         </Card>
+        </div>
       </div>
     </AdminLayout>
+  );
+}
+
+function GeoIpStatusPanel({ geo }: { geo?: GeoIpStatus }) {
+  if (!geo) {
+    return <p className="text-sm text-muted-foreground">GeoLite2 status unavailable.</p>;
+  }
+  const tone =
+    geo.status === "ok"
+      ? "secondary"
+      : geo.status === "stale"
+        ? "secondary"
+        : "destructive";
+  const label =
+    geo.status === "ok"
+      ? "IP-geo ready"
+      : geo.status === "no_license"
+        ? "IP-geo off — no license key"
+        : geo.status === "db_missing"
+          ? "IP-geo off — DB missing"
+          : geo.status === "stale"
+            ? "GeoLite2 stale (14+ days)"
+            : "IP-geo error";
+  const detail =
+    geo.status === "no_license"
+      ? "MAXMIND_LICENSE_KEY is not set. Visitors without a ship_country cookie fall through to US."
+      : geo.status === "db_missing"
+        ? "GeoLite2 DB is missing. Fail-to-US until the file is downloaded. Consider a volume on GEOIP_DB_PATH."
+        : geo.status === "stale"
+          ? `DB is ${geo.ageDays ?? "?"} days old. Lookups still run; refresh or mount a volume on GEOIP_DB_PATH so deploys do not re-download.`
+          : geo.status === "error"
+            ? geo.lastError || "GeoLite2 reader failed to open."
+            : `DB age ${geo.ageDays ?? "—"} days${geo.readerOpen ? " · reader open" : ""}.`;
+  return (
+    <div className="space-y-2 text-sm" data-testid="geoip-status">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          variant={tone}
+          className={
+            geo.status === "stale" ? "bg-amber-100 text-amber-900" : undefined
+          }
+        >
+          {label}
+        </Badge>
+        {geo.licenseKeyPresent ? (
+          <span className="text-muted-foreground">license present</span>
+        ) : (
+          <span className="text-amber-800">license missing</span>
+        )}
+      </div>
+      <p>{detail}</p>
+      <p className="text-xs text-muted-foreground break-all">{geo.path}</p>
+    </div>
   );
 }

@@ -7,6 +7,10 @@ vite.config.ts.*
 .env
 .env.*
 
+# GeoLite2 Country DB (MaxMind license — download at boot / weekly refresh)
+data/*.mmdb
+data/*.mmdb.tmp-*
+
 # Local dev artifacts (calibration runs, render tests, generated panel sources, etc.)
 tmp/
 tmp_dev_log*.txt

@@ -48,6 +48,18 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
 import { CreatorProductTermsNote } from "@/components/creators/CreatorProductTermsNote";
+import { ShipCountrySelector } from "@/components/creators/ShipCountrySelector";
+import {
+  ShippingSizeDownsell,
+  ShippingWarnedEstimate,
+} from "@/components/creators/ShippingSizeGate";
+import { useStorefrontSizeCoverage } from "@/lib/storefrontSizeCoverage";
+import {
+  buildSizeDownsell,
+  filterCatalogSizesForCountry,
+  findSizeCoverageRow,
+  sizeTokensMatch,
+} from "@shared/shipping-size-coverage";
 import { getSizeChartByBlueprintId, type NormalizedSizeChart } from "@/lib/printifySizeCharts";
 import {
   ProductMockup,
@@ -756,6 +768,33 @@ function resolvePrintSizeId(
     return idNorm === want || nameNorm === want;
   });
   return hit?.id ?? null;
+}
+
+function resolveSizeIdFromCoverage(
+  sizeId: string,
+  sizes: Array<{ id: string; name: string }>,
+): string | null {
+  const hit = sizes.find(
+    (s) =>
+      s.id === sizeId ||
+      sizeTokensMatch(s.id, sizeId) ||
+      sizeTokensMatch(s.name, sizeId),
+  );
+  return hit?.id ?? resolvePrintSizeId(sizeId, sizes);
+}
+
+function readUrlSizeParam(): string {
+  try {
+    const fromSelf = new URLSearchParams(window.location.search).get("size");
+    if (fromSelf?.trim()) return fromSelf.trim();
+  } catch {
+    /* ignore */
+  }
+  try {
+    return new URL(window.parent.location.href).searchParams.get("size")?.trim() || "";
+  } catch {
+    return "";
+  }
 }
 
 /** Resolve a saved frameColor value (id, name, or slug) to the config color id. */
@@ -1998,6 +2037,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [sharedDesignError, setSharedDesignError] = useState<string | null>(null);
   const [isSharedDesign, setIsSharedDesign] = useState(false);
   const [selectedSize, setSelectedSize] = useState("");
+  const [shippingDownsellSizeId, setShippingDownsellSizeId] = useState<string | null>(null);
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
@@ -2138,6 +2178,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }));
     return sortDimensionalSizesAscending(mapped);
   }, [productTypeConfig]);
+
+  const sizeCoverageQ = useStorefrontSizeCoverage(productTypeId, isCreatorStorefront);
+  const sizeCoverageRows = sizeCoverageQ.data?.sizes;
+  const shipCountryForCoverage = sizeCoverageQ.data?.country || "US";
 
   const frameOptionsRedundantWithSizes = useMemo(
     () =>
@@ -3687,6 +3731,50 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     printSizes,
     productTypeConfig?.aspectRatio,
   ]);
+
+  const countryAwareSizes = useMemo(() => {
+    if (!isCreatorStorefront) return orientationFilteredSizes;
+    return filterCatalogSizesForCountry(orientationFilteredSizes, sizeCoverageRows);
+  }, [isCreatorStorefront, orientationFilteredSizes, sizeCoverageRows]);
+
+  const selectedSizeCoverage = useMemo(() => {
+    if (!isCreatorStorefront || !sizeCoverageRows?.length || !selectedSize) return undefined;
+    const size = printSizes.find((s) => s.id === selectedSize);
+    return (
+      findSizeCoverageRow(selectedSize, sizeCoverageRows) ||
+      (size?.name ? findSizeCoverageRow(size.name, sizeCoverageRows) : undefined)
+    );
+  }, [isCreatorStorefront, sizeCoverageRows, selectedSize, printSizes]);
+
+  const shippingDownsell = useMemo(() => {
+    if (!isCreatorStorefront || !shippingDownsellSizeId || !sizeCoverageRows?.length) return null;
+    return buildSizeDownsell({
+      requestedSizeId: shippingDownsellSizeId,
+      country: shipCountryForCoverage,
+      rows: sizeCoverageRows,
+    });
+  }, [
+    isCreatorStorefront,
+    shippingDownsellSizeId,
+    sizeCoverageRows,
+    shipCountryForCoverage,
+  ]);
+
+  const shippingWarnedRow =
+    isCreatorStorefront &&
+    selectedSizeCoverage?.shippable &&
+    selectedSizeCoverage.tier === "warned"
+      ? selectedSizeCoverage
+      : null;
+
+  const sizeSelectorValue = countryAwareSizes.some((s) => s.id === selectedSize)
+    ? selectedSize
+    : "";
+  const shippingBlocksGenerate = !!(
+    isCreatorStorefront &&
+    selectedSizeCoverage &&
+    !selectedSizeCoverage.shippable
+  );
 
   const orientationBlankOverride = useMemo(() => {
     if (!hasMixedCanvasOrientation || !sizeCanvasOrientation || !selectedSize) {
@@ -5423,8 +5511,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, []);
 
   const applyProductDefaultSizeColor = useCallback(() => {
-    const firstSize = printSizes[0]?.id || "";
+    const pool = countryAwareSizes.length > 0 ? countryAwareSizes : printSizes;
+    const firstSize = pool[0]?.id || "";
     if (firstSize) setSelectedSize(firstSize);
+    setShippingDownsellSizeId(null);
     const colors = productTypeConfig?.frameColors || [];
     if (colors.length === 0) {
       setSelectedFrameColor("");
@@ -5434,7 +5524,103 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const firstColor =
       (vm && colors.find((c) => hasVariantMappingForColor(vm, c.id))) || colors[0];
     setSelectedFrameColor(firstColor?.id || "");
-  }, [printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
+  }, [countryAwareSizes, printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
+
+  const applySelectedSize = useCallback(
+    (sizeId: string) => {
+      const catalogId = resolveSizeIdFromCoverage(sizeId, printSizes) || sizeId;
+      const prevSize = printSizes.find((s) => s.id === selectedSize);
+      const nextSize = printSizes.find((s) => s.id === catalogId);
+      if (
+        generatedDesign?.imageUrl &&
+        prevSize &&
+        nextSize &&
+        prevSize.id !== nextSize.id
+      ) {
+        const prevAr = resolveSizeAspectRatio(
+          prevSize,
+          productTypeConfig?.aspectRatio,
+        );
+        const nextAr = resolveSizeAspectRatio(
+          nextSize,
+          productTypeConfig?.aspectRatio,
+        );
+        if (prevAr !== nextAr) {
+          toast({
+            title: isPhoneCaseProduct
+              ? "Model proportions changed"
+              : "Size proportions changed",
+            description:
+              "Generate new artwork so it matches this size's aspect ratio.",
+          });
+        }
+      }
+      setSelectedSize(catalogId);
+      setShippingDownsellSizeId(null);
+      if (frameOptionsRedundantWithSizes) {
+        const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
+        if (matched) setSelectedFrameColor(matched);
+      }
+      const flatOnTheFly = usesFlatOnTheFlyPreview;
+      if (!flatOnTheFly) {
+        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+      }
+    },
+    [
+      printSizes,
+      selectedSize,
+      generatedDesign?.imageUrl,
+      productTypeConfig?.aspectRatio,
+      toast,
+      isPhoneCaseProduct,
+      frameOptionsRedundantWithSizes,
+      frameColorObjects,
+      usesFlatOnTheFlyPreview,
+      defaultZoom,
+    ],
+  );
+
+  const urlSizeConsumedRef = useRef(false);
+  useEffect(() => {
+    if (!isCreatorStorefront || !printSizes.length) return;
+    if (effectiveLoadDesignId || sharedDesignId) return;
+    if (urlSizeConsumedRef.current) return;
+    const urlSize = readUrlSizeParam();
+    if (!urlSize) return;
+    const resolved = resolveSizeIdFromCoverage(urlSize, printSizes);
+    if (!resolved) return;
+    urlSizeConsumedRef.current = true;
+    setSelectedSize(resolved);
+  }, [isCreatorStorefront, printSizes, effectiveLoadDesignId, sharedDesignId]);
+
+  useEffect(() => {
+    if (!isCreatorStorefront || !sizeCoverageRows || !printSizes.length) return;
+    const candidate = shippingDownsellSizeId || selectedSize;
+    if (!candidate) {
+      if (countryAwareSizes[0]) setSelectedSize(countryAwareSizes[0].id);
+      return;
+    }
+    const next = buildSizeDownsell({
+      requestedSizeId: candidate,
+      country: shipCountryForCoverage,
+      rows: sizeCoverageRows,
+    });
+    if (next) {
+      if (shippingDownsellSizeId !== next.requestedSizeId) {
+        setShippingDownsellSizeId(next.requestedSizeId);
+      }
+      return;
+    }
+    if (shippingDownsellSizeId) setShippingDownsellSizeId(null);
+  }, [
+    isCreatorStorefront,
+    sizeCoverageRows,
+    selectedSize,
+    printSizes,
+    shipCountryForCoverage,
+    countryAwareSizes,
+    shippingDownsellSizeId,
+  ]);
 
   /** After ATC / Start Fresh: drop sticky loadDesignId so the grey skeleton cannot loop. */
   const resetStudioAfterPurchase = useCallback(() => {
@@ -7470,6 +7656,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         const postStart = Date.now();
         const fetchPromise = safeFetch(endpoint, {
           method: "POST",
+          credentials: "include",
           headers: { ...storefrontJsonHeaders(), "X-Req-Id": reqId },
           body: JSON.stringify(payload),
         }, 60_000);
@@ -7492,6 +7679,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           if (jobData.error === 'GALLERY_FULL') {
             setShowGalleryFullModal(true);
             throw new Error('GALLERY_FULL');
+          }
+          if (jobData.error === 'SHIPPING_EXCLUDED' || jobData.error === 'SHIPPING_UNMAPPED') {
+            if (jobData.sizeId) setShippingDownsellSizeId(String(jobData.sizeId));
+            throw new Error(jobData.message || "This size cannot ship to your country.");
           }
           if (jobData.error === 'Shop not authorized' && jobData.reinstallUrl) {
             throw new Error(`SHOP_NEEDS_REINSTALL:${jobData.reinstallUrl}`);
@@ -13105,6 +13296,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             </Button>
           )
         ) : (
+          <>
+          {shippingWarnedRow ? (
+            <ShippingWarnedEstimate
+              country={shipCountryForCoverage}
+              firstItemCents={shippingWarnedRow.firstItemCents}
+              matchedZone={shippingWarnedRow.matchedZone}
+            />
+          ) : null}
           <Button
             onClick={() => {
               if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
@@ -13124,9 +13323,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 alert("Please select a size before generating");
                 return;
               }
+              if (shippingBlocksGenerate) return;
               handleGenerate();
             }}
-            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted)}
+            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted) || shippingBlocksGenerate}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
@@ -13142,6 +13342,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               </>
             )}
           </Button>
+          </>
         )}
         {customerTermsEnabled && !(generatedDesign && !reuseAwaitingGenerate) ? (
           <StorefrontTermsAccept
@@ -13898,6 +14099,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               <div className="relative">
                 {isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam) ? (
                   <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <ShipCountrySelector compact />
                     <a
                       href={`/c/${encodeURIComponent(creatorUsernameRaw || creatorUsernameParam)}/products`}
                       className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
@@ -14679,6 +14881,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     )
                   ) : (
                     /* ── Generate state ── */
+                    <>
+                    {shippingWarnedRow ? (
+                      <ShippingWarnedEstimate
+                        country={shipCountryForCoverage}
+                        firstItemCents={shippingWarnedRow.firstItemCents}
+                        matchedZone={shippingWarnedRow.matchedZone}
+                      />
+                    ) : null}
                     <Button
                       onClick={() => {
                         if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
@@ -14698,9 +14908,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           alert("Please select a size before generating");
                           return;
                         }
+                        if (shippingBlocksGenerate) return;
                         handleGenerate();
                       }}
-                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted)}
+                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted) || shippingBlocksGenerate}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -14716,6 +14927,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         </>
                       )}
                     </Button>
+                    </>
                   )}
                   {customerTermsEnabled && !(generatedDesign && !reuseAwaitingGenerate) ? (
                     <StorefrontTermsAccept
@@ -14870,6 +15082,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 </div>
               </div>
 
+              {isCreatorStorefront && shippingDownsell ? (
+                <ShippingSizeDownsell
+                  country={shippingDownsell.country}
+                  requestedSizeId={shippingDownsell.requestedSizeId}
+                  requestedSizeLabel={
+                    printSizes.find((s) => s.id === shippingDownsellSizeId)?.name
+                  }
+                  shipsToSizes={shippingDownsell.shipsToSizes}
+                  suggestedSizeId={shippingDownsell.suggestedSizeId}
+                  catalogSizes={printSizes}
+                  onSwitchSize={applySelectedSize}
+                />
+              ) : null}
+
               {/* Art Style | Orientation (or Size), then Size | Color when orientation pills show */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-start">
                 {showPresetsParam && filteredStylePresets.length > 0 && (
@@ -14949,46 +15175,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   printSizes.length > 0 && (
                     <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                       <SizeSelector
-                        sizes={sortSizesByRetailPrice(orientationFilteredSizes, buildPriceMap())}
-                        selectedSize={selectedSize}
+                        sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
+                        selectedSize={sizeSelectorValue}
                         label={isPhoneCaseProduct ? "Model" : "Size"}
-                        onSizeChange={(sizeId) => {
-                          const prevSize = printSizes.find((s) => s.id === selectedSize);
-                          const nextSize = printSizes.find((s) => s.id === sizeId);
-                          if (
-                            generatedDesign?.imageUrl &&
-                            prevSize &&
-                            nextSize &&
-                            prevSize.id !== nextSize.id
-                          ) {
-                            const prevAr = resolveSizeAspectRatio(
-                              prevSize,
-                              productTypeConfig?.aspectRatio,
-                            );
-                            const nextAr = resolveSizeAspectRatio(
-                              nextSize,
-                              productTypeConfig?.aspectRatio,
-                            );
-                            if (prevAr !== nextAr) {
-                              toast({
-                                title: isPhoneCaseProduct
-                                  ? "Model proportions changed"
-                                  : "Size proportions changed",
-                                description:
-                                  "Generate new artwork so it matches this size's aspect ratio.",
-                              });
-                            }
-                          }
-                          setSelectedSize(sizeId);
-                          if (frameOptionsRedundantWithSizes) {
-                            const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
-                            if (matched) setSelectedFrameColor(matched);
-                          }
-                          const flatOnTheFly = usesFlatOnTheFlyPreview;
-                          if (!flatOnTheFly) {
-                            setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                          }
-                        }}
+                        onSizeChange={applySelectedSize}
                         prices={buildPriceMap()}
                         outOfStockSizeIds={outOfStockSizeIds}
                       />
@@ -15007,46 +15197,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   printSizes.length > 0 && (
                   <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                     <SizeSelector
-                      sizes={sortSizesByRetailPrice(orientationFilteredSizes, buildPriceMap())}
-                      selectedSize={selectedSize}
+                      sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
+                      selectedSize={sizeSelectorValue}
                       label={isPhoneCaseProduct ? "Model" : "Size"}
-                      onSizeChange={(sizeId) => {
-                        const prevSize = printSizes.find((s) => s.id === selectedSize);
-                        const nextSize = printSizes.find((s) => s.id === sizeId);
-                        if (
-                          generatedDesign?.imageUrl &&
-                          prevSize &&
-                          nextSize &&
-                          prevSize.id !== nextSize.id
-                        ) {
-                          const prevAr = resolveSizeAspectRatio(
-                            prevSize,
-                            productTypeConfig?.aspectRatio,
-                          );
-                          const nextAr = resolveSizeAspectRatio(
-                            nextSize,
-                            productTypeConfig?.aspectRatio,
-                          );
-                          if (prevAr !== nextAr) {
-                            toast({
-                              title: isPhoneCaseProduct
-                                ? "Model proportions changed"
-                                : "Size proportions changed",
-                              description:
-                                "Generate new artwork so it matches this size's aspect ratio.",
-                            });
-                          }
-                        }
-                        setSelectedSize(sizeId);
-                        if (frameOptionsRedundantWithSizes) {
-                          const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
-                          if (matched) setSelectedFrameColor(matched);
-                        }
-                        const flatOnTheFly = usesFlatOnTheFlyPreview;
-                        if (!flatOnTheFly) {
-                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                        }
-                      }}
+                      onSizeChange={applySelectedSize}
                       prices={buildPriceMap()}
                       outOfStockSizeIds={outOfStockSizeIds}
                     />

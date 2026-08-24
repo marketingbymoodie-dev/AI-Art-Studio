@@ -152,6 +152,10 @@ import {
   type GenerationBillingMode,
 } from "./generation-billing";
 import {
+  lookupAndBlockStorefrontGenerate,
+  resolveShipCountryFromRequest,
+} from "./shipping-generate-gate";
+import {
   ensureRewardLadder,
   getRewardLadder,
   patchRewardLadder,
@@ -8295,6 +8299,25 @@ ${orientationExtra}
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Phase 4 Slice A/B: size×country coverage gate — refuse BEFORE job create
+      // or credit spend. Country is middleware req.shipCountry (cookie > IP > US).
+      const shipCountry = resolveShipCountryFromRequest(req); // req.shipCountry from middleware
+      const shippingBlock = await lookupAndBlockStorefrontGenerate({
+        productTypeId,
+        size,
+        color: frameColor,
+        country: shipCountry,
+      });
+      if (shippingBlock) {
+        console.warn(P, reqId, "shipping coverage blocked generate", {
+          country: shippingBlock.country,
+          sizeId: shippingBlock.sizeId,
+          reason: shippingBlock.reason,
+          code: shippingBlock.code,
+        });
+        return res.status(409).json({ ...shippingBlock, reqId, stage: "shipping" });
       }
 
       // Merchant plan quota is consumed in the worker after success (peek-only here).

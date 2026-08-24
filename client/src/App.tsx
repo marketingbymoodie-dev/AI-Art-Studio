@@ -68,6 +68,7 @@ function AppRouter() {
   if (hasCreatorBootPayload() && !pathBasedCreator) {
     return (
       <Switch>
+        <Route path="/s/designer" component={EmbedDesign} />
         <Route path="/products" component={CreatorBootStorefrontPage} />
         <Route path="/about" component={CreatorBootStorefrontPage} />
         <Route path="/cart" component={CreatorBootStorefrontPage} />
