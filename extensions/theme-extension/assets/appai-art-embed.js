@@ -1007,7 +1007,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.3';
+    var BRIDGE_VERSION = '1.0.4';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -1302,30 +1302,24 @@
         .then(function(cart) {
           var existing = findMatchingCartLine(cart, variantId, safeProps);
           if (existing) {
-            var lineCents = cartLinePriceCents(existing);
-            var replaceQty = (existing.quantity || 1) + qty;
-            // Never increment. Shopify locks the line price at first add, so a
-            // fresh add re-locks at the variant's CURRENT price. Do NOT compare
-            // lineCents to expectedCents — Ajax cart prices are in the buyer's
-            // presentment currency (e.g. AUD) while the iframe price is the
-            // shop currency (e.g. USD). They legitimately differ.
-            console.log(B, 'Replacing existing AppAI line (never increment)', {
+            var nextQty = (existing.quantity || 1) + qty;
+            console.log(B, 'Re-add of same design — incrementing line', {
               lineKey: existing.key,
               existingVariantId: existing.variant_id,
               requestedVariantId: variantId,
-              linePriceCents: lineCents,
-              expectedCents: expectedCents,
-              cartCurrency: cart.currency || '',
-              replaceQty: replaceQty
+              sameVariant: String(existing.variant_id) === String(variantId),
+              fromQty: existing.quantity,
+              toQty: nextQty
             });
-            return postCartJson('/cart/change.js', { id: existing.key, quantity: 0 }, 15000)
+            return postCartJson('/cart/change.js', { id: existing.key, quantity: nextQty }, 15000)
               .then(function(out) {
                 if (!out.res.ok) {
                   logCartFailure('cart/change.js', existing.variant_id, out.res, out.json, out.text);
-                  var dropMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
-                  throw new Error('Cart change failed: ' + dropMsg);
+                  var changeMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
+                  throw new Error('Cart change failed: ' + changeMsg);
                 }
-                return postAdd(replaceQty);
+                console.log(B, '/cart/change.js status:', out.res.status, 'item_count:', out.json && out.json.item_count);
+                return out.json;
               });
           }
 
