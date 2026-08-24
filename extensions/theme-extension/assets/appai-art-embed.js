@@ -1007,7 +1007,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.0';
+    var BRIDGE_VERSION = '1.0.1';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -1185,6 +1185,20 @@
       return match;
     }
 
+    // Shopify Ajax cart `price` is cents. Expected retail from the iframe is dollars.
+    function parseExpectedPriceCents(price) {
+      if (price == null || price === '') return null;
+      var n = parseFloat(String(price).replace(/[^0-9.]/g, ''));
+      if (!isFinite(n) || n <= 0) return null;
+      return Math.round(n * 100);
+    }
+
+    function cartLinePriceCents(item) {
+      var p = Number(item && item.price);
+      if (isFinite(p) && p > 0) return Math.round(p);
+      return null;
+    }
+
     function postCartJson(url, body, timeoutMs) {
       var controller = new AbortController();
       var tid = setTimeout(function() { controller.abort(); }, timeoutMs || 15000);
@@ -1222,7 +1236,7 @@
     }
 
     // --- Cart add via Shopify Ajax API ---
-    function addToCart(variantId, quantity, properties) {
+    function addToCart(variantId, quantity, properties, expectedPrice) {
       if (!variantId) return Promise.reject(new Error('Missing variantId'));
 
       var safeProps = properties || {};
@@ -1234,15 +1248,53 @@
       }
 
       var qty = quantity || 1;
+      var expectedCents = parseExpectedPriceCents(expectedPrice);
       console.log(B, '_mockup_url being sent:', safeProps['_mockup_url'] ? safeProps['_mockup_url'] : '(none)');
       console.log(B, 'ATC request', {
         variantId: variantId,
         quantity: qty,
+        expectedPrice: expectedPrice || '',
+        expectedCents: expectedCents,
         shadowDesignId: shadowDesignIdFromProps(safeProps),
         size: safeProps['_size'] || '',
         color: safeProps['_color'] || '',
         displayDesignId: safeProps['_design_id'] || ''
       });
+
+      function postAdd(addQty) {
+        var body = { items: [{ id: Number(variantId), quantity: addQty, properties: safeProps }] };
+        console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
+        return postCartJson('/cart/add.js', body, 15000)
+          .then(function(out) {
+            console.log(B, '/cart/add.js status:', out.res.status);
+            if (!out.res.ok) {
+              logCartFailure('cart/add.js', variantId, out.res, out.json, out.text);
+              var errMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
+              var lower = String(errMsg).toLowerCase();
+              if (out.res.status === 422 && (lower.indexOf('cannot find') !== -1 || lower.indexOf('not found') !== -1)) {
+                console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying shortly...');
+                throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
+              }
+              throw new Error('Cart add failed: ' + errMsg);
+            }
+
+            fetch('/cart.js', { credentials: 'same-origin' })
+              .then(function(r) { return r.json(); })
+              .then(function(after) {
+                var lastItem = after.items && after.items.length > 0 ? after.items[after.items.length - 1] : null;
+                console.log(B, '/cart.js after add — item_count:', after.item_count, 'last_item:', lastItem ? {
+                  title: lastItem.title,
+                  variant_id: lastItem.variant_id,
+                  priceCents: lastItem.price,
+                  expectedCents: expectedCents,
+                  has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url'])
+                } : null);
+              })
+              .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
+
+            return out.json;
+          });
+      }
 
       return fetch('/cart.js', { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
@@ -1250,12 +1302,39 @@
         .then(function(cart) {
           var existing = findMatchingCartLine(cart, variantId, safeProps);
           if (existing) {
+            var lineCents = cartLinePriceCents(existing);
+            var priceMismatch = expectedCents != null && lineCents != null && Math.abs(lineCents - expectedCents) > 1;
+            // Shopify locks line price at first add. Incrementing a $27 line after
+            // we PUT the shadow to $18.95 keeps charging $27.
+            if (priceMismatch) {
+              var replaceQty = (existing.quantity || 1) + qty;
+              console.log(B, 'Re-add of same design — replacing line (stale locked price)', {
+                lineKey: existing.key,
+                existingVariantId: existing.variant_id,
+                requestedVariantId: variantId,
+                linePriceCents: lineCents,
+                expectedCents: expectedCents,
+                replaceQty: replaceQty
+              });
+              return postCartJson('/cart/change.js', { id: existing.key, quantity: 0 }, 15000)
+                .then(function(out) {
+                  if (!out.res.ok) {
+                    logCartFailure('cart/change.js', existing.variant_id, out.res, out.json, out.text);
+                    var dropMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
+                    throw new Error('Cart change failed: ' + dropMsg);
+                  }
+                  return postAdd(replaceQty);
+                });
+            }
+
             var nextQty = (existing.quantity || 1) + qty;
             console.log(B, 'Re-add of same design — incrementing line', {
               lineKey: existing.key,
               existingVariantId: existing.variant_id,
               requestedVariantId: variantId,
               sameVariant: String(existing.variant_id) === String(variantId),
+              linePriceCents: lineCents,
+              expectedCents: expectedCents,
               fromQty: existing.quantity,
               toQty: nextQty
             });
@@ -1271,32 +1350,7 @@
               });
           }
 
-          var body = { items: [{ id: Number(variantId), quantity: qty, properties: safeProps }] };
-          console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
-          return postCartJson('/cart/add.js', body, 15000)
-            .then(function(out) {
-              console.log(B, '/cart/add.js status:', out.res.status);
-              if (!out.res.ok) {
-                logCartFailure('cart/add.js', variantId, out.res, out.json, out.text);
-                var errMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
-                var lower = String(errMsg).toLowerCase();
-                if (out.res.status === 422 && (lower.indexOf('cannot find') !== -1 || lower.indexOf('not found') !== -1)) {
-                  console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying shortly...');
-                  throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
-                }
-                throw new Error('Cart add failed: ' + errMsg);
-              }
-
-              fetch('/cart.js', { credentials: 'same-origin' })
-                .then(function(r) { return r.json(); })
-                .then(function(after) {
-                  var lastItem = after.items && after.items.length > 0 ? after.items[after.items.length - 1] : null;
-                  console.log(B, '/cart.js after add — item_count:', after.item_count, 'last_item:', lastItem ? { title: lastItem.title, variant_id: lastItem.variant_id, has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url']) } : null);
-                })
-                .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
-
-              return out.json;
-            });
+          return postAdd(qty);
         });
     }
 
@@ -1706,13 +1760,13 @@
         function resolveFromBaseThenAdd() {
           return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl, data.price)
             .then(function(sku) {
-              return addToCart(sku.variantId, data.quantity, data.properties);
+              return addToCart(sku.variantId, data.quantity, data.properties, data.price);
             });
         }
 
         function addWithPublishRetry(variantId) {
           function attempt(n) {
-            return addToCart(variantId, data.quantity, data.properties)
+            return addToCart(variantId, data.quantity, data.properties, data.price)
               .catch(function(err) {
                 if (!(err && err.__retryable) || n >= 3) throw err;
                 var wait = n === 0 ? 600 : n === 1 ? 1200 : 2000;
@@ -2025,12 +2079,12 @@
           (payload.properties && payload.properties['_design_id']) || '';
         resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '', payload.price)
           .then(function(sku) {
-            return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {})
+            return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {}, payload.price)
               .catch(function(err) {
                 if (!(err && err.__retryable)) throw err;
                 return new Promise(function(resolve) { setTimeout(resolve, 600); })
                   .then(function() {
-                    return addToCart(err.variantId, payload.quantity || 1, payload.properties || {});
+                    return addToCart(err.variantId, payload.quantity || 1, payload.properties || {}, payload.price);
                   });
               });
           })
