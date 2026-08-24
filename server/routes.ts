@@ -10150,10 +10150,7 @@ ${orientationExtra}
         productTypeId: productTypeIdRaw,
         sizeId,
         colorId,
-        forceNew: forceNewRaw,
       } = req.body;
-      const forceNew =
-        forceNewRaw === true || String(forceNewRaw || "").toLowerCase() === "true";
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
@@ -10232,14 +10229,6 @@ ${orientationExtra}
         existingKey = key;
         break;
       }
-      let replaceExistingRow: typeof existing | undefined;
-      if (existing && existing.status === "active" && forceNew) {
-        console.log(
-          `[ShadowProduct] forceNew — retiring shadow ${existing.shopifyVariantId} and minting a new price SKU (matched key=${existingKey})`,
-        );
-        replaceExistingRow = existing;
-        existing = undefined;
-      }
       if (existing && existing.status === "active") {
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
@@ -10266,61 +10255,64 @@ ${orientationExtra}
             })
           : null;
         // Placement edits reuse the same designId — replace the variant image
-        // so cart/checkout thumbnails match the latest mockup.
+        // so cart/checkout thumbnails match the latest mockup. Fire-and-forget:
+        // these two Admin round-trips were adding ~3s to every add-to-cart and
+        // the reused shadow already has a (usually identical) image + title.
         if (existing.shopifyProductId && existing.shopifyVariantId) {
-          try {
-            const imgRes = await fetch(
-              `${apiBase}/products/${existing.shopifyProductId}/images.json`,
-              {
+          const reusedProductId = existing.shopifyProductId;
+          const reusedVariantId = existing.shopifyVariantId;
+          (async () => {
+            try {
+              const imgRes = await fetch(`${apiBase}/products/${reusedProductId}/images.json`, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({
                   image: {
                     src: mockupUrl,
-                    variant_ids: [Number(existing.shopifyVariantId)],
+                    variant_ids: [Number(reusedVariantId)],
                   },
                 }),
-              },
-            );
-            if (!imgRes.ok) {
-              const t = await imgRes.text();
+              });
+              if (!imgRes.ok) {
+                const t = await imgRes.text();
+                console.warn(
+                  `[ShadowProduct] Failed to refresh reused shadow image:`,
+                  imgRes.status,
+                  t.substring(0, 200),
+                );
+              }
+            } catch (imgErr: any) {
               console.warn(
                 `[ShadowProduct] Failed to refresh reused shadow image:`,
-                imgRes.status,
-                t.substring(0, 200),
+                imgErr?.message || imgErr,
               );
             }
-          } catch (imgErr: any) {
-            console.warn(
-              `[ShadowProduct] Failed to refresh reused shadow image:`,
-              imgErr?.message || imgErr,
-            );
-          }
-          try {
-            const titleRes = await fetch(
-              `${apiBase}/products/${existing.shopifyProductId}.json?fields=id,title`,
-              { headers },
-            );
-            if (titleRes.ok) {
-              const titleBody = (await titleRes.json()) as { product?: { title?: string } };
-              const currentTitle = String(titleBody?.product?.title || "");
-              const cleanedTitle = stripProviderSuffix(currentTitle);
-              if (cleanedTitle && cleanedTitle !== currentTitle) {
-                await fetch(`${apiBase}/products/${existing.shopifyProductId}.json`, {
-                  method: "PUT",
-                  headers,
-                  body: JSON.stringify({
-                    product: { id: Number(existing.shopifyProductId), title: cleanedTitle },
-                  }),
-                });
+            try {
+              const titleRes = await fetch(
+                `${apiBase}/products/${reusedProductId}.json?fields=id,title`,
+                { headers },
+              );
+              if (titleRes.ok) {
+                const titleBody = (await titleRes.json()) as { product?: { title?: string } };
+                const currentTitle = String(titleBody?.product?.title || "");
+                const cleanedTitle = stripProviderSuffix(currentTitle);
+                if (cleanedTitle && cleanedTitle !== currentTitle) {
+                  await fetch(`${apiBase}/products/${reusedProductId}.json`, {
+                    method: "PUT",
+                    headers,
+                    body: JSON.stringify({
+                      product: { id: Number(reusedProductId), title: cleanedTitle },
+                    }),
+                  });
+                }
               }
+            } catch (titleErr: any) {
+              console.warn(
+                `[ShadowProduct] Failed to strip provider from reused shadow title:`,
+                titleErr?.message || titleErr,
+              );
             }
-          } catch (titleErr: any) {
-            console.warn(
-              `[ShadowProduct] Failed to strip provider from reused shadow title:`,
-              titleErr?.message || titleErr,
-            );
-          }
+          })();
         }
         return res.json({
           success: true,
@@ -10464,30 +10456,18 @@ ${orientationExtra}
       }
 
       // 8. Persist the shadow product record in our DB
-      if (replaceExistingRow) {
-        await storage.updatePublishedProduct(replaceExistingRow.id, {
-          shopifyProductId: String(shadowProduct.id),
-          shopifyVariantId: String(shadowVariant.id),
-          shopifyProductHandle: shadowProduct.handle || null,
-          baseVariantId: String(variantId),
-          status: "active",
-          expiresAt: sixHoursFromNow,
-          cartAddedAt: null,
-        });
-      } else {
-        await storage.createPublishedProduct({
-          shop,
-          designId: persistDesignId,
-          customerKey: null,
-          shopifyProductId: String(shadowProduct.id),
-          shopifyVariantId: String(shadowVariant.id),
-          shopifyProductHandle: shadowProduct.handle || null,
-          baseVariantId: String(variantId),
-          status: 'active',
-          expiresAt: sixHoursFromNow,
-          cartAddedAt: null,
-        } as any);
-      }
+      await storage.createPublishedProduct({
+        shop,
+        designId: persistDesignId,
+        customerKey: null,
+        shopifyProductId: String(shadowProduct.id),
+        shopifyVariantId: String(shadowVariant.id),
+        shopifyProductHandle: shadowProduct.handle || null,
+        baseVariantId: String(variantId),
+        status: 'active',
+        expiresAt: sixHoursFromNow,
+        cartAddedAt: null,
+      } as any);
 
       // 9. Phase 3 shipping: associate the new shadow into its base variant's
       // delivery profile (no-op unless the shop is in table mode). Fire and
@@ -10505,26 +10485,10 @@ ${orientationExtra}
           console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
         );
 
-      if (replaceExistingRow?.shopifyProductId) {
-        const retiredId = replaceExistingRow.shopifyProductId;
-        fetch(`${apiBase}/products/${retiredId}.json`, { method: "DELETE", headers })
-          .then((r) => {
-            if (!r.ok) {
-              console.warn(`[ShadowProduct] Failed to delete retired shadow ${retiredId}:`, r.status);
-              return;
-            }
-            console.log(`[ShadowProduct] Deleted retired shadow product ${retiredId}`);
-          })
-          .catch((e: any) =>
-            console.warn(`[ShadowProduct] Delete retired shadow failed:`, e?.message || e),
-          );
-      }
-
       return res.json({
         success: true,
         variantId: String(shadowVariant.id),
         created: true,
-        forceNew: !!replaceExistingRow,
         designId: persistDesignId,
         price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
         priceSource: overridePriceFormatted ? "both" : "front",
