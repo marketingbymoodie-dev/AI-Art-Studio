@@ -8635,7 +8635,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         quantity: payload.quantity,
         properties: payload.properties,
         ...(payload.price ? { price: payload.price } : {}),
-        _bridgeVersion: '1.0.0',
+        _bridgeVersion: '1.0.2',
       };
 
       // Send to parent (primary target)

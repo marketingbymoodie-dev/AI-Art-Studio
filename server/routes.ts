@@ -10150,7 +10150,10 @@ ${orientationExtra}
         productTypeId: productTypeIdRaw,
         sizeId,
         colorId,
+        forceNew: forceNewRaw,
       } = req.body;
+      const forceNew =
+        forceNewRaw === true || String(forceNewRaw || "").toLowerCase() === "true";
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
@@ -10228,6 +10231,14 @@ ${orientationExtra}
         existing = row;
         existingKey = key;
         break;
+      }
+      let replaceExistingRow: typeof existing | undefined;
+      if (existing && existing.status === "active" && forceNew) {
+        console.log(
+          `[ShadowProduct] forceNew — retiring shadow ${existing.shopifyVariantId} and minting a new price SKU (matched key=${existingKey})`,
+        );
+        replaceExistingRow = existing;
+        existing = undefined;
       }
       if (existing && existing.status === "active") {
         console.log(
@@ -10453,18 +10464,30 @@ ${orientationExtra}
       }
 
       // 8. Persist the shadow product record in our DB
-      await storage.createPublishedProduct({
-        shop,
-        designId: persistDesignId,
-        customerKey: null,
-        shopifyProductId: String(shadowProduct.id),
-        shopifyVariantId: String(shadowVariant.id),
-        shopifyProductHandle: shadowProduct.handle || null,
-        baseVariantId: String(variantId),
-        status: 'active',
-        expiresAt: sixHoursFromNow,
-        cartAddedAt: null,
-      } as any);
+      if (replaceExistingRow) {
+        await storage.updatePublishedProduct(replaceExistingRow.id, {
+          shopifyProductId: String(shadowProduct.id),
+          shopifyVariantId: String(shadowVariant.id),
+          shopifyProductHandle: shadowProduct.handle || null,
+          baseVariantId: String(variantId),
+          status: "active",
+          expiresAt: sixHoursFromNow,
+          cartAddedAt: null,
+        });
+      } else {
+        await storage.createPublishedProduct({
+          shop,
+          designId: persistDesignId,
+          customerKey: null,
+          shopifyProductId: String(shadowProduct.id),
+          shopifyVariantId: String(shadowVariant.id),
+          shopifyProductHandle: shadowProduct.handle || null,
+          baseVariantId: String(variantId),
+          status: 'active',
+          expiresAt: sixHoursFromNow,
+          cartAddedAt: null,
+        } as any);
+      }
 
       // 9. Phase 3 shipping: associate the new shadow into its base variant's
       // delivery profile (no-op unless the shop is in table mode). Fire and
@@ -10482,10 +10505,26 @@ ${orientationExtra}
           console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
         );
 
+      if (replaceExistingRow?.shopifyProductId) {
+        const retiredId = replaceExistingRow.shopifyProductId;
+        fetch(`${apiBase}/products/${retiredId}.json`, { method: "DELETE", headers })
+          .then((r) => {
+            if (!r.ok) {
+              console.warn(`[ShadowProduct] Failed to delete retired shadow ${retiredId}:`, r.status);
+              return;
+            }
+            console.log(`[ShadowProduct] Deleted retired shadow product ${retiredId}`);
+          })
+          .catch((e: any) =>
+            console.warn(`[ShadowProduct] Delete retired shadow failed:`, e?.message || e),
+          );
+      }
+
       return res.json({
         success: true,
         variantId: String(shadowVariant.id),
         created: true,
+        forceNew: !!replaceExistingRow,
         designId: persistDesignId,
         price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
         priceSource: overridePriceFormatted ? "both" : "front",

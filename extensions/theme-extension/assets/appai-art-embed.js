@@ -1007,7 +1007,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.1';
+    var BRIDGE_VERSION = '1.0.2';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -1107,7 +1107,7 @@
     // This ensures each cart line item has its own variant image at checkout
     // without requiring Shopify Plus. Falls back to the original variantId if
     // the endpoint is unavailable or returns an error.
-    function resolveDesignSku(sourceVariantId, designId, mockupUrl, retailPrice) {
+    function resolveDesignSku(sourceVariantId, designId, mockupUrl, retailPrice, forceNew) {
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
       var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
@@ -1135,6 +1135,7 @@
       };
       if (productId) resolveBody.productId = String(productId);
       if (retailPrice) resolveBody.price = String(retailPrice);
+      if (forceNew) resolveBody.forceNew = true;
       return fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1303,54 +1304,59 @@
           var existing = findMatchingCartLine(cart, variantId, safeProps);
           if (existing) {
             var lineCents = cartLinePriceCents(existing);
-            var priceMismatch = expectedCents != null && lineCents != null && Math.abs(lineCents - expectedCents) > 1;
-            // Shopify locks line price at first add. Incrementing a $27 line after
-            // we PUT the shadow to $18.95 keeps charging $27.
-            if (priceMismatch) {
-              var replaceQty = (existing.quantity || 1) + qty;
-              console.log(B, 'Re-add of same design — replacing line (stale locked price)', {
-                lineKey: existing.key,
-                existingVariantId: existing.variant_id,
-                requestedVariantId: variantId,
-                linePriceCents: lineCents,
-                expectedCents: expectedCents,
-                replaceQty: replaceQty
-              });
-              return postCartJson('/cart/change.js', { id: existing.key, quantity: 0 }, 15000)
-                .then(function(out) {
-                  if (!out.res.ok) {
-                    logCartFailure('cart/change.js', existing.variant_id, out.res, out.json, out.text);
-                    var dropMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
-                    throw new Error('Cart change failed: ' + dropMsg);
-                  }
-                  return postAdd(replaceQty);
-                });
-            }
-
-            var nextQty = (existing.quantity || 1) + qty;
-            console.log(B, 'Re-add of same design — incrementing line', {
+            var replaceQty = (existing.quantity || 1) + qty;
+            // Never increment. Shopify locks the line price at first add, so
+            // /cart/change.js qty++ keeps a stale $27 after Admin is $18.95.
+            console.log(B, 'Replacing existing AppAI line (never increment)', {
               lineKey: existing.key,
               existingVariantId: existing.variant_id,
               requestedVariantId: variantId,
-              sameVariant: String(existing.variant_id) === String(variantId),
               linePriceCents: lineCents,
               expectedCents: expectedCents,
-              fromQty: existing.quantity,
-              toQty: nextQty
+              replaceQty: replaceQty
             });
-            return postCartJson('/cart/change.js', { id: existing.key, quantity: nextQty }, 15000)
+            return postCartJson('/cart/change.js', { id: existing.key, quantity: 0 }, 15000)
               .then(function(out) {
                 if (!out.res.ok) {
                   logCartFailure('cart/change.js', existing.variant_id, out.res, out.json, out.text);
-                  var changeMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
-                  throw new Error('Cart change failed: ' + changeMsg);
+                  var dropMsg = (out.json && (out.json.description || out.json.message)) || out.text || ('HTTP ' + out.res.status);
+                  throw new Error('Cart change failed: ' + dropMsg);
                 }
-                console.log(B, '/cart/change.js status:', out.res.status, 'item_count:', out.json && out.json.item_count);
-                return out.json;
+                return postAdd(replaceQty);
               });
           }
 
           return postAdd(qty);
+        });
+    }
+
+    function addedItemPriceCents(added) {
+      if (!added) return null;
+      var item = added.items && added.items[0] ? added.items[0] : added;
+      return cartLinePriceCents(item);
+    }
+
+    function remintIfCartPriceStale(added, usedVariantId, qty, properties, expectedPrice, baseVariantId, designId, mockupUrl) {
+      var expectedCents = parseExpectedPriceCents(expectedPrice);
+      var got = addedItemPriceCents(added);
+      var addedVariant = added && added.items && added.items[0] && added.items[0].variant_id
+        ? added.items[0].variant_id
+        : usedVariantId;
+      if (expectedCents == null || got == null || Math.abs(got - expectedCents) <= 1) {
+        return Promise.resolve(added);
+      }
+      console.warn(B, 'Cart add still at stale Shopify price — minting a new shadow SKU', {
+        usedVariantId: addedVariant,
+        gotCents: got,
+        expectedCents: expectedCents
+      });
+      return resolveDesignSku(baseVariantId, designId, mockupUrl, expectedPrice, true)
+        .then(function(sku) {
+          if (!sku || !sku.variantId || String(sku.variantId) === String(addedVariant)) {
+            console.warn(B, 'forceNew did not return a new variant — leaving stale cart price');
+            return added;
+          }
+          return addToCart(sku.variantId, qty, properties, expectedPrice);
         });
     }
 
@@ -1760,7 +1766,7 @@
         function resolveFromBaseThenAdd() {
           return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl, data.price)
             .then(function(sku) {
-              return addToCart(sku.variantId, data.quantity, data.properties, data.price);
+              return addAndEnsurePrice(sku.variantId);
             });
         }
 
@@ -1778,10 +1784,25 @@
           return attempt(0);
         }
 
+        function addAndEnsurePrice(variantId) {
+          return addWithPublishRetry(variantId).then(function(added) {
+            return remintIfCartPriceStale(
+              added,
+              variantId,
+              data.quantity || 1,
+              data.properties || {},
+              data.price,
+              atcBaseVariantId,
+              atcDesignId,
+              atcMockupUrl
+            );
+          });
+        }
+
         var addPromise;
         if (alreadyShadow) {
           console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId);
-          addPromise = addWithPublishRetry(data.variantId).catch(function(err) {
+          addPromise = addAndEnsurePrice(data.variantId).catch(function(err) {
             var msg = (err && err.message) || String(err || '');
             var soldOut = /sold out|cannot add more/i.test(msg);
             if (soldOut) {
@@ -2086,6 +2107,18 @@
                   .then(function() {
                     return addToCart(err.variantId, payload.quantity || 1, payload.properties || {}, payload.price);
                   });
+              })
+              .then(function(added) {
+                return remintIfCartPriceStale(
+                  added,
+                  sku.variantId,
+                  payload.quantity || 1,
+                  payload.properties || {},
+                  payload.price,
+                  payload.variantId,
+                  btnDesignId,
+                  mockupUrl || ''
+                );
               });
           })
           .then(function(cart) {
