@@ -520,6 +520,27 @@ export const stylePresets = pgTable("style_presets", {
   descriptionOptional: boolean("description_optional").notNull().default(false),
   /** merchant = Shopify app row; global/custom = creator-platform catalog eligibility. */
   creatorScope: text("creator_scope").notNull().default("merchant"),
+  /**
+   * Slot-composed base prompt. Null on every existing row and the version switch for the
+   * new composition path: null = legacy `promptPrefix` concatenation, byte-identical to
+   * today. `promptPrefix` / `promptPrefixDark` are frozen and never read or written here.
+   * Clearing this column reverts a style to legacy handling.
+   */
+  promptTemplate: text("prompt_template"),
+  /** APPAREL_TRANSPARENT | FULL_BLEED. Null = fall back to `category` behaviour. */
+  outputMode: text("output_mode"),
+  negativePrompt: text("negative_prompt"),
+  /** Per-style chroma plate colour. Null = global #FF00FF. */
+  chromaHex: text("chroma_hex"),
+  paletteMaxColors: integer("palette_max_colors"),
+  /** Max coverage before crackle risk. */
+  inkLoadCeilingPercent: integer("ink_load_ceiling_percent"),
+  /** Per-style override of the APPAREL_VECTORIZE env. Null = use env. */
+  vectorizeEnabled: boolean("vectorize_enabled"),
+  /** Supported ratios for full-bleed output. */
+  aspectRatios: jsonb("aspect_ratios"),
+  /** Slot definitions the customer fills. */
+  userSlotSchema: jsonb("user_slot_schema"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -531,6 +552,84 @@ export const insertStylePresetSchema = createInsertSchema(stylePresets).omit({
 });
 export type StylePresetDB = typeof stylePresets.$inferSelect;
 export type InsertStylePreset = z.infer<typeof insertStylePresetSchema>;
+
+/** One-tap starting points for a style: a complete slot set, not a prompt fragment. */
+export const stylePromptSuggestions = pgTable(
+  "style_prompt_suggestions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    stylePresetId: integer("style_preset_id").notNull(),
+    /** User-facing chip text. */
+    label: text("label").notNull(),
+    /** Complete slot set — one tap must yield a viable design. */
+    slotValues: jsonb("slot_values").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    timesUsed: integer("times_used").notNull().default(0),
+    timesPublished: integer("times_published").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("style_prompt_suggestions_style_idx").on(table.stylePresetId)],
+);
+
+export const insertStylePromptSuggestionSchema = createInsertSchema(stylePromptSuggestions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type StylePromptSuggestion = typeof stylePromptSuggestions.$inferSelect;
+export type InsertStylePromptSuggestion = z.infer<typeof insertStylePromptSuggestionSchema>;
+
+/** Reusable blocked-term sets. Separate table so one set can back several stores. */
+export const ipGuardrails = pgTable("ip_guardrails", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  /** String array — exact + fuzzy terms. */
+  blockedTerms: jsonb("blocked_terms").notNull().default(sql`'[]'::jsonb`),
+  /** Appended to every negative prompt in scope. */
+  negativeInjection: text("negative_injection"),
+  postGenOcrCheck: boolean("post_gen_ocr_check").notNull().default(false),
+  /** BLOCK | FLAG_FOR_REVIEW */
+  severity: text("severity").notNull().default("BLOCK"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertIpGuardrailSchema = createInsertSchema(ipGuardrails).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type IpGuardrail = typeof ipGuardrails.$inferSelect;
+export type InsertIpGuardrail = z.infer<typeof insertIpGuardrailSchema>;
+
+/** Per-creator niche storefront identity. `ipGuardrailId` points at ip_guardrails (no FK, repo convention). */
+export const nicheStoreConfigs = pgTable(
+  "niche_store_configs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    brandName: text("brand_name").notNull(),
+    niche: text("niche").notNull(),
+    voiceGuidelines: text("voice_guidelines"),
+    printedInUsa: boolean("printed_in_usa").notNull().default(false),
+    /** Badges, shipping copy, claims. */
+    trustConfig: jsonb("trust_config"),
+    ipGuardrailId: varchar("ip_guardrail_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("niche_store_configs_creator_uidx").on(table.creatorId)],
+);
+
+export const insertNicheStoreConfigSchema = createInsertSchema(nicheStoreConfigs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type NicheStoreConfig = typeof nicheStoreConfigs.$inferSelect;
+export type InsertNicheStoreConfig = z.infer<typeof insertNicheStoreConfigSchema>;
 
 // Product types for different customizable products (Framed Prints, Pillows, Mugs, etc.)
 export const productTypes = pgTable("product_types", {

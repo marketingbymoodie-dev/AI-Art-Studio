@@ -62,6 +62,17 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'style_presets',         column: 'options',                     type: 'JSONB' },
   { table: 'style_presets',         column: 'description_optional',        type: 'BOOLEAN NOT NULL DEFAULT FALSE' },
   { table: "style_presets",         column: "creator_scope",               type: "TEXT NOT NULL DEFAULT 'merchant'" },
+  // Style schema extension (WP1). Purely additive: every column nullable, no default,
+  // no backfill. Null means "behave exactly as before". prompt_prefix is untouched.
+  { table: "style_presets",         column: "prompt_template",             type: "TEXT" },
+  { table: "style_presets",         column: "output_mode",                 type: "TEXT" },
+  { table: "style_presets",         column: "negative_prompt",             type: "TEXT" },
+  { table: "style_presets",         column: "chroma_hex",                  type: "TEXT" },
+  { table: "style_presets",         column: "palette_max_colors",          type: "INTEGER" },
+  { table: "style_presets",         column: "ink_load_ceiling_percent",    type: "INTEGER" },
+  { table: "style_presets",         column: "vectorize_enabled",           type: "BOOLEAN" },
+  { table: "style_presets",         column: "aspect_ratios",               type: "JSONB" },
+  { table: "style_presets",         column: "user_slot_schema",            type: "JSONB" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -1392,6 +1403,55 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "style_prompt_suggestions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_prompt_suggestions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "style_preset_id" integer NOT NULL,
+        "label" text NOT NULL,
+        "slot_values" jsonb NOT NULL,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "times_used" integer NOT NULL DEFAULT 0,
+        "times_published" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "ip_guardrails",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "ip_guardrails" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "name" text NOT NULL,
+        "blocked_terms" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "negative_injection" text,
+        "post_gen_ocr_check" boolean NOT NULL DEFAULT false,
+        "severity" text NOT NULL DEFAULT 'BLOCK',
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "niche_store_configs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "niche_store_configs" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "brand_name" text NOT NULL,
+        "niche" text NOT NULL,
+        "voice_guidelines" text,
+        "printed_in_usa" boolean NOT NULL DEFAULT false,
+        "trust_config" jsonb,
+        "ip_guardrail_id" varchar,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_notes",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_notes" (
@@ -2062,6 +2122,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_style_assignments_style_idx",
     sql: `CREATE INDEX IF NOT EXISTS "creator_style_assignments_style_idx"
       ON "creator_style_assignments" ("style_preset_id")`,
+  },
+  {
+    name: "style_prompt_suggestions_style_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "style_prompt_suggestions_style_idx"
+      ON "style_prompt_suggestions" ("style_preset_id")`,
+  },
+  {
+    name: "niche_store_configs_creator_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "niche_store_configs_creator_uidx"
+      ON "niche_store_configs" ("creator_id")`,
   },
   {
     name: "creator_pack_purchases_creator_idx",
