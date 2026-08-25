@@ -410,6 +410,7 @@ async function resolveFxRate(
   if (persist) {
     await updateStoreShippingSettings(shop, {
       pinnedFxRate: String(rounded),
+      pinnedFxCurrency: shopCurrency,
       pinnedFxAt: new Date(),
     });
   }

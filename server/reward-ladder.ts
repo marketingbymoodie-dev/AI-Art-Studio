@@ -7,23 +7,34 @@
  *                          the rung row exists so the admin UI can display / disable it.
  *   - email_signup       : granted once per customer after Studio Art Class newsletter signup
  *                          (platform-funded pack credits — does not burn shop quota).
- *   - share_design       : granted to the sharer once a *different* visitor opens the share link.
- *   - purchase_threshold : granted after a paid Shopify order clears `thresholdCents`.
- *                          On by default once order webhooks are available; set
- *                          PURCHASE_REWARDS_ENABLED=false as a kill switch.
+ *   - share_design       : one credit per distinct shared design that gets a
+ *                          non-owner view. Keyed on shareId (not visitor/session).
+ *   - purchase_threshold : granted after a paid Shopify order's USD-equivalent
+ *                          (pinned shipping FX) clears `thresholdCents` (USD cents).
+ *                          Repeatable per distinct order id. Kill switch:
+ *                          PURCHASE_REWARDS_ENABLED=false.
  *
  * Grants are always idempotent:
- *   - reward_grants has UNIQUE (shop, customer_id, rung_key) so a rung is granted at most once per customer.
- *   - credit_ledger idempotency_key is derived from the rung + customer + shop (+ related entity when relevant),
- *     so the underlying wallet mutation never double-applies even under retries.
+ *   - email_signup: UNIQUE (shop, customer_id, rung_key) — once per customer per shop.
+ *   - share_design / purchase_threshold: UNIQUE (…, related_entity_id) after the listed
+ *     SQL in server/migrations/reward-grants-repeatable-rungs.sql (not auto-run).
+ *   - credit_ledger idempotency_key includes related entity for those two rungs.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, like, or } from "drizzle-orm";
 import { db, pool } from "./db";
 import { rewardGrants, rewardLadderRungs, type RewardLadderRung } from "@shared/schema";
 import { grantStudioCredits, clawbackStudioCredits, type CreditSource } from "./studio-credits";
 import { storage } from "./storage";
 import { clampStorefrontFreeGens, STOREFRONT_FREE_GENERATION_DEFAULT } from "@shared/storefront-credits";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
+import {
+  isRepeatableRewardRung,
+  purchaseRelatedEntityId,
+  shareDesignRelatedEntityId,
+  shareGrantMatchesShareId,
+  shopCentsToUsdCents,
+} from "@shared/reward-grants";
+import { readPinnedUsdToCurrency } from "./pinned-fx";
 
 export type RewardRungKey =
   | "free_anonymous"
@@ -325,8 +336,9 @@ export type GrantRungResult = {
 };
 
 /**
- * Grant a rung to a customer. Idempotent per shop+customer+rungKey.
- * Also idempotent on the underlying ledger via `reward:<rung>:<customer>[:<related>]`.
+ * Grant a rung to a customer.
+ * Newsletter: once per shop+customer+rung.
+ * Share / purchase: once per shop+customer+rung+relatedEntityId (shareId or order id).
  */
 export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantRungResult> {
   const shop = normalizeShop(input.shop);
@@ -343,30 +355,25 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
   const isolateToCreator = !!input.creatorId && source === "earned";
   const grantShop = isolateToCreator ? rewardGrantShopScope(shop, input.creatorId) : shop;
 
-  // Ledger key: for share_design we want ONE grant per sharer (unique on shop+customer+rung),
-  // but the specific viewer visit is captured in relatedEntityId. For purchase_threshold we
-  // deliberately want per-order grants — the caller supplies a per-order rung customization
-  // by passing a rungKey that includes the order id (see tryGrantPurchaseThreshold).
   const relatedEntityId = input.relatedEntityId ?? null;
-  const idempotencySuffix = relatedEntityId ? `:${relatedEntityId}` : "";
+  if (isRepeatableRewardRung(input.rungKey) && !relatedEntityId) {
+    return { granted: false, duplicate: false, amount: 0, reason: "missing related entity" };
+  }
+  const idempotencySuffix =
+    isRepeatableRewardRung(input.rungKey) && relatedEntityId ? `:${relatedEntityId}` : "";
   const idempotencyKey = `reward:${input.rungKey}:${grantShop}:${input.customerId}${idempotencySuffix}`;
 
-  // Fast pre-check: bail if we already recorded a reward_grant for this rung.
-  const [existingGrant] = await db
-    .select()
-    .from(rewardGrants)
-    .where(
-      and(
-        eq(rewardGrants.shop, grantShop),
-        eq(rewardGrants.customerId, input.customerId),
-        eq(rewardGrants.rungKey, input.rungKey),
-      ),
-    );
+  const existingGrant = await findExistingRewardGrant({
+    grantShop,
+    customerId: input.customerId,
+    rungKey: input.rungKey,
+    relatedEntityId,
+  });
   if (existingGrant) {
     return { granted: false, duplicate: true, amount: existingGrant.creditsGranted, reason: "already granted" };
   }
 
-  // Insert reward_grants first (unique on shop+customer+rung protects us).
+  // Insert reward_grants first (unique / onConflictDoNothing is the race guard).
   const [inserted] = await db
     .insert(rewardGrants)
     .values({
@@ -410,6 +417,44 @@ export async function grantRungIfEligible(input: GrantRungInput): Promise<GrantR
   });
 
   return { granted: true, duplicate: !grant.inserted, amount };
+}
+
+async function findExistingRewardGrant(params: {
+  grantShop: string;
+  customerId: string;
+  rungKey: RewardRungKey;
+  relatedEntityId: string | null;
+}) {
+  const base = and(
+    eq(rewardGrants.shop, params.grantShop),
+    eq(rewardGrants.customerId, params.customerId),
+    eq(rewardGrants.rungKey, params.rungKey),
+  );
+  if (params.rungKey === "share_design" && params.relatedEntityId) {
+    const shareId = shareDesignRelatedEntityId(params.relatedEntityId);
+    const rows = await db
+      .select()
+      .from(rewardGrants)
+      .where(
+        and(
+          base,
+          or(
+            eq(rewardGrants.relatedEntityId, shareId),
+            like(rewardGrants.relatedEntityId, `${shareId}:%`),
+          ),
+        ),
+      );
+    return rows.find((r) => shareGrantMatchesShareId(r.relatedEntityId, shareId)) ?? null;
+  }
+  if (params.rungKey === "purchase_threshold" && params.relatedEntityId) {
+    const [row] = await db
+      .select()
+      .from(rewardGrants)
+      .where(and(base, eq(rewardGrants.relatedEntityId, params.relatedEntityId)));
+    return row ?? null;
+  }
+  const [row] = await db.select().from(rewardGrants).where(base);
+  return row ?? null;
 }
 
 export async function tryGrantEmailSignup(
@@ -457,11 +502,12 @@ export async function tryGrantShareDesign(params: {
   if (visitorKey && visitorKey === ownerCustomerId) {
     return { granted: false, duplicate: false, amount: 0, reason: "visitor is owner" };
   }
+  // Keyed on shareId only. shareId:visitor would pay per incognito/self-session.
   return grantRungIfEligible({
     shop,
     customerId: ownerCustomerId,
     rungKey: "share_design",
-    relatedEntityId: `${shareId}:${visitorKey ?? visitorCustomerId ?? "anon"}`,
+    relatedEntityId: shareDesignRelatedEntityId(shareId),
     metadata: { shareId, visitorCustomerId: visitorCustomerId ?? null, visitorKey: visitorKey ?? null },
     creatorId: params.creatorId,
   });
@@ -476,6 +522,8 @@ export async function tryGrantPurchaseThreshold(params: {
   customerId: string;
   orderId: string;
   subtotalCents: number;
+  /** Shopify shop/presentment currency of subtotalCents. */
+  currency?: string | null;
   creatorId?: string | null;
 }): Promise<GrantRungResult> {
   if (!PURCHASE_REWARDS_ENABLED()) {
@@ -484,18 +532,32 @@ export async function tryGrantPurchaseThreshold(params: {
   const shop = normalizeShop(params.shop);
   const rung = await loadEnabledRung(shop, "purchase_threshold");
   if (!rung) return { granted: false, duplicate: false, amount: 0, reason: "rung disabled" };
-  const threshold = rung.thresholdCents ?? 0;
-  if (params.subtotalCents < threshold) {
+  const thresholdUsdCents = rung.thresholdCents ?? 5000;
+  const currency = String(params.currency || "USD").trim().toUpperCase() || "USD";
+  const pinnedRate = await readPinnedUsdToCurrency({ currency, shop });
+  const usdCents =
+    currency === "USD"
+      ? Math.round(Number(params.subtotalCents) || 0)
+      : shopCentsToUsdCents(params.subtotalCents, pinnedRate);
+  if (usdCents == null) {
+    return { granted: false, duplicate: false, amount: 0, reason: "no pinned fx" };
+  }
+  if (usdCents < thresholdUsdCents) {
     return { granted: false, duplicate: false, amount: 0, reason: "below threshold" };
   }
-  // Per-order idempotency: include the orderId in the ledger key by using it as relatedEntityId.
-  // (reward_grants unique still allows only ONE purchase_threshold rung ever per customer.)
+  const orderId = purchaseRelatedEntityId(params.orderId);
   return grantRungIfEligible({
     shop,
     customerId: params.customerId,
     rungKey: "purchase_threshold",
-    relatedEntityId: params.orderId,
-    metadata: { orderId: params.orderId, subtotalCents: params.subtotalCents },
+    relatedEntityId: orderId,
+    metadata: {
+      orderId,
+      subtotalCents: params.subtotalCents,
+      currency,
+      usdCents,
+      pinnedRate,
+    },
     creatorId: params.creatorId,
   });
 }
@@ -514,13 +576,18 @@ export async function clawbackPurchaseThresholdForOrder(params: {
   idempotencyKey: string;
 }): Promise<{ clawedGrants: number }> {
   const shop = normalizeShop(params.shop);
+  const orderId = purchaseRelatedEntityId(params.orderId);
+  const raw = String(params.orderId || "").trim();
+  const orderKeys = Array.from(
+    new Set([orderId, raw, orderId ? `gid://shopify/Order/${orderId}` : ""].filter(Boolean)),
+  );
   const grants = await db
     .select()
     .from(rewardGrants)
     .where(
       and(
         eq(rewardGrants.rungKey, "purchase_threshold"),
-        eq(rewardGrants.relatedEntityId, params.orderId),
+        inArray(rewardGrants.relatedEntityId, orderKeys),
       ),
     );
   let clawed = 0;
@@ -536,7 +603,7 @@ export async function clawbackPurchaseThresholdForOrder(params: {
         idempotencyKey: `${params.idempotencyKey}:${g.customerId}`,
         shop: g.shop,
         reason: params.reason,
-        relatedEntityId: params.orderId,
+        relatedEntityId: orderId,
       });
       clawed++;
       continue;
@@ -549,7 +616,7 @@ export async function clawbackPurchaseThresholdForOrder(params: {
       reason: params.reason,
       idempotencyKey: `${params.idempotencyKey}:${g.customerId}`,
       shop,
-      relatedEntityId: params.orderId,
+      relatedEntityId: orderId,
       metadata: { rungKey: "purchase_threshold", grantId: g.id },
     });
     clawed++;

@@ -127,7 +127,13 @@ export const insertRewardLadderRungSchema = createInsertSchema(rewardLadderRungs
 export type RewardLadderRung = typeof rewardLadderRungs.$inferSelect;
 export type InsertRewardLadderRung = z.infer<typeof insertRewardLadderRungSchema>;
 
-/** Idempotent grant of a Reward Ladder rung to a customer (or anon identity). */
+/**
+ * Reward Ladder grants.
+ * Intended uniqueness (see server/migrations/reward-grants-repeatable-rungs.sql — not auto-run):
+ *   email_signup / other: UNIQUE (shop, customer_id, rung_key)
+ *   share_design / purchase_threshold: UNIQUE (shop, customer_id, rung_key, related_entity_id)
+ * Drizzle still declares the old once-per-rung index so `drizzle-kit push` does not drop it first.
+ */
 export const rewardGrants = pgTable("reward_grants", {
   id: serial("id").primaryKey(),
   shop: text("shop").notNull(),
@@ -2237,6 +2243,8 @@ export const shippingStoreSettings = pgTable(
      * when drift exceeds SHIPPING_FX_REPIN_DRIFT (default 7.5%).
      */
     pinnedFxRate: text("pinned_fx_rate"),
+    /** ISO-4217 the pin converts into (USD→this). Needed so rewards display can reuse the shop pin. */
+    pinnedFxCurrency: text("pinned_fx_currency"),
     pinnedFxAt: timestamp("pinned_fx_at"),
     lastReconcileAt: timestamp("last_reconcile_at"),
     /** ok | error | partial */

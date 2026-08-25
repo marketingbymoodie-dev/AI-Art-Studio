@@ -2458,6 +2458,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     enabled: boolean;
     creditAmount: number;
     thresholdCents: number | null;
+    /** Server-rendered label in the Phase 4 shopper currency (e.g. "AUD $76"). */
+    thresholdDisplay?: string | null;
     sortOrder?: number;
   };
   type PublicRewardLadder = {
@@ -3130,8 +3132,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return `Share a design — earn ${credits} when someone opens your link`;
     }
     if (rung.rungKey === "purchase_threshold") {
-      const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
-      return `Order over $${dollars} — earn ${credits}`;
+      const label = rung.thresholdDisplay || `$${(rung.thresholdCents ?? 5000) / 100} USD`;
+      return `Order over ${label} — earn ${credits}`;
     }
     return credits;
   }, []);
@@ -13876,10 +13878,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       </li>
                     );
                   }
-                  const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
+                  const label = rung.thresholdDisplay || `$${(rung.thresholdCents ?? 5000) / 100} USD`;
                   return (
                     <li key={rung.rungKey}>
-                      Make a physical purchase over ${dollars} = {creditLabel}
+                      Make a physical purchase over {label} = {creditLabel}
                     </li>
                   );
                 })}

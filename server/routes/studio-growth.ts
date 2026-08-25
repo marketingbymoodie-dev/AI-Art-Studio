@@ -30,16 +30,33 @@ export function registerStudioGrowthRoutes(
       if (!isNewsletterSource(source)) {
         return res.status(400).json({ error: "Unknown signup source." });
       }
+      const shopDomain = body.shop || body.shopDomain || null;
+      const creatorUsername = body.creatorUsername || null;
+      const customerId = body.customerId || null;
+      console.log("[newsletter] subscribe hit", {
+        source,
+        shop: shopDomain || null,
+        creatorUsername: creatorUsername || null,
+        hasCustomerId: !!customerId,
+      });
       const result = await subscribeToStudioNewsletter({
         email: String(body.email || ""),
         source,
-        shopDomain: body.shop || body.shopDomain || null,
-        creatorUsername: body.creatorUsername || null,
-        customerId: body.customerId || null,
+        shopDomain,
+        creatorUsername,
+        customerId,
       });
       if (!result.ok) {
         return res.status(400).json({ error: result.reason });
       }
+      console.log("[newsletter] subscribe result", {
+        source,
+        shop: shopDomain || null,
+        alreadySubscribed: result.alreadySubscribed,
+        creditGranted: result.creditGranted,
+        creditAlreadyClaimed: result.creditAlreadyClaimed,
+        creditAmount: result.creditAmount,
+      });
       return res.json(result);
     } catch (e: any) {
       console.error("[newsletter] subscribe failed:", e);

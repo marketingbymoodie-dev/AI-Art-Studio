@@ -124,6 +124,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "creators",                  column: "previous_username",       type: "TEXT" },
   { table: "help_articles",             column: "demo_url",                type: "TEXT" },
+  { table: "shipping_store_settings",   column: "pinned_fx_currency",      type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -1675,6 +1676,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "probed_max_rates_per_zone" integer,
         "probed_at" timestamp,
         "pinned_fx_rate" text,
+        "pinned_fx_currency" text,
         "pinned_fx_at" timestamp,
         "last_reconcile_at" timestamp,
         "last_reconcile_status" text,

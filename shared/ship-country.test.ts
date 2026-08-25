@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SHIP_COUNTRY,
+  currencyForShipCountry,
   normalizeShipCountry,
   resolveShipCountryDecision,
   shipCountryFlag,
@@ -76,5 +77,14 @@ describe("shipCountryCookieOptions", () => {
 describe("shipCountryFlag", () => {
   it("renders AU as the Australian flag", () => {
     expect(shipCountryFlag("AU")).toBe("🇦🇺");
+  });
+});
+
+describe("currencyForShipCountry", () => {
+  it("maps Phase 4 countries — same source shipping/gating use", () => {
+    expect(currencyForShipCountry("AU")).toBe("AUD");
+    expect(currencyForShipCountry("GB")).toBe("GBP");
+    expect(currencyForShipCountry("US")).toBe("USD");
+    expect(currencyForShipCountry("DE")).toBe("EUR");
   });
 });

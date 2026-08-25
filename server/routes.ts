@@ -155,6 +155,10 @@ import {
   lookupAndBlockStorefrontGenerate,
   resolveShipCountryFromRequest,
 } from "./shipping-generate-gate";
+import { resolvedShipCountryFromReq } from "./ship-country-middleware";
+import { currencyForShipCountry } from "@shared/ship-country";
+import { formatPurchaseThresholdDisplay } from "@shared/reward-grants";
+import { readPinnedUsdToCurrency } from "./pinned-fx";
 import {
   ensureRewardLadder,
   getRewardLadder,
@@ -11108,6 +11112,12 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const ladder = await ensureRewardLadder(installation.shopDomain);
+      const shopperCountry = resolvedShipCountryFromReq(req).country;
+      const shopperCurrency = currencyForShipCountry(shopperCountry);
+      const usdToShopperRate = await readPinnedUsdToCurrency({
+        currency: shopperCurrency,
+        shop: installation.shopDomain,
+      });
       const publicRungs = ladder
         .filter((r) =>
           r.rungKey === "email_signup" ||
@@ -11116,11 +11126,20 @@ ${orientationExtra}
         )
         .map((r) => {
           const row = serializeRewardRung(r);
+          const thresholdDisplay =
+            row.rungKey === "purchase_threshold"
+              ? formatPurchaseThresholdDisplay({
+                  usdCents: row.thresholdCents ?? 5000,
+                  shopperCurrency,
+                  usdToShopperRate,
+                })
+              : null;
           return {
             rungKey: row.rungKey,
             enabled: row.enabled,
             creditAmount: row.creditAmount,
             thresholdCents: row.thresholdCents,
+            thresholdDisplay: thresholdDisplay?.label ?? null,
             sortOrder: row.sortOrder,
           };
         });
@@ -11624,6 +11643,7 @@ ${orientationExtra}
                 customerId: resolved.id,
                 orderId: String(orderId),
                 subtotalCents,
+                currency: order.currency || order.presentment_currency || "USD",
                 creatorId: orderCreatorId,
               });
               if (r.granted) {

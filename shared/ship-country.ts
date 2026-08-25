@@ -49,6 +49,50 @@ export const SHIP_COUNTRY_OPTIONS: ShipCountryOption[] = [
   { code: "PH", name: "Philippines" },
 ];
 
+/** ISO-4217 for the Phase 4 ship-to country. One map — shipping, gating, rewards copy. */
+export const CURRENCY_BY_SHIP_COUNTRY: Record<string, string> = {
+  US: "USD",
+  CA: "CAD",
+  GB: "GBP",
+  AU: "AUD",
+  NZ: "NZD",
+  IE: "EUR",
+  DE: "EUR",
+  FR: "EUR",
+  NL: "EUR",
+  BE: "EUR",
+  AT: "EUR",
+  CH: "CHF",
+  IT: "EUR",
+  ES: "EUR",
+  PT: "EUR",
+  SE: "SEK",
+  NO: "NOK",
+  DK: "DKK",
+  FI: "EUR",
+  PL: "PLN",
+  CZ: "CZK",
+  JP: "JPY",
+  KR: "KRW",
+  SG: "SGD",
+  HK: "HKD",
+  TW: "TWD",
+  IN: "INR",
+  MX: "MXN",
+  BR: "BRL",
+  AR: "ARS",
+  CL: "CLP",
+  ZA: "ZAR",
+  AE: "AED",
+  IL: "ILS",
+  PH: "PHP",
+};
+
+export function currencyForShipCountry(countryRaw: string | null | undefined): string {
+  const c = String(countryRaw || "").trim().toUpperCase();
+  return CURRENCY_BY_SHIP_COUNTRY[c] || "USD";
+}
+
 const OPTION_BY_CODE = new Map(SHIP_COUNTRY_OPTIONS.map((o) => [o.code, o]));
 
 export function normalizeShipCountry(raw: unknown): string | null {

@@ -62,6 +62,10 @@ export function StudioNewsletterSignup({
       } else if (data.creditGranted && data.creditAmount > 0) {
         setDone(`You're on the list — ${data.creditAmount} Studio Credit added.`);
         onCreditGranted?.(Number(data.creditAmount) || 1);
+      } else if (data.creditAlreadyClaimed) {
+        setDone(
+          "You're on the list. Your Art Class credit for this shop was already claimed.",
+        );
       } else if (source === "store_user" && !customerId) {
         setDone("You're on the list. Sign in so we can add your Studio Credit.");
       } else {
