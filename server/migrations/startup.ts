@@ -263,16 +263,19 @@ const DATA_MIGRATIONS: string[] = [
     WHERE cb.customer_id = c.id
       AND c.credits < cb.credits`,
   // Canonical hot-pink chroma prefixes for merchant apparel styles (matting-critical).
+  // Guard matches a white BACKGROUND, not the bare word "white": every canonical prefix
+  // says "no white mat" / "white may be used inside the subject", so `%white%` matched
+  // every row on every boot and reverted merchant edits (GH #49).
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
        category = 'apparel'
    WHERE lower(name) = 'centered graphic'
-     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+     AND (prompt_prefix ILIKE '%white background%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
        category = 'apparel'
    WHERE lower(name) = 'illustrated motif'
-     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+     AND (prompt_prefix ILIKE '%white background%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
   // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
@@ -288,9 +291,36 @@ const DATA_MIGRATIONS: string[] = [
      AND category = 'apparel'
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   // Stronger DO NOT use hot pink language + dark-tier DB column (editable in Admin without redeploy).
-  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of', prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of' WHERE lower(name) = 'illustrated motif'`,
-  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of', prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of' WHERE lower(name) = 'centered graphic'`,
-  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of', prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of' WHERE lower(name) = 'pet portraits' AND category = 'apparel'`,
+  // These run on every boot, so each is guarded to fire only on a machine-written prior seed:
+  // prompt_prefix upgrades rows still holding the "(avoid hot pink/magenta in the design)"
+  // generation above; prompt_prefix_dark seeds only when unset. A merchant edit matches
+  // neither, so it survives restarts — which is what the Admin UI promises (GH #49).
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
+   WHERE lower(name) = 'illustrated motif'
+     AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
+  `UPDATE style_presets
+   SET prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
+   WHERE lower(name) = 'illustrated motif'
+     AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
+   WHERE lower(name) = 'centered graphic'
+     AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
+  `UPDATE style_presets
+   SET prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
+   WHERE lower(name) = 'centered graphic'
+     AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
+   WHERE lower(name) = 'pet portraits'
+     AND category = 'apparel'
+     AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
+  `UPDATE style_presets
+   SET prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of'
+   WHERE lower(name) = 'pet portraits'
+     AND category = 'apparel'
+     AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
   // Creator Marketplace: seed accounting cost ($0.05). Do not overwrite if already set.
   `INSERT INTO platform_config ("key", "value", "updated_at")
    VALUES ('AI_GENERATION_COST_USD', '0.05', NOW())
