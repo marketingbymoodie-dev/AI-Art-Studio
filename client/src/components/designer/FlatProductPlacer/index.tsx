@@ -35,7 +35,7 @@ import {
 import {
   flatCovers,
   flatVisibleArtBoxAxisAligned,
-  flatApparelGuideTrimmed,
+  flatApparelOpaqueTrimmed,
   flatDefaultPlacementScale,
   flatPlacementRectPx,
   flatPlacementScaleMax,
@@ -745,8 +745,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           (state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT).scale,
         ),
       };
-      const box = flatVisibleArtBoxAxisAligned(pRect, placed, artworkImg);
-      if (flatApparelGuideTrimmed(pRect, box)) {
+      if (flatApparelOpaqueTrimmed(pRect, placed, artworkImg)) {
         clippedSides.push(view);
       }
     }
@@ -1094,8 +1093,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatApparelGuideTrimmed(placementRect, box)) {
-      // Apparel: opaque pixels touching/crossing the dashed guide only.
+    } else if (flatApparelOpaqueTrimmed(placementRect, placed, artworkImg)) {
+      // Apparel: only real opaque pixels past the guide — a rotated design's
+      // hollow bounding-box corners are empty and must never warn.
       coverageWarning = "trim";
     }
   }

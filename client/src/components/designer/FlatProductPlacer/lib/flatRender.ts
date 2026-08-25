@@ -708,6 +708,126 @@ export function flatArtContentSubRect(
   };
 }
 
+/**
+ * A point on the artwork's opaque footprint, in the artwork's own [0,1] image
+ * space. Transform-free by construction: the cache can never hold a stale
+ * rotation because it holds no rotation at all. Callers reproject through the
+ * live placement on every check.
+ */
+export type FlatNormPoint = { x: number; y: number };
+
+/**
+ * Occupancy resolution. At 128 one cell is ~0.8% of the artwork, which bounds
+ * the worst-case over-warn. Clamped to the pixel size for small images, where a
+ * finer grid than the source would leave unreachable cells looking empty.
+ */
+const OPAQUE_OUTLINE_GRID = 128;
+
+/** Matches flatArtContentFractionsCached: soft motif edges still paint, so they count. */
+const OPAQUE_OUTLINE_ALPHA = 1;
+
+/**
+ * Corners of the boundary cells of an alpha occupancy grid.
+ *
+ * Interior cells are dropped without losing correctness: the guide is a
+ * rectangle, i.e. an intersection of four half-planes, so any opaque pixel
+ * outside it can be reached by marching outward from a boundary cell that is
+ * also outside — moving away from a violated half-plane never re-enters it.
+ *
+ * Pure (no canvas) so it stays unit-testable under jsdom.
+ */
+export function flatOpaqueOutlineFromAlpha(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+): FlatNormPoint[] | null {
+  if (w <= 0 || h <= 0) return null;
+  const g = Math.max(8, Math.min(OPAQUE_OUTLINE_GRID, w, h));
+  const occupied = new Uint8Array(g * g);
+  let anyOpaque = false;
+  for (let y = 0; y < h; y++) {
+    const rowBase = y * w * 4;
+    const gyBase = Math.min(g - 1, ((y * g) / h) | 0) * g;
+    for (let x = 0; x < w; x++) {
+      if (data[rowBase + x * 4 + 3] > OPAQUE_OUTLINE_ALPHA) {
+        occupied[gyBase + Math.min(g - 1, ((x * g) / w) | 0)] = 1;
+        anyOpaque = true;
+      }
+    }
+  }
+  if (!anyOpaque) return null;
+
+  const seen = new Set<number>();
+  const points: FlatNormPoint[] = [];
+  for (let gy = 0; gy < g; gy++) {
+    for (let gx = 0; gx < g; gx++) {
+      if (!occupied[gy * g + gx]) continue;
+      const onBoundary =
+        gx === 0 ||
+        gy === 0 ||
+        gx === g - 1 ||
+        gy === g - 1 ||
+        !occupied[gy * g + gx - 1] ||
+        !occupied[gy * g + gx + 1] ||
+        !occupied[(gy - 1) * g + gx] ||
+        !occupied[(gy + 1) * g + gx];
+      if (!onBoundary) continue;
+      // All four corners, so the tested footprint covers each boundary cell
+      // whole: the grid can over-warn by at most one cell, never under-warn.
+      for (let dy = 0; dy <= 1; dy++) {
+        for (let dx = 0; dx <= 1; dx++) {
+          const key = (gy + dy) * (g + 1) + (gx + dx);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          points.push({ x: (gx + dx) / g, y: (gy + dy) / g });
+        }
+      }
+    }
+  }
+  return points.length ? points : null;
+}
+
+const artOpaqueOutlineCache = new WeakMap<
+  HTMLImageElement,
+  FlatNormPoint[] | null
+>();
+
+function readArtOpaqueOutline(
+  artwork: HTMLImageElement,
+): FlatNormPoint[] | null {
+  const w = artwork.naturalWidth || artwork.width;
+  const h = artwork.naturalHeight || artwork.height;
+  if (w <= 0 || h <= 0) return null;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(artwork, 0, 0, w, h);
+    return flatOpaqueOutlineFromAlpha(ctx.getImageData(0, 0, w, h).data, w, h);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cached opaque outline for an artwork image. Keying on the element is safe
+ * because loadFlatImage builds a fresh Image per URL and never re-points an
+ * existing one, so an element's pixels cannot change after load.
+ * Null when the pixels are unreadable (cross-origin without CORS).
+ */
+export function flatArtOpaqueOutlineCached(
+  artwork: HTMLImageElement,
+): FlatNormPoint[] | null {
+  if (artOpaqueOutlineCache.has(artwork)) {
+    return artOpaqueOutlineCache.get(artwork)!;
+  }
+  const outline = readArtOpaqueOutline(artwork);
+  artOpaqueOutlineCache.set(artwork, outline);
+  return outline;
+}
+
 /** Axis-aligned bounds of `rect` rotated `deg` degrees around (cx, cy). */
 export function flatRotatedAabbAround(
   rect: Rect,
@@ -943,20 +1063,89 @@ export function flatOverflows(rect: Rect, box: Rect, slackPx = 1): boolean {
 }
 
 /**
+ * Sub-pixel slack. Art flush with the guide fills the print area exactly and
+ * loses nothing, so touching the line is not crossing it; the slack also keeps
+ * rotation rounding from flickering the banner on and off.
+ */
+export const FLAT_GUIDE_TOUCH_SLACK_PX = 0.5;
+
+/**
  * Apparel trim banner: opaque artwork vs the dashed print guide only.
  * Transparent PNG padding does not count. Ring/handles are UI chrome and must
- * not trigger the warning. Fires when any opaque edge touches or crosses the
- * guide (flush with the line = will be clipped).
+ * not trigger the warning. Strict — only art past the line warns.
  */
 export function flatApparelGuideTrimmed(guideRect: Rect, artBox: Rect): boolean {
-  // Sub-pixel tolerance so "comfortably inside" stays quiet; flush/touch warns.
-  const touchEps = 0.5;
+  const slack = FLAT_GUIDE_TOUCH_SLACK_PX;
   return (
-    artBox.x <= guideRect.x + touchEps ||
-    artBox.y <= guideRect.y + touchEps ||
-    artBox.x + artBox.width >= guideRect.x + guideRect.width - touchEps ||
-    artBox.y + artBox.height >= guideRect.y + guideRect.height - touchEps
+    artBox.x < guideRect.x - slack ||
+    artBox.y < guideRect.y - slack ||
+    artBox.x + artBox.width > guideRect.x + guideRect.width + slack ||
+    artBox.y + artBox.height > guideRect.y + guideRect.height + slack
   );
+}
+
+/**
+ * True when any outline point, reprojected through `fullBox` and `rotationDeg`,
+ * lands outside the guide. Pure: the caller supplies the transform-free outline
+ * so a rotated design is always tested at its current rotation, and the same
+ * rotation origin as drawFlatArtwork (the full box centre) is used.
+ */
+export function flatOpaqueOutlineTrimmed(
+  guideRect: Rect,
+  fullBox: Rect,
+  rotationDeg: number,
+  outline: FlatNormPoint[],
+): boolean {
+  const slack = FLAT_GUIDE_TOUCH_SLACK_PX;
+  const minX = guideRect.x - slack;
+  const minY = guideRect.y - slack;
+  const maxX = guideRect.x + guideRect.width + slack;
+  const maxY = guideRect.y + guideRect.height + slack;
+  const deg = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = fullBox.x + fullBox.width / 2;
+  const cy = fullBox.y + fullBox.height / 2;
+  for (const p of outline) {
+    let px = fullBox.x + p.x * fullBox.width;
+    let py = fullBox.y + p.y * fullBox.height;
+    if (deg) {
+      const dx = px - cx;
+      const dy = py - cy;
+      px = cx + dx * cos - dy * sin;
+      py = cy + dx * sin + dy * cos;
+    }
+    if (px < minX || py < minY || px > maxX || py > maxY) return true;
+  }
+  return false;
+}
+
+/**
+ * Apparel trim check: only real opaque pixels count, rotated or not.
+ *
+ * The axis-aligned box runs first as a conservative filter — it contains the
+ * opaque footprint, so a negative there is proof and costs what it always did.
+ * Only when it says "maybe" do we reproject the outline, which is what stops a
+ * rotated design's hollow corners from warning on empty space.
+ */
+export function flatApparelOpaqueTrimmed(
+  guideRect: Rect,
+  placement: ArtworkPlacement,
+  artwork: HTMLImageElement,
+): boolean {
+  const aabb = flatVisibleArtBoxAxisAligned(guideRect, placement, artwork);
+  if (!flatApparelGuideTrimmed(guideRect, aabb)) return false;
+  const outline = flatArtOpaqueOutlineCached(artwork);
+  // Unreadable pixels (tainted canvas) — keep the conservative box answer.
+  if (!outline) return true;
+  const artW = artwork.naturalWidth || artwork.width || 1;
+  const artH = artwork.naturalHeight || artwork.height || 1;
+  const fullBox = flatArtBox(guideRect, placement, artW, artH);
+  const deg = Number.isFinite(placement.rotationDeg)
+    ? Number(placement.rotationDeg)
+    : 0;
+  return flatOpaqueOutlineTrimmed(guideRect, fullBox, deg, outline);
 }
 
 /**
