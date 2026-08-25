@@ -698,7 +698,10 @@ async function ensureHostedUrl(url: string): Promise<string> {
   // data: URL — upload directly to server storage
   if (isDataUrl(url)) {
     console.log("[EmbedDesign] Converting data URL to hosted URL via direct upload...");
-    const uploadRes = await safeFetch(`${API_BASE}/api/uploads/upload`, {
+    // Storefront visitors are anonymous, so this uses the public-but-protected
+    // storefront endpoint (rate-limited, size-capped, PNG/JPEG only) rather than
+    // the authenticated admin upload route.
+    const uploadRes = await safeFetch(`${API_BASE}/api/storefront/uploads/design`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataUrl: url, name: `design-${Date.now()}.png` }),

@@ -12328,27 +12328,45 @@ ${orientationExtra}
   //           singleScale, singleRotation, singlePosX, singlePosY }
   // Returns { patternUrl }
   // ── Background removal endpoint (separate from preview) ──────────────────
-  // Called by the client's optional "Remove BG" button in PatternCustomizer.
+  // Fires automatically from the storefront embed on design load for apparel
+  // without flat calibration (client/src/pages/embed-design.tsx). The caller is
+  // an ANONYMOUS storefront visitor — do not put user auth on this route or
+  // auto-background-removal breaks for every visitor. It is protected instead
+  // by the image-origin allowlist plus a per-IP rate limit, because it fetches
+  // a caller-supplied URL from the server's network position and then runs paid ML.
   // Returns a data URL (base64 PNG) of the subject with background removed.
   app.post("/api/pattern/remove-bg", async (req: any, res: Response) => {
     try {
       const { imageUrl } = req.body as { imageUrl: string };
       if (!imageUrl) return res.status(400).json({ error: "imageUrl is required" });
 
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rate = checkCreatorRateLimit({
+        key: `remove-bg:${clientIpFromReq(req)}`,
+        limit: 40,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rate.ok) {
+        res.setHeader("Retry-After", String(rate.retryAfterSec));
+        return res.status(429).json({ error: "Too many background removal requests." });
+      }
+
       // Fetch the image buffer
       let sourceBuffer: Buffer;
-      if (imageUrl.startsWith("/objects/")) {
-        const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || "localhost";
-        const protocol = req.protocol || "https";
-        const absoluteUrl = `${protocol}://${host}${imageUrl}`;
-        const srcRes = await fetch(absoluteUrl, { signal: AbortSignal.timeout(15000) });
-        if (!srcRes.ok) throw new Error(`Failed to fetch image (${srcRes.status})`);
-        sourceBuffer = Buffer.from(await srcRes.arrayBuffer());
-      } else if (imageUrl.startsWith("data:")) {
+      if (imageUrl.startsWith("data:")) {
         const base64Part = imageUrl.split(",")[1];
-        sourceBuffer = Buffer.from(base64Part, "base64");
+        sourceBuffer = Buffer.from(base64Part ?? "", "base64");
       } else {
-        const srcRes = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
+        // Covers both app-relative /objects/ paths and absolute URLs. The old
+        // code built the /objects/ URL from req.get("host") — a client-controlled
+        // header, so the "safe" branch was itself an SSRF vector.
+        const { resolveAllowedImageUrl } = await import("./safe-image-url");
+        const safe = resolveAllowedImageUrl(imageUrl);
+        if (!safe.ok) {
+          console.warn(`[Remove BG] Refused imageUrl (${safe.reason})`);
+          return res.status(safe.status).json({ error: safe.reason });
+        }
+        const srcRes = await fetch(safe.url, { signal: AbortSignal.timeout(15000) });
         if (!srcRes.ok) throw new Error(`Failed to fetch image (${srcRes.status})`);
         sourceBuffer = Buffer.from(await srcRes.arrayBuffer());
       }
@@ -12873,9 +12891,23 @@ ${orientationExtra}
     }
   }
 
-  // Create share link for a design (public endpoint for Shopify embed)
+  // Create share link for a design.
+  // Deliberately unauthenticated: the only caller is the share button in the
+  // anonymous storefront embed. Protected by a per-IP rate limit rather than
+  // user auth, which would make the button unusable for storefront visitors.
   app.post("/api/designs/share", async (req: Request, res: Response) => {
     try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `design-share:${clientIpFromReq(req)}`,
+        limit: 30,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        res.setHeader("Retry-After", String(rl.retryAfterSec));
+        return res.status(429).json({ error: "Too many share links created. Try again shortly." });
+      }
+
       const { 
         imageUrl: rawImageUrl,
         thumbnailUrl,
@@ -13046,9 +13078,22 @@ ${orientationExtra}
   });
 
   // Validate and prepare imported design (for Kittl/custom uploads)
-  // This endpoint validates the uploaded image and returns metadata for previewing
+  // This endpoint validates the uploaded image and returns metadata for previewing.
+  // Called from the anonymous storefront embed, so it is rate-limited rather than
+  // user-authenticated. Input is already restricted to our own /objects/uploads/ paths.
   app.post("/api/designs/import", async (req: Request, res: Response) => {
     try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `design-import:${clientIpFromReq(req)}`,
+        limit: 60,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        res.setHeader("Retry-After", String(rl.retryAfterSec));
+        return res.status(429).json({ error: "Too many imports. Try again shortly." });
+      }
+
       const { 
         imageUrl, 
         source = "upload",
