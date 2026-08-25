@@ -141,8 +141,10 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
 /** One-time data fixes (idempotent WHERE clauses). */
 const DATA_MIGRATIONS: string[] = [
   `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
+  // Default only — do NOT stamp existing rows. The column is merchant-configurable
+  // (Admin → Settings, clamped 1–10) and an unconditional UPDATE here reset every
+  // merchant's choice on each boot (GH #50). ADD COLUMN already backfills NOT NULL 2.
   `ALTER TABLE shopify_installations ALTER COLUMN storefront_free_gens_per_visitor SET DEFAULT 2`,
-  `UPDATE shopify_installations SET storefront_free_gens_per_visitor = 2`,
   // Required: every installation must have a pricing catalogue stamp for enforcement.
   `UPDATE shopify_installations SET pricing_version = 0 WHERE pricing_version IS NULL`,
   `ALTER TABLE shopify_installations ALTER COLUMN pricing_version SET DEFAULT 0`,
