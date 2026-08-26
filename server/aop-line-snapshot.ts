@@ -37,16 +37,22 @@ function jobIdFromLineValue(raw: string): string {
   return s.includes("::") ? s.split("::")[0] : s;
 }
 
+const AOP_SNAPSHOT_MAX_PANELS = 32;
+const AOP_SNAPSHOT_MAX_URL_LEN = 2048;
+
 export async function persistAopLinePanelSnapshot(
   jobId: string,
   panels: AopPanel[],
 ): Promise<string | null> {
-  if (panels.length === 0) return null;
+  const capped = panels
+    .filter((p) => p.url.length <= AOP_SNAPSHOT_MAX_URL_LEN)
+    .slice(0, AOP_SNAPSHOT_MAX_PANELS);
+  if (capped.length === 0) return null;
   const safeJob = jobIdFromLineValue(jobId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || "job";
   const filename = `aop-line-snapshots/${safeJob}/${Date.now().toString(36)}.json`;
   await uploadToFlatCalibrationBucket(
     filename,
-    Buffer.from(JSON.stringify(panels)),
+    Buffer.from(JSON.stringify(capped)),
     "application/json",
   );
   return filename.length < 255 ? filename : null;

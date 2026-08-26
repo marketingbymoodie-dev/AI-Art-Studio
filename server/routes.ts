@@ -9295,22 +9295,9 @@ ${orientationExtra}
               }
             };
 
-            // Check if shadow product already exists for this job
-            const freshJob = await storage.getGenerationJob(jobId);
-            if (freshJob?.shadowVariantId && freshJob?.shadowProductId) {
-              console.log(`[PreShadow] jobId=${jobId} already has shadow product ${freshJob.shadowProductId}`);
-              await refreshShadowImage(freshJob.shadowProductId, freshJob.shadowVariantId);
-              await syncShadowVariantPrice({
-                shop,
-                token,
-                shadowVariantId: freshJob.shadowVariantId,
-                baseVariantId,
-                priceOverride: preShadowClientPrice,
-              });
-              return;
-            }
-
-            // Check published_products table (job id, plus legacy job::mockupHash)
+            // One shadow per (job, catalog variant). Never POST a new mockup onto
+            // job.shadowProductId unless that row's baseVariantId matches — that
+            // singleton refresh painted Blue onto an already-carted Natural line.
             const designId = reusableShadowDesignId(jobId, baseVariantId);
             let existing = await storage.getPublishedProduct(shop, designId);
             if (!existing || existing.status !== "active") {
@@ -9693,6 +9680,79 @@ ${orientationExtra}
     } catch (err: any) {
       console.error("[SaveState]", err);
       return res.status(500).json({ error: "Failed to save design state" });
+    }
+  });
+
+  // Freeze AOP print panels onto a short _aop_pl path for merchant Ajax ATC.
+  // Creator cart already does this in attachAopPanelSnapshotToLineAttributes.
+  app.post("/api/storefront/aop-line-snapshot", async (req: Request, res: Response) => {
+    try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `aop-snap:${clientIpFromReq(req)}`,
+        limit: 60,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        res.setHeader("Retry-After", String(rl.retryAfterSec));
+        return res.status(429).json({ error: "Too many panel snapshot requests." });
+      }
+
+      const shop = normalizeMyshopifyShopDomain(req.body?.shop);
+      const jobId = String(req.body?.jobId || "").trim();
+      if (!shop || !jobId) {
+        return res.status(400).json({ error: "shop and jobId are required" });
+      }
+      if (jobId.length > 80 || jobId.includes("/") || jobId.includes("..")) {
+        return res.status(400).json({ error: "Invalid jobId" });
+      }
+
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const {
+        persistAopLinePanelSnapshot,
+        normalizeAopPanels,
+      } = await import("./aop-line-snapshot");
+      const AOP_SNAPSHOT_MAX_PANELS = 32;
+      const AOP_SNAPSHOT_MAX_URL_LEN = 2048;
+      let designState: Record<string, unknown> = {};
+      if (job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)) {
+        designState = job.designState as Record<string, unknown>;
+      } else if (typeof job.designState === "string") {
+        try {
+          designState = JSON.parse(job.designState || "{}") as Record<string, unknown>;
+        } catch {
+          designState = {};
+        }
+      }
+      let panels = normalizeAopPanels(
+        Array.isArray(req.body?.panels) ? req.body.panels : designState.aopPrintPanelUrls,
+      );
+      if (Array.isArray(req.body?.panels) && req.body.panels.length > AOP_SNAPSHOT_MAX_PANELS) {
+        return res.status(413).json({ error: `Too many panels (max ${AOP_SNAPSHOT_MAX_PANELS}).` });
+      }
+      panels = panels
+        .filter((p) => p.url.length <= AOP_SNAPSHOT_MAX_URL_LEN)
+        .slice(0, AOP_SNAPSHOT_MAX_PANELS);
+      if (panels.length === 0) {
+        return res.status(400).json({ error: "No print panels to freeze" });
+      }
+
+      const snapshot = await persistAopLinePanelSnapshot(jobId, panels);
+      if (!snapshot) {
+        return res.status(500).json({ error: "Failed to persist snapshot" });
+      }
+      return res.json({ snapshot });
+    } catch (err: any) {
+      console.error("[AopLineSnapshot]", err);
+      return res.status(500).json({ error: "Failed to freeze AOP panels" });
     }
   });
 

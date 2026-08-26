@@ -10,6 +10,7 @@ import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastC
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import {
+  LINE_AOP_PANELS_KEY,
   LINE_FLAT_PLACEMENT_KEY,
   LINE_TOTE_PLACEMENT_KEY,
   encodeFlatLinePlacement,
@@ -216,6 +217,25 @@ import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
   return `${sizeId || "default"}:${colorId || "default"}`;
+}
+
+async function freezeAopLineSnapshot(shop: string, jobId: string): Promise<string | null> {
+  try {
+    const res = await safeFetch(`${API_BASE}/api/storefront/aop-line-snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shop, jobId }),
+    });
+    if (!res.ok) {
+      console.error("[AOP] aop-line-snapshot failed", res.status, "— ATC will proceed without _aop_pl");
+      return null;
+    }
+    const data = await res.json();
+    return typeof data?.snapshot === "string" && data.snapshot.trim() ? String(data.snapshot) : null;
+  } catch (e) {
+    console.error("[AOP] aop-line-snapshot error — ATC will proceed without _aop_pl", e);
+    return null;
+  }
 }
 
 /** Hidden cart props so Shopify checkout can quote Printify first/additional shipping. */
@@ -7604,21 +7624,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       (cartMappedCents > 0 ? (cartMappedCents / 100).toFixed(2) : null) ||
       (cartFrontPrice > 0 ? cartFrontPrice.toFixed(2) : null);
 
+    const cartStatePayload = {
+      variantId,
+      baseVariantId: variantId,
+      quantity: 1,
+      properties,
+      ...(cartRetail ? { price: cartRetail } : {}),
+    };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
       ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
-      payload: {
-        variantId,
-        baseVariantId: variantId,
-        quantity: 1,
-        properties,
-        ...(cartRetail ? { price: cartRetail } : {}),
-      },
+      payload: cartStatePayload,
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y]);
+    if (
+      productTypeConfig?.isAllOverPrint &&
+      shopDomain &&
+      savedJobIdRef.current &&
+      !properties[LINE_AOP_PANELS_KEY]
+    ) {
+      const jobId = savedJobIdRef.current;
+      void freezeAopLineSnapshot(shopDomain, jobId).then((snap) => {
+        if (!snap || savedJobIdRef.current !== jobId) return;
+        window.parent.postMessage({
+          type: 'AI_ART_STUDIO_CART_STATE',
+          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
+          disabled: shouldDisable,
+          waitingForMockups,
+          label,
+          payload: {
+            ...cartStatePayload,
+            properties: { ...properties, [LINE_AOP_PANELS_KEY]: snap },
+          },
+        }, '*');
+      });
+    }
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -9587,6 +9630,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor,
       productTypeId,
     );
+    if (productTypeConfig?.isAllOverPrint && shopDomain && savedJobIdRef.current) {
+      const aopSnap = await freezeAopLineSnapshot(shopDomain, savedJobIdRef.current);
+      if (aopSnap) {
+        properties[LINE_AOP_PANELS_KEY] = aopSnap;
+      } else {
+        console.error(
+          "[AOP] ATC without _aop_pl — fulfillment will fall back to shared job panels (last-write-wins). Flat/mesh lines are unaffected.",
+        );
+      }
+    }
     const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnapAtc = encodeFlatLinePlacement(liveFlatAtc);
     if (flatSnapAtc) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnapAtc;

@@ -288,9 +288,16 @@ export function pickFlatOrderArtworkUrl(args: {
 }
 
 /**
- * Prefer designState size/colour (persisted on Apply) over stale job columns.
- * Design-product / line overrides still win for real Shopify checkouts.
- * Exported for unit tests.
+ * Size/colour for a Printify line.
+ *
+ * When a frozen cart-line field is present, it wins. The job is still the
+ * catalog/bake source and the fallback when a line field is genuinely absent
+ * (single-color products, variantMap miss, admin synthetics). Two ATCs from
+ * one saved-design ID with two colors must not both pick the job's latest
+ * designState.selectedFrameColor.
+ *
+ * Design-product listing override stays first: that is the variant the
+ * customer bought on a permanent listing, not this shared-job bug.
  */
 export function pickFlatOrderSizeColor(args: {
   designProductSizeId?: string | null;
@@ -305,15 +312,15 @@ export function pickFlatOrderSizeColor(args: {
   return {
     sizeId: String(
       args.designProductSizeId ||
-        args.designStateSize ||
         args.lineSize ||
+        args.designStateSize ||
         args.jobSize ||
         "default",
     ),
     colorId: String(
       args.designProductColorId ||
-        args.designStateColor ||
         args.lineColor ||
+        args.designStateColor ||
         args.jobColor ||
         "default",
     ),
@@ -582,6 +589,11 @@ export async function resolveDesignForOrderLine(
       // Cart-line snapshot wins so two ATCs from the same job keep independent panels.
       const linePanels = await loadAopLinePanelSnapshot(line.properties[LINE_AOP_PANELS_KEY]);
       const panels = pickAopPanelsForOrderLine(linePanels, normalizeAopPanels(rawPanels));
+      if ((!linePanels || linePanels.length === 0) && panels.length > 0) {
+        console.error(
+          `[flat-order-fulfillment] AOP line ${line.lineId} job=${designId} has no _aop_pl — falling back to shared job panels (last-write-wins). Flat/mesh lines are unaffected.`,
+        );
+      }
       if (panels.length === 0) {
         return {
           ok: false,
@@ -755,6 +767,35 @@ export function resolvePrintifyTarget(
   const printifyVariantId = Number(variantData.printifyVariantId);
   if (!Number.isFinite(blueprintId) || !Number.isFinite(printifyVariantId)) return null;
   return { blueprintId, providerId, printifyVariantId };
+}
+
+/**
+ * Prefer the Printify variant stamped on the cart line at ATC. Job/map
+ * resolution is fallback only when `_printify_variant_id` is absent.
+ */
+export function resolvePrintifyTargetForOrderLine(
+  productType: ProductType,
+  sizeId: string,
+  colorId: string,
+  lineProps?: Record<string, string> | null,
+): PrintifyTarget | null {
+  const mapped = resolvePrintifyTarget(productType, sizeId, colorId);
+  const lineVid = Number(String(lineProps?._printify_variant_id || "").trim());
+  if (Number.isFinite(lineVid) && lineVid > 0) {
+    const lineBp = Number(String(lineProps?._printify_blueprint_id || "").trim());
+    const lineProv = Number(String(lineProps?._printify_provider_id || "").trim());
+    const blueprintId =
+      Number.isFinite(lineBp) && lineBp > 0
+        ? lineBp
+        : mapped?.blueprintId ?? Number(productType.printifyBlueprintId);
+    const providerId =
+      Number.isFinite(lineProv) && lineProv > 0
+        ? lineProv
+        : mapped?.providerId ?? Number(productType.printifyProviderId ?? 1);
+    if (!Number.isFinite(blueprintId) || blueprintId <= 0) return mapped;
+    return { blueprintId, providerId, printifyVariantId: lineVid };
+  }
+  return mapped;
 }
 
 // ── Printify REST helpers ────────────────────────────────────────────────────────
@@ -1023,7 +1064,12 @@ export async function submitFlatOrderToPrintify(
     const productType = resolved.design.productType;
     const designId = resolved.design.designId;
     const merchant = resolved.design.merchant;
-    const target = resolvePrintifyTarget(productType, resolved.design.sizeId, resolved.design.colorId);
+    const target = resolvePrintifyTargetForOrderLine(
+      productType,
+      resolved.design.sizeId,
+      resolved.design.colorId,
+      line.properties,
+    );
     if (!target) {
       skippedReasons.push(`line ${line.lineId}: no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`);
       continue;

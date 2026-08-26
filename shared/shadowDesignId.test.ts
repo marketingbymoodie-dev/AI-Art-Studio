@@ -4,6 +4,7 @@ import {
   shadowDesignIdForCart,
   shadowJobPrefix,
   shadowLookupKeys,
+  shadowMatchesBaseVariant,
 } from "./shadowDesignId";
 
 describe("shadowDesignIdForCart", () => {
@@ -34,5 +35,17 @@ describe("shadowLookupKeys", () => {
     );
     expect(reusableShadowDesignId("job-1", "4617")).toBe("job-1::4617");
     expect(shadowJobPrefix("job-1::M::black")).toBe("job-1");
+  });
+});
+
+describe("shadowMatchesBaseVariant", () => {
+  it("refuses reuse when the stored shadow is a different catalog color", () => {
+    expect(shadowMatchesBaseVariant("46172379185386", "46172379185387")).toBe(false);
+    expect(shadowMatchesBaseVariant("46172379185386", "46172379185386")).toBe(true);
+  });
+
+  it("refuses reuse when either side is missing — do not fall through to another color", () => {
+    expect(shadowMatchesBaseVariant(null, "4617")).toBe(false);
+    expect(shadowMatchesBaseVariant("4617", null)).toBe(false);
   });
 });
