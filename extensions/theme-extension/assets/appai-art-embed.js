@@ -829,7 +829,9 @@
     // Large Printify imports (for example Bella+Canvas 3001) can have hundreds
     // of variants. Send designerConfig over postMessage instead of putting it
     // in the iframe URL, which can exceed browser/proxy URL limits.
-    if (config.inlineDesignerConfig) {
+    // deferDesignerConfig also lets /pages/:handle start the iframe (and JS
+    // download) before customizer-page JSON is back.
+    if (config.inlineDesignerConfig || config.deferDesignerConfig) {
       params.set('deferDesignerConfig', '1');
     }
     // Disabled pages with a saved design: ATC OK, Start Fresh / new generate blocked.
@@ -1473,6 +1475,44 @@
       }
     }
 
+    function sendShopifyVariants() {
+      if (!config.shopifyVariants || config.shopifyVariants.length === 0) return;
+      try {
+        iframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
+          variants: config.shopifyVariants,
+          baseVariantId: config.selectedVariant || null,
+          productTypeId: config.productTypeId || null,
+        }, iframeOrigin || '*');
+        console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
+      } catch(e) {
+        console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
+      }
+    }
+
+    function sendStylePresets() {
+      if (!config.stylePresets || config.stylePresets.length === 0) return;
+      try {
+        iframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_STYLE_PRESETS',
+          stylePresets: config.stylePresets,
+        }, iframeOrigin || '*');
+        console.log(B, 'Sent STYLE_PRESETS to iframe:', config.stylePresets.length, 'presets');
+      } catch(e) {
+        console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
+      }
+    }
+
+    // Early-mount path: parent mutates `config` when customizer-page returns,
+    // then pushes immediately so we don't wait for the next 500ms heartbeat.
+    config.__pushDesignerConfig = function () {
+      sendDesignerConfig();
+      if (bridgeAcked) {
+        sendShopifyVariants();
+        sendStylePresets();
+      }
+    };
+
     iframe.addEventListener('load', function() {
       console.log(B, 'Iframe loaded, starting BRIDGE_READY heartbeat');
       sendBridgeReady();
@@ -1573,32 +1613,10 @@
 
         // Push Shopify variants (with prices) into the iframe so the generator
         // can render a variant selector internally.
-        if (config.shopifyVariants && config.shopifyVariants.length > 0) {
-          try {
-            iframe.contentWindow.postMessage({
-              type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
-              variants: config.shopifyVariants,
-              baseVariantId: config.selectedVariant || null,
-              productTypeId: config.productTypeId || null,
-            }, iframeOrigin || '*');
-            console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
-          } catch(e) {
-            console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
-          }
-        }
+        sendShopifyVariants();
 
         // Push style presets so the generator doesn't need to call /api/config.
-        if (config.stylePresets && config.stylePresets.length > 0) {
-          try {
-            iframe.contentWindow.postMessage({
-              type: 'AI_ART_STUDIO_STYLE_PRESETS',
-              stylePresets: config.stylePresets,
-            }, iframeOrigin || '*');
-            console.log(B, 'Sent STYLE_PRESETS to iframe:', config.stylePresets.length, 'presets');
-          } catch(e) {
-            console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
-          }
-        }
+        sendStylePresets();
 
         // Send store theme so the iframe can match the merchant's visual style.
         try {
@@ -2525,12 +2543,52 @@
    * Only one customizer instance can ever mount — the global guards
    * (__APPAI_CUSTOMIZER_INIT__ + __APPAI_CUSTOMIZER_HANDLED) ensure this.
    */
-  function appaiMountCustomizerConfig(handle, config, opts) {
+  function appaiResolveShopDomain() {
+    var el = document.getElementById('appai-root');
+    var ds = el && el.getAttribute('data-shop');
+    var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
+    var s = String(raw).trim().toLowerCase();
+    if (s.indexOf('.myshopify.com') !== -1) return s;
+    if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
+    return s;
+  }
+
+  function appaiIsHostedCustomizerPage() {
+    return !!document.getElementById('appai-boot') ||
+      !!document.querySelector('.ai-art-studio-block, [data-block-handle="ai-art-studio"]');
+  }
+
+  function appaiUnmountEarlyStudio() {
+    document.querySelectorAll('#ai-art-studio-auto-embed, .ai-art-studio-embed').forEach(function(el) {
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+  }
+
+  function appaiAssignPageJsonToStudioConfig(studioConfig, handle, pageCfg) {
+    studioConfig.appUrl = pageCfg.appUrl;
+    studioConfig.productTypeId = pageCfg.productTypeId ? String(pageCfg.productTypeId) : '0';
+    studioConfig.productId = pageCfg.baseProductId || '';
+    studioConfig.productHandle = pageCfg.baseProductHandle || handle;
+    studioConfig.productTitle = pageCfg.baseProductTitle || pageCfg.title || '';
+    studioConfig.displayName = pageCfg.title || '';
+    studioConfig.selectedVariant = pageCfg.baseVariantId;
+    studioConfig.inlineDesignerConfig = pageCfg.designerConfig || null;
+    studioConfig.freshDesignAllowed = pageCfg.freshDesignAllowed !== false;
+    studioConfig.shopifyVariants = pageCfg.variants || [];
+    studioConfig.stylePresets = pageCfg.stylePresets || [];
+    studioConfig.styleConfig = pageCfg.styleConfig || null;
+    if (typeof studioConfig.__pushDesignerConfig === 'function') {
+      studioConfig.__pushDesignerConfig();
+    }
+  }
+
+  function appaiMountCustomizerConfig(handle, studioConfig, opts) {
     opts = opts || {};
     var replaceExisting = !!opts.replaceExisting;
-    console.log('[AI Art Embed] STATE=CONFIG_LOADED handle=' + handle +
-      ' productTypeId=' + config.productTypeId +
-      ' hasDesignerConfig=' + !!config.designerConfig);
+    console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle +
+      ' productTypeId=' + studioConfig.productTypeId +
+      ' hasDesignerConfig=' + !!studioConfig.inlineDesignerConfig +
+      ' shell=' + !studioConfig.inlineDesignerConfig);
 
     var mount = document.querySelector('#MainContent') ||
                 document.querySelector('main[role="main"]') ||
@@ -2538,9 +2596,7 @@
                 document.body;
 
     if (replaceExisting) {
-      document.querySelectorAll('#ai-art-studio-auto-embed, .ai-art-studio-embed').forEach(function(el) {
-        if (el && el.parentNode) el.parentNode.removeChild(el);
-      });
+      appaiUnmountEarlyStudio();
     }
 
     // Hide ALL other main-content children on customizer pages — not only on
@@ -2578,42 +2634,15 @@
       if (el.closest('.ai-art-studio-embed') || el.closest('.ai-art-studio-block')) return;
       hideThemeElement(el);
     });
-    var shopDomain = (function () {
-      var el = document.getElementById('appai-root');
-      var ds = el && el.getAttribute('data-shop');
-      var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
-      var s = String(raw).trim().toLowerCase();
-      if (s.indexOf('.myshopify.com') !== -1) return s;
-      if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
-      return s;
-    })();
-    var studioEl = createDesignStudio({
-      appUrl:               config.appUrl,
-      shopDomain:           shopDomain,
-      productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
-      productId:            config.baseProductId || '',
-      productHandle:        config.baseProductHandle || handle,
-      productTitle:         config.baseProductTitle || config.title,
-      displayName:          config.title,
-      description:          '',
-      selectedVariant:      config.baseVariantId,
-      hideAddToCart:        false,
-      enabled:              true,
-      inlineDesignerConfig: config.designerConfig || null,
-      freshDesignAllowed:   config.freshDesignAllowed !== false,
-      // Shopify variants with prices and style presets — pushed into the
-      // iframe via postMessage in the BRIDGE_ACK handler so the generator
-      // can render them internally (no external dropdown needed).
-      shopifyVariants:      config.variants || [],
-      stylePresets:         config.stylePresets || [],
-      styleConfig:          config.styleConfig || null,
-    });
+    if (!studioConfig.shopDomain) {
+      studioConfig.shopDomain = appaiResolveShopDomain();
+    }
+    var studioEl = createDesignStudio(studioConfig);
 
     // null means the iframe was mounted into an existing theme app block.
     if (studioEl) {
       mount.insertBefore(studioEl, mount.firstChild);
     }
-    console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
 
     // Remove any duplicate generators that old cached block scripts may have created
     cleanupDuplicateGenerators();
@@ -2657,6 +2686,35 @@
     opts = opts || {};
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
 
+    // Hosted customizer pages (#appai-boot or theme app block) can start the
+    // iframe immediately. Contact/About /pages/* must wait for the 404 so we
+    // never inject a studio on ordinary merchant pages.
+    var hosted = appaiIsHostedCustomizerPage();
+    var studioConfig = null;
+    if (hosted) {
+      studioConfig = {
+        shopDomain: appaiResolveShopDomain(),
+        productTypeId: '0',
+        productId: '',
+        productHandle: handle,
+        productTitle: '',
+        displayName: '',
+        description: '',
+        selectedVariant: '',
+        hideAddToCart: false,
+        enabled: true,
+        deferDesignerConfig: true,
+        inlineDesignerConfig: null,
+        freshDesignAllowed: true,
+        shopifyVariants: [],
+        stylePresets: [],
+        styleConfig: null,
+      };
+      console.log('[AI Art Embed] STATE=SHELL_MOUNTED handle=' + handle +
+        ' (iframe parallel with customizer-page)');
+      appaiMountCustomizerConfig(handle, studioConfig, opts);
+    }
+
     appaiFetchCustomizerConfig(handle, 0)
       .then(function(r) {
         if (r.ok) return r.json();
@@ -2677,9 +2735,10 @@
           // self-bootstrap cover (#appai-boot) or a theme app block container.
           // Ordinary merchant pages (Contact, About, FAQ...) also live under
           // /pages/ and reach this 404 branch — they must be left untouched.
-          var isAppaiPage = !!staleBoot || !!document.querySelector(
+          var isAppaiPage = hosted || !!staleBoot || !!document.querySelector(
             '.ai-art-studio-block, [data-block-handle="ai-art-studio"]'
           );
+          if (studioConfig) appaiUnmountEarlyStudio();
           if (staleBoot && staleBoot.parentNode) staleBoot.parentNode.removeChild(staleBoot);
           if (opts.fallbackUrl) {
             window.location.href = opts.fallbackUrl;
@@ -2708,7 +2767,34 @@
           return;
         }
 
-        appaiMountCustomizerConfig(handle, config, opts);
+        if (studioConfig) {
+          appaiAssignPageJsonToStudioConfig(studioConfig, handle, config);
+          console.log('[AI Art Embed] STATE=CONFIG_APPLIED handle=' + handle +
+            ' productTypeId=' + studioConfig.productTypeId);
+          cleanupDuplicateGenerators();
+          return;
+        }
+
+        studioConfig = {
+          shopDomain: appaiResolveShopDomain(),
+          productTypeId: '0',
+          productId: '',
+          productHandle: handle,
+          productTitle: '',
+          displayName: '',
+          description: '',
+          selectedVariant: '',
+          hideAddToCart: false,
+          enabled: true,
+          deferDesignerConfig: true,
+          inlineDesignerConfig: null,
+          freshDesignAllowed: true,
+          shopifyVariants: [],
+          stylePresets: [],
+          styleConfig: null,
+        };
+        appaiAssignPageJsonToStudioConfig(studioConfig, handle, config);
+        appaiMountCustomizerConfig(handle, studioConfig, opts);
 
         // Variant selector and style presets are now rendered INSIDE the
         // generator iframe (via AI_ART_STUDIO_SHOPIFY_VARIANTS and
@@ -2716,6 +2802,7 @@
         // handler).  No external DOM is needed here.
       })
       .catch(function(e) {
+        if (studioConfig) appaiUnmountEarlyStudio();
         var failedBoot = document.getElementById('appai-boot');
         if (failedBoot && failedBoot.parentNode) failedBoot.parentNode.removeChild(failedBoot);
         if (opts.fallbackUrl) {

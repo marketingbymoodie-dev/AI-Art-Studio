@@ -22826,6 +22826,9 @@ ${orientationExtra}
   app.get("/api/proxy/customizer-page", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
     const shop: string = (req as any).proxyShop;
     const handle = (req.query.handle as string) || "";
+    // Default: do not cache errors / preview / gated misses. Success for a live
+    // page overrides this to a short public TTL (matches storefront clone).
+    res.setHeader("Cache-Control", "private, no-store");
     if (!shop || !handle) return res.status(400).json({ error: "Missing shop or handle" });
 
     let page = await storage.getCustomizerPageByHandle(shop, handle);
@@ -22880,18 +22883,21 @@ ${orientationExtra}
         .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
     }
 
-    // Fetch all variants for the base product so the storefront can render a
-    // variant selector with prices before the customer generates artwork.
-    // Also check product status and auto-publish if needed so /cart/add.js accepts the variant.
-    let variants: Array<{ id: string; title: string; price: string }> = [];
-    let liveShopifyCatalog: Array<{
-      id?: string | number;
-      title?: string | null;
-      option1?: string | null;
-      option2?: string | null;
-    }> | null = null;
-    let productPublished: boolean | null = null;
-    if (page.baseProductId) {
+    // Match /api/storefront/customizer-page: variants + designerConfig in
+    // parallel; publish is fire-and-forget; size chart is client-side
+    // (waiting here added up to 2.5s before the first placeholder).
+    const variantsPromise = (async () => {
+      const empty: {
+        mapped: Array<{ id: string; title: string; price: string }>;
+        liveCatalog: Array<{
+          id?: string | number;
+          title?: string | null;
+          option1?: string | null;
+          option2?: string | null;
+        }> | null;
+        productPublished: boolean | null;
+      } = { mapped: [], liveCatalog: null, productPublished: null };
+      if (!page.baseProductId) return empty;
       try {
         let accessToken = installation?.accessToken || "";
         if (installation) {
@@ -22901,72 +22907,97 @@ ${orientationExtra}
             installation = tokenReady.installation;
           }
         }
-        if (accessToken) {
-          const prodResult = await shopifyApiCall(
-            shop,
-            accessToken,
-            `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`
-          );
-          const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
-          const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
-          let baseVariants = selectBaseCatalogVariants(rawVariants);
-          if (baseVariants.length > 0) {
-            liveShopifyCatalog = baseVariants;
-          }
-          if (baseVariants.length === 0 && page.productTypeId) {
-            const pt = await storage.getProductType(page.productTypeId);
-            if (pt) {
-              const fallback = enrichVariantsWithShopifyPrices(
-                buildFallbackVariantsFromProductType(pt),
-                rawVariants,
+        if (!accessToken) return empty;
+        const prodResult = await shopifyApiCall(
+          shop,
+          accessToken,
+          `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
+        );
+        const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
+        const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
+        let baseVariants = selectBaseCatalogVariants(rawVariants);
+        const fromLiveShopify = baseVariants.length > 0;
+        if (baseVariants.length === 0 && page.productTypeId) {
+          const pt = await storage.getProductType(page.productTypeId);
+          if (pt) {
+            const fallback = enrichVariantsWithShopifyPrices(
+              buildFallbackVariantsFromProductType(pt),
+              rawVariants,
+            );
+            if (fallback.length > 0) {
+              console.log(
+                `[proxy/customizer-page] Product ${page.baseProductId} catalog empty` +
+                  `${prodResult.ok ? "" : ` (Shopify ${prodResult.error || "failed"})`}` +
+                  `; using DB fallback (${fallback.length})`,
               );
-              if (fallback.length > 0) {
-                console.log(
-                  `[proxy/customizer-page] Product ${page.baseProductId} catalog empty` +
-                    `${prodResult.ok ? "" : ` (Shopify ${prodResult.error || "failed"})`}` +
-                    `; using DB fallback (${fallback.length})`,
-                );
-                baseVariants = fallback;
-              }
-            }
-          }
-          variants = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
-            id: String(v.id),
-            title: v.title || "",
-            price: v.price || "0.00",
-            option1: v.option1 ?? undefined,
-            option2: v.option2 ?? undefined,
-            option3: v.option3 ?? undefined,
-            imageSrc: v.imageSrc ?? undefined,
-          }));
-
-          // Ensure the product is published to the Online Store channel.
-          // Shopify "unlisted" products are accessible via direct URL and purchasable
-          // via /cart/add.js — we do NOT force status: "active" which would make the
-          // product visible in the storefront catalog.
-          const productStatus: string = prodResult.data?.product?.status ?? "";
-          const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
-          console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
-          productPublished = (productStatus === "active" || productStatus === "unlisted") && !!publishedAt;
-
-          const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
-
-          // Ensure product is published to Online Store so /cart/add.js works.
-          // "unlisted" products still work with /cart/add.js when published to Online Store.
-          if (productIdNum && prodResult.ok) {
-            try {
-              await ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum);
-              productPublished = true;
-              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
-            } catch (pubErr: any) {
-              console.warn(`[proxy/customizer-page] Failed to publish product ${productIdNum}: ${pubErr.message}`);
+              baseVariants = fallback;
             }
           }
         }
+        const mapped = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
+          id: String(v.id),
+          title: v.title || "",
+          price: v.price || "0.00",
+          option1: v.option1 ?? undefined,
+          option2: v.option2 ?? undefined,
+          option3: v.option3 ?? undefined,
+          imageSrc: v.imageSrc ?? undefined,
+        }));
+
+        const productStatus: string = prodResult.data?.product?.status ?? "";
+        const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
+        console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
+        let productPublished: boolean | null =
+          (productStatus === "active" || productStatus === "unlisted") && !!publishedAt;
+
+        const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
+        if (productIdNum && prodResult.ok) {
+          void ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum)
+            .then(() => {
+              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
+            })
+            .catch((pubErr: Error) => {
+              console.warn(`[proxy/customizer-page] Failed to publish product ${productIdNum}: ${pubErr.message}`);
+            });
+          productPublished = true;
+        }
+        return {
+          mapped,
+          liveCatalog: fromLiveShopify ? mapped : null,
+          productPublished,
+        };
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
+        return empty;
       }
-    }
+    })();
+
+    const designerPromise = (async () => {
+      if (!page.productTypeId) return null;
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (!pt) return null;
+        const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+          allowUnpublishedHarvest: true,
+        });
+        const { liveCatalog } = await variantsPromise;
+        return buildDesignerConfig(
+          ptForDesigner!,
+          page.productTypeId,
+          undefined,
+          null,
+          liveCatalog,
+        );
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
+        return null;
+      }
+    })();
+
+    const [designerConfig, variantResult] = await Promise.all([designerPromise, variantsPromise]);
+    let variants = variantResult.mapped;
+    const productPublished = variantResult.productPublished;
+
     if (variants.length === 0 && page.productTypeId) {
       try {
         const pt = await storage.getProductType(page.productTypeId);
@@ -22989,32 +23020,6 @@ ${orientationExtra}
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] DB variant fallback failed:`, e);
-      }
-    }
-
-    // Embed the full designer config so the iframe never needs to call
-    // /api/storefront/product-types/:id/designer (eliminates the timeout).
-    let designerConfig = null;
-    if (page.productTypeId) {
-      try {
-        const pt = await storage.getProductType(page.productTypeId);
-        if (pt) {
-          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
-            allowUnpublishedHarvest: true,
-          });
-          const sizeChart = ptForDesigner!.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
-            : null;
-          designerConfig = buildDesignerConfig(
-            ptForDesigner!,
-            page.productTypeId,
-            undefined,
-            sizeChart,
-            liveShopifyCatalog,
-          );
-        }
-      } catch (e) {
-        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
       }
     }
 
@@ -23050,6 +23055,13 @@ ${orientationExtra}
       ...s,
       promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
     }));
+
+    // Preview tokens must always see a fresh page. Live storefront JSON is
+    // safe to cache briefly — Shopify variant prices / designerConfig rarely
+    // change within a minute, and the iframe already starts in parallel.
+    if (!previewOk) {
+      res.setHeader("Cache-Control", "public, max-age=45, stale-while-revalidate=60");
+    }
 
     return res.json({
       id: page.id,
