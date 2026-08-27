@@ -3027,6 +3027,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   /** True while framed flat decor is re-rastering after size/colour change. */
   const [flatMockupRefreshing, setFlatMockupRefreshing] = useState(false);
+  // Same flag as the "Updating mockups…" overlay — iframe + parent ATC stay
+  // disabled for the full in-flight regen (Printify + flat).
+  const mockupsUpdating = !!(flatMockupRefreshing || mockupLoading || mockupTriggered);
   /** On-demand Printify lifestyle/context for flat framed (not auto-fetched). */
   const [lifestyleShotLoading, setLifestyleShotLoading] = useState(false);
   const [lifestyleShotError, setLifestyleShotError] = useState<string | null>(null);
@@ -5557,16 +5560,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [countryAwareSizes, printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
 
   const freezeParentAtcForUpdate = useCallback(() => {
+    if (usesFlatOnTheFlyPreview && generatedDesign?.imageUrl) {
+      setFlatMockupRefreshing(true);
+    }
     if (!isStorefront) return;
     setAtcUpdatesPending(true);
     window.parent.postMessage({
       type: "AI_ART_STUDIO_CART_STATE",
       ready: false,
       disabled: true,
-      label: "Updating…",
+      label: "Updating mockups…",
       payload: null,
     }, "*");
-  }, [isStorefront]);
+  }, [isStorefront, usesFlatOnTheFlyPreview, generatedDesign?.imageUrl]);
 
   const handleCustomerFrameColorChange = useCallback((colorId: string) => {
     if (colorId !== selectedFrameColor) freezeParentAtcForUpdate();
@@ -7646,20 +7652,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       aopApplyStatus === "saving"
     );
     const saveBlocking = flatSaveBlocking || aopSaveBlocking;
-    const mockupsStaleBlocksCart = mockupsStale;
+    const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
     const shouldDisable =
       waitingForMockups ||
       isAddingToCart ||
       mockupsStaleBlocksCart ||
-      mockupLoading ||
+      mockupsUpdating ||
       saveBlocking ||
       saveStatePending;
     const label = saveBlocking
       ? "Saving design\u2026"
-      : waitingForMockups
-        ? "Generating preview\u2026"
-        : mockupLoading
-          ? "Refreshing Mockups\u2026"
+      : waitingForMockups || mockupsUpdating
+        ? "Updating mockups…"
         : mockupsStaleBlocksCart
           ? "Refresh Mockups to Continue"
           : "Add to Cart";
@@ -7681,7 +7685,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -7698,7 +7702,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!snap || savedJobIdRef.current !== jobId) return;
         window.parent.postMessage({
           type: 'AI_ART_STUDIO_CART_STATE',
-          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
+          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking,
           disabled: shouldDisable,
           waitingForMockups,
           label,
@@ -7709,7 +7713,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }, '*');
       });
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -8170,6 +8174,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // and "Syncing placement…" stuck forever).
         setFlatRenderFailed(false);
         setFlatPlacerEditOpen(true);
+        setFlatMockupRefreshing(true);
       } else if (shouldFetchMockups) {
         console.log('[Mockups] Triggering mockup generation');
         // Set mockupTriggered synchronously so the overlay stays up between
@@ -9376,7 +9381,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
-    if (atcUpdatesPending || saveStatePending) return;
+    if (atcUpdatesPending || saveStatePending || mockupsUpdating) return;
     skipGalleryPersistRef.current = false;
 
     if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
@@ -13297,7 +13302,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const atcPrimaryDisabled =
     isAddingToCart ||
     atcWaitingForMockups ||
-    mockupLoading ||
+    mockupsUpdating ||
     flatPlacerSaveBlocking ||
     aopPlacerSaveBlocking ||
     atcPendingFreeze ||
@@ -13393,10 +13398,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     Saving design…
                   </span>
                 </>
-              ) : atcWaitingForMockups || atcRefreshingMockups ? (
+              ) : atcWaitingForMockups || atcRefreshingMockups || mockupsUpdating ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  <span className="shimmer-text-white">Refreshing Mockups…</span>
+                  <span className="shimmer-text-white">Updating mockups…</span>
                 </>
               ) : atcMockupsStaleBlocks ? (
                 <>
@@ -14975,10 +14980,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                               Saving design…
                             </span>
                           </>
-                        ) : atcWaitingForMockups || atcRefreshingMockups ? (
+                        ) : atcWaitingForMockups || atcRefreshingMockups || mockupsUpdating ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Refreshing Mockups…</span>
+                            <span className="shimmer-text-white">Updating mockups…</span>
                           </>
                         ) : atcMockupsStaleBlocks ? (
                           <>
@@ -16072,7 +16077,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   </div>
                 )}
                 <div className="relative min-h-0">
-                  {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
+                  {(mockupsUpdating || (flatDecorMode && mockupsStale)) && (
                     <div
                       className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20"
                       data-testid="overlay-flat-mockups-updating"
@@ -16082,7 +16087,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         className="pointer-events-auto text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1.5 animate-pulse"
                         onClick={handleRefreshFlatMockups}
                       >
-                        {flatMockupRefreshing ? "Updating mockups…" : "Refresh your Mockups"}
+                        {mockupsUpdating ? "Updating mockups…" : "Refresh your Mockups"}
                       </button>
                     </div>
                   )}
@@ -16690,8 +16695,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
               {/* Stale / updating mockups overlay (Printify + flat framed decor) */}
               {generatedDesign?.imageUrl &&
-                ((atcHasMockups && atcMockupsStaleBlocks && !mockupLoading) ||
-                  flatMockupRefreshing ||
+                ((atcHasMockups && atcMockupsStaleBlocks && !mockupsUpdating) ||
+                  mockupsUpdating ||
                   (flatDecorMode && mockupsStale)) && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
                   <button
@@ -16725,7 +16730,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       }
                     }}
                   >
-                    {flatMockupRefreshing || mockupLoading
+                    {mockupsUpdating
                       ? "Updating mockups…"
                       : "Refresh your Mockups"}
                   </button>
