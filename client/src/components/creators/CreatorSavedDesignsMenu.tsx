@@ -104,12 +104,9 @@ function thumbUrl(d: SavedDesign): string {
     ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
       ? (ds.hoodieAopMockups as Record<string, unknown>)
       : null;
-  for (const u of [
-    flat?.front,
-    hoodie?.front,
-    Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "",
-    d.artworkUrl,
-  ]) {
+  const fromJob = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
+  if (typeof fromJob === "string" && fromJob.trim()) return fromJob.trim();
+  for (const u of [flat?.front, hoodie?.front, d.artworkUrl]) {
     if (typeof u === "string" && u.trim()) return u.trim();
   }
   return "";

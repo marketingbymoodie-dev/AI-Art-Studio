@@ -1644,12 +1644,20 @@ function isPlacementForkDesign(d: { designState?: Record<string, unknown> | null
   return d.designState?.placementFork === true;
 }
 
-/** Per-job cart/preview raster — do not fall back to a sibling placement's mockupUrls. */
+/**
+ * Same thumbnail SoT as the parent cart-drawer Saved Designs
+ * (`appai-saved-designs-nav.js`): job `mockupUrls[0]`, then artwork.
+ * Colour-change persist writes mockupUrls and used to leave
+ * designState.flatMockups stale — preferring those rasters made the
+ * in-iframe strip lag the drawer.
+ */
 function savedDesignPreviewUrl(d: {
   mockupUrls?: string[] | null;
   artworkUrl?: string | null;
   designState?: Record<string, unknown> | null;
 }): string {
+  const fromJob = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
+  if (typeof fromJob === "string" && fromJob.trim()) return fromJob.trim();
   const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
   const flat =
     ds && ds.flatMockups && typeof ds.flatMockups === "object"
@@ -1659,12 +1667,7 @@ function savedDesignPreviewUrl(d: {
     ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
       ? (ds.hoodieAopMockups as Record<string, unknown>)
       : null;
-  for (const u of [
-    flat?.front,
-    hoodie?.front,
-    Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "",
-    d.artworkUrl,
-  ]) {
+  for (const u of [flat?.front, hoodie?.front, d.artworkUrl]) {
     if (typeof u === "string" && u.trim()) return u.trim();
   }
   return "";
@@ -10384,6 +10387,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               designState: {
                 productTypeId: currentTypeId,
                 pageHandle: currentHandle,
+                flatMockups: {
+                  front: absUrls[0],
+                  back: absUrls[1] || absUrls[0],
+                },
               },
             }),
           }).catch(() => {});
@@ -14661,6 +14668,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                       const displaySrc = mockupAbs || artworkAbs;
                                       return displaySrc ? (
                                         <img
+                                          key={displaySrc}
                                           src={displaySrc}
                                           alt={d.baseTitle || 'Saved design'}
                                           className="w-full h-full object-cover"
