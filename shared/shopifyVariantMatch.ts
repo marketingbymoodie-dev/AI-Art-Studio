@@ -208,3 +208,77 @@ export function matchShopifyVariantBySizeTitle(
 
   return String(candidates[0].id);
 }
+
+/** True when this Printify/frame colour appears on a minted Shopify catalog row. */
+export function frameColorIsOnShopifyCatalog(
+  catalog: ShopifyVariantMatchEntry[],
+  color: { id: string; name: string },
+): boolean {
+  if (!catalog.length) return false;
+  return catalog.some((v) => {
+    const options = [v.option1, v.option2].filter(Boolean).map((o) => String(o));
+    if (options.some((opt) => colorMatchesFrame(opt, color.name, color.id))) return true;
+    return !!(v.title && colorMatchesFrame(String(v.title), color.name, color.id));
+  });
+}
+
+/**
+ * Storefront colour dropdown source: minted Shopify variants only.
+ * Empty catalog → no colours (never fall back to intent / full Printify list).
+ */
+export function filterFrameColorsToShopifyCatalog<T extends { id: string; name: string }>(
+  frameColors: T[],
+  catalog: ShopifyVariantMatchEntry[] | null | undefined,
+): T[] {
+  if (!catalog || catalog.length === 0) return [];
+  return frameColors.filter((c) => frameColorIsOnShopifyCatalog(catalog, c));
+}
+
+/** Colour tokens from persist `shopifyVariantIds` keys (`Size:Color`). */
+export function colorTokensFromShopifyVariantIds(raw: unknown): string[] {
+  let map: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try {
+      map = JSON.parse(raw || "{}") as Record<string, unknown>;
+    } catch {
+      map = {};
+    }
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    map = raw as Record<string, unknown>;
+  }
+  const out: string[] = [];
+  for (const key of Object.keys(map)) {
+    const colon = key.indexOf(":");
+    if (colon < 0) continue;
+    const color = key.slice(colon + 1).trim();
+    if (!color || color.toLowerCase() === "default") continue;
+    out.push(color);
+  }
+  return out;
+}
+
+/**
+ * Offer only colours that were minted on Shopify.
+ * Prefer a live catalog; otherwise `product_types.shopifyVariantIds`.
+ * Never fall back to selectedColorIds or the full Printify frameColors list.
+ */
+export function filterFrameColorsToMintedShopify<T extends { id: string; name: string }>(
+  frameColors: T[],
+  args: {
+    catalog?: ShopifyVariantMatchEntry[] | null;
+    shopifyVariantIds?: unknown;
+  },
+): T[] {
+  if (args.catalog && args.catalog.length > 0) {
+    return filterFrameColorsToShopifyCatalog(frameColors, args.catalog);
+  }
+  const tokens = colorTokensFromShopifyVariantIds(args.shopifyVariantIds);
+  if (tokens.length === 0) return [];
+  const synthetic: ShopifyVariantMatchEntry[] = tokens.map((name, i) => ({
+    id: i + 1,
+    title: name,
+    option1: null,
+    option2: name,
+  }));
+  return filterFrameColorsToShopifyCatalog(frameColors, synthetic);
+}

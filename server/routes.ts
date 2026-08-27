@@ -49,6 +49,7 @@ import {
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
+import { filterFrameColorsToMintedShopify } from "@shared/shopifyVariantMatch";
 import {
   aspectRatioFromFlatCalibration,
   computeAspectRatioFromPixelDims,
@@ -6087,6 +6088,9 @@ ${orientationExtra}
         : null;
 
       console.log(`[Designer API] Building config for product type ${id}: ${productType.name}`);
+      const mintedFrameColors = filterFrameColorsToMintedShopify(frameColors, {
+        shopifyVariantIds: (productType as any).shopifyVariantIds,
+      });
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -6122,13 +6126,13 @@ ${orientationExtra}
             aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
           };
         }),
-        frameColors: frameColors.map((c: any) => ({
+        frameColors: mintedFrameColors.map((c: any) => ({
           id: c.id,
           name: c.name,
           hex: c.hex,
         })),
         // Determine the label for the color/option selector
-        colorLabel: getColorOptionName(frameColors, productType.colorOptionName),
+        colorLabel: getColorOptionName(mintedFrameColors, productType.colorOptionName),
         sizeChart,
         canvasConfig: {
           maxDimension,
@@ -6530,7 +6534,13 @@ ${orientationExtra}
     productTypeToUse: any,
     requestedId: number,
     resolvedFrom?: string,
-    sizeChart?: Record<string, any> | null
+    sizeChart?: Record<string, any> | null,
+    mintedCatalog?: Array<{
+      id?: string | number;
+      title?: string | null;
+      option1?: string | null;
+      option2?: string | null;
+    }> | null,
   ): Record<string, any> {
     const allSizes = typeof productTypeToUse.sizes === "string"
       ? JSON.parse(productTypeToUse.sizes)
@@ -6539,31 +6549,27 @@ ${orientationExtra}
       ? JSON.parse(productTypeToUse.frameColors)
       : productTypeToUse.frameColors || [];
 
-    // Filter sizes and colors to only those the merchant has selected.
-    // Empty array means the merchant deliberately cleared the selection (e.g. no color option).
-    // null/undefined means never configured — fall back to showing all.
+    // Sizes: merchant selectedSizeIds (null = never configured → all; [] = none).
+    // Colours: minted Shopify only — never selectedColorIds (can exceed the 100-variant cap).
     const rawSizeIds = typeof productTypeToUse.selectedSizeIds === "string"
       ? productTypeToUse.selectedSizeIds
       : JSON.stringify(productTypeToUse.selectedSizeIds ?? null);
-    const rawColorIds = typeof productTypeToUse.selectedColorIds === "string"
-      ? productTypeToUse.selectedColorIds
-      : JSON.stringify(productTypeToUse.selectedColorIds ?? null);
 
     // Parse — treat null JSON as "never set"
     const savedSizeIds: string[] | null = rawSizeIds && rawSizeIds !== "null"
       ? JSON.parse(rawSizeIds)
-      : null;
-    const savedColorIds: string[] | null = rawColorIds && rawColorIds !== "null"
-      ? JSON.parse(rawColorIds)
       : null;
 
     // null = never configured → show all; [] = deliberately cleared → show none
     const sizes = savedSizeIds !== null
       ? allSizes.filter((s: any) => savedSizeIds.includes(s.id))
       : allSizes;
-    const frameColors = savedColorIds !== null
-      ? allFrameColors.filter((c: any) => savedColorIds.includes(c.id))
-      : allFrameColors;
+    // Customer colours = minted Shopify only. selectedColorIds is merchant intent
+    // and can exceed the 100-variant cap (WP-55: 14 selected, ~11 minted).
+    const frameColors = filterFrameColorsToMintedShopify(allFrameColors, {
+      catalog: mintedCatalog,
+      shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
+    });
 
     const displayAspectRatio = designerDisplayAspectRatio(productTypeToUse);
     const [aspectW, aspectH] = displayAspectRatio.split(":").map(Number);
@@ -7671,29 +7677,16 @@ ${orientationExtra}
     const rawCreatorUsername = String(req.query.creatorUsername || "").trim();
     const rawCreatorId = String(req.query.creatorId || "").trim();
 
-    const designerPromise = (async () => {
-      if (!page.productTypeId) return null;
-      try {
-        const pt = await storage.getProductType(page.productTypeId);
-        if (!pt) return null;
-        const prepared = await prepareProductTypeForDesigner(pt, {
-          allowUnpublishedHarvest: true,
-        });
-        const ptForDesigner = await hydratePrintifyBothCostsFromPlatform(prepared);
-        // Size chart is loaded client-side; waiting here added up to 2.5s before
-        // the first placeholder could render.
-        return buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, null);
-      } catch (e) {
-        console.warn(
-          `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
-          e,
-        );
-        return null;
-      }
-    })();
-
     const variantsPromise = (async () => {
-      const empty: Array<{ id: string; title: string; price: string }> = [];
+      const empty: {
+        mapped: Array<{ id: string; title: string; price: string }>;
+        liveCatalog: Array<{
+          id?: string | number;
+          title?: string | null;
+          option1?: string | null;
+          option2?: string | null;
+        }> | null;
+      } = { mapped: [], liveCatalog: null };
       if (!page.baseProductId || !installation) return empty;
       try {
         const tokenReady = await ensureValidOfflineAccessToken(installation);
@@ -7707,6 +7700,7 @@ ${orientationExtra}
         const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
         const productImages: any[] = prodResult.data?.product?.images ?? [];
         let baseVariants = selectBaseCatalogVariants(rawVariants);
+        let fromLiveShopify = baseVariants.length > 0;
         if (baseVariants.length === 0 && page.productTypeId) {
           const pt = await storage.getProductType(page.productTypeId);
           if (pt) {
@@ -7732,14 +7726,43 @@ ${orientationExtra}
             () => {},
           );
         }
-        return mapped;
+        return { mapped, liveCatalog: fromLiveShopify ? mapped : null };
       } catch (e) {
         console.warn(`[storefront/customizer-page] variants failed:`, e);
         return empty;
       }
     })();
 
-    const [designerConfig, variants] = await Promise.all([designerPromise, variantsPromise]);
+    const designerPromise = (async () => {
+      if (!page.productTypeId) return null;
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (!pt) return null;
+        const prepared = await prepareProductTypeForDesigner(pt, {
+          allowUnpublishedHarvest: true,
+        });
+        const ptForDesigner = await hydratePrintifyBothCostsFromPlatform(prepared);
+        // Size chart is loaded client-side; waiting here added up to 2.5s before
+        // the first placeholder could render.
+        const { liveCatalog } = await variantsPromise;
+        return buildDesignerConfig(
+          ptForDesigner!,
+          page.productTypeId,
+          undefined,
+          null,
+          liveCatalog,
+        );
+      } catch (e) {
+        console.warn(
+          `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
+          e,
+        );
+        return null;
+      }
+    })();
+
+    const [designerConfig, variantResult] = await Promise.all([designerPromise, variantsPromise]);
+    const variants = variantResult.mapped;
 
     let stylePresets: any[] = [];
     try {
@@ -22851,30 +22874,16 @@ ${orientationExtra}
         .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
     }
 
-    // Embed the full designer config so the iframe never needs to call
-    // /api/storefront/product-types/:id/designer (eliminates the timeout).
-    let designerConfig = null;
-    if (page.productTypeId) {
-      try {
-        const pt = await storage.getProductType(page.productTypeId);
-        if (pt) {
-          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
-            allowUnpublishedHarvest: true,
-          });
-          const sizeChart = ptForDesigner!.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
-            : null;
-          designerConfig = buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, sizeChart);
-        }
-      } catch (e) {
-        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
-      }
-    }
-
     // Fetch all variants for the base product so the storefront can render a
     // variant selector with prices before the customer generates artwork.
     // Also check product status and auto-publish if needed so /cart/add.js accepts the variant.
     let variants: Array<{ id: string; title: string; price: string }> = [];
+    let liveShopifyCatalog: Array<{
+      id?: string | number;
+      title?: string | null;
+      option1?: string | null;
+      option2?: string | null;
+    }> | null = null;
     let productPublished: boolean | null = null;
     if (page.baseProductId) {
       try {
@@ -22895,6 +22904,9 @@ ${orientationExtra}
           const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
           const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
           let baseVariants = selectBaseCatalogVariants(rawVariants);
+          if (baseVariants.length > 0) {
+            liveShopifyCatalog = baseVariants;
+          }
           if (baseVariants.length === 0 && page.productTypeId) {
             const pt = await storage.getProductType(page.productTypeId);
             if (pt) {
@@ -22971,6 +22983,32 @@ ${orientationExtra}
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] DB variant fallback failed:`, e);
+      }
+    }
+
+    // Embed the full designer config so the iframe never needs to call
+    // /api/storefront/product-types/:id/designer (eliminates the timeout).
+    let designerConfig = null;
+    if (page.productTypeId) {
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (pt) {
+          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+            allowUnpublishedHarvest: true,
+          });
+          const sizeChart = ptForDesigner!.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
+            : null;
+          designerConfig = buildDesignerConfig(
+            ptForDesigner!,
+            page.productTypeId,
+            undefined,
+            sizeChart,
+            liveShopifyCatalog,
+          );
+        }
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
       }
     }
 

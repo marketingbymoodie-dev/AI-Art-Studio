@@ -2062,6 +2062,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [selectedSize, setSelectedSize] = useState("");
   const [shippingDownsellSizeId, setShippingDownsellSizeId] = useState<string | null>(null);
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
+  const [atcUpdatesPending, setAtcUpdatesPending] = useState(false);
+  const [saveStatePending, setSaveStatePending] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
@@ -5551,9 +5553,27 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setSelectedFrameColor(firstColor?.id || "");
   }, [countryAwareSizes, printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
 
+  const freezeParentAtcForUpdate = useCallback(() => {
+    if (!isStorefront) return;
+    setAtcUpdatesPending(true);
+    window.parent.postMessage({
+      type: "AI_ART_STUDIO_CART_STATE",
+      ready: false,
+      disabled: true,
+      label: "Updating…",
+      payload: null,
+    }, "*");
+  }, [isStorefront]);
+
+  const handleCustomerFrameColorChange = useCallback((colorId: string) => {
+    if (colorId !== selectedFrameColor) freezeParentAtcForUpdate();
+    setSelectedFrameColor(colorId);
+  }, [selectedFrameColor, freezeParentAtcForUpdate]);
+
   const applySelectedSize = useCallback(
     (sizeId: string) => {
       const catalogId = resolveSizeIdFromCoverage(sizeId, printSizes) || sizeId;
+      if (catalogId !== selectedSize) freezeParentAtcForUpdate();
       const prevSize = printSizes.find((s) => s.id === selectedSize);
       const nextSize = printSizes.find((s) => s.id === catalogId);
       if (
@@ -5602,6 +5622,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       frameColorObjects,
       usesFlatOnTheFlyPreview,
       defaultZoom,
+      freezeParentAtcForUpdate,
     ],
   );
 
@@ -7001,9 +7022,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
   useEffect(() => {
-    if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) return;
+    if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) {
+      setSaveStatePending(false);
+      return;
+    }
     const jobId = savedJobIdRef.current;
-    if (!jobId || !shopDomain || !selectedFrameColor || !generatedDesign?.imageUrl) return;
+    if (!jobId || !shopDomain || !selectedFrameColor || !generatedDesign?.imageUrl) {
+      setSaveStatePending(false);
+      return;
+    }
+    setSaveStatePending(true);
     const t = window.setTimeout(() => {
       void safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
@@ -7016,7 +7044,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             selectedFrameColor: selectedFrameColorRef.current || selectedFrameColor,
           },
         }),
-      }).catch(() => {});
+      })
+        .catch(() => {})
+        .finally(() => setSaveStatePending(false));
     }, 500);
     return () => window.clearTimeout(t);
   }, [selectedFrameColor, selectedSize, shopDomain, generatedDesign?.imageUrl]);
@@ -7509,16 +7539,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const rawVariantId = findVariantId();
     if (!rawVariantId) {
-      // Keep the parent button clickable so a match miss is not a dead click.
+      if (atcUpdatesPending) setAtcUpdatesPending(false);
       window.parent.postMessage({
         type: 'AI_ART_STUDIO_CART_STATE',
-        ready: true,
-        disabled: false,
-        label: 'Add to Cart',
-        payload: { variantId: '', matchFailed: true },
+        ready: false,
+        disabled: true,
+        label: 'Unavailable combination',
+        payload: null,
       }, '*');
       return;
     }
+    if (atcUpdatesPending) setAtcUpdatesPending(false);
 
     // Normalize to numeric (strip GID prefix if present) — /cart/add.js requires numeric IDs
     const variantId = normalizeVariantId(rawVariantId);
@@ -7605,7 +7636,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const saveBlocking = flatSaveBlocking || aopSaveBlocking;
     const mockupsStaleBlocksCart = mockupsStale;
     const shouldDisable =
-      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || saveBlocking;
+      waitingForMockups ||
+      isAddingToCart ||
+      mockupsStaleBlocksCart ||
+      mockupLoading ||
+      saveBlocking ||
+      saveStatePending;
     const label = saveBlocking
       ? "Saving design\u2026"
       : waitingForMockups
@@ -7661,7 +7697,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }, '*');
       });
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -8683,14 +8719,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
   }, [isShopify, isStorefront, shopDomain, productHandle, productTypeId, productTypeConfig?.frameColors?.length]);
 
-  const findVariantId = (): string | null => {
+  const findVariantId = (opts?: { quiet?: boolean }): string | null => {
+    const log = opts?.quiet ? () => {} : (...args: unknown[]) => console.log(...args);
     if (!isShopify && !isStorefront) return null;
 
     // Never resolve a catalog / URL default variant when the customer has not
     // picked a required size (reuse-artwork + hoodie left selectedSize blank
     // and still matched the PDP selectedVariant — Small at the wrong price).
     if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
-      console.log("[Design Studio] No variant found — size not selected");
+      log("[Design Studio] No variant found — size not selected");
       return null;
     }
     if (
@@ -8698,7 +8735,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !frameOptionsRedundantWithSizes &&
       !String(selectedFrameColor || "").trim()
     ) {
-      console.log("[Design Studio] No variant found — color not selected");
+      log("[Design Studio] No variant found — color not selected");
       return null;
     }
 
@@ -8707,7 +8744,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
 
-    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
+    log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
                 'variants:', variants.length, 'shopifyVariants:', shopifyVariants.length,
                 'selectedSize:', selectedSize, 'selectedFrameColor:', selectedFrameColor,
                 'hasColors:', hasColors);
@@ -8725,7 +8762,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         )
       : null;
     if (fromShopify) {
-      console.log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
+      log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
       return fromShopify;
     }
 
@@ -8737,7 +8774,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         selectedFrameColor || undefined,
       );
       if (titleHit) {
-        console.log('[Design Studio] Matched variant from shopifyVariants title:', titleHit);
+        log('[Design Studio] Matched variant from shopifyVariants title:', titleHit);
         return titleHit;
       }
     }
@@ -8757,7 +8794,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         )
       : null;
     if (fromVariants) {
-      console.log('[Design Studio] Matched variant from variants:', fromVariants);
+      log('[Design Studio] Matched variant from variants:', fromVariants);
       return fromVariants;
     }
 
@@ -8770,7 +8807,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Do NOT fall back to the PDP / URL default — that is how XL at $18.95
     // silently added Small at $27.
     if (printSizes.length > 0 && String(selectedSize || "").trim()) {
-      console.log("[Design Studio] No variant found for selected size/color — refusing PDP default");
+      log("[Design Studio] No variant found for selected size/color — refusing PDP default");
       return null;
     }
 
@@ -8778,21 +8815,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Never fall back when the catalog is empty — that would reuse a stale ID from
     // a prior product after an in-app switch (pillow → sweatshirt).
     if (overrideVariantId && catalogIds.has(String(overrideVariantId))) {
-      console.log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
+      log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
       return overrideVariantId;
     }
 
     if (selectedVariantParam && catalogIds.has(selectedVariantParam)) {
-      console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
+      log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
       return selectedVariantParam;
     }
 
     if (shopifyVariantId && catalogIds.has(String(shopifyVariantId))) {
-      console.log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
+      log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
       return shopifyVariantId;
     }
 
-    console.log('[Design Studio] No variant found');
+    log('[Design Studio] No variant found');
     return null;
   };
 
@@ -9327,6 +9364,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+    if (atcUpdatesPending || saveStatePending) return;
     skipGalleryPersistRef.current = false;
 
     if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
@@ -13242,6 +13280,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   );
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
+  const atcCatalogMiss = !findVariantId({ quiet: true });
+  const atcPendingFreeze = atcUpdatesPending || saveStatePending;
+  const atcPrimaryDisabled =
+    isAddingToCart ||
+    atcWaitingForMockups ||
+    mockupLoading ||
+    flatPlacerSaveBlocking ||
+    aopPlacerSaveBlocking ||
+    atcPendingFreeze ||
+    (atcCatalogMiss && !atcMockupsStaleBlocks && !(useAopCustomizer && !aopPatternUrl));
   const showingMockupAtArtworkSlot = !!(
     showsPrintifyMockupPreview &&
     generatedDesign?.imageUrl &&
@@ -13317,7 +13365,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
+              disabled={atcPrimaryDisabled}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -14899,7 +14947,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
+                        disabled={atcPrimaryDisabled}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
@@ -15276,7 +15324,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   <FrameColorSelector
                     frameColors={frameColorObjects}
                     selectedFrameColor={selectedFrameColor}
-                    onFrameColorChange={setSelectedFrameColor}
+                    onFrameColorChange={handleCustomerFrameColorChange}
                     colorLabel={productTypeConfig?.colorLabel || "Color"}
                     variantMap={productTypeConfig?.variantMap}
                     selectedSize={selectedSize}

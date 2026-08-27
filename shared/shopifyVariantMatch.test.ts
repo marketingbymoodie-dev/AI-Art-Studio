@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterFrameColorsToMintedShopify,
+  filterFrameColorsToShopifyCatalog,
   matchShopifyVariantBySizeColor,
   matchShopifyVariantBySizeTitle,
   normalizeShopifyVariantToken,
@@ -175,5 +177,46 @@ describe("matchShopifyVariantBySizeTitle", () => {
     expect(
       matchShopifyVariantBySizeTitle(teeCatalog, "XL", "Does Not Exist", "missing"),
     ).toBeNull();
+  });
+});
+
+describe("filterFrameColorsToShopifyCatalog", () => {
+  const catalog = [
+    { id: 1, title: "Navy / M", option1: "M", option2: "Navy" },
+    { id: 2, title: "Heather Grey / M", option1: "M", option2: "Heather Grey" },
+  ];
+  const frameColors = [
+    { id: "navy", name: "Navy" },
+    { id: "heather_grey", name: "Heather Grey" },
+    { id: "military-green", name: "Military Green" },
+    { id: "gold", name: "Solid Gold" },
+  ];
+
+  it("keeps only colours that exist on minted Shopify rows", () => {
+    expect(filterFrameColorsToShopifyCatalog(frameColors, catalog).map((c) => c.id)).toEqual([
+      "navy",
+      "heather_grey",
+    ]);
+  });
+
+  it("returns no colours when the Shopify catalog is empty — never the full Printify list", () => {
+    expect(filterFrameColorsToShopifyCatalog(frameColors, [])).toEqual([]);
+    expect(filterFrameColorsToShopifyCatalog(frameColors, null)).toEqual([]);
+  });
+
+  it("shopifyVariantIds path drops unpublished tail colours", () => {
+    const ids = {
+      "M:Navy": 1,
+      "M:Heather Grey": 2,
+      "L:Navy": 3,
+    };
+    expect(
+      filterFrameColorsToMintedShopify(frameColors, { shopifyVariantIds: ids }).map((c) => c.id),
+    ).toEqual(["navy", "heather_grey"]);
+  });
+
+  it("empty shopifyVariantIds offers nothing — not selectedColorIds / full Printify", () => {
+    expect(filterFrameColorsToMintedShopify(frameColors, { shopifyVariantIds: {} })).toEqual([]);
+    expect(filterFrameColorsToMintedShopify(frameColors, {})).toEqual([]);
   });
 });
