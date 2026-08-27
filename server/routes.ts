@@ -5413,9 +5413,12 @@ ${orientationExtra}
     if (frameColors.length > 0) {
       for (const size of sizes) {
         for (const color of frameColors) {
+          // Only minted Shopify rows. Fake fallback-* ids made findVariantId
+          // succeed for unminted colours (WP-55 ATC fail-open).
           const shopifyVariantId = lookupVariantId(size, color);
+          if (!shopifyVariantId) continue;
           fallbackVariants.push({
-            id: shopifyVariantId || `fallback-${productType.id}-${size.id}-${color.id}`,
+            id: shopifyVariantId,
             title: `${size.name} / ${color.name}`,
             option1: size.name,
             option2: color.name,
@@ -5428,8 +5431,9 @@ ${orientationExtra}
     } else {
       for (const size of sizes) {
         const shopifyVariantId = lookupVariantId(size);
+        if (!shopifyVariantId) continue;
         fallbackVariants.push({
-          id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
+          id: shopifyVariantId,
           title: size.name,
           option1: size.name,
           option2: null,
