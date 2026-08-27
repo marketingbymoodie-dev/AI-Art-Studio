@@ -135,6 +135,7 @@ export interface ProductDesignerConfig {
   hasPrintifyMockups: boolean;
   sizes: PrintSize[];
   frameColors: FrameColor[];
+  shopifyVariantIds?: unknown;
   canvasConfig: CanvasConfig;
   doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;

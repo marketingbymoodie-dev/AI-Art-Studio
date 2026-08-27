@@ -6145,6 +6145,7 @@ ${orientationExtra}
           safeZoneMargin,
         },
         variantMap,
+        shopifyVariantIds: (productType as any).shopifyVariantIds || null,
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
         panelMappingTemplate: (productType as any).panelMappingTemplate || null,
@@ -6812,6 +6813,7 @@ ${orientationExtra}
         safeZoneMargin,
       },
       variantMap,
+      shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds || null,
       variantAvailability: parseVariantAvailabilityMap(
         (productTypeToUse as any).variantAvailability,
       ),

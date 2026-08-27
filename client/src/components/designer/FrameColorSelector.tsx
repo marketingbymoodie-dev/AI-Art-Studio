@@ -7,7 +7,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { resolveStoredColorHex } from "@shared/printifyColorResolver";
-import { hasVariantMappingForColor, type VariantMap } from "@shared/variantMapResolve";
+import { comboIsMinted, type ShopifyVariantMatchEntry } from "@shared/shopifyVariantMatch";
 import type { FrameColor } from "./types";
 
 interface FrameColorSelectorProps {
@@ -16,25 +16,13 @@ interface FrameColorSelectorProps {
   onFrameColorChange: (colorId: string) => void;
   showLabel?: boolean;
   colorLabel?: string;
-  /** When set, greys out colors with no `{size}:{color}` variant mapping. */
-  variantMap?: VariantMap | null;
-  selectedSize?: string;
+  /** Minted Shopify catalog — greys colours that are not minted for the selected size. */
+  mintedCatalog?: ShopifyVariantMatchEntry[] | null;
+  selectedSizeName?: string;
 }
 
 function getDisplayHex(color: FrameColor): string {
   return resolveStoredColorHex(color.name, color.hex).hex;
-}
-
-function colorSelectable(
-  color: FrameColor,
-  variantMap: VariantMap | null | undefined,
-): boolean {
-  if (color.variantAvailable === false) return false;
-  if (color.inStock === false) return false;
-  if (!variantMap) return true;
-  // Check across all sizes so XL/2XL selection doesn't grey out colors that
-  // exist for S/M/L — the mockup server falls back to any matching-color variant.
-  return hasVariantMappingForColor(variantMap, color.id);
 }
 
 export function FrameColorSelector({
@@ -43,11 +31,18 @@ export function FrameColorSelector({
   onFrameColorChange,
   showLabel = true,
   colorLabel = "Color",
-  variantMap = null,
-  selectedSize,
+  mintedCatalog = null,
+  selectedSizeName,
 }: FrameColorSelectorProps) {
   const selected = frameColors.find((c) => c.id === selectedFrameColor);
   const isColorOption = colorLabel !== "Option";
+  const sizeName = String(selectedSizeName || "").trim();
+  const catalog = mintedCatalog && mintedCatalog.length > 0 ? mintedCatalog : null;
+
+  const colorUnminted = (color: FrameColor): boolean => {
+    if (!catalog || !sizeName) return false;
+    return !comboIsMinted(catalog, sizeName, color.name, color.id);
+  };
 
   return (
     <div className="space-y-1">
@@ -70,20 +65,20 @@ export function FrameColorSelector({
         </SelectTrigger>
         <SelectContent position="popper" sideOffset={4} className="z-[200]">
           {frameColors.map((color) => {
-            const selectable = colorSelectable(color, variantMap);
             const oos = color.inStock === false;
+            const unminted = colorUnminted(color);
+            const selectable = !oos && !unminted;
+            const reason = oos
+              ? "Out of stock"
+              : unminted
+                ? "Not available in this size"
+                : "Unavailable";
             return (
               <SelectItem
                 key={color.id}
                 value={color.id}
                 disabled={!selectable}
-                title={
-                  selectable
-                    ? undefined
-                    : oos
-                      ? "Out of stock"
-                      : "This colour is not linked to a Printify variant — re-import or refresh variants in Admin."
-                }
+                title={selectable ? undefined : reason}
                 data-testid={`option-frame-${color.id}`}
               >
                 <span className={`flex items-center gap-2 ${!selectable ? "opacity-50" : ""}`}>
@@ -95,9 +90,7 @@ export function FrameColorSelector({
                   )}
                   {color.name}
                   {!selectable && (
-                    <span className="text-[10px] text-muted-foreground">
-                      {oos ? "(out of stock)" : "(unavailable)"}
-                    </span>
+                    <span className="text-[10px] text-muted-foreground">({reason})</span>
                   )}
                 </span>
               </SelectItem>

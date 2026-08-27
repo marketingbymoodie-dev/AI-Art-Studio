@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  catalogFromShopifyVariantIds,
+  comboIsMinted,
   filterFrameColorsToMintedShopify,
   filterFrameColorsToShopifyCatalog,
   matchShopifyVariantBySizeColor,
@@ -218,5 +220,28 @@ describe("filterFrameColorsToShopifyCatalog", () => {
   it("empty shopifyVariantIds offers nothing — not selectedColorIds / full Printify", () => {
     expect(filterFrameColorsToMintedShopify(frameColors, { shopifyVariantIds: {} })).toEqual([]);
     expect(filterFrameColorsToMintedShopify(frameColors, {})).toEqual([]);
+  });
+});
+
+describe("comboIsMinted", () => {
+  const ids = {
+    "M:Solid Maroon": 1,
+    "L:Solid Maroon": 2,
+    "XL:Solid Maroon": 3,
+    "XS:Solid Black": 4,
+    "5XL:Solid Black": 5,
+  };
+
+  it("Maroon is minted at M but not XS", () => {
+    const catalog = catalogFromShopifyVariantIds(ids);
+    expect(comboIsMinted(catalog, "M", "Solid Maroon", "solid_maroon")).toBe(true);
+    expect(comboIsMinted(catalog, "XS", "Solid Maroon", "solid_maroon")).toBe(false);
+    expect(comboIsMinted(catalog, "5XL", "Solid Black", "solid_black")).toBe(true);
+    expect(comboIsMinted(catalog, "5XL", "Solid Maroon", "solid_maroon")).toBe(false);
+  });
+
+  it("empty catalog is not minted", () => {
+    expect(comboIsMinted([], "M", "Solid Maroon")).toBe(false);
+    expect(comboIsMinted(null, "M", "Solid Maroon")).toBe(false);
   });
 });

@@ -282,3 +282,68 @@ export function filterFrameColorsToMintedShopify<T extends { id: string; name: s
   }));
   return filterFrameColorsToShopifyCatalog(frameColors, synthetic);
 }
+
+/** Full size×colour catalog from persist `shopifyVariantIds` keys (`Size:Color`). */
+export function catalogFromShopifyVariantIds(raw: unknown): ShopifyVariantMatchEntry[] {
+  let map: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try {
+      map = JSON.parse(raw || "{}") as Record<string, unknown>;
+    } catch {
+      map = {};
+    }
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    map = raw as Record<string, unknown>;
+  }
+  const out: ShopifyVariantMatchEntry[] = [];
+  let i = 0;
+  for (const key of Object.keys(map)) {
+    const colon = key.indexOf(":");
+    if (colon < 0) continue;
+    const size = key.slice(0, colon).trim();
+    const color = key.slice(colon + 1).trim();
+    if (!size) continue;
+    const id = map[key];
+    const hasColor = !!color && color.toLowerCase() !== "default";
+    out.push({
+      id: (typeof id === "string" || typeof id === "number") && id !== "" ? id : ++i,
+      title: hasColor ? `${color} / ${size}` : size,
+      option1: size,
+      option2: hasColor ? color : null,
+    });
+  }
+  return out;
+}
+
+/** Live Shopify rows, else persist `shopifyVariantIds`. Empty when neither exists. */
+export function resolveMintedShopifyCatalog(args: {
+  catalog?: ShopifyVariantMatchEntry[] | null;
+  shopifyVariantIds?: unknown;
+}): ShopifyVariantMatchEntry[] {
+  if (args.catalog && args.catalog.length > 0) return args.catalog;
+  return catalogFromShopifyVariantIds(args.shopifyVariantIds);
+}
+
+/**
+ * True when this exact size×colour exists on the minted Shopify catalog.
+ * Empty catalog or empty size → not minted (fail closed).
+ */
+export function comboIsMinted(
+  catalog: ShopifyVariantMatchEntry[] | null | undefined,
+  sizeName: string,
+  frameName: string,
+  frameColorId?: string,
+): boolean {
+  if (!catalog || catalog.length === 0) return false;
+  if (!String(sizeName || "").trim()) return false;
+  const hasColor = !!(frameName?.trim() || frameColorId?.trim());
+  return (
+    matchShopifyVariantBySizeColor(
+      catalog,
+      sizeName,
+      frameName,
+      hasColor,
+      frameColorId,
+    ) != null
+  );
+}

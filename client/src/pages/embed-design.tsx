@@ -209,7 +209,7 @@ import {
 } from "@shared/printifyMockupLabels";
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
 import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
-import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle } from "@shared/shopifyVariantMatch";
+import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
@@ -411,6 +411,7 @@ interface ProductTypeConfig {
     inStock?: boolean;
   }>;
   variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
+  shopifyVariantIds?: unknown;
   /** Product Intelligence: sizeId:colorId → stock status */
   variantAvailability?: VariantAvailabilityMap;
   unavailableVariantKeys?: string[];
@@ -3993,6 +3994,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       sizes: dc.sizes || [],
       frameColors: dc.frameColors || [],
       variantMap: dc.variantMap || {},
+      shopifyVariantIds: dc.shopifyVariantIds ?? null,
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
@@ -4440,6 +4442,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             sizes: designerConfig.sizes || [],
             frameColors: designerConfig.frameColors || [],
             variantMap: designerConfig.variantMap || {},
+            shopifyVariantIds: designerConfig.shopifyVariantIds ?? null,
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
@@ -7251,6 +7254,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Used to render a variant selector inside the generator on customizer pages.
   const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
+
+  const mintedCatalog = useMemo(
+    () =>
+      resolveMintedShopifyCatalog({
+        catalog: shopifyVariants.length > 0 ? shopifyVariants : null,
+        shopifyVariantIds: productTypeConfig?.shopifyVariantIds,
+      }),
+    [shopifyVariants, productTypeConfig?.shopifyVariantIds],
+  );
 
   /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
   const shopifyColorImagesDistinct = useMemo(() => {
@@ -15287,6 +15299,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         onSizeChange={applySelectedSize}
                         prices={buildPriceMap()}
                         outOfStockSizeIds={outOfStockSizeIds}
+                        mintedCatalog={mintedCatalog}
+                        selectedColorName={
+                          frameColorObjects.find((c) => c.id === selectedFrameColor)?.name
+                        }
+                        selectedColorId={selectedFrameColor}
                       />
                       <div className="mt-0.5 min-h-[1rem]">
                         {selectedSize === "" && (
@@ -15309,6 +15326,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       onSizeChange={applySelectedSize}
                       prices={buildPriceMap()}
                       outOfStockSizeIds={outOfStockSizeIds}
+                      mintedCatalog={mintedCatalog}
+                      selectedColorName={
+                        frameColorObjects.find((c) => c.id === selectedFrameColor)?.name
+                      }
+                      selectedColorId={selectedFrameColor}
                     />
                     <div className="mt-0.5 min-h-[1rem]">
                       {selectedSize === "" && (
@@ -15326,8 +15348,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     selectedFrameColor={selectedFrameColor}
                     onFrameColorChange={handleCustomerFrameColorChange}
                     colorLabel={productTypeConfig?.colorLabel || "Color"}
-                    variantMap={productTypeConfig?.variantMap}
-                    selectedSize={selectedSize}
+                    mintedCatalog={mintedCatalog}
+                    selectedSizeName={
+                      printSizes.find((s) => s.id === selectedSize)?.name
+                    }
                   />
                 )}
 

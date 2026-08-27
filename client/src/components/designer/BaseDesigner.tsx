@@ -25,6 +25,7 @@ import type {
   FrameColor,
   PrintSize,
 } from "./types";
+import { resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
 
 export interface ProductAdapter {
   renderControls: (props: ControlsProps) => JSX.Element;
@@ -39,6 +40,7 @@ export interface ControlsProps {
   setSelectedVariant: (variant: string) => void;
   sizes: PrintSize[];
   variants: FrameColor[];
+  mintedCatalog?: import("@shared/shopifyVariantMatch").ShopifyVariantMatchEntry[] | null;
 }
 
 export interface MockupProps {
@@ -294,6 +296,9 @@ export function BaseDesigner({
           setSelectedVariant: setSelectedFrameColor,
           sizes: designerConfig.sizes,
           variants: designerConfig.frameColors,
+          mintedCatalog: resolveMintedShopifyCatalog({
+            shopifyVariantIds: designerConfig.shopifyVariantIds,
+          }),
         })}
 
         <div className="flex gap-2 flex-wrap">

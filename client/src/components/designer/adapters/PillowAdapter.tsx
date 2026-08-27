@@ -1,9 +1,9 @@
 import { useRef, useCallback } from "react";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ProductAdapter, ControlsProps, MockupProps } from "../BaseDesigner";
 import { ZoomControls } from "../ZoomControls";
 import { SafeZoneMask } from "../SafeZoneMask";
+import { SizeSelector } from "../SizeSelector";
+import { FrameColorSelector } from "../FrameColorSelector";
 import type { ImageTransform } from "../types";
 
 function PillowControls({
@@ -13,47 +13,31 @@ function PillowControls({
   setSelectedVariant,
   sizes,
   variants,
+  mintedCatalog,
 }: ControlsProps) {
+  const sizeName = sizes.find((s) => s.id === selectedSize)?.name;
+  const color = variants.find((c) => c.id === selectedVariant);
   return (
     <div className="flex flex-col gap-4">
-      <div className="space-y-2">
-        <Label className="text-sm font-medium">Pillow Size</Label>
-        <Select value={selectedSize} onValueChange={setSelectedSize}>
-          <SelectTrigger data-testid="select-size">
-            <SelectValue placeholder="Select size" />
-          </SelectTrigger>
-          <SelectContent>
-            {sizes.map((size) => (
-              <SelectItem key={size.id} value={size.id}>
-                {size.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <SizeSelector
+        sizes={sizes}
+        selectedSize={selectedSize}
+        onSizeChange={setSelectedSize}
+        label="Pillow Size"
+        mintedCatalog={mintedCatalog}
+        selectedColorName={color?.name}
+        selectedColorId={color?.id}
+      />
 
       {variants.length > 0 && (
-        <div className="space-y-2">
-          <Label className="text-sm font-medium">Style</Label>
-          <div className="flex gap-2 flex-wrap">
-            {variants.map((variant) => (
-              <button
-                key={variant.id}
-                onClick={() => setSelectedVariant(variant.id)}
-                className={`px-3 py-1.5 rounded-md border text-sm transition-all ${
-                  selectedVariant === variant.id
-                    ? "ring-2 ring-primary ring-offset-2 bg-primary text-primary-foreground"
-                    : "bg-muted hover:bg-muted/80"
-                }`}
-                style={variant.hex ? { backgroundColor: variant.hex } : undefined}
-                title={variant.name}
-                data-testid={`button-variant-${variant.id}`}
-              >
-                {variant.name}
-              </button>
-            ))}
-          </div>
-        </div>
+        <FrameColorSelector
+          frameColors={variants}
+          selectedFrameColor={selectedVariant}
+          onFrameColorChange={setSelectedVariant}
+          colorLabel="Style"
+          mintedCatalog={mintedCatalog}
+          selectedSizeName={sizeName}
+        />
       )}
     </div>
   );
