@@ -142,6 +142,38 @@ describe("Recraft vectorizer client", () => {
     expect(plateColors.has("#E614E1")).toBe(false);
   });
 
+  it("classifyPlateColorsByConnectivity punches enclosed tight plate colour (letter counters)", async () => {
+    const sharp = (await import("sharp")).default;
+    const { classifyPlateColorsByConnectivity } = await import("./replicate-vectorizer");
+
+    const width = 60;
+    const height = 60;
+    const raw = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        const inRing = x >= 18 && x < 42 && y >= 18 && y < 42;
+        const inCounter = x >= 24 && x < 36 && y >= 24 && y < 36;
+        if (inRing && !inCounter) {
+          raw[idx] = 20;
+          raw[idx + 1] = 20;
+          raw[idx + 2] = 20;
+        } else {
+          raw[idx] = 255;
+          raw[idx + 1] = 0;
+          raw[idx + 2] = 255;
+        }
+        raw[idx + 3] = 255;
+      }
+    }
+    const raster = await sharp(Buffer.from(raw), { raw: { width, height, channels: 4 } })
+      .png()
+      .toBuffer();
+
+    const plateColors = await classifyPlateColorsByConnectivity(raster, ["#FF00FF"]);
+    expect(plateColors.has("#FF00FF")).toBe(true);
+  });
+
   it("sanitizeVectorSvgConnected strips border-connected plate but keeps enclosed hot-pink design fill", async () => {
     const sharp = (await import("sharp")).default;
     const { sanitizeVectorSvgConnected } = await import("./replicate-vectorizer");

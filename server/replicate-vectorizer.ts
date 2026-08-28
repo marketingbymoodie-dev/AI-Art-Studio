@@ -341,7 +341,12 @@ function collectCandidatePlateColorValues(
     }
   }
 
-  if (canvasCorner) {
+  if (
+    canvasCorner &&
+    Number.isFinite(canvasCorner.r) &&
+    Number.isFinite(canvasCorner.g) &&
+    Number.isFinite(canvasCorner.b)
+  ) {
     values.add(rgbToSvgHexColor(canvasCorner.r, canvasCorner.g, canvasCorner.b));
   }
 
@@ -371,7 +376,7 @@ function collectCandidatePlateColorValues(
  */
 const PLATE_FLOOD_MANHATTAN_TOLERANCE = 60;
 
-function isPlateFloodPixelRgb(r: number, g: number, b: number): boolean {
+export function isPlateFloodPixelRgb(r: number, g: number, b: number): boolean {
   return Math.abs(r - 255) + Math.abs(g - 0) + Math.abs(b - 255) <= PLATE_FLOOD_MANHATTAN_TOLERANCE;
 }
 
@@ -451,6 +456,19 @@ export async function classifyPlateColorsByConnectivity(
   const plateColorTolerance = 6;
   const plateColors = new Set<string>();
   for (const { value, rgb } of parsed) {
+    // Tight plate colour (#FF00FF ± flood tolerance, or the sampled canvas
+    // corner) is ALWAYS punched — border-connected OR enclosed. After
+    // prepareOpaquePlateForVectorize, enclosed plate pixels are letter
+    // counters, not design. Non-plate hues (e.g. #E614E1 flowers) still use
+    // the majority-connected rule so enclosed design magenta survives.
+    if (
+      isPlateFloodPixelRgb(rgb.r, rgb.g, rgb.b) ||
+      isCanvasCornerPlateRgb(rgb.r, rgb.g, rgb.b, canvasCorner)
+    ) {
+      plateColors.add(value);
+      continue;
+    }
+
     let matched = 0;
     let matchedConnected = 0;
     for (let p = 0; p < total; p++) {
@@ -474,9 +492,8 @@ export async function classifyPlateColorsByConnectivity(
 }
 
 /**
- * Sanitize a raw traced SVG using connectivity-based plate classification instead of a blind
- * hue-range match, so enclosed design content sharing the plate's hue (hot-pink/magenta
- * flowers, accents, etc.) survives while the actual background plate is still stripped.
+ * Sanitize a raw traced SVG: tight plate colour is stripped everywhere (counters +
+ * background). Enclosed *non-plate* hues (flowers) still survive via connectivity.
  */
 export type SanitizeVectorSvgOptions = {
   /** AI canvas color sampled from source corners — strips off-spec pink plates the tracer kept. */
@@ -492,15 +509,40 @@ export async function sanitizeVectorSvgConnected(
   const candidates = collectCandidatePlateColorValues(text, opts?.canvasCorner);
   if (candidates.length === 0) return rawSvg;
 
-  const meta = await sharp(sourceForDims).metadata();
-  const width = meta.width ?? 1024;
-  const height = meta.height ?? 1024;
-  const raster = await rasterizeSvgBuffer(rawSvg, width, height);
-  const plateColors = await classifyPlateColorsByConnectivity(
-    raster,
-    candidates,
-    opts?.canvasCorner,
-  );
+  const plateColors = new Set<string>();
+  const needsConnectivity: string[] = [];
+  for (const value of candidates) {
+    const rgb = parseSvgColor(value);
+    if (
+      rgb &&
+      (isPlateFloodPixelRgb(rgb.r, rgb.g, rgb.b) ||
+        isCanvasCornerPlateRgb(rgb.r, rgb.g, rgb.b, opts?.canvasCorner))
+    ) {
+      plateColors.add(value);
+      continue;
+    }
+    needsConnectivity.push(value);
+  }
+
+  if (needsConnectivity.length > 0) {
+    try {
+      const meta = await sharp(sourceForDims).metadata();
+      const width = meta.width ?? 1024;
+      const height = meta.height ?? 1024;
+      const raster = await rasterizeSvgBuffer(rawSvg, width, height);
+      const connected = await classifyPlateColorsByConnectivity(
+        raster,
+        needsConnectivity,
+        opts?.canvasCorner,
+      );
+      for (const value of connected) plateColors.add(value);
+    } catch (err) {
+      console.warn(
+        "[Vectorizer] Connectivity classify skipped (keeping non-plate hues):",
+        (err as Error).message,
+      );
+    }
+  }
 
   return sanitizeVectorSvg(rawSvg, (value) => plateColors.has(value.trim()));
 }

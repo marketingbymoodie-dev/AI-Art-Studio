@@ -3,6 +3,8 @@
  * Replicate saliency removal is optional fallback only (see processApparelMotif).
  */
 
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import sharp from "sharp";
 import {
   removeBackground,
@@ -1063,20 +1065,33 @@ async function vectorizeWithNeplex(
   buffer: Buffer,
   canvasCorner?: CanvasCornerRgb | null,
 ): Promise<Buffer> {
-  const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
+  // Resolve from app root — import.meta.url is empty in the CJS production bundle.
+  const requireNeplex = createRequire(join(process.cwd(), "package.json"));
+  const { vectorizeSync } = requireNeplex("@neplex/vectorizer") as {
+    vectorizeSync: (source: Buffer, config: Record<string, number>) => string;
+  };
   const opaquePlate = await prepareOpaquePlateForVectorize(buffer);
 
-  const svg = await vectorize(opaquePlate, {
-    colorMode: ColorMode.Color,
+  // NAPI enums on @neplex/vectorizer@0.1.0 are empty at runtime — pass
+  // numeric discriminants: Color=0, Cutout=1, Spline=2.
+  const svg = vectorizeSync(opaquePlate, {
+    colorMode: 0,
     colorPrecision: 6,
-    filterSpeckle: 2,
-    cornerThreshold: 80,
-    hierarchical: Hierarchical.Stacked,
-    mode: PathSimplifyMode.Spline,
-    pathPrecision: 4,
+    filterSpeckle: 0,
+    cornerThreshold: 60,
+    hierarchical: 1,
+    mode: 2,
+    pathPrecision: 8,
+    layerDifference: 16,
+    lengthThreshold: 4,
+    maxIterations: 10,
+    spliceThreshold: 45,
   });
+  if (!svg) {
+    throw new Error("Neplex returned no SVG");
+  }
 
-  return sanitizeVectorSvgConnected(Buffer.from(svg), buffer, { canvasCorner });
+  return sanitizeVectorSvgConnected(Buffer.from(String(svg)), buffer, { canvasCorner });
 }
 
 /** Reject SVG when interior whites (eyes, teeth) were lost during tracing. */
@@ -1169,9 +1184,10 @@ async function acceptVectorizedOrFallback(
 
 export async function maybeVectorizeFlatGraphic(
   buffer: Buffer,
-  opts?: { canvasCorner?: CanvasCornerRgb | null },
+  opts?: { canvasCorner?: CanvasCornerRgb | null; enabled?: boolean },
 ): Promise<VectorizeFlatGraphicResult> {
-  if (process.env.APPAREL_VECTORIZE !== "true") {
+  const enabled = opts?.enabled === true || process.env.APPAREL_VECTORIZE === "true";
+  if (!enabled) {
     return { buffer, mimeType: "image/png" };
   }
 
@@ -1332,7 +1348,8 @@ export async function processApparelMotif(
 
   buffer = await cleanupFlatGraphicAlpha(buffer, {
     bgRemovalSensitivity: opts.bgRemovalSensitivity,
-    erodeAfterCleanup: !usedMlFallback,
+    // 1px erode eats 2–4px text stems before the tracer sees them.
+    erodeAfterCleanup: !usedMlFallback && !opts.vectorize,
   });
 
   // Safety net: if corners still opaque after cleanup, run one more chroma sweep
@@ -1368,7 +1385,12 @@ export async function processApparelMotif(
 
   if (opts.vectorize || process.env.APPAREL_VECTORIZE === "true") {
     const vectorized = await maybeVectorizeFlatGraphic(buffer, {
-      canvasCorner: sourceCorner,
+      canvasCorner: {
+        r: sourceCorner.avgR,
+        g: sourceCorner.avgG,
+        b: sourceCorner.avgB,
+      },
+      enabled: true,
     });
     buffer = vectorized.buffer;
     mimeType = vectorized.mimeType;

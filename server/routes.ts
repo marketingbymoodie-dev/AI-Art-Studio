@@ -957,10 +957,17 @@ interface SaveImageOptions {
   colorTier?: ColorTier;
   /** 0–100; higher = more aggressive alpha erosion after background removal. */
   bgRemovalSensitivity?: number;
+  /** Per-style WP1 `vectorizeEnabled`, or force on. Env APPAREL_VECTORIZE still wins. */
+  vectorize?: boolean;
+}
+
+function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
+  return styleEnabled === true || process.env.APPAREL_VECTORIZE === "true";
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
+  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize } =
+    options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -978,7 +985,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       bgRemovalSensitivity,
       allowWhiteKey: true,
       useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
-      vectorize: process.env.APPAREL_VECTORIZE === "true",
+      vectorize: resolveApparelVectorize(vectorize),
     });
     buffer = matting.buffer;
     extension = matting.mimeType === "image/svg+xml" ? "svg" : "png";
@@ -2548,6 +2555,7 @@ export async function registerRoutes(
       let stylePromptPrefixDark: string | null = null;
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
+      let styleVectorizeEnabled: boolean | null = null;
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
@@ -2561,6 +2569,7 @@ export async function registerRoutes(
               stylePromptPrefix = selectedStyle.promptPrefix;
             }
             stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+            styleVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2938,6 +2947,7 @@ console.log("[api/generate] replicate returned", {
   isAllOverPrint,
   targetDims,
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+  vectorize: resolveApparelVectorize(styleVectorizeEnabled),
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -3487,6 +3497,7 @@ console.log("[shopify/session] installation ok", {
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
+      let embedVectorizeEnabled: boolean | null = null;
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
@@ -3497,6 +3508,7 @@ console.log("[shopify/session] installation ok", {
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+          embedVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3799,6 +3811,7 @@ ${orientationExtra}
           isAllOverPrint,
           targetDims,
           bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+          vectorize: resolveApparelVectorize(embedVectorizeEnabled),
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -3810,6 +3823,7 @@ ${orientationExtra}
             isAllOverPrint,
             targetDims,
             bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+            vectorize: resolveApparelVectorize(embedVectorizeEnabled),
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -8360,6 +8374,7 @@ ${orientationExtra}
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
+      let sfVectorizeEnabled: boolean | null = null;
       if (creatorCtx && stylePreset) {
         const { isStyleEntitledForGenerate } = await import("./creator-styles");
         const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
@@ -8391,6 +8406,7 @@ ${orientationExtra}
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+          sfVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
@@ -8804,6 +8820,7 @@ ${orientationExtra}
               isAllOverPrint,
               targetDims,
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+              vectorize: resolveApparelVectorize(sfVectorizeEnabled),
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -8816,6 +8833,7 @@ ${orientationExtra}
                 isAllOverPrint,
                 targetDims,
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+                vectorize: resolveApparelVectorize(sfVectorizeEnabled),
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
@@ -8829,7 +8847,7 @@ ${orientationExtra}
                     typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                   allowWhiteKey: true,
                   useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
-                  vectorize: process.env.APPAREL_VECTORIZE === "true",
+                  vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 });
                 imageUrl = `data:${matted.mimeType};base64,${matted.buffer.toString("base64")}`;
               } else {
