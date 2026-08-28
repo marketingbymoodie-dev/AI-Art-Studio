@@ -662,7 +662,9 @@ export async function removeChromaKeyBackground(
     );
   }
 
-  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
+  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink).
+  // Follow-up (out of scope here): B has no connectivity / min-region guard, so isolated
+  // interior pixels that happen to match the corner colour can be punched as holes.
 
   let cornerRemoved = 0;
   if (cornerIsLightCanvas) {
@@ -681,10 +683,13 @@ export async function removeChromaKeyBackground(
   const cornerRemovedPct = (cornerRemoved / total) * 100;
   console.log(`[Chroma Key] Corner pass (rgb ${avgR},${avgG},${avgB}): ${cornerRemovedPct.toFixed(1)}%`);
 
-  // Pass C: connectivity-only white/grey mat removal (border + keyed background)
+  // Pass C: connectivity-only white/grey mat removal (border + keyed background).
+  // Purpose: rescue failed white/grey canvases. On a genuine magenta plate, A/A2/F
+  // already removed the key — seeding this flood from that transparency eats bright
+  // metal/white subject that touches the plate (bird-head hole). Skip when magenta.
   let whiteKeyRemoved = 0;
   let borderFloodRemoved = 0;
-  if (borderFloodFill && allowWhiteKey) {
+  if (borderFloodFill && allowWhiteKey && !cornerIsMagentaCanvas) {
     borderFloodRemoved = applyFloodFillLightMatFromBackground(
       pixels,
       source,
