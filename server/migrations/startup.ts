@@ -9,7 +9,13 @@
  * Every statement is fully idempotent and safe to run on every boot.
  */
 import { pool } from "../db";
-import { applyForcedStyleLayerByName, literalUserSlotSchema } from "@shared/promptLayers";
+import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared/apparel-chroma-prompts";
+import {
+  applyForcedStyleLayerByName,
+  findLiteralSlot,
+  literalUserSlotSchema,
+  parseUserSlotSchema,
+} from "@shared/promptLayers";
 
 // ── Column additions ──────────────────────────────────────────────────────────
 
@@ -2291,37 +2297,145 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
 ];
 
 async function migrateLayeredStylePrefixes(): Promise<number> {
-  const result = await pool.query(
-    `SELECT id, name, category, prompt_prefix, prompt_prefix_dark, user_slot_schema
-     FROM style_presets`,
-  );
-  const rows = (result as { rows?: any[] }).rows || [];
+  const tag = "[startup-migration] [opinionated]";
+  const light = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
+  const dark = APPAREL_DARK_TIER_PROMPTS.opinionated;
+  const slotsJson = JSON.stringify(literalUserSlotSchema(6));
   let updated = 0;
-  const opinionatedSlots = JSON.stringify(literalUserSlotSchema(6));
-  for (const row of rows) {
-    const nextPrefix = applyForcedStyleLayerByName(row.name || "", row.prompt_prefix || "", "light");
-    const forcedDark = applyForcedStyleLayerByName(row.name || "", row.prompt_prefix_dark || "", "dark");
-    const nextDark = forcedDark || row.prompt_prefix_dark;
-    const isOpinionated = String(row.name || "").trim().toLowerCase() === "opinionated";
-    const seedSlots = isOpinionated && (row.user_slot_schema == null);
-    if (
-      nextPrefix === (row.prompt_prefix || "") &&
-      nextDark === row.prompt_prefix_dark &&
-      !seedSlots
-    ) {
-      continue;
-    }
-    await pool.query(
-      `UPDATE style_presets
-       SET prompt_prefix = $1,
-           prompt_prefix_dark = $2,
-           user_slot_schema = CASE WHEN $3::boolean THEN $4::jsonb ELSE user_slot_schema END,
-           updated_at = NOW()
-       WHERE id = $5`,
-      [nextPrefix, nextDark, seedSlots, opinionatedSlots, row.id],
+
+  const before = await pool.query(
+    `SELECT id, name, merchant_id, prompt_prefix, user_slot_schema
+     FROM style_presets
+     WHERE lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
+        OR lower(btrim(name)) = 'opinionated'
+        OR (
+          prompt_prefix ILIKE '%bold stacked text typography%'
+          AND prompt_prefix ILIKE '%#FF00FF%'
+          AND prompt_prefix ILIKE '%strong opinion%'
+        )`,
+  );
+  const beforeRows = (before as { rows?: any[] }).rows || [];
+  console.log(`${tag} boot write running. matched ${beforeRows.length} row(s)`);
+  for (const row of beforeRows) {
+    const prefix = String(row.prompt_prefix || "");
+    console.log(
+      `${tag} BEFORE id=${row.id} name=${JSON.stringify(row.name)} ` +
+        `hasHex=${/#ff00ff/i.test(prefix)} hasBoldStack=${/bold stacked/i.test(prefix)} ` +
+        `slots=${row.user_slot_schema == null ? "null" : "set"}`,
     );
-    updated++;
+    console.log(`${tag} BEFORE prefix id=${row.id}:\n${prefix}`);
   }
+
+  // Set-based write of prompt_prefix (the field Admin reads). No JS skip, no
+  // per-row abort. Slot seed is a separate COALESCE so a JSONB issue cannot
+  // roll back the prefix write.
+  const prefixUpd = await pool.query(
+    `UPDATE style_presets
+     SET prompt_prefix = $1,
+         prompt_prefix_dark = CASE
+           WHEN prompt_prefix_dark IS NULL OR btrim(prompt_prefix_dark) = '' THEN $2
+           WHEN prompt_prefix_dark ILIKE '%#FF00FF%'
+             OR prompt_prefix_dark ILIKE '%bold stacked%' THEN $2
+           ELSE prompt_prefix_dark
+         END,
+         updated_at = NOW()
+     WHERE lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
+        OR lower(btrim(name)) = 'opinionated'
+        OR (
+          prompt_prefix ILIKE '%bold stacked text typography%'
+          AND prompt_prefix ILIKE '%#FF00FF%'
+          AND prompt_prefix ILIKE '%strong opinion%'
+        )
+     RETURNING id, name, prompt_prefix`,
+    [light, dark],
+  );
+  const prefixRows = (prefixUpd as { rows?: any[]; rowCount?: number }).rows || [];
+  updated += prefixRows.length;
+  console.log(`${tag} prefix UPDATE rowCount=${prefixRows.length}`);
+  for (const row of prefixRows) {
+    console.log(`${tag} AFTER id=${row.id} name=${JSON.stringify(row.name)}:\n${row.prompt_prefix}`);
+  }
+
+  try {
+    const slotUpd = await pool.query(
+      `UPDATE style_presets
+       SET user_slot_schema = $1::jsonb,
+           updated_at = NOW()
+       WHERE (
+           lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
+           OR lower(btrim(name)) = 'opinionated'
+         )
+         AND user_slot_schema IS NULL
+       RETURNING id`,
+      [slotsJson],
+    );
+    const slotN = (slotUpd as { rowCount?: number }).rowCount || 0;
+    updated += slotN;
+    console.log(`${tag} literal slot seed rowCount=${slotN}`);
+  } catch (err: any) {
+    console.error(`${tag} slot seed failed (prefix write already committed):`, err.message ?? err);
+  }
+
+  const verify = await pool.query(
+    `SELECT id, name, prompt_prefix, user_slot_schema
+     FROM style_presets
+     WHERE lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
+        OR lower(btrim(name)) = 'opinionated'`,
+  );
+  const verifyRows = (verify as { rows?: any[] }).rows || [];
+  if (verifyRows.length === 0) {
+    const names = await pool.query(`SELECT id, name FROM style_presets ORDER BY id`);
+    console.warn(
+      `${tag} NO row named Opinionated. All style names: ${
+        ((names as { rows?: any[] }).rows || [])
+          .map((r) => `${r.id}:${JSON.stringify(r.name)}`)
+          .join(", ")
+      }`,
+    );
+  }
+  for (const row of verifyRows) {
+    console.log(`${tag} VERIFY id=${row.id} stored prompt_prefix:\n${row.prompt_prefix}`);
+    const parsed = parseUserSlotSchema(row.user_slot_schema);
+    if (!findLiteralSlot(parsed)) {
+      try {
+        await pool.query(
+          `UPDATE style_presets
+           SET user_slot_schema = $1::jsonb, updated_at = NOW()
+           WHERE id = $2`,
+          [slotsJson, row.id],
+        );
+        updated++;
+        console.log(`${tag} forced literal slot on id=${row.id}`);
+      } catch (err: any) {
+        console.error(`${tag} forced slot write failed id=${row.id}:`, err.message ?? err);
+      }
+    }
+  }
+
+  const others = await pool.query(
+    `SELECT id, name, prompt_prefix, prompt_prefix_dark
+     FROM style_presets
+     WHERE lower(btrim(name)) <> 'opinionated'`,
+  );
+  for (const row of (others as { rows?: any[] }).rows || []) {
+    try {
+      const nextPrefix = applyForcedStyleLayerByName(row.name || "", row.prompt_prefix || "", "light");
+      const nextDark = row.prompt_prefix_dark
+        ? applyForcedStyleLayerByName(row.name || "", row.prompt_prefix_dark, "dark")
+        : row.prompt_prefix_dark;
+      if (nextPrefix === (row.prompt_prefix || "") && nextDark === row.prompt_prefix_dark) continue;
+      await pool.query(
+        `UPDATE style_presets
+         SET prompt_prefix = $1, prompt_prefix_dark = $2, updated_at = NOW()
+         WHERE id = $3`,
+        [nextPrefix, nextDark, row.id],
+      );
+      updated++;
+    } catch (err: any) {
+      console.error(`[startup-migration] style-layer row id=${row.id} failed:`, err.message ?? err);
+    }
+  }
+
   return updated;
 }
 
@@ -2387,9 +2501,7 @@ export async function runStartupMigrations(): Promise<void> {
   try {
     const n = await migrateLayeredStylePrefixes();
     applied++;
-    if (n > 0) {
-      console.log(`${tag} Layered style-layer migration updated ${n} row(s)`);
-    }
+    console.log(`${tag} Layered style-layer migration ran (updated ${n} row(s))`);
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED layered style-layer migration: ${err.message ?? err}`);

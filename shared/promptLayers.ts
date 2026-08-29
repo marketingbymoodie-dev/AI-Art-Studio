@@ -56,6 +56,13 @@ export type UserSlot = {
 export type UserSlotSchema = { slots: UserSlot[] };
 
 export function parseUserSlotSchema(raw: unknown): UserSlotSchema | null {
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
   if (!raw || typeof raw !== "object") return null;
   const slotsRaw = (raw as { slots?: unknown }).slots;
   if (!Array.isArray(slotsRaw) || slotsRaw.length === 0) return null;

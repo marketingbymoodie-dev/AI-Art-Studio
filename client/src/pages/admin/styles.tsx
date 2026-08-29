@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, Shapes, RefreshCw, ImagePlus, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { StylePresetCategory } from "@shared/styleCategories";
+import { findLiteralSlot, parseUserSlotSchema } from "@shared/promptLayers";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -285,10 +286,9 @@ export default function AdminStyles() {
     const quality = String((style as any).generationQuality || "low").toLowerCase();
     setGenerationQuality(quality === "medium" || quality === "high" ? quality : "low");
     setVectorizeEnabled((style as any).vectorizeEnabled === true);
-    const slots = (style as any).userSlotSchema?.slots;
-    const literal = Array.isArray(slots) ? slots.find((s: any) => s?.kind === "literal") : null;
+    const literal = findLiteralSlot(parseUserSlotSchema((style as any).userSlotSchema));
     setLiteralTextStyle(!!literal);
-    setLiteralMaxWords(literal?.maxWords > 0 ? Number(literal.maxWords) : 6);
+    setLiteralMaxWords(literal?.maxWords && literal.maxWords > 0 ? Number(literal.maxWords) : 6);
 
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
@@ -747,7 +747,8 @@ export default function AdminStyles() {
                     Literal text style
                   </Label>
                   <p className="text-xs text-muted-foreground">
-                    Render the customer’s words exactly (quoted). For statement / quote styles.
+                    Same setting as this style’s user_slot_schema: quotes the prompt box as
+                    literal text. Off means no literal slot is stored.
                   </p>
                 </div>
                 <Switch

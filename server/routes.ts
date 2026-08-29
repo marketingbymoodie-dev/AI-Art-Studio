@@ -16,6 +16,7 @@ import {
 } from "@shared/styleGeneration";
 import {
   composeLayeredPrompt,
+  parseUserSlotSchema,
   persistUserSlotSchema,
   resolveStyleLayerRaw,
   resolveSubStyleFragment,
@@ -2225,7 +2226,7 @@ export async function registerRoutes(
                 options: dbOptions || hardcodedOptions,
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
                 descriptionOptional: !!(s as any).descriptionOptional,
-                userSlotSchema: (s as any).userSlotSchema ?? (hardcoded as any)?.userSlotSchema ?? null,
+                userSlotSchema: parseUserSlotSchema((s as any).userSlotSchema) ?? (hardcoded as any)?.userSlotSchema ?? null,
               };
             })
           : hardcodedFallback,
@@ -6541,7 +6542,7 @@ ${orientationExtra}
         baseImageUrls:
           s.baseImageUrls || (hardcoded as any)?.baseImageUrls || undefined,
         descriptionOptional: !!s.descriptionOptional,
-        userSlotSchema: s.userSlotSchema ?? (hardcoded as any)?.userSlotSchema ?? null,
+        userSlotSchema: parseUserSlotSchema(s.userSlotSchema) ?? (hardcoded as any)?.userSlotSchema ?? null,
       };
     });
   }
@@ -14162,8 +14163,15 @@ ${orientationExtra}
       // (styles seeded before the options column was added won't have these fields populated)
       const enriched = presets.map((s: any) => {
         const hardcoded = STYLE_PRESETS.find((h: any) => h.id === s.id.toString() || h.name === s.name);
+        const userSlotSchema = parseUserSlotSchema(s.userSlotSchema);
+        if (String(s.name || "").trim().toLowerCase() === "opinionated") {
+          console.log(
+            `[admin/styles] Opinionated id=${s.id} stored prompt_prefix:\n${s.promptPrefix || ""}`,
+          );
+        }
         return {
           ...s,
+          userSlotSchema,
           options: s.options ?? (hardcoded as any)?.options ?? null,
           promptPlaceholder: s.promptPlaceholder ?? (hardcoded as any)?.promptPlaceholder ?? null,
           baseImageUrl: s.baseImageUrl ?? (hardcoded as any)?.baseImageUrl ?? null,

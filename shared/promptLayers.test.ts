@@ -10,9 +10,11 @@ import {
   applyForcedStyleLayerByName,
   composeLayeredPrompt,
   countChromaHexMentions,
+  findLiteralSlot,
   resolveSubStyleFragment,
   literalPlaceholder,
   literalUserSlotSchema,
+  parseUserSlotSchema,
   migrateStoredStyleLayer,
   resolveLockedBase,
   resolvePromptLayerCategory,
@@ -241,5 +243,14 @@ describe("literal slot UI helpers", () => {
     expect(literalPlaceholder(literalUserSlotSchema(6).slots[0])).toBe(
       "Write your text here (up to 6 words)",
     );
+  });
+
+  it("parses user_slot_schema from a JSON string or object", () => {
+    const asObject = literalUserSlotSchema(6);
+    const asString = JSON.stringify(asObject);
+    expect(parseUserSlotSchema(asObject)).toEqual(asObject);
+    expect(parseUserSlotSchema(asString)).toEqual(asObject);
+    expect(findLiteralSlot(parseUserSlotSchema(asString))?.kind).toBe("literal");
+    expect(parseUserSlotSchema(null)).toBeNull();
   });
 });
