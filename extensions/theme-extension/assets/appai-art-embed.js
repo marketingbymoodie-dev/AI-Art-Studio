@@ -823,6 +823,11 @@
     if (config.selectedVariant) {
       params.set('selectedVariant', config.selectedVariant);
     }
+    var pageHandleForIframe = config.customizerPageHandle || config.pageHandle || '';
+    if (pageHandleForIframe) {
+      params.set('page', pageHandleForIframe);
+      params.set('pageHandle', pageHandleForIframe);
+    }
     if (mobileNativeScroll) {
       params.set('mobileNativeScroll', '1');
     }
@@ -1503,14 +1508,70 @@
       }
     }
 
+    function applyFetchedStylePayload(payload) {
+      if (!payload) return;
+      if (Array.isArray(payload.stylePresets)) {
+        config.stylePresets = payload.stylePresets;
+      }
+      if (payload.styleConfig !== undefined) {
+        config.styleConfig = payload.styleConfig;
+      }
+    }
+
+    // Ticket B: parent must not be a stale source of truth. Refetch the same
+    // customizer-page (or PDP designer) snapshot before ACK / page-change push.
+    function refreshStylePresetsThen(done) {
+      var finish = function () {
+        if (typeof done === 'function') done();
+      };
+      if (config.__stylePresetsRefreshInFlight) {
+        config.__stylePresetsRefreshInFlight.then(finish, finish);
+        return;
+      }
+      var handle = config.customizerPageHandle || config.pageHandle || '';
+      var shop = normaliseMyshopifyShopForApi(config.shopDomain);
+      var pt = config.productTypeId ? String(config.productTypeId) : '';
+      var request;
+      if (handle) {
+        request = appaiFetchCustomizerConfig(handle, 0, true)
+          .then(function (r) { return r && r.ok ? r.json() : null; })
+          .then(applyFetchedStylePayload);
+      } else if (pt && pt !== '0' && shop) {
+        var designerUrl = '/apps/appai/api/storefront/product-types/' +
+          encodeURIComponent(pt) +
+          '/designer?shop=' + encodeURIComponent(shop) +
+          '&_t=' + Date.now();
+        if (config.productHandle) {
+          designerUrl += '&productHandle=' + encodeURIComponent(config.productHandle);
+        }
+        request = appaiFetchWithTimeout(designerUrl, { credentials: 'same-origin' }, 10000)
+          .then(function (r) { return r && r.ok ? r.json() : null; })
+          .then(applyFetchedStylePayload);
+      } else {
+        finish();
+        return;
+      }
+      config.__stylePresetsRefreshInFlight = Promise.resolve(request)
+        .catch(function (e) {
+          console.warn(B, 'stylePresets refresh failed:', e && e.message);
+        })
+        .then(function () {
+          config.__stylePresetsRefreshInFlight = null;
+        });
+      config.__stylePresetsRefreshInFlight.then(finish, finish);
+    }
+
     // Early-mount path: parent mutates `config` when customizer-page returns,
     // then pushes immediately so we don't wait for the next 500ms heartbeat.
+    // Refresh first so page-change / late assign is not a stale boot snapshot.
     config.__pushDesignerConfig = function () {
-      sendDesignerConfig();
-      if (bridgeAcked) {
-        sendShopifyVariants();
-        sendStylePresets();
-      }
+      refreshStylePresetsThen(function () {
+        sendDesignerConfig();
+        if (bridgeAcked) {
+          sendShopifyVariants();
+          sendStylePresets();
+        }
+      });
     };
 
     iframe.addEventListener('load', function() {
@@ -1615,8 +1676,11 @@
         // can render a variant selector internally.
         sendShopifyVariants();
 
-        // Push style presets so the generator doesn't need to call /api/config.
-        sendStylePresets();
+        // Handshake DESIGNER_CONFIG may still be the boot snapshot; refresh
+        // before STYLE_PRESETS so ACK is not a stale dump.
+        refreshStylePresetsThen(function () {
+          sendStylePresets();
+        });
 
         // Send store theme so the iframe can match the merchant's visual style.
         try {
@@ -2577,6 +2641,7 @@
     studioConfig.shopifyVariants = pageCfg.variants || [];
     studioConfig.stylePresets = pageCfg.stylePresets || [];
     studioConfig.styleConfig = pageCfg.styleConfig || null;
+    studioConfig.customizerPageHandle = handle;
     if (typeof studioConfig.__pushDesignerConfig === 'function') {
       studioConfig.__pushDesignerConfig();
     }
@@ -2664,13 +2729,14 @@
     return fetch(url, Object.assign({}, options, controller ? { signal: controller.signal } : {}))
       .finally(function() { if (timer) clearTimeout(timer); });
   }
-  function appaiFetchCustomizerConfig(handle, attempt) {
+  function appaiFetchCustomizerConfig(handle, attempt, cacheBust) {
     var previewMatch = window.location.search.match(/[?&]appai_preview=([^&]+)/);
     var savedDesignMatch = window.location.search.match(/[?&](?:savedDesignId|loadDesignId)=([^&]+)/);
     var url = '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle);
     if (previewMatch) url += '&appai_preview=' + previewMatch[1];
     // Disabled pages only load for saved-design reopen (ATC); pass id for server gate.
     if (savedDesignMatch) url += '&savedDesignId=' + savedDesignMatch[1];
+    if (cacheBust) url += '&_t=' + Date.now();
     return appaiFetchWithTimeout(
       url,
       { credentials: 'same-origin' },
@@ -2678,7 +2744,7 @@
     ).catch(function(e) {
       if (attempt >= 1) throw e;
       console.warn('[AI Art Embed] customizer-page fetch attempt', attempt, 'failed, retrying:', e && e.message);
-      return appaiFetchCustomizerConfig(handle, attempt + 1);
+      return appaiFetchCustomizerConfig(handle, attempt + 1, cacheBust);
     });
   }
 
@@ -2709,6 +2775,7 @@
         shopifyVariants: [],
         stylePresets: [],
         styleConfig: null,
+        customizerPageHandle: handle,
       };
       console.log('[AI Art Embed] STATE=SHELL_MOUNTED handle=' + handle +
         ' (iframe parallel with customizer-page)');
@@ -2792,6 +2859,7 @@
           shopifyVariants: [],
           stylePresets: [],
           styleConfig: null,
+          customizerPageHandle: handle,
         };
         appaiAssignPageJsonToStudioConfig(studioConfig, handle, config);
         appaiMountCustomizerConfig(handle, studioConfig, opts);

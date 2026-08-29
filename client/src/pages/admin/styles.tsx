@@ -18,6 +18,7 @@ import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, Shapes, RefreshCw, Im
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { StylePresetCategory } from "@shared/styleCategories";
 import { findLiteralSlot, literalUserSlotSchema, parseUserSlotSchema } from "@shared/promptLayers";
+import { notifyStylePresetsChanged } from "@shared/stylePresetFreshness";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -147,6 +148,7 @@ export default function AdminStyles() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
       setStyleDialogOpen(false);
       resetStyleForm();
       toast({ title: "Style created", description: "Your custom style is ready to use." });
@@ -165,6 +167,7 @@ export default function AdminStyles() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
       queryClient.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
+      notifyStylePresetsChanged();
       setStyleDialogOpen(false);
       resetStyleForm();
       toast({ title: "Style updated" });
@@ -185,6 +188,7 @@ export default function AdminStyles() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
       queryClient.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
       queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      notifyStylePresetsChanged();
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update literal text", description: error.message, variant: "destructive" });
@@ -198,6 +202,7 @@ export default function AdminStyles() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update style", description: error.message, variant: "destructive" });
@@ -210,6 +215,7 @@ export default function AdminStyles() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
       toast({ title: "Style deleted" });
     },
   });
@@ -233,6 +239,7 @@ export default function AdminStyles() {
     },
     onSuccess: (newStyle) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
       toast({
         title: "Style copied",
         description: `"Copy of ${newStyle.name?.replace(/^Copy of /, "")}" created — rename it before enabling.`,
@@ -251,6 +258,7 @@ export default function AdminStyles() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
       queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      notifyStylePresetsChanged();
       toast({
         title: "Styles updated",
         description: `Updated ${data.updated} styles, created ${data.created} new styles.`,

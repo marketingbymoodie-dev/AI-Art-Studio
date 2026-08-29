@@ -185,6 +185,11 @@ import {
   type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
 import {
+  STYLE_PRESETS_CHANNEL,
+  STYLE_PRESETS_STORAGE_KEY,
+  shouldApplyParentStylePresets,
+} from "@shared/stylePresetFreshness";
+import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
   STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE,
@@ -2180,6 +2185,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, []);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const stylePresetsOwnedRef = useRef(false);
+  const lastDesignerProductTypeRef = useRef("");
+  const refetchStylePresetsRef = useRef<() => Promise<void>>(async () => {});
   const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
@@ -2434,6 +2442,138 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     console.log('[Design Studio] Could not determine myshopify.com domain from shop param:', shopParam);
     return null;
   };
+
+  const applyOwnStylePresets = useCallback((presets: StylePreset[]) => {
+    setStylePresets(presets);
+    stylePresetsOwnedRef.current = true;
+  }, []);
+
+  const refetchStylePresets = useCallback(async () => {
+    const shop = getMyShopifyDomain();
+    const pageHandle =
+      activeProductContext.pageHandle ||
+      searchParams.get("page") ||
+      searchParams.get("pageHandle") ||
+      "";
+    const cacheBuster = `_t=${Date.now()}`;
+    const takePresets = (raw: unknown) => {
+      if (!Array.isArray(raw)) return false;
+      applyOwnStylePresets(raw as StylePreset[]);
+      return true;
+    };
+    try {
+      if (isStorefront && pageHandle && shop) {
+        const pageUrl =
+          `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shop)}` +
+          `&handle=${encodeURIComponent(pageHandle)}&${cacheBuster}` +
+          (creatorUsernameParam
+            ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}`
+            : "") +
+          (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : "");
+        const pageRes = await safeFetch(pageUrl, {}, 8000);
+        if (!pageRes.ok) return;
+        const pageCfg = await pageRes.json();
+        if (takePresets(pageCfg.stylePresets) && pageCfg.styleConfig !== undefined && !isCreatorStorefront) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
+        }
+        return;
+      }
+      if (isAdminTester && productTypeId && productTypeId !== "0") {
+        const designerRes = await safeFetch(
+          `${API_BASE}/api/product-types/${productTypeId}/designer?${cacheBuster}`,
+          {},
+          8000,
+        );
+        if (!designerRes.ok) return;
+        const designerCfg = await designerRes.json();
+        if (designerCfg.styleConfig !== undefined) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(designerCfg.styleConfig));
+        }
+        takePresets(designerCfg.stylePresets);
+        return;
+      }
+      if (shop && productTypeId && productTypeId !== "0") {
+        const designerParams = new URLSearchParams({
+          shop,
+          _t: String(Date.now()),
+        });
+        if (activeProductContext.productHandle) {
+          designerParams.set("productHandle", activeProductContext.productHandle);
+        }
+        const designerRes = await safeFetch(
+          `${API_BASE}/api/storefront/product-types/${productTypeId}/designer?${designerParams.toString()}`,
+          {},
+          8000,
+        );
+        if (!designerRes.ok) return;
+        const designerCfg = await designerRes.json();
+        if (designerCfg.styleConfig !== undefined) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(designerCfg.styleConfig));
+        }
+        takePresets(designerCfg.stylePresets);
+      }
+    } catch (err) {
+      console.warn("[EmbedDesign] stylePresets refetch failed:", err);
+    }
+  }, [
+    activeProductContext.pageHandle,
+    activeProductContext.productHandle,
+    applyOwnStylePresets,
+    creatorIdParam,
+    creatorUsernameParam,
+    isAdminTester,
+    isCreatorStorefront,
+    isStorefront,
+    productTypeId,
+    searchParams,
+  ]);
+
+  refetchStylePresetsRef.current = refetchStylePresets;
+
+  useEffect(() => {
+    let lastKick = 0;
+    const kick = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastKick < 1500) return;
+      lastKick = now;
+      void refetchStylePresetsRef.current();
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("focus", kick);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", kick);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onInvalidate = () => {
+      void refetchStylePresetsRef.current();
+    };
+    let ch: BroadcastChannel | null = null;
+    try {
+      ch = new BroadcastChannel(STYLE_PRESETS_CHANNEL);
+      ch.onmessage = onInvalidate;
+    } catch {
+      /* unsupported */
+    }
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STYLE_PRESETS_STORAGE_KEY && event.newValue) onInvalidate();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      try {
+        ch?.close();
+      } catch {
+        /* ignore */
+      }
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   
   const shopDomain = resolveShopDomain();
 
@@ -4216,6 +4356,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         applyDesignerConfig(activeProductContext.designerConfig, 'ACTIVE CONTEXT');
         if (activeProductContext.stylePresets) {
           setStylePresets(activeProductContext.stylePresets);
+          stylePresetsOwnedRef.current = true;
         }
         if (!isCancelled) setConfigLoading(false);
         return;
@@ -4232,7 +4373,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           // Still fetch style presets — lightweight, non-blocking
           fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`, 8000)
             .then(r => safeJson(r, '/api/config'))
-            .then(c => { if (!isCancelled && c.stylePresets) setStylePresets(c.stylePresets); })
+            .then(c => {
+              if (!isCancelled && c.stylePresets) {
+                setStylePresets(c.stylePresets);
+                stylePresetsOwnedRef.current = true;
+              }
+            })
             .catch(() => {});
           if (!isCancelled) setConfigLoading(false);
           return;
@@ -4284,6 +4430,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             if (pageCfg?.designerConfig) {
               if (Array.isArray(pageCfg.stylePresets) && (pageCfg.stylePresets.length > 0 || isCreatorStorefront)) {
                 setStylePresets(pageCfg.stylePresets);
+                stylePresetsOwnedRef.current = true;
               }
               if (isCreatorStorefront) {
                 setPageStyleConfig(null);
@@ -4401,6 +4548,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Handle style presets
         if (configRes.stylePresets) {
           setStylePresets(configRes.stylePresets);
+          stylePresetsOwnedRef.current = true;
         }
 
         // Handle designer config
@@ -4436,6 +4584,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }
           if (Array.isArray(designerConfig.stylePresets) && designerConfig.stylePresets.length > 0) {
             setStylePresets(designerConfig.stylePresets);
+            stylePresetsOwnedRef.current = true;
           }
 
           setProductTypeConfig({
@@ -5288,6 +5437,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     applyDesignerConfig(config.designerConfig, "SWITCH SAVED DESIGN");
     if (Array.isArray(config.stylePresets)) {
       setStylePresets(config.stylePresets);
+      stylePresetsOwnedRef.current = true;
     }
     setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
     setConfigLoading(false);
@@ -5470,6 +5620,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     applyDesignerConfig(config.designerConfig, "SWITCH REUSE PRODUCT");
     if (Array.isArray(config.stylePresets)) {
       setStylePresets(config.stylePresets);
+      stylePresetsOwnedRef.current = true;
     }
     setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
     setConfigLoading(false);
@@ -11641,14 +11792,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
       if (type === "AI_ART_STUDIO_DESIGNER_CONFIG" && event.data.designerConfig) {
         applyDesignerConfig(event.data.designerConfig, "POSTMESSAGE CONFIG");
-        if (Array.isArray(event.data.stylePresets)) {
+        const incomingPt = String(
+          event.data.designerConfig.id || event.data.designerConfig.productTypeId || "",
+        );
+        const previousPt = lastDesignerProductTypeRef.current;
+        const productTypeChanged = Boolean(incomingPt && previousPt && incomingPt !== previousPt);
+        if (incomingPt) lastDesignerProductTypeRef.current = incomingPt;
+        if (productTypeChanged) {
+          stylePresetsOwnedRef.current = false;
+        }
+        const applyParentPresets = shouldApplyParentStylePresets({
+          owned: stylePresetsOwnedRef.current,
+          incomingProductTypeId: incomingPt || null,
+          currentProductTypeId: previousPt || null,
+        });
+        if (Array.isArray(event.data.stylePresets) && applyParentPresets) {
           setStylePresets(event.data.stylePresets);
         }
-        if (event.data.styleConfig !== undefined) {
+        if (event.data.styleConfig !== undefined && applyParentPresets) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
         }
         if (typeof event.data.freshDesignAllowed === "boolean") {
           setFreshDesignAllowed(event.data.freshDesignAllowed);
+        }
+        if (productTypeChanged) {
+          void refetchStylePresetsRef.current();
         }
         setConfigLoading(false);
       }
@@ -11706,10 +11874,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       }
 
-      // Style presets pushed by parent after bridge handshake (avoids /api/config round-trip)
+      // Style presets pushed by parent after bridge handshake (avoids /api/config round-trip).
+      // After the iframe owns a successful fetch, ignore heartbeat dumps so they cannot clobber
+      // a newer merchant-scoped snapshot. First paint still applies (owned is false).
       if (type === "AI_ART_STUDIO_STYLE_PRESETS" && Array.isArray(event.data.stylePresets)) {
-        console.log('[Design Studio] STYLE_PRESETS received:', event.data.stylePresets.length, 'presets');
-        setStylePresets(event.data.stylePresets);
+        if (
+          shouldApplyParentStylePresets({
+            owned: stylePresetsOwnedRef.current,
+            incomingProductTypeId: null,
+            currentProductTypeId: lastDesignerProductTypeRef.current || null,
+          })
+        ) {
+          console.log('[Design Studio] STYLE_PRESETS received:', event.data.stylePresets.length, 'presets');
+          setStylePresets(event.data.stylePresets);
+        } else {
+          console.log('[Design Studio] STYLE_PRESETS ignored — iframe owns a fresher snapshot');
+        }
       }
 
       // Store theme: apply merchant's colors, fonts and radius to the iframe's CSS variables
