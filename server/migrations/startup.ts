@@ -183,15 +183,12 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types SET fabric_weave_texture = true
    WHERE printify_blueprint_id = 1649
      AND fabric_weave_texture IS NULL`,
-  // Vintage Poster: first-seed empty rows + one-time dirty "travel poster" seed.
-  // Do NOT re-clobber edits that omit "canvas orientation".
+  // Vintage Poster: first-seed empty rows only. Do not match product language
+  // ("vintage travel poster") — a merchant edit that keeps that phrase must survive.
   `UPDATE style_presets
    SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
    WHERE (catalog_slug = 'vintage-poster' OR (catalog_slug IS NULL AND LOWER(name) = 'vintage poster'))
-     AND (
-       prompt_prefix IS NULL OR btrim(prompt_prefix) = ''
-       OR prompt_prefix ILIKE '%vintage travel poster%'
-     )`,
+     AND (prompt_prefix IS NULL OR btrim(prompt_prefix) = '')`,
   // Wall Decals: product-level AR was portrait 2:3; per-size ARs are authoritative.
   `UPDATE product_types
    SET aspect_ratio = '1:1'
