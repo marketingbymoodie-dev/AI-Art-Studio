@@ -614,7 +614,6 @@ export function applyForcedStyleLayerBySlug(
   const key = catalogSlug.trim().toLowerCase();
   const forced = FORCE_STYLE_LAYER_BY_SLUG[key];
   const target = field === "dark" ? forced?.dark : forced?.light;
-  if (key === "opinionated" && target) return target;
   const migrated = migrateStoredStyleLayer(current);
   if (target && (/#ff00ff/i.test(current) || /solid hot pink/i.test(current) || /hot pink background/i.test(current))) {
     return target;

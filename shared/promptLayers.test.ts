@@ -55,6 +55,12 @@ describe("prefix migration is chroma-only", () => {
     );
   });
 
+  it("does not clobber a chroma-free Opinionated merchant prefix", () => {
+    const custom = "Statement-tee graphic, flat vibrant colors, high contrast, centered.";
+    expect(applyForcedStyleLayerBySlug("opinionated", custom, "light")).toBe(custom);
+    expect(applyForcedStyleLayerBySlug("opinionated", custom, "dark")).toBe(custom);
+  });
+
   it("keeps Opinionated style-level character without pinning lettering", () => {
     const after = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
     expect(after).toContain("Statement-tee graphic");

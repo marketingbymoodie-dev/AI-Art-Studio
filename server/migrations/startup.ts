@@ -183,13 +183,14 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types SET fabric_weave_texture = true
    WHERE printify_blueprint_id = 1649
      AND fabric_weave_texture IS NULL`,
-  // Vintage Poster: drop "travel poster" portrait bias — follow canvas orientation.
+  // Vintage Poster: first-seed empty rows + one-time dirty "travel poster" seed.
+  // Do NOT re-clobber edits that omit "canvas orientation".
   `UPDATE style_presets
    SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
    WHERE (catalog_slug = 'vintage-poster' OR (catalog_slug IS NULL AND LOWER(name) = 'vintage poster'))
      AND (
-       prompt_prefix ILIKE '%vintage travel poster%'
-       OR prompt_prefix NOT ILIKE '%canvas orientation%'
+       prompt_prefix IS NULL OR btrim(prompt_prefix) = ''
+       OR prompt_prefix ILIKE '%vintage travel poster%'
      )`,
   // Wall Decals: product-level AR was portrait 2:3; per-size ARs are authoritative.
   `UPDATE product_types
@@ -2344,9 +2345,8 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
     console.log(`${tag} BEFORE prefix id=${row.id}:\n${prefix}`);
   }
 
-  // Set-based write of prompt_prefix (the field Admin reads). No JS skip, no
-  // per-row abort. Slot seed is a separate COALESCE so a JSONB issue cannot
-  // roll back the prefix write.
+  // First-seed empty Opinionated rows only. Dirty-OR repairs leftover chroma
+  // "bold stacked" seeds — not a chroma-free merchant edit.
   const prefixUpd = await pool.query(
     `UPDATE style_presets
      SET prompt_prefix = $1,
@@ -2357,7 +2357,10 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
            ELSE prompt_prefix_dark
          END,
          updated_at = NOW()
-     WHERE catalog_slug = 'opinionated'
+     WHERE (
+          catalog_slug = 'opinionated'
+          AND (prompt_prefix IS NULL OR btrim(prompt_prefix) = '')
+        )
         OR (
           prompt_prefix ILIKE '%bold stacked text typography%'
           AND prompt_prefix ILIKE '%#FF00FF%'
