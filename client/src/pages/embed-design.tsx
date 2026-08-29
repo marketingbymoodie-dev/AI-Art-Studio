@@ -5871,36 +5871,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     shippingDownsellSizeId,
   ]);
 
-  /** After ATC / Start Fresh: drop sticky loadDesignId so the grey skeleton cannot loop. */
-  const resetStudioAfterPurchase = useCallback(() => {
-    if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
-    setGeneratedDesign(null);
-    setDesignSource(null);
-    loadDesignAppliedRef.current = true;
-    pendingRestoreColorRef.current = null;
-    restoringSavedDesignRef.current = false;
-    setBridgeLoadDesignId("");
-    clearLoadDesignIdFromUrl();
-    setReferenceImages([]);
-    setReferencePreviews([]);
-    setReuseRegenerateBasePrompt(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    setSelectedPreset("");
-    setSelectedStyleOption("");
-    applyProductDefaultSizeColor();
-    try {
-      sessionStorage.removeItem(designSessionStorageKey(shopDomain, productHandle, productTypeId));
-    } catch {
-      /* ignore */
-    }
-  }, [
-    applyProductDefaultSizeColor,
-    clearLoadDesignIdFromUrl,
-    shopDomain,
-    productHandle,
-    productTypeId,
-  ]);
-
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
     if (!effectiveLoadDesignId || loadDesignAppliedRef.current) return;
@@ -8477,6 +8447,63 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setQuoteRowDrafts([]);
     setQuoteEditingIndex(null);
   };
+
+  /** Blank canvas; keep Art Style, sub-style, and the prompt. Size: sole option only. */
+  const startFreshDesign = useCallback(() => {
+    setGeneratedDesign(null);
+    setReuseAwaitingGenerate(false);
+    setReuseRegenerateBasePrompt(null);
+    lastAopPanelUrlsRef.current = null;
+    setShowPatternStep(false);
+    setAopPendingMotifUrl(null);
+    setAopPatternUrl(null);
+    setAopPlacementSettings(undefined);
+    setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+    setHoodieAopPlacerState(null);
+    setFlatPlacerState(null);
+    setFlatPlacerEditOpen(false);
+    setFlatApplyStatus("idle");
+    setFlatRenderFailed(false);
+    setDesignSource(null);
+    setAddedToCart(false);
+    loadDesignAppliedRef.current = true;
+    pendingRestoreColorRef.current = null;
+    restoringSavedDesignRef.current = false;
+    setBridgeLoadDesignId("");
+    setReferenceImages([]);
+    setReferencePreviews([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    resetQuoteFlow();
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(0);
+    setMockupsStale(false);
+    setMockupTriggered(false);
+    setMockupLoading(false);
+    setMockupFailed(false);
+    setVariantError(null);
+    setTransform({ scale: defaultZoom, x: 50, y: 50 });
+    applyProductDefaultSizeColor();
+    try {
+      sessionStorage.removeItem(designSessionStorageKey(shopDomain, productHandle, productTypeId));
+    } catch {
+      /* ignore */
+    }
+    clearLoadDesignIdFromUrl();
+  }, [
+    applyProductDefaultSizeColor,
+    clearLoadDesignIdFromUrl,
+    defaultZoom,
+    productHandle,
+    productTypeId,
+    shopDomain,
+  ]);
+
+  /** After ATC: same fresh start, unless placer/pattern UI is still open. */
+  const resetStudioAfterPurchase = useCallback(() => {
+    if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
+    startFreshDesign();
+  }, [startFreshDesign]);
 
   const commitQuoteRowEdit = (i: number) => {
     setQuoteRowDrafts((prev) => {
@@ -13887,33 +13914,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               <button
                 type="button"
                 className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-                onClick={() => {
-                  setGeneratedDesign(null);
-                  setReuseAwaitingGenerate(false);
-                  setReuseRegenerateBasePrompt(null);
-                  lastAopPanelUrlsRef.current = null;
-                  setFlatPlacerState(null);
-                  setFlatPlacerEditOpen(false);
-                  setFlatApplyStatus("idle");
-                  setFlatRenderFailed(false);
-                  setDesignSource(null);
-                  setAddedToCart(false);
-                  loadDesignAppliedRef.current = true;
-                  pendingRestoreColorRef.current = null;
-                  restoringSavedDesignRef.current = false;
-                  setBridgeLoadDesignId('');
-                  setReferenceImages([]);
-                  setReferencePreviews([]);
-                  if (fileInputRef.current) fileInputRef.current.value = '';
-                  setSelectedPreset('');
-                  setSelectedStyleOption('');
-                  applyProductDefaultSizeColor();
-                  try {
-                    const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                    sessionStorage.removeItem(stateKey);
-                  } catch (_) {}
-                  clearLoadDesignIdFromUrl();
-                }}
+                onClick={() => startFreshDesign()}
               >
                 <Plus className="w-3 h-3" />
                 Start Fresh Design
@@ -15454,29 +15455,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         <button
                           type="button"
                           className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-                          onClick={() => {
-                            setGeneratedDesign(null);
-                            setReuseAwaitingGenerate(false);
-                            setReuseRegenerateBasePrompt(null);
-                            lastAopPanelUrlsRef.current = null;
-                            setDesignSource(null);
-                            setAddedToCart(false);
-                            loadDesignAppliedRef.current = true;
-                            pendingRestoreColorRef.current = null;
-                            restoringSavedDesignRef.current = false;
-                            setBridgeLoadDesignId('');
-                            setReferenceImages([]);
-                            setReferencePreviews([]);
-                            if (fileInputRef.current) fileInputRef.current.value = '';
-                            setSelectedPreset('');
-                            setSelectedStyleOption('');
-                            applyProductDefaultSizeColor();
-                            try {
-                              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                              sessionStorage.removeItem(stateKey);
-                            } catch (_) {}
-                            clearLoadDesignIdFromUrl();
-                          }}
+                          onClick={() => startFreshDesign()}
                         >
                           <Plus className="w-3 h-3" />
                           Start Fresh Design
