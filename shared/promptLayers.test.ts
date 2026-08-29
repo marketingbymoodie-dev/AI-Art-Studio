@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APPAREL_CHROMA_STYLE_BY_NAME } from "./apparel-chroma-prompts";
+import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
 import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
 import {
   APPAREL_BASE_CHROMA,
@@ -7,8 +7,10 @@ import {
   DECOR_BASE_FULL_BLEED,
   LITERAL_TEXT_INSTRUCTION,
   STYLE_LAYER_MIGRATIONS,
+  applyForcedStyleLayerByName,
   composeLayeredPrompt,
   countChromaHexMentions,
+  resolveSubStyleFragment,
   literalPlaceholder,
   literalUserSlotSchema,
   migrateStoredStyleLayer,
@@ -27,17 +29,32 @@ describe("prefix migration is chroma-only", () => {
     }
   });
 
-  it("strip matches AFTER for catalog befores (no semantic wipe)", () => {
+  it("strip matches AFTER for chroma catalog befores (no semantic wipe)", () => {
     for (const row of STYLE_LAYER_MIGRATIONS) {
+      if (row.key.startsWith("opinionated")) continue;
+      if (!/#ff00ff/i.test(row.before) && !/solid hot pink/i.test(row.before)) continue;
       expect(stripChromaFromStyleLayer(row.before)).toBe(row.after);
     }
   });
 
-  it("keeps Opinionated creative treatment", () => {
+  it("force-replaces Opinionated stored prefixes by name", () => {
+    const dirty =
+      "T-shirt graphic, bold stacked text typography, isolated on a solid hot pink (#FF00FF) background. Create a bold text stack design of";
+    expect(applyForcedStyleLayerByName("Opinionated", dirty, "light")).toBe(
+      APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+    );
+    expect(applyForcedStyleLayerByName("Opinionated", dirty, "dark")).toBe(
+      APPAREL_DARK_TIER_PROMPTS.opinionated,
+    );
+  });
+
+  it("keeps Opinionated style-level character without pinning lettering", () => {
     const after = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
-    expect(after).toContain("bold stacked text typography");
+    expect(after).toContain("Statement-tee graphic");
+    expect(after).toContain("strong opinion statement");
     expect(after).toContain("up to 6 words");
-    expect(after).toContain("Create a bold text stack design of");
+    expect(after.toLowerCase()).not.toContain("bold stacked");
+    expect(after.toLowerCase()).not.toContain("typography");
     expect(after.toLowerCase()).not.toContain("#ff00ff");
   });
 });
@@ -87,7 +104,8 @@ describe("composeLayeredPrompt", () => {
       userSlotSchema: literalUserSlotSchema(6),
     });
     expect(layered.prompt.startsWith(APPAREL_BASE_TRANSPARENT)).toBe(true);
-    expect(layered.prompt).toContain("bold stacked text typography");
+    expect(layered.prompt).toContain("Statement-tee graphic");
+    expect(layered.prompt).not.toMatch(/bold stacked/i);
     expect(layered.prompt).toContain(LITERAL_TEXT_INSTRUCTION);
     expect(layered.prompt).toContain('"I choose dogs"');
     expect(layered.prompt.toLowerCase()).not.toContain("#ff00ff");
@@ -136,6 +154,47 @@ describe("composeLayeredPrompt", () => {
     expect(layered.prompt).toContain("sunset mountains");
   });
 
+  it("puts the sub-style fragment in its own layer for Opinionated / Quotes / Pet Portraits", () => {
+    const opinionated = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      subStyleLayer: "casual hand-lettered script, organic brush strokes, personal handwriting feel",
+      userInput: "I choose dogs",
+      userSlotSchema: literalUserSlotSchema(6),
+    });
+    expect(opinionated.subStyleLayer).toContain("hand-lettered script");
+    expect(opinionated.prompt).toContain("casual hand-lettered script");
+    expect(opinionated.prompt).toContain('"I choose dogs"');
+    expect(opinionated.prompt).not.toMatch(/bold stacked/i);
+    expect(opinionated.prompt.indexOf("hand-lettered")).toBeLessThan(
+      opinionated.prompt.indexOf("I choose dogs"),
+    );
+
+    const quotes = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: null,
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
+      subStyleLayer: "a funny, humorous, comedic quote on",
+      userInput: "monday mornings",
+    });
+    expect(quotes.prompt).toContain("a funny, humorous, comedic quote on");
+    expect(quotes.prompt).toContain("monday mornings");
+
+    const pets = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: null,
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME["pet portraits"],
+      subStyleLayer: "dressed as a majestic king with crown and royal robes",
+      userInput: "Rex",
+    });
+    expect(pets.prompt).toContain("dressed as a majestic king with crown and royal robes");
+    expect(pets.prompt).toContain("Rex");
+  });
+
   it("thematic styles pass user text through without quoting", () => {
     const layered = composeLayeredPrompt({
       category: "apparel",
@@ -146,6 +205,34 @@ describe("composeLayeredPrompt", () => {
     });
     expect(layered.prompt).toContain("scary grizzly bear");
     expect(layered.prompt).not.toContain(LITERAL_TEXT_INSTRUCTION);
+  });
+});
+
+describe("resolveSubStyleFragment", () => {
+  const quotesOptions = {
+    choices: [
+      { id: "funny", name: "Funny", promptFragment: "a funny, humorous, comedic quote on" },
+      { id: "king", name: "King", promptFragment: "dressed as a majestic king with crown and royal robes" },
+    ],
+  };
+
+  it("resolves by styleOptionId", () => {
+    expect(
+      resolveSubStyleFragment({
+        styleOptionId: "funny",
+        styleOptions: quotesOptions,
+      }),
+    ).toBe("a funny, humorous, comedic quote on");
+  });
+
+  it("recovers a fragment prefixed onto the client prompt", () => {
+    expect(
+      resolveSubStyleFragment({
+        styleOptions: quotesOptions,
+        clientPrompt: "dressed as a majestic king with crown and royal robes. Rex",
+        userInput: "Rex",
+      }),
+    ).toBe("dressed as a majestic king with crown and royal robes");
   });
 });
 

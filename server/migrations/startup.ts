@@ -9,7 +9,7 @@
  * Every statement is fully idempotent and safe to run on every boot.
  */
 import { pool } from "../db";
-import { literalUserSlotSchema, migrateStoredStyleLayer } from "@shared/promptLayers";
+import { applyForcedStyleLayerByName, literalUserSlotSchema } from "@shared/promptLayers";
 
 // ── Column additions ──────────────────────────────────────────────────────────
 
@@ -2299,10 +2299,9 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
   let updated = 0;
   const opinionatedSlots = JSON.stringify(literalUserSlotSchema(6));
   for (const row of rows) {
-    const nextPrefix = migrateStoredStyleLayer(row.prompt_prefix || "");
-    const nextDark = row.prompt_prefix_dark
-      ? migrateStoredStyleLayer(row.prompt_prefix_dark)
-      : row.prompt_prefix_dark;
+    const nextPrefix = applyForcedStyleLayerByName(row.name || "", row.prompt_prefix || "", "light");
+    const forcedDark = applyForcedStyleLayerByName(row.name || "", row.prompt_prefix_dark || "", "dark");
+    const nextDark = forcedDark || row.prompt_prefix_dark;
     const isOpinionated = String(row.name || "").trim().toLowerCase() === "opinionated";
     const seedSlots = isOpinionated && (row.user_slot_schema == null);
     if (

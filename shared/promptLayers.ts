@@ -224,6 +224,8 @@ export type ComposeLayeredPromptInput = {
   isApparelGeneration: boolean;
   generationModel?: string | null;
   styleLayer: string;
+  /** Sub-style / layout fragment (Retro, Funny, King, …). Own layer — not folded into user text. */
+  subStyleLayer?: string | null;
   userInput: string;
   userSlotSchema?: unknown;
   isAllOverPrint?: boolean;
@@ -235,10 +237,46 @@ export type ComposeLayeredPromptResult = {
   category: PromptLayerCategory;
   base: string;
   styleLayer: string;
+  subStyleLayer: string;
   userLayer: string;
   nativeTransparent: boolean;
   chromaHexMentions: number;
 };
+
+export type StyleOptionChoice = {
+  id?: string;
+  name?: string;
+  promptFragment?: string;
+};
+
+export function resolveSubStyleFragment(opts: {
+  styleOptionId?: string | null;
+  styleOptions?: { choices?: StyleOptionChoice[] } | null;
+  fallbackFragment?: string | null;
+  clientPrompt?: string | null;
+  userInput?: string | null;
+}): string {
+  const choices = opts.styleOptions?.choices;
+  const id = (opts.styleOptionId || "").trim();
+  if (id && Array.isArray(choices)) {
+    const hit = choices.find(
+      (c) =>
+        String(c.id || "") === id ||
+        String(c.name || "").trim().toLowerCase() === id.toLowerCase(),
+    );
+    if (hit?.promptFragment?.trim()) return hit.promptFragment.trim();
+  }
+  const fallback = (opts.fallbackFragment || "").trim();
+  if (fallback) return fallback;
+  const clientPrompt = (opts.clientPrompt || "").trim();
+  if (clientPrompt && Array.isArray(choices)) {
+    for (const c of choices) {
+      const fragment = (c.promptFragment || "").trim();
+      if (fragment && clientPrompt.startsWith(fragment)) return fragment;
+    }
+  }
+  return "";
+}
 
 export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeLayeredPromptResult {
   const category = resolvePromptLayerCategory(input.category, input.isApparelGeneration);
@@ -249,13 +287,15 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
     extras.push(input.isPatternStyle ? AOP_PATTERN_EXTRA : AOP_MOTIF_EXTRA);
   }
   const styleLayer = stripChromaFromStyleLayer(input.styleLayer || "");
+  const subStyleLayer = stripChromaFromStyleLayer(input.subStyleLayer || "");
   const userLayer = composeUserInputLayer(input.userInput, input.userSlotSchema);
-  const prompt = [base, ...extras, styleLayer, userLayer].filter(Boolean).join("\n\n");
+  const prompt = [base, ...extras, styleLayer, subStyleLayer, userLayer].filter(Boolean).join("\n\n");
   return {
     prompt,
     category,
     base,
     styleLayer,
+    subStyleLayer,
     userLayer,
     nativeTransparent,
     chromaHexMentions: countChromaHexMentions(prompt),
@@ -313,8 +353,14 @@ export const STYLE_LAYER_MIGRATIONS: StyleLayerMigration[] = [
     field: "prompt_prefix",
     before:
       "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean typographic layout. Create a bold text stack design of",
-    after:
+    after: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+  },
+  {
+    key: "opinionated-stripped",
+    field: "prompt_prefix",
+    before:
       "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat, clean typographic layout. Create a bold text stack design of",
+    after: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
   },
   {
     key: "quotes",
@@ -361,8 +407,14 @@ export const STYLE_LAYER_MIGRATIONS: StyleLayerMigration[] = [
     field: "prompt_prefix_dark",
     before:
       "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean typographic layout. Create a bold text stack design of",
-    after:
+    after: APPAREL_DARK_TIER_PROMPTS.opinionated,
+  },
+  {
+    key: "opinionated-stripped",
+    field: "prompt_prefix_dark",
+    before:
       "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, clean typographic layout. Create a bold text stack design of",
+    after: APPAREL_DARK_TIER_PROMPTS.opinionated,
   },
   {
     key: "quotes",
@@ -432,4 +484,57 @@ export function migrateStoredStyleLayer(text: string): string {
     return stripChromaFromStyleLayer(trimmed);
   }
   return trimmed;
+}
+
+/** Catalog style layers forced by lowercased display name (boot + dirty-row repair). */
+export const FORCE_STYLE_LAYER_BY_NAME: Record<string, { light: string; dark?: string }> = {
+  opinionated: {
+    light: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+    dark: APPAREL_DARK_TIER_PROMPTS.opinionated,
+  },
+  quotes: {
+    light: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
+    dark: APPAREL_DARK_TIER_PROMPTS.quotes,
+  },
+  "pet portraits": {
+    light: APPAREL_CHROMA_STYLE_BY_NAME["pet portraits"],
+    dark: APPAREL_DARK_TIER_PROMPTS["pet-portraits"],
+  },
+  "centered graphic": {
+    light: APPAREL_CHROMA_STYLE_BY_NAME["centered graphic"],
+    dark: APPAREL_DARK_TIER_PROMPTS["centered-graphic"],
+  },
+  "illustrated motif": {
+    light: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
+    dark: APPAREL_DARK_TIER_PROMPTS["illustrated-motif"],
+  },
+  "pattern maker": {
+    light: APPAREL_CHROMA_STYLE_BY_NAME["pattern maker"],
+    dark: APPAREL_DARK_TIER_PROMPTS["pattern-maker"],
+  },
+  "centered graphic (graphics)": {
+    light: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-centered-graphic"],
+  },
+  "illustrated motif (graphics)": {
+    light: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-illustrated-motif"],
+  },
+  "pattern maker (graphics)": {
+    light: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-pattern-maker"],
+  },
+};
+
+export function applyForcedStyleLayerByName(
+  styleName: string,
+  current: string,
+  field: "light" | "dark",
+): string {
+  const key = styleName.trim().toLowerCase();
+  const forced = FORCE_STYLE_LAYER_BY_NAME[key];
+  const target = field === "dark" ? forced?.dark : forced?.light;
+  if (key === "opinionated" && target) return target;
+  const migrated = migrateStoredStyleLayer(current);
+  if (target && (/#ff00ff/i.test(current) || /solid hot pink/i.test(current) || /hot pink background/i.test(current))) {
+    return target;
+  }
+  return migrated;
 }

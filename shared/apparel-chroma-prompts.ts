@@ -17,7 +17,7 @@ export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
   "pattern maker":
     "Seamless repeating pattern design, tileable motif, clean vector shapes, flat colors (avoid white, light colors), high contrast, no white mat, no rectangular frame. Create a repeating pattern of",
   opinionated:
-    "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat, clean typographic layout. Create a bold text stack design of",
+    "Statement-tee graphic, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat.",
   quotes:
     "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
   "pet portraits":
@@ -34,7 +34,7 @@ export const APPAREL_DARK_TIER_PROMPTS: Record<string, string> = {
   "pattern-maker":
     "Seamless repeating pattern design, tileable motif, clean vector shapes, bright vibrant colors including white and light tones (avoid dark, black), high contrast. Create a repeating pattern of",
   opinionated:
-    "T-shirt graphic, bold stacked text typography, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, clean typographic layout. Create a bold text stack design of",
+    "Statement-tee graphic, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture.",
   quotes:
     "T-shirt graphic, stylish quote typography, expressive lettering, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, creative typographic layout. Create a quote design of",
   "pet-portraits":

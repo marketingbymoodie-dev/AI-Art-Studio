@@ -18,6 +18,7 @@ import {
   composeLayeredPrompt,
   persistUserSlotSchema,
   resolveStyleLayerRaw,
+  resolveSubStyleFragment,
   wrapLayeredArtworkPrompt,
 } from "@shared/promptLayers";
 import { tileImage, type TileMode } from "./sharp-tiler";
@@ -2545,7 +2546,7 @@ export async function registerRoutes(
         }
       }
 
-      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, styleOptionId: styleOptionIdAdmin, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -2582,6 +2583,7 @@ export async function registerRoutes(
       let styleGenerationModel: string | null = null;
       let styleGenerationQuality: string | null = null;
       let styleUserSlotSchema: unknown = null;
+      let styleOptionsAdmin: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
@@ -2599,6 +2601,7 @@ export async function registerRoutes(
             styleGenerationModel = (selectedStyle as any).generationModel ?? null;
             styleGenerationQuality = (selectedStyle as any).generationQuality ?? null;
             styleUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+            styleOptionsAdmin = (selectedStyle as any).options ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2616,6 +2619,7 @@ export async function registerRoutes(
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
             styleUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? styleUserSlotSchema;
+            styleOptionsAdmin = (hardcodedStyle as any).options ?? styleOptionsAdmin;
           }
         }
       }
@@ -2832,11 +2836,22 @@ ${orientationExtra}
       // Build final prompt: locked base + style layer + user (chroma only in nano-banana base)
       const geminiAspectRatio = mapToGeminiAspectRatio(aspectRatioStr);
       const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+      if (!styleOptionsAdmin) {
+        const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
+        styleOptionsAdmin = (hc as any)?.options ?? null;
+      }
+      const subStyleAdmin = resolveSubStyleFragment({
+        styleOptionId: styleOptionIdAdmin,
+        styleOptions: styleOptionsAdmin,
+        clientPrompt: prompt,
+        userInput: userDescAdmin,
+      });
       const layeredAdmin = composeLayeredPrompt({
         category: styleCategory,
         isApparelGeneration: isApparel,
         generationModel: styleGen.model,
         styleLayer: styleLayerAdmin,
+        subStyleLayer: subStyleAdmin,
         userInput: userDescAdmin,
         userSlotSchema: styleUserSlotSchema,
         isAllOverPrint,
@@ -3458,7 +3473,7 @@ console.log("[shopify/session] installation ok", {
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     let embedInstallation: Awaited<ReturnType<typeof getAuthorizedInstallation>> = null;
     try {
-      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
+      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, styleOptionId: styleOptionIdEmbed, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -3555,6 +3570,7 @@ console.log("[shopify/session] installation ok", {
       let embedGenerationModel: string | null = null;
       let embedGenerationQuality: string | null = null;
       let embedUserSlotSchema: unknown = null;
+      let embedStyleOptions: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
@@ -3569,6 +3585,7 @@ console.log("[shopify/session] installation ok", {
           embedGenerationModel = (selectedStyle as any).generationModel ?? null;
           embedGenerationQuality = (selectedStyle as any).generationQuality ?? null;
           embedUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+          embedStyleOptions = (selectedStyle as any).options ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3583,6 +3600,7 @@ console.log("[shopify/session] installation ok", {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
             embedUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? embedUserSlotSchema;
+            embedStyleOptions = (hardcodedStyle as any).options ?? embedStyleOptions;
           }
         }
       }
@@ -3753,11 +3771,22 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
+      if (!embedStyleOptions) {
+        const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
+        embedStyleOptions = (hc as any)?.options ?? null;
+      }
+      const subStyleEmbed = resolveSubStyleFragment({
+        styleOptionId: styleOptionIdEmbed,
+        styleOptions: embedStyleOptions,
+        clientPrompt: prompt,
+        userInput: userDescEmbed,
+      });
       const layeredEmbed = composeLayeredPrompt({
         category: embedStyleCategory,
         isApparelGeneration: embedIsApparelEarly,
         generationModel: embedStyleGen.model,
         styleLayer: styleLayerEmbed,
+        subStyleLayer: subStyleEmbed,
         userInput: userDescEmbed,
         userSlotSchema: embedUserSlotSchema,
         isAllOverPrint: embedIsAllOverPrintEarly,
@@ -8078,6 +8107,7 @@ ${orientationExtra}
         prompt,
         userPrompt: rawUserPrompt,
         stylePreset,
+        styleOptionId: styleOptionIdSf,
         size,
         frameColor,
         referenceImage,
@@ -8437,6 +8467,7 @@ ${orientationExtra}
       let sfGenerationModel: string | null = null;
       let sfGenerationQuality: string | null = null;
       let sfUserSlotSchema: unknown = null;
+      let sfStyleOptions: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
       if (creatorCtx && stylePreset) {
         const { isStyleEntitledForGenerate } = await import("./creator-styles");
         const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
@@ -8472,6 +8503,7 @@ ${orientationExtra}
           sfGenerationModel = (selectedStyle as any).generationModel ?? null;
           sfGenerationQuality = (selectedStyle as any).generationQuality ?? null;
           sfUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+          sfStyleOptions = (selectedStyle as any).options ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
@@ -8486,6 +8518,7 @@ ${orientationExtra}
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
             sfUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? sfUserSlotSchema;
+            sfStyleOptions = (hardcodedStyle as any).options ?? sfStyleOptions;
           }
         }
       }
@@ -8706,11 +8739,22 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
+      if (!sfStyleOptions) {
+        const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
+        sfStyleOptions = (hc as any)?.options ?? null;
+      }
+      const subStyleSf = resolveSubStyleFragment({
+        styleOptionId: styleOptionIdSf,
+        styleOptions: sfStyleOptions,
+        clientPrompt: prompt,
+        userInput: userDescSf,
+      });
       const layeredSf = composeLayeredPrompt({
         category: sfStyleCategory,
         isApparelGeneration: isApparel,
         generationModel: sfStyleGen.model,
         styleLayer: styleLayerSf,
+        subStyleLayer: subStyleSf,
         userInput: userDescSf,
         userSlotSchema: sfUserSlotSchema,
         isAllOverPrint,

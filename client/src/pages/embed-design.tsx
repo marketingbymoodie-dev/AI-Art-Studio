@@ -7726,6 +7726,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       size: string;
       frameColor?: string;
       stylePreset?: string;
+      styleOptionId?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
       shop?: string;
@@ -8436,6 +8437,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             ? productTypeConfig.frameColors[0]?.id
             : undefined),
         stylePreset: effectivePresetId && effectivePresetId !== "" ? effectivePresetId : undefined,
+        styleOptionId: selectedStyleOption && selectedStyleOption !== "" ? selectedStyleOption : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
