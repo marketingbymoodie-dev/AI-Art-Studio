@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { APPAREL_CHROMA_STYLE_BY_NAME } from "./apparel-chroma-prompts";
+import { apparelChromaStyleLayerForCatalogSlug } from "./promptLayers";
 import { inferCatalogSlug, resolveCatalogSlug, findCatalogPreset } from "./styleCatalog";
 
 describe("style catalog identity", () => {
@@ -22,5 +24,15 @@ describe("style catalog identity", () => {
   it("disambiguates Pet Portraits by category", () => {
     expect(inferCatalogSlug("Pet Portraits", "apparel")).toBe("pet-portraits");
     expect(inferCatalogSlug("Pet Portraits", "decor")).toBe("pet-portraits-decor");
+  });
+});
+
+describe("apparel chroma reseed key", () => {
+  it("maps apparel Pet Portraits slug and ignores decor slug / bare name", () => {
+    expect(apparelChromaStyleLayerForCatalogSlug("pet-portraits")).toBe(
+      APPAREL_CHROMA_STYLE_BY_NAME["pet portraits"],
+    );
+    expect(apparelChromaStyleLayerForCatalogSlug("pet-portraits-decor")).toBeUndefined();
+    expect(apparelChromaStyleLayerForCatalogSlug("pet portraits")).toBeUndefined();
   });
 });

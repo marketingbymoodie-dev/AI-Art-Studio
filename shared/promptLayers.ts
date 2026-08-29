@@ -46,6 +46,15 @@ const SLUG_TO_APPAREL_CHROMA_KEY: Record<string, string> = {
   "free-4-all": "free 4 all",
 };
 
+/** Apparel chroma STYLE layer for a catalog slug. Undefined for decor / unknown slugs. */
+export function apparelChromaStyleLayerForCatalogSlug(
+  catalogSlug: string | null | undefined,
+): string | undefined {
+  const key = SLUG_TO_APPAREL_CHROMA_KEY[String(catalogSlug || "").trim().toLowerCase()];
+  if (key === undefined) return undefined;
+  return APPAREL_CHROMA_STYLE_BY_NAME[key];
+}
+
 export const LITERAL_TEXT_INSTRUCTION =
   "Render the following text EXACTLY as written, verbatim — do not change, add, remove, rephrase, or invent text";
 

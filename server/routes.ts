@@ -5,7 +5,6 @@ import {
   maybeVectorizeFlatGraphic,
   trimTransparentBounds,
   resolveIsApparelGeneration,
-  APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
 import {
@@ -15,6 +14,7 @@ import {
   resolveStyleGeneration,
 } from "@shared/styleGeneration";
 import {
+  apparelChromaStyleLayerForCatalogSlug,
   composeLayeredPrompt,
   effectiveStoredUserSlotSchema,
   parseUserSlotSchema,
@@ -14428,14 +14428,15 @@ ${orientationExtra}
         }
       }
 
-      // Sync canonical apparel chroma prefixes for merchant styles matched by name
+      // Sync canonical apparel chroma prefixes by catalog slug only.
+      // Never match display name — "Pet Portraits" apparel vs decor share a name.
       for (const existing of existingStyles) {
-        const key = existing.name.trim().toLowerCase();
-        const canonicalPrefix = APPAREL_CHROMA_STYLE_BY_NAME[key];
+        if ((existing.category || "").toLowerCase() !== "apparel") continue;
+        const slug = resolveCatalogSlug(existing);
+        const canonicalPrefix = apparelChromaStyleLayerForCatalogSlug(slug);
         if (canonicalPrefix === undefined) continue;
-        if (existing.promptPrefix === canonicalPrefix && existing.category === "apparel") continue;
+        if (existing.promptPrefix === canonicalPrefix) continue;
         const updated = await storage.updateStylePreset(existing.id, {
-          category: "apparel",
           promptPrefix: canonicalPrefix,
         });
         if (updated) updatedStyles.push(updated);

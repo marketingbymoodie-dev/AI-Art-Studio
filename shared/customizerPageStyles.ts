@@ -84,17 +84,20 @@ export function suggestedStyleCategoryForDesignerType(
   return def.mode === "category" ? def.category : "all";
 }
 
-export function dedupeStylePresets<T extends { id: string; name?: string }>(
-  presets: T[],
-): T[] {
+export function dedupeStylePresets<
+  T extends { id: string; name?: string; catalogSlug?: string | null },
+>(presets: T[]): T[] {
   const seenIds = new Set<string>();
-  const seenNames = new Set<string>();
+  const seenSlugs = new Set<string>();
   return presets.filter((p) => {
     const idKey = String(p.id);
-    const nameKey = (p.name || idKey).trim().toLowerCase();
-    if (seenIds.has(idKey) || seenNames.has(nameKey)) return false;
+    const slugKey = String(p.catalogSlug || "")
+      .trim()
+      .toLowerCase();
+    if (seenIds.has(idKey)) return false;
+    if (slugKey && seenSlugs.has(slugKey)) return false;
     seenIds.add(idKey);
-    seenNames.add(nameKey);
+    if (slugKey) seenSlugs.add(slugKey);
     return true;
   });
 }
@@ -123,19 +126,31 @@ export function preferGraphicsStyleTwin(
 }
 
 /**
- * Collapse "Centered Graphic" + "Centered Graphic (Graphics)" to one row.
- * Storefront labels strip "(Graphics)", so both otherwise look identical.
+ * Collapse apparel DTG + Graphics chroma twins that share a customer-facing
+ * name ("Centered Graphic" / "Centered Graphic (Graphics)").
+ * Do not collapse rows that only share a display name across categories
+ * (Pet Portraits apparel vs decor).
  */
+function apparelGraphicsTwinKey<
+  T extends { id: string; name?: string; category?: string | null; catalogSlug?: string | null },
+>(style: T): string | null {
+  const name = canonicalCreatorStyleName(style.name || style.id);
+  if (!name) return null;
+  if (isGraphicsStyleTwin(style)) return name;
+  if ((style.category || "").toLowerCase() === "apparel") return name;
+  return null;
+}
+
 export function collapseStyleNameTwins<
-  T extends { id: string; name?: string; category?: string | null },
+  T extends { id: string; name?: string; category?: string | null; catalogSlug?: string | null },
 >(presets: T[], designerType?: string | null, pageCategory?: string | null): T[] {
   const preferGraphics = preferGraphicsStyleTwin(designerType, pageCategory);
   const rank = (p: T) => (isGraphicsStyleTwin(p) ? 0 : 1);
   const best = new Map<string, T>();
   const order: string[] = [];
   for (const p of presets) {
-    const key = canonicalCreatorStyleName(p.name || p.id);
-    if (!key) continue;
+    const twinKey = apparelGraphicsTwinKey(p);
+    const key = twinKey ? `ag:${twinKey}` : `id:${String(p.id)}`;
     const prev = best.get(key);
     if (!prev) {
       best.set(key, p);

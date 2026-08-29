@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  collapseStyleNameTwins,
+  dedupeStylePresets,
   filterStylePresetsForPage,
   parseCustomizerPageStyleConfig,
   styleExampleImageUrl,
@@ -90,6 +92,56 @@ describe("filterStylePresetsForPage", () => {
     });
     const shown = filterStylePresetsForPage(twins, cfg, "generic");
     expect(shown.map((s) => s.id)).toEqual(["cg-graphics", "quotes"]);
+  });
+});
+
+describe("Pet Portraits apparel/decor name twins", () => {
+  const pair = [
+    {
+      id: "13",
+      name: "Pet Portraits",
+      category: "apparel",
+      catalogSlug: "pet-portraits",
+    },
+    {
+      id: "19",
+      name: "Pet Portraits",
+      category: "decor",
+      catalogSlug: "pet-portraits-decor",
+    },
+  ];
+
+  it("dedupes by id/slug, not display name", () => {
+    expect(dedupeStylePresets(pair).map((p) => p.id)).toEqual(["13", "19"]);
+    expect(dedupeStylePresets([...pair, pair[0]]).map((p) => p.id)).toEqual(["13", "19"]);
+  });
+
+  it("does not collapse apparel vs decor in collapseStyleNameTwins", () => {
+    expect(collapseStyleNameTwins(pair, "generic").map((p) => p.id)).toEqual(["13", "19"]);
+    expect(collapseStyleNameTwins(pair, "framed-print").map((p) => p.id)).toEqual(["13", "19"]);
+  });
+
+  it("routes All Apparel / All Decor / All / selected [19]", () => {
+    expect(
+      filterStylePresetsForPage(pair, { mode: "category", category: "apparel" }, "apparel").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["13"]);
+    expect(
+      filterStylePresetsForPage(pair, { mode: "category", category: "decor" }, "framed-print").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["19"]);
+    expect(
+      filterStylePresetsForPage(pair, { mode: "category", category: "all" }, "generic").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["13", "19"]);
+    expect(
+      filterStylePresetsForPage(pair, { mode: "selected", presetIds: ["19"] }, "framed-print").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["19"]);
   });
 });
 
