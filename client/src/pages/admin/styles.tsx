@@ -94,6 +94,8 @@ export default function AdminStyles() {
   const [generationModel, setGenerationModel] = useState<"default" | "gpt-image-2">("default");
   const [generationQuality, setGenerationQuality] = useState<"low" | "medium" | "high">("low");
   const [vectorizeEnabled, setVectorizeEnabled] = useState(false);
+  const [literalTextStyle, setLiteralTextStyle] = useState(false);
+  const [literalMaxWords, setLiteralMaxWords] = useState(6);
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const MAX_BASE_IMAGES = 5;
 
@@ -205,6 +207,7 @@ export default function AdminStyles() {
         baseImageUrls: (style as any).baseImageUrls || null,
         promptPlaceholder: (style as any).promptPlaceholder || null,
         descriptionOptional: !!(style as any).descriptionOptional,
+        userSlotSchema: (style as any).userSlotSchema || null,
         options: (style as any).options || null,
         isActive: false, // start inactive so merchant can rename before enabling
       };
@@ -254,6 +257,8 @@ export default function AdminStyles() {
     setGenerationModel("default");
     setGenerationQuality("low");
     setVectorizeEnabled(false);
+    setLiteralTextStyle(false);
+    setLiteralMaxWords(6);
     setSubStylesEnabled(false);
     setSubStyleLabel("Style");
     setSubStyleRequired(true);
@@ -280,6 +285,10 @@ export default function AdminStyles() {
     const quality = String((style as any).generationQuality || "low").toLowerCase();
     setGenerationQuality(quality === "medium" || quality === "high" ? quality : "low");
     setVectorizeEnabled((style as any).vectorizeEnabled === true);
+    const slots = (style as any).userSlotSchema?.slots;
+    const literal = Array.isArray(slots) ? slots.find((s: any) => s?.kind === "literal") : null;
+    setLiteralTextStyle(!!literal);
+    setLiteralMaxWords(literal?.maxWords > 0 ? Number(literal.maxWords) : 6);
 
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
@@ -426,6 +435,9 @@ export default function AdminStyles() {
             : null
           : null,
       vectorizeEnabled: vectorizeEnabled ? true : null,
+      userSlotSchema: literalTextStyle
+        ? { slots: [{ id: "text", kind: "literal" as const, maxWords: literalMaxWords || 6 }] }
+        : null,
     };
 
     if (editingStyle) {
@@ -685,7 +697,7 @@ export default function AdminStyles() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Decor fills the canvas edge-to-edge. Apparel and Graphics use hot-pink chroma removal; Graphics is for blankets, totes, and patterns.
+                  Decor fills the canvas edge-to-edge. Apparel and Graphics inherit a locked print base from the generation model (transparent for GPT-Image-2, chroma plate for Nano Banana). Graphics is for blankets, totes, and patterns.
                 </p>
               </div>
 
@@ -704,7 +716,7 @@ export default function AdminStyles() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  GPT-Image-2 outputs a real transparent PNG and skips chroma. Default keeps the current model and plate pipeline.
+                  Flipping the model switches the locked print base. GPT-Image-2 is transparent. Default (Nano Banana) keeps the chroma plate.
                 </p>
               </div>
 
@@ -730,6 +742,37 @@ export default function AdminStyles() {
               </div>
 
               <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5 pr-3">
+                  <Label htmlFor="literal-text-style" className="text-sm font-medium">
+                    Literal text style
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Render the customer’s words exactly (quoted). For statement / quote styles.
+                  </p>
+                </div>
+                <Switch
+                  id="literal-text-style"
+                  checked={literalTextStyle}
+                  onCheckedChange={setLiteralTextStyle}
+                  data-testid="switch-literal-text-style"
+                />
+              </div>
+              {literalTextStyle && (
+                <div className="space-y-2">
+                  <Label htmlFor="literal-max-words">Max words</Label>
+                  <Input
+                    id="literal-max-words"
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={literalMaxWords}
+                    onChange={(e) => setLiteralMaxWords(Math.max(1, Number(e.target.value) || 6))}
+                    data-testid="input-literal-max-words"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center justify-between rounded-lg border p-3">
                 <div className="space-y-0.5">
                   <Label htmlFor="vectorize-enabled" className="text-sm font-medium">
                     Vectorize (large-format scaling)
@@ -748,7 +791,7 @@ export default function AdminStyles() {
 
               {/* Prompt Prefix — auto-resizing textarea */}
               <div className="space-y-2">
-                <Label htmlFor="style-prompt">Prompt Prefix</Label>
+                <Label htmlFor="style-prompt">Style layer (creative treatment only)</Label>
                 <textarea
                   id="style-prompt"
                   ref={promptTextareaRef}
@@ -781,9 +824,7 @@ export default function AdminStyles() {
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
-                  {styleCategory === "decor"
-                    ? "Full-bleed prefix — artwork should extend to all edges."
-                    : "Must include hot pink (#FF00FF) background language for background removal. Edits apply immediately — no deploy needed."}
+                  Print base is locked from category + generation model — do not add #FF00FF, hot-pink plate, or transparent-background instructions. Write only the creative treatment.
                 </p>
               </div>
 
@@ -797,7 +838,7 @@ export default function AdminStyles() {
                     id="style-prompt-dark"
                     value={stylePromptDark}
                     onChange={(e) => setStylePromptDark(e.target.value)}
-                    placeholder="Bright vibrant colors on dark garments… isolated on solid hot pink (#FF00FF) background…"
+                    placeholder="Bright vibrant colors on dark garments…"
                     rows={3}
                     className="w-full min-h-[72px] resize-y rounded-md border border-input bg-background px-3 py-2 text-sm"
                     data-testid="input-style-prompt-dark"

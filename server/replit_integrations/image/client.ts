@@ -108,6 +108,7 @@ import {
   styleAllowsGeneratedText,
   userPromptRequestsMonochrome,
 } from "@shared/generationPromptHints";
+import { countChromaHexMentions } from "@shared/promptLayers";
 import {
   composeTransparentPrompt,
   estimatedGptImage2CostUsd,
@@ -144,6 +145,8 @@ export type GenerateImageParams = {
   generationModel?: string | null;
   generationQuality?: string | null;
   nativeTransparent?: boolean;
+  /** Layered compose already applied the locked base — do not re-inject chroma. */
+  layered?: boolean;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -230,6 +233,7 @@ export function compressPrompt(
   aspectRatio?: string | null,
   cylindricalWrap?: boolean,
   nativeTransparent?: boolean,
+  layered?: boolean,
 ): string {
   const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
   const artworkSection = artworkMatch?.[1]?.trim() || "";
@@ -239,6 +243,34 @@ export function compressPrompt(
     : "";
 
   let compressed: string;
+
+  if (layered) {
+    compressed = monoHint + stripVerboseRequirementBlocks(raw);
+    if (!isApparel) {
+      const orient = buildDecorOrientationShortConstraint(aspectRatio);
+      const allowText = decorAllowsGeneratedText({
+        promptBlob: raw,
+        userPrompt,
+      });
+      const textRule = allowText
+        ? buildDecorTextSafeMarginShortConstraint()
+        : buildDecorNoTextUnlessAskedShortConstraint();
+      const shortConstraints = cylindricalWrap
+        ? orient +
+          "Full-bleed background to all edges. Keep text and focal subjects in the center 60% (cylindrical wrap safe area). "
+        : orient + textRule;
+      compressed = shortConstraints + compressed;
+    } else if (!isAllOverPrint && styleAllowsGeneratedText(null, raw)) {
+      compressed = buildDecorTextSafeMarginShortConstraint() + compressed;
+    }
+    if (compressed.length > PROMPT_MAX_LENGTH) {
+      const artMax = artworkSection ? Math.min(artworkSection.length, 380) : 0;
+      const headMax = PROMPT_MAX_LENGTH - artMax - (artMax > 0 ? 4 : 0);
+      const head = compressed.substring(0, Math.max(0, headMax));
+      compressed = artMax > 0 ? `${head} ... ${artworkSection.substring(0, artMax)}` : head;
+    }
+    return compressed;
+  }
 
   if (isApparel && nativeTransparent) {
     compressed = composeTransparentPrompt(monoHint + stripVerboseRequirementBlocks(raw));
@@ -473,7 +505,16 @@ export async function generateImageBase64(
     params.aspectRatio,
     params.cylindricalWrap,
     nativeTransparent,
+    params.layered === true,
   );
+
+  if (params.layered === true) {
+    const hex = countChromaHexMentions(compressedPrompt);
+    const modelLabel = nativeTransparent ? "gpt-image-2" : "nano-banana";
+    console.log(
+      `[layered] model=${modelLabel} chromaHexMentions=${hex} plate=${hex > 0 ? "yes" : "none"} (${compressedPrompt.length} chars):\n${compressedPrompt}`,
+    );
+  }
 
   if (nativeTransparent || isGptImage2Model(params.generationModel)) {
     const quality: GenerationQuality = resolveGenerationQuality(params.generationQuality);
@@ -483,7 +524,9 @@ export async function generateImageBase64(
       inputImageUrl: params.inputImageUrl,
       quality,
     });
-    logComposedPrompt(compressedPrompt, "gpt-image-2");
+    if (params.layered !== true) {
+      logComposedPrompt(compressedPrompt, "gpt-image-2");
+    }
     console.log(
       `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
     );

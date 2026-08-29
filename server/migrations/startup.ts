@@ -9,6 +9,7 @@
  * Every statement is fully idempotent and safe to run on every boot.
  */
 import { pool } from "../db";
+import { literalUserSlotSchema, migrateStoredStyleLayer } from "@shared/promptLayers";
 
 // ── Column additions ──────────────────────────────────────────────────────────
 
@@ -274,12 +275,12 @@ const DATA_MIGRATIONS: string[] = [
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
        category = 'apparel'
    WHERE lower(name) = 'centered graphic'
-     AND (prompt_prefix ILIKE '%white background%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+     AND prompt_prefix ILIKE '%white background%'`
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
        category = 'apparel'
    WHERE lower(name) = 'illustrated motif'
-     AND (prompt_prefix ILIKE '%white background%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+     AND prompt_prefix ILIKE '%white background%'`
   // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
@@ -2289,6 +2290,42 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
   },
 ];
 
+async function migrateLayeredStylePrefixes(): Promise<number> {
+  const result = await pool.query(
+    `SELECT id, name, category, prompt_prefix, prompt_prefix_dark, user_slot_schema
+     FROM style_presets`,
+  );
+  const rows = (result as { rows?: any[] }).rows || [];
+  let updated = 0;
+  const opinionatedSlots = JSON.stringify(literalUserSlotSchema(6));
+  for (const row of rows) {
+    const nextPrefix = migrateStoredStyleLayer(row.prompt_prefix || "");
+    const nextDark = row.prompt_prefix_dark
+      ? migrateStoredStyleLayer(row.prompt_prefix_dark)
+      : row.prompt_prefix_dark;
+    const isOpinionated = String(row.name || "").trim().toLowerCase() === "opinionated";
+    const seedSlots = isOpinionated && (row.user_slot_schema == null);
+    if (
+      nextPrefix === (row.prompt_prefix || "") &&
+      nextDark === row.prompt_prefix_dark &&
+      !seedSlots
+    ) {
+      continue;
+    }
+    await pool.query(
+      `UPDATE style_presets
+       SET prompt_prefix = $1,
+           prompt_prefix_dark = $2,
+           user_slot_schema = CASE WHEN $3::boolean THEN $4::jsonb ELSE user_slot_schema END,
+           updated_at = NOW()
+       WHERE id = $5`,
+      [nextPrefix, nextDark, seedSlots, opinionatedSlots, row.id],
+    );
+    updated++;
+  }
+  return updated;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function runStartupMigrations(): Promise<void> {
@@ -2348,7 +2385,18 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
-  const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length;
+  try {
+    const n = await migrateLayeredStylePrefixes();
+    applied++;
+    if (n > 0) {
+      console.log(`${tag} Layered style-layer migration updated ${n} row(s)`);
+    }
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED layered style-layer migration: ${err.message ?? err}`);
+  }
+
+  const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;
   console.log(`${tag} Done. total=${total} applied=${applied} errors=${errors}`);
   if (errors > 0) {
     console.error(`${tag} WARNING: ${errors} statement(s) failed — some routes may be degraded.`);

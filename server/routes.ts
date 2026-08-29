@@ -4,20 +4,22 @@ import {
   processApparelMotif,
   maybeVectorizeFlatGraphic,
   trimTransparentBounds,
-  resolveApparelDarkTierPrefix,
   resolveIsApparelGeneration,
-  resolveMotifStylePrefix,
   APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
 import {
-  composeTransparentPrompt,
-  logComposedPrompt,
   persistGenerationModel,
   persistGenerationQuality,
   persistVectorizeEnabled,
   resolveStyleGeneration,
 } from "@shared/styleGeneration";
+import {
+  composeLayeredPrompt,
+  persistUserSlotSchema,
+  resolveStyleLayerRaw,
+  wrapLayeredArtworkPrompt,
+} from "@shared/promptLayers";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -2181,6 +2183,7 @@ export async function registerRoutes(
       options: (s as any).options,
       baseImageUrl: (s as any).baseImageUrl,
       descriptionOptional: false,
+      userSlotSchema: (s as any).userSlotSchema ?? null,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -2221,6 +2224,7 @@ export async function registerRoutes(
                 options: dbOptions || hardcodedOptions,
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
                 descriptionOptional: !!(s as any).descriptionOptional,
+                userSlotSchema: (s as any).userSlotSchema ?? (hardcoded as any)?.userSlotSchema ?? null,
               };
             })
           : hardcodedFallback,
@@ -2577,6 +2581,7 @@ export async function registerRoutes(
       let styleVectorizeEnabled: boolean | null = null;
       let styleGenerationModel: string | null = null;
       let styleGenerationQuality: string | null = null;
+      let styleUserSlotSchema: unknown = null;
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
@@ -2593,6 +2598,7 @@ export async function registerRoutes(
             styleVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
             styleGenerationModel = (selectedStyle as any).generationModel ?? null;
             styleGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+            styleUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2609,6 +2615,7 @@ export async function registerRoutes(
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
+            styleUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? styleUserSlotSchema;
           }
         }
       }
@@ -2690,14 +2697,7 @@ export async function registerRoutes(
       });
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      if (isApparel && !isAllOverPrint && !styleGen.nativeTransparent) {
-        stylePromptPrefix = resolveMotifStylePrefix(
-          styleCategory,
-          styleName,
-          stylePreset,
-          stylePromptPrefix,
-        );
-      } else if (isAllOverPrint && stylePromptPrefix && !styleGen.nativeTransparent) {
+      if (isAllOverPrint && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -2746,41 +2746,23 @@ export async function registerRoutes(
       // Apply style prompt prefix - use dark tier variant for apparel on dark colors
       // User description comes first so the AI treats it as the primary subject.
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
-      let fullPrompt: string;
-      
-      if (styleCategory === "apparel" && isApparel && colorTier === "dark" && stylePreset && !styleGen.nativeTransparent) {
-        const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
-        if (darkTierPrompt) {
-          fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
-        } else {
-          fullPrompt = prompt;
-        }
-        console.log(`[Generate] Using dark tier prompt for ${stylePreset}`);
-      } else if (styleGen.nativeTransparent && colorTier === "dark" && (stylePromptPrefixDark || "").trim()) {
-        const rawDark = stylePromptPrefixDark!.trim();
-        fullPrompt = userDescAdmin ? `${userDescAdmin}, ${rawDark}` : rawDark;
-      } else {
-        if (stylePromptPrefix) {
-          fullPrompt = userDescAdmin ? `${userDescAdmin}, ${stylePromptPrefix}` : stylePromptPrefix;
-        } else {
-          fullPrompt = prompt;
-        }
+      const styleLayerAdmin = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: stylePromptPrefixDark,
+        colorTier,
+        stylePresetId: stylePreset,
+        styleName,
+        category: styleCategory,
+      });
+      if (colorTier === "dark" && (stylePromptPrefixDark || APPAREL_DARK_TIER_PROMPTS[stylePreset || ""])) {
+        console.log(`[Generate] Using dark tier style layer for ${stylePreset}`);
       }
 
-      // Different requirements for apparel vs wall art
+      // Decor keeps product-canvas sizing. Apparel/graphics chroma lives only in the locked base.
       let sizingRequirements: string;
       
-      if (isApparel && styleGen.nativeTransparent) {
+      if (isApparel) {
         sizingRequirements = "";
-      } else if (isApparel && isAllOverPrint) {
-        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
-        sizingRequirements = usePatternAop
-          ? buildAopPatternSizingRequirements(userDescAdmin)
-          : buildAopSizingRequirements(userDescAdmin);
-      } else if (isApparel) {
-        sizingRequirements = buildApparelChromaSizingRequirements(
-          apparelMotifDesignColors(userDescAdmin, colorTier === "dark"),
-        );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
         // Build shape-specific safe zone instructions
@@ -2847,14 +2829,20 @@ ${orientationExtra}
 `;
       }
 
-      // Build final prompt: CONSTRAINTS FIRST, then style, then user description
-      // This ensures Gemini prioritizes our dimensional requirements over style biases
+      // Build final prompt: locked base + style layer + user (chroma only in nano-banana base)
       const geminiAspectRatio = mapToGeminiAspectRatio(aspectRatioStr);
-      
-      // Restructure prompt: constraints first, then style/content
-      const constraintsFirst = sizingRequirements;
-      const styleAndContent = fullPrompt; // Already has style prefix + user prompt
-      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+      const layeredAdmin = composeLayeredPrompt({
+        category: styleCategory,
+        isApparelGeneration: isApparel,
+        generationModel: styleGen.model,
+        styleLayer: styleLayerAdmin,
+        userInput: userDescAdmin,
+        userSlotSchema: styleUserSlotSchema,
+        isAllOverPrint,
+        isPatternStyle: usePatternAopAdmin,
+      });
+      let fullPrompt = wrapLayeredArtworkPrompt(layeredAdmin, sizingRequirements);
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
@@ -2916,13 +2904,6 @@ ${orientationExtra}
       }
 
       // Generate image using Replicate
-      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
-
-      if (styleGen.nativeTransparent) {
-        fullPrompt = composeTransparentPrompt(fullPrompt);
-        logComposedPrompt(fullPrompt, "api/generate");
-      }
-
       const { mimeType, data } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
@@ -2938,6 +2919,7 @@ ${orientationExtra}
         generationModel: styleGen.model,
         generationQuality: styleGen.quality,
         nativeTransparent: styleGen.nativeTransparent,
+        layered: true,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -3166,6 +3148,8 @@ console.log("[api/shopify/generate] saved image", result);
       const stylePreset = originalDesign.stylePreset;
       let regenGenerationModel: string | null = null;
       let regenGenerationQuality: string | null = null;
+      let regenStyleCategory = "apparel";
+      let regenUserSlotSchema: unknown = null;
       
       if (stylePreset) {
         const merchantId = productType?.merchantId;
@@ -3175,20 +3159,17 @@ console.log("[api/shopify/generate] saved image", result);
           if (selectedStyle) {
             regenGenerationModel = (selectedStyle as any).generationModel ?? null;
             regenGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+            regenStyleCategory = (selectedStyle as any).category || "apparel";
+            regenUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
             if ((selectedStyle as any).promptPrefix) stylePromptPrefix = (selectedStyle as any).promptPrefix;
           }
-        }
-        const regenGen = resolveStyleGeneration({
-          generationModel: regenGenerationModel,
-          generationQuality: regenGenerationQuality,
-        });
-        if (newColorTier === "dark" && !regenGen.nativeTransparent) {
-          stylePromptPrefix = resolveApparelDarkTierPrefix(stylePreset, null);
         }
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
+            regenStyleCategory = hardcodedStyle.category || regenStyleCategory;
+            regenUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? regenUserSlotSchema;
           }
         }
       }
@@ -3198,20 +3179,23 @@ console.log("[api/shopify/generate] saved image", result);
         generationQuality: regenGenerationQuality,
       });
 
-      // Build the prompt
       const prompt = originalDesign.prompt;
-      let fullPrompt = stylePromptPrefix ? `${stylePromptPrefix} ${prompt}` : prompt;
-      
-      const isDarkTier = newColorTier === "dark";
-      if (!regenGen.nativeTransparent) {
-        const designColors = isDarkTier 
-          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-          : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
-        fullPrompt += buildApparelChromaSizingRequirements(designColors);
-      } else {
-        fullPrompt = composeTransparentPrompt(fullPrompt);
-        logComposedPrompt(fullPrompt, "regenerate-tier");
-      }
+      const regenStyleLayer = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        colorTier: newColorTier === "dark" ? "dark" : "light",
+        stylePresetId: stylePreset,
+        category: regenStyleCategory,
+      });
+      const layeredRegen = composeLayeredPrompt({
+        category: regenStyleCategory,
+        isApparelGeneration: true,
+        generationModel: regenGen.model,
+        styleLayer: regenStyleLayer,
+        userInput: prompt,
+        userSlotSchema: regenUserSlotSchema,
+        isAllOverPrint: !!(productType as any)?.isAllOverPrint,
+      });
+      const fullPrompt = wrapLayeredArtworkPrompt(layeredRegen);
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
@@ -3224,6 +3208,7 @@ const { data: base64Data, mimeType } = await generateImageBase64({
   generationModel: regenGen.model,
   generationQuality: regenGen.quality,
   nativeTransparent: regenGen.nativeTransparent,
+  layered: true,
 });
 
 // Match the old Gemini shape so the rest of the code still works
@@ -3569,6 +3554,7 @@ console.log("[shopify/session] installation ok", {
       let embedVectorizeEnabled: boolean | null = null;
       let embedGenerationModel: string | null = null;
       let embedGenerationQuality: string | null = null;
+      let embedUserSlotSchema: unknown = null;
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
@@ -3582,6 +3568,7 @@ console.log("[shopify/session] installation ok", {
           embedVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
           embedGenerationModel = (selectedStyle as any).generationModel ?? null;
           embedGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+          embedUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3595,6 +3582,7 @@ console.log("[shopify/session] installation ok", {
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
+            embedUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? embedUserSlotSchema;
           }
         }
       }
@@ -3615,14 +3603,7 @@ console.log("[shopify/session] installation ok", {
         generationModel: embedGenerationModel,
         generationQuality: embedGenerationQuality,
       });
-      if (embedIsApparelEarly && !embedIsAllOverPrintEarly && !embedStyleGen.nativeTransparent) {
-        stylePromptPrefix = resolveMotifStylePrefix(
-          embedStyleCategory,
-          styleName,
-          stylePreset,
-          stylePromptPrefix,
-        );
-      } else if (embedIsAllOverPrintEarly && stylePromptPrefix && !embedStyleGen.nativeTransparent) {
+      if (embedIsAllOverPrintEarly && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -3662,18 +3643,22 @@ console.log("[shopify/session] installation ok", {
       // When user provides a description, it becomes the subject; style prefix provides the artistic direction.
       // Pattern: "[userDescription], rendered as [stylePrefix]" so the AI prioritises the user's intent.
       const userDescEmbed = (rawUserPromptEmbed || "").trim();
-      let fullPrompt: string;
-      if (stylePromptPrefix) {
-        if (userDescEmbed) {
-          // User description first so the model treats it as the primary subject
-          fullPrompt = `${userDescEmbed}, ${stylePromptPrefix}`;
-        } else {
-          // No description — style prefix drives the generation (uses reference image as subject)
-          fullPrompt = stylePromptPrefix;
+      let embedColorTier: ColorTier = "light";
+      if (embedIsApparelEarly && frameColor && productType) {
+        const frameColors = JSON.parse(productType.frameColors || "[]");
+        const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+        if (selectedColor?.hex) {
+          embedColorTier = getColorTier(selectedColor.hex);
         }
-      } else {
-        fullPrompt = prompt;
       }
+      const styleLayerEmbed = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: stylePromptPrefixDark,
+        colorTier: embedColorTier,
+        stylePresetId: stylePreset,
+        styleName,
+        category: embedStyleCategory,
+      });
 
       // Determine aspect ratio and orientation
       if (
@@ -3706,32 +3691,8 @@ console.log("[shopify/session] installation ok", {
       });
 
       let sizingRequirements: string;
-      if (embedIsApparelEarly && embedStyleGen.nativeTransparent) {
+      if (embedIsApparelEarly) {
         sizingRequirements = "";
-      } else if (embedIsApparelEarly && embedIsAllOverPrintEarly) {
-        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
-        sizingRequirements = usePatternAop
-          ? buildAopPatternSizingRequirements(userDescEmbed)
-          : buildAopSizingRequirements(userDescEmbed);
-      } else if (embedIsApparelEarly) {
-        let colorTier: ColorTier = "light";
-        if (frameColor && productType) {
-          const frameColors = JSON.parse(productType.frameColors || "[]");
-          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
-          if (selectedColor?.hex) {
-            colorTier = getColorTier(selectedColor.hex);
-          }
-        }
-        const isDarkTier = colorTier === "dark";
-        if (embedStyleCategory === "apparel" && isDarkTier && stylePreset) {
-          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
-          if (darkTierPrompt) {
-            fullPrompt = userDescEmbed ? `${userDescEmbed}, ${darkTierPrompt}` : darkTierPrompt;
-          }
-        }
-        sizingRequirements = buildApparelChromaSizingRequirements(
-          apparelMotifDesignColors(userDescEmbed, isDarkTier),
-        );
       } else {
         const printShape = productType?.printShape || "rectangle";
         const bleedMargin = productType?.bleedMarginPercent || 5;
@@ -3792,7 +3753,17 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
+      const layeredEmbed = composeLayeredPrompt({
+        category: embedStyleCategory,
+        isApparelGeneration: embedIsApparelEarly,
+        generationModel: embedStyleGen.model,
+        styleLayer: styleLayerEmbed,
+        userInput: userDescEmbed,
+        userSlotSchema: embedUserSlotSchema,
+        isAllOverPrint: embedIsAllOverPrintEarly,
+        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix)),
+      });
+      let fullPrompt = wrapLayeredArtworkPrompt(layeredEmbed, sizingRequirements);
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
@@ -3855,22 +3826,19 @@ ${orientationExtra}
       }
 
       // Generate image via Replicate
-      if (embedStyleGen.nativeTransparent) {
-        fullPrompt = composeTransparentPrompt(fullPrompt);
-        logComposedPrompt(fullPrompt, "shopify/generate");
-      }
-
       const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio ?? "1:1",
         inputImageUrl,
         isApparel,
         isAllOverPrint,
+        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix)),
         userPrompt: userDescEmbed || null,
         cylindricalWrap,
         generationModel: embedStyleGen.model,
         generationQuality: embedStyleGen.quality,
         nativeTransparent: embedStyleGen.nativeTransparent,
+        layered: true,
       });
 
       if (!base64Data) {
@@ -6544,6 +6512,7 @@ ${orientationExtra}
         baseImageUrls:
           s.baseImageUrls || (hardcoded as any)?.baseImageUrls || undefined,
         descriptionOptional: !!s.descriptionOptional,
+        userSlotSchema: s.userSlotSchema ?? (hardcoded as any)?.userSlotSchema ?? null,
       };
     });
   }
@@ -6561,6 +6530,7 @@ ${orientationExtra}
       baseImageUrl: (s as any).baseImageUrl || undefined,
       baseImageUrls: (s as any).baseImageUrls || undefined,
       descriptionOptional: !!(s as any).descriptionOptional,
+      userSlotSchema: (s as any).userSlotSchema ?? null,
     }));
   }
 
@@ -8466,6 +8436,7 @@ ${orientationExtra}
       let sfVectorizeEnabled: boolean | null = null;
       let sfGenerationModel: string | null = null;
       let sfGenerationQuality: string | null = null;
+      let sfUserSlotSchema: unknown = null;
       if (creatorCtx && stylePreset) {
         const { isStyleEntitledForGenerate } = await import("./creator-styles");
         const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
@@ -8500,6 +8471,7 @@ ${orientationExtra}
           sfVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
           sfGenerationModel = (selectedStyle as any).generationModel ?? null;
           sfGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+          sfUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
@@ -8513,6 +8485,7 @@ ${orientationExtra}
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
+            sfUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? sfUserSlotSchema;
           }
         }
       }
@@ -8613,14 +8586,7 @@ ${orientationExtra}
       });
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      if (isApparel && !isAllOverPrint && !sfStyleGen.nativeTransparent) {
-        stylePromptPrefix = resolveMotifStylePrefix(
-          sfStyleCategory,
-          styleName,
-          stylePreset,
-          stylePromptPrefix,
-        );
-      } else if (isAllOverPrint && stylePromptPrefix && !sfStyleGen.nativeTransparent) {
+      if (isAllOverPrint && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -8654,49 +8620,27 @@ ${orientationExtra}
       // When user provides a description, it becomes the subject; style prefix provides artistic direction.
       // Pattern: "[userDescription], [stylePrefix]" so the AI prioritises the user's intent.
       const userDescSf = (rawUserPrompt || "").trim();
-      let fullPrompt: string;
-      if (stylePromptPrefix) {
-        if (userDescSf) {
-          fullPrompt = `${userDescSf}, ${stylePromptPrefix}`;
-        } else {
-          fullPrompt = stylePromptPrefix;
+      let sfColorTier: ColorTier = "light";
+      if (isApparel && frameColor && productType) {
+        const frameColors = JSON.parse(productType.frameColors || "[]");
+        const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+        if (selectedColor?.hex) {
+          sfColorTier = getColorTier(selectedColor.hex);
         }
-      } else {
-        fullPrompt = prompt;
       }
+      const styleLayerSf = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: stylePromptPrefixDark,
+        colorTier: sfColorTier,
+        stylePresetId: stylePreset,
+        styleName,
+        category: sfStyleCategory,
+      });
 
       let sizingRequirements: string;
 
-      if (isApparel && sfStyleGen.nativeTransparent) {
+      if (isApparel) {
         sizingRequirements = "";
-      } else if (isApparel && isAllOverPrint) {
-        const usePatternAopSf = styleIsPatternMaker(styleName, stylePromptPrefix);
-        sizingRequirements = usePatternAopSf
-          ? buildAopPatternSizingRequirements(userDescSf)
-          : buildAopSizingRequirements(userDescSf);
-      } else if (isApparel) {
-        // Apparel: #FF00FF chroma key background for precise removal
-        const frameColor = req.body.frameColor;
-        let colorTier: ColorTier = "light";
-        if (frameColor && productType) {
-          const frameColors = JSON.parse(productType.frameColors || "[]");
-          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
-          if (selectedColor?.hex) {
-            colorTier = getColorTier(selectedColor.hex);
-          }
-        }
-        const isDarkTier = colorTier === "dark";
-        const designColors = apparelMotifDesignColors(userDescSf, isDarkTier);
-
-        // Use dark tier prompt variant if available
-        if (sfStyleCategory === "apparel" && isDarkTier && stylePreset) {
-          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
-          if (darkTierPrompt) {
-            fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;
-          }
-        }
-
-        sizingRequirements = buildApparelChromaSizingRequirements(designColors);
       } else {
         // Decor: full-bleed edge-to-edge designs
         const printShape = productType?.printShape || "rectangle";
@@ -8762,7 +8706,17 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
+      const layeredSf = composeLayeredPrompt({
+        category: sfStyleCategory,
+        isApparelGeneration: isApparel,
+        generationModel: sfStyleGen.model,
+        styleLayer: styleLayerSf,
+        userInput: userDescSf,
+        userSlotSchema: sfUserSlotSchema,
+        isAllOverPrint,
+        isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix)),
+      });
+      let fullPrompt = wrapLayeredArtworkPrompt(layeredSf, sizingRequirements);
 
       // Capture appUrl from request before responding (used for reference image resolution in worker)
       const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
@@ -8874,10 +8828,6 @@ ${orientationExtra}
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
           const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
-          if (sfStyleGen.nativeTransparent) {
-            fullPrompt = composeTransparentPrompt(fullPrompt);
-            logComposedPrompt(fullPrompt, "storefront/generate");
-          }
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
@@ -8893,6 +8843,7 @@ ${orientationExtra}
             generationModel: sfStyleGen.model,
             generationQuality: sfStyleGen.quality,
             nativeTransparent: sfStyleGen.nativeTransparent,
+            layered: true,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
@@ -14192,7 +14143,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -14214,6 +14165,7 @@ ${orientationExtra}
         ...(generationModel !== undefined ? { generationModel: persistGenerationModel(generationModel) ?? null } : {}),
         ...(generationQuality !== undefined ? { generationQuality: persistGenerationQuality(generationQuality) ?? null } : {}),
         ...(vectorizeEnabled !== undefined ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null } : {}),
+        ...(userSlotSchema !== undefined ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null } : {}),
       } as any);
       configCache.delete("global"); // invalidate so storefront picks up new style
       res.json(preset);
@@ -14239,7 +14191,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -14262,6 +14214,9 @@ ${orientationExtra}
           : {}),
         ...(vectorizeEnabled !== undefined
           ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null }
+          : {}),
+        ...(userSlotSchema !== undefined
+          ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null }
           : {}),
       } as any);
 

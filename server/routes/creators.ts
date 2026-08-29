@@ -2372,8 +2372,10 @@ export function registerCreatorMarketplaceRoutes(
           generationModel,
           generationQuality,
           vectorizeEnabled,
+          userSlotSchema,
         } = req.body || {};
         const { persistGenerationModel, persistGenerationQuality, persistVectorizeEnabled } = await import("@shared/styleGeneration");
+        const { persistUserSlotSchema } = await import("@shared/promptLayers");
         const style = await updatePlatformStyle(id, {
           ...(name !== undefined ? { name } : {}),
           ...(promptPrefix !== undefined ? { promptPrefix } : {}),
@@ -2392,6 +2394,9 @@ export function registerCreatorMarketplaceRoutes(
             : {}),
           ...(vectorizeEnabled !== undefined
             ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null }
+            : {}),
+          ...(userSlotSchema !== undefined
+            ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null }
             : {}),
         } as any);
         res.json(style);

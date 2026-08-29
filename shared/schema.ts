@@ -12,6 +12,8 @@ export {
   NO_HOT_PINK_IN_DESIGN,
 } from "./apparel-chroma-prompts";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
+import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
+import { literalUserSlotSchema } from "./promptLayers";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -1205,7 +1207,8 @@ export const STYLE_PRESETS = [
     name: "Opinionated",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
     category: "apparel",
-    promptPlaceholder: "State your opinion in up to 6 words, e.g. Dogs Are Better Than People, Pizza Fixes Everything, Mondays Should Be Illegal, Naps Over Small Talk, Cats Run This House",
+    promptPlaceholder: "Write your text here (up to 6 words)",
+    userSlotSchema: literalUserSlotSchema(6),
     options: {
       label: "Choose Layout",
       required: true,
@@ -1272,8 +1275,7 @@ export const STYLE_PRESETS = [
   {
     id: "graphics-centered-graphic",
     name: "Centered Graphic (Graphics)",
-    promptPrefix:
-      "Centered flat vector illustration for large-format print, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
+    promptPrefix: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-centered-graphic"],
     category: "graphics",
     promptPlaceholder:
       "Describe your centered graphic (e.g. geometric wolf, vintage skull, botanical emblem)",
@@ -1281,8 +1283,7 @@ export const STYLE_PRESETS = [
   {
     id: "graphics-illustrated-motif",
     name: "Illustrated Motif (Graphics)",
-    promptPrefix:
-      "Illustrated character motif for large-format print and patterns, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+    promptPrefix: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-illustrated-motif"],
     category: "graphics",
     promptPlaceholder:
       "Describe your illustrated motif (e.g. retro robot, floral skull, camping bear)",
@@ -1290,8 +1291,7 @@ export const STYLE_PRESETS = [
   {
     id: "graphics-pattern-maker",
     name: "Pattern Maker (Graphics)",
-    promptPrefix:
-      "Seamless repeating pattern design for large-format products, tileable motif, clean vector shapes, flat colors (avoid white, light colors; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background, no white mat, no rectangular frame. Create a repeating pattern of",
+    promptPrefix: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-pattern-maker"],
     category: "graphics",
     promptPlaceholder:
       "Describe your pattern idea (e.g. tiny tacos, scattered leaves, geometric tiles)",

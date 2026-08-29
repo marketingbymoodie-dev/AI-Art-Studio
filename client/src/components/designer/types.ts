@@ -33,6 +33,15 @@ export interface StylePreset {
   baseImageUrl?: string;
   baseImageUrls?: string[];
   descriptionOptional?: boolean;
+  userSlotSchema?: {
+    slots: Array<{
+      id: string;
+      kind: "literal" | "thematic";
+      maxWords?: number;
+      maxChars?: number;
+      placeholder?: string;
+    }>;
+  } | null;
   options?: {
     label: string;
     required: boolean;

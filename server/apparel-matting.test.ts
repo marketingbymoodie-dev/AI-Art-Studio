@@ -123,7 +123,7 @@ describe("resolveApparelStylePrefix", () => {
       "Illustrated character on white card background",
     );
     expect(out.toLowerCase()).toContain("#ff00ff");
-    expect(out.toLowerCase()).toContain("do not use solid hot pink");
+    expect(out.toLowerCase()).toContain("illustrated character motif");
     expect(out.toLowerCase()).not.toContain("white card");
   });
 });

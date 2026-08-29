@@ -44,8 +44,28 @@ describe("compressPrompt nativeTransparent", () => {
     expect(out.toLowerCase()).not.toContain("hot pink background");
   });
 
-  it("still injects chroma plate when nativeTransparent is off", () => {
+  it("still injects chroma plate when nativeTransparent is off (legacy path)", () => {
     const out = compressPrompt("a bold slogan", true, false, "a bold slogan", false, "1:1", false, false);
     expect(out.toLowerCase()).toContain("#ff00ff");
+  });
+
+  it("layered path does not inject a second chroma plate", () => {
+    const raw =
+      `Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background.\n\n` +
+      `=== ARTWORK DESCRIPTION ===\nbold stacked typography`;
+    const out = compressPrompt(raw, true, false, "I choose dogs", false, "1:1", false, false, true);
+    expect(out).toContain("#FF00FF");
+    expect((out.match(/#FF00FF/gi) || []).length).toBe(1);
+    expect(out).not.toMatch(/Every pixel not part of the design must be exactly #FF00FF/i);
+  });
+
+  it("layered gpt-image-2 path does not inject chroma or re-wrap transparent", () => {
+    const raw =
+      `Isolated centered graphic on a TRANSPARENT background, for screen printing.\n\n` +
+      `=== ARTWORK DESCRIPTION ===\nbold stacked typography`;
+    const out = compressPrompt(raw, true, false, "I choose dogs", false, "1:1", false, true, true);
+    expect(out).not.toMatch(/#FF00FF/i);
+    expect(out.toLowerCase()).not.toContain("hot pink");
+    expect((out.match(/TRANSPARENT background/gi) || []).length).toBe(1);
   });
 });

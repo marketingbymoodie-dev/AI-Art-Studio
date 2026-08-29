@@ -64,10 +64,12 @@ describe("mapGptImage2AspectRatio", () => {
 });
 
 describe("chroma plate strip", () => {
-  it("clears Opinionated stored prefix plate language", () => {
+  it("clears leftover plate language around a style-only Opinionated prefix", () => {
     const prefix = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
-    expect(prefix.toLowerCase()).toContain("#ff00ff");
-    const composed = composeTransparentPrompt(`CATCH THIS, ${prefix}`);
+    expect(prefix.toLowerCase()).not.toContain("#ff00ff");
+    const composed = composeTransparentPrompt(
+      `CATCH THIS, ${prefix} isolated on a solid hot pink (#FF00FF) background`,
+    );
     expect(chromaPlateLeakMatches(composed)).toEqual([]);
     expect(composed.toLowerCase()).toContain("transparent background");
     expect(composed).toMatch(/CATCH THIS/i);

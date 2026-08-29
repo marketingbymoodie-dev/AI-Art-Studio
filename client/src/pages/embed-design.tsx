@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { countWords, findLiteralSlot, literalPlaceholder, parseUserSlotSchema } from "@shared/promptLayers";
 import {
   StorefrontTermsAccept,
   useStorefrontTermsAccept,
@@ -15561,6 +15562,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       return "Optional: add changes, e.g. change the colours from red to green";
                     }
                     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                    const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
+                    if (literal) {
+                      return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
+                    }
                     if (activePreset?.descriptionOptional) {
                       return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
                     }
@@ -15597,6 +15602,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   }}
                   className="min-h-[64px] text-sm"
                 />
+                {(() => {
+                  const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+                  const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
+                  if (!literal?.maxWords) return null;
+                  const words = countWords(prompt);
+                  if (words <= literal.maxWords) return null;
+                  return (
+                    <p className="text-[11px] text-amber-700" data-testid="text-literal-word-limit">
+                      {words} words — this style renders cleanly at up to {literal.maxWords}. Extra words may garble.
+                    </p>
+                  );
+                })()}
                 {renderPrimaryAction("md:hidden", "mobile")}
               </div>
                 );
