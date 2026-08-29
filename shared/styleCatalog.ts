@@ -11,6 +11,9 @@ export type CatalogStyle = (typeof STYLE_PRESETS)[number];
 const EXTRA_NAME_ALIASES: Array<{ name: string; slug: string; category?: string }> = [
   { name: "opinionated", slug: "opinionated", category: "apparel" },
   { name: "opinionated text", slug: "opinionated", category: "apparel" },
+  { name: "minimal line art", slug: "minimal-line", category: "decor" },
+  { name: "minimal line art", slug: "minimal-line", category: "all" },
+  { name: "minimalist", slug: "minimal-line" },
 ];
 
 function norm(value: string | null | undefined): string {
@@ -83,6 +86,11 @@ export const TEXT_FRIENDLY_CATALOG_SLUGS = new Set([
   "opinionated",
   "quotes",
   "vintage-poster",
+  "vintage-print",
+  "one-color-print",
+  "retro-sunset-stack",
+  "playful-cartoon",
+  "minimal-line",
 ]);
 
 export function isLiteralTextCatalogSlug(slug: string | null | undefined): boolean {

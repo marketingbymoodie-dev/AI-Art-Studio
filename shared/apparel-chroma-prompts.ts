@@ -26,6 +26,16 @@ export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
     "T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat, high contrast, centered composition, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
   "illustrated motif":
     "T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat, high contrast, centered, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+  "vintage print":
+    "Vintage screen-print graphic, distressed worn texture with faded ink and subtle cracks as if aged, muted retro color palette, halftone shading, slightly off-register print feel, warm nostalgic tones, balanced classic composition, high-quality aged apparel print look.",
+  "one color print":
+    "Single-color print, one ink only, clean high-contrast silhouette and linework, no gradients, no halftones, generous negative space, bold simple shapes, refined minimal composition, screen-print-ready flat design, striking against the garment.",
+  "retro sunset stack":
+    "Retro graphic with a bold horizontal sunset backdrop of stacked warm stripes (70s-inspired sun and banded gradient), strong hero composition, high-contrast layered elements, vintage warm palette (oranges, golds, rusts, teal accents), centered and symmetrical, punchy nostalgic print.",
+  "playful cartoon":
+    "Playful cartoon graphic, friendly mascot-style character, bold clean outlines, flat vibrant cheerful fills, sticker-art composition, expressive and characterful, lively rounded shapes, mass-appeal fun print.",
+  minimalist:
+    "Minimalist print, sparse and elegant, thin clean lines, a single small focal motif, extensive negative space, restrained one- or two-color palette, refined and understated composition, plenty of breathing room, modern simplicity.",
 };
 
 /** Dark-garment style layers keyed by style preset id (e.g. illustrated-motif). */
@@ -43,6 +53,16 @@ export const APPAREL_DARK_TIER_PROMPTS: Record<string, string> = {
     "T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered composition, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
   "illustrated-motif":
     "T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
+  "vintage-print":
+    "Vintage screen-print graphic, distressed worn texture with faded ink and subtle cracks as if aged, muted retro color palette, halftone shading, slightly off-register print feel, warm nostalgic tones, balanced classic composition, high-quality aged apparel print look.",
+  "one-color-print":
+    "Single-color print, one ink only, clean high-contrast silhouette and linework, no gradients, no halftones, generous negative space, bold simple shapes, refined minimal composition, screen-print-ready flat design, striking against the garment.",
+  "retro-sunset-stack":
+    "Retro graphic with a bold horizontal sunset backdrop of stacked warm stripes (70s-inspired sun and banded gradient), strong hero composition, high-contrast layered elements, vintage warm palette (oranges, golds, rusts, teal accents), centered and symmetrical, punchy nostalgic print.",
+  "playful-cartoon":
+    "Playful cartoon graphic, friendly mascot-style character, bold clean outlines, flat vibrant cheerful fills, sticker-art composition, expressive and characterful, lively rounded shapes, mass-appeal fun print.",
+  "minimal-line":
+    "Minimalist print, sparse and elegant, thin clean lines, a single small focal motif, extensive negative space, restrained one- or two-color palette, refined and understated composition, plenty of breathing room, modern simplicity.",
   none: "",
 };
 

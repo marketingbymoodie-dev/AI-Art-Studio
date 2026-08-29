@@ -106,6 +106,7 @@ import {
   walletJson,
 } from "./storefront-wallet-view";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, mergeCatalogStyleOptions, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
+import { catalogRowFieldsFromPreset, isVerbatimShortcutCatalogSlug } from "@shared/catalogArtStyles";
 import { findCatalogPreset, isLiteralTextCatalogSlug, resolveCatalogSlug } from "@shared/styleCatalog";
 import {
   isQuotesCatalogSlug,
@@ -2805,6 +2806,7 @@ export async function registerRoutes(
         catalogSlug: catalogSlugAdmin,
         styleName,
         category: styleCategory,
+        isApparelGeneration: isApparel,
       });
       if (colorTier === "dark" && (stylePromptPrefixDark || APPAREL_DARK_TIER_PROMPTS[stylePreset || ""])) {
         console.log(`[Generate] Using dark tier style layer for ${stylePreset}`);
@@ -3269,6 +3271,7 @@ console.log("[api/shopify/generate] saved image", result);
         stylePresetId: stylePreset,
         catalogSlug: regenCatalogSlug,
         category: regenStyleCategory,
+        isApparelGeneration: true,
       });
       const layeredRegen = composeLayeredPrompt({
         category: regenStyleCategory,
@@ -3749,6 +3752,7 @@ console.log("[shopify/session] installation ok", {
         catalogSlug: catalogSlugEmbed,
         styleName,
         category: embedStyleCategory,
+        isApparelGeneration: embedIsApparelEarly,
       });
 
       // Determine aspect ratio and orientation
@@ -8794,6 +8798,7 @@ ${orientationExtra}
         catalogSlug: catalogSlugSf,
         styleName,
         category: sfStyleCategory,
+        isApparelGeneration: isApparel,
       });
 
       let sizingRequirements: string;
@@ -14461,15 +14466,15 @@ ${orientationExtra}
       }
 
       // Seed default styles with their categories
-      const defaultStyles = STYLE_PRESETS.map((style, index) => ({
-        merchantId: merchant.id,
-        name: style.name,
-        catalogSlug: style.id === "none" ? null : style.id,
-        promptPrefix: style.promptPrefix,
-        category: style.category,
-        isActive: true,
-        sortOrder: index,
-      }));
+      const defaultStyles = STYLE_PRESETS.map((style, index) => {
+        const fields = catalogRowFieldsFromPreset(style as any);
+        return {
+          merchantId: merchant.id,
+          ...fields,
+          isActive: true,
+          sortOrder: index,
+        };
+      });
 
       const createdStyles = [];
       for (const style of defaultStyles) {
@@ -14510,27 +14515,30 @@ ${orientationExtra}
         const existing = existingBySlug.get(preset.id);
         
         if (existing) {
+          const fields = catalogRowFieldsFromPreset(preset as any);
           const updated = await storage.updateStylePreset(existing.id, {
-            category: preset.category,
-            promptPrefix: preset.promptPrefix,
+            name: fields.name,
+            category: fields.category,
+            promptPrefix: fields.promptPrefix,
             sortOrder: i,
             catalogSlug: preset.id,
-            ...(preset.id === "quotes"
+            promptPlaceholder: fields.promptPlaceholder,
+            generationQuality: fields.generationQuality,
+            ...(isVerbatimShortcutCatalogSlug(preset.id)
               ? {
                   userSlotSchema: null,
-                  promptPlaceholder: (preset as any).promptPlaceholder ?? null,
-                  options: (preset as any).options ?? null,
+                  ...(preset.id === "quotes"
+                    ? { options: (preset as any).options ?? null }
+                    : {}),
                 }
               : {}),
           } as any);
           if (updated) updatedStyles.push(updated);
         } else {
+          const fields = catalogRowFieldsFromPreset(preset as any);
           const created = await storage.createStylePreset({
             merchantId: merchant.id,
-            name: preset.name,
-            catalogSlug: preset.id,
-            promptPrefix: preset.promptPrefix,
-            category: preset.category,
+            ...fields,
             isActive: true,
             sortOrder: i,
           } as any);

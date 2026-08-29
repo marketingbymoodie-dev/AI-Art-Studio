@@ -35,4 +35,18 @@ describe("apparel chroma reseed key", () => {
     expect(apparelChromaStyleLayerForCatalogSlug("pet-portraits-decor")).toBeUndefined();
     expect(apparelChromaStyleLayerForCatalogSlug("pet portraits")).toBeUndefined();
   });
+
+  it("does not map minimal-line so reseed cannot smash the decor prefix", () => {
+    expect(apparelChromaStyleLayerForCatalogSlug("minimal-line")).toBeUndefined();
+  });
+});
+
+describe("Minimalist rename keeps slug minimal-line", () => {
+  it("infers Minimalist and Minimal Line Art as minimal-line", () => {
+    expect(inferCatalogSlug("Minimalist")).toBe("minimal-line");
+    expect(inferCatalogSlug("Minimal Line Art")).toBe("minimal-line");
+    expect(resolveCatalogSlug({ catalogSlug: "minimal-line", name: "Minimalist" })).toBe(
+      "minimal-line",
+    );
+  });
 });

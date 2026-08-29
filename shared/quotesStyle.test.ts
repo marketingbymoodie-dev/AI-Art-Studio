@@ -108,6 +108,52 @@ describe("quotesImageComposeOverrides", () => {
     expect(out.userSlotSchema).toBe(stored);
     expect(out.userInput).toBe("I choose dogs");
   });
+
+  it("verbatim wrap on new art styles is shortcut-only (no Quotes Step B FONT/ART)", () => {
+    for (const slug of [
+      "vintage-print",
+      "one-color-print",
+      "retro-sunset-stack",
+      "playful-cartoon",
+      "minimal-line",
+    ]) {
+      const wrap = quotesImageComposeOverrides({
+        catalogSlug: slug,
+        userInput: '"Stay wild"',
+        quotesVoice: "funny",
+        quoteArtBrief: "a wolf howling",
+        quoteFontSuggestion: "heavy comic display sans",
+      });
+      expect(wrap.verbatimFromBox).toBe(true);
+      expect(wrap.userInput).toBe("Stay wild");
+      expect(wrap.fontLayer).toBe("");
+      expect(wrap.artLayer).toBe("");
+      expect(wrap.userSlotSchema).toEqual(literalUserSlotSchema(16));
+
+      const theme = quotesImageComposeOverrides({
+        catalogSlug: slug,
+        userInput: "a moth on a lamp",
+      });
+      expect(theme.verbatimFromBox).toBe(false);
+      expect(theme.userSlotSchema).toBeNull();
+      expect(theme.fontLayer).toBe("");
+      expect(theme.artLayer).toBe("");
+    }
+  });
+
+  it("Quotes Step B chosen pick still adds FONT and ART", () => {
+    const out = quotesImageComposeOverrides({
+      catalogSlug: "quotes",
+      userInput: "Monday called. I hung up.",
+      quotesVoice: "funny",
+      quoteArtBrief: "a rotary phone flying",
+      quoteFontSuggestion: "heavy comic display sans, slight bounce",
+    });
+    expect(out.committed).toBe(true);
+    expect(out.verbatimFromBox).toBe(false);
+    expect(out.fontLayer).toBe("heavy comic display sans, slight bounce");
+    expect(out.artLayer).toBe("a rotary phone flying");
+  });
 });
 
 describe("Quotes layered compose", () => {

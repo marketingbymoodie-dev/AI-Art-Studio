@@ -4,6 +4,7 @@
  * the Quotes row must not store a permanent user_slot_schema.
  */
 
+import { isVerbatimShortcutCatalogSlug } from "./catalogArtStyles";
 import { literalUserSlotSchema, type UserSlotSchema } from "./promptLayers";
 
 export const QUOTES_CATALOG_SLUG = "quotes";
@@ -168,6 +169,19 @@ export type QuotesImageComposeResult = {
 export function quotesImageComposeOverrides(
   input: QuotesImageComposeInput,
 ): QuotesImageComposeResult {
+  const slug = String(input.catalogSlug || "").trim().toLowerCase();
+  if (isVerbatimShortcutCatalogSlug(slug) && !isQuotesCatalogSlug(slug)) {
+    const detected = detectQuotesVerbatimInput(input.userInput);
+    const verbatimFromBox = detected.mode === "verbatim";
+    return {
+      userInput: verbatimFromBox ? detected.text : String(input.userInput || "").trim(),
+      userSlotSchema: verbatimFromBox ? literalUserSlotSchema(QUOTES_LITERAL_MAX_WORDS) : null,
+      fontLayer: "",
+      artLayer: "",
+      committed: verbatimFromBox,
+      verbatimFromBox,
+    };
+  }
   if (!isQuotesCatalogSlug(input.catalogSlug)) {
     return {
       userInput: input.userInput,

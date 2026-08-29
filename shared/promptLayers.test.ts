@@ -22,6 +22,7 @@ import {
   migrateStoredStyleLayer,
   resolveLockedBase,
   resolvePromptLayerCategory,
+  resolveStyleLayerRaw,
   stripChromaFromStyleLayer,
   LITERAL_TEXT_INTENT_FRAGMENT,
 } from "./promptLayers";
@@ -399,5 +400,39 @@ describe("literal slot UI helpers", () => {
     expect(effectiveStoredUserSlotSchema(null, hardcoded)).toBeNull();
     expect(effectiveStoredUserSlotSchema(hardcoded, null)).toEqual(hardcoded);
     expect(effectiveStoredUserSlotSchema(undefined, hardcoded)).toEqual(hardcoded);
+  });
+});
+
+describe("minimal-line Minimalist keeps decor bleed and apparel treatment", () => {
+  const storedDecorPrefix =
+    "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of";
+
+  it("decor product: category all + not apparel → full-bleed base + stored decor prefix", () => {
+    const category = resolvePromptLayerCategory("all", false);
+    expect(category).toBe("decor");
+    expect(resolveLockedBase(category)).toBe(DECOR_BASE_FULL_BLEED);
+    const style = resolveStyleLayerRaw({
+      lightPrefix: storedDecorPrefix,
+      catalogSlug: "minimal-line",
+      category: "all",
+      isApparelGeneration: false,
+    });
+    expect(style).toBe(storedDecorPrefix);
+    expect(style.toLowerCase()).toContain("full-bleed");
+    expect(style).not.toBe(APPAREL_CHROMA_STYLE_BY_NAME.minimalist);
+  });
+
+  it("apparel product: category all + apparel → apparel base + isolated Minimalist treatment", () => {
+    const category = resolvePromptLayerCategory("all", true);
+    expect(category).toBe("apparel");
+    expect(resolveLockedBase(category, "gpt-image-2")).toBe(APPAREL_BASE_TRANSPARENT);
+    const style = resolveStyleLayerRaw({
+      lightPrefix: storedDecorPrefix,
+      catalogSlug: "minimal-line",
+      category: "all",
+      isApparelGeneration: true,
+    });
+    expect(style).toBe(APPAREL_CHROMA_STYLE_BY_NAME.minimalist);
+    expect(style.toLowerCase()).not.toContain("full-bleed");
   });
 });

@@ -13,6 +13,11 @@ import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared
 import { applyForcedStyleLayerBySlug } from "@shared/promptLayers";
 import { catalogSlugBackfillRows, inferCatalogSlug } from "@shared/styleCatalog";
 import {
+  catalogRowFieldsFromPreset,
+  NEW_APPAREL_CATALOG_SLUGS,
+} from "@shared/catalogArtStyles";
+import { STYLE_PRESETS } from "@shared/schema";
+import {
   isOldQuotesStylePrefix,
   QUOTES_OLD_INVENT_FRAGMENTS,
   QUOTES_PLACEHOLDER,
@@ -2501,6 +2506,91 @@ async function migrateQuotesInterpretiveStyle(): Promise<number> {
   return updated;
 }
 
+/**
+ * Insert missing STYLE_PRESETS catalog slugs for every merchant, and sync
+ * Minimalist + the four new apparel styles in place (no dupes).
+ */
+export async function ensureCatalogStylesForAllMerchants(): Promise<{
+  inserted: number;
+  updated: number;
+  merchants: number;
+}> {
+  const merch = await pool.query(`SELECT id FROM merchants`);
+  const merchants = (merch as { rows?: { id: string }[] }).rows || [];
+  const presets = STYLE_PRESETS.filter((p) => p.id !== "none");
+  const syncSlugs = new Set<string>(["minimal-line", ...NEW_APPAREL_CATALOG_SLUGS]);
+  let inserted = 0;
+  let updated = 0;
+
+  for (const m of merchants) {
+    const existing = await pool.query(
+      `SELECT id, catalog_slug, name, category FROM style_presets WHERE merchant_id = $1`,
+      [m.id],
+    );
+    const bySlug = new Map<string, { id: number; name: string; category: string }>();
+    for (const r of (existing as { rows?: any[] }).rows || []) {
+      const slug =
+        (r.catalog_slug && String(r.catalog_slug)) ||
+        inferCatalogSlug(r.name, r.category);
+      if (slug && !bySlug.has(slug)) bySlug.set(slug, r);
+    }
+
+    for (let i = 0; i < presets.length; i++) {
+      const preset = presets[i];
+      const fields = catalogRowFieldsFromPreset(preset as any);
+      const hit = bySlug.get(preset.id);
+      if (hit) {
+        if (!syncSlugs.has(preset.id)) continue;
+        await pool.query(
+          `UPDATE style_presets
+           SET name = $1,
+               category = $2,
+               prompt_placeholder = $3,
+               generation_quality = $4,
+               user_slot_schema = $5,
+               prompt_prefix = CASE
+                 WHEN catalog_slug = 'minimal-line' THEN prompt_prefix
+                 ELSE $6
+               END,
+               updated_at = NOW()
+           WHERE id = $7`,
+          [
+            fields.name,
+            fields.category,
+            fields.promptPlaceholder,
+            fields.generationQuality,
+            fields.userSlotSchema,
+            fields.promptPrefix,
+            hit.id,
+          ],
+        );
+        updated++;
+        continue;
+      }
+      await pool.query(
+        `INSERT INTO style_presets (
+           merchant_id, name, catalog_slug, prompt_prefix, category, is_active, sort_order,
+           prompt_placeholder, generation_quality, user_slot_schema
+         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9)`,
+        [
+          m.id,
+          fields.name,
+          fields.catalogSlug,
+          fields.promptPrefix,
+          fields.category,
+          i,
+          fields.promptPlaceholder,
+          fields.generationQuality,
+          fields.userSlotSchema,
+        ],
+      );
+      inserted++;
+    }
+  }
+
+  return { inserted, updated, merchants: merchants.length };
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function runStartupMigrations(): Promise<void> {
@@ -2585,6 +2675,17 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED quotes interpretive migration: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await ensureCatalogStylesForAllMerchants();
+    applied++;
+    console.log(
+      `${tag} catalog styles for all merchants: inserted=${n.inserted} updated=${n.updated} merchants=${n.merchants}`,
+    );
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED catalog styles for all merchants: ${err.message ?? err}`);
   }
 
   const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;

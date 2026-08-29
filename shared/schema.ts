@@ -15,6 +15,14 @@ import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./appar
 import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
 import { literalUserSlotSchema } from "./promptLayers";
 import { QUOTES_PLACEHOLDER, QUOTES_TREATMENTS } from "./quotesStyle";
+import {
+  ART_STYLE_VERBATIM_PLACEHOLDER,
+  MINIMAL_LINE_DECOR_STYLE,
+  ONE_COLOR_PRINT_STYLE,
+  PLAYFUL_CARTOON_STYLE,
+  RETRO_SUNSET_STACK_STYLE,
+  VINTAGE_PRINT_STYLE,
+} from "./catalogArtStyles";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -1187,7 +1195,14 @@ export const STYLE_PRESETS = [
   { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of", category: "decor" },
   { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic full-bleed oil painting in the style of impressionism that fills the entire canvas with rich brushstrokes extending to all edges of", category: "decor" },
   { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of", category: "decor" },
-  { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of", category: "decor" },
+  {
+    id: "minimal-line",
+    name: "Minimalist",
+    promptPrefix: MINIMAL_LINE_DECOR_STYLE,
+    category: "all",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "low",
+  },
   { id: "abstract", name: "Abstract", promptPrefix: "A full-bleed abstract modern art piece with bold colors filling the entire canvas edge-to-edge representing", category: "decor" },
   { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of", category: "decor" },
   { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of", category: "decor" },
@@ -1277,6 +1292,38 @@ export const STYLE_PRESETS = [
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
     category: "apparel",
     promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
+  },
+  {
+    id: "vintage-print",
+    name: "Vintage Print",
+    promptPrefix: VINTAGE_PRINT_STYLE,
+    category: "apparel",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "medium",
+  },
+  {
+    id: "one-color-print",
+    name: "One-Color Print",
+    promptPrefix: ONE_COLOR_PRINT_STYLE,
+    category: "apparel",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "low",
+  },
+  {
+    id: "retro-sunset-stack",
+    name: "Retro Sunset Stack",
+    promptPrefix: RETRO_SUNSET_STACK_STYLE,
+    category: "apparel",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "medium",
+  },
+  {
+    id: "playful-cartoon",
+    name: "Playful Cartoon",
+    promptPrefix: PLAYFUL_CARTOON_STYLE,
+    category: "apparel",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "low",
   },
 
   // Graphics — isolated motifs for blankets, totes, patterns (chroma + SVG pipeline)

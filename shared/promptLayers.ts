@@ -44,6 +44,10 @@ const SLUG_TO_APPAREL_CHROMA_KEY: Record<string, string> = {
   "illustrated-motif": "illustrated motif",
   "pattern-maker": "pattern maker",
   "free-4-all": "free 4 all",
+  "vintage-print": "vintage print",
+  "one-color-print": "one color print",
+  "retro-sunset-stack": "retro sunset stack",
+  "playful-cartoon": "playful cartoon",
 };
 
 /** Apparel chroma STYLE layer for a catalog slug. Undefined for decor / unknown slugs. */
@@ -277,8 +281,16 @@ export function resolveStyleLayerRaw(opts: {
   catalogSlug?: string | null;
   styleName?: string | null;
   category?: string | null;
+  isApparelGeneration?: boolean;
 }): string {
   const slug = (opts.catalogSlug || "").trim() || (opts.stylePresetId || "").trim();
+  // Minimalist: apparel uses the isolated treatment; decor keeps the stored full-bleed prefix.
+  if (slug.toLowerCase() === "minimal-line" && opts.isApparelGeneration) {
+    if (opts.colorTier === "dark" && APPAREL_DARK_TIER_PROMPTS["minimal-line"]) {
+      return APPAREL_DARK_TIER_PROMPTS["minimal-line"];
+    }
+    return APPAREL_CHROMA_STYLE_BY_NAME.minimalist;
+  }
   if (opts.colorTier === "dark") {
     const dark = (opts.darkPrefix || "").trim();
     if (dark) return dark;
