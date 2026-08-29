@@ -5716,8 +5716,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const applyProductDefaultSizeColor = useCallback(() => {
     const pool = countryAwareSizes.length > 0 ? countryAwareSizes : printSizes;
-    const firstSize = pool[0]?.id || "";
-    if (firstSize) setSelectedSize(firstSize);
+    if (pool.length === 1 && pool[0]?.id) {
+      setSelectedSize(pool[0].id);
+    } else {
+      setSelectedSize("");
+    }
     setShippingDownsellSizeId(null);
     const colors = productTypeConfig?.frameColors || [];
     if (colors.length === 0) {
@@ -5806,6 +5809,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     ],
   );
 
+  // Exactly one visible size (e.g. apron One Size) — same path as a customer click.
+  // Never pick the first of several.
+  useEffect(() => {
+    if (configLoading || !productTypeConfig) return;
+    if (countryAwareSizes.length !== 1) return;
+    const onlyId = countryAwareSizes[0]?.id;
+    if (!onlyId) return;
+    if (selectedSize === onlyId) return;
+    if (selectedSize && countryAwareSizes.some((s) => s.id === selectedSize)) return;
+    applySelectedSize(onlyId);
+  }, [
+    configLoading,
+    productTypeConfig,
+    countryAwareSizes,
+    selectedSize,
+    applySelectedSize,
+  ]);
+
   const urlSizeConsumedRef = useRef(false);
   useEffect(() => {
     if (!isCreatorStorefront || !printSizes.length) return;
@@ -5823,7 +5844,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!isCreatorStorefront || !sizeCoverageRows || !printSizes.length) return;
     const candidate = shippingDownsellSizeId || selectedSize;
     if (!candidate) {
-      if (countryAwareSizes[0]) setSelectedSize(countryAwareSizes[0].id);
+      if (countryAwareSizes.length === 1 && countryAwareSizes[0]) {
+        setSelectedSize(countryAwareSizes[0].id);
+      }
       return;
     }
     const next = buildSizeDownsell({
@@ -11933,7 +11956,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   useEffect(() => {
     if (!reuseAwaitingGenerate && !autoReuseHydratedRef.current) return;
     if (configLoading || !productTypeConfig) return;
-    if (printSizes.length === 0 || selectedSize) return;
+    if (printSizes.length !== 1 || selectedSize) return;
     const first = printSizes[0];
     if (!first?.id) return;
     setSelectedSize(first.id);

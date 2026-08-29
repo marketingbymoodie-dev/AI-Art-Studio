@@ -96,9 +96,12 @@ function ensureStyles() {
 /* ─────────────────────────────────────────────────────────────────────────────
    GeneratingLoader — light base, dark rotating conic gradient + dark shimmer
    ───────────────────────────────────────────────────────────────────────────── */
+/** Hardcoded wait line — not an admin/env/theme setting. */
+const GENERATING_WAIT_LINE = { line1: "This may take", line2: "up to 60 seconds" };
+
 const GENERATING_MESSAGES = [
   { line1: "Generating", line2: "Artwork" },
-  { line1: "May take up", line2: "to 20 seconds..." },
+  GENERATING_WAIT_LINE,
   { line1: "Generating", line2: "Artwork" },
   { line1: "Almost", line2: "there..." },
 ];
@@ -115,7 +118,7 @@ function GeneratingLoader({ isAop = false }: { isAop?: boolean }) {
   const messages = isAop
     ? [
         { line1: "Generating", line2: "Artwork" },
-        { line1: "May take up", line2: "to 20 seconds..." },
+        GENERATING_WAIT_LINE,
         { line1: "Generating", line2: "Artwork" },
         { line1: "Rendering", line2: "Pattern Styles..." },
       ]
