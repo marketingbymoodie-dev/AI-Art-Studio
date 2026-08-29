@@ -16,6 +16,7 @@ import {
 } from "@shared/styleGeneration";
 import {
   composeLayeredPrompt,
+  effectiveStoredUserSlotSchema,
   parseUserSlotSchema,
   persistUserSlotSchema,
   resolveStyleLayerRaw,
@@ -2231,7 +2232,10 @@ export async function registerRoutes(
                 options: mergeCatalogStyleOptions(dbOptions, hardcodedOptions),
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
                 descriptionOptional: !!(s as any).descriptionOptional,
-                userSlotSchema: parseUserSlotSchema((s as any).userSlotSchema) ?? (hardcoded as any)?.userSlotSchema ?? null,
+                userSlotSchema: effectiveStoredUserSlotSchema(
+                  (s as any).userSlotSchema,
+                  (hardcoded as any)?.userSlotSchema,
+                ),
               };
             })
           : hardcodedFallback,
@@ -3180,10 +3184,12 @@ console.log("[api/shopify/generate] saved image", result);
       
       if (stylePreset) {
         const merchantId = productType?.merchantId;
+        let matchedDbStyle = false;
         if (merchantId) {
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
           const selectedStyle = dbStyles.find((s: { id: number }) => s.id.toString() === stylePreset);
           if (selectedStyle) {
+            matchedDbStyle = true;
             regenGenerationModel = (selectedStyle as any).generationModel ?? null;
             regenGenerationQuality = (selectedStyle as any).generationQuality ?? null;
             regenStyleCategory = (selectedStyle as any).category || "apparel";
@@ -3197,8 +3203,10 @@ console.log("[api/shopify/generate] saved image", result);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
             regenStyleCategory = hardcodedStyle.category || regenStyleCategory;
-            regenUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? regenUserSlotSchema;
             regenCatalogSlug = hardcodedStyle.id;
+            if (!matchedDbStyle) {
+              regenUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? regenUserSlotSchema;
+            }
           }
         }
       }
@@ -6560,7 +6568,10 @@ ${orientationExtra}
         baseImageUrls:
           s.baseImageUrls || (hardcoded as any)?.baseImageUrls || undefined,
         descriptionOptional: !!s.descriptionOptional,
-        userSlotSchema: parseUserSlotSchema(s.userSlotSchema) ?? (hardcoded as any)?.userSlotSchema ?? null,
+        userSlotSchema: effectiveStoredUserSlotSchema(
+          s.userSlotSchema,
+          (hardcoded as any)?.userSlotSchema,
+        ),
       };
     });
   }

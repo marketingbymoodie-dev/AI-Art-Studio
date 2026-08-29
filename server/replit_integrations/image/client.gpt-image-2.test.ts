@@ -4,6 +4,7 @@ import {
   APPAREL_BASE_TRANSPARENT,
   composeLayeredPrompt,
   LITERAL_TEXT_INSTRUCTION,
+  LITERAL_TEXT_INTENT_FRAGMENT,
   literalUserSlotSchema,
   wrapLayeredArtworkPrompt,
 } from "@shared/promptLayers";
@@ -96,6 +97,7 @@ describe("compressPrompt nativeTransparent", () => {
     const expected = [
       APPAREL_BASE_TRANSPARENT,
       APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      LITERAL_TEXT_INTENT_FRAGMENT,
       "casual hand-lettered script, organic brush strokes, personal handwriting feel",
       `${LITERAL_TEXT_INSTRUCTION}: "Murder is subjective"`,
     ].join("\n\n");

@@ -10,8 +10,10 @@ import {
   STYLE_LAYER_MIGRATIONS,
   applyForcedStyleLayerBySlug,
   composeLayeredPrompt,
+  composeUserInputLayer,
   countChromaHexMentions,
   dedupeConsecutiveParagraphs,
+  effectiveStoredUserSlotSchema,
   findLiteralSlot,
   resolveSubStyleFragment,
   literalPlaceholder,
@@ -21,6 +23,7 @@ import {
   resolveLockedBase,
   resolvePromptLayerCategory,
   stripChromaFromStyleLayer,
+  LITERAL_TEXT_INTENT_FRAGMENT,
 } from "./promptLayers";
 
 describe("prefix migration is chroma-only", () => {
@@ -199,7 +202,7 @@ describe("composeLayeredPrompt", () => {
     expect(pets.prompt).toContain("Rex");
   });
 
-  it("Opinionated handwritten literal is four layers only — Murder is subjective", () => {
+  it("Opinionated handwritten literal is BASE + STYLE + INTENT + SUB + USER", () => {
     const layered = composeLayeredPrompt({
       category: "apparel",
       isApparelGeneration: true,
@@ -212,10 +215,12 @@ describe("composeLayeredPrompt", () => {
     const expected = [
       APPAREL_BASE_TRANSPARENT,
       APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      LITERAL_TEXT_INTENT_FRAGMENT,
       "casual hand-lettered script, organic brush strokes, personal handwriting feel",
       `${LITERAL_TEXT_INSTRUCTION}: "Murder is subjective"`,
     ].join("\n\n");
     expect(layered.prompt).toBe(expected);
+    expect(layered.intentLayer).toBe(LITERAL_TEXT_INTENT_FRAGMENT);
     expect((layered.prompt.match(/TRANSPARENT background/gi) || []).length).toBe(1);
     expect(layered.prompt).not.toMatch(/15% of the canvas/i);
     expect(layered.prompt).not.toMatch(/Do not add text unless/i);
@@ -264,11 +269,14 @@ describe("composeLayeredPrompt", () => {
       userSlotSchema: literalUserSlotSchema(6),
     });
     const styleAt = layered.prompt.indexOf(APPAREL_CHROMA_STYLE_BY_NAME.opinionated);
+    const intentAt = layered.prompt.indexOf(LITERAL_TEXT_INTENT_FRAGMENT);
     const twAt = layered.prompt.indexOf(OPINIONATED_TYPEWRITER_FRAGMENT);
     const userAt = layered.prompt.indexOf("Murder is subjective");
     expect(styleAt).toBeGreaterThan(-1);
-    expect(twAt).toBeGreaterThan(styleAt);
+    expect(intentAt).toBeGreaterThan(styleAt);
+    expect(twAt).toBeGreaterThan(intentAt);
     expect(userAt).toBeGreaterThan(twAt);
+    expect(LITERAL_TEXT_INTENT_FRAGMENT).not.toMatch(/bold|stacked|typewriter|monospace/i);
     expect(resolveSubStyleFragment({
       styleOptionId: "typewriter",
       styleOptions: catalog.options,
@@ -285,6 +293,43 @@ describe("composeLayeredPrompt", () => {
     });
     expect(layered.prompt).toContain("scary grizzly bear");
     expect(layered.prompt).not.toContain(LITERAL_TEXT_INSTRUCTION);
+    expect(layered.prompt).not.toContain(LITERAL_TEXT_INTENT_FRAGMENT);
+    expect(layered.intentLayer).toBe("");
+  });
+
+  it("literal ON injects intent + quote; OFF injects neither", () => {
+    const on = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      subStyleLayer: OPINIONATED_TYPEWRITER_FRAGMENT,
+      userInput: "I choose dogs",
+      userSlotSchema: literalUserSlotSchema(6),
+    });
+    expect(on.intentLayer).toBe(LITERAL_TEXT_INTENT_FRAGMENT);
+    expect(on.prompt).toContain(LITERAL_TEXT_INTENT_FRAGMENT);
+    expect(on.prompt).toContain(LITERAL_TEXT_INSTRUCTION);
+    expect(on.prompt.indexOf(LITERAL_TEXT_INTENT_FRAGMENT)).toBeLessThan(
+      on.prompt.indexOf(OPINIONATED_TYPEWRITER_FRAGMENT),
+    );
+    expect(on.prompt.indexOf(OPINIONATED_TYPEWRITER_FRAGMENT)).toBeLessThan(
+      on.prompt.indexOf(LITERAL_TEXT_INSTRUCTION),
+    );
+
+    const off = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      subStyleLayer: OPINIONATED_TYPEWRITER_FRAGMENT,
+      userInput: "I choose dogs",
+      userSlotSchema: null,
+    });
+    expect(off.intentLayer).toBe("");
+    expect(off.prompt).not.toContain(LITERAL_TEXT_INTENT_FRAGMENT);
+    expect(off.prompt).not.toContain(LITERAL_TEXT_INSTRUCTION);
+    expect(off.userLayer).toBe("I choose dogs");
   });
 });
 
@@ -330,5 +375,20 @@ describe("literal slot UI helpers", () => {
     expect(parseUserSlotSchema(asString)).toEqual(asObject);
     expect(findLiteralSlot(parseUserSlotSchema(asString))?.kind).toBe("literal");
     expect(parseUserSlotSchema(null)).toBeNull();
+  });
+
+  it("composeUserInputLayer quotes only when a literal slot is stored", () => {
+    expect(composeUserInputLayer("I choose dogs", null)).toBe("I choose dogs");
+    expect(composeUserInputLayer("I choose dogs", null)).not.toContain(LITERAL_TEXT_INSTRUCTION);
+    expect(composeUserInputLayer("I choose dogs", literalUserSlotSchema(6))).toBe(
+      `${LITERAL_TEXT_INSTRUCTION}: "I choose dogs"`,
+    );
+  });
+
+  it("effectiveStoredUserSlotSchema treats explicit null as OFF", () => {
+    const hardcoded = literalUserSlotSchema(6);
+    expect(effectiveStoredUserSlotSchema(null, hardcoded)).toBeNull();
+    expect(effectiveStoredUserSlotSchema(hardcoded, null)).toEqual(hardcoded);
+    expect(effectiveStoredUserSlotSchema(undefined, hardcoded)).toEqual(hardcoded);
   });
 });

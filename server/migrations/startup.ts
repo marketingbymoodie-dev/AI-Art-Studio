@@ -10,12 +10,7 @@
  */
 import { pool } from "../db";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared/apparel-chroma-prompts";
-import {
-  applyForcedStyleLayerBySlug,
-  findLiteralSlot,
-  literalUserSlotSchema,
-  parseUserSlotSchema,
-} from "@shared/promptLayers";
+import { applyForcedStyleLayerBySlug } from "@shared/promptLayers";
 import { catalogSlugBackfillRows, inferCatalogSlug } from "@shared/styleCatalog";
 
 // ── Column additions ──────────────────────────────────────────────────────────
@@ -2325,7 +2320,6 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
   const tag = "[startup-migration] [opinionated]";
   const light = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
   const dark = APPAREL_DARK_TIER_PROMPTS.opinionated;
-  const slotsJson = JSON.stringify(literalUserSlotSchema(6));
   let updated = 0;
 
   const before = await pool.query(
@@ -2379,23 +2373,6 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
     console.log(`${tag} AFTER id=${row.id} name=${JSON.stringify(row.name)}:\n${row.prompt_prefix}`);
   }
 
-  try {
-    const slotUpd = await pool.query(
-      `UPDATE style_presets
-       SET user_slot_schema = $1::jsonb,
-           updated_at = NOW()
-       WHERE catalog_slug = 'opinionated'
-         AND user_slot_schema IS NULL
-       RETURNING id`,
-      [slotsJson],
-    );
-    const slotN = (slotUpd as { rowCount?: number }).rowCount || 0;
-    updated += slotN;
-    console.log(`${tag} literal slot seed rowCount=${slotN}`);
-  } catch (err: any) {
-    console.error(`${tag} slot seed failed (prefix write already committed):`, err.message ?? err);
-  }
-
   const verify = await pool.query(
     `SELECT id, name, prompt_prefix, user_slot_schema
      FROM style_presets
@@ -2414,21 +2391,6 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
   }
   for (const row of verifyRows) {
     console.log(`${tag} VERIFY id=${row.id} stored prompt_prefix:\n${row.prompt_prefix}`);
-    const parsed = parseUserSlotSchema(row.user_slot_schema);
-    if (!findLiteralSlot(parsed)) {
-      try {
-        await pool.query(
-          `UPDATE style_presets
-           SET user_slot_schema = $1::jsonb, updated_at = NOW()
-           WHERE id = $2`,
-          [slotsJson, row.id],
-        );
-        updated++;
-        console.log(`${tag} forced literal slot on id=${row.id}`);
-      } catch (err: any) {
-        console.error(`${tag} forced slot write failed id=${row.id}:`, err.message ?? err);
-      }
-    }
   }
 
   const renamed = await pool.query(

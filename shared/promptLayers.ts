@@ -49,6 +49,10 @@ const SLUG_TO_APPAREL_CHROMA_KEY: Record<string, string> = {
 export const LITERAL_TEXT_INSTRUCTION =
   "Render the following text EXACTLY as written, verbatim — do not change, add, remove, rephrase, or invent text";
 
+/** Compose-owned. Fires only when a literal slot is present. No letterform treatment. */
+export const LITERAL_TEXT_INTENT_FRAGMENT =
+  "Render the user's provided words as the primary element of the design — the text is the design, displayed prominently and legibly.";
+
 export type PromptLayerCategory = "apparel" | "graphics" | "decor";
 
 export type UserSlotKind = "literal" | "thematic";
@@ -103,6 +107,24 @@ export function persistUserSlotSchema(raw: unknown): UserSlotSchema | null | und
   if (raw === undefined) return undefined;
   if (raw == null) return null;
   return parseUserSlotSchema(raw);
+}
+
+/**
+ * Merchant-stored user_slot_schema is authoritative.
+ * Explicit NULL = Literal Text OFF — never overlay a catalog default.
+ * Hardcoded fallback only when the column was never written (undefined).
+ */
+export function effectiveStoredUserSlotSchema(
+  stored: unknown,
+  hardcodedFallback?: unknown,
+): UserSlotSchema | null {
+  if (stored === null) return null;
+  const parsed = parseUserSlotSchema(stored);
+  if (parsed) return parsed;
+  if (stored === undefined) {
+    return parseUserSlotSchema(hardcodedFallback);
+  }
+  return null;
 }
 
 export function literalUserSlotSchema(maxWords = 6): UserSlotSchema {
@@ -234,6 +256,10 @@ export function composeUserInputLayer(userInput: string, schema?: unknown): stri
   return trimmed;
 }
 
+export function composeLiteralIntentLayer(schema?: unknown): string {
+  return findLiteralSlot(parseUserSlotSchema(schema)) ? LITERAL_TEXT_INTENT_FRAGMENT : "";
+}
+
 export function resolveStyleLayerRaw(opts: {
   lightPrefix: string;
   darkPrefix?: string | null;
@@ -283,6 +309,7 @@ export type ComposeLayeredPromptResult = {
   category: PromptLayerCategory;
   base: string;
   styleLayer: string;
+  intentLayer: string;
   subStyleLayer: string;
   userLayer: string;
   nativeTransparent: boolean;
@@ -340,15 +367,17 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
     stripChromaFromStyleLayer(input.subStyleLayer || ""),
     base,
   );
+  const intentLayer = composeLiteralIntentLayer(input.userSlotSchema);
   const userLayer = composeUserInputLayer(input.userInput, input.userSlotSchema);
   const prompt = dedupeConsecutiveParagraphs(
-    [base, ...extras, styleLayer, subStyleLayer, userLayer].filter(Boolean).join("\n\n"),
+    [base, ...extras, styleLayer, intentLayer, subStyleLayer, userLayer].filter(Boolean).join("\n\n"),
   );
   return {
     prompt,
     category,
     base,
     styleLayer,
+    intentLayer,
     subStyleLayer,
     userLayer,
     nativeTransparent,

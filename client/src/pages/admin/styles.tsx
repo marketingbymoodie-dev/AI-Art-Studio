@@ -17,7 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, Shapes, RefreshCw, ImagePlus, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { StylePresetCategory } from "@shared/styleCategories";
-import { findLiteralSlot, parseUserSlotSchema } from "@shared/promptLayers";
+import { findLiteralSlot, literalUserSlotSchema, parseUserSlotSchema } from "@shared/promptLayers";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -172,6 +172,22 @@ export default function AdminStyles() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update style", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const persistLiteralSlotMutation = useMutation({
+    mutationFn: async ({ id, userSlotSchema }: { id: number; userSlotSchema: unknown }) => {
+      const path = returnCreator ? `/api/platform/styles/${id}` : `/api/admin/styles/${id}`;
+      const response = await apiRequest("PATCH", path, { userSlotSchema });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update literal text", description: error.message, variant: "destructive" });
     },
   });
 
@@ -754,7 +770,20 @@ export default function AdminStyles() {
                 <Switch
                   id="literal-text-style"
                   checked={literalTextStyle}
-                  onCheckedChange={setLiteralTextStyle}
+                  onCheckedChange={(on) => {
+                    const prev = literalTextStyle;
+                    setLiteralTextStyle(on);
+                    if (!editingStyle) return;
+                    persistLiteralSlotMutation.mutate(
+                      {
+                        id: editingStyle.id,
+                        userSlotSchema: on
+                          ? literalUserSlotSchema(literalMaxWords || 6)
+                          : null,
+                      },
+                      { onError: () => setLiteralTextStyle(prev) },
+                    );
+                  }}
                   data-testid="switch-literal-text-style"
                 />
               </div>
