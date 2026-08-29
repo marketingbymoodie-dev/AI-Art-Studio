@@ -8,7 +8,7 @@ import {
   DECOR_BASE_FULL_BLEED,
   LITERAL_TEXT_INSTRUCTION,
   STYLE_LAYER_MIGRATIONS,
-  applyForcedStyleLayerByName,
+  applyForcedStyleLayerBySlug,
   composeLayeredPrompt,
   countChromaHexMentions,
   dedupeConsecutiveParagraphs,
@@ -44,10 +44,10 @@ describe("prefix migration is chroma-only", () => {
   it("force-replaces Opinionated stored prefixes by name", () => {
     const dirty =
       "T-shirt graphic, bold stacked text typography, isolated on a solid hot pink (#FF00FF) background. Create a bold text stack design of";
-    expect(applyForcedStyleLayerByName("Opinionated", dirty, "light")).toBe(
+    expect(applyForcedStyleLayerBySlug("opinionated", dirty, "light")).toBe(
       APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
     );
-    expect(applyForcedStyleLayerByName("Opinionated", dirty, "dark")).toBe(
+    expect(applyForcedStyleLayerBySlug("opinionated", dirty, "dark")).toBe(
       APPAREL_DARK_TIER_PROMPTS.opinionated,
     );
   });

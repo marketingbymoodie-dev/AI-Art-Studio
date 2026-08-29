@@ -105,6 +105,7 @@ import {
   walletJson,
 } from "./storefront-wallet-view";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, mergeCatalogStyleOptions, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
+import { findCatalogPreset, isLiteralTextCatalogSlug, resolveCatalogSlug } from "@shared/styleCatalog";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
   resolveFulfillmentLayout,
@@ -787,9 +788,11 @@ ${APPAREL_CHROMA_MATTING_LINE}
 
 function singleCustomerReferenceInstruction(opts: {
   stylePreset?: string | null;
+  catalogSlug?: string | null;
   userPrompt?: string;
 }): string {
-  const isTextStyle = opts.stylePreset && ["opinionated", "quotes"].includes(opts.stylePreset);
+  const slug = opts.catalogSlug || opts.stylePreset;
+  const isTextStyle = isLiteralTextCatalogSlug(slug);
   if (isTextStyle) {
     return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
   }
@@ -2178,6 +2181,7 @@ export async function registerRoutes(
 
     const hardcodedFallback = STYLE_PRESETS.map((s) => ({
       id: s.id,
+      catalogSlug: s.id === "none" ? null : s.id,
       name: s.name,
       promptSuffix: s.promptPrefix,
       category: s.category,
@@ -2213,12 +2217,13 @@ export async function registerRoutes(
           ? dbStyles.map((s) => {
               // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
               // promptPlaceholder: prefer DB value (merchant-editable), fall back to hardcoded default
-              const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
+              const hardcoded = findCatalogPreset(s);
               // Prefer DB-stored options (merchant-edited) over hardcoded defaults
               const dbOptions = (s as any).options ?? null;
               const hardcodedOptions = (hardcoded as any)?.options ?? null;
               return {
                 id: s.id.toString(),
+                catalogSlug: resolveCatalogSlug(s),
                 name: s.name,
                 promptSuffix: s.promptPrefix,
                 category: s.category || "all",
@@ -2577,6 +2582,7 @@ export async function registerRoutes(
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
       let styleName = "";
+      let catalogSlugAdmin: string | null = null;
       let stylePromptPrefixDark: string | null = null;
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
@@ -2593,6 +2599,7 @@ export async function registerRoutes(
           const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
           if (selectedStyle) {
             styleName = selectedStyle.name || "";
+            catalogSlugAdmin = resolveCatalogSlug(selectedStyle);
             styleCategory = selectedStyle.category || "all";
             if (selectedStyle.promptPrefix) {
               stylePromptPrefix = selectedStyle.promptPrefix;
@@ -2615,6 +2622,7 @@ export async function registerRoutes(
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
+            catalogSlugAdmin = hardcodedStyle.id;
             styleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -2756,6 +2764,7 @@ export async function registerRoutes(
         darkPrefix: stylePromptPrefixDark,
         colorTier,
         stylePresetId: stylePreset,
+        catalogSlug: catalogSlugAdmin,
         styleName,
         category: styleCategory,
       });
@@ -2836,9 +2845,9 @@ ${orientationExtra}
 
       // Build final prompt: locked base + style layer + user (chroma only in nano-banana base)
       const geminiAspectRatio = mapToGeminiAspectRatio(aspectRatioStr);
-      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugAdmin));
       {
-        const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
+        const hc = findCatalogPreset({ catalogSlug: catalogSlugAdmin, id: stylePreset, name: styleName, category: styleCategory });
         styleOptionsAdmin = mergeCatalogStyleOptions(styleOptionsAdmin, (hc as any)?.options);
       }
       const subStyleAdmin = resolveSubStyleFragment({
@@ -2911,6 +2920,7 @@ ${orientationExtra}
         } else if (customerImageUrl) {
           refInstruction = singleCustomerReferenceInstruction({
             stylePreset,
+            catalogSlug: catalogSlugAdmin,
             userPrompt: userDescAdmin,
           });
         } else {
@@ -3166,6 +3176,7 @@ console.log("[api/shopify/generate] saved image", result);
       let regenGenerationQuality: string | null = null;
       let regenStyleCategory = "apparel";
       let regenUserSlotSchema: unknown = null;
+      let regenCatalogSlug: string | null = null;
       
       if (stylePreset) {
         const merchantId = productType?.merchantId;
@@ -3178,6 +3189,7 @@ console.log("[api/shopify/generate] saved image", result);
             regenStyleCategory = (selectedStyle as any).category || "apparel";
             regenUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
             if ((selectedStyle as any).promptPrefix) stylePromptPrefix = (selectedStyle as any).promptPrefix;
+            regenCatalogSlug = resolveCatalogSlug(selectedStyle);
           }
         }
         if (!stylePromptPrefix) {
@@ -3186,6 +3198,7 @@ console.log("[api/shopify/generate] saved image", result);
             stylePromptPrefix = hardcodedStyle.promptPrefix;
             regenStyleCategory = hardcodedStyle.category || regenStyleCategory;
             regenUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? regenUserSlotSchema;
+            regenCatalogSlug = hardcodedStyle.id;
           }
         }
       }
@@ -3200,6 +3213,7 @@ console.log("[api/shopify/generate] saved image", result);
         lightPrefix: stylePromptPrefix,
         colorTier: newColorTier === "dark" ? "dark" : "light",
         stylePresetId: stylePreset,
+        catalogSlug: regenCatalogSlug,
         category: regenStyleCategory,
       });
       const layeredRegen = composeLayeredPrompt({
@@ -3564,6 +3578,7 @@ console.log("[shopify/session] installation ok", {
       let stylePromptPrefix = "";
       let stylePromptPrefixDark: string | null = null;
       let styleName = "";
+      let catalogSlugEmbed: string | null = null;
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
@@ -3577,6 +3592,7 @@ console.log("[shopify/session] installation ok", {
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle) {
           styleName = selectedStyle.name || "";
+          catalogSlugEmbed = resolveCatalogSlug(selectedStyle);
           embedStyleCategory = selectedStyle.category || "all";
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
@@ -3596,6 +3612,7 @@ console.log("[shopify/session] installation ok", {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
+            catalogSlugEmbed = hardcodedStyle.id;
             embedStyleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -3675,6 +3692,7 @@ console.log("[shopify/session] installation ok", {
         darkPrefix: stylePromptPrefixDark,
         colorTier: embedColorTier,
         stylePresetId: stylePreset,
+        catalogSlug: catalogSlugEmbed,
         styleName,
         category: embedStyleCategory,
       });
@@ -3773,7 +3791,7 @@ ${orientationExtra}
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
       {
-        const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
+        const hc = findCatalogPreset({ catalogSlug: catalogSlugEmbed, id: stylePreset, name: styleName, category: embedStyleCategory });
         embedStyleOptions = mergeCatalogStyleOptions(embedStyleOptions, (hc as any)?.options);
       }
       const subStyleEmbed = resolveSubStyleFragment({
@@ -3791,7 +3809,7 @@ ${orientationExtra}
         userInput: userDescEmbed,
         userSlotSchema: embedUserSlotSchema,
         isAllOverPrint: embedIsAllOverPrintEarly,
-        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix)),
+        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
       });
       let fullPrompt = wrapLayeredArtworkPrompt(layeredEmbed, sizingRequirements);
       
@@ -3847,6 +3865,7 @@ ${orientationExtra}
         } else if (embedCustomerImageUrl) {
           refInstruction = singleCustomerReferenceInstruction({
             stylePreset,
+            catalogSlug: catalogSlugEmbed,
             userPrompt: userDescEmbed,
           });
         } else {
@@ -3862,7 +3881,7 @@ ${orientationExtra}
         inputImageUrl,
         isApparel,
         isAllOverPrint,
-        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix)),
+        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
         userPrompt: userDescEmbed || null,
         cylindricalWrap,
         generationModel: embedStyleGen.model,
@@ -6525,11 +6544,10 @@ ${orientationExtra}
   /** Map DB style rows the same way `/api/proxy/customizer-page` does. */
   function mapDbStylesForDesigner(dbStyles: any[]) {
     return dbStyles.map((s: any) => {
-      const hardcoded = STYLE_PRESETS.find(
-        (h) => h.id === s.id.toString() || h.name === s.name,
-      );
+      const hardcoded = findCatalogPreset(s);
       return {
         id: s.id.toString(),
+        catalogSlug: resolveCatalogSlug(s),
         name: s.name,
         promptSuffix: s.promptPrefix,
         promptPrefix: s.promptPrefix,
@@ -6551,6 +6569,7 @@ ${orientationExtra}
   function hardcodedStylePresetsForDesigner() {
     return STYLE_PRESETS.map((s) => ({
       id: s.id,
+      catalogSlug: s.id === "none" ? null : s.id,
       name: s.name,
       promptSuffix: s.promptPrefix,
       promptPrefix: s.promptPrefix,
@@ -8460,6 +8479,7 @@ ${orientationExtra}
       // Merchant plan quota is consumed in the worker after success (peek-only here).
       let stylePromptPrefix = "";
       let styleName = "";
+      let catalogSlugSf: string | null = null;
       let stylePromptPrefixDark: string | null = null;
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
@@ -8495,6 +8515,7 @@ ${orientationExtra}
         });
         if (selectedStyle) {
           styleName = selectedStyle.name || "";
+          catalogSlugSf = resolveCatalogSlug(selectedStyle);
           sfStyleCategory = selectedStyle.category || "all";
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
@@ -8514,6 +8535,7 @@ ${orientationExtra}
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
+            catalogSlugSf = hardcodedStyle.id;
             sfStyleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -8667,6 +8689,7 @@ ${orientationExtra}
         darkPrefix: stylePromptPrefixDark,
         colorTier: sfColorTier,
         stylePresetId: stylePreset,
+        catalogSlug: catalogSlugSf,
         styleName,
         category: sfStyleCategory,
       });
@@ -8741,7 +8764,7 @@ ${orientationExtra}
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
       {
-        const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
+        const hc = findCatalogPreset({ catalogSlug: catalogSlugSf, id: stylePreset, name: styleName, category: sfStyleCategory });
         sfStyleOptions = mergeCatalogStyleOptions(sfStyleOptions, (hc as any)?.options);
       }
       const subStyleSf = resolveSubStyleFragment({
@@ -8759,7 +8782,7 @@ ${orientationExtra}
         userInput: userDescSf,
         userSlotSchema: sfUserSlotSchema,
         isAllOverPrint,
-        isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix)),
+        isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf)),
       });
       let fullPrompt = wrapLayeredArtworkPrompt(layeredSf, sizingRequirements);
 
@@ -8861,6 +8884,7 @@ ${orientationExtra}
             } else if (sfCustomerImageUrl) {
               refInstruction = singleCustomerReferenceInstruction({
                 stylePreset,
+                catalogSlug: catalogSlugSf,
                 userPrompt: userDescSf,
               });
             } else {
@@ -8872,7 +8896,7 @@ ${orientationExtra}
           // Call AI image generation
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
-          const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+          const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf));
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
@@ -14162,11 +14186,11 @@ ${orientationExtra}
       // Enrich each DB record with hardcoded options/promptPlaceholder when the DB column is null
       // (styles seeded before the options column was added won't have these fields populated)
       const enriched = presets.map((s: any) => {
-        const hardcoded = STYLE_PRESETS.find((h: any) => h.id === s.id.toString() || h.name === s.name);
+        const hardcoded = findCatalogPreset(s);
         const userSlotSchema = parseUserSlotSchema(s.userSlotSchema);
-        if (String(s.name || "").trim().toLowerCase() === "opinionated") {
+        if (resolveCatalogSlug(s) === "opinionated") {
           console.log(
-            `[admin/styles] Opinionated id=${s.id} stored prompt_prefix:\n${s.promptPrefix || ""}`,
+            `[admin/styles] Opinionated id=${s.id} slug=opinionated stored prompt_prefix:\n${s.promptPrefix || ""}`,
           );
         }
         return {
@@ -14326,6 +14350,7 @@ ${orientationExtra}
       const defaultStyles = STYLE_PRESETS.map((style, index) => ({
         merchantId: merchant.id,
         name: style.name,
+        catalogSlug: style.id === "none" ? null : style.id,
         promptPrefix: style.promptPrefix,
         category: style.category,
         isActive: true,
@@ -14356,33 +14381,38 @@ ${orientationExtra}
       }
 
       const existingStyles = await storage.getStylePresetsByMerchant(merchant.id);
-      const existingByName = new Map(existingStyles.map(s => [s.name, s]));
+      const existingBySlug = new Map(
+        existingStyles
+          .map((s) => [resolveCatalogSlug(s), s] as const)
+          .filter((row): row is [string, typeof existingStyles[number]] => !!row[0]),
+      );
       
       const updatedStyles = [];
       const createdStyles = [];
 
       for (let i = 0; i < STYLE_PRESETS.length; i++) {
         const preset = STYLE_PRESETS[i];
-        const existing = existingByName.get(preset.name);
+        if (preset.id === "none") continue;
+        const existing = existingBySlug.get(preset.id);
         
         if (existing) {
-          // Update existing style with correct category
           const updated = await storage.updateStylePreset(existing.id, {
             category: preset.category,
             promptPrefix: preset.promptPrefix,
             sortOrder: i,
-          });
+            catalogSlug: preset.id,
+          } as any);
           if (updated) updatedStyles.push(updated);
         } else {
-          // Create missing style
           const created = await storage.createStylePreset({
             merchantId: merchant.id,
             name: preset.name,
+            catalogSlug: preset.id,
             promptPrefix: preset.promptPrefix,
             category: preset.category,
             isActive: true,
             sortOrder: i,
-          });
+          } as any);
           createdStyles.push(created);
         }
       }

@@ -512,6 +512,8 @@ export const stylePresets = pgTable("style_presets", {
   id: serial("id").primaryKey(),
   merchantId: varchar("merchant_id").notNull(),
   name: text("name").notNull(),
+  /** Stable catalog identity (STYLE_PRESETS.id). Null = merchant-created custom style. */
+  catalogSlug: text("catalog_slug"),
   promptPrefix: text("prompt_prefix").notNull(),
   promptPrefixDark: text("prompt_prefix_dark"),
   category: text("category").notNull().default("all"),
@@ -1208,7 +1210,7 @@ export const STYLE_PRESETS = [
   },
   {
     id: "opinionated",
-    name: "Opinionated",
+    name: "Opinionated Text",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
     category: "apparel",
     promptPlaceholder: "Write your text here (up to 6 words)",

@@ -11,11 +11,12 @@
 import { pool } from "../db";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared/apparel-chroma-prompts";
 import {
-  applyForcedStyleLayerByName,
+  applyForcedStyleLayerBySlug,
   findLiteralSlot,
   literalUserSlotSchema,
   parseUserSlotSchema,
 } from "@shared/promptLayers";
+import { catalogSlugBackfillRows, inferCatalogSlug } from "@shared/styleCatalog";
 
 // ── Column additions ──────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "style_presets",         column: "generation_quality",          type: "TEXT" },
   { table: "style_presets",         column: "aspect_ratios",               type: "JSONB" },
   { table: "style_presets",         column: "user_slot_schema",            type: "JSONB" },
+  { table: "style_presets",         column: "catalog_slug",                type: "TEXT" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -189,7 +191,7 @@ const DATA_MIGRATIONS: string[] = [
   // Vintage Poster: drop "travel poster" portrait bias — follow canvas orientation.
   `UPDATE style_presets
    SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
-   WHERE LOWER(name) = 'vintage poster'
+   WHERE (catalog_slug = 'vintage-poster' OR (catalog_slug IS NULL AND LOWER(name) = 'vintage poster'))
      AND (
        prompt_prefix ILIKE '%vintage travel poster%'
        OR prompt_prefix NOT ILIKE '%canvas orientation%'
@@ -280,25 +282,25 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
        category = 'apparel'
-   WHERE lower(name) = 'centered graphic'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
      AND prompt_prefix ILIKE '%white background%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
        category = 'apparel'
-   WHERE lower(name) = 'illustrated motif'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
      AND prompt_prefix ILIKE '%white background%'`,
   // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
-   WHERE lower(name) = 'centered graphic'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
-   WHERE lower(name) = 'illustrated motif'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
-   WHERE lower(name) = 'pet portraits'
+   WHERE (catalog_slug = 'pet-portraits' OR (catalog_slug IS NULL AND lower(name) = 'pet portraits'))
      AND category = 'apparel'
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   // Stronger DO NOT use hot pink language + dark-tier DB column (editable in Admin without redeploy).
@@ -308,28 +310,28 @@ const DATA_MIGRATIONS: string[] = [
   // neither, so it survives restarts — which is what the Admin UI promises (GH #49).
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
-   WHERE lower(name) = 'illustrated motif'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
      AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
   `UPDATE style_presets
    SET prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
-   WHERE lower(name) = 'illustrated motif'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
      AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
-   WHERE lower(name) = 'centered graphic'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
      AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
   `UPDATE style_presets
    SET prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
-   WHERE lower(name) = 'centered graphic'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
      AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
-   WHERE lower(name) = 'pet portraits'
+   WHERE (catalog_slug = 'pet-portraits' OR (catalog_slug IS NULL AND lower(name) = 'pet portraits'))
      AND category = 'apparel'
      AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
   `UPDATE style_presets
    SET prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of'
-   WHERE lower(name) = 'pet portraits'
+   WHERE (catalog_slug = 'pet-portraits' OR (catalog_slug IS NULL AND lower(name) = 'pet portraits'))
      AND category = 'apparel'
      AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
   // Creator Marketplace: seed accounting cost ($0.05). Do not overwrite if already set.
@@ -2296,6 +2298,29 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
   },
 ];
 
+async function backfillStyleCatalogSlugs(): Promise<number> {
+  let updated = 0;
+  for (const row of catalogSlugBackfillRows()) {
+    const extra =
+      row.slug === "opinionated"
+        ? ` OR lower(btrim(replace(name, chr(160), ' '))) IN ('opinionated', 'opinionated text')`
+        : "";
+    const r = await pool.query(
+      `UPDATE style_presets
+       SET catalog_slug = $1, updated_at = NOW()
+       WHERE catalog_slug IS NULL
+         AND category = $2
+         AND (
+           lower(btrim(replace(name, chr(160), ' '))) = lower($3)
+           ${extra}
+         )`,
+      [row.slug, row.category, row.name],
+    );
+    updated += (r as { rowCount?: number }).rowCount || 0;
+  }
+  return updated;
+}
+
 async function migrateLayeredStylePrefixes(): Promise<number> {
   const tag = "[startup-migration] [opinionated]";
   const light = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
@@ -2304,10 +2329,9 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
   let updated = 0;
 
   const before = await pool.query(
-    `SELECT id, name, merchant_id, prompt_prefix, user_slot_schema
+    `SELECT id, name, merchant_id, catalog_slug, prompt_prefix, user_slot_schema
      FROM style_presets
-     WHERE lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
-        OR lower(btrim(name)) = 'opinionated'
+     WHERE catalog_slug = 'opinionated'
         OR (
           prompt_prefix ILIKE '%bold stacked text typography%'
           AND prompt_prefix ILIKE '%#FF00FF%'
@@ -2339,8 +2363,7 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
            ELSE prompt_prefix_dark
          END,
          updated_at = NOW()
-     WHERE lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
-        OR lower(btrim(name)) = 'opinionated'
+     WHERE catalog_slug = 'opinionated'
         OR (
           prompt_prefix ILIKE '%bold stacked text typography%'
           AND prompt_prefix ILIKE '%#FF00FF%'
@@ -2361,10 +2384,7 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
       `UPDATE style_presets
        SET user_slot_schema = $1::jsonb,
            updated_at = NOW()
-       WHERE (
-           lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
-           OR lower(btrim(name)) = 'opinionated'
-         )
+       WHERE catalog_slug = 'opinionated'
          AND user_slot_schema IS NULL
        RETURNING id`,
       [slotsJson],
@@ -2379,14 +2399,13 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
   const verify = await pool.query(
     `SELECT id, name, prompt_prefix, user_slot_schema
      FROM style_presets
-     WHERE lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
-        OR lower(btrim(name)) = 'opinionated'`,
+     WHERE catalog_slug = 'opinionated'`,
   );
   const verifyRows = (verify as { rows?: any[] }).rows || [];
   if (verifyRows.length === 0) {
     const names = await pool.query(`SELECT id, name FROM style_presets ORDER BY id`);
     console.warn(
-      `${tag} NO row named Opinionated. All style names: ${
+      `${tag} NO row with catalog_slug=opinionated. All styles: ${
         ((names as { rows?: any[] }).rows || [])
           .map((r) => `${r.id}:${JSON.stringify(r.name)}`)
           .join(", ")
@@ -2412,16 +2431,30 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
     }
   }
 
+  const renamed = await pool.query(
+    `UPDATE style_presets
+     SET name = 'Opinionated Text', updated_at = NOW()
+     WHERE catalog_slug = 'opinionated'
+       AND lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
+     RETURNING id`,
+  );
+  const renamedN = (renamed as { rowCount?: number }).rowCount || 0;
+  if (renamedN > 0) {
+    console.log(`${tag} display name → Opinionated Text rowCount=${renamedN}`);
+    updated += renamedN;
+  }
+
   const others = await pool.query(
-    `SELECT id, name, prompt_prefix, prompt_prefix_dark
+    `SELECT id, name, category, catalog_slug, prompt_prefix, prompt_prefix_dark
      FROM style_presets
-     WHERE lower(btrim(name)) <> 'opinionated'`,
+     WHERE catalog_slug IS DISTINCT FROM 'opinionated'`,
   );
   for (const row of (others as { rows?: any[] }).rows || []) {
     try {
-      const nextPrefix = applyForcedStyleLayerByName(row.name || "", row.prompt_prefix || "", "light");
+      const slug = row.catalog_slug || inferCatalogSlug(row.name, row.category) || "";
+      const nextPrefix = applyForcedStyleLayerBySlug(slug, row.prompt_prefix || "", "light");
       const nextDark = row.prompt_prefix_dark
-        ? applyForcedStyleLayerByName(row.name || "", row.prompt_prefix_dark, "dark")
+        ? applyForcedStyleLayerBySlug(slug, row.prompt_prefix_dark, "dark")
         : row.prompt_prefix_dark;
       if (nextPrefix === (row.prompt_prefix || "") && nextDark === row.prompt_prefix_dark) continue;
       await pool.query(
@@ -2481,6 +2514,15 @@ export async function runStartupMigrations(): Promise<void> {
       errors++;
       console.error(`${tag} FAILED adding column ${m.table}.${m.column}: ${err.message ?? err}`);
     }
+  }
+
+  try {
+    const n = await backfillStyleCatalogSlugs();
+    applied++;
+    console.log(`${tag} catalog_slug backfill updated ${n} row(s)`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED catalog_slug backfill: ${err.message ?? err}`);
   }
 
   // 4) Data migrations (safe re-runs)

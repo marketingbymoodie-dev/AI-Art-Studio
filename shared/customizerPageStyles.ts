@@ -100,10 +100,12 @@ export function dedupeStylePresets<T extends { id: string; name?: string }>(
 }
 
 /** Apparel DTG vs Graphics chroma twins share a customer-facing name. */
-function isGraphicsStyleTwin<T extends { name?: string; category?: string | null }>(
+function isGraphicsStyleTwin<T extends { name?: string; category?: string | null; catalogSlug?: string | null }>(
   style: T,
 ): boolean {
-  return /\(graphics\)\s*$/i.test(style.name || "") || style.category === "graphics";
+  const slug = String((style as any).catalogSlug || "").trim().toLowerCase();
+  if (slug.startsWith("graphics-")) return true;
+  return style.category === "graphics";
 }
 
 /**

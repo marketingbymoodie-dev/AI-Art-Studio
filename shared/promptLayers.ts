@@ -36,6 +36,16 @@ export const AOP_PATTERN_EXTRA =
 export const AOP_MOTIF_EXTRA =
   "This motif will be tiled into a repeating pattern. Keep a single centered isolated graphic.";
 
+const SLUG_TO_APPAREL_CHROMA_KEY: Record<string, string> = {
+  opinionated: "opinionated",
+  quotes: "quotes",
+  "pet-portraits": "pet portraits",
+  "centered-graphic": "centered graphic",
+  "illustrated-motif": "illustrated motif",
+  "pattern-maker": "pattern maker",
+  "free-4-all": "free 4 all",
+};
+
 export const LITERAL_TEXT_INSTRUCTION =
   "Render the following text EXACTLY as written, verbatim — do not change, add, remove, rephrase, or invent text";
 
@@ -229,27 +239,28 @@ export function resolveStyleLayerRaw(opts: {
   darkPrefix?: string | null;
   colorTier?: "light" | "dark";
   stylePresetId?: string | null;
+  catalogSlug?: string | null;
   styleName?: string | null;
   category?: string | null;
 }): string {
+  const slug = (opts.catalogSlug || "").trim() || (opts.stylePresetId || "").trim();
   if (opts.colorTier === "dark") {
     const dark = (opts.darkPrefix || "").trim();
     if (dark) return dark;
-    const idKey = (opts.stylePresetId || "").trim();
-    if (idKey && APPAREL_DARK_TIER_PROMPTS[idKey]) {
-      return APPAREL_DARK_TIER_PROMPTS[idKey];
+    if (slug && APPAREL_DARK_TIER_PROMPTS[slug]) {
+      return APPAREL_DARK_TIER_PROMPTS[slug];
     }
   }
   const light = (opts.lightPrefix || "").trim();
   if (light) return light;
   const cat = (opts.category || "").toLowerCase();
-  const nameKey = (opts.styleName || "").trim().toLowerCase();
   if (cat === "graphics") {
-    const idKey = (opts.stylePresetId || "").trim().toLowerCase();
-    return GRAPHICS_CHROMA_STYLE_BY_ID[idKey] || GRAPHICS_CHROMA_STYLE_BY_NAME[nameKey] || "";
+    const idKey = slug.toLowerCase();
+    return GRAPHICS_CHROMA_STYLE_BY_ID[idKey] || "";
   }
-  if (nameKey && APPAREL_CHROMA_STYLE_BY_NAME[nameKey] !== undefined) {
-    return APPAREL_CHROMA_STYLE_BY_NAME[nameKey];
+  const chromaKey = SLUG_TO_APPAREL_CHROMA_KEY[slug.toLowerCase()];
+  if (chromaKey && APPAREL_CHROMA_STYLE_BY_NAME[chromaKey] !== undefined) {
+    return APPAREL_CHROMA_STYLE_BY_NAME[chromaKey];
   }
   return "";
 }
@@ -529,8 +540,8 @@ export function migrateStoredStyleLayer(text: string): string {
   return trimmed;
 }
 
-/** Catalog style layers forced by lowercased display name (boot + dirty-row repair). */
-export const FORCE_STYLE_LAYER_BY_NAME: Record<string, { light: string; dark?: string }> = {
+/** Catalog style layers forced by stable catalog slug (boot + dirty-row repair). */
+export const FORCE_STYLE_LAYER_BY_SLUG: Record<string, { light: string; dark?: string }> = {
   opinionated: {
     light: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
     dark: APPAREL_DARK_TIER_PROMPTS.opinionated,
@@ -539,40 +550,40 @@ export const FORCE_STYLE_LAYER_BY_NAME: Record<string, { light: string; dark?: s
     light: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
     dark: APPAREL_DARK_TIER_PROMPTS.quotes,
   },
-  "pet portraits": {
+  "pet-portraits": {
     light: APPAREL_CHROMA_STYLE_BY_NAME["pet portraits"],
     dark: APPAREL_DARK_TIER_PROMPTS["pet-portraits"],
   },
-  "centered graphic": {
+  "centered-graphic": {
     light: APPAREL_CHROMA_STYLE_BY_NAME["centered graphic"],
     dark: APPAREL_DARK_TIER_PROMPTS["centered-graphic"],
   },
-  "illustrated motif": {
+  "illustrated-motif": {
     light: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
     dark: APPAREL_DARK_TIER_PROMPTS["illustrated-motif"],
   },
-  "pattern maker": {
+  "pattern-maker": {
     light: APPAREL_CHROMA_STYLE_BY_NAME["pattern maker"],
     dark: APPAREL_DARK_TIER_PROMPTS["pattern-maker"],
   },
-  "centered graphic (graphics)": {
+  "graphics-centered-graphic": {
     light: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-centered-graphic"],
   },
-  "illustrated motif (graphics)": {
+  "graphics-illustrated-motif": {
     light: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-illustrated-motif"],
   },
-  "pattern maker (graphics)": {
+  "graphics-pattern-maker": {
     light: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-pattern-maker"],
   },
 };
 
-export function applyForcedStyleLayerByName(
-  styleName: string,
+export function applyForcedStyleLayerBySlug(
+  catalogSlug: string,
   current: string,
   field: "light" | "dark",
 ): string {
-  const key = styleName.trim().toLowerCase();
-  const forced = FORCE_STYLE_LAYER_BY_NAME[key];
+  const key = catalogSlug.trim().toLowerCase();
+  const forced = FORCE_STYLE_LAYER_BY_SLUG[key];
   const target = field === "dark" ? forced?.dark : forced?.light;
   if (key === "opinionated" && target) return target;
   const migrated = migrateStoredStyleLayer(current);

@@ -80,6 +80,10 @@ describe("generationPromptHints", () => {
 
   it("styleIsPatternMaker detects pattern maker styles", () => {
     expect(styleIsPatternMaker("Pattern Maker", "Create a repeating pattern of")).toBe(true);
+    expect(styleIsPatternMaker("Tiles", "", "pattern-maker")).toBe(true);
+    expect(styleIsPatternMaker("Pattern Maker", "Create a repeating pattern of", "centered-graphic")).toBe(
+      false,
+    );
     expect(styleIsPatternMaker("Minimalist Icon", "Create a minimal icon of")).toBe(false);
   });
 
@@ -112,6 +116,10 @@ describe("generationPromptHints", () => {
   it("detects text-friendly styles like Vintage Poster", () => {
     expect(styleAllowsGeneratedText("Vintage Poster", "period typography")).toBe(true);
     expect(styleAllowsGeneratedText("Opinionated", "bold stacked text typography")).toBe(true);
+    expect(styleAllowsGeneratedText("Renamed By Merchant", "simple icon", "opinionated")).toBe(true);
+    expect(styleAllowsGeneratedText("Opinionated", "bold stacked text typography", "centered-graphic")).toBe(
+      false,
+    );
     expect(styleAllowsGeneratedText("Minimalist Icon", "simple icon")).toBe(false);
   });
 
