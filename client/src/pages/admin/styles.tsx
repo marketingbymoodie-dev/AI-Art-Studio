@@ -91,6 +91,9 @@ export default function AdminStyles() {
   const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [descriptionOptional, setDescriptionOptional] = useState(false);
+  const [generationModel, setGenerationModel] = useState<"default" | "gpt-image-2">("default");
+  const [generationQuality, setGenerationQuality] = useState<"low" | "medium" | "high">("low");
+  const [vectorizeEnabled, setVectorizeEnabled] = useState(false);
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const MAX_BASE_IMAGES = 5;
 
@@ -248,6 +251,9 @@ export default function AdminStyles() {
     setStyleBaseImageUrls([]);
     setStylePromptPlaceholder("");
     setDescriptionOptional(false);
+    setGenerationModel("default");
+    setGenerationQuality("low");
+    setVectorizeEnabled(false);
     setSubStylesEnabled(false);
     setSubStyleLabel("Style");
     setSubStyleRequired(true);
@@ -269,6 +275,11 @@ export default function AdminStyles() {
     setStyleBaseImageUrls(existingBaseUrls);
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
     setDescriptionOptional(!!(style as any).descriptionOptional);
+    const model = String((style as any).generationModel || "").toLowerCase();
+    setGenerationModel(model === "gpt-image-2" || model === "openai/gpt-image-2" ? "gpt-image-2" : "default");
+    const quality = String((style as any).generationQuality || "low").toLowerCase();
+    setGenerationQuality(quality === "medium" || quality === "high" ? quality : "low");
+    setVectorizeEnabled((style as any).vectorizeEnabled === true);
 
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
@@ -407,6 +418,14 @@ export default function AdminStyles() {
       promptPlaceholder: stylePromptPlaceholder || null,
       descriptionOptional,
       options,
+      generationModel: generationModel === "gpt-image-2" ? "gpt-image-2" : null,
+      generationQuality:
+        generationModel === "gpt-image-2"
+          ? generationQuality === "medium" || generationQuality === "high"
+            ? generationQuality
+            : null
+          : null,
+      vectorizeEnabled: vectorizeEnabled ? true : null,
     };
 
     if (editingStyle) {
@@ -668,6 +687,63 @@ export default function AdminStyles() {
                 <p className="text-xs text-muted-foreground">
                   Decor fills the canvas edge-to-edge. Apparel and Graphics use hot-pink chroma removal; Graphics is for blankets, totes, and patterns.
                 </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Generation Model</Label>
+                <Select
+                  value={generationModel}
+                  onValueChange={(v) => setGenerationModel(v as "default" | "gpt-image-2")}
+                >
+                  <SelectTrigger data-testid="select-generation-model">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">Default — Nano Banana (current)</SelectItem>
+                    <SelectItem value="gpt-image-2">GPT-Image-2 (native transparent)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  GPT-Image-2 outputs a real transparent PNG and skips chroma. Default keeps the current model and plate pipeline.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Generation Quality</Label>
+                <Select
+                  value={generationQuality}
+                  onValueChange={(v) => setGenerationQuality(v as "low" | "medium" | "high")}
+                  disabled={generationModel !== "gpt-image-2"}
+                >
+                  <SelectTrigger data-testid="select-generation-quality">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low (default, ~1¢)</SelectItem>
+                    <SelectItem value="medium">Medium (~5¢)</SelectItem>
+                    <SelectItem value="high">High (~13¢)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Only used for GPT-Image-2. Low is the default. Medium is 5×; high is 13×.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5">
+                  <Label htmlFor="vectorize-enabled" className="text-sm font-medium">
+                    Vectorize (large-format scaling)
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Trace the motif to SVG after generate. Off leaves the env default.
+                  </p>
+                </div>
+                <Switch
+                  id="vectorize-enabled"
+                  checked={vectorizeEnabled}
+                  onCheckedChange={setVectorizeEnabled}
+                  data-testid="switch-vectorize-enabled"
+                />
               </div>
 
               {/* Prompt Prefix — auto-resizing textarea */}

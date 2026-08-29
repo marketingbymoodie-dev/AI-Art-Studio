@@ -15,6 +15,7 @@ import {
   logComposedPrompt,
   persistGenerationModel,
   persistGenerationQuality,
+  persistVectorizeEnabled,
   resolveStyleGeneration,
 } from "@shared/styleGeneration";
 import { tileImage, type TileMode } from "./sharp-tiler";
@@ -14191,7 +14192,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -14212,6 +14213,7 @@ ${orientationExtra}
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
         ...(generationModel !== undefined ? { generationModel: persistGenerationModel(generationModel) ?? null } : {}),
         ...(generationQuality !== undefined ? { generationQuality: persistGenerationQuality(generationQuality) ?? null } : {}),
+        ...(vectorizeEnabled !== undefined ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null } : {}),
       } as any);
       configCache.delete("global"); // invalidate so storefront picks up new style
       res.json(preset);
@@ -14237,7 +14239,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -14257,6 +14259,9 @@ ${orientationExtra}
           : {}),
         ...(generationQuality !== undefined
           ? { generationQuality: persistGenerationQuality(generationQuality) ?? null }
+          : {}),
+        ...(vectorizeEnabled !== undefined
+          ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null }
           : {}),
       } as any);
 

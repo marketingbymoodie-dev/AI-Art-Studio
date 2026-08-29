@@ -2369,7 +2369,11 @@ export function registerCreatorMarketplaceRoutes(
           promptPlaceholder,
           descriptionOptional,
           options,
+          generationModel,
+          generationQuality,
+          vectorizeEnabled,
         } = req.body || {};
+        const { persistGenerationModel, persistGenerationQuality, persistVectorizeEnabled } = await import("@shared/styleGeneration");
         const style = await updatePlatformStyle(id, {
           ...(name !== undefined ? { name } : {}),
           ...(promptPrefix !== undefined ? { promptPrefix } : {}),
@@ -2380,6 +2384,15 @@ export function registerCreatorMarketplaceRoutes(
           ...(descriptionOptional !== undefined ? { descriptionOptional: !!descriptionOptional } : {}),
           ...(options !== undefined ? { options: options || null } : {}),
           ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+          ...(generationModel !== undefined
+            ? { generationModel: persistGenerationModel(generationModel) ?? null }
+            : {}),
+          ...(generationQuality !== undefined
+            ? { generationQuality: persistGenerationQuality(generationQuality) ?? null }
+            : {}),
+          ...(vectorizeEnabled !== undefined
+            ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null }
+            : {}),
         } as any);
         res.json(style);
       } catch (e: any) {

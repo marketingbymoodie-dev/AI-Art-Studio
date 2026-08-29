@@ -5,6 +5,7 @@ import {
   composeTransparentPrompt,
   estimatedGptImage2CostUsd,
   mapGptImage2AspectRatio,
+  persistVectorizeEnabled,
   resolveGenerationQuality,
   resolveStyleGeneration,
   stripChromaPlateLanguage,
@@ -37,6 +38,12 @@ describe("quality cost map", () => {
   it("defaults unknown to low", () => {
     expect(resolveGenerationQuality(null)).toBe("low");
     expect(resolveGenerationQuality("nope")).toBe("low");
+  });
+
+  it("persists vectorizeEnabled as true or null", () => {
+    expect(persistVectorizeEnabled(undefined)).toBeUndefined();
+    expect(persistVectorizeEnabled(true)).toBe(true);
+    expect(persistVectorizeEnabled(null)).toBeNull();
   });
 
   it("maps list prices", () => {

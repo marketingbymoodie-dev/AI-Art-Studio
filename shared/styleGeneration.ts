@@ -59,6 +59,15 @@ export function persistGenerationModel(raw: unknown): string | null | undefined 
 }
 
 /** `undefined` = field omitted (leave existing). */
+export function persistVectorizeEnabled(raw: unknown): boolean | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (raw === true || raw === "true") return true;
+  if (raw === false || raw === "false") return false;
+  return null;
+}
+
+/** `undefined` = field omitted (leave existing). */
 export function persistGenerationQuality(raw: unknown): string | null | undefined {
   if (raw === undefined) return undefined;
   if (raw == null || raw === "") return null;
