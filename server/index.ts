@@ -278,7 +278,12 @@ app.use((req, res, next) => {
     const { ensureSeedPricingCatalogue } = await import("./pricing-catalogue");
     await ensureSeedPricingCatalogue();
   } catch (migrationError) {
-    console.error("[SERVER STARTUP] Startup migration failed — continuing boot:", migrationError);
+    const err = migrationError as any;
+    console.error(
+      "[SERVER STARTUP] Startup migration failed — continuing boot:",
+      err?.stack || err,
+    );
+    console.error("[SERVER STARTUP] migration error message:", err?.message ?? String(migrationError));
   }
 
   // ✅ 1) Register API + server routes FIRST

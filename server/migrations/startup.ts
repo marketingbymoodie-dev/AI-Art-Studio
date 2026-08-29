@@ -281,12 +281,12 @@ const DATA_MIGRATIONS: string[] = [
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
        category = 'apparel'
    WHERE lower(name) = 'centered graphic'
-     AND prompt_prefix ILIKE '%white background%'`
+     AND prompt_prefix ILIKE '%white background%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
        category = 'apparel'
    WHERE lower(name) = 'illustrated motif'
-     AND prompt_prefix ILIKE '%white background%'`
+     AND prompt_prefix ILIKE '%white background%'`,
   // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
