@@ -37,12 +37,14 @@ import {
   flatVisibleArtBoxAxisAligned,
   flatApparelOpaqueTrimmed,
   flatDefaultPlacementScale,
+  flatFitPlacementToSafeArea,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   flatPrintCanvasPreviewDims,
+  flatShouldFitToSafeArea,
   renderFlatView,
-  FLAT_SCALE_MIN,
+  FLAT_SCALE_FIT_FLOOR,
   type Rect,
 } from "./lib/flatRender";
 import type {
@@ -92,6 +94,11 @@ export type FlatProductPlacerState = {
    * `null` = no customer fill (grey guide chrome in preview; transparent bake).
    */
   backgroundColor: string | null;
+  /**
+   * First-open only: contain-fit apparel into the dashed print guide, then
+   * clear. User drags/scales after that are never overwritten.
+   */
+  needsSafeFit?: boolean;
 };
 
 export type FlatProductPlacerApplyResult = {
@@ -233,7 +240,7 @@ function applyPlacementToState(
     const otherCur = placements[other] ?? next;
     placements[other] = { ...otherCur, scale: next.scale };
   }
-  return { ...prev, linkSides: false, placements };
+  return { ...prev, linkSides: false, placements, needsSafeFit: false };
 }
 
 function buildInitialState(
@@ -261,6 +268,7 @@ function buildInitialState(
     linkSides: false,
     artworkUrl: saved?.artworkUrl ?? null,
     backgroundColor: resolvedBg,
+    needsSafeFit: saved?.needsSafeFit ?? !saved?.placements,
   };
   if (!saved) return base;
   return {
@@ -270,6 +278,7 @@ function buildInitialState(
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
     linkSides: false,
     backgroundColor: resolvedBg,
+    needsSafeFit: saved.needsSafeFit ?? !saved.placements,
   };
 }
 
@@ -498,9 +507,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       for (const v of availableViews) {
         placements[v] = { ...defaultPlacement };
       }
-      return { ...prev, placements };
+      return {
+        ...prev,
+        placements,
+        needsSafeFit: flatShouldFitToSafeArea({
+          edgeWrapMode,
+          decorMode,
+          fabricWeave,
+        }),
+      };
     });
-  }, [geometryKey, availableViews, defaultPlacement]);
+  }, [geometryKey, availableViews, defaultPlacement, edgeWrapMode, decorMode, fabricWeave]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -548,6 +565,61 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     };
   }, [artworkSourceUrl, edgeWrapMode]);
 
+  // First render of a design into this product's dashed guide: contain-fit
+  // (scale down + center). Decor / edge-wrap / tapestry skip. After this,
+  // user drags are never overwritten (needsSafeFit cleared; placement edits
+  // also clear it via applyPlacementToState).
+  useEffect(() => {
+    if (!flatShouldFitToSafeArea({ edgeWrapMode, decorMode, fabricWeave })) {
+      if (stateRef.current?.needsSafeFit) {
+        setState((prev) => (prev?.needsSafeFit ? { ...prev, needsSafeFit: false } : prev));
+      }
+      return;
+    }
+    if (assetsLoading || !artworkImg) return;
+    if (!stateRef.current?.needsSafeFit) return;
+    const artW = artworkImg.naturalWidth || artworkImg.width || 0;
+    const artH = artworkImg.naturalHeight || artworkImg.height || 0;
+    if (artW <= 0 || artH <= 0) return;
+
+    const prev = stateRef.current;
+    const placements = { ...prev.placements };
+    let anyFitted = false;
+    for (const v of availableViews) {
+      const cal = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
+      const va = assets[v];
+      if (!cal || !va?.blank) continue;
+      const mW = va.blank.naturalWidth || cal.mockupDims?.width || 1;
+      const mH = va.blank.naturalHeight || cal.mockupDims?.height || 1;
+      const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
+        edgeWrapMode,
+        decorMode,
+      });
+      if (!(pRect.width > 0 && pRect.height > 0)) continue;
+      const cur = placements[v] ?? defaultPlacement;
+      placements[v] = flatFitPlacementToSafeArea(pRect, artW, artH, cur);
+      anyFitted = true;
+    }
+    if (!anyFitted) return;
+    setState((s) => {
+      if (!s?.needsSafeFit) return s;
+      return { ...s, placements, needsSafeFit: false };
+    });
+  }, [
+    assets,
+    assetsLoading,
+    artworkImg,
+    availableViews,
+    calibOpts,
+    colorId,
+    decorMode,
+    defaultPlacement,
+    edgeWrapMode,
+    fabricWeave,
+    manifest,
+    state?.needsSafeFit,
+  ]);
+
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);
 
@@ -562,7 +634,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode, fabricWeave });
 
   const clampPlacementScale = useCallback(
-    (scale: number) => Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, scale)),
+    (scale: number) => Math.max(FLAT_SCALE_FIT_FLOOR, Math.min(scaleMax, scale)),
     [scaleMax],
   );
 
@@ -1560,7 +1632,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             </div>
             <input
               type="range"
-              min={FLAT_SCALE_MIN}
+              min={FLAT_SCALE_FIT_FLOOR}
               max={scaleMax}
               step={0.01}
               value={displayScale}

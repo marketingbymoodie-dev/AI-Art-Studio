@@ -39,8 +39,10 @@ import type {
 
 export type Rect = { x: number; y: number; width: number; height: number };
 
-/** Lowest allowed placement scale. */
+/** Lowest allowed placement scale (slider / drag). */
 export const FLAT_SCALE_MIN = 0.2;
+/** First-open contain-fit may go below the slider min so extreme aspects still fit. */
+export const FLAT_SCALE_FIT_FLOOR = 0.05;
 /** Apparel cap — baked print files honor this; Printify's own placement API still clamps at 1. */
 export const FLAT_SCALE_MAX = 1.5;
 /** Phone edge-wrap — zoom in to cover side strip + bleed. */
@@ -82,6 +84,75 @@ export function flatDefaultPlacementScale(opts: {
     return Math.max(FLAT_SCALE_MIN, Math.min(max, pct / 100));
   }
   return Math.min(max, FLAT_APPAREL_DEFAULT_SCALE);
+}
+
+/**
+ * Apparel chest prints (DTG / non-bleed) get a first-open contain-fit into
+ * the dashed print guide. Decor / edge-wrap / tapestry are meant to cover or
+ * bleed the print area — do not shrink those.
+ */
+export function flatShouldFitToSafeArea(opts: {
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+  fabricWeave?: boolean;
+}): boolean {
+  return !opts.edgeWrapMode && !opts.decorMode && !opts.fabricWeave;
+}
+
+/**
+ * Placement `scale` (cover baseline) that contain-fits the artwork box in
+ * `rect`. Matching aspects → 1; a mismatch is contain/cover (always ≤ 1).
+ */
+export function flatContainPlacementScale(
+  rect: Rect,
+  artW: number,
+  artH: number,
+  rotationDeg = 0,
+): number {
+  const aw = artW > 0 ? artW : 1;
+  const ah = artH > 0 ? artH : 1;
+  const rw = rect.width > 0 ? rect.width : 1;
+  const rh = rect.height > 0 ? rect.height : 1;
+  const cover = Math.max(rw / aw, rh / ah);
+  if (!(cover > 0) || !Number.isFinite(cover)) return 1;
+  let fit = Math.min(rw / aw, rh / ah) / cover;
+  const deg = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+  if (deg % 180 !== 0) {
+    const rad = (deg * Math.PI) / 180;
+    const c = Math.abs(Math.cos(rad));
+    const s = Math.abs(Math.sin(rad));
+    const denomW = cover * (aw * c + ah * s);
+    const denomH = cover * (aw * s + ah * c);
+    if (denomW > 0) fit = Math.min(fit, rw / denomW);
+    if (denomH > 0) fit = Math.min(fit, rh / denomH);
+  }
+  if (!Number.isFinite(fit) || fit <= 0) return FLAT_SCALE_FIT_FLOOR;
+  return Math.max(FLAT_SCALE_FIT_FLOOR, Math.min(FLAT_SCALE_MAX, fit));
+}
+
+/**
+ * First-open fit: scale down (never up) so the artwork box sits inside `rect`,
+ * preserve aspect, center. Offsets from another product are cleared.
+ */
+export function flatFitPlacementToSafeArea(
+  rect: Rect,
+  artW: number,
+  artH: number,
+  current: ArtworkPlacement,
+): ArtworkPlacement {
+  const contain = flatContainPlacementScale(
+    rect,
+    artW,
+    artH,
+    current.rotationDeg,
+  );
+  const scale = Math.min(current.scale, contain);
+  return {
+    ...current,
+    scale: Math.max(FLAT_SCALE_FIT_FLOOR, scale),
+    offsetX: 0,
+    offsetY: 0,
+  };
 }
 
 /** Floor for the normalized shading multiply so artwork never goes fully black. */

@@ -119,7 +119,10 @@ import {
   firstUsableBlankKey,
 } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { resolveStoredColorHex } from "@shared/printifyColorResolver";
-import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
+import {
+  flatDefaultPlacementScale,
+  flatShouldFitToSafeArea,
+} from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
   isVariantKeyAvailable,
@@ -8221,6 +8224,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           artworkUrl: artworkAbs,
           // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
           backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          needsSafeFit: flatShouldFitToSafeArea({
+            edgeWrapMode: flatEdgeWrapMode,
+            decorMode: flatDecorMode,
+            fabricWeave: !!flatFabricWeave,
+          }),
         };
         setFlatPlacerState(seededFlatState);
       } else {
@@ -8997,6 +9005,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           artworkUrl: artworkAbs,
           // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
           backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          needsSafeFit: flatShouldFitToSafeArea({
+            edgeWrapMode: flatEdgeWrapMode,
+            decorMode: flatDecorMode,
+            fabricWeave: !!flatFabricWeave,
+          }),
         });
       } else {
         setFlatPlacerState(null);
@@ -11713,6 +11726,36 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setAopPatternUrl(null);
         setShowPatternStep(true);
       } else if (usesFlatOnTheFlyPreview) {
+        const seedScale = flatDefaultPlacementScale({
+          edgeWrapMode: flatEdgeWrapMode,
+          decorMode: flatDecorMode,
+          fabricWeave: !!flatFabricWeave,
+          zoomPercent: defaultZoom,
+        });
+        setFlatPlacerState({
+          view: "front",
+          placements: {
+            front: { scale: seedScale, offsetX: 0, offsetY: 0 },
+            back: { scale: seedScale, offsetX: 0, offsetY: 0 },
+          },
+          enabled: {
+            front:
+              !supportsPrintPlacementSelection ||
+              printPlacement === "front" ||
+              printPlacement === "both",
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : false,
+          },
+          linkSides: false,
+          artworkUrl: abs,
+          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          needsSafeFit: flatShouldFitToSafeArea({
+            edgeWrapMode: flatEdgeWrapMode,
+            decorMode: flatDecorMode,
+            fabricWeave: !!flatFabricWeave,
+          }),
+        });
         setFlatPlacerEditOpen(true);
       }
     },
@@ -11728,6 +11771,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedSize,
       printSizes,
       clearLoadDesignIdFromUrl,
+      flatEdgeWrapMode,
+      flatDecorMode,
+      flatFabricWeave,
+      defaultZoom,
+      supportsPrintPlacementSelection,
+      printPlacement,
     ],
   );
 
