@@ -8478,12 +8478,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.options) || data.options.length !== 3) {
-        const detail = [data.anthropicStatus, data.anthropicType, data.anthropicMessage]
+        const detail = [
+          data.error,
+          data.quoteStage,
+          data.anthropicStatus,
+          data.anthropicType,
+          data.anthropicMessage,
+          data.quoteDetail,
+        ]
           .filter(Boolean)
-          .join(" ");
+          .join(" · ");
         toast({
           title: "Could not write quotes",
-          description: detail || data.error || "Try again in a moment.",
+          description: detail || "Try again in a moment.",
           variant: "destructive",
         });
         return;

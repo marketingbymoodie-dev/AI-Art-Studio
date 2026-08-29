@@ -68,6 +68,29 @@ export function summarizeAnthropicError(status: number, body: string): Anthropic
   };
 }
 
+export type QuoteStage = "fetch" | "json-parse" | "validation";
+
+/** Staging / toast fields. Status, type, message, stage — never the API key. */
+export function stagingQuoteErrorPayload(err: any): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    error: err?.message || "Quote writer is unavailable",
+  };
+  if (err?.quoteStage) payload.quoteStage = err.quoteStage;
+  if (err?.quoteDetail) {
+    payload.quoteDetail = redactAnthropicSecrets(String(err.quoteDetail)).slice(0, 300);
+  }
+  if (err?.anthropicStatus) payload.anthropicStatus = err.anthropicStatus;
+  if (err?.anthropicType) payload.anthropicType = err.anthropicType;
+  if (err?.anthropicMessage) payload.anthropicMessage = err.anthropicMessage;
+  if (err?.rawModelText) {
+    payload.rawModelText = redactAnthropicSecrets(String(err.rawModelText)).slice(0, 300);
+  }
+  if (err?.stack) {
+    payload.stack = redactAnthropicSecrets(String(err.stack)).slice(0, 600);
+  }
+  return payload;
+}
+
 const SYSTEM = `You write original t-shirt quotes from a customer's THEME and a VOICE.
 
 Return ONLY JSON: {"options":[{ "quote": string, "art_brief": string, "font_suggestion": string }, ...]}
@@ -124,6 +147,7 @@ export async function generateQuoteOptions(theme: string, voiceRaw: string): Pro
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let quoteStage: QuoteStage = "fetch";
   try {
     const res = await fetch(ANTHROPIC_MESSAGES_URL, {
       method: "POST",
@@ -146,17 +170,29 @@ export async function generateQuoteOptions(theme: string, voiceRaw: string): Pro
       console.warn("[quote-options] Anthropic", res.status, safeBody.slice(0, 400));
       throw Object.assign(new Error("Quote writer is unavailable"), {
         status: 502,
+        quoteStage: "fetch",
         ...summarizeAnthropicError(res.status, safeBody),
       });
     }
-    const json = (await res.json()) as {
-      content?: Array<{ type?: string; text?: string }>;
-    };
-    const text = (json.content || [])
-      .filter((b) => b.type === "text" && b.text)
+    quoteStage = "json-parse";
+    let json: { content?: Array<{ type?: string; text?: string } | null> };
+    try {
+      json = (await res.json()) as typeof json;
+    } catch (parseErr: any) {
+      console.warn("[quote-options] json-parse", parseErr?.message || parseErr);
+      throw Object.assign(new Error("Anthropic response was not JSON"), {
+        status: 502,
+        quoteStage: "json-parse",
+        quoteDetail: redactAnthropicSecrets(String(parseErr?.message || "")).slice(0, 300),
+      });
+    }
+    const blocks = Array.isArray(json.content) ? json.content : [];
+    const text = blocks
+      .filter((b) => b && b.type === "text" && b.text)
       .map((b) => b.text)
       .join("\n")
       .trim();
+    quoteStage = "validation";
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(text);
@@ -172,15 +208,31 @@ export async function generateQuoteOptions(theme: string, voiceRaw: string): Pro
     }
     const options = parseOptions(parsed);
     if (!options) {
-      throw Object.assign(new Error("Quote writer returned an invalid set"), { status: 502 });
+      const rawModelText = redactAnthropicSecrets(text).slice(0, 300);
+      console.warn("[quote-options] validation failed raw:", rawModelText);
+      throw Object.assign(new Error("Quote writer returned an invalid set"), {
+        status: 502,
+        quoteStage: "validation",
+        rawModelText,
+      });
     }
     return options;
   } catch (err: any) {
     if (err?.status) throw err;
-    if (err?.name === "AbortError") {
-      throw Object.assign(new Error("Quote writer timed out"), { status: 504 });
+    const aborted = err?.name === "AbortError" || err?.cause?.name === "AbortError";
+    if (aborted) {
+      throw Object.assign(new Error("Quote writer timed out"), {
+        status: 504,
+        quoteStage,
+      });
     }
-    throw Object.assign(new Error("Quote writer is unavailable"), { status: 502 });
+    console.warn("[quote-options] throw", quoteStage, err?.stack || err);
+    throw Object.assign(new Error("Quote writer is unavailable"), {
+      status: 502,
+      quoteStage,
+      quoteDetail: redactAnthropicSecrets(String(err?.message || "")).slice(0, 300),
+      stack: err?.stack,
+    });
   } finally {
     clearTimeout(timer);
   }

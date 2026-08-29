@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactAnthropicSecrets, summarizeAnthropicError } from "./quote-options";
+import { redactAnthropicSecrets, stagingQuoteErrorPayload, summarizeAnthropicError } from "./quote-options";
 
 describe("summarizeAnthropicError", () => {
   it("extracts type and message from the standard Anthropic error envelope", () => {
@@ -34,5 +34,22 @@ describe("summarizeAnthropicError", () => {
     expect(detail.anthropicStatus).toBe(404);
     expect(detail.anthropicType).toBeNull();
     expect(detail.anthropicMessage?.length).toBe(300);
+  });
+});
+
+describe("stagingQuoteErrorPayload", () => {
+  it("echoes stage and redacts keys from detail", () => {
+    const payload = stagingQuoteErrorPayload({
+      message: "Quote writer is unavailable",
+      quoteStage: "fetch",
+      anthropicStatus: 401,
+      anthropicType: "authentication_error",
+      anthropicMessage: "API key is invalid.",
+      quoteDetail: "got sk-ant-secret123",
+    });
+    expect(payload.quoteStage).toBe("fetch");
+    expect(payload.anthropicStatus).toBe(401);
+    expect(String(payload.quoteDetail)).toContain("[redacted]");
+    expect(JSON.stringify(payload)).not.toContain("sk-ant-");
   });
 });

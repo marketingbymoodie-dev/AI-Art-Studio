@@ -112,7 +112,7 @@ import {
   migrateQuotesInventFragment,
   quotesImageComposeOverrides,
 } from "@shared/quotesStyle";
-import { generateQuoteOptions } from "./quote-options";
+import { generateQuoteOptions, stagingQuoteErrorPayload } from "./quote-options";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
   resolveFulfillmentLayout,
@@ -8176,32 +8176,31 @@ ${orientationExtra}
 
   // Quotes Step A — Sonnet only. Never debits a credit. Not on the generate path.
   app.post("/api/storefront/quote-options", async (req: Request, res: Response) => {
-    const theme = String(req.body?.theme || "").trim();
-    const voice = String(req.body?.voice || "").trim();
-    const shopRaw = String(req.body?.shop || req.query.shop || "");
-    const shop = shopRaw ? normalizeMyshopifyShopDomain(shopRaw) : "";
-    if (shop) {
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(401).json({ error: "Shop not authorized" });
-      }
-    }
+    const railwayEnv = `${process.env.RAILWAY_ENVIRONMENT || ""} ${process.env.RAILWAY_ENVIRONMENT_NAME || ""}`.toLowerCase();
+    const staging = requestLooksLikeStagingHost(req) || railwayEnv.includes("staging");
+    const fail = (err: any, fallbackStatus: number) => {
+      const status = Number(err?.status) || fallbackStatus;
+      const payload = staging
+        ? stagingQuoteErrorPayload(err)
+        : { error: err?.message || "Quote writer is unavailable" };
+      return res.status(status).json(payload);
+    };
     try {
+      const theme = String(req.body?.theme || "").trim();
+      const voice = String(req.body?.voice || "").trim();
+      const shopRaw = String(req.body?.shop || req.query.shop || "");
+      const shop = shopRaw ? normalizeMyshopifyShopDomain(shopRaw) : "";
+      if (shop) {
+        const installation = await getAuthorizedInstallation(shop);
+        if (!installation) {
+          return res.status(401).json({ error: "Shop not authorized" });
+        }
+      }
       const options = await generateQuoteOptions(theme, voice);
       return res.json({ options });
     } catch (err: any) {
-      const status = Number(err?.status) || 502;
-      const payload: Record<string, unknown> = {
-        error: err?.message || "Quote writer is unavailable",
-      };
-      const railwayEnv = `${process.env.RAILWAY_ENVIRONMENT || ""} ${process.env.RAILWAY_ENVIRONMENT_NAME || ""}`.toLowerCase();
-      const staging = requestLooksLikeStagingHost(req) || railwayEnv.includes("staging");
-      if (staging && err?.anthropicStatus) {
-        payload.anthropicStatus = err.anthropicStatus;
-        if (err.anthropicType) payload.anthropicType = err.anthropicType;
-        if (err.anthropicMessage) payload.anthropicMessage = err.anthropicMessage;
-      }
-      return res.status(status).json(payload);
+      console.warn("[quote-options] route", err?.stack || err?.message || err);
+      return fail(err, 500);
     }
   });
 
