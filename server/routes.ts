@@ -8464,7 +8464,7 @@ ${orientationExtra}
 
       rateLimit.count++;
 
-      if (!prompt || !size) {
+      if (!size || (prompt == null && rawUserPrompt == null)) {
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
@@ -8814,7 +8814,7 @@ ${orientationExtra}
         sessionId: sessionId ?? null,
         customerId: resolvedJobCustomerId,
         status: "pending",
-        prompt,
+        prompt: typeof rawUserPrompt === "string" ? rawUserPrompt : prompt,
         userPrompt: rawUserPrompt ?? null,
         stylePreset: stylePreset ?? null,
         size: size ?? null,

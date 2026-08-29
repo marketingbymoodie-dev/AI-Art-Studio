@@ -8373,16 +8373,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!shouldUseStyleReferenceImage(effectivePrompt, referenceImages.length > 0 || hasReuseRefs)) {
       resolvedBaseImageUrl = undefined;
     }
-    if (effectivePresetId && effectivePresetId !== "") {
-      const preset = filteredStylePresets.find((p) => p.id === effectivePresetId);
-      if (preset?.promptSuffix) {
-        fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
+    // Storefront generate: server compose owns STYLE + sizing. Keep a leading
+    // sub-style fragment on `prompt` so resolveSubStyleFragment's startsWith
+    // fallback still works if styleOptionId is missing. Do not append
+    // promptSuffix or the legacy Full-bleed tail (stale iframe suffix dirtied jobs).
+    if (!isStorefront) {
+      if (effectivePresetId && effectivePresetId !== "") {
+        const preset = filteredStylePresets.find((p) => p.id === effectivePresetId);
+        if (preset?.promptSuffix) {
+          fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
+        }
       }
-    }
-
-    if (!reuseRegenerateBasePrompt) {
-      fullPrompt +=
-        ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+      if (!reuseRegenerateBasePrompt) {
+        fullPrompt +=
+          ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+      }
     }
 
     // Convert all reference images to base64
