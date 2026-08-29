@@ -40,7 +40,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { countWords, findLiteralSlot, literalPlaceholder, parseUserSlotSchema } from "@shared/promptLayers";
 import {
@@ -2089,6 +2089,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [quoteTheme, setQuoteTheme] = useState("");
   const [quoteWriting, setQuoteWriting] = useState(false);
   const [quoteRowDrafts, setQuoteRowDrafts] = useState<string[]>([]);
+  const [quoteEditingIndex, setQuoteEditingIndex] = useState<number | null>(null);
+  const quoteEditSeedRef = useRef("");
   const prevQuoteVoiceRef = useRef("");
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
   const [referencePreviews, setReferencePreviews] = useState<string[]>([]);
@@ -8450,6 +8452,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setQuotePickIndex(null);
     setQuoteTheme("");
     setQuoteRowDrafts([]);
+    setQuoteEditingIndex(null);
+  };
+
+  const commitQuoteRowEdit = (i: number) => {
+    setQuoteRowDrafts((prev) => {
+      const next = [...prev];
+      const trimmed = String(next[i] || "").trim();
+      next[i] = trimmed || quoteOptions?.[i]?.quote || quoteEditSeedRef.current;
+      return next;
+    });
+    setQuotePickIndex(i);
+    setQuoteEditingIndex(null);
+  };
+
+  const beginQuoteRowEdit = (i: number) => {
+    if (quoteEditingIndex != null && quoteEditingIndex !== i) {
+      commitQuoteRowEdit(quoteEditingIndex);
+    }
+    const seed = (quoteRowDrafts[i] || quoteOptions?.[i]?.quote || "").trim();
+    quoteEditSeedRef.current = seed;
+    setQuotePickIndex(i);
+    setQuoteEditingIndex(i);
   };
 
   const runQuoteOptions = async (theme: string) => {
@@ -8499,6 +8523,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setQuoteOptions(data.options);
       setQuoteRowDrafts(data.options.map((o: QuoteOption) => o.quote));
       setQuotePickIndex(null);
+      setQuoteEditingIndex(null);
     } catch {
       toast({
         title: "Could not write quotes",
@@ -8522,6 +8547,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setQuotePickIndex(null);
       setQuoteOptions(null);
       setQuoteRowDrafts([]);
+      setQuoteEditingIndex(null);
       const theme = quoteTheme || detectQuotesVerbatimInput(prompt).text;
       if (theme && selectedStyleOption) void runQuoteOptions(theme);
     }
@@ -15884,6 +15910,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   >
                     {quoteRowDrafts.map((line, i) => {
                       const selected = quotePickIndex === i;
+                      const editing = quoteEditingIndex === i;
                       return (
                         <div
                           key={i}
@@ -15898,23 +15925,69 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                 ? "bg-foreground text-background"
                                 : "border border-border text-muted-foreground"
                             }`}
-                            onClick={() => setQuotePickIndex(i)}
+                            onClick={() => {
+                              if (quoteEditingIndex != null && quoteEditingIndex !== i) {
+                                commitQuoteRowEdit(quoteEditingIndex);
+                              }
+                              setQuotePickIndex(i);
+                            }}
                             data-testid={`button-quote-option-${i}`}
                           >
                             {i + 1}
                           </button>
-                          <textarea
-                            className="min-h-[40px] w-full resize-none bg-transparent text-sm outline-none"
-                            value={line}
-                            onFocus={() => setQuotePickIndex(i)}
-                            onChange={(e) => {
-                              const next = [...quoteRowDrafts];
-                              next[i] = e.target.value;
-                              setQuoteRowDrafts(next);
-                              setQuotePickIndex(i);
+                          {editing ? (
+                            <textarea
+                              className="min-h-[40px] w-full resize-none bg-transparent text-sm outline-none"
+                              value={line}
+                              autoFocus
+                              onChange={(e) => {
+                                const next = [...quoteRowDrafts];
+                                next[i] = e.target.value;
+                                setQuoteRowDrafts(next);
+                                setQuotePickIndex(i);
+                              }}
+                              onBlur={() => commitQuoteRowEdit(i)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                  e.preventDefault();
+                                  (e.currentTarget as HTMLTextAreaElement).blur();
+                                }
+                                if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  setQuoteRowDrafts((prev) => {
+                                    const next = [...prev];
+                                    next[i] = quoteEditSeedRef.current;
+                                    return next;
+                                  });
+                                  setQuoteEditingIndex(null);
+                                }
+                              }}
+                              data-testid={`input-quote-option-${i}`}
+                            />
+                          ) : (
+                            <p
+                              className="min-h-[40px] w-full text-sm leading-snug"
+                              data-testid={`text-quote-option-${i}`}
+                            >
+                              {line}
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            className="mt-0.5 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            aria-label={`Edit quote ${i + 1}`}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              if (editing) {
+                                commitQuoteRowEdit(i);
+                              } else {
+                                beginQuoteRowEdit(i);
+                              }
                             }}
-                            data-testid={`input-quote-option-${i}`}
-                          />
+                            data-testid={`button-quote-edit-${i}`}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
                         </div>
                       );
                     })}
