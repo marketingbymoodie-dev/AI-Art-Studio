@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
+import { mergeCatalogStyleOptions, OPINIONATED_TYPEWRITER_FRAGMENT, STYLE_PRESETS } from "./schema";
 import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
 import {
   APPAREL_BASE_CHROMA,
@@ -235,6 +236,43 @@ describe("composeLayeredPrompt", () => {
     expect(dedupeConsecutiveParagraphs(`${APPAREL_BASE_TRANSPARENT}\n\n${APPAREL_BASE_TRANSPARENT}`)).toBe(
       APPAREL_BASE_TRANSPARENT,
     );
+  });
+
+  it("Typewriter sits in Choose Layout and composes after STYLE before USER", () => {
+    const catalog = STYLE_PRESETS.find((s) => s.id === "opinionated") as any;
+    expect(catalog.options.label).toBe("Choose Layout");
+    const tw = catalog.options.choices.find((c: any) => c.id === "typewriter");
+    expect(tw?.name).toBe("Typewriter");
+    expect(tw?.promptFragment).toBe(OPINIONATED_TYPEWRITER_FRAGMENT);
+    expect(tw?.promptFragment).toMatch(/^Typewriter lettering —/);
+    expect(tw?.promptFragment.toLowerCase()).not.toContain("render the");
+    expect(tw?.promptFragment.toLowerCase()).not.toContain("verbatim");
+
+    const merged = mergeCatalogStyleOptions(
+      { label: "Choose Layout", required: true, choices: catalog.options.choices.slice(0, 5) },
+      catalog.options,
+    );
+    expect(merged?.choices?.some((c) => c.id === "typewriter")).toBe(true);
+
+    const layered = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      subStyleLayer: OPINIONATED_TYPEWRITER_FRAGMENT,
+      userInput: "Murder is subjective",
+      userSlotSchema: literalUserSlotSchema(6),
+    });
+    const styleAt = layered.prompt.indexOf(APPAREL_CHROMA_STYLE_BY_NAME.opinionated);
+    const twAt = layered.prompt.indexOf(OPINIONATED_TYPEWRITER_FRAGMENT);
+    const userAt = layered.prompt.indexOf("Murder is subjective");
+    expect(styleAt).toBeGreaterThan(-1);
+    expect(twAt).toBeGreaterThan(styleAt);
+    expect(userAt).toBeGreaterThan(twAt);
+    expect(resolveSubStyleFragment({
+      styleOptionId: "typewriter",
+      styleOptions: catalog.options,
+    })).toBe(OPINIONATED_TYPEWRITER_FRAGMENT);
   });
 
   it("thematic styles pass user text through without quoting", () => {

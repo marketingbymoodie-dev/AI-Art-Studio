@@ -104,7 +104,7 @@ import {
   resolveStorefrontWalletView,
   walletJson,
 } from "./storefront-wallet-view";
-import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
+import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, mergeCatalogStyleOptions, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
   resolveFulfillmentLayout,
@@ -2223,7 +2223,7 @@ export async function registerRoutes(
                 promptSuffix: s.promptPrefix,
                 category: s.category || "all",
                 promptPlaceholder: (s as any).promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-                options: dbOptions || hardcodedOptions,
+                options: mergeCatalogStyleOptions(dbOptions, hardcodedOptions),
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
                 descriptionOptional: !!(s as any).descriptionOptional,
                 userSlotSchema: parseUserSlotSchema((s as any).userSlotSchema) ?? (hardcoded as any)?.userSlotSchema ?? null,
@@ -2837,9 +2837,9 @@ ${orientationExtra}
       // Build final prompt: locked base + style layer + user (chroma only in nano-banana base)
       const geminiAspectRatio = mapToGeminiAspectRatio(aspectRatioStr);
       const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
-      if (!styleOptionsAdmin) {
+      {
         const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
-        styleOptionsAdmin = (hc as any)?.options ?? null;
+        styleOptionsAdmin = mergeCatalogStyleOptions(styleOptionsAdmin, (hc as any)?.options);
       }
       const subStyleAdmin = resolveSubStyleFragment({
         styleOptionId: styleOptionIdAdmin,
@@ -3772,9 +3772,9 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      if (!embedStyleOptions) {
+      {
         const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
-        embedStyleOptions = (hc as any)?.options ?? null;
+        embedStyleOptions = mergeCatalogStyleOptions(embedStyleOptions, (hc as any)?.options);
       }
       const subStyleEmbed = resolveSubStyleFragment({
         styleOptionId: styleOptionIdEmbed,
@@ -6536,7 +6536,7 @@ ${orientationExtra}
         category: s.category || "all",
         promptPlaceholder:
           s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-        options: s.options || (hardcoded as any)?.options,
+        options: mergeCatalogStyleOptions(s.options, (hardcoded as any)?.options),
         baseImageUrl:
           s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
         baseImageUrls:
@@ -8740,9 +8740,9 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      if (!sfStyleOptions) {
+      {
         const hc = STYLE_PRESETS.find((s) => s.id === stylePreset || s.name === styleName);
-        sfStyleOptions = (hc as any)?.options ?? null;
+        sfStyleOptions = mergeCatalogStyleOptions(sfStyleOptions, (hc as any)?.options);
       }
       const subStyleSf = resolveSubStyleFragment({
         styleOptionId: styleOptionIdSf,
@@ -14172,7 +14172,7 @@ ${orientationExtra}
         return {
           ...s,
           userSlotSchema,
-          options: s.options ?? (hardcoded as any)?.options ?? null,
+          options: mergeCatalogStyleOptions(s.options, (hardcoded as any)?.options),
           promptPlaceholder: s.promptPlaceholder ?? (hardcoded as any)?.promptPlaceholder ?? null,
           baseImageUrl: s.baseImageUrl ?? (hardcoded as any)?.baseImageUrl ?? null,
           baseImageUrls: s.baseImageUrls ?? null,

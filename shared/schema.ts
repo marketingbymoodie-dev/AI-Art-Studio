@@ -1168,6 +1168,10 @@ export const FRAME_COLORS = [
   { id: "white", name: "White", hex: "#f5f5f5" },
 ] as const;
 
+/** Treatment-only Opinionated sub-style. Intent to render words lives on the style layer. */
+export const OPINIONATED_TYPEWRITER_FRAGMENT =
+  "Typewriter lettering — monospaced characters with even mechanical spacing, struck-ink texture with slight uneven inking and small imperfections, as if typed on paper with an old manual typewriter.";
+
 // IMPORTANT: Style presets are categorized by product type
 // Decor styles create full-bleed, edge-to-edge artwork for prints and wall art
 // Apparel styles create centered graphics/motifs suitable for t-shirts, etc.
@@ -1218,6 +1222,7 @@ export const STYLE_PRESETS = [
         { id: "street", name: "Street", promptFragment: "graffiti spray paint urban style, drip effects, raw street art typography", baseImageUrl: "" },
         { id: "minimal", name: "Minimal", promptFragment: "clean modern sans-serif, simple layout, balanced whitespace, understated elegance", baseImageUrl: "" },
         { id: "handwritten", name: "Handwritten", promptFragment: "casual hand-lettered script, organic brush strokes, personal handwriting feel", baseImageUrl: "" },
+        { id: "typewriter", name: "Typewriter", promptFragment: OPINIONATED_TYPEWRITER_FRAGMENT, baseImageUrl: "" },
       ],
     },
   },
@@ -1317,6 +1322,32 @@ export const STYLE_PRESETS = [
     },
   },
 ] as const;
+
+export type StyleOptionsBlob = {
+  label?: string;
+  required?: boolean;
+  choices?: Array<{
+    id?: string;
+    name?: string;
+    promptFragment?: string;
+    baseImageUrl?: string;
+    baseImageUrls?: string[];
+  }>;
+};
+
+/** Keep merchant-saved options, append any catalog choices the DB row is missing (e.g. Typewriter). */
+export function mergeCatalogStyleOptions(
+  dbOptions: StyleOptionsBlob | null | undefined,
+  hardcodedOptions: StyleOptionsBlob | null | undefined,
+): StyleOptionsBlob | null {
+  if (!dbOptions) return hardcodedOptions ?? null;
+  const catalog = hardcodedOptions?.choices || [];
+  if (catalog.length === 0) return dbOptions;
+  const have = new Set((dbOptions.choices || []).map((c) => String(c?.id || "")));
+  const extras = catalog.filter((c) => c?.id && !have.has(String(c.id)));
+  if (extras.length === 0) return dbOptions;
+  return { ...dbOptions, choices: [...(dbOptions.choices || []), ...extras] };
+}
 
 export type PrintSize = typeof PRINT_SIZES[number];
 export type FrameColor = typeof FRAME_COLORS[number];
