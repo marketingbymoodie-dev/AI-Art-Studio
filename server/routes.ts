@@ -147,7 +147,7 @@ import { ensureValidOfflineAccessToken, getBearerTokenFromRequest, recoverOrCrea
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { renderTermsOfUseHtml } from "./terms-of-use";
-import { getTermsContent } from "./creator-config";
+import { getTermsContent, requestLooksLikeStagingHost } from "./creator-config";
 import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
@@ -8191,7 +8191,17 @@ ${orientationExtra}
       return res.json({ options });
     } catch (err: any) {
       const status = Number(err?.status) || 502;
-      return res.status(status).json({ error: err?.message || "Quote writer is unavailable" });
+      const payload: Record<string, unknown> = {
+        error: err?.message || "Quote writer is unavailable",
+      };
+      const railwayEnv = `${process.env.RAILWAY_ENVIRONMENT || ""} ${process.env.RAILWAY_ENVIRONMENT_NAME || ""}`.toLowerCase();
+      const staging = requestLooksLikeStagingHost(req) || railwayEnv.includes("staging");
+      if (staging && err?.anthropicStatus) {
+        payload.anthropicStatus = err.anthropicStatus;
+        if (err.anthropicType) payload.anthropicType = err.anthropicType;
+        if (err.anthropicMessage) payload.anthropicMessage = err.anthropicMessage;
+      }
+      return res.status(status).json(payload);
     }
   });
 

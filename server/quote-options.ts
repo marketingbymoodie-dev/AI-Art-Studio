@@ -26,6 +26,48 @@ export function anthropicQuotesModel(): string {
   return String(process.env.ANTHROPIC_QUOTES_MODEL || "").trim() || DEFAULT_MODEL;
 }
 
+const SECRET_RE = /sk-ant-[A-Za-z0-9_-]+/g;
+
+export function redactAnthropicSecrets(text: string): string {
+  return String(text || "").replace(SECRET_RE, "[redacted]");
+}
+
+export type AnthropicErrorDetail = {
+  anthropicStatus: number;
+  anthropicType: string | null;
+  anthropicMessage: string | null;
+};
+
+/** Status / type / message only — never the raw key or full wire dump. */
+export function summarizeAnthropicError(status: number, body: string): AnthropicErrorDetail {
+  const safe = redactAnthropicSecrets((body || "").trim());
+  let type: string | null = null;
+  let message: string | null = null;
+  try {
+    const parsed = JSON.parse(safe) as {
+      type?: unknown;
+      message?: unknown;
+      error?: { type?: unknown; message?: unknown };
+    };
+    const inner = parsed?.error;
+    if (inner && typeof inner === "object") {
+      if (typeof inner.type === "string") type = inner.type;
+      if (typeof inner.message === "string") message = inner.message;
+    }
+    if (!type && typeof parsed?.type === "string") type = parsed.type;
+    if (!message && typeof parsed?.message === "string") message = parsed.message;
+  } catch {
+    // not JSON — fall through to truncated body
+  }
+  if (!message && safe) message = safe;
+  if (message) message = redactAnthropicSecrets(message).slice(0, 300);
+  return {
+    anthropicStatus: status,
+    anthropicType: type,
+    anthropicMessage: message,
+  };
+}
+
 const SYSTEM = `You write original t-shirt quotes from a customer's THEME and a VOICE.
 
 Return ONLY JSON: {"options":[{ "quote": string, "art_brief": string, "font_suggestion": string }, ...]}
@@ -94,15 +136,18 @@ export async function generateQuoteOptions(theme: string, voiceRaw: string): Pro
       body: JSON.stringify({
         model: anthropicQuotesModel(),
         max_tokens: 800,
-        temperature: 0.9,
         system: SYSTEM,
         messages: [{ role: "user", content: voiceUserMessage(trimmedTheme, voice) }],
       }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      console.warn("[quote-options] Anthropic", res.status, body.slice(0, 400));
-      throw Object.assign(new Error("Quote writer is unavailable"), { status: 502 });
+      const safeBody = redactAnthropicSecrets(body);
+      console.warn("[quote-options] Anthropic", res.status, safeBody.slice(0, 400));
+      throw Object.assign(new Error("Quote writer is unavailable"), {
+        status: 502,
+        ...summarizeAnthropicError(res.status, safeBody),
+      });
     }
     const json = (await res.json()) as {
       content?: Array<{ type?: string; text?: string }>;

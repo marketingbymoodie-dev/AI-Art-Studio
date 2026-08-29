@@ -8478,9 +8478,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(data.options) || data.options.length !== 3) {
+        const detail = [data.anthropicStatus, data.anthropicType, data.anthropicMessage]
+          .filter(Boolean)
+          .join(" ");
         toast({
           title: "Could not write quotes",
-          description: data.error || "Try again in a moment.",
+          description: detail || data.error || "Try again in a moment.",
           variant: "destructive",
         });
         return;
