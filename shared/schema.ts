@@ -537,6 +537,10 @@ export const stylePresets = pgTable("style_presets", {
   inkLoadCeilingPercent: integer("ink_load_ceiling_percent"),
   /** Per-style override of the APPAREL_VECTORIZE env. Null = use env. */
   vectorizeEnabled: boolean("vectorize_enabled"),
+  /** gpt-image-2 or null = current nano-banana. */
+  generationModel: text("generation_model"),
+  /** low (default) | medium | high | auto. Null = low for gpt-image-2. */
+  generationQuality: text("generation_quality"),
   /** Supported ratios for full-bleed output. */
   aspectRatios: jsonb("aspect_ratios"),
   /** Slot definitions the customer fills. */

@@ -71,6 +71,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "style_presets",         column: "palette_max_colors",          type: "INTEGER" },
   { table: "style_presets",         column: "ink_load_ceiling_percent",    type: "INTEGER" },
   { table: "style_presets",         column: "vectorize_enabled",           type: "BOOLEAN" },
+  { table: "style_presets",         column: "generation_model",            type: "TEXT" },
+  { table: "style_presets",         column: "generation_quality",          type: "TEXT" },
   { table: "style_presets",         column: "aspect_ratios",               type: "JSONB" },
   { table: "style_presets",         column: "user_slot_schema",            type: "JSONB" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },

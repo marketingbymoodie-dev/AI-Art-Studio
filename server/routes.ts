@@ -2,6 +2,7 @@ import { generateImageBase64 } from "./replit_integrations/image/client";
 import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
+  maybeVectorizeFlatGraphic,
   trimTransparentBounds,
   resolveApparelDarkTierPrefix,
   resolveIsApparelGeneration,
@@ -9,6 +10,13 @@ import {
   APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
+import {
+  composeTransparentPrompt,
+  logComposedPrompt,
+  persistGenerationModel,
+  persistGenerationQuality,
+  resolveStyleGeneration,
+} from "@shared/styleGeneration";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -959,6 +967,8 @@ interface SaveImageOptions {
   bgRemovalSensitivity?: number;
   /** Per-style WP1 `vectorizeEnabled`, or force on. Env APPAREL_VECTORIZE still wins. */
   vectorize?: boolean;
+  /** Native-transparent model — skip chroma / processApparelMotif. */
+  skipChroma?: boolean;
 }
 
 function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
@@ -966,7 +976,7 @@ function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize } =
+  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize, skipChroma } =
     options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
@@ -977,7 +987,15 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
 
   // For apparel, remove background using Replicate — including AOP
   // This ensures the motif is clean before tiling or placement
-  if (isApparel) {
+  if (isApparel && skipChroma) {
+    console.log("[saveImageToStorage] Skipping chroma pipeline (native transparent model)");
+    if (resolveApparelVectorize(vectorize)) {
+      const vectorized = await maybeVectorizeFlatGraphic(buffer, { enabled: true });
+      buffer = vectorized.buffer;
+      extension = vectorized.mimeType === "image/svg+xml" ? "svg" : "png";
+      actualMimeType = vectorized.mimeType;
+    }
+  } else if (isApparel) {
     console.log(`[saveImageToStorage] Chroma-first matting for apparel (AOP=${isAllOverPrint})...`);
     const sourceBuffer = buffer;
     const matting = await processApparelMotif(sourceBuffer, {
@@ -2556,6 +2574,8 @@ export async function registerRoutes(
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
       let styleVectorizeEnabled: boolean | null = null;
+      let styleGenerationModel: string | null = null;
+      let styleGenerationQuality: string | null = null;
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
@@ -2570,6 +2590,8 @@ export async function registerRoutes(
             }
             stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
             styleVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
+            styleGenerationModel = (selectedStyle as any).generationModel ?? null;
+            styleGenerationQuality = (selectedStyle as any).generationQuality ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2661,16 +2683,20 @@ export async function registerRoutes(
       // This covers both hardcoded and merchant-created styles via styleCategory
       // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
       let isApparel = resolveIsApparelGeneration(productType, styleCategory);
+      const styleGen = resolveStyleGeneration({
+        generationModel: styleGenerationModel,
+        generationQuality: styleGenerationQuality,
+      });
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      if (isApparel && !isAllOverPrint) {
+      if (isApparel && !isAllOverPrint && !styleGen.nativeTransparent) {
         stylePromptPrefix = resolveMotifStylePrefix(
           styleCategory,
           styleName,
           stylePreset,
           stylePromptPrefix,
         );
-      } else if (isAllOverPrint && stylePromptPrefix) {
+      } else if (isAllOverPrint && stylePromptPrefix && !styleGen.nativeTransparent) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -2721,7 +2747,7 @@ export async function registerRoutes(
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
       let fullPrompt: string;
       
-      if (styleCategory === "apparel" && isApparel && colorTier === "dark" && stylePreset) {
+      if (styleCategory === "apparel" && isApparel && colorTier === "dark" && stylePreset && !styleGen.nativeTransparent) {
         const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
         if (darkTierPrompt) {
           fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
@@ -2729,6 +2755,9 @@ export async function registerRoutes(
           fullPrompt = prompt;
         }
         console.log(`[Generate] Using dark tier prompt for ${stylePreset}`);
+      } else if (styleGen.nativeTransparent && colorTier === "dark" && (stylePromptPrefixDark || "").trim()) {
+        const rawDark = stylePromptPrefixDark!.trim();
+        fullPrompt = userDescAdmin ? `${userDescAdmin}, ${rawDark}` : rawDark;
       } else {
         if (stylePromptPrefix) {
           fullPrompt = userDescAdmin ? `${userDescAdmin}, ${stylePromptPrefix}` : stylePromptPrefix;
@@ -2740,7 +2769,9 @@ export async function registerRoutes(
       // Different requirements for apparel vs wall art
       let sizingRequirements: string;
       
-      if (isApparel && isAllOverPrint) {
+      if (isApparel && styleGen.nativeTransparent) {
+        sizingRequirements = "";
+      } else if (isApparel && isAllOverPrint) {
         const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
         sizingRequirements = usePatternAop
           ? buildAopPatternSizingRequirements(userDescAdmin)
@@ -2886,6 +2917,11 @@ ${orientationExtra}
       // Generate image using Replicate
       const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
 
+      if (styleGen.nativeTransparent) {
+        fullPrompt = composeTransparentPrompt(fullPrompt);
+        logComposedPrompt(fullPrompt, "api/generate");
+      }
+
       const { mimeType, data } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
@@ -2898,6 +2934,9 @@ ${orientationExtra}
           designerType: productType?.designerType,
           isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
         }),
+        generationModel: styleGen.model,
+        generationQuality: styleGen.quality,
+        nativeTransparent: styleGen.nativeTransparent,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -2948,6 +2987,7 @@ console.log("[api/generate] replicate returned", {
   targetDims,
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
   vectorize: resolveApparelVectorize(styleVectorizeEnabled),
+  skipChroma: styleGen.nativeTransparent,
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -3123,9 +3163,25 @@ console.log("[api/shopify/generate] saved image", result);
       // Look up the original style preset
       let stylePromptPrefix = "";
       const stylePreset = originalDesign.stylePreset;
+      let regenGenerationModel: string | null = null;
+      let regenGenerationQuality: string | null = null;
       
       if (stylePreset) {
-        if (newColorTier === "dark") {
+        const merchantId = productType?.merchantId;
+        if (merchantId) {
+          const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
+          const selectedStyle = dbStyles.find((s: { id: number }) => s.id.toString() === stylePreset);
+          if (selectedStyle) {
+            regenGenerationModel = (selectedStyle as any).generationModel ?? null;
+            regenGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+            if ((selectedStyle as any).promptPrefix) stylePromptPrefix = (selectedStyle as any).promptPrefix;
+          }
+        }
+        const regenGen = resolveStyleGeneration({
+          generationModel: regenGenerationModel,
+          generationQuality: regenGenerationQuality,
+        });
+        if (newColorTier === "dark" && !regenGen.nativeTransparent) {
           stylePromptPrefix = resolveApparelDarkTierPrefix(stylePreset, null);
         }
         if (!stylePromptPrefix) {
@@ -3136,17 +3192,25 @@ console.log("[api/shopify/generate] saved image", result);
         }
       }
 
+      const regenGen = resolveStyleGeneration({
+        generationModel: regenGenerationModel,
+        generationQuality: regenGenerationQuality,
+      });
+
       // Build the prompt
       const prompt = originalDesign.prompt;
       let fullPrompt = stylePromptPrefix ? `${stylePromptPrefix} ${prompt}` : prompt;
       
-      // Add sizing requirements — always use #FF00FF chroma key background for apparel
       const isDarkTier = newColorTier === "dark";
-      const designColors = isDarkTier 
-        ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-        : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
-      
-      fullPrompt += buildApparelChromaSizingRequirements(designColors);
+      if (!regenGen.nativeTransparent) {
+        const designColors = isDarkTier 
+          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
+          : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
+        fullPrompt += buildApparelChromaSizingRequirements(designColors);
+      } else {
+        fullPrompt = composeTransparentPrompt(fullPrompt);
+        logComposedPrompt(fullPrompt, "regenerate-tier");
+      }
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
@@ -3156,6 +3220,9 @@ const { data: base64Data, mimeType } = await generateImageBase64({
   prompt: fullPrompt,
   isApparel: true,
   isAllOverPrint: recolorIsAllOverPrint,
+  generationModel: regenGen.model,
+  generationQuality: regenGen.quality,
+  nativeTransparent: regenGen.nativeTransparent,
 });
 
 // Match the old Gemini shape so the rest of the code still works
@@ -3177,7 +3244,8 @@ if (!imagePart.inlineData.data) {
         const finalMimeType = mimeType || "image/png";
 const result = await saveImageToStorage(base64Data, finalMimeType, { 
           isApparel: true, 
-          colorTier: newColorTier as ColorTier
+          colorTier: newColorTier as ColorTier,
+          skipChroma: regenGen.nativeTransparent,
         });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
@@ -3498,6 +3566,8 @@ console.log("[shopify/session] installation ok", {
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
       let embedVectorizeEnabled: boolean | null = null;
+      let embedGenerationModel: string | null = null;
+      let embedGenerationQuality: string | null = null;
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
@@ -3509,6 +3579,8 @@ console.log("[shopify/session] installation ok", {
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           embedVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
+          embedGenerationModel = (selectedStyle as any).generationModel ?? null;
+          embedGenerationQuality = (selectedStyle as any).generationQuality ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3538,14 +3610,18 @@ console.log("[shopify/session] installation ok", {
 
       const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
       const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
-      if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
+      const embedStyleGen = resolveStyleGeneration({
+        generationModel: embedGenerationModel,
+        generationQuality: embedGenerationQuality,
+      });
+      if (embedIsApparelEarly && !embedIsAllOverPrintEarly && !embedStyleGen.nativeTransparent) {
         stylePromptPrefix = resolveMotifStylePrefix(
           embedStyleCategory,
           styleName,
           stylePreset,
           stylePromptPrefix,
         );
-      } else if (embedIsAllOverPrintEarly && stylePromptPrefix) {
+      } else if (embedIsAllOverPrintEarly && stylePromptPrefix && !embedStyleGen.nativeTransparent) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -3629,7 +3705,9 @@ console.log("[shopify/session] installation ok", {
       });
 
       let sizingRequirements: string;
-      if (embedIsApparelEarly && embedIsAllOverPrintEarly) {
+      if (embedIsApparelEarly && embedStyleGen.nativeTransparent) {
+        sizingRequirements = "";
+      } else if (embedIsApparelEarly && embedIsAllOverPrintEarly) {
         const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
         sizingRequirements = usePatternAop
           ? buildAopPatternSizingRequirements(userDescEmbed)
@@ -3776,6 +3854,11 @@ ${orientationExtra}
       }
 
       // Generate image via Replicate
+      if (embedStyleGen.nativeTransparent) {
+        fullPrompt = composeTransparentPrompt(fullPrompt);
+        logComposedPrompt(fullPrompt, "shopify/generate");
+      }
+
       const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio ?? "1:1",
@@ -3784,6 +3867,9 @@ ${orientationExtra}
         isAllOverPrint,
         userPrompt: userDescEmbed || null,
         cylindricalWrap,
+        generationModel: embedStyleGen.model,
+        generationQuality: embedStyleGen.quality,
+        nativeTransparent: embedStyleGen.nativeTransparent,
       });
 
       if (!base64Data) {
@@ -3812,6 +3898,7 @@ ${orientationExtra}
           targetDims,
           bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
           vectorize: resolveApparelVectorize(embedVectorizeEnabled),
+          skipChroma: embedStyleGen.nativeTransparent,
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -3824,6 +3911,7 @@ ${orientationExtra}
             targetDims,
             bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
             vectorize: resolveApparelVectorize(embedVectorizeEnabled),
+            skipChroma: embedStyleGen.nativeTransparent,
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -8375,6 +8463,8 @@ ${orientationExtra}
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
       let sfVectorizeEnabled: boolean | null = null;
+      let sfGenerationModel: string | null = null;
+      let sfGenerationQuality: string | null = null;
       if (creatorCtx && stylePreset) {
         const { isStyleEntitledForGenerate } = await import("./creator-styles");
         const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
@@ -8407,6 +8497,8 @@ ${orientationExtra}
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           sfVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
+          sfGenerationModel = (selectedStyle as any).generationModel ?? null;
+          sfGenerationQuality = (selectedStyle as any).generationQuality ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
@@ -8514,16 +8606,20 @@ ${orientationExtra}
 
       // Determine apparel status early — affects both prompt and dimensions
       let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
+      const sfStyleGen = resolveStyleGeneration({
+        generationModel: sfGenerationModel,
+        generationQuality: sfGenerationQuality,
+      });
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      if (isApparel && !isAllOverPrint) {
+      if (isApparel && !isAllOverPrint && !sfStyleGen.nativeTransparent) {
         stylePromptPrefix = resolveMotifStylePrefix(
           sfStyleCategory,
           styleName,
           stylePreset,
           stylePromptPrefix,
         );
-      } else if (isAllOverPrint && stylePromptPrefix) {
+      } else if (isAllOverPrint && stylePromptPrefix && !sfStyleGen.nativeTransparent) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -8570,7 +8666,9 @@ ${orientationExtra}
 
       let sizingRequirements: string;
 
-      if (isApparel && isAllOverPrint) {
+      if (isApparel && sfStyleGen.nativeTransparent) {
+        sizingRequirements = "";
+      } else if (isApparel && isAllOverPrint) {
         const usePatternAopSf = styleIsPatternMaker(styleName, stylePromptPrefix);
         sizingRequirements = usePatternAopSf
           ? buildAopPatternSizingRequirements(userDescSf)
@@ -8775,6 +8873,10 @@ ${orientationExtra}
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
           const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
+          if (sfStyleGen.nativeTransparent) {
+            fullPrompt = composeTransparentPrompt(fullPrompt);
+            logComposedPrompt(fullPrompt, "storefront/generate");
+          }
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
@@ -8787,6 +8889,9 @@ ${orientationExtra}
               designerType: productType?.designerType,
               isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
             }),
+            generationModel: sfStyleGen.model,
+            generationQuality: sfStyleGen.quality,
+            nativeTransparent: sfStyleGen.nativeTransparent,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
@@ -8821,6 +8926,7 @@ ${orientationExtra}
               targetDims,
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
               vectorize: resolveApparelVectorize(sfVectorizeEnabled),
+              skipChroma: sfStyleGen.nativeTransparent,
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -8834,13 +8940,14 @@ ${orientationExtra}
                 targetDims,
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                 vectorize: resolveApparelVectorize(sfVectorizeEnabled),
+                skipChroma: sfStyleGen.nativeTransparent,
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
             } catch (retryError) {
               console.error(`${W} Storage save failed on retry, using data URL:`, retryError);
-              if (isApparel) {
+              if (isApparel && !sfStyleGen.nativeTransparent) {
                 const matted = await processApparelMotif(Buffer.from(base64Data, "base64"), {
                   isAllOverPrint,
                   bgRemovalSensitivity:
@@ -14084,7 +14191,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -14103,6 +14210,8 @@ ${orientationExtra}
         creatorScope: "merchant",
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+        ...(generationModel !== undefined ? { generationModel: persistGenerationModel(generationModel) ?? null } : {}),
+        ...(generationQuality !== undefined ? { generationQuality: persistGenerationQuality(generationQuality) ?? null } : {}),
       } as any);
       configCache.delete("global"); // invalidate so storefront picks up new style
       res.json(preset);
@@ -14128,7 +14237,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -14143,6 +14252,12 @@ ${orientationExtra}
         descriptionOptional: descriptionOptional !== undefined ? !!descriptionOptional : !!(preset as any).descriptionOptional,
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+        ...(generationModel !== undefined
+          ? { generationModel: persistGenerationModel(generationModel) ?? null }
+          : {}),
+        ...(generationQuality !== undefined
+          ? { generationQuality: persistGenerationQuality(generationQuality) ?? null }
+          : {}),
       } as any);
 
       configCache.delete("global"); // invalidate so storefront picks up new placeholder

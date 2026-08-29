@@ -108,6 +108,28 @@ import {
   styleAllowsGeneratedText,
   userPromptRequestsMonochrome,
 } from "@shared/generationPromptHints";
+import {
+  composeTransparentPrompt,
+  estimatedGptImage2CostUsd,
+  isGptImage2Model,
+  logComposedPrompt,
+  mapGptImage2AspectRatio,
+  resolveGenerationQuality,
+  type GenerationQuality,
+} from "@shared/styleGeneration";
+
+export class GptImage2TransparentRejectedError extends Error {
+  status: number;
+  body: string;
+  constructor(status: number, body: string) {
+    super(
+      `gpt-image-2 rejected background:transparent (HTTP ${status}). Do not fall back to chroma — switch to gpt-image-1.5.`,
+    );
+    this.name = "GptImage2TransparentRejectedError";
+    this.status = status;
+    this.body = body;
+  }
+}
 
 export type GenerateImageParams = {
   prompt: string;
@@ -119,6 +141,9 @@ export type GenerateImageParams = {
   userPrompt?: string | null;
   /** Tumbler/mug wrap — keep content away from edges. Not for framed art / wall decals. */
   cylindricalWrap?: boolean;
+  generationModel?: string | null;
+  generationQuality?: string | null;
+  nativeTransparent?: boolean;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -196,7 +221,7 @@ export function buildDecorOrientationShortConstraint(aspectRatio?: string | null
   return "CANVAS IS SQUARE. Fill edge-to-edge with no blank margins. ";
 }
 
-function compressPrompt(
+export function compressPrompt(
   raw: string,
   isApparel: boolean,
   isAllOverPrint?: boolean,
@@ -204,6 +229,7 @@ function compressPrompt(
   isPatternStyle?: boolean,
   aspectRatio?: string | null,
   cylindricalWrap?: boolean,
+  nativeTransparent?: boolean,
 ): string {
   const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
   const artworkSection = artworkMatch?.[1]?.trim() || "";
@@ -214,7 +240,9 @@ function compressPrompt(
 
   let compressed: string;
 
-  if (isApparel && isAllOverPrint) {
+  if (isApparel && nativeTransparent) {
+    compressed = composeTransparentPrompt(monoHint + stripVerboseRequirementBlocks(raw));
+  } else if (isApparel && isAllOverPrint) {
     compressed = stripVerboseRequirementBlocks(raw);
 
     const shortAopConstraints = isPatternStyle
@@ -290,6 +318,60 @@ function compressPrompt(
   return compressed;
 }
 
+export function buildGptImage2ReplicateInput(params: {
+  prompt: string;
+  aspectRatio?: string;
+  inputImageUrl?: string | string[] | null;
+  quality?: string | null;
+}): Record<string, unknown> {
+  const quality = resolveGenerationQuality(params.quality);
+  const input: Record<string, unknown> = {
+    prompt: params.prompt,
+    background: "transparent",
+    output_format: "png",
+    quality,
+    aspect_ratio: mapGptImage2AspectRatio(params.aspectRatio),
+    number_of_images: 1,
+  };
+  if (params.inputImageUrl) {
+    const urls = Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl];
+    const filtered = urls.filter(Boolean);
+    if (filtered.length) input.input_images = filtered;
+  }
+  return input;
+}
+
+async function createGptImage2Prediction(
+  token: string,
+  input: Record<string, unknown>,
+): Promise<ReplicatePrediction> {
+  const url = "https://api.replicate.com/v1/models/openai/gpt-image-2/predictions";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ input }),
+  });
+  const text = await res.text();
+  let json: any;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { raw: text };
+  }
+  if (!res.ok) {
+    console.error("[Replicate] gpt-image-2 FAIL LOUD — full error body:", text);
+    console.error("[Replicate] gpt-image-2 request quality=", input.quality, "background=", input.background);
+    if (res.status === 400 || res.status === 422) {
+      throw new GptImage2TransparentRejectedError(res.status, text);
+    }
+    throw new Error(`Replicate gpt-image-2 HTTP ${res.status}: ${text}`);
+  }
+  return json;
+}
+
 /**
  * Run a single Replicate prediction and return the result.
  */
@@ -318,7 +400,13 @@ async function runPrediction(
   );
 
   console.log("[Replicate] Prediction created:", created.id, "status:", created.status);
+  return pollAndDownload(token, created);
+}
 
+async function pollAndDownload(
+  token: string,
+  created: ReplicatePrediction,
+): Promise<{ mimeType: string; data: string }> {
   let prediction = created;
 
   for (let i = 0; i < 120; i++) {
@@ -374,7 +462,7 @@ export async function generateImageBase64(
   data: string;
 }> {
   const token = getReplicateToken();
-  const version = getReplicateModelVersion();
+  const nativeTransparent = params.nativeTransparent === true || isGptImage2Model(params.generationModel);
 
   const compressedPrompt = compressPrompt(
     params.prompt,
@@ -384,7 +472,27 @@ export async function generateImageBase64(
     params.isPatternStyle,
     params.aspectRatio,
     params.cylindricalWrap,
+    nativeTransparent,
   );
+
+  if (nativeTransparent || isGptImage2Model(params.generationModel)) {
+    const quality: GenerationQuality = resolveGenerationQuality(params.generationQuality);
+    const input = buildGptImage2ReplicateInput({
+      prompt: compressedPrompt,
+      aspectRatio: params.aspectRatio,
+      inputImageUrl: params.inputImageUrl,
+      quality,
+    });
+    logComposedPrompt(compressedPrompt, "gpt-image-2");
+    console.log(
+      `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
+    );
+    const created = await createGptImage2Prediction(token, input);
+    console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
+    return pollAndDownload(token, created);
+  }
+
+  const version = getReplicateModelVersion();
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 
   // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4
