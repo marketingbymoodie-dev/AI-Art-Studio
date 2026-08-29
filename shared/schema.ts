@@ -14,6 +14,7 @@ export {
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
 import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
 import { literalUserSlotSchema } from "./promptLayers";
+import { QUOTES_PLACEHOLDER, QUOTES_TREATMENTS } from "./quotesStyle";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -1233,15 +1234,15 @@ export const STYLE_PRESETS = [
     name: "Quotes",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
     category: "apparel",
-    promptPlaceholder: "Enter your topic (e.g. life, cats, Monday mornings, coffee addiction)",
+    promptPlaceholder: QUOTES_PLACEHOLDER,
     options: {
       label: "Quote Style",
       required: true,
       choices: [
-        { id: "profound", name: "Profound", promptFragment: "a profound, thoughtful, deep quote on", baseImageUrl: "" },
-        { id: "quirky", name: "Quirky", promptFragment: "a quirky, offbeat, unexpected quote on", baseImageUrl: "" },
-        { id: "weird", name: "Weird", promptFragment: "a weird, absurd, surreal quote on", baseImageUrl: "" },
-        { id: "funny", name: "Funny", promptFragment: "a funny, humorous, comedic quote on", baseImageUrl: "" },
+        { id: "profound", name: "Profound", promptFragment: QUOTES_TREATMENTS.profound, baseImageUrl: "" },
+        { id: "quirky", name: "Quirky", promptFragment: QUOTES_TREATMENTS.quirky, baseImageUrl: "" },
+        { id: "weird", name: "Weird", promptFragment: QUOTES_TREATMENTS.weird, baseImageUrl: "" },
+        { id: "funny", name: "Funny", promptFragment: QUOTES_TREATMENTS.funny, baseImageUrl: "" },
       ],
     },
   },

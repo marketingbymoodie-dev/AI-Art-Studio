@@ -19,7 +19,7 @@ export const APPAREL_CHROMA_STYLE_BY_NAME: Record<string, string> = {
   opinionated:
     "Statement-tee graphic, strong opinion statement, up to 6 words maximum, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat.",
   quotes:
-    "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
+    "Isolated t-shirt graphic, high contrast, centered, garment-safe colors (avoid white, light colors), no white mat.",
   "pet portraits":
     "T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat, high contrast, centered, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of",
   "centered graphic":
@@ -36,7 +36,7 @@ export const APPAREL_DARK_TIER_PROMPTS: Record<string, string> = {
   opinionated:
     "Statement-tee graphic, strong opinion statement, up to 6 words maximum, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture.",
   quotes:
-    "T-shirt graphic, stylish quote typography, expressive lettering, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, creative typographic layout. Create a quote design of",
+    "Isolated t-shirt graphic, high contrast, centered, bright vibrant colors including white and light tones (avoid dark, black), no white mat.",
   "pet-portraits":
     "T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, clean illustrated style. Create a pet portrait of",
   "centered-graphic":

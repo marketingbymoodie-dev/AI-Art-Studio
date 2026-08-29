@@ -107,6 +107,12 @@ import {
 } from "./storefront-wallet-view";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, mergeCatalogStyleOptions, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { findCatalogPreset, isLiteralTextCatalogSlug, resolveCatalogSlug } from "@shared/styleCatalog";
+import {
+  isQuotesCatalogSlug,
+  migrateQuotesInventFragment,
+  quotesImageComposeOverrides,
+} from "@shared/quotesStyle";
+import { generateQuoteOptions } from "./quote-options";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
   resolveFulfillmentLayout,
@@ -769,6 +775,33 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 const APPAREL_CHROMA_MATTING_LINE =
   "10. MATTING EDGES: Use hard vector-like edges with no outer glow, drop shadow, or gradient halos. Leave a clean band of solid #FF00FF background between the artwork and the canvas edge so chroma-key removal can eliminate fringe color.";
 
+function applyQuotesLayeredCompose(opts: {
+  catalogSlug: string | null | undefined;
+  userInput: string;
+  quotesVoice?: string | null;
+  quoteArtBrief?: string | null;
+  quoteFontSuggestion?: string | null;
+  storedUserSlotSchema: unknown;
+  subStyleLayer: string;
+  styleOptionId?: string | null;
+}) {
+  const overrides = quotesImageComposeOverrides({
+    catalogSlug: opts.catalogSlug,
+    userInput: opts.userInput,
+    quotesVoice: opts.quotesVoice,
+    quoteArtBrief: opts.quoteArtBrief,
+    quoteFontSuggestion: opts.quoteFontSuggestion,
+    storedUserSlotSchema: opts.storedUserSlotSchema,
+  });
+  return {
+    ...overrides,
+    subStyleLayer: migrateQuotesInventFragment(
+      opts.subStyleLayer,
+      opts.quotesVoice || opts.styleOptionId,
+    ),
+  };
+}
+
 function buildApparelChromaSizingRequirements(designColors: string): string {
   return `
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
@@ -793,7 +826,8 @@ function singleCustomerReferenceInstruction(opts: {
   userPrompt?: string;
 }): string {
   const slug = opts.catalogSlug || opts.stylePreset;
-  const isTextStyle = isLiteralTextCatalogSlug(slug);
+  const isTextStyle =
+    isLiteralTextCatalogSlug(slug) || String(slug || "").trim().toLowerCase() === "quotes";
   if (isTextStyle) {
     return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
   }
@@ -2556,7 +2590,7 @@ export async function registerRoutes(
         }
       }
 
-      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, styleOptionId: styleOptionIdAdmin, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, styleOptionId: styleOptionIdAdmin, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl, quoteArtBrief: quoteArtBriefAdmin, quoteFontSuggestion: quoteFontSuggestionAdmin, quotesVoice: quotesVoiceAdmin } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -2854,20 +2888,32 @@ ${orientationExtra}
         const hc = findCatalogPreset({ catalogSlug: catalogSlugAdmin, id: stylePreset, name: styleName, category: styleCategory });
         styleOptionsAdmin = mergeCatalogStyleOptions(styleOptionsAdmin, (hc as any)?.options);
       }
-      const subStyleAdmin = resolveSubStyleFragment({
+      const subStyleAdminRaw = resolveSubStyleFragment({
         styleOptionId: styleOptionIdAdmin,
         styleOptions: styleOptionsAdmin,
         clientPrompt: prompt,
         userInput: userDescAdmin,
+      });
+      const quotesAdmin = applyQuotesLayeredCompose({
+        catalogSlug: catalogSlugAdmin,
+        userInput: userDescAdmin,
+        quotesVoice: quotesVoiceAdmin,
+        quoteArtBrief: quoteArtBriefAdmin,
+        quoteFontSuggestion: quoteFontSuggestionAdmin,
+        storedUserSlotSchema: styleUserSlotSchema,
+        subStyleLayer: subStyleAdminRaw,
+        styleOptionId: styleOptionIdAdmin,
       });
       const layeredAdmin = composeLayeredPrompt({
         category: styleCategory,
         isApparelGeneration: isApparel,
         generationModel: styleGen.model,
         styleLayer: styleLayerAdmin,
-        subStyleLayer: subStyleAdmin,
-        userInput: userDescAdmin,
-        userSlotSchema: styleUserSlotSchema,
+        subStyleLayer: quotesAdmin.subStyleLayer,
+        userInput: quotesAdmin.userInput,
+        userSlotSchema: quotesAdmin.userSlotSchema,
+        fontLayer: quotesAdmin.fontLayer,
+        artLayer: quotesAdmin.artLayer,
         isAllOverPrint,
         isPatternStyle: usePatternAopAdmin,
       });
@@ -3088,8 +3134,8 @@ console.log("[api/shopify/generate] saved image", result);
             sessionId: null,
             customerId: null,
             status: "complete",
-            prompt,
-            userPrompt: rawUserPromptAdmin ?? null,
+            prompt: quotesAdmin.committed ? quotesAdmin.userInput : prompt,
+            userPrompt: quotesAdmin.committed ? quotesAdmin.userInput : rawUserPromptAdmin ?? null,
             stylePreset: stylePreset ?? null,
             size: size ?? null,
             frameColor: frameColor ?? null,
@@ -3496,7 +3542,7 @@ console.log("[shopify/session] installation ok", {
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     let embedInstallation: Awaited<ReturnType<typeof getAuthorizedInstallation>> = null;
     try {
-      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, styleOptionId: styleOptionIdEmbed, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
+      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, styleOptionId: styleOptionIdEmbed, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed, quoteArtBrief: quoteArtBriefEmbed, quoteFontSuggestion: quoteFontSuggestionEmbed, quotesVoice: quotesVoiceEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -3802,20 +3848,32 @@ ${orientationExtra}
         const hc = findCatalogPreset({ catalogSlug: catalogSlugEmbed, id: stylePreset, name: styleName, category: embedStyleCategory });
         embedStyleOptions = mergeCatalogStyleOptions(embedStyleOptions, (hc as any)?.options);
       }
-      const subStyleEmbed = resolveSubStyleFragment({
+      const subStyleEmbedRaw = resolveSubStyleFragment({
         styleOptionId: styleOptionIdEmbed,
         styleOptions: embedStyleOptions,
         clientPrompt: prompt,
         userInput: userDescEmbed,
+      });
+      const quotesEmbed = applyQuotesLayeredCompose({
+        catalogSlug: catalogSlugEmbed,
+        userInput: userDescEmbed,
+        quotesVoice: quotesVoiceEmbed,
+        quoteArtBrief: quoteArtBriefEmbed,
+        quoteFontSuggestion: quoteFontSuggestionEmbed,
+        storedUserSlotSchema: embedUserSlotSchema,
+        subStyleLayer: subStyleEmbedRaw,
+        styleOptionId: styleOptionIdEmbed,
       });
       const layeredEmbed = composeLayeredPrompt({
         category: embedStyleCategory,
         isApparelGeneration: embedIsApparelEarly,
         generationModel: embedStyleGen.model,
         styleLayer: styleLayerEmbed,
-        subStyleLayer: subStyleEmbed,
-        userInput: userDescEmbed,
-        userSlotSchema: embedUserSlotSchema,
+        subStyleLayer: quotesEmbed.subStyleLayer,
+        userInput: quotesEmbed.userInput,
+        userSlotSchema: quotesEmbed.userSlotSchema,
+        fontLayer: quotesEmbed.fontLayer,
+        artLayer: quotesEmbed.artLayer,
         isAllOverPrint: embedIsAllOverPrintEarly,
         isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
       });
@@ -8116,6 +8174,27 @@ ${orientationExtra}
     }
   }));
 
+  // Quotes Step A — Sonnet only. Never debits a credit. Not on the generate path.
+  app.post("/api/storefront/quote-options", async (req: Request, res: Response) => {
+    const theme = String(req.body?.theme || "").trim();
+    const voice = String(req.body?.voice || "").trim();
+    const shopRaw = String(req.body?.shop || req.query.shop || "");
+    const shop = shopRaw ? normalizeMyshopifyShopDomain(shopRaw) : "";
+    if (shop) {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(401).json({ error: "Shop not authorized" });
+      }
+    }
+    try {
+      const options = await generateQuoteOptions(theme, voice);
+      return res.json({ options });
+    } catch (err: any) {
+      const status = Number(err?.status) || 502;
+      return res.status(status).json({ error: err?.message || "Quote writer is unavailable" });
+    }
+  });
+
   // ==================== STOREFRONT GENERATE (NO SESSION TOKEN) ====================
   // Used by storefront embeds where App Bridge session tokens are not available.
   // Validates shop domain + active installation instead of session token.
@@ -8137,6 +8216,9 @@ ${orientationExtra}
       const {
         prompt,
         userPrompt: rawUserPrompt,
+        quoteArtBrief: quoteArtBriefSf,
+        quoteFontSuggestion: quoteFontSuggestionSf,
+        quotesVoice: quotesVoiceSf,
         stylePreset,
         styleOptionId: styleOptionIdSf,
         size,
@@ -8778,20 +8860,32 @@ ${orientationExtra}
         const hc = findCatalogPreset({ catalogSlug: catalogSlugSf, id: stylePreset, name: styleName, category: sfStyleCategory });
         sfStyleOptions = mergeCatalogStyleOptions(sfStyleOptions, (hc as any)?.options);
       }
-      const subStyleSf = resolveSubStyleFragment({
+      const subStyleSfRaw = resolveSubStyleFragment({
         styleOptionId: styleOptionIdSf,
         styleOptions: sfStyleOptions,
         clientPrompt: prompt,
         userInput: userDescSf,
+      });
+      const quotesSf = applyQuotesLayeredCompose({
+        catalogSlug: catalogSlugSf,
+        userInput: userDescSf,
+        quotesVoice: quotesVoiceSf,
+        quoteArtBrief: quoteArtBriefSf,
+        quoteFontSuggestion: quoteFontSuggestionSf,
+        storedUserSlotSchema: sfUserSlotSchema,
+        subStyleLayer: subStyleSfRaw,
+        styleOptionId: styleOptionIdSf,
       });
       const layeredSf = composeLayeredPrompt({
         category: sfStyleCategory,
         isApparelGeneration: isApparel,
         generationModel: sfStyleGen.model,
         styleLayer: styleLayerSf,
-        subStyleLayer: subStyleSf,
-        userInput: userDescSf,
-        userSlotSchema: sfUserSlotSchema,
+        subStyleLayer: quotesSf.subStyleLayer,
+        userInput: quotesSf.userInput,
+        userSlotSchema: quotesSf.userSlotSchema,
+        fontLayer: quotesSf.fontLayer,
+        artLayer: quotesSf.artLayer,
         isAllOverPrint,
         isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf)),
       });
@@ -8814,8 +8908,8 @@ ${orientationExtra}
         sessionId: sessionId ?? null,
         customerId: resolvedJobCustomerId,
         status: "pending",
-        prompt: typeof rawUserPrompt === "string" ? rawUserPrompt : prompt,
-        userPrompt: rawUserPrompt ?? null,
+        prompt: quotesSf.committed ? quotesSf.userInput : (typeof rawUserPrompt === "string" ? rawUserPrompt : prompt),
+        userPrompt: quotesSf.committed ? quotesSf.userInput : rawUserPrompt ?? null,
         stylePreset: stylePreset ?? null,
         size: size ?? null,
         frameColor: frameColor ?? null,
@@ -14412,6 +14506,13 @@ ${orientationExtra}
             promptPrefix: preset.promptPrefix,
             sortOrder: i,
             catalogSlug: preset.id,
+            ...(preset.id === "quotes"
+              ? {
+                  userSlotSchema: null,
+                  promptPlaceholder: (preset as any).promptPlaceholder ?? null,
+                  options: (preset as any).options ?? null,
+                }
+              : {}),
           } as any);
           if (updated) updatedStyles.push(updated);
         } else {

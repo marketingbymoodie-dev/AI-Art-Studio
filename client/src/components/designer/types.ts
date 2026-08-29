@@ -25,6 +25,7 @@ export interface StylePresetOption {
 
 export interface StylePreset {
   id: string;
+  catalogSlug?: string | null;
   name: string;
   promptSuffix: string;
   thumbnailUrl?: string;

@@ -307,6 +307,10 @@ export type ComposeLayeredPromptInput = {
   styleLayer: string;
   /** Sub-style / layout fragment (Retro, Funny, King, …). Own layer — not folded into user text. */
   subStyleLayer?: string | null;
+  /** Quotes Step B: letterform character only. */
+  fontLayer?: string | null;
+  /** Quotes Step B: illustration subject only. */
+  artLayer?: string | null;
   userInput: string;
   userSlotSchema?: unknown;
   isAllOverPrint?: boolean;
@@ -320,6 +324,8 @@ export type ComposeLayeredPromptResult = {
   styleLayer: string;
   intentLayer: string;
   subStyleLayer: string;
+  fontLayer: string;
+  artLayer: string;
   userLayer: string;
   nativeTransparent: boolean;
   chromaHexMentions: number;
@@ -377,9 +383,19 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
     base,
   );
   const intentLayer = composeLiteralIntentLayer(input.userSlotSchema);
+  const fontLayer = stripLockedBaseEcho(
+    stripChromaFromStyleLayer(input.fontLayer || ""),
+    base,
+  );
+  const artLayer = stripLockedBaseEcho(
+    stripChromaFromStyleLayer(input.artLayer || ""),
+    base,
+  );
   const userLayer = composeUserInputLayer(input.userInput, input.userSlotSchema);
   const prompt = dedupeConsecutiveParagraphs(
-    [base, ...extras, styleLayer, intentLayer, subStyleLayer, userLayer].filter(Boolean).join("\n\n"),
+    [base, ...extras, styleLayer, intentLayer, subStyleLayer, fontLayer, artLayer, userLayer]
+      .filter(Boolean)
+      .join("\n\n"),
   );
   return {
     prompt,
@@ -388,6 +404,8 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
     styleLayer,
     intentLayer,
     subStyleLayer,
+    fontLayer,
+    artLayer,
     userLayer,
     nativeTransparent,
     chromaHexMentions: countChromaHexMentions(prompt),
@@ -460,7 +478,15 @@ export const STYLE_LAYER_MIGRATIONS: StyleLayerMigration[] = [
     before:
       "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
     after:
+      "Isolated t-shirt graphic, high contrast, centered, garment-safe colors (avoid white, light colors), no white mat.",
+  },
+  {
+    key: "quotes-stripped",
+    field: "prompt_prefix",
+    before:
       "T-shirt graphic, stylish quote typography, expressive lettering, flat vibrant colors (avoid white, light colors), high contrast, centered, no shadow, no texture, no white mat, creative typographic layout. Create a quote design of",
+    after:
+      "Isolated t-shirt graphic, high contrast, centered, garment-safe colors (avoid white, light colors), no white mat.",
   },
   {
     key: "pet portraits",
@@ -514,7 +540,15 @@ export const STYLE_LAYER_MIGRATIONS: StyleLayerMigration[] = [
     before:
       "T-shirt graphic, stylish quote typography, expressive lettering, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, creative typographic layout. Create a quote design of",
     after:
+      "Isolated t-shirt graphic, high contrast, centered, bright vibrant colors including white and light tones (avoid dark, black), no white mat.",
+  },
+  {
+    key: "quotes-stripped",
+    field: "prompt_prefix_dark",
+    before:
       "T-shirt graphic, stylish quote typography, expressive lettering, bright vibrant colors including white and light tones (avoid dark, black), high contrast, centered, no shadow, no texture, creative typographic layout. Create a quote design of",
+    after:
+      "Isolated t-shirt graphic, high contrast, centered, bright vibrant colors including white and light tones (avoid dark, black), no white mat.",
   },
   {
     key: "pet-portraits",

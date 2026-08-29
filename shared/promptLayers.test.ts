@@ -38,7 +38,7 @@ describe("prefix migration is chroma-only", () => {
 
   it("strip matches AFTER for chroma catalog befores (no semantic wipe)", () => {
     for (const row of STYLE_LAYER_MIGRATIONS) {
-      if (row.key.startsWith("opinionated")) continue;
+      if (row.key.startsWith("opinionated") || row.key.startsWith("quotes")) continue;
       if (!/#ff00ff/i.test(row.before) && !/solid hot pink/i.test(row.before)) continue;
       expect(stripChromaFromStyleLayer(row.before)).toBe(row.after);
     }
@@ -190,11 +190,14 @@ describe("composeLayeredPrompt", () => {
       isApparelGeneration: true,
       generationModel: null,
       styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
-      subStyleLayer: "a funny, humorous, comedic quote on",
+      subStyleLayer:
+        "Bold classic t-shirt graphic, punchy high-contrast colors, exaggerated cartoon illustration, centered composition, clear readable hero lettering, mass-appeal print style.",
       userInput: "monday mornings",
     });
-    expect(quotes.prompt).toContain("a funny, humorous, comedic quote on");
+    expect(quotes.prompt).toContain("mass-appeal print style");
     expect(quotes.prompt).toContain("monday mornings");
+    expect(quotes.prompt).not.toContain("Create a quote design of");
+    expect(quotes.prompt).not.toContain("a funny, humorous, comedic quote on");
 
     const pets = composeLayeredPrompt({
       category: "apparel",
@@ -342,7 +345,7 @@ describe("composeLayeredPrompt", () => {
 describe("resolveSubStyleFragment", () => {
   const quotesOptions = {
     choices: [
-      { id: "funny", name: "Funny", promptFragment: "a funny, humorous, comedic quote on" },
+      { id: "funny", name: "Funny", promptFragment: "Bold classic t-shirt graphic, punchy high-contrast colors, exaggerated cartoon illustration, centered composition, clear readable hero lettering, mass-appeal print style." },
       { id: "king", name: "King", promptFragment: "dressed as a majestic king with crown and royal robes" },
     ],
   };
@@ -353,7 +356,7 @@ describe("resolveSubStyleFragment", () => {
         styleOptionId: "funny",
         styleOptions: quotesOptions,
       }),
-    ).toBe("a funny, humorous, comedic quote on");
+    ).toBe("Bold classic t-shirt graphic, punchy high-contrast colors, exaggerated cartoon illustration, centered composition, clear readable hero lettering, mass-appeal print style.");
   });
 
   it("recovers a fragment prefixed onto the client prompt", () => {

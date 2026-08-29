@@ -77,7 +77,7 @@ export function findCatalogPreset(row: {
   return undefined;
 }
 
-export const LITERAL_TEXT_CATALOG_SLUGS = new Set(["opinionated", "quotes"]);
+export const LITERAL_TEXT_CATALOG_SLUGS = new Set(["opinionated"]);
 export const PATTERN_MAKER_CATALOG_SLUGS = new Set(["pattern-maker", "graphics-pattern-maker"]);
 export const TEXT_FRIENDLY_CATALOG_SLUGS = new Set([
   "opinionated",

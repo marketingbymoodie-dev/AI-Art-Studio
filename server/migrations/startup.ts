@@ -12,6 +12,15 @@ import { pool } from "../db";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared/apparel-chroma-prompts";
 import { applyForcedStyleLayerBySlug } from "@shared/promptLayers";
 import { catalogSlugBackfillRows, inferCatalogSlug } from "@shared/styleCatalog";
+import {
+  isOldQuotesStylePrefix,
+  QUOTES_OLD_INVENT_FRAGMENTS,
+  QUOTES_PLACEHOLDER,
+  QUOTES_THIN_STYLE_DARK,
+  QUOTES_THIN_STYLE_LIGHT,
+  QUOTES_TREATMENTS,
+  type QuotesVoiceId,
+} from "@shared/quotesStyle";
 
 // ── Column additions ──────────────────────────────────────────────────────────
 
@@ -2434,6 +2443,64 @@ async function migrateLayeredStylePrefixes(): Promise<number> {
   return updated;
 }
 
+async function migrateQuotesInterpretiveStyle(): Promise<number> {
+  const tag = "[startup-migration] [quotes]";
+  let updated = 0;
+  const rows = await pool.query(
+    `SELECT id, prompt_prefix, prompt_prefix_dark, user_slot_schema, options, prompt_placeholder
+     FROM style_presets
+     WHERE catalog_slug = 'quotes'`,
+  );
+  for (const row of (rows as { rows?: any[] }).rows || []) {
+    const nextPrefix = isOldQuotesStylePrefix(row.prompt_prefix || "", "light")
+      ? QUOTES_THIN_STYLE_LIGHT
+      : row.prompt_prefix;
+    const nextDark = isOldQuotesStylePrefix(row.prompt_prefix_dark || "", "dark")
+      ? QUOTES_THIN_STYLE_DARK
+      : row.prompt_prefix_dark;
+    const nextPlaceholder =
+      !row.prompt_placeholder || /enter your topic/i.test(String(row.prompt_placeholder))
+        ? QUOTES_PLACEHOLDER
+        : row.prompt_placeholder;
+    let nextOptions = row.options;
+    const choices = Array.isArray(row.options?.choices) ? row.options.choices : null;
+    if (choices) {
+      const mapped = choices.map((c: any) => {
+        const id = String(c?.id || "").toLowerCase() as QuotesVoiceId;
+        const frag = String(c?.promptFragment || "");
+        const old = (QUOTES_OLD_INVENT_FRAGMENTS as Record<string, string>)[id];
+        if (old && frag.trim().toLowerCase() === old.toLowerCase() && QUOTES_TREATMENTS[id]) {
+          return { ...c, promptFragment: QUOTES_TREATMENTS[id] };
+        }
+        return c;
+      });
+      nextOptions = { ...row.options, choices: mapped };
+    }
+    const slotIsSet = row.user_slot_schema != null;
+    const prefixChanged = nextPrefix !== row.prompt_prefix;
+    const darkChanged = nextDark !== row.prompt_prefix_dark;
+    const placeholderChanged = nextPlaceholder !== row.prompt_placeholder;
+    const optionsChanged = JSON.stringify(nextOptions) !== JSON.stringify(row.options);
+    if (!slotIsSet && !prefixChanged && !darkChanged && !placeholderChanged && !optionsChanged) {
+      continue;
+    }
+    await pool.query(
+      `UPDATE style_presets
+       SET user_slot_schema = NULL,
+           prompt_prefix = $1,
+           prompt_prefix_dark = $2,
+           prompt_placeholder = $3,
+           options = $4::jsonb,
+           updated_at = NOW()
+       WHERE id = $5`,
+      [nextPrefix, nextDark, nextPlaceholder, JSON.stringify(nextOptions), row.id],
+    );
+    updated++;
+    console.log(`${tag} cleared literal + migrated row id=${row.id}`);
+  }
+  return updated;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function runStartupMigrations(): Promise<void> {
@@ -2509,6 +2576,15 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED layered style-layer migration: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await migrateQuotesInterpretiveStyle();
+    applied++;
+    console.log(`${tag} Quotes interpretive migration ran (updated ${n} row(s))`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED quotes interpretive migration: ${err.message ?? err}`);
   }
 
   const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;

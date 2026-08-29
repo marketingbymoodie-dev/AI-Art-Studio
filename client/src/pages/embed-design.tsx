@@ -190,6 +190,14 @@ import {
   shouldApplyParentStylePresets,
 } from "@shared/stylePresetFreshness";
 import {
+  detectQuotesVerbatimInput,
+  isQuotesCatalogSlug,
+  QUOTES_LITERAL_MAX_WORDS,
+  QUOTES_PLACEHOLDER,
+  type QuoteOption,
+} from "@shared/quotesStyle";
+import { resolveCatalogSlug } from "@shared/styleCatalog";
+import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
   STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE,
@@ -2076,6 +2084,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [saveStatePending, setSaveStatePending] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
+  const [quoteOptions, setQuoteOptions] = useState<QuoteOption[] | null>(null);
+  const [quotePickIndex, setQuotePickIndex] = useState<number | null>(null);
+  const [quoteTheme, setQuoteTheme] = useState("");
+  const [quoteWriting, setQuoteWriting] = useState(false);
+  const [quoteRowDrafts, setQuoteRowDrafts] = useState<string[]>([]);
+  const prevQuoteVoiceRef = useRef("");
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
   const [referencePreviews, setReferencePreviews] = useState<string[]>([]);
   type ReusePageOption = {
@@ -7878,6 +7892,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       frameColor?: string;
       stylePreset?: string;
       styleOptionId?: string;
+      quoteArtBrief?: string;
+      quoteFontSuggestion?: string;
+      quotesVoice?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
       shop?: string;
@@ -8409,6 +8426,134 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return headers;
   };
 
+  const isQuotesActivePreset = (preset: StylePreset | undefined | null) => {
+    if (!preset) return false;
+    return isQuotesCatalogSlug(
+      resolveCatalogSlug({
+        catalogSlug: preset.catalogSlug,
+        id: preset.id,
+        name: preset.name,
+        category: preset.category,
+      }) || preset.catalogSlug || preset.id,
+    );
+  };
+
+  const quotesActivePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+  const quotesMode = isQuotesActivePreset(quotesActivePreset);
+  const quotesVerbatim = quotesMode && detectQuotesVerbatimInput(prompt).mode === "verbatim";
+  const quotesShowOptions =
+    quotesMode && !quotesVerbatim && Array.isArray(quoteOptions) && quoteOptions.length === 3;
+  const quotesNeedWrite = quotesMode && !quotesVerbatim && !quotesShowOptions;
+
+  const resetQuoteFlow = () => {
+    setQuoteOptions(null);
+    setQuotePickIndex(null);
+    setQuoteTheme("");
+    setQuoteRowDrafts([]);
+  };
+
+  const runQuoteOptions = async (theme: string) => {
+    const trimmed = theme.trim();
+    if (!trimmed || !selectedStyleOption) {
+      if (!selectedStyleOption) {
+        alert("Please choose a quote style before writing quotes");
+      }
+      return;
+    }
+    setQuoteWriting(true);
+    try {
+      const res = await safeFetch(
+        `${API_BASE}/api/storefront/quote-options`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: storefrontJsonHeaders(),
+          body: JSON.stringify({
+            theme: trimmed,
+            voice: selectedStyleOption,
+            shop: shopDomain || undefined,
+          }),
+        },
+        15_000,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.options) || data.options.length !== 3) {
+        toast({
+          title: "Could not write quotes",
+          description: data.error || "Try again in a moment.",
+          variant: "destructive",
+        });
+        return;
+      }
+      setQuoteTheme(trimmed);
+      setQuoteOptions(data.options);
+      setQuoteRowDrafts(data.options.map((o: QuoteOption) => o.quote));
+      setQuotePickIndex(null);
+    } catch {
+      toast({
+        title: "Could not write quotes",
+        description: "Try again in a moment.",
+        variant: "destructive",
+      });
+    } finally {
+      setQuoteWriting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!quotesMode) {
+      if (quoteOptions) resetQuoteFlow();
+      prevQuoteVoiceRef.current = selectedStyleOption;
+      return;
+    }
+    const prev = prevQuoteVoiceRef.current;
+    prevQuoteVoiceRef.current = selectedStyleOption;
+    if (quoteOptions && prev && prev !== selectedStyleOption) {
+      setQuotePickIndex(null);
+      setQuoteOptions(null);
+      setQuoteRowDrafts([]);
+      const theme = quoteTheme || detectQuotesVerbatimInput(prompt).text;
+      if (theme && selectedStyleOption) void runQuoteOptions(theme);
+    }
+  }, [selectedStyleOption, quotesMode]);
+
+  const handleQuotesOrGenerateClick = () => {
+    if ((isShopify || isStorefront) && customer && !hasGenerationCapacity && !quotesNeedWrite) {
+      notifyInsufficientCredits();
+      return;
+    }
+    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+      alert("Please select an art style before generating");
+      return;
+    }
+    const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+    if (activePreset?.options?.required && selectedStyleOption === "") {
+      alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+      return;
+    }
+    if (printSizes.length > 0 && selectedSize === "") {
+      alert("Please select a size before generating");
+      return;
+    }
+    if (shippingBlocksGenerate) return;
+    if (quotesNeedWrite) {
+      void runQuoteOptions(prompt);
+      return;
+    }
+    handleGenerate();
+  };
+
+  const quotesOrGenerateDisabled = (() => {
+    if (!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate)) return true;
+    if (generateMutation.isPending || quoteWriting) return true;
+    if (customerTermsEnabled && !storefrontTerms.accepted) return true;
+    if (shippingBlocksGenerate) return true;
+    if (quotesNeedWrite) return !prompt.trim();
+    if (quotesShowOptions) return quotePickIndex == null;
+    if (quotesVerbatim) return !detectQuotesVerbatimInput(prompt).text;
+    return !prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find((p) => p.id === selectedPreset)?.descriptionOptional;
+  })();
+
   const handleGenerate = async (options?: {
     skipStyleMismatchCheck?: boolean;
     overridePresetId?: string;
@@ -8439,10 +8584,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (options?.overridePrompt != null) {
       setPrompt(options.overridePrompt);
     }
-    const effectivePrompt = composeReuseRegenerateUserPrompt(
-      reuseRegenerateBasePrompt,
-      typedPrompt,
-    );
+    const quotesPresetNow = filteredStylePresets.find((p) => p.id === (options?.overridePresetId ?? selectedPreset));
+    const quotesNow = isQuotesActivePreset(quotesPresetNow);
+    const quotesDetected = quotesNow ? detectQuotesVerbatimInput(typedPrompt) : null;
+    const quotesCommittedLine = quotesNow
+      ? quotesDetected?.mode === "verbatim"
+        ? quotesDetected.text
+        : quotePickIndex != null
+          ? (quoteRowDrafts[quotePickIndex] || quoteOptions?.[quotePickIndex]?.quote || "").trim()
+          : ""
+      : "";
+    const effectivePrompt = quotesNow
+      ? quotesCommittedLine
+      : composeReuseRegenerateUserPrompt(
+          reuseRegenerateBasePrompt,
+          typedPrompt,
+        );
 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (!effectivePrompt.trim() && !activePresetForCheck?.descriptionOptional) return;
@@ -8487,7 +8644,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
-    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim()) {
+    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim() && !quotesNow) {
       const mismatch = detectStylePromptMismatch(
         typedPrompt,
         activePreset.promptSuffix,
@@ -8510,7 +8667,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Build the prompt: prepend selected option fragment if present
     let fullPrompt = effectivePrompt;
     let resolvedBaseImageUrl: string | undefined;
-    if (activePreset?.options && selectedStyleOption !== "") {
+    if (activePreset?.options && selectedStyleOption !== "" && !quotesNow) {
       const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
       if (selectedChoice) {
         fullPrompt = `${selectedChoice.promptFragment}. ${effectivePrompt}`;
@@ -8594,6 +8751,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             : undefined),
         stylePreset: effectivePresetId && effectivePresetId !== "" ? effectivePresetId : undefined,
         styleOptionId: selectedStyleOption && selectedStyleOption !== "" ? selectedStyleOption : undefined,
+        quoteArtBrief:
+          quotesNow && quotesDetected?.mode !== "verbatim" && quotePickIndex != null
+            ? quoteOptions?.[quotePickIndex]?.art_brief
+            : undefined,
+        quoteFontSuggestion:
+          quotesNow && quotesDetected?.mode !== "verbatim" && quotePickIndex != null
+            ? quoteOptions?.[quotePickIndex]?.font_suggestion
+            : undefined,
+        quotesVoice: quotesNow && selectedStyleOption ? selectedStyleOption : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
@@ -13623,40 +13789,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             />
           ) : null}
           <Button
-            onClick={() => {
-              if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
-                notifyInsufficientCredits();
-                return;
-              }
-              if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                alert("Please select an art style before generating");
-                return;
-              }
-              const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-              if (activePreset?.options?.required && selectedStyleOption === "") {
-                alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-                return;
-              }
-              if (printSizes.length > 0 && selectedSize === "") {
-                alert("Please select a size before generating");
-                return;
-              }
-              if (shippingBlocksGenerate) return;
-              handleGenerate();
-            }}
-            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted) || shippingBlocksGenerate}
+            onClick={handleQuotesOrGenerateClick}
+            disabled={quotesOrGenerateDisabled}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
-            {generateMutation.isPending ? (
+            {generateMutation.isPending || quoteWriting ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                <span className="shimmer-text-white">Generating...</span>
+                <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : "Generating..."}</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4 mr-2" />
-                <span className="shimmer-text-white">Generate Artwork</span>
+                <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : "Generate Artwork"}</span>
               </>
             )}
           </Button>
@@ -15209,40 +15355,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       />
                     ) : null}
                     <Button
-                      onClick={() => {
-                        if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
-                          notifyInsufficientCredits();
-                          return;
-                        }
-                        if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                          alert("Please select an art style before generating");
-                          return;
-                        }
-                        const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                        if (activePreset?.options?.required && selectedStyleOption === "") {
-                          alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-                          return;
-                        }
-                        if (printSizes.length > 0 && selectedSize === "") {
-                          alert("Please select a size before generating");
-                          return;
-                        }
-                        if (shippingBlocksGenerate) return;
-                        handleGenerate();
-                      }}
-                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted) || shippingBlocksGenerate}
+                      onClick={handleQuotesOrGenerateClick}
+                      disabled={quotesOrGenerateDisabled}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
-                      {generateMutation.isPending ? (
+                      {generateMutation.isPending || quoteWriting ? (
                         <>
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          <span className="shimmer-text-white">Generating...</span>
+                          <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : "Generating..."}</span>
                         </>
                       ) : (
                         <>
                           <Sparkles className="w-4 h-4 mr-2" />
-                          <span className="shimmer-text-white">Generate Artwork</span>
+                          <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : "Generate Artwork"}</span>
                         </>
                       )}
                     </Button>
@@ -15724,7 +15850,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 return (
               <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
                 <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
-                  Describe your artwork
+                  {quotesMode ? "Theme" : "Describe your artwork"}
                   {reuseRegenerateBasePrompt ? (
                     <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
                       (optional changes)
@@ -15741,6 +15867,70 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     {reuseRegenerateBasePrompt}
                   </p>
                 ) : null}
+                {quotesShowOptions ? (
+                  <div
+                    className="rounded-md border bg-background"
+                    data-testid="quotes-options-box"
+                  >
+                    {quoteRowDrafts.map((line, i) => {
+                      const selected = quotePickIndex === i;
+                      return (
+                        <div
+                          key={i}
+                          className={`flex items-start gap-2 border-b last:border-b-0 px-2 py-2 ${
+                            selected ? "bg-muted" : ""
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className={`mt-0.5 h-6 w-6 shrink-0 rounded-full text-xs font-semibold ${
+                              selected
+                                ? "bg-foreground text-background"
+                                : "border border-border text-muted-foreground"
+                            }`}
+                            onClick={() => setQuotePickIndex(i)}
+                            data-testid={`button-quote-option-${i}`}
+                          >
+                            {i + 1}
+                          </button>
+                          <textarea
+                            className="min-h-[40px] w-full resize-none bg-transparent text-sm outline-none"
+                            value={line}
+                            onFocus={() => setQuotePickIndex(i)}
+                            onChange={(e) => {
+                              const next = [...quoteRowDrafts];
+                              next[i] = e.target.value;
+                              setQuoteRowDrafts(next);
+                              setQuotePickIndex(i);
+                            }}
+                            data-testid={`input-quote-option-${i}`}
+                          />
+                        </div>
+                      );
+                    })}
+                    <div className="flex items-center justify-between px-2 py-1.5">
+                      <button
+                        type="button"
+                        className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                        onClick={() => {
+                          resetQuoteFlow();
+                        }}
+                        data-testid="button-quotes-new-theme"
+                      >
+                        New theme
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[11px] text-muted-foreground underline-offset-2 hover:underline disabled:opacity-50"
+                        disabled={quoteWriting || !quoteTheme}
+                        onClick={() => void runQuoteOptions(quoteTheme)}
+                        data-testid="button-quotes-more"
+                      >
+                        More quotes
+                      </button>
+                    </div>
+                  </div>
+                ) : (
                 <Textarea
                   id="prompt"
                   data-testid="input-prompt"
@@ -15749,6 +15939,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       return "Optional: add changes, e.g. change the colours from red to green";
                     }
                     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                    if (isQuotesActivePreset(activePreset)) {
+                      return activePreset?.promptPlaceholder || QUOTES_PLACEHOLDER;
+                    }
                     const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
                     if (literal) {
                       return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
@@ -15789,8 +15982,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   }}
                   className="min-h-[64px] text-sm"
                 />
+                )}
                 {(() => {
+                  if (quotesShowOptions && quotePickIndex != null) {
+                    const words = countWords(quoteRowDrafts[quotePickIndex] || "");
+                    if (words <= QUOTES_LITERAL_MAX_WORDS) return null;
+                    return (
+                      <p className="text-[11px] text-amber-700" data-testid="text-quotes-word-limit">
+                        {words} words — this style renders cleanly at up to {QUOTES_LITERAL_MAX_WORDS}. Extra words may garble.
+                      </p>
+                    );
+                  }
                   const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+                  if (isQuotesActivePreset(activePreset)) return null;
                   const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
                   if (!literal?.maxWords) return null;
                   const words = countWords(prompt);
