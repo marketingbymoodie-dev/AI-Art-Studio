@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { APPAREL_CHROMA_STYLE_BY_NAME } from "@shared/apparel-chroma-prompts";
+import {
+  APPAREL_BASE_TRANSPARENT,
+  composeLayeredPrompt,
+  LITERAL_TEXT_INSTRUCTION,
+  literalUserSlotSchema,
+  wrapLayeredArtworkPrompt,
+} from "@shared/promptLayers";
 import { chromaPlateLeakMatches } from "@shared/styleGeneration";
 import {
   buildGptImage2ReplicateInput,
@@ -67,5 +74,35 @@ describe("compressPrompt nativeTransparent", () => {
     expect(out).not.toMatch(/#FF00FF/i);
     expect(out.toLowerCase()).not.toContain("hot pink");
     expect((out.match(/TRANSPARENT background/gi) || []).length).toBe(1);
+  });
+
+  it("layered Opinionated does not prepend 15% safe-area or a second base", () => {
+    const layered = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      subStyleLayer: "casual hand-lettered script, organic brush strokes, personal handwriting feel",
+      userInput: "Murder is subjective",
+      userSlotSchema: literalUserSlotSchema(6),
+    });
+    const raw = wrapLayeredArtworkPrompt(layered);
+    const leftover =
+      "Keep ALL text/letters/words at least 15% of the canvas away from the TOP and BOTTOM edges, " +
+      "and at least 5% from the left and right edges (outer 15% top/bottom bands must contain no text). " +
+      "Background/scene may still fill edge-to-edge. " +
+      raw;
+    const out = compressPrompt(leftover, true, false, "Murder is subjective", false, "1:1", false, true, true);
+    const expected = [
+      APPAREL_BASE_TRANSPARENT,
+      APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      "casual hand-lettered script, organic brush strokes, personal handwriting feel",
+      `${LITERAL_TEXT_INSTRUCTION}: "Murder is subjective"`,
+    ].join("\n\n");
+    expect(out).toBe(expected);
+    expect((out.match(/TRANSPARENT background/gi) || []).length).toBe(1);
+    expect(out).not.toMatch(/15% of the canvas/i);
+    expect(out).not.toMatch(/Do not add text unless/i);
+    expect(out).not.toMatch(/=== ARTWORK DESCRIPTION ===/);
   });
 });

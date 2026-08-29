@@ -108,7 +108,11 @@ import {
   styleAllowsGeneratedText,
   userPromptRequestsMonochrome,
 } from "@shared/generationPromptHints";
-import { countChromaHexMentions } from "@shared/promptLayers";
+import {
+  countChromaHexMentions,
+  dedupeConsecutiveParagraphs,
+  LITERAL_TEXT_INSTRUCTION,
+} from "@shared/promptLayers";
 import {
   composeTransparentPrompt,
   estimatedGptImage2CostUsd,
@@ -203,6 +207,28 @@ function stripVerboseRequirementBlocks(raw: string): string {
     .trim();
 }
 
+/** Old route/compress leftovers that must never ride along a layered compose. */
+function stripLegacyLayeredInjectors(text: string): string {
+  let out = text
+    .replace(
+      /Keep ALL text\/letters\/words at least \d+% of the canvas away from the TOP and BOTTOM edges, and at least 5% from the left and right edges \(outer \d+% top\/bottom bands must contain no text\)\. Background\/scene may still fill edge-to-edge\.\s*/gi,
+      "",
+    )
+    .replace(
+      /10\.\s*TEXT SAFE ZONE: Keep ALL text\/letters\/words inside the center[\s\S]*?Do not place words near the top or bottom edge\.\n?/gi,
+      "",
+    );
+  if (out.includes(LITERAL_TEXT_INSTRUCTION)) {
+    out = out
+      .replace(/Do not add text unless the user explicitly requested it\.?\s*/gi, "")
+      .replace(
+        /Do NOT add any text(?:, letters, words, slogans, speech bubbles, or labels|, words, slogans, or labels)? unless the user explicitly requested them\.?\s*/gi,
+        "",
+      );
+  }
+  return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** Compact orientation lock that survives prompt compression (verbose ORIENTATION LOCK is stripped). */
 export function buildDecorOrientationShortConstraint(aspectRatio?: string | null): string {
   const mapped = mapToSupportedAspectRatio(aspectRatio || undefined);
@@ -245,29 +271,14 @@ export function compressPrompt(
   let compressed: string;
 
   if (layered) {
-    compressed = monoHint + stripVerboseRequirementBlocks(raw);
-    if (!isApparel) {
-      const orient = buildDecorOrientationShortConstraint(aspectRatio);
-      const allowText = decorAllowsGeneratedText({
-        promptBlob: raw,
-        userPrompt,
-      });
-      const textRule = allowText
-        ? buildDecorTextSafeMarginShortConstraint()
-        : buildDecorNoTextUnlessAskedShortConstraint();
-      const shortConstraints = cylindricalWrap
-        ? orient +
-          "Full-bleed background to all edges. Keep text and focal subjects in the center 60% (cylindrical wrap safe area). "
-        : orient + textRule;
-      compressed = shortConstraints + compressed;
-    } else if (!isAllOverPrint && styleAllowsGeneratedText(null, raw)) {
-      compressed = buildDecorTextSafeMarginShortConstraint() + compressed;
-    }
+    // Compose already owns BASE + STYLE + SUB-STYLE + USER. Do not re-inject
+    // chroma, transparent, 15% safe-area, or "don't add text" leftovers.
+    let compressed = stripLegacyLayeredInjectors(
+      dedupeConsecutiveParagraphs(stripVerboseRequirementBlocks(raw)),
+    );
+    if (monoHint) compressed = `${monoHint}${compressed}`;
     if (compressed.length > PROMPT_MAX_LENGTH) {
-      const artMax = artworkSection ? Math.min(artworkSection.length, 380) : 0;
-      const headMax = PROMPT_MAX_LENGTH - artMax - (artMax > 0 ? 4 : 0);
-      const head = compressed.substring(0, Math.max(0, headMax));
-      compressed = artMax > 0 ? `${head} ... ${artworkSection.substring(0, artMax)}` : head;
+      compressed = compressed.slice(compressed.length - PROMPT_MAX_LENGTH);
     }
     return compressed;
   }

@@ -10,6 +10,7 @@ import {
   applyForcedStyleLayerByName,
   composeLayeredPrompt,
   countChromaHexMentions,
+  dedupeConsecutiveParagraphs,
   findLiteralSlot,
   resolveSubStyleFragment,
   literalPlaceholder,
@@ -195,6 +196,45 @@ describe("composeLayeredPrompt", () => {
     });
     expect(pets.prompt).toContain("dressed as a majestic king with crown and royal robes");
     expect(pets.prompt).toContain("Rex");
+  });
+
+  it("Opinionated handwritten literal is four layers only — Murder is subjective", () => {
+    const layered = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      subStyleLayer: "casual hand-lettered script, organic brush strokes, personal handwriting feel",
+      userInput: "Murder is subjective",
+      userSlotSchema: literalUserSlotSchema(6),
+    });
+    const expected = [
+      APPAREL_BASE_TRANSPARENT,
+      APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
+      "casual hand-lettered script, organic brush strokes, personal handwriting feel",
+      `${LITERAL_TEXT_INSTRUCTION}: "Murder is subjective"`,
+    ].join("\n\n");
+    expect(layered.prompt).toBe(expected);
+    expect((layered.prompt.match(/TRANSPARENT background/gi) || []).length).toBe(1);
+    expect(layered.prompt).not.toMatch(/15% of the canvas/i);
+    expect(layered.prompt).not.toMatch(/Do not add text unless/i);
+    expect(layered.prompt).not.toMatch(/Do NOT add any text/i);
+  });
+
+  it("drops a style layer that echoes the locked transparent base", () => {
+    const layered = composeLayeredPrompt({
+      category: "apparel",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: `${APPAREL_BASE_TRANSPARENT}\n\n${APPAREL_CHROMA_STYLE_BY_NAME.opinionated}`,
+      userInput: "Murder is subjective",
+      userSlotSchema: literalUserSlotSchema(6),
+    });
+    expect((layered.prompt.match(/TRANSPARENT background/gi) || []).length).toBe(1);
+    expect(layered.styleLayer).toBe(APPAREL_CHROMA_STYLE_BY_NAME.opinionated);
+    expect(dedupeConsecutiveParagraphs(`${APPAREL_BASE_TRANSPARENT}\n\n${APPAREL_BASE_TRANSPARENT}`)).toBe(
+      APPAREL_BASE_TRANSPARENT,
+    );
   });
 
   it("thematic styles pass user text through without quoting", () => {

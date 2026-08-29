@@ -24,8 +24,7 @@ export const APPAREL_BASE_TRANSPARENT =
   "Isolated centered graphic on a TRANSPARENT background, for screen printing. " +
   "Isolated motif, screen-print ready, clean crisp edges, no background scene, no ground shadow, no plate. " +
   "No border or outline around text. Clean legible lettering. " +
-  "No scenic plate, no white mat, no rectangular card. " +
-  "Do not add text unless the user explicitly requested it.";
+  "No scenic plate, no white mat, no rectangular card.";
 
 export const DECOR_BASE_FULL_BLEED =
   "Full-bleed, edge-to-edge composition, fills the entire canvas. " +
@@ -185,6 +184,35 @@ export function countChromaHexMentions(prompt: string): number {
   return (prompt.match(/#ff00ff/gi) || []).length;
 }
 
+/** Drop a style/sub-style layer that accidentally repeats the locked base. */
+export function stripLockedBaseEcho(layer: string, base: string): string {
+  const text = (layer || "").trim();
+  const locked = (base || "").trim();
+  if (!text || !locked) return text;
+  if (text === locked) return "";
+  if (text.includes(locked)) {
+    return text.split(locked).join(" ").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  return text;
+}
+
+export function dedupeConsecutiveParagraphs(text: string): string {
+  const out: string[] = [];
+  for (const raw of (text || "").split(/\n\n+/)) {
+    const part = raw.trim();
+    if (!part) continue;
+    const prev = out[out.length - 1];
+    if (prev && prev === part) continue;
+    if (prev && isTransparentBaseParagraph(prev) && isTransparentBaseParagraph(part)) continue;
+    out.push(part);
+  }
+  return out.join("\n\n");
+}
+
+function isTransparentBaseParagraph(text: string): boolean {
+  return /^Isolated centered graphic on a TRANSPARENT background/i.test((text || "").trim());
+}
+
 export function composeUserInputLayer(userInput: string, schema?: unknown): string {
   const trimmed = (userInput || "").trim();
   if (!trimmed) return "";
@@ -293,10 +321,18 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
   if (input.isAllOverPrint && (category === "apparel" || category === "graphics")) {
     extras.push(input.isPatternStyle ? AOP_PATTERN_EXTRA : AOP_MOTIF_EXTRA);
   }
-  const styleLayer = stripChromaFromStyleLayer(input.styleLayer || "");
-  const subStyleLayer = stripChromaFromStyleLayer(input.subStyleLayer || "");
+  const styleLayer = stripLockedBaseEcho(
+    stripChromaFromStyleLayer(input.styleLayer || ""),
+    base,
+  );
+  const subStyleLayer = stripLockedBaseEcho(
+    stripChromaFromStyleLayer(input.subStyleLayer || ""),
+    base,
+  );
   const userLayer = composeUserInputLayer(input.userInput, input.userSlotSchema);
-  const prompt = [base, ...extras, styleLayer, subStyleLayer, userLayer].filter(Boolean).join("\n\n");
+  const prompt = dedupeConsecutiveParagraphs(
+    [base, ...extras, styleLayer, subStyleLayer, userLayer].filter(Boolean).join("\n\n"),
+  );
   return {
     prompt,
     category,
