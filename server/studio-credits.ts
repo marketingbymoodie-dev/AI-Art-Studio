@@ -10,8 +10,9 @@
  */
 
 import { and, eq, sql } from "drizzle-orm";
+import { canSpendStudioCreditOnJob } from "@shared/studio-credit-spend-guard";
 import { db } from "./db";
-import { creditBalances, creditLedger, customers, type CreditBalance } from "@shared/schema";
+import { creditBalances, creditLedger, customers, generationJobs, type CreditBalance } from "@shared/schema";
 import { storage } from "./storage";
 
 export type CreditSource = "earned" | "pack";
@@ -30,6 +31,8 @@ export type GrantStudioCreditsParams = {
 
 export type SpendStudioCreditParams = {
   customerId: string;
+  /** Required. Spend is refused unless this job exists and status === "complete". */
+  generationJobId: string;
   idempotencyKey: string;
   shop?: string | null;
   externalRef?: string | null;
@@ -150,6 +153,8 @@ export async function grantStudioCredits(params: GrantStudioCreditsParams): Prom
 
 /**
  * Spend one Studio Credit: earned first, then pack.
+ * Debit-on-success only — requires a completed generation_job.
+ * Stale credits=0 / packCredits=1 still spends on that success path.
  * Caller is responsible for burning merchant quota when source === "earned".
  */
 export async function spendStudioCredit(params: SpendStudioCreditParams): Promise<SpendResult> {
@@ -167,6 +172,22 @@ export async function spendStudioCredit(params: SpendStudioCreditParams): Promis
       })
       .onConflictDoNothing();
 
+    const [current] = await tx
+      .select()
+      .from(creditBalances)
+      .where(eq(creditBalances.customerId, params.customerId));
+
+    if (!params.generationJobId) {
+      return { spent: false, source: null, balance: current, duplicate: false };
+    }
+    const [job] = await tx
+      .select({ status: generationJobs.status, customerId: generationJobs.customerId })
+      .from(generationJobs)
+      .where(eq(generationJobs.id, params.generationJobId));
+    if (!canSpendStudioCreditOnJob(job, params.customerId)) {
+      return { spent: false, source: null, balance: current, duplicate: false };
+    }
+
     const [existingLedger] = await tx
       .select()
       .from(creditLedger)
@@ -181,11 +202,6 @@ export async function spendStudioCredit(params: SpendStudioCreditParams): Promis
         : null) as CreditSource | null;
       return { spent: true, source: src, balance, duplicate: true };
     }
-
-    const [current] = await tx
-      .select()
-      .from(creditBalances)
-      .where(eq(creditBalances.customerId, params.customerId));
     const earned = current?.earnedCredits ?? 0;
     const pack = current?.packCredits ?? 0;
     const totalCol = current?.credits ?? 0;
@@ -236,10 +252,11 @@ export async function spendStudioCredit(params: SpendStudioCreditParams): Promis
       deltaCredits: -1,
       source,
       shop: params.shop ?? null,
+      relatedEntityId: params.generationJobId,
       quotaBucketKey: params.quotaBucketKey ?? null,
       reason: "generation",
       idempotencyKey: params.idempotencyKey,
-      externalRef: params.externalRef ?? null,
+      externalRef: params.externalRef ?? params.generationJobId,
       metadata: params.metadata ?? null,
     });
 

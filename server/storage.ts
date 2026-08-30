@@ -23,6 +23,7 @@ import {
   founderAlerts,
   oosCatalogueScans, type OosCatalogueScan,
 } from "@shared/schema";
+import { isForbiddenGenerationLedgerDebit } from "@shared/studio-credit-spend-guard";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, asc, inArray, sql, isNull } from "drizzle-orm";
 import { computeGenerationConsume, getEffectivePlan, resolveGenerationQuota } from "./customizer-plans";
@@ -271,14 +272,10 @@ export class DatabaseStorage implements IStorage {
     return customer;
   }
 
-  async decrementCreditsIfAvailable(customerId: string): Promise<Customer | null> {
-    const result = await this.consumePaidCredit(
-      customerId,
-      `legacy-decrement:${customerId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-      "legacy-decrementCreditsIfAvailable",
+  async decrementCreditsIfAvailable(_customerId: string): Promise<Customer | null> {
+    throw new Error(
+      "decrementCreditsIfAvailable is retired; generation spend must use spendStudioCredit with a completed generation_job",
     );
-    if (!result.consumed) return null;
-    return this.getCustomer(customerId).then((customer) => customer || null);
   }
 
   async ensureCustomerBalance(customerId: string): Promise<CreditBalance> {
@@ -472,6 +469,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }> {
+    if (isForbiddenGenerationLedgerDebit(entry)) {
+      throw new Error(
+        "Generation debits must use spendStudioCredit with a completed generation_job",
+      );
+    }
     return db.transaction(async (tx) => {
       await tx
         .insert(creditBalances)
@@ -541,52 +543,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * Legacy: bucket-agnostic credit spend (does not distinguish earned vs pack,
-   * does not burn merchant quota on "earned"). Retained for coupon/manual
-   * paths only. Generation billing should use `spendStudioCredit` from
-   * `./studio-credits` so bucket accounting and quota burn stay correct.
+   * Retired. Generation spend must use spendStudioCredit with a completed generation_job.
    */
-  async consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
-    return db.transaction(async (tx) => {
-      await tx
-        .insert(creditBalances)
-        .values({ customerId, credits: 0, earnedCredits: 0, packCredits: 0, freeGenerationsUsed: 0, version: 0, updatedAt: new Date() })
-        .onConflictDoNothing();
-
-      const [existingLedger] = await tx.select().from(creditLedger).where(eq(creditLedger.idempotencyKey, idempotencyKey));
-      if (existingLedger) {
-        const [balance] = await tx.select().from(creditBalances).where(eq(creditBalances.customerId, customerId));
-        return { consumed: true, balance };
-      }
-
-      const [balance] = await tx
-        .update(creditBalances)
-        .set({
-          credits: sql`${creditBalances.credits} - 1`,
-          version: sql`${creditBalances.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(creditBalances.customerId, customerId), sql`${creditBalances.credits} > 0`))
-        .returning();
-
-      if (!balance) return { consumed: false, balance: undefined };
-
-      await tx.insert(creditLedger).values({
-        customerId,
-        deltaCredits: -1,
-        reason: "generation",
-        idempotencyKey,
-        externalRef,
-        metadata: null,
-      });
-
-      await tx
-        .update(customers)
-        .set({ credits: balance.credits, totalGenerations: sql`${customers.totalGenerations} + 1`, updatedAt: new Date() })
-        .where(eq(customers.id, customerId));
-
-      return { consumed: true, balance };
-    });
+  async consumePaidCredit(
+    _customerId: string,
+    _idempotencyKey: string,
+    _externalRef?: string,
+  ): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
+    throw new Error(
+      "consumePaidCredit is retired; generation spend must use spendStudioCredit with a completed generation_job",
+    );
   }
 
   async consumeFreeGeneration(

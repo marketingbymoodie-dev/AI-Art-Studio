@@ -233,6 +233,14 @@ export async function getRewardLadder(shop: string): Promise<RewardLadderRung[]>
   return db.select().from(rewardLadderRungs).where(eq(rewardLadderRungs.shop, normShop));
 }
 
+/**
+ * Page-load / counter / gate resolve. READ-ONLY.
+ * Never grants, spends, clawbacks, or reconciles wallets.
+ */
+export async function resolveRewardsForShop(shop: string): Promise<RewardLadderRung[]> {
+  return getRewardLadder(shop);
+}
+
 export type RewardRungPatch = Partial<Pick<RewardLadderRung, "enabled" | "creditAmount" | "thresholdCents">>;
 
 export async function patchRewardLadder(

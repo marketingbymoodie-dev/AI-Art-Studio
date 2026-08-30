@@ -61,6 +61,7 @@ export function creatorContextFromRequest(req: {
 
 /**
  * Customer-facing wallet: paid buckets plus this-shop free remaining.
+ * READ-ONLY — never spend, grant, clawback, or reconcile buckets.
  * Creator storefronts use the per-creator free-gen table, not merchant visitor free gens.
  */
 export async function resolveStorefrontWalletView(params: {

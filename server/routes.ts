@@ -188,7 +188,7 @@ import { formatPurchaseThresholdDisplay } from "@shared/reward-grants";
 import { readPinnedUsdToCurrency } from "./pinned-fx";
 import {
   ensureRewardLadder,
-  getRewardLadder,
+  resolveRewardsForShop,
   patchRewardLadder,
   serializeRewardRung,
   tryGrantShareDesign,
@@ -4060,13 +4060,29 @@ ${orientationExtra}
 
       // Bill merchant or customer only after successful generation.
       if (usedCustomerPaidCredit && customer) {
+        const embedJob = await storage.createGenerationJob({
+          shop,
+          customerId: customer.id,
+          status: "complete",
+          prompt: String(rawUserPromptEmbed ?? prompt ?? ""),
+          userPrompt: rawUserPromptEmbed ?? null,
+          stylePreset: stylePreset ?? null,
+          size: size ?? null,
+          frameColor: frameColor ?? null,
+          designImageUrl: imageUrl,
+          thumbnailUrl: thumbnailUrl ?? null,
+          designId,
+          billingMode: "customer_paid",
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        });
         const consumed = await applyCustomerBillingOnSuccess({
           customerId: customer.id,
           mode: "customer_paid",
+          generationJobId: embedJob.id,
           idempotencyKey: `shopify-generation:${embedBillingReqId}`,
           externalRef: embedBillingReqId,
         });
-        if (!consumed) {
+        if (!consumed.consumed) {
           return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits." });
         }
         customer = (await storage.getCustomer(customer.id)) ?? customer;
@@ -9212,6 +9228,7 @@ ${orientationExtra}
               } else {
                 const paid = await spendStudioCredit({
                   customerId: workerCustomerId,
+                  generationJobId: jobId,
                   idempotencyKey: reqId.toString(),
                   externalRef: reqId.toString(),
                   shop,
@@ -9262,6 +9279,7 @@ ${orientationExtra}
               installation,
               billingMode: workerBillingMode,
               customerId: workerCustomerId,
+              generationJobId: jobId,
               idempotencyKey: reqId.toString(),
               freeGenerationLimit: workerFreeLimit,
             });
@@ -11529,7 +11547,7 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const ladder = await ensureRewardLadder(installation.shopDomain);
+      const ladder = await resolveRewardsForShop(installation.shopDomain);
       const shopperCountry = resolvedShipCountryFromReq(req).country;
       const shopperCurrency = currencyForShipCountry(shopperCountry);
       const usdToShopperRate = await readPinnedUsdToCurrency({
