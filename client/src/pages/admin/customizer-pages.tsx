@@ -971,12 +971,25 @@ export default function AdminCustomizerPages() {
   }>({
     queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || "Failed to fetch production costs from Printify");
+      // Use apiFetch (not apiRequest) so a 502 cost miss can degrade instead of
+      // hard-blocking Review & Create. Fully-OOS still throws.
+      const res = await apiFetch(`/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) return body;
+      if (body?.code === "PRINTIFY_FULLY_OOS" || res.status === 401) {
+        throw new Error(`${res.status}: ${JSON.stringify(body)}`);
       }
-      return res.json();
+      const warning =
+        (typeof body.message === "string" && body.message.trim()) ||
+        (typeof body.error === "string" && body.error.trim()) ||
+        "Failed to fetch production costs from Printify";
+      return {
+        costs: {},
+        shopifyVariantCosts: {},
+        printifyVariantLabels: body.printifyVariantLabels || {},
+        cached: false,
+        warning,
+      };
     },
     // Prefetch during Variants (step 3) once the product type is on the chosen supplier.
     enabled:
@@ -1888,7 +1901,7 @@ export default function AdminCustomizerPages() {
     applySupplierAndVariantsMutation.mutate();
   }
 
-  /** Validate prices in Step 4; advance to Step 5 (confirm). Suggested Printify pricing is required. */
+  /** Validate prices in Step 4; advance to Step 5 (confirm). Every retail price must be > $0.00. */
   function advanceToStep4() {
     if (selectedBlankFullyOos) {
       toast({
@@ -1907,14 +1920,7 @@ export default function AdminCustomizerPages() {
       });
       return;
     }
-    if (!costsAvailable || costsError) {
-      toast({
-        title: "Suggested prices required",
-        description: "Suggested retail prices from Printify are required before creating this page. Wait for costs to finish loading, click Refresh costs, or go back to Supplier and pick a different print provider.",
-        variant: "destructive",
-      });
-      return;
-    }
+    // Missing COGS is not a hard block (tapestry / tote degrade). $0.00 still is.
     const errs: Record<string, string> = {};
     for (const v of selectedVariants) {
       const val = variantPrices[v.id] ?? "";
@@ -3168,11 +3174,21 @@ export default function AdminCustomizerPages() {
                       </p>
                     )}
 
-                    {costsError && !selectedBlankFullyOos && (
-                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
+                    {!costsError && selectedBlank?.oosStatus === "critical" && (
+                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3">
+                        Most variants are out of stock
+                        {selectedBlankProviderLabel ? ` at ${selectedBlankProviderLabel}` : ""}
+                        {" "}({selectedBlank.oosAvailableVariants ?? 0}/{selectedBlank.oosTotalVariants ?? 0} available).
+                        You can still set prices for in-stock options.
+                      </p>
+                    )}
+
+                    {!costsLoading && !selectedBlankFullyOos && selectedBlank?.printifyBlueprintId && !costsAvailable && (
+                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center gap-2">
                         <span>
-                          {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
-                          {" "}Retry runs Product Sync then a Printify cost probe — apparel can take up to a minute.
+                          COGS unavailable
+                          {costsData?.warning ? ` — ${costsData.warning}` : "."}
+                          {" "}Enter a retail price greater than $0.00 for each variant to continue.
                         </span>
                         <Button
                           type="button"
@@ -3186,16 +3202,15 @@ export default function AdminCustomizerPages() {
                               try {
                                 await productSyncMutation.mutateAsync(ptId);
                               } catch {
-                                /* still try legacy costs */
+                                /* still try cost probe */
                               }
                             }
                             try {
-                              const res = await apiRequest(
-                                "GET",
+                              const res = await apiFetch(
                                 `/api/admin/printify/costs/${ptId}?legacy=1`,
                               );
-                              if (res.ok) {
-                                const data = await res.json();
+                              const data = await res.json().catch(() => ({}));
+                              if (res.ok && data?.costs && Object.keys(data.costs).length > 0) {
                                 queryClient.setQueryData(
                                   ["/api/admin/printify/costs", ptId],
                                   data,
@@ -3212,41 +3227,6 @@ export default function AdminCustomizerPages() {
                             <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                           ) : null}
                           Retry
-                        </Button>
-                      </p>
-                    )}
-
-                    {!costsError && selectedBlank?.oosStatus === "critical" && (
-                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3">
-                        Most variants are out of stock
-                        {selectedBlankProviderLabel ? ` at ${selectedBlankProviderLabel}` : ""}
-                        {" "}({selectedBlank.oosAvailableVariants ?? 0}/{selectedBlank.oosTotalVariants ?? 0} available).
-                        You can still set prices for in-stock options.
-                      </p>
-                    )}
-
-                    {!costsLoading && !costsError && selectedBlank?.printifyBlueprintId && !costsAvailable && (
-                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center gap-2">
-                        <span>
-                          Loading production costs from Printify… If this persists, open Printify Costs or click Refresh costs.
-                        </span>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-8"
-                          onClick={() => {
-                            if (!selectedBlank?.productTypeId) return;
-                            productSyncMutation.mutate(selectedBlank.productTypeId, {
-                              onSuccess: () => void refetchCosts(),
-                            });
-                          }}
-                          disabled={productSyncMutation.isPending}
-                        >
-                          {productSyncMutation.isPending ? (
-                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                          ) : null}
-                          Refresh costs
                         </Button>
                       </p>
                     )}
@@ -3320,9 +3300,7 @@ export default function AdminCustomizerPages() {
                                         ? ` · Profit $${frontProfit.toFixed(2)}`
                                         : ""
                                     }`
-                                  : costsAvailable
-                                    ? "COGS unavailable for this variant"
-                                    : "COGS loading…"}
+                                  : "COGS unavailable"}
                               </p>
                             </div>
                             {supportsBothSidePricing && (
@@ -3375,14 +3353,12 @@ export default function AdminCustomizerPages() {
                       <Button
                         className="flex-1"
                         onClick={advanceToStep4}
-                        disabled={selectedBlankFullyOos || !costsAvailable || costsError || suggestedPricesApplying}
+                        disabled={selectedBlankFullyOos || suggestedPricesApplying}
                         title={
                           selectedBlankFullyOos
                             ? "Cannot create a customizer page while this Printify supplier has no stock"
                             : suggestedPricesApplying
                               ? "Wait for suggested prices to finish applying"
-                            : !costsAvailable || costsError
-                              ? "Suggested prices from Printify are required before creating this page"
                               : undefined
                         }
                       >
