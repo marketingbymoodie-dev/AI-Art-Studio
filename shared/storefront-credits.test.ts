@@ -4,10 +4,26 @@ import {
   pickStorefrontGenerationSpend,
   storefrontArtworksRemaining,
   storefrontCreditBreakdown,
+  storefrontPaidSpendable,
   storefrontShopFreeRemaining,
 } from "./storefront-credits";
 
 describe("storefront credit split + spend order", () => {
+  it("treats pack-only as spendable paid (0 free + 0 rewards + 1 pack)", () => {
+    const paid = storefrontPaidSpendable({ earnedCredits: 0, packCredits: 1 });
+    expect(paid).toBe(1);
+    expect(pickStorefrontGenerationSpend({ shopFreeRemaining: 0, paidCredits: paid })).toBe(
+      "customer_paid",
+    );
+    expect(
+      storefrontCreditBreakdown({
+        shopFreeRemaining: 0,
+        earnedCredits: 0,
+        packCredits: 1,
+      }).total,
+    ).toBe(1);
+  });
+
   it("uses this shop's free gens before paid credits", () => {
     expect(pickStorefrontGenerationSpend({ shopFreeRemaining: 2, paidCredits: 10 })).toBe(
       "customer_free",

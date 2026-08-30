@@ -127,6 +127,17 @@ export function storefrontCreditBreakdown(args: {
   };
 }
 
+/**
+ * Spendable paid total — same buckets as the counter/modal (earned + pack).
+ * Does not use the unbucketed `credits` column (can be stale vs packCredits).
+ */
+export function storefrontPaidSpendable(args: {
+  earnedCredits?: number | null;
+  packCredits?: number | null;
+}): number {
+  return nonNegInt(args.earnedCredits) + nonNegInt(args.packCredits);
+}
+
 /** Shop free first, then paid (earned then pack at spend time). */
 export function pickStorefrontGenerationSpend(args: {
   shopFreeRemaining: number;

@@ -14587,12 +14587,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }
         >
         {/* Free generation limit reached — prompt to create account */}
-        {freeLimitReached && (
+        {freeLimitReached && creditBreakdown.total === 0 && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
             <CardContent className="py-3">
               <p className="text-orange-700 dark:text-orange-300 text-sm font-medium">
                 {storefrontLoggedIn
-                  ? "No free generations or shop rewards left on this shop. Buy a pack below to keep generating."
+                  ? "No free generations, shop rewards, or pack credits left on this shop. Buy a pack below to keep generating."
                   : `You've used all ${freeGenerationLimit} free generations. Create an account or buy a pack to continue designing!`}
               </p>
             </CardContent>

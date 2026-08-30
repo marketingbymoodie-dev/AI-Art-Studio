@@ -101,6 +101,7 @@ import {
   STOREFRONT_FREE_GENERATION_MIN,
   clampStorefrontFreeGens,
   pickStorefrontGenerationSpend,
+  storefrontPaidSpendable,
   storefrontArtworksRemaining,
 } from "@shared/storefront-credits";
 import {
@@ -8441,14 +8442,20 @@ ${orientationExtra}
             shopFreeRemaining = freePeek.remaining;
             shopFreeUsed = freePeek.used;
           }
-          let paidCredits = balance.credits;
+          let paidCredits = storefrontPaidSpendable({
+            earnedCredits: balance.earnedCredits,
+            packCredits: balance.packCredits,
+          });
           if (creatorCtx) {
             const { peekCreatorEarned } = await import("./creator-earned");
             const creatorEarned = await peekCreatorEarned({
               creatorId: creatorCtx.id,
               customerId: customer.id,
             });
-            paidCredits = creatorEarned + (balance.packCredits ?? 0);
+            paidCredits = storefrontPaidSpendable({
+              earnedCredits: creatorEarned,
+              packCredits: balance.packCredits,
+            });
           }
           const spend = pickStorefrontGenerationSpend({
             shopFreeRemaining,

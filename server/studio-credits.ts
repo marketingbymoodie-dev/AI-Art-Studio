@@ -186,28 +186,35 @@ export async function spendStudioCredit(params: SpendStudioCreditParams): Promis
       .select()
       .from(creditBalances)
       .where(eq(creditBalances.customerId, params.customerId));
-    if (!current || current.credits <= 0) {
+    const earned = current?.earnedCredits ?? 0;
+    const pack = current?.packCredits ?? 0;
+    const totalCol = current?.credits ?? 0;
+    // Buckets are spendable even when the unbucketed `credits` column is stale (0).
+    if (!current || (earned <= 0 && pack <= 0 && totalCol <= 0)) {
       return { spent: false, source: null, balance: current, duplicate: false };
     }
 
-    let source: CreditSource = current.earnedCredits > 0 ? "earned" : "pack";
+    let source: CreditSource = earned > 0 ? "earned" : pack > 0 ? "pack" : "earned";
     if (params.preferSource === "pack") {
-      if (current.packCredits <= 0) {
+      if (pack <= 0) {
         return { spent: false, source: null, balance: current, duplicate: false };
       }
       source = "pack";
     }
-    if (source === "pack" && current.packCredits <= 0) {
-      // Total credits > 0 but buckets empty (legacy row) — treat as earned for quota safety.
-      // Still debit total.
-    }
+
+    const spendWhere =
+      source === "pack" && pack > 0
+        ? sql`${creditBalances.packCredits} > 0`
+        : earned > 0
+          ? sql`${creditBalances.earnedCredits} > 0`
+          : sql`${creditBalances.credits} > 0`;
 
     const [balance] = await tx
       .update(creditBalances)
       .set({
-        credits: sql`${creditBalances.credits} - 1`,
+        credits: sql`GREATEST(0, ${creditBalances.credits} - 1)`,
         earnedCredits:
-          source === "earned"
+          source === "earned" && earned > 0
             ? sql`GREATEST(0, ${creditBalances.earnedCredits} - 1)`
             : creditBalances.earnedCredits,
         packCredits:
@@ -217,7 +224,7 @@ export async function spendStudioCredit(params: SpendStudioCreditParams): Promis
         version: sql`${creditBalances.version} + 1`,
         updatedAt: new Date(),
       })
-      .where(and(eq(creditBalances.customerId, params.customerId), sql`${creditBalances.credits} > 0`))
+      .where(and(eq(creditBalances.customerId, params.customerId), spendWhere))
       .returning();
 
     if (!balance) {
