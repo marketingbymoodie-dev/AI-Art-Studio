@@ -553,12 +553,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         setArtworkCorsClean(true);
         setArtworkImg(withCors);
         setArtworkLoading(false);
-        if (edgeWrapMode) {
-          try {
-            setArtPalette(extractArtworkPalette(withCors, 4));
-          } catch {
-            setArtPalette([]);
-          }
+        try {
+          setArtPalette(extractArtworkPalette(withCors, 4));
+        } catch {
+          setArtPalette([]);
         }
         return;
       }
@@ -1662,6 +1660,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                   setBgColor(next === "none" ? null : next);
                   decorGenerateFill.onChange(next);
                 }}
+                swatches={artPalette.slice(0, 4)}
               />
             )}
             {decorMode && !edgeWrapMode && (

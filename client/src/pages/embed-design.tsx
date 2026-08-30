@@ -206,7 +206,7 @@ import {
   QUOTES_PLACEHOLDER,
   type QuoteOption,
 } from "@shared/quotesStyle";
-import { resolveCatalogSlug } from "@shared/styleCatalog";
+import { isFloatingCatalogStyle, resolveCatalogSlug } from "@shared/styleCatalog";
 import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
@@ -1711,6 +1711,25 @@ function isBackGalleryLabel(label: string | undefined): boolean {
   return l === "back" || l.startsWith("back ");
 }
 
+function findStylePresetForFill(
+  presets: StylePreset[],
+  ...keys: Array<string | null | undefined>
+): StylePreset | undefined {
+  for (const raw of keys) {
+    const key = String(raw || "").trim();
+    if (!key) continue;
+    const lower = key.toLowerCase();
+    const hit = presets.find(
+      (p) =>
+        p.id === key ||
+        String(p.catalogSlug || "").toLowerCase() === lower ||
+        String(p.name || "").toLowerCase() === lower,
+    );
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
 function buildPostGenGalleryItems(
   catalogPreviewImages: string[],
@@ -2095,6 +2114,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
   const [decorBackgroundFill, setDecorBackgroundFill] = useState<string>(DEFAULT_DECOR_BACKGROUND_FILL);
+  /** Style fields from a reopened save — selectedPreset may be a slug or stale merchant id. */
+  const [loadedDecorStyle, setLoadedDecorStyle] = useState<{
+    stylePreset?: string | null;
+    catalogSlug?: string | null;
+    styleName?: string | null;
+    outputMode?: string | null;
+    generationModel?: string | null;
+  } | null>(null);
   const [quoteOptions, setQuoteOptions] = useState<QuoteOption[] | null>(null);
   const [quotePickIndex, setQuotePickIndex] = useState<number | null>(null);
   const [quoteTheme, setQuoteTheme] = useState("");
@@ -3882,22 +3909,38 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
 
   const showDecorFloatingFill = useMemo(() => {
-    const active = filteredStylePresets.find((p) => p.id === selectedPreset);
-    if (!active) return false;
+    const active = findStylePresetForFill(
+      filteredStylePresets,
+      selectedPreset,
+      loadedDecorStyle?.stylePreset,
+      loadedDecorStyle?.catalogSlug,
+      loadedDecorStyle?.styleName,
+    );
+    const catalogSlug =
+      active?.catalogSlug ||
+      loadedDecorStyle?.catalogSlug ||
+      selectedPreset ||
+      null;
+    const styleName = active?.name || loadedDecorStyle?.styleName || null;
+    const styleId = active?.id || selectedPreset || loadedDecorStyle?.stylePreset || null;
+    if (!active && !catalogSlug && !styleName && !styleId) return false;
+    if (!generatedDesign?.imageUrl && !active && !selectedPreset) return false;
     return shouldShowDecorFloatingFill({
       isApparelProduct: isApparel,
       designerType: productTypeConfig?.designerType,
-      catalogSlug: active.catalogSlug,
-      styleName: active.name,
-      styleId: active.id,
-      outputMode: active.outputMode,
-      generationModel: active.generationModel,
+      catalogSlug,
+      styleName,
+      styleId,
+      outputMode: active?.outputMode || loadedDecorStyle?.outputMode,
+      generationModel: active?.generationModel || loadedDecorStyle?.generationModel,
       useAopCustomizer,
       edgeWrapMode: flatEdgeWrapMode,
     });
   }, [
     filteredStylePresets,
     selectedPreset,
+    loadedDecorStyle,
+    generatedDesign?.imageUrl,
     isApparel,
     productTypeConfig?.designerType,
     useAopCustomizer,
@@ -4174,15 +4217,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
   }, [productTypeConfig?.printifyBlueprintId, productTypeConfig?.sizeChart]);
 
-  // Reset selectedPreset if it's not in the filtered list (e.g., after product type loads)
+  // Remap saved slug/name to the merchant style id. Keep floating catalog
+  // slugs so a reopened design still gates the fill picker.
   useEffect(() => {
-    if (selectedPreset && selectedPreset !== "" && filteredStylePresets.length > 0) {
-      const isValidPreset = filteredStylePresets.some(p => p.id === selectedPreset);
-      if (!isValidPreset) {
-        setSelectedPreset("");
-      }
+    if (!selectedPreset || selectedPreset === "" || filteredStylePresets.length === 0) return;
+    const match = findStylePresetForFill(filteredStylePresets, selectedPreset);
+    if (match) {
+      if (match.id !== selectedPreset) setSelectedPreset(match.id);
+      return;
     }
-  }, [filteredStylePresets, selectedPreset]);
+    if (
+      isFloatingCatalogStyle({ catalogSlug: selectedPreset, outputMode: loadedDecorStyle?.outputMode }) ||
+      resolveCatalogSlug({ catalogSlug: selectedPreset, name: selectedPreset })
+    ) {
+      return;
+    }
+    setSelectedPreset("");
+  }, [filteredStylePresets, selectedPreset, loadedDecorStyle?.outputMode]);
 
   const defaultProductTypeConfig: ProductTypeConfig = {
     id: 0,
@@ -4893,6 +4944,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         });
         setPrompt(sharedDesign.prompt);
         setSelectedPreset(sharedDesign.stylePreset || "");
+        setLoadedDecorStyle({
+          stylePreset: sharedDesign.stylePreset || null,
+          catalogSlug: null,
+          styleName: null,
+          outputMode: null,
+          generationModel: null,
+        });
         setSelectedSize(sharedDesign.size);
         setSelectedFrameColor(sharedDesign.frameColor);
         setTransform({
@@ -4938,6 +4996,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     mockupColorCacheRef.current = {};
     currentMockupColorRef.current = "";
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
+    setLoadedDecorStyle({
+      stylePreset: (typeof ds?.stylePreset === "string" && ds.stylePreset) || topLevel.stylePreset || null,
+      catalogSlug: typeof ds?.catalogSlug === "string" ? ds.catalogSlug : null,
+      styleName: typeof ds?.styleName === "string" ? ds.styleName : null,
+      outputMode: typeof ds?.outputMode === "string" ? ds.outputMode : null,
+      generationModel: typeof ds?.generationModel === "string" ? ds.generationModel : null,
+    });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
     placementFrozenSigRef.current = null;
@@ -8116,6 +8181,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         imageUrl: imageUrl,
         prompt: composedPrompt || prompt,
       });
+      {
+        const active = findStylePresetForFill(filteredStylePresets, selectedPreset);
+        setLoadedDecorStyle({
+          stylePreset: selectedPreset || null,
+          catalogSlug: active?.catalogSlug || null,
+          styleName: active?.name || null,
+          outputMode: active?.outputMode || null,
+          generationModel: active?.generationModel || null,
+        });
+      }
       if (reuseRegenerateBasePrompt) {
         setPrompt(composedPrompt);
         setReuseRegenerateBasePrompt(null);
@@ -8392,6 +8467,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               selectedSize,
               selectedFrameColor,
               stylePreset: selectedPreset || null,
+              catalogSlug:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.catalogSlug ||
+                loadedDecorStyle?.catalogSlug ||
+                null,
+              styleName:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.name ||
+                loadedDecorStyle?.styleName ||
+                null,
+              outputMode:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.outputMode ||
+                loadedDecorStyle?.outputMode ||
+                null,
               prompt,
               decorBackgroundFill,
               ...(seededFlatState ? { flatPlacerState: seededFlatState } : {}),
