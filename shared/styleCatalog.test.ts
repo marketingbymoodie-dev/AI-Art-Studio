@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { APPAREL_CHROMA_STYLE_BY_NAME } from "./apparel-chroma-prompts";
 import { apparelChromaStyleLayerForCatalogSlug } from "./promptLayers";
-import { inferCatalogSlug, resolveCatalogSlug, findCatalogPreset } from "./styleCatalog";
+import {
+  inferCatalogSlug,
+  resolveCatalogSlug,
+  findCatalogPreset,
+  isFloatingCatalogStyle,
+  RETIRED_GRAPHICS_SLUG_TO_KEEPER,
+} from "./styleCatalog";
 
 describe("style catalog identity", () => {
   it("resolves Opinionated after a display rename", () => {
@@ -38,6 +44,22 @@ describe("apparel chroma reseed key", () => {
 
   it("does not map minimal-line so reseed cannot smash the decor prefix", () => {
     expect(apparelChromaStyleLayerForCatalogSlug("minimal-line")).toBeUndefined();
+  });
+});
+
+describe("retired Graphics twin slugs", () => {
+  it("resolve to the All-types keeper", () => {
+    expect(resolveCatalogSlug({ catalogSlug: "graphics-centered-graphic" })).toBe(
+      "centered-graphic",
+    );
+    expect(inferCatalogSlug("Centered Graphic (Graphics)")).toBe("centered-graphic");
+    expect(findCatalogPreset({ catalogSlug: "graphics-illustrated-motif" })?.id).toBe(
+      "illustrated-motif",
+    );
+    expect(Object.keys(RETIRED_GRAPHICS_SLUG_TO_KEEPER)).toHaveLength(3);
+    expect(isFloatingCatalogStyle({ catalogSlug: "centered-graphic" })).toBe(true);
+    expect(isFloatingCatalogStyle({ outputMode: "floating" })).toBe(true);
+    expect(isFloatingCatalogStyle({ catalogSlug: "minimal-line" })).toBe(false);
   });
 });
 

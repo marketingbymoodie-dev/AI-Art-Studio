@@ -52,6 +52,31 @@ export function parseCustomizerPageStyleConfig(
   return null;
 }
 
+/**
+ * Remap retired Graphics twin ids and the Graphics category bundle.
+ * Returns the original value when nothing changes.
+ */
+export function remapCustomizerStyleConfigAfterGraphicsRetire(
+  raw: unknown,
+  idMap: Map<string, string>,
+): { config: CustomizerPageStyleConfig | unknown; changed: boolean } {
+  const parsed = parseCustomizerPageStyleConfig(raw);
+  if (!parsed) return { config: raw, changed: false };
+  if (parsed.mode === "category") {
+    if (parsed.category === "graphics") {
+      return { config: { mode: "category", category: "all" }, changed: true };
+    }
+    return { config: raw, changed: false };
+  }
+  const nextIds = parsed.presetIds.map((id) => idMap.get(String(id)) ?? String(id));
+  const deduped = [...new Set(nextIds)];
+  const changed =
+    deduped.length !== parsed.presetIds.length ||
+    deduped.some((id, i) => id !== String(parsed.presetIds[i]));
+  if (!changed) return { config: raw, changed: false };
+  return { config: { mode: "selected", presetIds: deduped }, changed: true };
+}
+
 export function validateCustomizerPageStyleConfig(
   config: CustomizerPageStyleConfig | null | undefined,
 ): string | null {

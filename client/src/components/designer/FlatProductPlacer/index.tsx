@@ -20,6 +20,7 @@ import {
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
+import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
@@ -194,6 +195,15 @@ export type FlatProductPlacerProps = {
   viewerHeightPx?: number | null;
   /** Recolor a shared default blank to the selected garment colour. */
   garmentColorHex?: string | null;
+  /**
+   * Live floating-decor fill. Changing colour updates `backgroundColor` and
+   * re-renders immediately — no generate / credit.
+   */
+  decorGenerateFill?: {
+    value: string;
+    onChange: (next: string) => void;
+    hint?: string;
+  } | null;
 };
 
 type LoadedAssets = {
@@ -308,6 +318,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       canvasOverrideLabel = null,
       viewerHeightPx = null,
       garmentColorHex = null,
+      decorGenerateFill = null,
     },
     ref,
   ) {
@@ -682,9 +693,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
-          printCanvasBackgroundColor: edgeWrapMode
-            ? state.backgroundColor
-            : null,
+          printCanvasBackgroundColor:
+            edgeWrapMode || decorMode || fabricWeave
+              ? state.backgroundColor
+              : null,
           decorMode,
           fabricWeave,
           cropToBackFace: false,
@@ -1162,7 +1174,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         coverageWarning = "edge-gap";
       }
     } else if (decorMode || fabricWeave) {
-      if (!flatCovers(placementRect, box)) {
+      // Live fill covers the opening independently of motif scale.
+      if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
     } else if (flatApparelOpaqueTrimmed(placementRect, placed, artworkImg)) {
@@ -1641,6 +1654,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
+            {decorMode && !edgeWrapMode && decorGenerateFill && (
+              <DecorFloatingFillPicker
+                value={decorGenerateFill.value}
+                onChange={(next) => {
+                  setBgColor(next === "none" ? null : next);
+                  decorGenerateFill.onChange(next);
+                }}
+              />
+            )}
             {decorMode && !edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
                 Scale above 100% to zoom in and crop built-in borders. The dashed
@@ -1696,7 +1718,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && !fabricWeave && (
-          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-mat-gap-warning"
+          >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork doesn&apos;t fully cover the mat opening — scale up or

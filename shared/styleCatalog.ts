@@ -8,12 +8,28 @@ import { STYLE_PRESETS } from "./schema";
 
 export type CatalogStyle = (typeof STYLE_PRESETS)[number];
 
+/** Retired Graphics twins → the All-types floating keeper. */
+export const RETIRED_GRAPHICS_SLUG_TO_KEEPER: Record<string, string> = {
+  "graphics-centered-graphic": "centered-graphic",
+  "graphics-illustrated-motif": "illustrated-motif",
+  "graphics-pattern-maker": "pattern-maker",
+};
+
+export const WIDEN_TO_ALL_TYPES_FLOATING_SLUGS = [
+  "centered-graphic",
+  "illustrated-motif",
+  "pattern-maker",
+] as const;
+
 const EXTRA_NAME_ALIASES: Array<{ name: string; slug: string; category?: string }> = [
   { name: "opinionated", slug: "opinionated", category: "apparel" },
   { name: "opinionated text", slug: "opinionated", category: "apparel" },
   { name: "minimal line art", slug: "minimal-line", category: "decor" },
   { name: "minimal line art", slug: "minimal-line", category: "all" },
   { name: "minimalist", slug: "minimal-line" },
+  { name: "centered graphic (graphics)", slug: "centered-graphic" },
+  { name: "illustrated motif (graphics)", slug: "illustrated-motif" },
+  { name: "pattern maker (graphics)", slug: "pattern-maker" },
 ];
 
 function norm(value: string | null | undefined): string {
@@ -63,6 +79,8 @@ export function resolveCatalogSlug(row: {
   category?: string | null;
 }): string | null {
   const stored = norm(row.catalogSlug);
+  const retired = RETIRED_GRAPHICS_SLUG_TO_KEEPER[stored];
+  if (retired) return retired;
   if (stored && isCatalogSlug(stored)) return stored;
   return inferCatalogSlug(row.name, row.category);
 }
@@ -107,6 +125,18 @@ export function isTextFriendlyCatalogSlug(slug: string | null | undefined): bool
 
 export function isGraphicsCatalogSlug(slug: string | null | undefined): boolean {
   return norm(slug).startsWith("graphics-");
+}
+
+/** Floating output — All-types keepers plus retired Graphics slugs. */
+export function isFloatingCatalogStyle(opts?: {
+  outputMode?: string | null;
+  catalogSlug?: string | null;
+}): boolean {
+  const mode = norm(opts?.outputMode).replace(/-/g, "_");
+  if (mode === "floating" || mode === "apparel_transparent") return true;
+  const slug = norm(opts?.catalogSlug);
+  const keeper = RETIRED_GRAPHICS_SLUG_TO_KEEPER[slug] || slug;
+  return (WIDEN_TO_ALL_TYPES_FLOATING_SLUGS as readonly string[]).includes(keeper);
 }
 
 export function catalogSlugBackfillRows(): Array<{ slug: string; name: string; category: string }> {

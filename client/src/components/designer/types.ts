@@ -35,6 +35,7 @@ export interface StylePreset {
   baseImageUrls?: string[];
   descriptionOptional?: boolean;
   generationModel?: string | null;
+  outputMode?: string | null;
   userSlotSchema?: {
     slots: Array<{
       id: string;

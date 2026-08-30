@@ -2860,6 +2860,15 @@ export function renderFlatView(input: FlatRenderInput): void {
     const printRect: Rect = { x: 0, y: 0, width: printW, height: printH };
     const mesh = buildMeshGrid(view, scaleX, scaleY, printRect);
     if (pctx && mesh) {
+      const meshFill =
+        typeof printCanvasBackgroundColor === "string" &&
+        /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
+          ? printCanvasBackgroundColor.trim()
+          : null;
+      if (meshFill) {
+        pctx.fillStyle = meshFill;
+        pctx.fillRect(printRect.x, printRect.y, printRect.width, printRect.height);
+      }
       const box = flatArtBox(printRect, placement, artW, artH);
       drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
       drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
@@ -2867,7 +2876,17 @@ export function renderFlatView(input: FlatRenderInput): void {
     }
   }
 
+  const areaFill =
+    typeof printCanvasBackgroundColor === "string" &&
+    /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
+      ? printCanvasBackgroundColor.trim()
+      : null;
+
   if (!drewMesh) {
+    if (areaFill) {
+      actx.fillStyle = areaFill;
+      actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    }
     const box = flatArtBox(rect, placement, artW, artH);
     drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
   }

@@ -19,6 +19,7 @@ import {
   normalizeMockupCameraLabel,
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
+import { parseLiveFillHex } from "@shared/decorBackgroundFill";
 
 export {
   isContextLikeMockupLabel,
@@ -96,6 +97,8 @@ export interface MockupRequest {
    * default white garment template.
    */
   bgColor?: string;
+  /** Live floating-decor fill — tote/wrap canvases, not AOP trim placeholders. */
+  backgroundColor?: string | null;
   /**
    * Internal-only metadata used by calibration/debug scripts. The storefront
    * route does not pass this, so customer mockup behavior is unchanged.
@@ -1041,11 +1044,15 @@ export async function generatePrintifyMockup(
           originalBuffer = imageUrl as Buffer;
         }
         if (originalBuffer.length > 0) {
-          uploadUrl = await buildToteFoldedPrintPng(originalBuffer, {
-            scale,
-            offsetX: x,
-            offsetY: y,
-          });
+          uploadUrl = await buildToteFoldedPrintPng(
+            originalBuffer,
+            {
+              scale,
+              offsetX: x,
+              offsetY: y,
+            },
+            request.backgroundColor ?? request.bgColor ?? null,
+          );
           toteFoldedPrintPlacement = "front";
           console.log("[Printify Mockup] Built tote_folded_v1 fulfillment canvas (2650×5250)");
         }
@@ -1068,6 +1075,17 @@ export async function generatePrintifyMockup(
           const w = metadata.width || 1024;
           const h = metadata.height || 1024;
           let wrappedBuffer: Buffer;
+          const wrapHex = parseLiveFillHex(request.backgroundColor);
+          const wrapBg = wrapHex
+            ? {
+                r: parseInt(wrapHex.slice(1, 3), 16),
+                g: parseInt(wrapHex.slice(3, 5), 16),
+                b: parseInt(wrapHex.slice(5, 7), 16),
+                alpha: 1,
+              }
+            : request.backgroundColor === null
+              ? { r: 0, g: 0, b: 0, alpha: 0 }
+              : { r: 255, g: 255, b: 255, alpha: 1 };
 
           if (direction === "vertical") {
             wrappedBuffer = await sharp({
@@ -1075,7 +1093,7 @@ export async function generatePrintifyMockup(
                 width: w,
                 height: h * 2,
                 channels: 4,
-                background: { r: 255, g: 255, b: 255, alpha: 1 },
+                background: wrapBg,
               },
             })
               .composite([
@@ -1090,7 +1108,7 @@ export async function generatePrintifyMockup(
                 width: w * 2,
                 height: h,
                 channels: 4,
-                background: { r: 255, g: 255, b: 255, alpha: 1 },
+                background: wrapBg,
               },
             })
               .composite([

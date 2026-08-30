@@ -29,9 +29,6 @@ describe("catalog style model audit (report only — no reassignment)", () => {
       "one-color-print",
       "retro-sunset-stack",
       "playful-cartoon",
-      "graphics-centered-graphic",
-      "graphics-illustrated-motif",
-      "graphics-pattern-maker",
     ]);
   });
 

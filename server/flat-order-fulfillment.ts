@@ -73,6 +73,7 @@ import {
   decodeToteLinePlacement,
 } from "@shared/linePlacementSnapshot";
 import { loadAopLinePanelSnapshot, normalizeAopPanels, pickAopPanelsForOrderLine } from "./aop-line-snapshot";
+import { resolveDesignLiveFillHex } from "@shared/decorBackgroundFill";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -178,6 +179,7 @@ export type ResolvedToteFoldedDesign = {
   /** Design product's persistent Printify product (if any) — bake-failure fallback (Phase 3). */
   printifyProductId?: string | null;
   placement: ToteFoldedPlacement;
+  backgroundColor?: string | null;
 };
 
 /**
@@ -532,6 +534,8 @@ export async function resolveDesignForOrderLine(
         sizeId,
         colorId,
         placement,
+        backgroundColor:
+          lineFlatEarly?.backgroundColor ?? resolveDesignLiveFillHex(designState),
         printifyProductId: designProductOverride?.printifyProductId ?? null,
       },
     };
@@ -898,7 +902,11 @@ async function buildToteFoldedPrintAreasForDesign(
     const base = process.env.PUBLIC_APP_URL || process.env.APP_URL || "";
     artworkUrl = `${base.replace(/\/$/, "")}${artworkUrl}`;
   }
-  const foldedPng = await buildToteFoldedPrintPngFromUrl(artworkUrl, design.placement);
+  const foldedPng = await buildToteFoldedPrintPngFromUrl(
+    artworkUrl,
+    design.placement,
+    design.backgroundColor ?? null,
+  );
   const prepared = await prepareBakeUploadBuffer(foldedPng);
   const path = `tote-folded-orders/${design.productType.id}/${design.designId}-${Date.now()}.${prepared.ext}`;
   const url = await uploadToFlatCalibrationBucket(path, prepared.buffer, prepared.contentType);

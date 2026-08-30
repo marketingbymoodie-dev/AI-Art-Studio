@@ -92,6 +92,31 @@ describe("resolveIsApparelGeneration", () => {
     expect(resolveIsApparelGeneration({ designerType: "framed-print" }, "all")).toBe(false);
     expect(resolveIsApparelGeneration({ designerType: "generic" }, "all")).toBe(false);
   });
+
+  it("floating keepers on decor use fill (not garment matting); apparel stays isolated", () => {
+    expect(
+      resolveIsApparelGeneration({ designerType: "generic" }, "all", {
+        catalogSlug: "centered-graphic",
+        outputMode: "floating",
+      }),
+    ).toBe(false);
+    expect(
+      resolveIsApparelGeneration({ designerType: "framed-print" }, "all", {
+        catalogSlug: "graphics-centered-graphic",
+      }),
+    ).toBe(false);
+    expect(
+      resolveIsApparelGeneration({ designerType: "apparel" }, "all", {
+        catalogSlug: "centered-graphic",
+        outputMode: "floating",
+      }),
+    ).toBe(true);
+    expect(
+      resolveIsApparelGeneration({ designerType: "framed-print" }, "all", {
+        catalogSlug: "minimal-line",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("sanitizeApparelStylePrefix", () => {

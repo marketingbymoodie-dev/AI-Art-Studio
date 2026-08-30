@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   flatArtBox,
+  flatCovers,
   flatContainPlacementScale,
+  flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
   flatOverflows,
   flatShouldFitToSafeArea,
@@ -9,6 +11,35 @@ import {
 } from "./flatRender";
 
 const TALL_GUIDE = { x: 100, y: 50, width: 200, height: 400 };
+
+describe("decor fill + mat coverage", () => {
+  const mat = { x: 40, y: 30, width: 400, height: 250 };
+
+  it("defaults framed/mat placement to 100% cover", () => {
+    expect(flatDefaultPlacementScale({ decorMode: true })).toBe(1);
+    expect(flatShouldFitToSafeArea({ decorMode: true })).toBe(false);
+  });
+
+  it("filled opaque PNG at scale 1 covers all four sides of the mat opening", () => {
+    const box = flatArtBox(
+      mat,
+      { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      300,
+      200,
+    );
+    expect(flatCovers(mat, box)).toBe(true);
+  });
+
+  it("scaled-down filled PNG leaves a gap (mat warning)", () => {
+    const box = flatArtBox(
+      mat,
+      { scale: 0.7, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      300,
+      200,
+    );
+    expect(flatCovers(mat, box)).toBe(false);
+  });
+});
 
 describe("flatShouldFitToSafeArea", () => {
   it("fits apparel (non-bleed) bases", () => {

@@ -21,6 +21,7 @@ import {
   GRAPHICS_CHROMA_STYLE_BY_ID,
   GRAPHICS_CHROMA_STYLE_BY_NAME,
 } from "@shared/graphics-chroma-prompts";
+import { isFloatingCatalogStyle } from "@shared/styleCatalog";
 
 export {
   APPAREL_CHROMA_STYLE_BY_NAME,
@@ -132,10 +133,16 @@ const WHITE_BG_PATTERNS: RegExp[] = [
 export function resolveIsApparelGeneration(
   productType?: { designerType?: string | null; isAllOverPrint?: boolean | null } | null,
   styleCategory?: string | null,
+  style?: { outputMode?: string | null; catalogSlug?: string | null },
 ): boolean {
   const styleCat = (styleCategory || "all").toLowerCase();
   const designerType = (productType?.designerType || "").toLowerCase();
 
+  const isApparelProduct =
+    designerType === "apparel" || designerType === "all-over-print";
+  // Floating on decor uses composite fill, not garment matting.
+  if (isFloatingCatalogStyle(style) && !isApparelProduct) return false;
+  if (isFloatingCatalogStyle(style)) return true;
   if (styleCat === "apparel" || styleCat === "graphics") return true;
   if (designerType === "apparel") return true;
 

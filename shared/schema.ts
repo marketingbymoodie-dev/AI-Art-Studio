@@ -12,7 +12,6 @@ export {
   NO_HOT_PINK_IN_DESIGN,
 } from "./apparel-chroma-prompts";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
-import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
 import { literalUserSlotSchema } from "./promptLayers";
 import { QUOTES_PLACEHOLDER, QUOTES_TREATMENTS } from "./quotesStyle";
 import {
@@ -1221,7 +1220,8 @@ export const STYLE_PRESETS = [
     id: "pattern-maker",
     name: "Pattern Maker",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["pattern maker"],
-    category: "apparel",
+    category: "all",
+    outputMode: "floating",
     promptPlaceholder: "Describe your pattern idea (e.g. tiny tacos and hot sauce bottles)",
   },
   {
@@ -1283,14 +1283,16 @@ export const STYLE_PRESETS = [
     id: "centered-graphic",
     name: "Centered Graphic",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["centered graphic"],
-    category: "apparel",
+    category: "all",
+    outputMode: "floating",
     promptPlaceholder: "Describe your centered graphic (e.g. scary bear standing up, vintage skull, geometric wolf)",
   },
   {
     id: "illustrated-motif",
     name: "Illustrated Motif",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
-    category: "apparel",
+    category: "all",
+    outputMode: "floating",
     promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
   },
   {
@@ -1324,32 +1326,6 @@ export const STYLE_PRESETS = [
     category: "apparel",
     promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
     generationQuality: "low",
-  },
-
-  // Graphics — isolated motifs for blankets, totes, patterns (chroma + SVG pipeline)
-  {
-    id: "graphics-centered-graphic",
-    name: "Centered Graphic (Graphics)",
-    promptPrefix: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-centered-graphic"],
-    category: "graphics",
-    promptPlaceholder:
-      "Describe your centered graphic (e.g. geometric wolf, vintage skull, botanical emblem)",
-  },
-  {
-    id: "graphics-illustrated-motif",
-    name: "Illustrated Motif (Graphics)",
-    promptPrefix: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-illustrated-motif"],
-    category: "graphics",
-    promptPlaceholder:
-      "Describe your illustrated motif (e.g. retro robot, floral skull, camping bear)",
-  },
-  {
-    id: "graphics-pattern-maker",
-    name: "Pattern Maker (Graphics)",
-    promptPrefix: GRAPHICS_CHROMA_STYLE_BY_ID["graphics-pattern-maker"],
-    category: "graphics",
-    promptPlaceholder:
-      "Describe your pattern idea (e.g. tiny tacos, scattered leaves, geometric tiles)",
   },
 
   // Decor Pet Portraits - Full-bleed scenic versions (no chroma key needed)

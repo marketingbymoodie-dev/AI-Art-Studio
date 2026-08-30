@@ -137,9 +137,13 @@ import {
   buildReuseRegeneratePrompt,
   composeReuseRegenerateUserPrompt,
 } from "@shared/reuseArtworkPrompt";
-import { isMinimalLineCatalogSlug } from "@shared/catalogArtStyles";
-import { DEFAULT_DECOR_BACKGROUND_FILL } from "@shared/decorBackgroundFill";
-import { isGptImage2Model } from "@shared/styleGeneration";
+import {
+  DEFAULT_DECOR_BACKGROUND_FILL,
+  parseLiveFillHex,
+  resolveLiveFillHex,
+  shouldShowDecorFloatingFill,
+} from "@shared/decorBackgroundFill";
+import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
@@ -3877,14 +3881,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return collapseStyleNameTwins(matched, productTypeConfig?.designerType);
   }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
 
-  const showDecorMinimalistFill = useMemo(() => {
+  const showDecorFloatingFill = useMemo(() => {
     const active = filteredStylePresets.find((p) => p.id === selectedPreset);
-    return (
-      !isApparel &&
-      isMinimalLineCatalogSlug(active?.catalogSlug || active?.id) &&
-      isGptImage2Model(active?.generationModel)
+    if (!active) return false;
+    return shouldShowDecorFloatingFill({
+      isApparelProduct: isApparel,
+      designerType: productTypeConfig?.designerType,
+      catalogSlug: active.catalogSlug,
+      styleName: active.name,
+      styleId: active.id,
+      outputMode: active.outputMode,
+      generationModel: active.generationModel,
+    });
+  }, [filteredStylePresets, selectedPreset, isApparel, productTypeConfig?.designerType]);
+
+  const liveDecorFillHex = useMemo(
+    () =>
+      resolveLiveFillHex(decorBackgroundFill, {
+        shown: showDecorFloatingFill && !flatEdgeWrapMode,
+      }),
+    [decorBackgroundFill, showDecorFloatingFill, flatEdgeWrapMode],
+  );
+
+  const applyLiveDecorFill = useCallback((next: string) => {
+    setDecorBackgroundFill(next);
+    const hex = parseLiveFillHex(next);
+    setFlatPlacerState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
+    setAopPatternSettings((prev) => ({ ...prev, bgColor: hex ?? "" }));
+    setAopPlacementSettings((prev) =>
+      prev ? { ...prev, bgColor: hex ?? undefined } : prev,
     );
-  }, [filteredStylePresets, selectedPreset, isApparel]);
+    setSelectedMockupIndex(0);
+  }, []);
+
+  const seedFlatBackgroundColor = (): string | null => {
+    if (flatEdgeWrapMode) return "#FFFFFF";
+    if (showDecorFloatingFill) return liveDecorFillHex;
+    return null;
+  };
 
   const activeStyleHasOrientationChoices = useMemo(() => {
     const active = filteredStylePresets.find((p) => p.id === selectedPreset);
@@ -4957,6 +4991,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       }
       if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
+      if (typeof ds.decorBackgroundFill === "string") {
+        setDecorBackgroundFill(ds.decorBackgroundFill);
+      } else if (
+        ds.flatPlacerState &&
+        typeof (ds.flatPlacerState as FlatProductPlacerState).backgroundColor === "string"
+      ) {
+        setDecorBackgroundFill(
+          (ds.flatPlacerState as FlatProductPlacerState).backgroundColor || "none",
+        );
+      }
       if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
         setAopPlacementSettings(ds.aopPlacementSettings as AopPlacementSettings);
         if (typeof ds.aopPlacementSettings.bgColor === 'string') {
@@ -6398,11 +6442,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         ) {
           return bgColorOverride;
         }
-        if (!useAopCustomizer) return undefined;
-        const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
-        return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
-          ? candidate
-          : undefined;
+        if (useAopCustomizer) {
+          const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
+          return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
+            ? candidate
+            : undefined;
+        }
+        return liveDecorFillHex ?? undefined;
       })();
       const mockupPrintPlacement = useAopCustomizer
         ? undefined
@@ -6424,6 +6470,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         y: clampedY,
         shop: shopDomain,
         bgColor: aopBgColor,
+        backgroundColor: liveDecorFillHex,
         preferContextViews: mergeContextOnly || undefined,
         preferPersonViews: mergePersonViews || undefined,
       } : isShopify ? {
@@ -6441,6 +6488,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         shop: shopDomain,
         sessionToken,
         bgColor: aopBgColor,
+        backgroundColor: liveDecorFillHex,
         preferContextViews: mergeContextOnly || undefined,
         preferPersonViews: mergePersonViews || undefined,
       } : {
@@ -6456,6 +6504,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         x: clampedX,
         y: clampedY,
         bgColor: aopBgColor,
+        backgroundColor: liveDecorFillHex,
         preferContextViews: mergeContextOnly || undefined,
         preferPersonViews: mergePersonViews || undefined,
       };
@@ -7906,7 +7955,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       quoteArtBrief?: string;
       quoteFontSuggestion?: string;
       quotesVoice?: string;
-      decorBackgroundFill?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
       shop?: string;
@@ -8236,8 +8284,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           },
           linkSides: false,
           artworkUrl: artworkAbs,
-          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
-          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          // Phone / floating-decor: live fill (white default). Not baked into the PNG.
+          backgroundColor: seedFlatBackgroundColor(),
           needsSafeFit: flatShouldFitToSafeArea({
             edgeWrapMode: flatEdgeWrapMode,
             decorMode: flatDecorMode,
@@ -8336,6 +8384,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               selectedFrameColor,
               stylePreset: selectedPreset || null,
               prompt,
+              decorBackgroundFill,
+              ...(seededFlatState ? { flatPlacerState: seededFlatState } : {}),
             },
           }),
         }).catch(() => {}); // fire-and-forget
@@ -8868,9 +8918,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             ? quoteOptions?.[quotePickIndex]?.font_suggestion
             : undefined,
         quotesVoice: quotesNow && selectedStyleOption ? selectedStyleOption : undefined,
-        decorBackgroundFill: showDecorMinimalistFill
-          ? (decorBackgroundFill || "none")
-          : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
@@ -9020,8 +9067,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           },
           linkSides: false,
           artworkUrl: artworkAbs,
-          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
-          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          backgroundColor: seedFlatBackgroundColor(),
           needsSafeFit: flatShouldFitToSafeArea({
             edgeWrapMode: flatEdgeWrapMode,
             decorMode: flatDecorMode,
@@ -11766,7 +11812,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           },
           linkSides: false,
           artworkUrl: abs,
-          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          backgroundColor: seedFlatBackgroundColor(),
           needsSafeFit: flatShouldFitToSafeArea({
             edgeWrapMode: flatEdgeWrapMode,
             decorMode: flatDecorMode,
@@ -11794,6 +11840,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       defaultZoom,
       supportsPrintPlacementSelection,
       printPlacement,
+      showDecorFloatingFill,
+      liveDecorFillHex,
     ],
   );
 
@@ -13198,7 +13246,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Phone cases + aprons: bake the same print file as order fulfillment,
       // then ask Printify at scale=1 center. Raw art + cover-scale made Lifestyle
       // Woman/Man much smaller than the in-app Artwork slide.
-      const bakeLifestylePrint = flatEdgeWrapMode || looksLikeApron || toteFoldedLayout;
+      const bakeLifestylePrint =
+        flatEdgeWrapMode ||
+        looksLikeApron ||
+        toteFoldedLayout ||
+        flatDecorMode ||
+        !!flatFabricWeave;
       if (bakeLifestylePrint) {
         const bakeEndpoint = isStorefront
           ? `${API_BASE}/api/storefront/bake-flat-print`
@@ -15660,6 +15713,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
                       )}
                     </div>
+                    {showDecorFloatingFill && !flatEdgeWrapMode && !flatPlacerActive && (
+                      <DecorFloatingFillPicker
+                        value={decorBackgroundFill}
+                        onChange={applyLiveDecorFill}
+                      />
+                    )}
                   </div>
                 )}
 
@@ -15844,47 +15903,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   </div>
                 )}
               </div>
-
-              {showDecorMinimalistFill && (
-                <div className="mt-2" data-testid="decor-minimalist-background">
-                  <Label className="text-xs">Background</Label>
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setDecorBackgroundFill(DEFAULT_DECOR_BACKGROUND_FILL)}
-                      className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
-                        decorBackgroundFill === DEFAULT_DECOR_BACKGROUND_FILL
-                          ? "border-foreground bg-foreground text-background"
-                          : "border-border bg-card text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      White
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDecorBackgroundFill("none")}
-                      className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
-                        decorBackgroundFill === "none"
-                          ? "border-foreground bg-foreground text-background"
-                          : "border-border bg-card text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      None
-                    </button>
-                    <input
-                      type="color"
-                      value={
-                        decorBackgroundFill !== "none" && /^#[0-9a-fA-F]{6}$/.test(decorBackgroundFill)
-                          ? decorBackgroundFill
-                          : DEFAULT_DECOR_BACKGROUND_FILL
-                      }
-                      onChange={(e) => setDecorBackgroundFill(e.target.value.toUpperCase())}
-                      className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
-                      aria-label="Background colour"
-                    />
-                  </div>
-                </div>
-              )}
 
               {/* Style Sub-Options */}
               {showPresetsParam && selectedPreset !== "" && (() => {
@@ -16738,6 +16756,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl
                     }
                     garmentColorHex={colorizeSharedBlank ? selectedGarmentHex : null}
+                    decorGenerateFill={
+                      showDecorFloatingFill && !flatEdgeWrapMode
+                        ? {
+                            value: decorBackgroundFill,
+                            onChange: applyLiveDecorFill,
+                          }
+                        : null
+                    }
                     catalogSizeAspectRatio={
                       !flatDecorMode && orientationBlankOverride
                         ? catalogSizeAspectRatio
@@ -17162,6 +17188,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         printifyTransformEligible
                       }
                       designerType={productTypeConfig?.designerType || "generic"}
+                      artworkBackgroundColor={
+                        showDecorFloatingFill &&
+                        !flatEdgeWrapMode &&
+                        !usesFlatOnTheFlyPreview &&
+                        !useAopCustomizer
+                          ? liveDecorFillHex
+                          : null
+                      }
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={(() => {

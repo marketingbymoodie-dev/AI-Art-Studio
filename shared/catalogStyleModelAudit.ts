@@ -41,6 +41,13 @@ export function classifyCatalogStyleIntent(preset: {
         "Dual intent: stored catalog prefix is decor full-bleed (nano-banana matches). Apparel compose uses an isolated treatment that wants GPT-Image-2. Review per surface — do not treat as a hard catalog mismatch.",
     };
   }
+  if (
+    slug === "centered-graphic" ||
+    slug === "illustrated-motif" ||
+    slug === "pattern-maker"
+  ) {
+    return { base: "floating-transparent", recommendedModel: "GPT-Image-2" };
+  }
   if (cat === "decor") return { base: "full-bleed", recommendedModel: "nano-banana" };
   if (cat === "graphics") return { base: "floating-transparent", recommendedModel: "GPT-Image-2" };
   if (cat === "apparel") return { base: "apparel", recommendedModel: "GPT-Image-2" };

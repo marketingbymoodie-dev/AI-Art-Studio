@@ -11,7 +11,13 @@
 import { pool } from "../db";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared/apparel-chroma-prompts";
 import { applyForcedStyleLayerBySlug } from "@shared/promptLayers";
-import { catalogSlugBackfillRows, inferCatalogSlug } from "@shared/styleCatalog";
+import { remapCustomizerStyleConfigAfterGraphicsRetire } from "@shared/customizerPageStyles";
+import {
+  catalogSlugBackfillRows,
+  inferCatalogSlug,
+  RETIRED_GRAPHICS_SLUG_TO_KEEPER,
+  WIDEN_TO_ALL_TYPES_FLOATING_SLUGS,
+} from "@shared/styleCatalog";
 import {
   catalogRowFieldsFromPreset,
   NEW_APPAREL_CATALOG_SLUGS,
@@ -2567,11 +2573,11 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
         updated++;
         continue;
       }
-      await pool.query(
-        `INSERT INTO style_presets (
+        await pool.query(
+          `INSERT INTO style_presets (
            merchant_id, name, catalog_slug, prompt_prefix, category, is_active, sort_order,
-           prompt_placeholder, generation_quality, user_slot_schema
-         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9)`,
+           prompt_placeholder, generation_quality, user_slot_schema, output_mode
+         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10)`,
         [
           m.id,
           fields.name,
@@ -2582,6 +2588,7 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
           fields.promptPlaceholder,
           fields.generationQuality,
           fields.userSlotSchema,
+          fields.outputMode,
         ],
       );
       inserted++;
@@ -2589,6 +2596,156 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
   }
 
   return { inserted, updated, merchants: merchants.length };
+}
+
+function keeperSlugForGraphicsRow(row: {
+  catalog_slug?: string | null;
+  name?: string | null;
+  category?: string | null;
+}): string | null {
+  const stored = String(row.catalog_slug || "")
+    .trim()
+    .toLowerCase();
+  if (RETIRED_GRAPHICS_SLUG_TO_KEEPER[stored]) return RETIRED_GRAPHICS_SLUG_TO_KEEPER[stored];
+  return inferCatalogSlug(row.name, row.category);
+}
+
+async function remapCreatorAssignments(oldId: number, newId: number): Promise<number> {
+  if (oldId === newId) return 0;
+  const dropped = await pool.query(
+    `DELETE FROM creator_style_assignments a
+     USING creator_style_assignments b
+     WHERE a.style_preset_id = $1
+       AND b.style_preset_id = $2
+       AND a.creator_id = b.creator_id`,
+    [oldId, newId],
+  );
+  const moved = await pool.query(
+    `UPDATE creator_style_assignments
+     SET style_preset_id = $2, updated_at = NOW()
+     WHERE style_preset_id = $1`,
+    [oldId, newId],
+  );
+  return (
+    ((dropped as { rowCount?: number }).rowCount || 0) +
+    ((moved as { rowCount?: number }).rowCount || 0)
+  );
+}
+
+async function remapStylePromptSuggestions(oldId: number, newId: number): Promise<void> {
+  if (oldId === newId) return;
+  await pool.query(`DELETE FROM style_prompt_suggestions WHERE style_preset_id = $1`, [oldId]);
+  void newId;
+}
+
+/**
+ * Retire Graphics catalog twins and widen Centered Graphic / Illustrated Motif /
+ * Pattern Maker to All types + floating. Idempotent.
+ */
+export async function retireGraphicsTwinStyles(): Promise<{
+  remappedAssignments: number;
+  remappedPages: number;
+  converted: number;
+  deleted: number;
+  widened: number;
+}> {
+  const tag = "[startup-migration] [graphics-twins]";
+  const retiredSlugs = Object.keys(RETIRED_GRAPHICS_SLUG_TO_KEEPER);
+  const gfx = await pool.query(
+    `SELECT id, merchant_id, name, catalog_slug, category
+     FROM style_presets
+     WHERE catalog_slug = ANY($1::text[])`,
+    [retiredSlugs],
+  );
+  const gfxRows = (gfx as { rows?: any[] }).rows || [];
+
+  const keepers = await pool.query(
+    `SELECT id, merchant_id, catalog_slug
+     FROM style_presets
+     WHERE catalog_slug = ANY($1::text[])`,
+    [[...WIDEN_TO_ALL_TYPES_FLOATING_SLUGS]],
+  );
+  const keepersByMerchant = new Map<string, Map<string, number>>();
+  for (const row of (keepers as { rows?: any[] }).rows || []) {
+    const mid = String(row.merchant_id);
+    if (!keepersByMerchant.has(mid)) keepersByMerchant.set(mid, new Map());
+    keepersByMerchant.get(mid)!.set(String(row.catalog_slug), Number(row.id));
+  }
+
+  const idMap = new Map<string, string>();
+  let remappedAssignments = 0;
+  let converted = 0;
+  let deleted = 0;
+
+  for (const row of gfxRows) {
+    const keeperSlug = keeperSlugForGraphicsRow(row);
+    if (!keeperSlug || !WIDEN_TO_ALL_TYPES_FLOATING_SLUGS.includes(keeperSlug as any)) {
+      console.warn(`${tag} skip unmatched graphics row id=${row.id} slug=${row.catalog_slug}`);
+      continue;
+    }
+    const mid = String(row.merchant_id);
+    const existingId = keepersByMerchant.get(mid)?.get(keeperSlug);
+    if (existingId) {
+      idMap.set(String(row.id), String(existingId));
+      remappedAssignments += await remapCreatorAssignments(Number(row.id), existingId);
+      await remapStylePromptSuggestions(Number(row.id), existingId);
+      await pool.query(`DELETE FROM style_presets WHERE id = $1`, [row.id]);
+      deleted++;
+      continue;
+    }
+    const catalog = STYLE_PRESETS.find((p) => p.id === keeperSlug);
+    await pool.query(
+      `UPDATE style_presets
+       SET catalog_slug = $1,
+           name = $2,
+           category = 'all',
+           output_mode = 'floating',
+           generation_model = 'gpt-image-2',
+           updated_at = NOW()
+       WHERE id = $3`,
+      [keeperSlug, catalog?.name || row.name, row.id],
+    );
+    if (!keepersByMerchant.has(mid)) keepersByMerchant.set(mid, new Map());
+    keepersByMerchant.get(mid)!.set(keeperSlug, Number(row.id));
+    converted++;
+  }
+
+  let remappedPages = 0;
+  const pages = await pool.query(`SELECT id, style_config FROM customizer_pages WHERE style_config IS NOT NULL`);
+  for (const page of (pages as { rows?: any[] }).rows || []) {
+    const next = remapCustomizerStyleConfigAfterGraphicsRetire(page.style_config, idMap);
+    if (!next.changed) continue;
+    await pool.query(`UPDATE customizer_pages SET style_config = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(next.config),
+      page.id,
+    ]);
+    remappedPages++;
+  }
+
+  const widened = await pool.query(
+    `UPDATE style_presets
+     SET category = 'all',
+         output_mode = 'floating',
+         generation_model = 'gpt-image-2',
+         updated_at = NOW()
+     WHERE catalog_slug = ANY($1::text[])
+       AND (
+         category IS DISTINCT FROM 'all'
+         OR output_mode IS DISTINCT FROM 'floating'
+         OR generation_model IS DISTINCT FROM 'gpt-image-2'
+       )`,
+    [[...WIDEN_TO_ALL_TYPES_FLOATING_SLUGS]],
+  );
+
+  const result = {
+    remappedAssignments,
+    remappedPages,
+    converted,
+    deleted,
+    widened: (widened as { rowCount?: number }).rowCount || 0,
+  };
+  console.log(`${tag} ${JSON.stringify(result)}`);
+  return result;
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -2675,6 +2832,18 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED quotes interpretive migration: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await retireGraphicsTwinStyles();
+    applied++;
+    console.log(
+      `${tag} graphics twins retired: deleted=${n.deleted} converted=${n.converted} ` +
+        `assignments=${n.remappedAssignments} pages=${n.remappedPages} widened=${n.widened}`,
+    );
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED graphics twin retirement: ${err.message ?? err}`);
   }
 
   try {

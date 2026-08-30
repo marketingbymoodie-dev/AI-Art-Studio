@@ -486,10 +486,18 @@ describe("minimal-line Minimalist keeps decor bleed and apparel treatment", () =
     expect(style.toLowerCase()).not.toContain("full-bleed");
   });
 
-  it("native-fill path is Minimalist + GPT + not apparel only", () => {
+  it("native-fill path is any floating style + GPT + not apparel", () => {
     expect(
       isDecorMinimalistNativeFillPath({
         catalogSlug: "minimal-line",
+        generationModel: "gpt-image-2",
+        isApparelGeneration: false,
+      }),
+    ).toBe(true);
+    expect(
+      isDecorMinimalistNativeFillPath({
+        catalogSlug: "centered-graphic",
+        outputMode: "floating",
         generationModel: "gpt-image-2",
         isApparelGeneration: false,
       }),
@@ -515,5 +523,22 @@ describe("minimal-line Minimalist keeps decor bleed and apparel treatment", () =
         isApparelGeneration: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("floating All-types on decor uses the same fill base as Minimalist", () => {
+  it("Centered Graphic on decor + GPT gets transparent base, no plate", () => {
+    const layered = composeLayeredPrompt({
+      category: "all",
+      isApparelGeneration: false,
+      generationModel: "gpt-image-2",
+      catalogSlug: "centered-graphic",
+      outputMode: "floating",
+      styleLayer: APPAREL_CHROMA_STYLE_BY_NAME["centered graphic"],
+      userInput: "a wolf",
+    });
+    expect(layered.base).toBe(APPAREL_BASE_TRANSPARENT);
+    expect(layered.prompt.toLowerCase()).not.toContain("#ff00ff");
+    expect(layered.chromaHexMentions).toBe(0);
   });
 });

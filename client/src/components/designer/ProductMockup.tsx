@@ -56,6 +56,8 @@ interface ProductMockupProps {
    *  Use "contain" while browsing in the standard square window so tall
    *  phone-case / mug blanks are not cropped. */
   blankFit?: "cover" | "contain";
+  /** Live fill behind a transparent floating PNG (mug / non-flat decor). */
+  artworkBackgroundColor?: string | null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -345,6 +347,7 @@ export function ProductMockup({
   initialPreviewUrl,
   mockupFit = "cover",
   blankFit,
+  artworkBackgroundColor = null,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -595,17 +598,31 @@ export function ProductMockup({
           </>
         );
       }
+      const fillHex =
+        typeof artworkBackgroundColor === "string" &&
+        /^#[0-9a-fA-F]{6}$/.test(artworkBackgroundColor.trim())
+          ? artworkBackgroundColor.trim()
+          : null;
       return (
-        <img
-          src={displayUrl}
-          alt="Generated artwork"
-          className="absolute inset-0 w-full h-full object-contain"
-          style={artStyle}
-          draggable={false}
-          data-testid="img-generated"
-          onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
-          onError={(e) => console.error("[ProductMockup] Image failed to load:", e)}
-        />
+        <>
+          {fillHex && !mockupUrl ? (
+            <div
+              className="absolute inset-0"
+              style={{ ...artStyle, backgroundColor: fillHex }}
+              data-testid="decor-live-fill"
+            />
+          ) : null}
+          <img
+            src={displayUrl}
+            alt="Generated artwork"
+            className="absolute inset-0 w-full h-full object-contain"
+            style={artStyle}
+            draggable={false}
+            data-testid="img-generated"
+            onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
+            onError={(e) => console.error("[ProductMockup] Image failed to load:", e)}
+          />
+        </>
       );
     }
 

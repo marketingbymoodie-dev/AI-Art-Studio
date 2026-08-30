@@ -17,15 +17,16 @@ import {
   apparelChromaStyleLayerForCatalogSlug,
   composeLayeredPrompt,
   effectiveStoredUserSlotSchema,
-  isDecorMinimalistNativeFillPath,
   parseUserSlotSchema,
   persistUserSlotSchema,
   resolveStyleLayerRaw,
   resolveSubStyleFragment,
   wrapLayeredArtworkPrompt,
 } from "@shared/promptLayers";
-import { parseDecorBackgroundFill, type DecorBackgroundFill } from "@shared/decorBackgroundFill";
-import { compositeFillBehindNativeAlpha } from "./compositeFillBehind";
+import {
+  isDecorFloatingNativeFillPath,
+  resolveStyleGenerationForProduct,
+} from "@shared/decorBackgroundFill";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -1017,8 +1018,6 @@ interface SaveImageOptions {
   vectorize?: boolean;
   /** Native-transparent model — skip chroma / processApparelMotif. */
   skipChroma?: boolean;
-  /** Decor Minimalist + GPT-Image-2 only — composite fill behind native alpha. */
-  decorNativeFill?: DecorBackgroundFill;
 }
 
 function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
@@ -1026,7 +1025,7 @@ function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize, skipChroma, decorNativeFill } =
+  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize, skipChroma } =
     options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
@@ -1063,41 +1062,26 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
   } else {
-    if (decorNativeFill !== undefined) {
-      // GPT-Image-2 Minimalist decor: fill behind native alpha. Never plate / Pass C.
-      // Skip letterbox — a white/colored fill would be mistaken for cream bars.
-      try {
-        buffer = await compositeFillBehindNativeAlpha(buffer, decorNativeFill);
-        extension = "png";
-        actualMimeType = "image/png";
-        console.log(`[saveImageToStorage] Decor native fill composite (${decorNativeFill})`);
-      } catch (err) {
-        console.warn("[saveImageToStorage] decor fill composite skipped:", (err as Error).message);
+    // Vintage Poster (and similar) often paints cream letterbox bars inside an
+    // already-correct landscape/portrait canvas — strip those so flat placement
+    // fills the dashed print rect edge-to-edge.
+    try {
+      const stripped = await stripLetterboxBars(buffer);
+      if (stripped.changed) {
+        buffer = stripped.buffer;
+        console.log(
+          `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
+        );
       }
-    } else {
-      // Vintage Poster (and similar) often paints cream letterbox bars inside an
-      // already-correct landscape/portrait canvas — strip those so flat placement
-      // fills the dashed print rect edge-to-edge.
-      try {
-        const stripped = await stripLetterboxBars(buffer);
-        if (stripped.changed) {
-          buffer = stripped.buffer;
-          console.log(
-            `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
-          );
-        }
-      } catch (err) {
-        console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
-      }
+    } catch (err) {
+      console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
     }
 
     if (targetDims && targetDims.width !== targetDims.height) {
       const outputFormat =
-        decorNativeFill !== undefined
-          ? "png"
-          : actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
-            ? "jpeg"
-            : "png";
+        actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
+          ? "jpeg"
+          : "png";
       buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
       extension = outputFormat === "jpeg" ? "jpg" : "png";
       actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
@@ -2248,6 +2232,7 @@ export async function registerRoutes(
       descriptionOptional: false,
       userSlotSchema: (s as any).userSlotSchema ?? null,
       generationModel: (s as any).generationModel ?? null,
+      outputMode: (s as any).outputMode ?? null,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -2294,6 +2279,7 @@ export async function registerRoutes(
                   (hardcoded as any)?.userSlotSchema,
                 ),
                 generationModel: (s as any).generationModel ?? null,
+                outputMode: (s as any).outputMode ?? (hardcoded as any)?.outputMode ?? null,
               };
             })
           : hardcodedFallback,
@@ -2645,6 +2631,7 @@ export async function registerRoutes(
       let stylePromptPrefix = "";
       let styleName = "";
       let catalogSlugAdmin: string | null = null;
+      let styleOutputModeAdmin: string | null = null;
       let stylePromptPrefixDark: string | null = null;
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
@@ -2662,6 +2649,7 @@ export async function registerRoutes(
           if (selectedStyle) {
             styleName = selectedStyle.name || "";
             catalogSlugAdmin = resolveCatalogSlug(selectedStyle);
+            styleOutputModeAdmin = (selectedStyle as any).outputMode ?? null;
             styleCategory = selectedStyle.category || "all";
             if (selectedStyle.promptPrefix) {
               stylePromptPrefix = selectedStyle.promptPrefix;
@@ -2685,6 +2673,7 @@ export async function registerRoutes(
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
             catalogSlugAdmin = hardcodedStyle.id;
+            styleOutputModeAdmin = (hardcodedStyle as any).outputMode ?? styleOutputModeAdmin;
             styleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -2765,11 +2754,19 @@ export async function registerRoutes(
       // Check if this is an apparel product - either from productType or from style preset category
       // This covers both hardcoded and merchant-created styles via styleCategory
       // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
-      let isApparel = resolveIsApparelGeneration(productType, styleCategory);
-      const styleGen = resolveStyleGeneration({
-        generationModel: styleGenerationModel,
-        generationQuality: styleGenerationQuality,
+      let isApparel = resolveIsApparelGeneration(productType, styleCategory, {
+        outputMode: styleOutputModeAdmin,
+        catalogSlug: catalogSlugAdmin,
       });
+      const styleGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: styleGenerationModel,
+          generationQuality: styleGenerationQuality,
+          outputMode: styleOutputModeAdmin,
+          catalogSlug: catalogSlugAdmin,
+        },
+        productType?.designerType,
+      );
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -2831,14 +2828,14 @@ export async function registerRoutes(
         category: styleCategory,
         isApparelGeneration: isApparel,
         generationModel: styleGen.model,
+        outputMode: styleOutputModeAdmin,
       });
-      const decorNativeFillAdmin = isDecorMinimalistNativeFillPath({
+      const floatingDecorAdmin = isDecorFloatingNativeFillPath({
         catalogSlug: catalogSlugAdmin,
         generationModel: styleGen.model,
+        outputMode: styleOutputModeAdmin,
         isApparelGeneration: isApparel,
-      })
-        ? parseDecorBackgroundFill(decorBackgroundFillAdmin)
-        : undefined;
+      });
       if (colorTier === "dark" && (stylePromptPrefixDark || APPAREL_DARK_TIER_PROMPTS[stylePreset || ""])) {
         console.log(`[Generate] Using dark tier style layer for ${stylePreset}`);
       }
@@ -2846,7 +2843,7 @@ export async function registerRoutes(
       // Decor keeps product-canvas sizing. Apparel/graphics chroma lives only in the locked base.
       let sizingRequirements: string;
       
-      if (isApparel || decorNativeFillAdmin !== undefined) {
+      if (isApparel || floatingDecorAdmin) {
         sizingRequirements = "";
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -2950,6 +2947,7 @@ ${orientationExtra}
         artLayer: quotesAdmin.artLayer,
         isAllOverPrint,
         isPatternStyle: usePatternAopAdmin,
+        outputMode: styleOutputModeAdmin,
       });
       let fullPrompt = wrapLayeredArtworkPrompt(layeredAdmin, sizingRequirements);
       
@@ -3081,7 +3079,6 @@ console.log("[api/generate] replicate returned", {
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
   vectorize: resolveApparelVectorize(styleVectorizeEnabled),
   skipChroma: styleGen.nativeTransparent,
-  decorNativeFill: decorNativeFillAdmin,
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -3669,6 +3666,7 @@ console.log("[shopify/session] installation ok", {
       let stylePromptPrefixDark: string | null = null;
       let styleName = "";
       let catalogSlugEmbed: string | null = null;
+      let embedOutputMode: string | null = null;
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
@@ -3683,6 +3681,7 @@ console.log("[shopify/session] installation ok", {
         if (selectedStyle) {
           styleName = selectedStyle.name || "";
           catalogSlugEmbed = resolveCatalogSlug(selectedStyle);
+          embedOutputMode = (selectedStyle as any).outputMode ?? null;
           embedStyleCategory = selectedStyle.category || "all";
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
@@ -3703,6 +3702,7 @@ console.log("[shopify/session] installation ok", {
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
             catalogSlugEmbed = hardcodedStyle.id;
+            embedOutputMode = (hardcodedStyle as any).outputMode ?? embedOutputMode;
             embedStyleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -3723,12 +3723,20 @@ console.log("[shopify/session] installation ok", {
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
-      const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
-      const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
-      const embedStyleGen = resolveStyleGeneration({
-        generationModel: embedGenerationModel,
-        generationQuality: embedGenerationQuality,
+      const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory, {
+        outputMode: embedOutputMode,
+        catalogSlug: catalogSlugEmbed,
       });
+      const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
+      const embedStyleGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: embedGenerationModel,
+          generationQuality: embedGenerationQuality,
+          outputMode: embedOutputMode,
+          catalogSlug: catalogSlugEmbed,
+        },
+        productType?.designerType,
+      );
       if (embedIsAllOverPrintEarly && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
@@ -3787,14 +3795,14 @@ console.log("[shopify/session] installation ok", {
         category: embedStyleCategory,
         isApparelGeneration: embedIsApparelEarly,
         generationModel: embedStyleGen.model,
+        outputMode: embedOutputMode,
       });
-      const decorNativeFillEmbed = isDecorMinimalistNativeFillPath({
+      const floatingDecorEmbed = isDecorFloatingNativeFillPath({
         catalogSlug: catalogSlugEmbed,
         generationModel: embedStyleGen.model,
+        outputMode: embedOutputMode,
         isApparelGeneration: embedIsApparelEarly,
-      })
-        ? parseDecorBackgroundFill(decorBackgroundFillEmbed)
-        : undefined;
+      });
 
       // Determine aspect ratio and orientation
       if (
@@ -3827,7 +3835,7 @@ console.log("[shopify/session] installation ok", {
       });
 
       let sizingRequirements: string;
-      if (embedIsApparelEarly || decorNativeFillEmbed !== undefined) {
+      if (embedIsApparelEarly || floatingDecorEmbed) {
         sizingRequirements = "";
       } else {
         const printShape = productType?.printShape || "rectangle";
@@ -3922,6 +3930,7 @@ ${orientationExtra}
         artLayer: quotesEmbed.artLayer,
         isAllOverPrint: embedIsAllOverPrintEarly,
         isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
+        outputMode: embedOutputMode,
       });
       let fullPrompt = wrapLayeredArtworkPrompt(layeredEmbed, sizingRequirements);
       
@@ -3954,7 +3963,10 @@ ${orientationExtra}
       const embedCustomerImageUrl: string | null = embedCustomerImageUrls[0] || null;
 
       // Check if this is an apparel product (covers both DB and hardcoded styles)
-      let isApparel = resolveIsApparelGeneration(productType, embedStyleCategory);
+      let isApparel = resolveIsApparelGeneration(productType, embedStyleCategory, {
+        outputMode: embedOutputMode,
+        catalogSlug: catalogSlugEmbed,
+      });
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
@@ -4029,7 +4041,6 @@ ${orientationExtra}
           bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
           vectorize: resolveApparelVectorize(embedVectorizeEnabled),
           skipChroma: embedStyleGen.nativeTransparent,
-          decorNativeFill: decorNativeFillEmbed,
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -4043,7 +4054,6 @@ ${orientationExtra}
             bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
             vectorize: resolveApparelVectorize(embedVectorizeEnabled),
             skipChroma: embedStyleGen.nativeTransparent,
-            decorNativeFill: decorNativeFillEmbed,
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -6695,6 +6705,7 @@ ${orientationExtra}
           (hardcoded as any)?.userSlotSchema,
         ),
         generationModel: s.generationModel ?? null,
+        outputMode: s.outputMode ?? (hardcoded as any)?.outputMode ?? null,
       };
     });
   }
@@ -6715,6 +6726,7 @@ ${orientationExtra}
       descriptionOptional: !!(s as any).descriptionOptional,
       userSlotSchema: (s as any).userSlotSchema ?? null,
       generationModel: (s as any).generationModel ?? null,
+      outputMode: (s as any).outputMode ?? null,
     }));
   }
 
@@ -8655,6 +8667,7 @@ ${orientationExtra}
       let stylePromptPrefix = "";
       let styleName = "";
       let catalogSlugSf: string | null = null;
+      let sfOutputMode: string | null = null;
       let stylePromptPrefixDark: string | null = null;
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
@@ -8691,6 +8704,7 @@ ${orientationExtra}
         if (selectedStyle) {
           styleName = selectedStyle.name || "";
           catalogSlugSf = resolveCatalogSlug(selectedStyle);
+          sfOutputMode = (selectedStyle as any).outputMode ?? null;
           sfStyleCategory = selectedStyle.category || "all";
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
@@ -8711,6 +8725,7 @@ ${orientationExtra}
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
             catalogSlugSf = hardcodedStyle.id;
+            sfOutputMode = (hardcodedStyle as any).outputMode ?? sfOutputMode;
             sfStyleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
@@ -8810,11 +8825,19 @@ ${orientationExtra}
       }
 
       // Determine apparel status early — affects both prompt and dimensions
-      let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
-      const sfStyleGen = resolveStyleGeneration({
-        generationModel: sfGenerationModel,
-        generationQuality: sfGenerationQuality,
+      let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory, {
+        outputMode: sfOutputMode,
+        catalogSlug: catalogSlugSf,
       });
+      const sfStyleGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: sfGenerationModel,
+          generationQuality: sfGenerationQuality,
+          outputMode: sfOutputMode,
+          catalogSlug: catalogSlugSf,
+        },
+        productType?.designerType,
+      );
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -8869,18 +8892,18 @@ ${orientationExtra}
         category: sfStyleCategory,
         isApparelGeneration: isApparel,
         generationModel: sfStyleGen.model,
+        outputMode: sfOutputMode,
       });
-      const decorNativeFillSf = isDecorMinimalistNativeFillPath({
+      const floatingDecorSf = isDecorFloatingNativeFillPath({
         catalogSlug: catalogSlugSf,
         generationModel: sfStyleGen.model,
+        outputMode: sfOutputMode,
         isApparelGeneration: isApparel,
-      })
-        ? parseDecorBackgroundFill(decorBackgroundFillSf)
-        : undefined;
+      });
 
       let sizingRequirements: string;
 
-      if (isApparel || decorNativeFillSf !== undefined) {
+      if (isApparel || floatingDecorSf) {
         sizingRequirements = "";
       } else {
         // Decor: full-bleed edge-to-edge designs
@@ -8980,6 +9003,7 @@ ${orientationExtra}
         artLayer: quotesSf.artLayer,
         isAllOverPrint,
         isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf)),
+        outputMode: sfOutputMode,
       });
       let fullPrompt = wrapLayeredArtworkPrompt(layeredSf, sizingRequirements);
 
@@ -9145,7 +9169,6 @@ ${orientationExtra}
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
               vectorize: resolveApparelVectorize(sfVectorizeEnabled),
               skipChroma: sfStyleGen.nativeTransparent,
-              decorNativeFill: decorNativeFillSf,
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -9160,7 +9183,6 @@ ${orientationExtra}
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                 vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 skipChroma: sfStyleGen.nativeTransparent,
-                decorNativeFill: decorNativeFillSf,
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
@@ -10207,7 +10229,7 @@ ${orientationExtra}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, backgroundColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -10407,6 +10429,7 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        backgroundColor: typeof backgroundColor === "string" || backgroundColor === null ? backgroundColor : undefined,
         preferContextViews: !!preferContextViews,
         preferPersonViews: !!preferPersonViews,
       }, {
@@ -14606,6 +14629,7 @@ ${orientationExtra}
             catalogSlug: preset.id,
             promptPlaceholder: fields.promptPlaceholder,
             generationQuality: fields.generationQuality,
+            ...(fields.outputMode ? { outputMode: fields.outputMode } : {}),
             ...(isVerbatimShortcutCatalogSlug(preset.id)
               ? {
                   userSlotSchema: null,
@@ -19810,7 +19834,7 @@ ${orientationExtra}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, backgroundColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -19906,6 +19930,7 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        backgroundColor: typeof backgroundColor === "string" || backgroundColor === null ? backgroundColor : undefined,
         preferContextViews: !!preferContextViews,
         preferPersonViews: !!preferPersonViews,
       }, {
@@ -19933,7 +19958,7 @@ ${orientationExtra}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, backgroundColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -20058,6 +20083,7 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        backgroundColor: typeof backgroundColor === "string" || backgroundColor === null ? backgroundColor : undefined,
         preferContextViews: !!preferContextViews,
         preferPersonViews: !!preferPersonViews,
       }, {

@@ -59,6 +59,7 @@ export function catalogRowFieldsFromPreset(preset: {
   promptPlaceholder?: string;
   generationQuality?: string;
   userSlotSchema?: unknown;
+  outputMode?: string;
 }): {
   name: string;
   catalogSlug: string | null;
@@ -67,6 +68,7 @@ export function catalogRowFieldsFromPreset(preset: {
   promptPlaceholder: string | null;
   generationQuality: string | null;
   userSlotSchema: unknown;
+  outputMode: string | null;
 } {
   const verbatim = isVerbatimShortcutCatalogSlug(preset.id);
   return {
@@ -77,5 +79,6 @@ export function catalogRowFieldsFromPreset(preset: {
     promptPlaceholder: preset.promptPlaceholder ?? null,
     generationQuality: preset.generationQuality ?? null,
     userSlotSchema: verbatim ? null : (preset.userSlotSchema ?? null),
+    outputMode: preset.outputMode ?? null,
   };
 }

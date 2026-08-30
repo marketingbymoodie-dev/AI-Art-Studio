@@ -5,13 +5,14 @@
  * Apparel and Graphics share the same by-model bases:
  *   gpt-image-2 → transparent
  *   nano-banana (null) → chroma plate (THE only chroma source)
- * Decor → full-bleed (any model), except Minimalist + GPT-Image-2
+ * Decor → full-bleed (any model), except floating + GPT-Image-2
  * (native transparent + composite fill; no plate).
  */
 
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
 import { MINIMALIST_APPAREL_STYLE } from "./catalogArtStyles";
 import { GRAPHICS_CHROMA_STYLE_BY_ID, GRAPHICS_CHROMA_STYLE_BY_NAME } from "./graphics-chroma-prompts";
+import { isDecorFloatingNativeFillPath } from "./decorBackgroundFill";
 import { isGptImage2Model } from "./styleGeneration";
 
 export const APPAREL_BASE_CHROMA =
@@ -173,28 +174,26 @@ export function resolvePromptLayerCategory(
   return "decor";
 }
 
-/** Decor + GPT-Image-2 + Minimalist only — native transparent, then composite fill. */
+/** @deprecated Use isDecorFloatingNativeFillPath — same fill gate for every floating style. */
 export function isDecorMinimalistNativeFillPath(opts: {
   catalogSlug?: string | null;
   generationModel?: string | null;
   isApparelGeneration?: boolean;
+  outputMode?: string | null;
 }): boolean {
-  return (
-    opts.isApparelGeneration !== true &&
-    String(opts.catalogSlug || "").trim().toLowerCase() === "minimal-line" &&
-    isGptImage2Model(opts.generationModel)
-  );
+  return isDecorFloatingNativeFillPath(opts);
 }
 
 export function resolveLockedBase(
   category: PromptLayerCategory,
   generationModel?: string | null,
-  opts?: { catalogSlug?: string | null; isApparelGeneration?: boolean },
+  opts?: { catalogSlug?: string | null; isApparelGeneration?: boolean; outputMode?: string | null },
 ): string {
   if (
-    isDecorMinimalistNativeFillPath({
+    isDecorFloatingNativeFillPath({
       catalogSlug: opts?.catalogSlug,
       generationModel,
+      outputMode: opts?.outputMode,
       isApparelGeneration: opts?.isApparelGeneration ?? category !== "decor",
     })
   ) {
@@ -308,6 +307,7 @@ export function resolveStyleLayerRaw(opts: {
   category?: string | null;
   isApparelGeneration?: boolean;
   generationModel?: string | null;
+  outputMode?: string | null;
 }): string {
   const slug = (opts.catalogSlug || "").trim() || (opts.stylePresetId || "").trim();
   // Minimalist: apparel uses the isolated treatment; decor keeps the stored full-bleed prefix
@@ -319,9 +319,11 @@ export function resolveStyleLayerRaw(opts: {
     return APPAREL_CHROMA_STYLE_BY_NAME.minimalist;
   }
   if (
-    isDecorMinimalistNativeFillPath({
+    slug.toLowerCase() === "minimal-line" &&
+    isDecorFloatingNativeFillPath({
       catalogSlug: slug,
       generationModel: opts.generationModel,
+      outputMode: opts.outputMode,
       isApparelGeneration: opts.isApparelGeneration,
     })
   ) {
@@ -364,6 +366,7 @@ export type ComposeLayeredPromptInput = {
   userSlotSchema?: unknown;
   isAllOverPrint?: boolean;
   isPatternStyle?: boolean;
+  outputMode?: string | null;
 };
 
 export type ComposeLayeredPromptResult = {
@@ -421,6 +424,7 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
   const base = resolveLockedBase(category, input.generationModel, {
     catalogSlug: input.catalogSlug,
     isApparelGeneration: input.isApparelGeneration,
+    outputMode: input.outputMode,
   });
   const extras: string[] = [];
   if (input.isAllOverPrint && (category === "apparel" || category === "graphics")) {

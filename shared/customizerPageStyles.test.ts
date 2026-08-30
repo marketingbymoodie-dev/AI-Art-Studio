@@ -4,6 +4,7 @@ import {
   dedupeStylePresets,
   filterStylePresetsForPage,
   parseCustomizerPageStyleConfig,
+  remapCustomizerStyleConfigAfterGraphicsRetire,
   styleExampleImageUrl,
   stylesForCustomizerPagePicker,
 } from "./customizerPageStyles";
@@ -142,6 +143,44 @@ describe("Pet Portraits apparel/decor name twins", () => {
         (p) => p.id,
       ),
     ).toEqual(["19"]);
+  });
+});
+
+describe("remapCustomizerStyleConfigAfterGraphicsRetire", () => {
+  it("rewrites Graphics category bundles to All types", () => {
+    const next = remapCustomizerStyleConfigAfterGraphicsRetire(
+      { mode: "category", category: "graphics" },
+      new Map(),
+    );
+    expect(next).toEqual({
+      changed: true,
+      config: { mode: "category", category: "all" },
+    });
+  });
+
+  it("rewrites selected Graphics twin ids to the keeper id", () => {
+    const next = remapCustomizerStyleConfigAfterGraphicsRetire(
+      { mode: "selected", presetIds: ["16", "9"] },
+      new Map([["16", "14"]]),
+    );
+    expect(next.changed).toBe(true);
+    expect(next.config).toEqual({ mode: "selected", presetIds: ["14", "9"] });
+  });
+});
+
+describe("All-types floating styles on a Decor page bundle", () => {
+  it("includes category=all keepers on default decor pages", () => {
+    const presets = [
+      { id: "w", name: "Watercolor", category: "decor" },
+      { id: "cg", name: "Centered Graphic", category: "all" },
+      { id: "q", name: "Quotes", category: "apparel" },
+    ];
+    const shown = filterStylePresetsForPage(
+      presets,
+      { mode: "category", category: "decor" },
+      "framed-print",
+    );
+    expect(shown.map((s) => s.id)).toEqual(["w", "cg"]);
   });
 });
 

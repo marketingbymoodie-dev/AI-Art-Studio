@@ -63,7 +63,10 @@ export async function renderFlatMockupDataUrl(
     decorMode: opts?.decorMode === true || !!manifest.decorPerSize,
     fabricWeave: opts?.fabricWeave === true,
     // Phone cases: customer BG colour must survive colour-swap re-bake.
-    printCanvasBackgroundColor: manifest.edgeWrap ? bg : null,
+    printCanvasBackgroundColor:
+      manifest.edgeWrap || opts?.decorMode || opts?.fabricWeave || !!manifest.decorPerSize
+        ? bg
+        : null,
     garmentColorHex: opts?.garmentColorHex ?? null,
   });
 

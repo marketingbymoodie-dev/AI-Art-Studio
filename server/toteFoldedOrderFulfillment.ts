@@ -3,6 +3,7 @@
  */
 import { storage } from "./storage";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
+import { resolveDesignLiveFillHex } from "@shared/decorBackgroundFill";
 import { prepareBakeUploadBuffer } from "./flat-print-file";
 import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
 import { generatePrintifyMockup } from "./printify-mockups";
@@ -90,7 +91,23 @@ export async function submitToteFoldedTestOrder(args: {
   }
 
   try {
-    const foldedPng = await buildToteFoldedPrintPngFromUrl(artworkUrl);
+    const designState =
+      job.designState && typeof job.designState === "object"
+        ? (job.designState as Record<string, unknown>)
+        : typeof job.designState === "string"
+          ? (() => {
+              try {
+                return JSON.parse(job.designState) as Record<string, unknown>;
+              } catch {
+                return {};
+              }
+            })()
+          : {};
+    const foldedPng = await buildToteFoldedPrintPngFromUrl(
+      artworkUrl,
+      undefined,
+      resolveDesignLiveFillHex(designState as { flatPlacerState?: { backgroundColor?: string | null }; decorBackgroundFill?: unknown }),
+    );
     const prepared = await prepareBakeUploadBuffer(foldedPng);
     const path = `tote-folded-orders/${productType.id}/${job.id}-${Date.now()}.${prepared.ext}`;
     const printFileUrl = await uploadToFlatCalibrationBucket(

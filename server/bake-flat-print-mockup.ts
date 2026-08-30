@@ -109,12 +109,16 @@ export async function bakeFlatPrintForMockup(
   if (toteFolded) {
     try {
       const placement = normalizePlacement(args.placement);
-      const buffer = await buildToteFoldedPrintPngFromUrl(artworkUrl, {
-        scale: placement.scale,
-        offsetX: placement.offsetX,
-        offsetY: placement.offsetY,
-        printBack: true,
-      });
+      const buffer = await buildToteFoldedPrintPngFromUrl(
+        artworkUrl,
+        {
+          scale: placement.scale,
+          offsetX: placement.offsetX,
+          offsetY: placement.offsetY,
+          printBack: true,
+        },
+        normalizeBg(args.backgroundColor),
+      );
       const designKey = `mockup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const url = await persistBakedPrintFile(
         args.productType.id,

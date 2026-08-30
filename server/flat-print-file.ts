@@ -84,8 +84,9 @@ export type BakeFlatPrintFileArgs = {
   /** Placement anchor in print-file px (defaults to full canvas). */
   placementRect?: Rect;
   /**
-   * Phone cases: opaque fill under artwork out to the print canvas.
-   * When unset, the bake stays transparent (floating cutout art).
+   * Live decor / phone fill: opaque color under artwork out to the existing
+   * print-file edge (Printify placeholder bleed). Does not resize the canvas
+   * or change placement math. When unset, the bake stays transparent.
    */
   backgroundColor?: string | null;
 };

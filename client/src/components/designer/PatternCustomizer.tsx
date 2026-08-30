@@ -1630,6 +1630,10 @@ export function PatternCustomizer({
     return 1.5;
   });
   const [bgColor, setBgColor] = useState(initialPlacement?.bgColor ?? initialBgColor ?? "");
+  useEffect(() => {
+    if (initialBgColor === undefined) return;
+    setBgColor(initialBgColor);
+  }, [initialBgColor]);
   const [applyLoading, setApplyLoading] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);

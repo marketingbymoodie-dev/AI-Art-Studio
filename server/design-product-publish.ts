@@ -22,6 +22,8 @@ import { PRINTIFY_PANEL_POSITION_ALIASES } from "@shared/pulloverPocketPrintMerg
 import { bakeFlatPrintFile, uploadPrintFileToPrintify, type FlatPlacement } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
+import { compositeFillBehindNativeAlpha } from "./compositeFillBehind";
+import { parseLiveFillHex, resolveDesignLiveFillHex } from "@shared/decorBackgroundFill";
 import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
@@ -267,11 +269,18 @@ async function buildToteFoldedPlaceholders(
   const dsX = Number(designState?.x ?? 50);
   const dsY = Number(designState?.y ?? 50);
   try {
-    const buffer = await buildToteFoldedPrintPngFromUrl(toAbsoluteUrl(artworkUrl), {
-      scale: Math.max(0.05, Math.min(4, dsScale / 100)),
-      offsetX: (dsX - 50) / 50,
-      offsetY: (dsY - 50) / 50,
-    });
+    const fps = designState?.flatPlacerState as { backgroundColor?: string | null } | undefined;
+    const fillHex =
+      parseLiveFillHex(fps?.backgroundColor) ?? resolveDesignLiveFillHex(designState);
+    const buffer = await buildToteFoldedPrintPngFromUrl(
+      toAbsoluteUrl(artworkUrl),
+      {
+        scale: Math.max(0.05, Math.min(4, dsScale / 100)),
+        offsetX: (dsX - 50) / 50,
+        offsetY: (dsY - 50) / 50,
+      },
+      fillHex,
+    );
     const imageId = await uploadPrintFileToPrintify(apiToken, `design-${job.id}-folded.png`, buffer);
     return { placeholders: [{ position: "front", images: [{ id: imageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }] };
   } catch (e: any) {
@@ -300,10 +309,21 @@ async function buildDefaultPlaceholders(
   const scale = typeof designState.scale === "number" ? designState.scale / 100 : 1;
   const x = typeof designState.x === "number" ? (designState.x - 50) / 100 : 0;
   const y = typeof designState.y === "number" ? (designState.y - 50) / 100 : 0;
+  const fillHex = resolveDesignLiveFillHex(designState);
 
   let uploaded;
   try {
-    uploaded = await uploadImageToPrintify(toAbsoluteUrl(artworkUrl), apiToken);
+    if (fillHex) {
+      const res = await fetch(toAbsoluteUrl(artworkUrl));
+      if (!res.ok) throw new Error(`artwork fetch ${res.status}`);
+      const flattened = await compositeFillBehindNativeAlpha(
+        Buffer.from(await res.arrayBuffer()),
+        fillHex,
+      );
+      uploaded = await uploadImageToPrintify(flattened, apiToken);
+    } else {
+      uploaded = await uploadImageToPrintify(toAbsoluteUrl(artworkUrl), apiToken);
+    }
   } catch (e: any) {
     return { placeholders: [], error: `Image upload to Printify failed: ${e?.message ?? e}` };
   }
