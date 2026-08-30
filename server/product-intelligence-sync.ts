@@ -457,11 +457,14 @@ export async function syncProductTypeIntelligence(
       marginBelowThreshold,
     });
 
-    const printifyCosts = serializePrintifyCostsCache(
-      Object.keys(bothCosts).length > 0
-        ? { front: frontCosts, both: bothCosts }
-        : frontCosts,
-    );
+    const persistCosts = Object.keys(frontCosts).length > 0;
+    const printifyCosts = persistCosts
+      ? serializePrintifyCostsCache(
+          Object.keys(bothCosts).length > 0
+            ? { front: frontCosts, both: bothCosts }
+            : frontCosts,
+        )
+      : undefined;
 
     await storage.updateProductType(pt.id, {
       pricingVersion: nextVersion,
@@ -469,7 +472,7 @@ export async function syncProductTypeIntelligence(
       productHealth: health,
       variantAvailability: JSON.stringify(availabilityMap),
       shippingSnapshot: JSON.stringify(shippingSnapshot),
-      printifyCosts,
+      ...(printifyCosts ? { printifyCosts } : {}),
       lastOosScanAt: new Date(),
       oosAvailableVariants: summary.availableSelected,
       oosTotalVariants: summary.totalSelected,

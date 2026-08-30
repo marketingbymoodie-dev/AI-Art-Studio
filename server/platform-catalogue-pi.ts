@@ -11,6 +11,7 @@ import { db } from "./db";
 import { storage } from "./storage";
 import { listMerchantImportableCatalog } from "./platformCatalogStore";
 import { fetchPrintifyProviderVariantsDual } from "./printifyCatalogVariantsFetch";
+import { extractPlaceholderPositionRows } from "@shared/printifyCostProbePositions";
 import {
   extractCostsFromCatalogVariants,
   parsePrintifyCostsCache,
@@ -236,29 +237,9 @@ async function upsertPlatformRefForEntry(args: {
       String((existing as any).placeholderPositions).trim().length > 2
         ? String((existing as any).placeholderPositions)
         : "[]";
-    const sampleVid = Number(dual.variants[0]?.id);
-    if (Number.isFinite(sampleVid) && sampleVid > 0) {
-      try {
-        const phRes = await fetch(
-          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${provider.providerId}/variants/${sampleVid}/placeholders.json`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (phRes.ok) {
-          const phData = await phRes.json();
-          const list = phData.placeholders || phData || [];
-          if (Array.isArray(list) && list.length > 0) {
-            placeholderPositions = JSON.stringify(
-              list.map((p: any) => ({
-                position: String(p?.position || "").trim(),
-                width: p?.width ?? null,
-                height: p?.height ?? null,
-              })).filter((p: { position: string }) => p.position),
-            );
-          }
-        }
-      } catch (e) {
-        console.warn(`${TAG} placeholders fetch failed for bp ${blueprintId}:`, e);
-      }
+    const fromCatalog = extractPlaceholderPositionRows(dual.variants);
+    if (fromCatalog.length > 0) {
+      placeholderPositions = JSON.stringify(fromCatalog);
     }
 
     const payload = {

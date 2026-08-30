@@ -297,6 +297,12 @@ import {
   colorIdsWithInStockVariants,
   mergeNewlyAppearedSelectionIds,
 } from "@shared/printifyCatalogSelection";
+import {
+  extractPlaceholderPositionNames,
+  parseStoredPlaceholderPositionNames,
+  resolveCostProbePositionAttempts,
+  minimalCostProbePositions,
+} from "@shared/printifyCostProbePositions";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -16802,6 +16808,9 @@ ${orientationExtra}
           catalogVariants: variants,
           printifyVariantIds: importPrintifyVariantIds,
           baseMockupImages,
+          storedPositions: positionKeys,
+          isAllOverPrint,
+          fulfillmentLayout: catalogFulfillmentLayout,
         });
       const printifyCostsAtImport =
         Object.keys(resolvedImportCosts).length > 0
@@ -18011,25 +18020,7 @@ ${orientationExtra}
     return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
   }
 
-  /**
-   * Minimal body placeholders for cost probes (avoid filling every AOP panel).
-   * Zip 451 has no bare "front"; leggings use left_side/right_side.
-   */
-  function minimalCostProbePositions(blueprintId: number): string[] | null {
-    switch (Number(blueprintId)) {
-      case 451:
-        return ["front_left", "front_right"];
-      case 256:
-      case 1050:
-        return ["left_side", "right_side"];
-      case 450:
-        return ["front"];
-      default:
-        return null;
-    }
-  }
-
-  /** Raw placeholder list from Printify (no minimal filtering). */
+  /** Placeholder names from official catalog variants.json (not the dead placeholders.json URL). */
   async function fetchRawPlaceholderPositions(
     blueprintId: number,
     providerId: number,
@@ -18038,28 +18029,29 @@ ${orientationExtra}
   ): Promise<string[]> {
     try {
       const resp = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variantId}/placeholders.json`,
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
         { headers: { Authorization: `Bearer ${apiToken}` } },
       );
-      if (resp.ok) {
-        const data = await resp.json();
-        const list = data.placeholders || data || [];
-        if (Array.isArray(list) && list.length > 0) {
-          return [
-            ...new Set(
-              list
-                .map((p: any) => String(p?.position || "").trim())
-                .filter(Boolean),
-            ),
-          ];
-        }
-      } else {
-        console.warn(`[Printify Costs] Placeholder API returned ${resp.status}`);
+      if (!resp.ok) {
+        console.warn(`[Printify Costs] variants.json returned ${resp.status} while reading placeholder names`);
+        return [];
       }
+      const data = await resp.json();
+      const variants = Array.isArray(data?.variants)
+        ? data.variants
+        : Array.isArray(data)
+          ? data
+          : [];
+      const match = variants.find((v: any) => Number(v?.id) === Number(variantId));
+      const names = extractPlaceholderPositionNames(match ? [match] : variants);
+      if (names.length === 0) {
+        console.warn(`[Printify Costs] variants.json had no placeholder names for ${blueprintId}/${providerId}`);
+      }
+      return names;
     } catch (e) {
-      console.warn("[Printify Costs] Could not fetch placeholder positions:", e);
+      console.warn("[Printify Costs] Could not read placeholder names from variants.json:", e);
+      return [];
     }
-    return [];
   }
 
   /**
@@ -18139,7 +18131,7 @@ ${orientationExtra}
     }
     if (opts?.doubleSidedPrint) return true;
 
-    // Nested variants.json placeholders are usually empty — use placeholders.json.
+    // Placeholder names come from nested variants.json (official Catalog API).
     // Prefer show-out-of-stock so fully OOS providers (baseball tee) still resolve.
     let sampleVid = opts?.sampleVariantId != null ? Number(opts.sampleVariantId) : NaN;
     if (!Number.isFinite(sampleVid) || sampleVid <= 0) {
@@ -18242,7 +18234,10 @@ ${orientationExtra}
     const positions = (Array.isArray(placeholderPosition) ? placeholderPosition : [placeholderPosition])
       .map((p) => String(p || "").trim())
       .filter(Boolean);
-    const effectivePositions = positions.length > 0 ? positions : ["front"];
+    if (positions.length === 0) {
+      return { success: false, costs: {}, error: "No Printify placeholder names to send" };
+    }
+    const effectivePositions = positions;
     const body: any = {
       title: `_cost_probe_${Date.now()}`,
       description: "Temporary product for cost lookup - will be deleted immediately",
@@ -18419,6 +18414,9 @@ ${orientationExtra}
     catalogVariants: unknown[];
     printifyVariantIds: number[];
     baseMockupImages: Record<string, unknown>;
+    storedPositions?: string[];
+    isAllOverPrint?: boolean;
+    fulfillmentLayout?: string | null;
   }): Promise<{ costs: Record<string, number>; source: string }> {
     const catalogCosts = extractCostsFromCatalogVariants(args.catalogVariants);
     if (Object.keys(catalogCosts).length > 0) {
@@ -18446,6 +18444,12 @@ ${orientationExtra}
         args.providerId,
         args.printifyVariantIds,
         args.baseMockupImages as Record<string, string>,
+        {
+          storedPositions: args.storedPositions,
+          catalogPositions: extractPlaceholderPositionNames(args.catalogVariants),
+          isAllOverPrint: args.isAllOverPrint,
+          fulfillmentLayout: args.fulfillmentLayout,
+        },
       );
       if (Object.keys(waterfallCosts).length > 0) {
         return { costs: waterfallCosts, source: strategyUsed ?? "waterfall" };
@@ -18468,7 +18472,13 @@ ${orientationExtra}
     blueprintId: number,
     providerId: number,
     variantIds: number[],
-    baseMockupImages: Record<string, string>
+    baseMockupImages: Record<string, string>,
+    probeOpts?: {
+      storedPositions?: string[];
+      catalogPositions?: string[];
+      isAllOverPrint?: boolean;
+      fulfillmentLayout?: string | null;
+    },
   ): Promise<{
     costs: Record<string, number>;
     strategyUsed: string | null;
@@ -18476,19 +18486,7 @@ ${orientationExtra}
   }> {
     const diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
     const firstVid = variantIds[0];
-    // Prefer minimal AOP body set; fall back to full catalog list if creates fail.
-    const rawPositions = await fetchRawPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
-    const minimal = minimalCostProbePositions(blueprintId);
-    const positionAttempts: string[][] = [];
-    if (minimal && (rawPositions.length === 0 || minimal.every((p) => rawPositions.includes(p)))) {
-      positionAttempts.push(minimal);
-    }
-    if (rawPositions.length > 0) {
-      const key = rawPositions.join("|");
-      if (!positionAttempts.some((a) => a.join("|") === key)) positionAttempts.push(rawPositions);
-    }
-    if (positionAttempts.length === 0) positionAttempts.push(minimal || ["front"]);
-    let positions = positionAttempts[0]!;
+    let catalogPositions = [...(probeOpts?.catalogPositions ?? [])];
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
     // Printify API rejects temp product creation if variant count exceeds 100.
@@ -18532,6 +18530,9 @@ ${orientationExtra}
         const catalogData = await catalogResp.json();
         const catalogVariants = catalogData.variants || catalogData || [];
         const list = Array.isArray(catalogVariants) ? catalogVariants : [];
+        if (catalogPositions.length === 0) {
+          catalogPositions = extractPlaceholderPositionNames(list);
+        }
         const catalogCosts = extractCostsFromCatalogVariants(list);
         if (hasCosts(catalogCosts)) {
           console.log(
@@ -18557,6 +18558,33 @@ ${orientationExtra}
       diagnostics.push({ strategy: "catalog_variants", success: false, error: String(catalogErr) });
       console.warn("[Printify Costs] Strategy catalog error:", catalogErr);
     }
+
+    if (catalogPositions.length === 0 && Number.isFinite(firstVid)) {
+      catalogPositions = await fetchRawPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
+    }
+    const resolvedPositions = resolveCostProbePositionAttempts({
+      blueprintId,
+      catalogPositions,
+      storedPositions: probeOpts?.storedPositions,
+      isAllOverPrint: probeOpts?.isAllOverPrint,
+      fulfillmentLayout: probeOpts?.fulfillmentLayout,
+    });
+    const positionAttempts = resolvedPositions.attempts;
+    if (positionAttempts.length === 0) {
+      diagnostics.push({
+        strategy: "placeholder_names",
+        success: false,
+        error:
+          `No Printify placeholder names for blueprint ${blueprintId}/${providerId}` +
+          ` (catalog/stored empty; refusing to invent "front")`,
+      });
+      console.warn(`[Printify Costs] No placeholder names for ${blueprintId}/${providerId}`);
+    } else {
+      console.log(
+        `[Printify Costs] Probe positions from ${resolvedPositions.source}: ${positionAttempts.map((a) => `[${a.join(",")}]`).join(" → ")}`,
+      );
+    }
+    let positions = positionAttempts[0] || [];
 
     // Prefer in-stock IDs for temp-product probes when the catalog flagged availability.
     const probeVariantIds =
@@ -18584,7 +18612,7 @@ ${orientationExtra}
       let found = false;
       while (page <= 5) {
         const listResp = await fetch(
-          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=100&page=${page}`,
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=50&page=${page}`,
           { headers: { Authorization: `Bearer ${apiToken}` } },
         );
         if (!listResp.ok) {
@@ -18665,19 +18693,6 @@ ${orientationExtra}
         if (s1.success && hasCosts(s1.costs)) {
           return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
         }
-      }
-
-      const s2 = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, availableChunk, positions, null,
-      );
-      diagnostics.push({
-        strategy: `empty_images:${posTag}`,
-        status: s2.status,
-        success: s2.success && hasCosts(s2.costs),
-        error: s2.error,
-      });
-      if (s2.success && hasCosts(s2.costs)) {
-        return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
       }
 
       if (mockupUrl && probeImageId) {
@@ -19516,7 +19531,12 @@ ${orientationExtra}
           shopId ?? "",
           costApiToken,
           productType.printifyBlueprintId, productType.printifyProviderId,
-          printifyVariantIds, baseMockupImages
+          printifyVariantIds, baseMockupImages,
+          {
+            storedPositions: parseStoredPlaceholderPositionNames(productType.placeholderPositions),
+            isAllOverPrint: !!productType.isAllOverPrint,
+            fulfillmentLayout: (productType as any).fulfillmentLayout ?? null,
+          },
         );
         costs = waterfall.costs;
         strategyUsed = waterfall.strategyUsed;
@@ -19560,7 +19580,9 @@ ${orientationExtra}
             diagnostics,
           });
         }
-        const lastErr = diagnostics.find((d) => d.error)?.error?.slice(0, 300);
+        const lastErr =
+          diagnostics.find((d) => d.status && d.error)?.error?.slice(0, 300) ||
+          diagnostics.find((d) => d.error)?.error?.slice(0, 300);
         return res.status(502).json({
           error: "Failed to fetch production costs from Printify",
           message: lastErr || "All cost lookup strategies failed. Check Railway logs for diagnostics.",
@@ -19717,7 +19739,12 @@ ${orientationExtra}
       const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
         shopId, apiToken,
         productType.printifyBlueprintId, productType.printifyProviderId,
-        printifyVariantIds, baseMockupImages
+        printifyVariantIds, baseMockupImages,
+        {
+          storedPositions: parseStoredPlaceholderPositionNames(productType.placeholderPositions),
+          isAllOverPrint: !!productType.isAllOverPrint,
+          fulfillmentLayout: (productType as any).fulfillmentLayout ?? null,
+        },
       );
 
       return res.json({
