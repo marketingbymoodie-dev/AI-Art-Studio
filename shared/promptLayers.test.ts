@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
+import { MINIMALIST_APPAREL_STYLE } from "./catalogArtStyles";
 import { mergeCatalogStyleOptions, OPINIONATED_TYPEWRITER_FRAGMENT, STYLE_PRESETS } from "./schema";
 import { GRAPHICS_CHROMA_STYLE_BY_ID } from "./graphics-chroma-prompts";
 import {
   APPAREL_BASE_CHROMA,
   APPAREL_BASE_TRANSPARENT,
   DECOR_BASE_FULL_BLEED,
+  isDecorMinimalistNativeFillPath,
   LITERAL_TEXT_INSTRUCTION,
   STYLE_LAYER_MIGRATIONS,
   applyForcedStyleLayerBySlug,
@@ -166,6 +168,54 @@ describe("composeLayeredPrompt", () => {
     expect(layered.prompt).not.toContain("TRANSPARENT background");
     expect(layered.prompt).toContain("watercolor");
     expect(layered.prompt).toContain("sunset mountains");
+  });
+
+  it("GPT-Image-2 Minimalist decor: transparent base + isolated style, no plate", () => {
+    const style = resolveStyleLayerRaw({
+      lightPrefix:
+        "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of",
+      catalogSlug: "minimal-line",
+      category: "all",
+      isApparelGeneration: false,
+      generationModel: "gpt-image-2",
+    });
+    expect(style).toBe(MINIMALIST_APPAREL_STYLE);
+    const layered = composeLayeredPrompt({
+      category: "all",
+      isApparelGeneration: false,
+      generationModel: "gpt-image-2",
+      catalogSlug: "minimal-line",
+      styleLayer: style,
+      userInput: "a sparrow",
+    });
+    expect(layered.base).toBe(APPAREL_BASE_TRANSPARENT);
+    expect(layered.prompt).toContain("TRANSPARENT background");
+    expect(layered.prompt.toLowerCase()).not.toContain("full-bleed");
+    expect(layered.prompt.toLowerCase()).not.toContain("#ff00ff");
+    expect(layered.chromaHexMentions).toBe(0);
+  });
+
+  it("nano-banana Minimalist decor stays full-bleed and unkeyed", () => {
+    const style = resolveStyleLayerRaw({
+      lightPrefix:
+        "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of",
+      catalogSlug: "minimal-line",
+      category: "all",
+      isApparelGeneration: false,
+      generationModel: null,
+    });
+    const layered = composeLayeredPrompt({
+      category: "all",
+      isApparelGeneration: false,
+      generationModel: null,
+      catalogSlug: "minimal-line",
+      styleLayer: style,
+      userInput: "a sparrow",
+    });
+    expect(layered.base).toBe(DECOR_BASE_FULL_BLEED);
+    expect(style.toLowerCase()).toContain("full-bleed");
+    expect(layered.prompt.toLowerCase()).not.toContain("#ff00ff");
+    expect(layered.chromaHexMentions).toBe(0);
   });
 
   it("puts the sub-style fragment in its own layer for Opinionated / Quotes / Pet Portraits", () => {
@@ -434,5 +484,36 @@ describe("minimal-line Minimalist keeps decor bleed and apparel treatment", () =
     });
     expect(style).toBe(APPAREL_CHROMA_STYLE_BY_NAME.minimalist);
     expect(style.toLowerCase()).not.toContain("full-bleed");
+  });
+
+  it("native-fill path is Minimalist + GPT + not apparel only", () => {
+    expect(
+      isDecorMinimalistNativeFillPath({
+        catalogSlug: "minimal-line",
+        generationModel: "gpt-image-2",
+        isApparelGeneration: false,
+      }),
+    ).toBe(true);
+    expect(
+      isDecorMinimalistNativeFillPath({
+        catalogSlug: "watercolor",
+        generationModel: "gpt-image-2",
+        isApparelGeneration: false,
+      }),
+    ).toBe(false);
+    expect(
+      isDecorMinimalistNativeFillPath({
+        catalogSlug: "minimal-line",
+        generationModel: null,
+        isApparelGeneration: false,
+      }),
+    ).toBe(false);
+    expect(
+      isDecorMinimalistNativeFillPath({
+        catalogSlug: "minimal-line",
+        generationModel: "gpt-image-2",
+        isApparelGeneration: true,
+      }),
+    ).toBe(false);
   });
 });

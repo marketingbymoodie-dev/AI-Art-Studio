@@ -17,12 +17,15 @@ import {
   apparelChromaStyleLayerForCatalogSlug,
   composeLayeredPrompt,
   effectiveStoredUserSlotSchema,
+  isDecorMinimalistNativeFillPath,
   parseUserSlotSchema,
   persistUserSlotSchema,
   resolveStyleLayerRaw,
   resolveSubStyleFragment,
   wrapLayeredArtworkPrompt,
 } from "@shared/promptLayers";
+import { parseDecorBackgroundFill, type DecorBackgroundFill } from "@shared/decorBackgroundFill";
+import { compositeFillBehindNativeAlpha } from "./compositeFillBehind";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -1013,6 +1016,8 @@ interface SaveImageOptions {
   vectorize?: boolean;
   /** Native-transparent model — skip chroma / processApparelMotif. */
   skipChroma?: boolean;
+  /** Decor Minimalist + GPT-Image-2 only — composite fill behind native alpha. */
+  decorNativeFill?: DecorBackgroundFill;
 }
 
 function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
@@ -1020,7 +1025,7 @@ function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize, skipChroma } =
+  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize, skipChroma, decorNativeFill } =
     options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
@@ -1057,26 +1062,41 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
   } else {
-    // Vintage Poster (and similar) often paints cream letterbox bars inside an
-    // already-correct landscape/portrait canvas — strip those so flat placement
-    // fills the dashed print rect edge-to-edge.
-    try {
-      const stripped = await stripLetterboxBars(buffer);
-      if (stripped.changed) {
-        buffer = stripped.buffer;
-        console.log(
-          `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
-        );
+    if (decorNativeFill !== undefined) {
+      // GPT-Image-2 Minimalist decor: fill behind native alpha. Never plate / Pass C.
+      // Skip letterbox — a white/colored fill would be mistaken for cream bars.
+      try {
+        buffer = await compositeFillBehindNativeAlpha(buffer, decorNativeFill);
+        extension = "png";
+        actualMimeType = "image/png";
+        console.log(`[saveImageToStorage] Decor native fill composite (${decorNativeFill})`);
+      } catch (err) {
+        console.warn("[saveImageToStorage] decor fill composite skipped:", (err as Error).message);
       }
-    } catch (err) {
-      console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
+    } else {
+      // Vintage Poster (and similar) often paints cream letterbox bars inside an
+      // already-correct landscape/portrait canvas — strip those so flat placement
+      // fills the dashed print rect edge-to-edge.
+      try {
+        const stripped = await stripLetterboxBars(buffer);
+        if (stripped.changed) {
+          buffer = stripped.buffer;
+          console.log(
+            `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
+          );
+        }
+      } catch (err) {
+        console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
+      }
     }
 
     if (targetDims && targetDims.width !== targetDims.height) {
       const outputFormat =
-        actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
-          ? "jpeg"
-          : "png";
+        decorNativeFill !== undefined
+          ? "png"
+          : actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
+            ? "jpeg"
+            : "png";
       buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
       extension = outputFormat === "jpeg" ? "jpg" : "png";
       actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
@@ -2226,6 +2246,7 @@ export async function registerRoutes(
       baseImageUrl: (s as any).baseImageUrl,
       descriptionOptional: false,
       userSlotSchema: (s as any).userSlotSchema ?? null,
+      generationModel: (s as any).generationModel ?? null,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -2271,6 +2292,7 @@ export async function registerRoutes(
                   (s as any).userSlotSchema,
                   (hardcoded as any)?.userSlotSchema,
                 ),
+                generationModel: (s as any).generationModel ?? null,
               };
             })
           : hardcodedFallback,
@@ -2591,7 +2613,7 @@ export async function registerRoutes(
         }
       }
 
-      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, styleOptionId: styleOptionIdAdmin, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl, quoteArtBrief: quoteArtBriefAdmin, quoteFontSuggestion: quoteFontSuggestionAdmin, quotesVoice: quotesVoiceAdmin } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, styleOptionId: styleOptionIdAdmin, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl, quoteArtBrief: quoteArtBriefAdmin, quoteFontSuggestion: quoteFontSuggestionAdmin, quotesVoice: quotesVoiceAdmin, decorBackgroundFill: decorBackgroundFillAdmin } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -2807,7 +2829,15 @@ export async function registerRoutes(
         styleName,
         category: styleCategory,
         isApparelGeneration: isApparel,
+        generationModel: styleGen.model,
       });
+      const decorNativeFillAdmin = isDecorMinimalistNativeFillPath({
+        catalogSlug: catalogSlugAdmin,
+        generationModel: styleGen.model,
+        isApparelGeneration: isApparel,
+      })
+        ? parseDecorBackgroundFill(decorBackgroundFillAdmin)
+        : undefined;
       if (colorTier === "dark" && (stylePromptPrefixDark || APPAREL_DARK_TIER_PROMPTS[stylePreset || ""])) {
         console.log(`[Generate] Using dark tier style layer for ${stylePreset}`);
       }
@@ -2815,7 +2845,7 @@ export async function registerRoutes(
       // Decor keeps product-canvas sizing. Apparel/graphics chroma lives only in the locked base.
       let sizingRequirements: string;
       
-      if (isApparel) {
+      if (isApparel || decorNativeFillAdmin !== undefined) {
         sizingRequirements = "";
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -2910,6 +2940,7 @@ ${orientationExtra}
         category: styleCategory,
         isApparelGeneration: isApparel,
         generationModel: styleGen.model,
+        catalogSlug: catalogSlugAdmin,
         styleLayer: styleLayerAdmin,
         subStyleLayer: quotesAdmin.subStyleLayer,
         userInput: quotesAdmin.userInput,
@@ -3049,6 +3080,7 @@ console.log("[api/generate] replicate returned", {
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
   vectorize: resolveApparelVectorize(styleVectorizeEnabled),
   skipChroma: styleGen.nativeTransparent,
+  decorNativeFill: decorNativeFillAdmin,
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -3545,7 +3577,7 @@ console.log("[shopify/session] installation ok", {
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     let embedInstallation: Awaited<ReturnType<typeof getAuthorizedInstallation>> = null;
     try {
-      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, styleOptionId: styleOptionIdEmbed, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed, quoteArtBrief: quoteArtBriefEmbed, quoteFontSuggestion: quoteFontSuggestionEmbed, quotesVoice: quotesVoiceEmbed } = req.body;
+      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, styleOptionId: styleOptionIdEmbed, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed, quoteArtBrief: quoteArtBriefEmbed, quoteFontSuggestion: quoteFontSuggestionEmbed, quotesVoice: quotesVoiceEmbed, decorBackgroundFill: decorBackgroundFillEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -3753,7 +3785,15 @@ console.log("[shopify/session] installation ok", {
         styleName,
         category: embedStyleCategory,
         isApparelGeneration: embedIsApparelEarly,
+        generationModel: embedStyleGen.model,
       });
+      const decorNativeFillEmbed = isDecorMinimalistNativeFillPath({
+        catalogSlug: catalogSlugEmbed,
+        generationModel: embedStyleGen.model,
+        isApparelGeneration: embedIsApparelEarly,
+      })
+        ? parseDecorBackgroundFill(decorBackgroundFillEmbed)
+        : undefined;
 
       // Determine aspect ratio and orientation
       if (
@@ -3786,7 +3826,7 @@ console.log("[shopify/session] installation ok", {
       });
 
       let sizingRequirements: string;
-      if (embedIsApparelEarly) {
+      if (embedIsApparelEarly || decorNativeFillEmbed !== undefined) {
         sizingRequirements = "";
       } else {
         const printShape = productType?.printShape || "rectangle";
@@ -3872,6 +3912,7 @@ ${orientationExtra}
         category: embedStyleCategory,
         isApparelGeneration: embedIsApparelEarly,
         generationModel: embedStyleGen.model,
+        catalogSlug: catalogSlugEmbed,
         styleLayer: styleLayerEmbed,
         subStyleLayer: quotesEmbed.subStyleLayer,
         userInput: quotesEmbed.userInput,
@@ -3987,6 +4028,7 @@ ${orientationExtra}
           bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
           vectorize: resolveApparelVectorize(embedVectorizeEnabled),
           skipChroma: embedStyleGen.nativeTransparent,
+          decorNativeFill: decorNativeFillEmbed,
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -4000,6 +4042,7 @@ ${orientationExtra}
             bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
             vectorize: resolveApparelVectorize(embedVectorizeEnabled),
             skipChroma: embedStyleGen.nativeTransparent,
+            decorNativeFill: decorNativeFillEmbed,
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -6634,6 +6677,7 @@ ${orientationExtra}
           s.userSlotSchema,
           (hardcoded as any)?.userSlotSchema,
         ),
+        generationModel: s.generationModel ?? null,
       };
     });
   }
@@ -6653,6 +6697,7 @@ ${orientationExtra}
       baseImageUrls: (s as any).baseImageUrls || undefined,
       descriptionOptional: !!(s as any).descriptionOptional,
       userSlotSchema: (s as any).userSlotSchema ?? null,
+      generationModel: (s as any).generationModel ?? null,
     }));
   }
 
@@ -8247,6 +8292,7 @@ ${orientationExtra}
         creatorUsername: rawCreatorUsername,
         creatorId: rawCreatorId,
         creatorSessionId: rawCreatorSessionId,
+        decorBackgroundFill: decorBackgroundFillSf,
       } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
 
@@ -8799,11 +8845,19 @@ ${orientationExtra}
         styleName,
         category: sfStyleCategory,
         isApparelGeneration: isApparel,
+        generationModel: sfStyleGen.model,
       });
+      const decorNativeFillSf = isDecorMinimalistNativeFillPath({
+        catalogSlug: catalogSlugSf,
+        generationModel: sfStyleGen.model,
+        isApparelGeneration: isApparel,
+      })
+        ? parseDecorBackgroundFill(decorBackgroundFillSf)
+        : undefined;
 
       let sizingRequirements: string;
 
-      if (isApparel) {
+      if (isApparel || decorNativeFillSf !== undefined) {
         sizingRequirements = "";
       } else {
         // Decor: full-bleed edge-to-edge designs
@@ -8894,6 +8948,7 @@ ${orientationExtra}
         category: sfStyleCategory,
         isApparelGeneration: isApparel,
         generationModel: sfStyleGen.model,
+        catalogSlug: catalogSlugSf,
         styleLayer: styleLayerSf,
         subStyleLayer: quotesSf.subStyleLayer,
         userInput: quotesSf.userInput,
@@ -9067,6 +9122,7 @@ ${orientationExtra}
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
               vectorize: resolveApparelVectorize(sfVectorizeEnabled),
               skipChroma: sfStyleGen.nativeTransparent,
+              decorNativeFill: decorNativeFillSf,
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -9081,6 +9137,7 @@ ${orientationExtra}
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                 vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 skipChroma: sfStyleGen.nativeTransparent,
+                decorNativeFill: decorNativeFillSf,
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;

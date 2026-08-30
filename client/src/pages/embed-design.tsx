@@ -137,6 +137,9 @@ import {
   buildReuseRegeneratePrompt,
   composeReuseRegenerateUserPrompt,
 } from "@shared/reuseArtworkPrompt";
+import { isMinimalLineCatalogSlug } from "@shared/catalogArtStyles";
+import { DEFAULT_DECOR_BACKGROUND_FILL } from "@shared/decorBackgroundFill";
+import { isGptImage2Model } from "@shared/styleGeneration";
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
@@ -2087,6 +2090,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [saveStatePending, setSaveStatePending] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
+  const [decorBackgroundFill, setDecorBackgroundFill] = useState<string>(DEFAULT_DECOR_BACKGROUND_FILL);
   const [quoteOptions, setQuoteOptions] = useState<QuoteOption[] | null>(null);
   const [quotePickIndex, setQuotePickIndex] = useState<number | null>(null);
   const [quoteTheme, setQuoteTheme] = useState("");
@@ -3872,6 +3876,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         : deduped.filter((s) => styleMatchesSelectableCategories(s, selectable));
     return collapseStyleNameTwins(matched, productTypeConfig?.designerType);
   }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
+
+  const showDecorMinimalistFill = useMemo(() => {
+    const active = filteredStylePresets.find((p) => p.id === selectedPreset);
+    return (
+      !isApparel &&
+      isMinimalLineCatalogSlug(active?.catalogSlug || active?.id) &&
+      isGptImage2Model(active?.generationModel)
+    );
+  }, [filteredStylePresets, selectedPreset, isApparel]);
 
   const activeStyleHasOrientationChoices = useMemo(() => {
     const active = filteredStylePresets.find((p) => p.id === selectedPreset);
@@ -7893,6 +7906,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       quoteArtBrief?: string;
       quoteFontSuggestion?: string;
       quotesVoice?: string;
+      decorBackgroundFill?: string;
       referenceImages?: string[];
       baseImageUrl?: string;
       shop?: string;
@@ -8854,6 +8868,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             ? quoteOptions?.[quotePickIndex]?.font_suggestion
             : undefined,
         quotesVoice: quotesNow && selectedStyleOption ? selectedStyleOption : undefined,
+        decorBackgroundFill: showDecorMinimalistFill
+          ? (decorBackgroundFill || "none")
+          : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
@@ -15827,6 +15844,47 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   </div>
                 )}
               </div>
+
+              {showDecorMinimalistFill && (
+                <div className="mt-2" data-testid="decor-minimalist-background">
+                  <Label className="text-xs">Background</Label>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setDecorBackgroundFill(DEFAULT_DECOR_BACKGROUND_FILL)}
+                      className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                        decorBackgroundFill === DEFAULT_DECOR_BACKGROUND_FILL
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-card text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      White
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDecorBackgroundFill("none")}
+                      className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                        decorBackgroundFill === "none"
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-card text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      None
+                    </button>
+                    <input
+                      type="color"
+                      value={
+                        decorBackgroundFill !== "none" && /^#[0-9a-fA-F]{6}$/.test(decorBackgroundFill)
+                          ? decorBackgroundFill
+                          : DEFAULT_DECOR_BACKGROUND_FILL
+                      }
+                      onChange={(e) => setDecorBackgroundFill(e.target.value.toUpperCase())}
+                      className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
+                      aria-label="Background colour"
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Style Sub-Options */}
               {showPresetsParam && selectedPreset !== "" && (() => {

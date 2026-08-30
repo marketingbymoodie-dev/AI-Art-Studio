@@ -86,6 +86,12 @@ describe("resolveIsApparelGeneration", () => {
       true,
     );
   });
+
+  it("does not plate decor or category=all on framed/poster products", () => {
+    expect(resolveIsApparelGeneration({ designerType: "framed-print" }, "decor")).toBe(false);
+    expect(resolveIsApparelGeneration({ designerType: "framed-print" }, "all")).toBe(false);
+    expect(resolveIsApparelGeneration({ designerType: "generic" }, "all")).toBe(false);
+  });
 });
 
 describe("sanitizeApparelStylePrefix", () => {
