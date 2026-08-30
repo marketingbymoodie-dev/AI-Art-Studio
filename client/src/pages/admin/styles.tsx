@@ -721,7 +721,7 @@ export default function AdminStyles() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Decor fills the canvas edge-to-edge. Apparel and Graphics follow the generation model. Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2. Graphics is for blankets, totes, and patterns.
+                  Decor fills the canvas edge-to-edge. Apparel and Graphics follow the generation model. Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2.
                 </p>
               </div>
 
@@ -750,19 +750,27 @@ export default function AdminStyles() {
 
               <div className="space-y-2">
                 <Label>Generation Quality</Label>
-                <Select
-                  value={generationQuality === "high" ? "medium" : generationQuality}
-                  onValueChange={(v) => setGenerationQuality(v as "low" | "medium")}
-                  disabled={generationModel !== "gpt-image-2"}
-                >
-                  <SelectTrigger data-testid="select-generation-quality">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low Quality (use for small, simple artwork)</SelectItem>
-                    <SelectItem value="medium">Medium Quality (use for all other artwork)</SelectItem>
-                  </SelectContent>
-                </Select>
+                {generationModel === "gpt-image-2" ? (
+                  <Select
+                    value={generationQuality === "high" ? "medium" : generationQuality}
+                    onValueChange={(v) => setGenerationQuality(v as "low" | "medium")}
+                  >
+                    <SelectTrigger data-testid="select-generation-quality">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low Quality (use for small, simple artwork)</SelectItem>
+                      <SelectItem value="medium">Standard Quality (use for all other artwork)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div
+                    className="flex h-10 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground"
+                    data-testid="select-generation-quality"
+                  >
+                    Standard
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground">
                   *Printify upscales resolution for final printing.
                 </p>
