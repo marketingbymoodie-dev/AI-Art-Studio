@@ -9,6 +9,7 @@ import {
   resolveDesignLiveFillHex,
   resolveLiveFillHex,
   resolveStyleGenerationForProduct,
+  productBakeSupportsDecorFill,
   shouldShowDecorFloatingFill,
 } from "./decorBackgroundFill";
 
@@ -140,6 +141,27 @@ describe("isDecorFloatingNativeFillPath", () => {
   });
 });
 
+describe("productBakeSupportsDecorFill", () => {
+  it("allows tote / tapestry / mug hex-fill bakes", () => {
+    expect(productBakeSupportsDecorFill({ designerType: "generic" })).toBe(true);
+    expect(productBakeSupportsDecorFill({ designerType: "mug" })).toBe(true);
+    expect(productBakeSupportsDecorFill({ designerType: "pillow" })).toBe(true);
+  });
+
+  it("rejects apparel, phone edge-wrap, and PatternCustomizer AOP", () => {
+    expect(productBakeSupportsDecorFill({ designerType: "apparel" })).toBe(false);
+    expect(productBakeSupportsDecorFill({ isApparelProduct: true, designerType: "generic" })).toBe(
+      false,
+    );
+    expect(productBakeSupportsDecorFill({ designerType: "generic", edgeWrapMode: true })).toBe(
+      false,
+    );
+    expect(
+      productBakeSupportsDecorFill({ designerType: "all-over-print", useAopCustomizer: true }),
+    ).toBe(false);
+  });
+});
+
 describe("shouldShowDecorFloatingFill", () => {
   it("shows for floating styles on framed-print even when only a numeric id + name exist", () => {
     expect(
@@ -177,7 +199,27 @@ describe("shouldShowDecorFloatingFill", () => {
     ).toBe(true);
   });
 
-  it("stays off for apparel and full-bleed decor", () => {
+  it("shows for floating styles on tote / tapestry (generic), not only pillow/poster", () => {
+    expect(
+      shouldShowDecorFloatingFill({
+        designerType: "generic",
+        styleName: "Centered Graphic",
+        outputMode: "floating",
+        catalogSlug: "centered-graphic",
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowDecorFloatingFill({
+        designerType: "generic",
+        styleId: "14",
+        styleName: "Illustrated Motif",
+        catalogSlug: null,
+        outputMode: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("stays off for apparel, full-bleed decor, and PatternCustomizer AOP", () => {
     expect(
       shouldShowDecorFloatingFill({
         designerType: "apparel",
@@ -189,6 +231,21 @@ describe("shouldShowDecorFloatingFill", () => {
       shouldShowDecorFloatingFill({
         designerType: "framed-print",
         catalogSlug: "watercolor",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowDecorFloatingFill({
+        designerType: "generic",
+        catalogSlug: "watercolor",
+        outputMode: "full_bleed",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowDecorFloatingFill({
+        designerType: "all-over-print",
+        useAopCustomizer: true,
+        catalogSlug: "centered-graphic",
+        outputMode: "floating",
       }),
     ).toBe(false);
   });

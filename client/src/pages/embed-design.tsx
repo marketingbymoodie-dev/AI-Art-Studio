@@ -3892,8 +3892,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       styleId: active.id,
       outputMode: active.outputMode,
       generationModel: active.generationModel,
+      useAopCustomizer,
+      edgeWrapMode: flatEdgeWrapMode,
     });
-  }, [filteredStylePresets, selectedPreset, isApparel, productTypeConfig?.designerType]);
+  }, [
+    filteredStylePresets,
+    selectedPreset,
+    isApparel,
+    productTypeConfig?.designerType,
+    useAopCustomizer,
+    flatEdgeWrapMode,
+  ]);
 
   const liveDecorFillHex = useMemo(
     () =>
@@ -15713,7 +15722,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
                       )}
                     </div>
-                    {showDecorFloatingFill && !flatEdgeWrapMode && !flatPlacerActive && (
+                    {showDecorFloatingFill &&
+                      !flatEdgeWrapMode &&
+                      !useAopCustomizer &&
+                      !flatPlacerActive && (
                       <DecorFloatingFillPicker
                         value={decorBackgroundFill}
                         onChange={applyLiveDecorFill}

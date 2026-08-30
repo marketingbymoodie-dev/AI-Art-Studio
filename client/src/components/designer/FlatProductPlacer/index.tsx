@@ -694,7 +694,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           printCanvasBackgroundColor:
-            edgeWrapMode || decorMode || fabricWeave
+            edgeWrapMode || decorMode || fabricWeave || !!decorGenerateFill
               ? state.backgroundColor
               : null,
           decorMode,
@@ -721,6 +721,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       edgeWrapMode,
       decorMode,
       fabricWeave,
+      decorGenerateFill,
       calibOpts,
       clampPlacementScale,
       defaultPlacement,
@@ -1654,7 +1655,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
-            {decorMode && !edgeWrapMode && decorGenerateFill && (
+            {!edgeWrapMode && decorGenerateFill && (
               <DecorFloatingFillPicker
                 value={decorGenerateFill.value}
                 onChange={(next) => {

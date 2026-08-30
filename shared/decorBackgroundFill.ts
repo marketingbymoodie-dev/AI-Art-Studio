@@ -131,9 +131,37 @@ export function isApparelDesignerType(designerType?: string | null): boolean {
 }
 
 /**
- * Storefront picker + generate-payload gate. Resolves catalog slug from name
- * when the client only has a numeric merchant style id (common on framed
- * customizer pages) so floating-on-decor is not missed.
+ * Bake can flatten a hex under floating art: print-file (pillow/poster/
+ * tapestry), tote-canvas, mug wrap. Not hoodie/mesh PatternCustomizer
+ * (separate bgColor/trim) or phone edge-wrap (its own canvas fill).
+ */
+export function productBakeSupportsDecorFill(opts: {
+  designerType?: string | null;
+  isApparelProduct?: boolean;
+  useAopCustomizer?: boolean;
+  edgeWrapMode?: boolean;
+}): boolean {
+  if (opts.useAopCustomizer === true) return false;
+  if (opts.edgeWrapMode === true) return false;
+  const dt = String(opts.designerType || "").toLowerCase();
+  if (dt === "apparel") return false;
+  // Hoodie/tee imported as generic still look like apparel — no this picker.
+  // Pillow / framed / mug stay eligible even if a size heuristic misfires.
+  if (
+    opts.isApparelProduct === true &&
+    dt !== "pillow" &&
+    dt !== "framed-print" &&
+    dt !== "mug"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Storefront picker + generate-payload gate. Style must be floating (or
+ * Minimalist GPT). Product must have a hex-fill bake. Resolves catalog slug
+ * from name when the client only has a numeric merchant style id.
  */
 export function shouldShowDecorFloatingFill(opts: {
   isApparelProduct?: boolean;
@@ -143,12 +171,10 @@ export function shouldShowDecorFloatingFill(opts: {
   styleName?: string | null;
   styleId?: string | null;
   generationModel?: string | null;
+  useAopCustomizer?: boolean;
+  edgeWrapMode?: boolean;
 }): boolean {
-  if (isApparelDesignerType(opts.designerType)) return false;
-  const dt = String(opts.designerType || "").toLowerCase();
-  const framedOrSurfaceDecor =
-    dt === "framed-print" || dt === "pillow" || dt === "mug";
-  if (!framedOrSurfaceDecor && opts.isApparelProduct === true) return false;
+  if (!productBakeSupportsDecorFill(opts)) return false;
   const slug =
     resolveCatalogSlug({
       catalogSlug: opts.catalogSlug,
