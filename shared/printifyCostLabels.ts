@@ -1,6 +1,7 @@
 /**
  * Normalize variant titles for Printify production-cost lookup.
- * Framed prints often differ by quote style / "X" vs "x" between Shopify and Printify.
+ * Framed prints / AOP sizes often differ by quote style, "X" vs "x", or
+ * hyphenated ids ("16-16") vs display ("16 x 16" / "16x16").
  */
 export function normalizeVariantLabelForCostMatch(label: string): string {
   if (label == null || typeof label !== "string") return "";
@@ -12,6 +13,8 @@ export function normalizeVariantLabelForCostMatch(label: string): string {
     // Only collapse numeric dimensions ("14 x 11" → "14x11"). A global
     // `\s*x\s*` also ate the space before XS/XL ("Black / XS" → "black /xs").
     .replace(/(\d+)\s*x\s*(\d+)/g, "$1x$2")
+    // variantMap / tote ids: "16-16" is the same dimension as "16x16".
+    .replace(/(\d+)\s*-\s*(\d+)/g, "$1x$2")
     .trim();
 }
 
@@ -45,14 +48,22 @@ function isGenericSize(raw: string): boolean {
   return n === "onesize" || n === "os" || n === "default" || n === "standard";
 }
 
+function isDimensionalSize(raw: string): boolean {
+  const n = normalizeVariantLabelForCostMatch(raw).replace(/\s/g, "");
+  return /^\d+x\d+/.test(n);
+}
+
 function isSizeToken(raw: string): boolean {
   const n = normalizeSizeToken(raw);
-  return APPAREL_SIZE_RE.test(n) || /^\d+x\d+/.test(n) || isGenericSize(raw);
+  return APPAREL_SIZE_RE.test(n) || isDimensionalSize(raw) || isGenericSize(raw);
 }
 
 function sizesMatch(a: string, b: string): boolean {
   if (a === b) return true;
   if (normalizeSizeToken(a) === normalizeSizeToken(b)) return true;
+  if (isDimensionalSize(a) && isDimensionalSize(b)) {
+    return normalizeVariantLabelForCostMatch(a) === normalizeVariantLabelForCostMatch(b);
+  }
   return isGenericSize(a) && isGenericSize(b);
 }
 
@@ -111,13 +122,59 @@ export function variantCostLabelsMatch(wizardTitle: string, printifyLabel: strin
     return true;
   }
   if (!sizesMatch(sa.size, sb.size)) return false;
-  return colorsMatch(sa.color, sb.color);
+  if (colorsMatch(sa.color, sb.color)) return true;
+  // Tote / pillow: one COGS per dimension; wizard may add a colour suffix
+  // ("16\" x 16\" / Natural") while Printify / variantMap is size-only ("16-16").
+  if (isDimensionalSize(sa.size) && (!sa.color || !sb.color)) return true;
+  return false;
 }
 
 export type VariantCostLookup = {
   id: string;
   title?: string;
 };
+
+/** variantMap key (`16-16` or `16-16:natural`) → cost cents. */
+export function buildVariantKeyCosts(
+  variantMap: Record<string, { printifyVariantId?: number | string } | undefined>,
+  costs: Record<string, number>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(variantMap)) {
+    const vid = entry?.printifyVariantId;
+    if (vid == null) continue;
+    const cost = costs[String(vid)] ?? costs[String(Number(vid))];
+    if (cost != null) out[key] = cost;
+  }
+  return out;
+}
+
+function lookupVariantKeyCost(
+  v: VariantCostLookup,
+  variantKeyCosts?: Record<string, number>,
+): number | undefined {
+  if (!variantKeyCosts) return undefined;
+  if (variantKeyCosts[v.id] != null) return variantKeyCosts[v.id];
+  const stripped = v.id.startsWith("size:") ? v.id.slice("size:".length) : v.id;
+  if (stripped && variantKeyCosts[stripped] != null) return variantKeyCosts[stripped];
+
+  const candidates = [v.title?.trim(), stripped, stripped.split(":")[0]].filter(Boolean) as string[];
+  for (const [key, cost] of Object.entries(variantKeyCosts)) {
+    const keyAsLabel = key.replace(/:default$/i, "").replace(/:/g, " / ");
+    if (
+      candidates.some(
+        (c) =>
+          variantCostLabelsMatch(c, key) ||
+          variantCostLabelsMatch(c, keyAsLabel) ||
+          normalizeVariantLabelForCostMatch(c) === normalizeVariantLabelForCostMatch(key) ||
+          normalizeVariantLabelForCostMatch(c) === normalizeVariantLabelForCostMatch(keyAsLabel),
+      )
+    ) {
+      return cost;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Resolve production cost (cents) for a blank/wizard variant.
@@ -131,15 +188,17 @@ export function resolveVariantCostCents(
     shopifyVariantCosts?: Record<string, number>;
     costsByNormalizedLabel?: Record<string, number>;
     printifyVariantLabels?: Record<string, string>;
+    variantKeyCosts?: Record<string, number>;
   },
 ): number | undefined {
-  const { costs, shopifyVariantCosts, costsByNormalizedLabel, printifyVariantLabels } = args;
+  const { costs, shopifyVariantCosts, costsByNormalizedLabel, printifyVariantLabels, variantKeyCosts } = args;
   let costCents: number | undefined = shopifyVariantCosts?.[v.id];
   if (costCents == null && v.id.startsWith("printify:")) {
     const pid = v.id.slice("printify:".length);
     costCents = costs?.[pid] ?? costs?.[String(Number(pid))];
   }
   if (costCents == null) costCents = costs?.[v.id];
+  if (costCents == null) costCents = lookupVariantKeyCost(v, variantKeyCosts);
 
   const title = v.title?.trim();
   if (costCents == null && title && costsByNormalizedLabel) {

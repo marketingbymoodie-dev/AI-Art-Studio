@@ -965,6 +965,8 @@ export default function AdminCustomizerPages() {
     printifyVariantLabels: Record<string, string>;
     costsByNormalizedLabel?: Record<string, number>;
     costsBothByNormalizedLabel?: Record<string, number>;
+    variantKeyCosts?: Record<string, number>;
+    variantKeyCostsBoth?: Record<string, number>;
     supportsBothSides?: boolean;
     cached: boolean;
     warning?: string;
@@ -1171,6 +1173,7 @@ export default function AdminCustomizerPages() {
       shopifyVariantCosts: costsData.shopifyVariantCosts,
       costsByNormalizedLabel: costsData.costsByNormalizedLabel,
       printifyVariantLabels: costsData.printifyVariantLabels,
+      variantKeyCosts: costsData.variantKeyCosts,
     });
   }
 
@@ -1182,6 +1185,7 @@ export default function AdminCustomizerPages() {
       shopifyVariantCosts: costsData.shopifyVariantCostsBoth,
       costsByNormalizedLabel: costsData.costsBothByNormalizedLabel,
       printifyVariantLabels: costsData.printifyVariantLabels,
+      variantKeyCosts: costsData.variantKeyCostsBoth,
     });
   }
 

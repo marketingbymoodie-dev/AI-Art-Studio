@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeVariantLabelForCostMatch,
   resolveVariantCostCents,
   variantCostLabelsMatch,
 } from "./printifyCostLabels";
@@ -32,6 +33,22 @@ describe("variantCostLabelsMatch", () => {
   it("does not treat a real apparel size as a colour-only Printify title", () => {
     expect(variantCostLabelsMatch("S / Black", "Black")).toBe(false);
     expect(variantCostLabelsMatch("4XL / Black", "Black")).toBe(false);
+  });
+
+  it("treats tote hyphen / x / spaced dimensions as the same size", () => {
+    expect(normalizeVariantLabelForCostMatch("16-16")).toBe("16x16");
+    expect(normalizeVariantLabelForCostMatch("16 x 16")).toBe("16x16");
+    expect(normalizeVariantLabelForCostMatch('16" x 16"')).toBe("16x16");
+    expect(variantCostLabelsMatch("16-16", "16 x 16")).toBe(true);
+    expect(variantCostLabelsMatch('16" x 16"', "16-16")).toBe(true);
+    expect(variantCostLabelsMatch("18-18", "18x18")).toBe(true);
+    expect(variantCostLabelsMatch('16" x 16" / Natural', "16-16")).toBe(true);
+    expect(variantCostLabelsMatch('16" x 16" / Natural', "16 x 16")).toBe(true);
+  });
+
+  it("does not treat apparel letter sizes as size-only matches", () => {
+    expect(variantCostLabelsMatch("4XL / Solid Black", "4XL")).toBe(false);
+    expect(variantCostLabelsMatch("S / Solid Black", "S")).toBe(false);
   });
 });
 
@@ -89,5 +106,35 @@ describe("resolveVariantCostCents", () => {
       },
     );
     expect(cost).toBe(2499);
+  });
+
+  it("maps tote wizard rows to hyphenated variantKeyCosts / unnormalized labels", () => {
+    const variantKeyCosts = { "16-16": 1888, "18-18": 2002 };
+    const costsByNormalizedLabel = { "16 x 16": 1888, "18 x 18": 2002 };
+
+    expect(
+      resolveVariantCostCents(
+        { id: "size:16x16", title: '16" x 16"' },
+        { variantKeyCosts },
+      ),
+    ).toBe(1888);
+    expect(
+      resolveVariantCostCents(
+        { id: "size:18x18", title: "18 x 18" },
+        { costsByNormalizedLabel },
+      ),
+    ).toBe(2002);
+    expect(
+      resolveVariantCostCents(
+        { id: "size:16-16", title: "16-16" },
+        { costsByNormalizedLabel },
+      ),
+    ).toBe(1888);
+    expect(
+      resolveVariantCostCents(
+        { id: "size:16x16:natural", title: '16" x 16" / Natural' },
+        { variantKeyCosts, costsByNormalizedLabel },
+      ),
+    ).toBe(1888);
   });
 });

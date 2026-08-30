@@ -81,7 +81,7 @@ import {
   isBodyPillowBlueprint,
   isLeggingsBlueprint,
 } from "@shared/hoodieTemplate";
-import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
+import { buildCostsByNormalizedLabel, buildVariantKeyCosts } from "@shared/printifyCostLabels";
 import {
   cacheCoversVariantIds,
   extractCostsFromCatalogVariants,
@@ -19484,6 +19484,8 @@ ${orientationExtra}
           printifyVariantLabels: cachedLabels,
           costsByNormalizedLabel: buildCostsByNormalizedLabel(cachedCosts, cachedLabels),
           costsBothByNormalizedLabel: buildCostsByNormalizedLabel(cachedCostsBoth, cachedLabels),
+          variantKeyCosts: buildVariantKeyCosts(vm, cachedCosts),
+          variantKeyCostsBoth: buildVariantKeyCosts(vm, cachedCostsBoth),
           supportsBothSides: Object.keys(cachedCostsBoth).length > 0,
           cached: true,
         });
@@ -19632,13 +19634,8 @@ ${orientationExtra}
         ),
       });
 
-      // Build variant-key → cost mapping
-      const variantKeyCosts: Record<string, number> = {};
-      for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
-        if (entry?.printifyVariantId && costs[String(entry.printifyVariantId)] !== undefined) {
-          variantKeyCosts[key] = costs[String(entry.printifyVariantId)];
-        }
-      }
+      const variantKeyCosts = buildVariantKeyCosts(variantMap, costs);
+      const variantKeyCostsBoth = buildVariantKeyCosts(variantMap, costsBoth);
 
        // Build printifyVariantId → label mapping AND name-based bridge for shopifyVariantIds
       const printifyVariantLabels: Record<string, string> = {};
@@ -19678,6 +19675,7 @@ ${orientationExtra}
         costs,
         costsBoth,
         variantKeyCosts,
+        variantKeyCostsBoth,
         shopifyVariantCosts,
         printifyVariantLabels,
         costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),

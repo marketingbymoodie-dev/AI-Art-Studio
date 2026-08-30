@@ -24,6 +24,7 @@ import {
   summarizeVariantAvailability,
 } from "@shared/printifyAvailability";
 import { buildActivePrintifyVariantLabels } from "@shared/printifyVariantLabels";
+import { buildCostsByNormalizedLabel, buildVariantKeyCosts } from "@shared/printifyCostLabels";
 import {
   computeProductHealth,
   costChecksum,
@@ -866,6 +867,8 @@ export async function costsResponseFromProductIntelligence(productType: ProductT
   printifyVariantLabels: Record<string, string>;
   costsByNormalizedLabel: Record<string, number>;
   costsBothByNormalizedLabel: Record<string, number>;
+  variantKeyCosts: Record<string, number>;
+  variantKeyCostsBoth: Record<string, number>;
   supportsBothSides: boolean;
   cached: boolean;
   source: "product_intelligence";
@@ -961,28 +964,16 @@ export async function costsResponseFromProductIntelligence(productType: ProductT
     if (costsBoth[pvid] !== undefined) shopifyVariantCostsBoth[String(shopifyVid)] = costsBoth[pvid];
   }
 
-  const norm = (label: string) =>
-    label
-      .toLowerCase()
-      .replace(/\s*\/\s*/g, "/")
-      .replace(/\s+/g, " ")
-      .trim();
-  const costsByNormalizedLabel: Record<string, number> = {};
-  const costsBothByNormalizedLabel: Record<string, number> = {};
-  for (const [vid, label] of Object.entries(labels)) {
-    const key = norm(label);
-    if (costs[vid] != null) costsByNormalizedLabel[key] = costs[vid];
-    if (costsBoth[vid] != null) costsBothByNormalizedLabel[key] = costsBoth[vid];
-  }
-
   return {
     costs,
     costsBoth,
     shopifyVariantCosts,
     shopifyVariantCostsBoth,
     printifyVariantLabels: labels,
-    costsByNormalizedLabel,
-    costsBothByNormalizedLabel,
+    costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, labels),
+    costsBothByNormalizedLabel: buildCostsByNormalizedLabel(costsBoth, labels),
+    variantKeyCosts: buildVariantKeyCosts(variantMap, costs),
+    variantKeyCostsBoth: buildVariantKeyCosts(variantMap, costsBoth),
     supportsBothSides: Object.keys(costsBoth).length > 0,
     cached: true,
     source: "product_intelligence",
