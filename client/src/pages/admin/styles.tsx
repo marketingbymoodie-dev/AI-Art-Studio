@@ -716,12 +716,12 @@ export default function AdminStyles() {
                   <SelectContent>
                     <SelectItem value="decor">Decor — full-bleed artwork</SelectItem>
                     <SelectItem value="apparel">Apparel — garment graphics</SelectItem>
-                    <SelectItem value="graphics">Graphics — isolated motifs (chroma + SVG)</SelectItem>
+                    <SelectItem value="graphics">Graphics — isolated motifs</SelectItem>
                     <SelectItem value="all">All product types</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Decor fills the canvas edge-to-edge. Apparel and Graphics inherit a locked print base from the generation model (transparent for GPT-Image-2, chroma plate for Nano Banana). Graphics is for blankets, totes, and patterns.
+                  Decor fills the canvas edge-to-edge. Apparel and Graphics follow the generation model. Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2. Graphics is for blankets, totes, and patterns.
                 </p>
               </div>
 
@@ -735,33 +735,36 @@ export default function AdminStyles() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">Default — Nano Banana (current)</SelectItem>
-                    <SelectItem value="gpt-image-2">GPT-Image-2 (native transparent)</SelectItem>
+                    <SelectItem value="default">
+                      Full-bleed images with artwork extended to all edges — uses Nano Banana.
+                    </SelectItem>
+                    <SelectItem value="gpt-image-2">
+                      Floating imagery / background removed — uses GPT-Image-2.
+                    </SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Flipping the model switches the locked print base. GPT-Image-2 is transparent. Default (Nano Banana) keeps the chroma plate.
+                  Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2.
                 </p>
               </div>
 
               <div className="space-y-2">
                 <Label>Generation Quality</Label>
                 <Select
-                  value={generationQuality}
-                  onValueChange={(v) => setGenerationQuality(v as "low" | "medium" | "high")}
+                  value={generationQuality === "high" ? "medium" : generationQuality}
+                  onValueChange={(v) => setGenerationQuality(v as "low" | "medium")}
                   disabled={generationModel !== "gpt-image-2"}
                 >
                   <SelectTrigger data-testid="select-generation-quality">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">Low (default, ~1¢)</SelectItem>
-                    <SelectItem value="medium">Medium (~5¢)</SelectItem>
-                    <SelectItem value="high">High (~13¢)</SelectItem>
+                    <SelectItem value="low">Low Quality (use for small, simple artwork)</SelectItem>
+                    <SelectItem value="medium">Medium Quality (use for all other artwork)</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Only used for GPT-Image-2. Low is the default. Medium is 5×; high is 13×.
+                  *Printify upscales resolution for final printing.
                 </p>
               </div>
 
@@ -862,7 +865,7 @@ export default function AdminStyles() {
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Print base is locked from category + generation model — do not add #FF00FF, hot-pink plate, or transparent-background instructions. Write only the creative treatment.
+                  Write only the creative treatment. Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2.
                 </p>
               </div>
 
