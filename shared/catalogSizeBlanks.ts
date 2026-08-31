@@ -125,9 +125,67 @@ function aspectRatioFromSizeKey(
 }
 
 /**
+ * Indoor wall tapestry catalog photos are hanging fabric on a white wall —
+ * not the 0.75 letterbox used by wall-decal sticker PNGs. Probe the loaded
+ * blank (non-near-white pixels) so the dashed box matches that photo.
+ */
+export function shouldProbeCatalogBlankGuide(
+  blueprintId: number | null | undefined,
+): boolean {
+  return blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry;
+}
+
+/**
+ * Bounding box of fabric/shadow pixels in a white-studio catalog blank.
+ * Not a hand-tuned table — derived from the same image the customer sees.
+ */
+export function probeSilhouetteRectFromRgba(
+  data: ArrayLike<number>,
+  width: number,
+  height: number,
+  opts?: { whiteThreshold?: number; printInset?: number },
+): NormRect | null {
+  if (!(width > 0) || !(height > 0)) return null;
+  const white = opts?.whiteThreshold ?? 248;
+  const printInset = opts?.printInset ?? CATALOG_SIZE_BLANK_PRINT_INSET;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const a = data[i + 3] ?? 255;
+      if (a < 10) continue;
+      const r = data[i] ?? 0;
+      const g = data[i + 1] ?? 0;
+      const b = data[i + 2] ?? 0;
+      if (r > white && g > white && b > white) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  const bw = (maxX - minX + 1) / width;
+  const bh = (maxY - minY + 1) / height;
+  if (!(bw > 0.05) || !(bh > 0.05)) return null;
+  const insetW = bw * printInset;
+  const insetH = bh * printInset;
+  const round = (n: number) => +n.toFixed(5);
+  return {
+    x: round(minX / width + (bw - insetW) / 2),
+    y: round(minY / height + (bh - insetH) / 2),
+    width: round(insetW),
+    height: round(insetH),
+  };
+}
+
+/**
  * Print guide for catalog-size-blank products (wall decals, comforter, tapestry).
- * Always the inch-aspect letterbox — never measured droop bboxes. 241 used to
- * read a hand-tuned sheet table and desynced from the blank photo.
+ * Inch-aspect letterbox is the fallback when the blank cannot be probed (241
+ * prefers a live silhouette probe of the hanging photo).
  */
 export function visibleRectForCatalogSizeBlank(
   _blueprintId: number | null | undefined,

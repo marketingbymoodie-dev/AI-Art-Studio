@@ -1,7 +1,10 @@
 import { API_BASE } from "@/lib/urlBase";
 import {
   printFileDimsForAspectRatio,
+  probeSilhouetteRectFromRgba,
+  shouldProbeCatalogBlankGuide,
   visibleRectForCatalogSizeBlank,
+  type NormRect,
 } from "@shared/catalogSizeBlanks";
 import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
@@ -261,6 +264,43 @@ export function resolveFlatViewCalibration(
   if (!pf?.width || !pf?.height || pf.width >= pf.height) return merged;
   return orientFlatViewCalibrationLandscape(merged);
 }
+
+/** Overlay the live-probed fabric rect onto a catalog-size calibration. */
+export function applyProbedCatalogGuide(
+  calib: FlatViewCalibration,
+  probed: NormRect | null | undefined,
+): FlatViewCalibration {
+  if (!probed || !(probed.width > 0) || !(probed.height > 0)) return calib;
+  return {
+    ...calib,
+    visibleRectNormalized: probed,
+    printBoundsNormalized: probed,
+  };
+}
+
+/** Read fabric/shadow AABB from a loaded catalog blank (white studio backdrop). */
+export function probeCatalogBlankSilhouette(
+  img: HTMLImageElement | null,
+): NormRect | null {
+  if (!img) return null;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!(w > 0) || !(h > 0)) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(img, 0, 0, w, h);
+    const { data } = ctx.getImageData(0, 0, w, h);
+    return probeSilhouetteRectFromRgba(data, w, h);
+  } catch {
+    return null;
+  }
+}
+
+export { shouldProbeCatalogBlankGuide };
 
 export function resolveFlatBlank(
   manifest: FlatCalibrationManifest,

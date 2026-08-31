@@ -27,8 +27,11 @@ import {
   loadFlatImageRelaxed,
   flatCalibrationSwappedToLandscape,
   orientFlatHarvestPixelsForLandscape,
+  applyProbedCatalogGuide,
+  probeCatalogBlankSilhouette,
   resolveFlatBlank,
   resolveFlatViewCalibration,
+  shouldProbeCatalogBlankGuide,
   resolveCalibratorLayerAdjust,
   withFlatAssetVersion,
   type FlatViewName,
@@ -40,6 +43,7 @@ import {
   flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
   flatPlacementRectPx,
+  flatVisibleRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   flatPrintCanvasPreviewDims,
@@ -330,6 +334,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
+  const probeCatalogGuide = shouldProbeCatalogBlankGuide(catalogBlueprintId);
   const refitCatalogSizeGuide =
     !!blankUrlOverride && !!(catalogSizeAspectRatio || catalogSizeKey);
   const calibOpts = useMemo(
@@ -389,8 +394,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     front: EMPTY_ASSETS,
     back: EMPTY_ASSETS,
   });
+  const [probedGuideByView, setProbedGuideByView] = useState<
+    Partial<Record<ViewName, { x: number; y: number; width: number; height: number }>>
+  >({});
   const [assetsLoading, setAssetsLoading] = useState(true);
   const [assetError, setAssetError] = useState<string | null>(null);
+  const resolveCalib = useCallback(
+    (view: ViewName) => {
+      const base = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+      if (!base) return undefined;
+      return applyProbedCatalogGuide(base, probedGuideByView[view]);
+    },
+    [manifest, colorId, calibOpts, probedGuideByView],
+  );
 
   // ---------- Preload blank / mask / shading for every available view ----------
   useEffect(() => {
@@ -399,6 +415,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     // immediately. Colour-only swaps still keep prior pixels to avoid a flash.
     if (refitCatalogSizeGuide) {
       setAssets({ front: EMPTY_ASSETS, back: EMPTY_ASSETS });
+      setProbedGuideByView({});
       setAssetsLoading(true);
     } else {
       const hasExistingAssets = availableViews.some((v) => assets[v].blank);
@@ -410,6 +427,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         front: EMPTY_ASSETS,
         back: EMPTY_ASSETS,
       };
+      const nextGuides: Partial<
+        Record<ViewName, { x: number; y: number; width: number; height: number }>
+      > = {};
       for (const v of availableViews) {
         // Use colorId (e.g. 20x30:white) for mask/geometry — size-only geometryKey
         // misses decorPerSize geometryByBlank and falls back to the shared 11×14 mask.
@@ -446,8 +466,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         } else {
           next[v] = { blank: b, mask: m, shading: s };
         }
+        if (probeCatalogGuide && b) {
+          const probed = probeCatalogBlankSilhouette(b);
+          if (probed) nextGuides[v] = probed;
+        }
       }
       if (cancelled) return;
+      setProbedGuideByView(nextGuides);
       setAssets(next);
       const anyBlank = availableViews.some((v) => next[v].blank);
       const err = anyBlank ? null : "Could not load product images";
@@ -459,7 +484,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
-  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed, geometryKey, calibOpts, blankUrlOverride]);
+  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed, geometryKey, calibOpts, blankUrlOverride, probeCatalogGuide]);
 
   useEffect(() => {
     if (!assetsLoading && availableViews.length === 0) {
@@ -619,7 +644,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     const placements = { ...prev.placements };
     let anyFitted = false;
     for (const v of availableViews) {
-      const cal = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
+      const cal = resolveCalib(v);
       const va = assets[v];
       if (!cal || !va?.blank) continue;
       const mW = va.blank.naturalWidth || cal.mockupDims?.width || 1;
@@ -694,7 +719,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
+      const calib = resolveCalib(v);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       const rawPlacement = state.placements[v] ?? defaultPlacement;
@@ -745,6 +770,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       fabricWeave,
       decorGenerateFill,
       calibOpts,
+      resolveCalib,
       clampPlacementScale,
       defaultPlacement,
       garmentColorHex,
@@ -837,7 +863,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     const clippedSides: Array<"front" | "back"> = [];
     for (const view of availableViews) {
       if (!state.enabled[view]) continue;
-      const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+      const cal = resolveCalib(view);
       if (!cal) continue;
       const va = assets[view];
       const mW = va.blank?.naturalWidth || cal.mockupDims?.width || 1;
@@ -1001,7 +1027,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+        const cal = resolveCalib(view);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -1079,12 +1105,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           srcW = canvas.width;
           srcH = canvas.height;
         } else if (state) {
-          const cal = resolveFlatViewCalibration(
-            manifest,
-            colorId,
-            state.view,
-            calibOpts,
-          );
+          const cal = resolveCalib(state.view);
           if (cal) {
             const dims = flatPrintCanvasPreviewDims(cal);
             srcW = dims.width;
@@ -1148,7 +1169,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, colorId, state.view, calibOpts);
+  const calib = resolveCalib(state.view);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
@@ -1168,12 +1189,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const placementRect =
     edgeWrapMode && calib
       ? printCanvasLayout!.printCanvas
-      : calib
-        ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
-            edgeWrapMode,
-            decorMode,
-          })
-        : null;
+      : calib && probedGuideByView[state.view]
+        ? flatVisibleRectPx(calib, mockupW, mockupH)
+        : calib
+          ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
+              edgeWrapMode,
+              decorMode,
+            })
+          : null;
 
   const displayEdgeGuides =
     edgeWrapMode && calib

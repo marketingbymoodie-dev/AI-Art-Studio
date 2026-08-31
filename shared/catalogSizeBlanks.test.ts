@@ -5,6 +5,8 @@ import {
   catalogSizeCalibratorModels,
   isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
+  probeSilhouetteRectFromRgba,
+  shouldProbeCatalogBlankGuide,
   visibleRectForCatalogSizeAspect,
   visibleRectForCatalogSizeBlank,
 } from "./catalogSizeBlanks";
@@ -92,6 +94,30 @@ describe("catalogSizeBlanks", () => {
     ]);
     expect(models?.[0]?.name).toBe("26 × 36");
     expect(catalogSizeCalibratorModels(421)).toBeNull();
+  });
+
+  it("probes fabric silhouette from RGBA instead of a shared letterbox", () => {
+    const w = 100;
+    const h = 100;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    for (let y = 10; y < 80; y++) {
+      for (let x = 20; x < 70; x++) {
+        const i = (y * w + x) * 4;
+        data[i] = 200;
+        data[i + 1] = 200;
+        data[i + 2] = 200;
+      }
+    }
+    const rect = probeSilhouetteRectFromRgba(data, w, h, { printInset: 1 });
+    expect(rect).toEqual({ x: 0.2, y: 0.1, width: 0.5, height: 0.7 });
+    expect(shouldProbeCatalogBlankGuide(241)).toBe(true);
+    expect(shouldProbeCatalogBlankGuide(759)).toBe(false);
   });
 
   it("uses inch-aspect letterbox for tapestry (same source as wall decals)", () => {

@@ -1,7 +1,16 @@
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 import type { FlatProductPlacerState } from "../index";
-import { loadFlatImageRelaxed, loadFlatViewAssets, resolveFlatBlank, resolveFlatViewCalibration, type FlatViewName } from "./flatAssets";
+import {
+  applyProbedCatalogGuide,
+  loadFlatImageRelaxed,
+  loadFlatViewAssets,
+  probeCatalogBlankSilhouette,
+  resolveFlatBlank,
+  resolveFlatViewCalibration,
+  shouldProbeCatalogBlankGuide,
+  type FlatViewName,
+} from "./flatAssets";
 import { renderFlatView } from "./flatRender";
 
 /**
@@ -36,14 +45,17 @@ export async function renderFlatMockupDataUrl(
     catalogBlueprintId: opts?.catalogBlueprintId,
     catalogSizeKey: opts?.catalogSizeKey,
   });
-  const calib = resolveFlatViewCalibration(manifest, colorId, view, {
+  const calibBase = resolveFlatViewCalibration(manifest, colorId, view, {
     landscapeOrientation: !!opts?.landscapeOrientation,
     sizeAspectRatio: opts?.catalogSizeAspectRatio,
     refitCatalogSizeGuide,
     catalogBlueprintId: opts?.catalogBlueprintId,
     catalogSizeKey: opts?.catalogSizeKey,
   });
-  if (!assets?.blank || !calib) return null;
+  if (!assets?.blank || !calibBase) return null;
+  const calib = shouldProbeCatalogBlankGuide(opts?.catalogBlueprintId)
+    ? applyProbedCatalogGuide(calibBase, probeCatalogBlankSilhouette(assets.blank))
+    : calibBase;
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =
