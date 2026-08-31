@@ -1,3 +1,5 @@
+import { isDataPreviewUrl, normalizePreviewUrl } from "@shared/previewUrl";
+
 /**
  * Centralized URL base for Shopify App Proxy context.
  *
@@ -63,6 +65,11 @@ export function getProxyBase(): string {
  *   buildAppUrl("/api/config")          → "/api/config"
  */
 export function buildAppUrl(urlPath: string): string {
+  // ensureLeadingSlash("data:…") would become "/data:…" and then
+  // "/apps/appai/data:…". Preview URLs must never go through that hole.
+  const preview = normalizePreviewUrl(urlPath);
+  if (preview && isDataPreviewUrl(preview)) return preview;
+
   const base = getProxyBase();
   const normalized = ensureLeadingSlash(urlPath);
 

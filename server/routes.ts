@@ -44,6 +44,12 @@ import {
   shadowLookupKeys,
   shadowMatchesBaseVariant,
 } from "@shared/shadowDesignId";
+import {
+  isHostedHttpUrl,
+  isPersistablePreviewUrl,
+  normalizePreviewUrl,
+  unwrapMangledPreviewUrl,
+} from "@shared/previewUrl";
 import { ensureShadowVariantUntracked } from "./shadow-variant-purchasable";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
@@ -9652,8 +9658,12 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
       }
-      // Only store valid absolute URLs (Printify CDN URLs)
-      const validUrls = mockupUrls.filter((u: any) => typeof u === 'string' && u.startsWith('http'));
+      // Hosted http(s) or a clean data: preview. Unwrap host-concat data: first
+      // so we never persist https://<host>/data:image/…
+      const validUrls = mockupUrls
+        .filter((u: unknown): u is string => typeof u === "string")
+        .map((u) => normalizePreviewUrl(u))
+        .filter((u): u is string => !!u && isPersistablePreviewUrl(u));
       const mockupPatch: Record<string, unknown> = { mockupUrls: validUrls };
       if (productTypeId != null && String(productTypeId).trim()) {
         const nextPt = String(productTypeId).trim();
@@ -11218,14 +11228,8 @@ ${orientationExtra}
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Repair URLs mangled by the earlier double-resolution bug
-      // (".../apps/appai/https://<real-url>") — the embedded trailing absolute
-      // URL is the real durable file.
-      const unmangle = (u?: string | null): string | null => {
-        if (!u || typeof u !== 'string') return u ?? null;
-        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
-        return idx > 0 ? u.slice(idx) : u;
-      };
+      // Repair URLs mangled by earlier wrap bugs (proxy+https, host+/data:).
+      const unmangle = (u?: string | null): string | null => unwrapMangledPreviewUrl(u);
 
       return res.json({
         designId: design.id,
@@ -11376,22 +11380,19 @@ ${orientationExtra}
       // real, durable Supabase/CDN file — the uploads themselves are fine, only
       // the stored reference string got wrapped. Recovering it here fixes every
       // affected design instantly, with no need to re-open/re-save them.
-      const unmangleUrl = (u?: string | null): string | null => {
-        if (!u || typeof u !== 'string') return u ?? null;
-        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
-        return idx > 0 ? u.slice(idx) : u;
-      };
+      const unmangleUrl = (u?: string | null): string | null => unwrapMangledPreviewUrl(u);
 
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
       // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
       // For Supabase/external URLs, pass them through directly so gallery previews work.
       const proxyUrl = (u?: string | null) => {
-        const fixed = unmangleUrl(u);
+        const fixed = normalizePreviewUrl(u);
         if (!fixed) return null;
+        if (fixed.startsWith("data:")) return fixed;
         // Supabase or other absolute URL — pass through directly (needed for gallery previews)
-        if (fixed.startsWith('http')) return fixed;
+        if (fixed.startsWith("http")) return fixed;
         // Relative path like /objects/designs/xxx.png → serve via App Proxy
-        const clean = fixed.startsWith('/') ? fixed : `/${fixed}`;
+        const clean = fixed.startsWith("/") ? fixed : `/${fixed}`;
         return `/apps/appai${clean}`;
       };
 
@@ -20629,7 +20630,14 @@ ${orientationExtra}
 
     // All saved mockup views (front, back, …) become the listing's images, deduped by URL.
     const jobMockupUrls: string[] = Array.isArray(job.mockupUrls)
-      ? Array.from(new Set((job.mockupUrls as string[]).filter((u) => typeof u === "string" && u.startsWith("http"))))
+      ? Array.from(
+          new Set(
+            (job.mockupUrls as string[])
+              .filter((u): u is string => typeof u === "string")
+              .map((u) => normalizePreviewUrl(u))
+              .filter((u): u is string => !!u && isHostedHttpUrl(u)),
+          ),
+        )
       : [];
     const productImageUrls: string[] = jobMockupUrls.length > 0
       ? jobMockupUrls
@@ -23259,9 +23267,10 @@ ${orientationExtra}
 
   /** Rewrites local /objects/... storage paths to go through the App Proxy so storefront can load them */
   function rewriteStoragePath(url: string | null | undefined): string | null {
-    if (!url) return null;
-    if (url.startsWith("/objects/")) return `/apps/appai${url}`;
-    return url;
+    const fixed = normalizePreviewUrl(url);
+    if (!fixed) return null;
+    if (fixed.startsWith("/objects/")) return `/apps/appai${fixed}`;
+    return fixed;
   }
 
   /** GET /api/proxy/customizer-page — single page config by handle, for storefront embed */

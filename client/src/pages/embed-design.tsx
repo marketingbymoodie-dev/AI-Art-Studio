@@ -19,6 +19,7 @@ import {
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
+import { isDataPreviewUrl, normalizePreviewUrl } from "@shared/previewUrl";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 import { StudioMenuIconButton } from "@/components/studio-menu-icon-button";
@@ -676,7 +677,10 @@ function clampPreviewChromeAspectCss(arCss: string): string {
 
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
-  if (isDataUrl(url)) return url;
+  const unwrapped = normalizePreviewUrl(url);
+  if (!unwrapped) return url;
+  if (isDataPreviewUrl(unwrapped)) return unwrapped;
+  url = unwrapped;
   const assetBase = typeof window !== "undefined" ? window.__APPAI_ASSET_BASE__ : undefined;
   if (assetBase && (url.startsWith("http://") || url.startsWith("https://"))) {
     try {
@@ -1212,14 +1216,15 @@ const _isStorefrontIframe = typeof window !== 'undefined' &&
 
 const DIRECT_APP_API_BASE = "https://appai-pod-production.up.railway.app";
 
-/** Absolute http(s) URL for save-mockups (server rejects relative/proxy paths). */
+/** Absolute http(s) or clean data: URL for save-mockups (never host-concat data:). */
 function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null {
   if (!u) return null;
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
-  const resolved = toAbsoluteImageUrl(u);
-  if (resolved.startsWith("http")) return resolved;
-  const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
-  return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  return normalizePreviewUrl(u, (relative) => {
+    const resolved = toAbsoluteImageUrl(relative);
+    if (resolved.startsWith("http://") || resolved.startsWith("https://")) return resolved;
+    const path = relative.startsWith(PROXY_PREFIX) ? relative.slice(PROXY_PREFIX.length) : relative;
+    return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  });
 }
 
 /**
@@ -1695,7 +1700,9 @@ function savedDesignPreviewUrl(d: {
   designState?: Record<string, unknown> | null;
 }): string {
   const fromJob = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
-  if (typeof fromJob === "string" && fromJob.trim()) return fromJob.trim();
+  if (typeof fromJob === "string" && fromJob.trim()) {
+    return normalizePreviewUrl(fromJob.trim()) || "";
+  }
   const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
   const flat =
     ds && ds.flatMockups && typeof ds.flatMockups === "object"
@@ -1706,7 +1713,9 @@ function savedDesignPreviewUrl(d: {
       ? (ds.hoodieAopMockups as Record<string, unknown>)
       : null;
   for (const u of [flat?.front, hoodie?.front, d.artworkUrl]) {
-    if (typeof u === "string" && u.trim()) return u.trim();
+    if (typeof u === "string" && u.trim()) {
+      return normalizePreviewUrl(u.trim()) || "";
+    }
   }
   return "";
 }
@@ -2117,11 +2126,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     if (!raw) raw = searchParams.get("loadMockup") || "";
     if (!raw) return "";
+    let decoded = raw;
     try {
-      return decodeURIComponent(raw);
+      decoded = decodeURIComponent(raw);
     } catch {
-      return raw;
+      decoded = raw;
     }
+    return normalizePreviewUrl(decoded) || "";
   })();
 
   const [prompt, setPrompt] = useState("");
@@ -5062,7 +5073,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
   const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
-    const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
+    const abs = (u?: string) => {
+      if (!u) return u;
+      const n = normalizePreviewUrl(u);
+      if (!n) return u;
+      if (n.startsWith("/")) return buildAppUrl(n);
+      return n;
+    };
     // Prefer the job row artwork — never a stale designState.artworkUrl from another product.
     const preferredUrl =
       imageUrl ||
@@ -10962,30 +10979,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           console.error("[HoodieAopApply] Failed to persist designState:", e);
         });
 
-        // `save-mockups` only persists URLs that start with "http" (it was
-        // built for Printify CDN URLs). Our local renders come back from
-        // ensureHostedUrl as a *relative* App Proxy path
-        // (`/apps/appai/objects/...`), which the endpoint would silently
-        // drop — leaving `mockupUrls` empty so the Saved Designs gallery
-        // falls back to the raw artwork. Convert to an absolute app-origin
-        // URL so it survives the filter AND renders as an <img> in the
-        // gallery (which passes http URLs through unchanged).
-        const toAbsoluteMockupUrl = (u: string | null): string | null => {
-          if (!u) return null;
-          if (u.startsWith("http://") || u.startsWith("https://")) return u;
-          const resolved = toAbsoluteImageUrl(u);
-          if (resolved.startsWith("http")) return resolved;
-          // Still relative → force onto the app origin, stripping the
-          // proxy prefix so it hits the app's /objects/ route directly.
-          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
-          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
-        };
-        const frontAbs = toAbsoluteMockupUrl(frontHosted);
-        const backAbs = toAbsoluteMockupUrl(backHosted);
+        // `save-mockups` persists hosted http(s) and clean data: previews.
+        // Relative App Proxy paths (`/apps/appai/objects/...`) must be
+        // converted to an absolute app-origin URL so they survive; data:
+        // must stay data: (never host-concat).
+        const frontAbs = toAbsoluteMockupUrlForSave(frontHosted);
+        const backAbs = toAbsoluteMockupUrlForSave(backHosted);
         // Include current on-demand Printers/lifestyle shots so Saved Designs /
         // ATC reopen keep them (front/back-only overwrite dropped them before).
         const onDemandAbs = aopPersonMockupsRef.current
-          .map((m) => toAbsoluteMockupUrl(m.url))
+          .map((m) => toAbsoluteMockupUrlForSave(m.url))
           .filter((u): u is string => !!u && u.startsWith("http"));
         const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
           (u): u is string => !!u,

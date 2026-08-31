@@ -12,6 +12,7 @@ import {
   Image, Loader2, Trash2, Wand2, Pencil, Sparkles, LayoutTemplate, Tag,
   ExternalLink, Camera, Power, PowerOff, X,
 } from "lucide-react";
+import { normalizePreviewUrl } from "@shared/previewUrl";
 
 interface CustomizerPageSummary {
   id: string;
@@ -296,7 +297,7 @@ export default function DesignsPage() {
                     <div className="aspect-[3/4] bg-muted relative overflow-hidden">
                       {design.mockupUrls?.[0] || design.artworkUrl ? (
                         <img
-                          src={design.mockupUrls?.[0] || design.artworkUrl || ""}
+                          src={normalizePreviewUrl(design.mockupUrls?.[0] || design.artworkUrl) || ""}
                           alt={design.prompt || "Saved design"}
                           className="w-full h-full object-cover"
                           loading="lazy"

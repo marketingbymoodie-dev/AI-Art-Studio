@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Images, X } from "lucide-react";
 import { API_BASE } from "@/lib/urlBase";
+import { normalizePreviewUrl } from "@shared/previewUrl";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 
 type SavedDesign = {
@@ -105,9 +106,13 @@ function thumbUrl(d: SavedDesign): string {
       ? (ds.hoodieAopMockups as Record<string, unknown>)
       : null;
   const fromJob = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
-  if (typeof fromJob === "string" && fromJob.trim()) return fromJob.trim();
+  if (typeof fromJob === "string" && fromJob.trim()) {
+    return normalizePreviewUrl(fromJob.trim()) || "";
+  }
   for (const u of [flat?.front, hoodie?.front, d.artworkUrl]) {
-    if (typeof u === "string" && u.trim()) return u.trim();
+    if (typeof u === "string" && u.trim()) {
+      return normalizePreviewUrl(u.trim()) || "";
+    }
   }
   return "";
 }
