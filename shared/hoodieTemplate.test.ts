@@ -13,6 +13,8 @@ import {
   BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
   bomberPatternPrintTileScaleForPanel,
+  BEANIE_BLUEPRINT_ID,
+  BEANIE_PREVIEW_PLACEMENT_SCALE,
   PULOVER_HOODIE_BLUEPRINT_ID,
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
@@ -33,6 +35,7 @@ import {
   designGroupsForBlueprint,
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
+  isBeanieBlueprint,
   isBomberJacketBlueprint,
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
@@ -544,6 +547,17 @@ describe("bomber jacket blueprint", () => {
     expect(eligible).toContain("front_right");
     const groups = designGroupsForBlueprint(BOMBER_JACKET_BLUEPRINT_ID);
     expect(groups.some((g) => g.id === "front-body")).toBe(true);
+  });
+});
+
+describe("beanie blueprint 576", () => {
+  it("is keyed to Printify baby beanie only — preview scale is 1.15", () => {
+    expect(BEANIE_BLUEPRINT_ID).toBe(576);
+    expect(BEANIE_PREVIEW_PLACEMENT_SCALE).toBe(1.15);
+    expect(isBeanieBlueprint(576)).toBe(true);
+    expect(isBeanieBlueprint(450)).toBe(false);
+    expect(isBeanieBlueprint(241)).toBe(false);
+    expect(isBeanieBlueprint(null)).toBe(false);
   });
 });
 

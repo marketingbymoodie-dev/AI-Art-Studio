@@ -57,9 +57,11 @@ import {
   BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  BEANIE_PREVIEW_PLACEMENT_SCALE,
   bomberPatternPrintTileScaleForPanel,
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isBeanieBlueprint,
   isBodyPillowBlueprint,
   isBomberJacketBlueprint,
   isPulloverHoodieBlueprint,
@@ -1682,6 +1684,14 @@ function applyFrontBodyPreviewPlacementScale(
   rects: Map<string, DesignRectInfo>,
   opts?: { includeBomberSleeves?: boolean },
 ): void {
+  // 576 live editor is FlatProductPlacer; this branch is 576-only belt-and-suspenders
+  // if a mapper template is ever attached. Bake / renderFlatPrintPanels never call us.
+  if (isBeanieBlueprint(template.blueprintId)) {
+    for (const [id, info] of Array.from(rects.entries())) {
+      rects.set(id, scaleDesignRectEffective(info, BEANIE_PREVIEW_PLACEMENT_SCALE));
+    }
+    return;
+  }
   if (
     isPulloverHoodieBlueprint(template.blueprintId) ||
     template.hoodieType === "pullover-hoodie-aop"

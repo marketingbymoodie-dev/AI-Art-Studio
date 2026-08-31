@@ -42,6 +42,7 @@ import {
   flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
   flatMaskCoreUncovered,
+  applyBeaniePreviewPlacementRect,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
@@ -749,6 +750,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
           garmentColorHex,
+          blueprintId: manifest.blueprintId,
         });
         return true;
       } catch (e) {
@@ -1267,10 +1269,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode && calib
       ? printCanvasLayout!.printCanvas
       : calib
-        ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
-            edgeWrapMode,
-            decorMode,
-          })
+        ? applyBeaniePreviewPlacementRect(
+            manifest.blueprintId,
+            flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
+              edgeWrapMode,
+              decorMode,
+            }),
+          )
         : null;
 
   const displayEdgeGuides =

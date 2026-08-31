@@ -81,6 +81,7 @@ export async function renderFlatMockupDataUrl(
     // Phone cases: customer BG colour must survive colour-swap re-bake.
     printCanvasBackgroundColor: bg,
     garmentColorHex: opts?.garmentColorHex ?? null,
+    blueprintId: manifest.blueprintId,
   });
 
   try {

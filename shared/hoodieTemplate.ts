@@ -123,6 +123,14 @@ export const LEGGINGS_BLUEPRINT_IDS: readonly number[] = [
   LEGGINGS_CAPRI_BLUEPRINT_ID,
 ];
 
+/** Printify blueprint 576 (Baby Beanie AOP) — flat harvest, not a mapper template. */
+export const BEANIE_BLUEPRINT_ID = 576;
+/**
+ * Preview-only: beanie Place-on-item art renders 15% larger so the app mockup
+ * matches Printify's printed size. Bake / `renderFlatPrintPanels` stay at 1.0.
+ */
+export const BEANIE_PREVIEW_PLACEMENT_SCALE = 1.15;
+
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
 /**
@@ -1035,6 +1043,10 @@ export function isBomberJacketBlueprint(blueprintId: number | null | undefined):
 
 export function isSweatshirtBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === SWEATSHIRT_BLUEPRINT_ID;
+}
+
+export function isBeanieBlueprint(blueprintId: number | null | undefined): boolean {
+  return Number(blueprintId) === BEANIE_BLUEPRINT_ID;
 }
 
 export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {

@@ -31,7 +31,12 @@
 
 import { drawMeshWarp } from "@/components/hoodie-template-mapper/lib/meshWarp";
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
-import type { MeshGrid, Pt } from "@shared/hoodieTemplate";
+import {
+  BEANIE_PREVIEW_PLACEMENT_SCALE,
+  isBeanieBlueprint,
+  type MeshGrid,
+  type Pt,
+} from "@shared/hoodieTemplate";
 import type {
   FlatTier,
   FlatViewCalibration,
@@ -254,6 +259,11 @@ export type FlatRenderInput = {
    * onto the composited art. Never used by `bakeFlatPrintFile`.
    */
   catalogBlankShade?: boolean;
+  /**
+   * Printify blueprint. Beanie 576 preview scale / mask-only clip are keyed
+   * here — bakeFlatPrintFile never receives this input.
+   */
+  blueprintId?: number | null;
 };
 
 function parseCssHex(hex: string): { r: number; g: number; b: number } | null {
@@ -1041,6 +1051,26 @@ export function flatPlacementRectPx(
     canvasW,
     canvasH,
   );
+}
+
+function scaleRectFromCenter(rect: Rect, factor: number): Rect {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const w = rect.width * factor;
+  const h = rect.height * factor;
+  return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
+}
+
+/**
+ * Preview-only: grow 576's placement rect 15% so the editor matches Printify.
+ * Must not be used by `bakeFlatPrintFile` / `resolveFlatBakePlacementRect`.
+ */
+export function applyBeaniePreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+): Rect {
+  if (!isBeanieBlueprint(blueprintId)) return rect;
+  return scaleRectFromCenter(rect, BEANIE_PREVIEW_PLACEMENT_SCALE);
 }
 
 /** Edge-wrap overlay guides: outer = print canvas, inner = safe zone. */
@@ -3005,6 +3035,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     layerAdjust,
     previewLayers,
     garmentColorHex = null,
+    blueprintId = null,
   } = input;
   const coloredBlank =
     !edgeWrapMode &&
@@ -3280,7 +3311,10 @@ export function renderFlatView(input: FlatRenderInput): void {
   // independent of bg). Matches tote / pillow bake.
   if (!hasArt && !areaFill) return;
 
-  const rect = flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode });
+  const rect = applyBeaniePreviewPlacementRect(
+    blueprintId,
+    flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }),
+  );
 
   const art = document.createElement("canvas");
   art.width = W;
@@ -3329,9 +3363,15 @@ export function renderFlatView(input: FlatRenderInput): void {
     }
   }
 
+  // 576: clip to the harvested dome mask only. The harvest AABB
+  // (visibleRect / printBounds, ~11.5% inset) must not destination-out the
+  // top of Printify's real print area. Bake never calls this clip.
   clipFlatArtToPrintArea(actx, {
     mask,
-    rect,
+    rect:
+      isBeanieBlueprint(blueprintId) && mask
+        ? { x: 0, y: 0, width: W, height: H }
+        : rect,
     canvasW: W,
     canvasH: H,
     fabricWeave: fabricWeave && !edgeWrapMode,
