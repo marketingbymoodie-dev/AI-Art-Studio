@@ -170,7 +170,7 @@ export type FlatProductPlacerProps = {
   blankUrlOverride?: string | null;
   /**
    * Selected size aspect (`3:4`, `4:3`, …). Required when `blankUrlOverride` is a
-   * square catalog size blank so the dashed guide matches that size (wall decals).
+   * square catalog size blank so the dashed guide matches that size (wall decals / tapestry).
    */
   catalogSizeAspectRatio?: string | null;
   /**

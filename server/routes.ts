@@ -15771,7 +15771,7 @@ ${orientationExtra}
       available,
     };
     delete next.lifestyle;
-    // Preserve size-keyed catalog blanks (comforter / wall decals).
+    // Preserve size-keyed catalog blanks (comforter / wall decals / indoor tapestry).
     if (
       currentImages.blanksBySize &&
       typeof currentImages.blanksBySize === "object" &&

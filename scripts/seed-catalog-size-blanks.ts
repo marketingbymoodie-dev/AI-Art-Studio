@@ -1,8 +1,9 @@
 /**
- * Upload size-keyed comforter / wall-decal blanks to Supabase and apply them
- * to every product_types row for those Printify blueprints.
+ * Upload size-keyed comforter / wall-decal / indoor-tapestry blanks to Supabase
+ * and apply them to every product_types row for those Printify blueprints.
  *
  *   npx tsx scripts/seed-catalog-size-blanks.ts
+ *   npx tsx scripts/seed-catalog-size-blanks.ts --only=241
  *
  * Requires DATABASE_URL + SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in `.env`.
  */
@@ -25,6 +26,10 @@ const ASSETS = path.join(ROOT, "scripts", "assets", "catalog-blanks");
 const LOCAL_DIRS: Record<CatalogSizeBlankBlueprintId, string> = {
   [CATALOG_SIZE_BLANK_BLUEPRINTS.cottonComforter]: path.join(ASSETS, "comforter"),
   [CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals]: path.join(ASSETS, "wall-decals"),
+  [CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry]: path.join(
+    ASSETS,
+    "indoor-wall-tapestry",
+  ),
 };
 
 async function main() {
@@ -75,8 +80,24 @@ async function main() {
     return out;
   }
 
+  const onlyArg = process.argv.find((a) => a.startsWith("--only="));
+  const onlyIds = onlyArg
+    ? onlyArg
+        .slice("--only=".length)
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n))
+    : null;
+  const blueprintIds = (
+    Object.values(CATALOG_SIZE_BLANK_BLUEPRINTS) as CatalogSizeBlankBlueprintId[]
+  ).filter((bp) => !onlyIds || onlyIds.includes(bp));
+  if (blueprintIds.length === 0) {
+    console.error("[seed] no matching blueprints for --only");
+    process.exit(1);
+  }
+
   const byBlueprint: Record<number, Record<string, string>> = {};
-  for (const bp of Object.values(CATALOG_SIZE_BLANK_BLUEPRINTS)) {
+  for (const bp of blueprintIds) {
     byBlueprint[bp] = await uploadBlueprintBlanks(bp);
   }
   const pool = new pg.Pool({
@@ -88,7 +109,7 @@ async function main() {
     `SELECT id, name, printify_blueprint_id, base_mockup_images
      FROM product_types
      WHERE printify_blueprint_id = ANY($1::int[])`,
-    [Object.values(CATALOG_SIZE_BLANK_BLUEPRINTS)],
+    [blueprintIds],
   );
 
   let updated = 0;

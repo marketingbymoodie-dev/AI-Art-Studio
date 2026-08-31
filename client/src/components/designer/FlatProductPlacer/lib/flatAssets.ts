@@ -180,7 +180,7 @@ export function resolveCalibratorLayerAdjust(
  * Falls back to shared `manifest.views[view]` when no override exists.
  *
  * `refitCatalogSizeGuide` + `sizeAspectRatio`: when the blank is a square
- * catalog size PNG (wall decals) but harvest only stored one shared 2:3 guide,
+ * catalog size PNG (wall decals / tapestry) but harvest only stored one shared 2:3 guide,
  * synthesize the dashed print rect for the selected size AR (3:4 / 4:3 / …).
  */
 export function resolveFlatViewCalibration(
@@ -224,7 +224,7 @@ export function resolveFlatViewCalibration(
     };
   }
 
-  // Square catalog blanks (wall decals): harvest often only stored one shared
+  // Square catalog blanks (wall decals / tapestry): harvest often only stored one shared
   // 2:3 guide. When the blank PNG is size-specific, rebuild the dashed rect
   // from the selected size AR so 18×24 / 24×18 aren't stuck on 2:3 / 3:2.
   if (opts?.refitCatalogSizeGuide && opts.sizeAspectRatio) {

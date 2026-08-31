@@ -835,7 +835,7 @@ export function resolveFlatPrintFileDims(
   view: ViewName,
   opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): { width: number; height: number } | null {
-  // Wall decals / comforterters: harvest often stores one shared 2:3 printFileDims.
+  // Wall decals / comforter / indoor tapestry: harvest often stores one shared 2:3 printFileDims.
   // Axis-swapping that for landscape yields 3:2 — wrong for 24×18 (4:3). Prefer
   // the selected size's inch aspect so bake matches the storefront guide.
   if (isCatalogSizeBlankBlueprint(manifest.blueprintId) && opts.sizeId) {

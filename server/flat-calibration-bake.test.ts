@@ -89,3 +89,33 @@ describe("resolveFlatPrintFileDims catalog size blanks (wall decals)", () => {
     expect(dims).not.toEqual({ width: 3600, height: 2400 });
   });
 });
+
+describe("resolveFlatPrintFileDims catalog size blanks (indoor tapestry)", () => {
+  const tapestryManifest = {
+    ...decorManifest,
+    blueprintId: 241,
+    name: "Indoor Wall Tapestry",
+    decorPerSize: false,
+    views: {
+      front: {
+        ...decorManifest.views.front,
+        printFileDims: { width: 2400, height: 3600 },
+      },
+    },
+  };
+
+  it("uses 26:36 print dims for 26x36", () => {
+    const dims = resolveFlatPrintFileDims(tapestryManifest as any, "front", {
+      sizeId: "26x36",
+    });
+    expect(dims).toEqual({ width: 2600, height: 3600 });
+  });
+
+  it("uses 36:26 for 36x26 (not landscape-swapped 3:2)", () => {
+    const dims = resolveFlatPrintFileDims(tapestryManifest as any, "front", {
+      sizeId: "36x26",
+    });
+    expect(dims).toEqual({ width: 3600, height: Math.round((3600 * 26) / 36) });
+    expect(dims).not.toEqual({ width: 3600, height: 2400 });
+  });
+});

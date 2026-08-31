@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCatalogSizeBlanks,
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
+  isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
   visibleRectForCatalogSizeAspect,
 } from "./catalogSizeBlanks";
@@ -64,5 +66,27 @@ describe("catalogSizeBlanks", () => {
   it("can skip print inset when measuring the outer sheet bbox", () => {
     const outer = visibleRectForCatalogSizeAspect("4:3", 0.75, 1);
     expect(outer!.width).toBeCloseTo(0.75, 3);
+  });
+
+  it("treats indoor wall tapestry (241) as a catalog size-blank blueprint", () => {
+    expect(isCatalogSizeBlankBlueprint(241)).toBe(true);
+    expect(isCatalogSizeBlankBlueprint(CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry)).toBe(
+      true,
+    );
+    expect(isCatalogSizeBlankBlueprint(1649)).toBe(false);
+  });
+
+  it("resolves tapestry portrait vs landscape size keys", () => {
+    const blanksBySize = {
+      "26x36": "https://cdn.example/26x36.png",
+      "36x26": "https://cdn.example/36x26.png",
+    };
+    const images = { blanksBySize };
+    expect(
+      resolveBlankUrlForSize(images, { id: "26x36", name: '26" × 36"' }),
+    ).toBe(blanksBySize["26x36"]);
+    expect(
+      resolveBlankUrlForSize(images, { id: "36x26", name: '36" × 26"' }),
+    ).toBe(blanksBySize["36x26"]);
   });
 });

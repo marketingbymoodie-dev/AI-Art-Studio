@@ -1,7 +1,8 @@
 /**
  * Size-keyed catalog blanks for mixed-orientation products (Cotton Comforter,
- * Wall Decals). Printify placeholder PNGs are often square canvases — match by
- * product size token from the filename (68x88), not image pixel aspect.
+ * Wall Decals, Indoor Wall Tapestry). Printify placeholder PNGs are often
+ * square canvases — match by product size token from the filename (68x88),
+ * not image pixel aspect.
  */
 
 import {
@@ -16,6 +17,7 @@ import {
 export const CATALOG_SIZE_BLANK_BLUEPRINTS = {
   cottonComforter: 2706,
   wallDecals: 759,
+  indoorWallTapestry: 241,
 } as const;
 
 export type CatalogSizeBlankBlueprintId =
@@ -24,9 +26,9 @@ export type CatalogSizeBlankBlueprintId =
 export function isCatalogSizeBlankBlueprint(
   blueprintId: number | null | undefined,
 ): blueprintId is CatalogSizeBlankBlueprintId {
-  return (
-    blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.cottonComforter ||
-    blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals
+  if (blueprintId == null) return false;
+  return (Object.values(CATALOG_SIZE_BLANK_BLUEPRINTS) as number[]).includes(
+    blueprintId,
   );
 }
 
@@ -63,6 +65,16 @@ export const CATALOG_SIZE_BLANK_STORAGE_PATHS: Record<
     "24x18": "catalog-blanks/wall-decals/24x18.png",
     "24x36": "catalog-blanks/wall-decals/24x36.png",
     "36x24": "catalog-blanks/wall-decals/36x24.png",
+  },
+  [CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry]: {
+    "26x36": "catalog-blanks/indoor-wall-tapestry/26x36.png",
+    "36x26": "catalog-blanks/indoor-wall-tapestry/36x26.png",
+    "50x60": "catalog-blanks/indoor-wall-tapestry/50x60.png",
+    "60x50": "catalog-blanks/indoor-wall-tapestry/60x50.png",
+    "68x80": "catalog-blanks/indoor-wall-tapestry/68x80.png",
+    "80x68": "catalog-blanks/indoor-wall-tapestry/80x68.png",
+    "88x104": "catalog-blanks/indoor-wall-tapestry/88x104.png",
+    "104x88": "catalog-blanks/indoor-wall-tapestry/104x88.png",
   },
 };
 

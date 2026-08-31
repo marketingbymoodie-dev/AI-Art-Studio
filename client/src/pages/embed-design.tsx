@@ -2417,7 +2417,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         decorPerSize: cal.decorPerSize,
       })
     );
-    // Comforter / wall decals: same — Printify zoom mode left tester stuck on
+    // Comforter / wall decals / indoor tapestry: same — Printify zoom mode left tester stuck on
     // "Save design / Refresh Mockups" because placement never auto-Applied.
     const catalogSizeBlank = isCatalogSizeBlankBlueprint(
       productTypeConfig?.printifyBlueprintId,
@@ -3698,7 +3698,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return isLandscapeSizeAspect(ar);
   }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
 
-  /** Inch AR for catalog size blanks (wall decals) — drives dashed guide when harvest is shared 2:3. */
+  /** Inch AR for catalog size blanks (wall decals / tapestry) — drives dashed guide when harvest is shared 2:3. */
   const catalogSizeAspectRatio = useMemo(() => {
     const sizeConfig = printSizes.find((s) => s.id === selectedSize);
     if (!sizeConfig) return null;
