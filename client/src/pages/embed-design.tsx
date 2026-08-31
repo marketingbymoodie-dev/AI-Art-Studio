@@ -208,6 +208,12 @@ import {
 } from "@shared/quotesStyle";
 import { isFloatingCatalogStyle, resolveCatalogSlug } from "@shared/styleCatalog";
 import {
+  coerceStyleHint,
+  findStylePresetForFill,
+  resolveSelectableStylePreset,
+  type SavedStyleHints,
+} from "@shared/resolveStylePresetForUi";
+import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
   STOREFRONT_GOOGLE_AUTH_FAILED_MESSAGE,
@@ -1711,28 +1717,31 @@ function isBackGalleryLabel(label: string | undefined): boolean {
   return l === "back" || l.startsWith("back ");
 }
 
-function findStylePresetForFill(
-  presets: StylePreset[],
-  ...keys: Array<string | null | undefined>
-): StylePreset | undefined {
-  for (const raw of keys) {
-    const key = String(raw || "").trim();
-    if (!key) continue;
-    const lower = key.toLowerCase();
-    const keySlug = resolveCatalogSlug({ catalogSlug: key, name: key });
-    const hit = presets.find((p) => {
-      if (p.id === key) return true;
-      if (String(p.catalogSlug || "").toLowerCase() === lower) return true;
-      if (String(p.name || "").toLowerCase() === lower) return true;
-      const presetSlug = resolveCatalogSlug({
-        catalogSlug: p.catalogSlug,
+function resolveSavedStyleDropdownId(
+  selectable: StylePreset[],
+  hints: SavedStyleHints,
+  pool: StylePreset[] | undefined,
+  context: string,
+): string {
+  const match = resolveSelectableStylePreset(selectable, hints, { pool });
+  if (match) return String(match.id);
+  const stylePreset = coerceStyleHint(hints.stylePreset);
+  const catalogSlug = coerceStyleHint(hints.catalogSlug);
+  const styleName = coerceStyleHint(hints.styleName);
+  if (stylePreset || catalogSlug || styleName) {
+    console.warn("[LoadDesign] style preselect unresolved", {
+      context,
+      stylePreset: stylePreset || null,
+      catalogSlug: catalogSlug || null,
+      styleName: styleName || null,
+      options: selectable.map((p) => ({
+        id: String(p.id),
+        catalogSlug: p.catalogSlug ?? null,
         name: p.name,
-      });
-      return !!(keySlug && presetSlug && keySlug === presetSlug);
+      })),
     });
-    if (hit) return hit;
   }
-  return undefined;
+  return "";
 }
 
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
@@ -3914,12 +3923,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
 
   const showDecorFloatingFill = useMemo(() => {
-    const active = findStylePresetForFill(
+    const active = resolveSelectableStylePreset(
       filteredStylePresets,
-      selectedPreset,
-      loadedDecorStyle?.stylePreset,
-      loadedDecorStyle?.catalogSlug,
-      loadedDecorStyle?.styleName,
+      {
+        stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
+        catalogSlug: loadedDecorStyle?.catalogSlug,
+        styleName: loadedDecorStyle?.styleName,
+      },
+      { pool: stylePresets },
     );
     const catalogSlug =
       active?.catalogSlug ||
@@ -3943,6 +3954,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     });
   }, [
     filteredStylePresets,
+    stylePresets,
     selectedPreset,
     loadedDecorStyle,
     generatedDesign?.imageUrl,
@@ -4226,15 +4238,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // the current dropdown option so Art Style + the fill picker both light up.
   useEffect(() => {
     if (filteredStylePresets.length === 0) return;
-    const match = findStylePresetForFill(
-      filteredStylePresets,
-      selectedPreset,
-      loadedDecorStyle?.stylePreset,
-      loadedDecorStyle?.catalogSlug,
-      loadedDecorStyle?.styleName,
-    );
+    const hints: SavedStyleHints = {
+      stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
+      catalogSlug: loadedDecorStyle?.catalogSlug,
+      styleName: loadedDecorStyle?.styleName,
+    };
+    const match = resolveSelectableStylePreset(filteredStylePresets, hints, {
+      pool: stylePresets,
+    });
     if (match) {
-      if (selectedPreset !== match.id) setSelectedPreset(match.id);
+      const matchId = String(match.id);
+      if (selectedPreset !== matchId) setSelectedPreset(matchId);
       return;
     }
     if (
@@ -4242,6 +4256,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       loadedDecorStyle?.catalogSlug ||
       loadedDecorStyle?.styleName
     ) {
+      const displayable = filteredStylePresets.some((p) => String(p.id) === selectedPreset);
+      if (selectedPreset && !displayable) {
+        resolveSavedStyleDropdownId(
+          filteredStylePresets,
+          hints,
+          stylePresets,
+          "remap-style-list",
+        );
+        setSelectedPreset("");
+      }
       return;
     }
     if (!selectedPreset) return;
@@ -4252,7 +4276,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
     setSelectedPreset("");
-  }, [filteredStylePresets, selectedPreset, loadedDecorStyle]);
+  }, [filteredStylePresets, stylePresets, selectedPreset, loadedDecorStyle]);
 
   const defaultProductTypeConfig: ProductTypeConfig = {
     id: 0,
@@ -4962,15 +4986,25 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           prompt: sharedDesign.prompt,
         });
         setPrompt(sharedDesign.prompt);
-        const sharedMatch = findStylePresetForFill(
+        const sharedHints: SavedStyleHints = {
+          stylePreset: sharedDesign.stylePreset,
+          catalogSlug: sharedDesign.catalogSlug,
+          styleName: sharedDesign.styleName,
+        };
+        const sharedMatchId = resolveSavedStyleDropdownId(
           filteredStylePresets,
-          sharedDesign.stylePreset,
+          sharedHints,
+          stylePresets,
+          "shared-design",
         );
-        setSelectedPreset(sharedMatch?.id || sharedDesign.stylePreset || "");
+        const sharedMatch = sharedMatchId
+          ? filteredStylePresets.find((p) => String(p.id) === sharedMatchId)
+          : undefined;
+        setSelectedPreset(sharedMatchId);
         setLoadedDecorStyle({
-          stylePreset: sharedDesign.stylePreset || null,
-          catalogSlug: sharedMatch?.catalogSlug || null,
-          styleName: sharedMatch?.name || null,
+          stylePreset: coerceStyleHint(sharedDesign.stylePreset) || null,
+          catalogSlug: coerceStyleHint(sharedDesign.catalogSlug) || sharedMatch?.catalogSlug || null,
+          styleName: coerceStyleHint(sharedDesign.styleName) || sharedMatch?.name || null,
           outputMode: sharedMatch?.outputMode || null,
           generationModel: sharedMatch?.generationModel || null,
         });
@@ -5020,21 +5054,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     currentMockupColorRef.current = "";
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     const loadedStyle = {
-      stylePreset: (typeof ds?.stylePreset === "string" && ds.stylePreset) || topLevel.stylePreset || null,
-      catalogSlug: typeof ds?.catalogSlug === "string" ? ds.catalogSlug : null,
-      styleName: typeof ds?.styleName === "string" ? ds.styleName : null,
-      outputMode: typeof ds?.outputMode === "string" ? ds.outputMode : null,
-      generationModel: typeof ds?.generationModel === "string" ? ds.generationModel : null,
+      stylePreset: coerceStyleHint(ds?.stylePreset) || coerceStyleHint(topLevel.stylePreset) || null,
+      catalogSlug: coerceStyleHint(ds?.catalogSlug) || null,
+      styleName: coerceStyleHint(ds?.styleName) || null,
+      outputMode: coerceStyleHint(ds?.outputMode) || null,
+      generationModel: coerceStyleHint(ds?.generationModel) || null,
     };
     setLoadedDecorStyle(loadedStyle);
-    const resolvedStyle = findStylePresetForFill(
-      filteredStylePresets,
-      loadedStyle.stylePreset,
-      loadedStyle.catalogSlug,
-      loadedStyle.styleName,
-    );
     setSelectedPreset(
-      resolvedStyle?.id || loadedStyle.stylePreset || loadedStyle.catalogSlug || loadedStyle.styleName || "",
+      resolveSavedStyleDropdownId(
+        filteredStylePresets,
+        loadedStyle,
+        stylePresets,
+        `saved-design:${designId}`,
+      ),
     );
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
@@ -5269,7 +5302,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           restoringSavedDesignRef.current = false;
         }
       }
-      if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
+      // Style is already resolved above to a real dropdown option id — do not
+      // overwrite with a raw job slug / foreign merchant id.
     }
     // Some older saved AOP designs only persisted panel URLs in designState; their
     // size/color/style live on the top-level saved-design row. Always fall back to

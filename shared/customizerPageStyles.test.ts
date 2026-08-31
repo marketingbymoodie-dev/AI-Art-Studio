@@ -3,6 +3,7 @@ import {
   collapseStyleNameTwins,
   dedupeStylePresets,
   filterStylePresetsForPage,
+  findSurvivingStyleTwin,
   parseCustomizerPageStyleConfig,
   remapCustomizerStyleConfigAfterGraphicsRetire,
   styleExampleImageUrl,
@@ -93,6 +94,13 @@ describe("filterStylePresetsForPage", () => {
     });
     const shown = filterStylePresetsForPage(twins, cfg, "generic");
     expect(shown.map((s) => s.id)).toEqual(["cg-graphics", "quotes"]);
+  });
+
+  it("maps a dropped apparel twin onto the surviving graphics option", () => {
+    const cfg = parseCustomizerPageStyleConfig({ mode: "category", category: "all" });
+    const shown = filterStylePresetsForPage(twins, cfg, "generic");
+    const survivor = findSurvivingStyleTwin(twins[0], shown);
+    expect(survivor?.id).toBe("cg-graphics");
   });
 });
 

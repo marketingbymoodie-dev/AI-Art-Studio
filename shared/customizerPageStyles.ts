@@ -166,6 +166,37 @@ function apparelGraphicsTwinKey<
   return null;
 }
 
+/** Map a twin that collapse dropped onto the row still shown in the dropdown. */
+export function findSurvivingStyleTwin<
+  T extends { id: string | number; name?: string; category?: string | null; catalogSlug?: string | null },
+>(dropped: T, survivors: T[]): T | undefined {
+  const droppedId = String(dropped.id);
+  const exact = survivors.find((s) => String(s.id) === droppedId);
+  if (exact) return exact;
+  const droppedTwin = apparelGraphicsTwinKey({
+    ...dropped,
+    id: droppedId,
+  } as T & { id: string });
+  if (droppedTwin) {
+    const hit = survivors.find(
+      (s) =>
+        apparelGraphicsTwinKey({
+          ...s,
+          id: String(s.id),
+        } as T & { id: string }) === droppedTwin,
+    );
+    if (hit) return hit;
+  }
+  const droppedName = canonicalCreatorStyleName(dropped.name || "");
+  if (droppedName) {
+    const hit = survivors.find(
+      (s) => canonicalCreatorStyleName(s.name || "") === droppedName,
+    );
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 export function collapseStyleNameTwins<
   T extends { id: string; name?: string; category?: string | null; catalogSlug?: string | null },
 >(presets: T[], designerType?: string | null, pageCategory?: string | null): T[] {
