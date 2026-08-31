@@ -31,12 +31,16 @@ describe("maskAlphaLooksBinary", () => {
 });
 
 describe("featherMaskAlphaFromRgba", () => {
-  it("keeps the core at 255 and adds a mid-alpha perimeter", () => {
+  it("keeps the core at 255 and only softens the 1px boundary", () => {
     const w = 32;
     const h = 32;
     const src = hardRect(w, h, 8, 8, 24, 24);
     const out = featherMaskAlphaFromRgba(src, w, h, TAPESTRY_MASK_FEATHER_RADIUS_PX);
-    expect(out[(16 * w + 16) * 4 + 3]).toBeGreaterThanOrEqual(200);
+    expect(out[(16 * w + 16) * 4 + 3]).toBe(255);
+    expect(out[(8 * w + 8) * 4 + 3]).toBe(160);
+    expect(out[(8 * w + 16) * 4 + 3]).toBe(160);
+    // One pixel inside the edge stays core (≥128 coverage cutoff).
+    expect(out[(9 * w + 16) * 4 + 3]).toBe(255);
     let mid = 0;
     for (let i = 0; i < w * h; i++) {
       const a = out[i * 4 + 3];
@@ -49,7 +53,7 @@ describe("featherMaskAlphaFromRgba", () => {
     const w = 32;
     const h = 32;
     const src = hardRect(w, h, 8, 8, 24, 24);
-    const out = featherMaskAlphaFromRgba(src, w, h, 2);
+    const out = featherMaskAlphaFromRgba(src, w, h, TAPESTRY_MASK_FEATHER_RADIUS_PX);
     expect(out[(1 * w + 1) * 4 + 3]).toBeLessThan(8);
   });
 });

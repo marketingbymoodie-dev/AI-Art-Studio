@@ -29,6 +29,7 @@ import {
   featherMaskAlphaFromRgba,
   maskAlphaLooksBinary,
 } from "@shared/maskFeather";
+import { expandTapestryMagentaMask } from "@shared/tapestryHarvestMagenta";
 import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
@@ -521,22 +522,35 @@ type MagentaAnalysis = {
 };
 
 /** Detect the #FF00FF print region: bounding box + pixel-exact silhouette (captures occlusion). */
-async function analyzeMagenta(buffer: Buffer): Promise<MagentaAnalysis> {
+async function analyzeMagenta(
+  buffer: Buffer,
+  opts?: { expandTapestry?: boolean },
+): Promise<MagentaAnalysis> {
   const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const { width, height, channels } = info;
   const maskRaw = Buffer.alloc(width * height * 4, 0);
   let minX = width, minY = height, maxX = -1, maxY = -1, count = 0;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * channels;
-      if (isMagenta(data[i], data[i + 1], data[i + 2])) {
-        count++;
-        const o = (y * width + x) * 4;
-        maskRaw[o] = 255; maskRaw[o + 1] = 255; maskRaw[o + 2] = 255; maskRaw[o + 3] = 255;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
+  if (opts?.expandTapestry) {
+    const expanded = expandTapestryMagentaMask(data, width, height, channels);
+    maskRaw.set(expanded.maskRaw);
+    count = expanded.count;
+    minX = expanded.minX;
+    minY = expanded.minY;
+    maxX = expanded.maxX;
+    maxY = expanded.maxY;
+  } else {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * channels;
+        if (isMagenta(data[i], data[i + 1], data[i + 2])) {
+          count++;
+          const o = (y * width + x) * 4;
+          maskRaw[o] = 255; maskRaw[o + 1] = 255; maskRaw[o + 2] = 255; maskRaw[o + 3] = 255;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
       }
     }
   }
@@ -787,6 +801,33 @@ function placeholderDimsForVariant(variant: any): Map<ViewName, { width: number;
     }
   }
   return map;
+}
+
+function catalogVariantSizeKey(variant: any): string | null {
+  const blobs = [
+    variant?.title,
+    variant?.sku,
+    JSON.stringify(variant?.options || {}),
+  ];
+  for (const b of blobs) {
+    const key = extractDimensionalKey(String(b || ""));
+    if (key) return key;
+  }
+  return null;
+}
+
+/** 241: each size has its own print-file dims — do not fall back to variants[0]. */
+function placeholderDimsForSizeKey(
+  variants: any[],
+  sizeKey: string,
+  fallback: Map<ViewName, { width: number; height: number }>,
+): Map<ViewName, { width: number; height: number }> {
+  for (const v of variants) {
+    if (catalogVariantSizeKey(v) !== sizeKey) continue;
+    const dims = placeholderDimsForVariant(v);
+    if (dims.size > 0) return dims;
+  }
+  return fallback;
 }
 
 function blankKeyMatchesManifest(manifest: FlatCalibrationManifest, key: string): boolean {
@@ -1857,6 +1898,11 @@ async function harvestPerBlankGeometry(args: {
     const dims = variantPlaceholderDims.get(view);
     if (!vc || !dims) continue;
     try {
+      if (shouldProbeCatalogBlankGuide(blueprintId)) {
+        console.log(
+          `[flat-calibration] 241 ${color.id}/${view} magenta probe ${dims.width}×${dims.height}`,
+        );
+      }
       const magId = await uploadImage(
         token,
         `reg-${safe}-${view}.png`,
@@ -1870,7 +1916,9 @@ async function harvestPerBlankGeometry(args: {
       const regMatch = pickView(regImages, view);
       if (!regMatch) continue;
       const regBuf = await downloadBuffer(regMatch.url);
-      const a = await analyzeMagenta(regBuf);
+      const a = await analyzeMagenta(regBuf, {
+        expandTapestry: shouldProbeCatalogBlankGuide(blueprintId),
+      });
       const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap, dims);
       const calPaths = calibratorMode ? calibratorLayerPaths(storageKey, safe, view) : null;
 
@@ -3110,7 +3158,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       if (!match) continue;
       const buf = await downloadBuffer(match.url);
       if (calibratorMode) regImageByView[view] = buf;
-      const a = await analyzeMagenta(buf);
+      const a = await analyzeMagenta(buf, {
+        expandTapestry: shouldProbeCatalogBlankGuide(blueprintId),
+      });
       maskByView[view] = a;
       const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct, placeholderDims.get(view));
       let maskUrl: string | null = null;
@@ -3293,9 +3343,16 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       // variants[0]) which is correct for per-model geometry: all phone-case
       // models share the same print-area dimensions within a blueprint.
       const variant = variants.find((v) => v.id === color.variantId);
-      const variantDims = placeholderDimsForVariant(variant).size > 0
-        ? placeholderDimsForVariant(variant)
-        : placeholderDims;
+      const fromId = placeholderDimsForVariant(variant);
+      const variantDims = shouldProbeCatalogBlankGuide(blueprintId)
+        ? placeholderDimsForSizeKey(
+            variants,
+            color.id,
+            fromId.size > 0 ? fromId : placeholderDims,
+          )
+        : fromId.size > 0
+          ? fromId
+          : placeholderDims;
       let perBlankGeo: Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null = null;
       const perBlank = needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize);
       if (perBlank && variantDims.size > 0) {

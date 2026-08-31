@@ -3,8 +3,12 @@
  * Hood / poster harvest must not call this — their masks stay hard-edged.
  */
 
-/** ~2px gaussian-equivalent (3 box passes) over the whole perimeter. */
-export const TAPESTRY_MASK_FEATHER_RADIUS_PX = 2;
+/**
+ * 1px boundary-band (half the previous r=2 / 3-pass box blur).
+ * Core stays 255; only pixels that touch a transparent neighbor soften.
+ * Coverage cutoff α≥128 still sees the full silhouette as core.
+ */
+export const TAPESTRY_MASK_FEATHER_RADIUS_PX = 1;
 
 /** True when opaque pixels are almost all 255 — no existing soft ramp. */
 export function maskAlphaLooksBinary(
@@ -25,46 +29,29 @@ export function maskAlphaLooksBinary(
   return mid / opaque < 0.02;
 }
 
-function boxBlurAlpha1D(
-  src: Float64Array,
+function hasTransparentNeighbor(
+  alpha: ArrayLike<number>,
   w: number,
   h: number,
+  x: number,
+  y: number,
   radius: number,
-  horizontal: boolean,
-): Float64Array {
-  const out = new Float64Array(src.length);
-  const r = Math.max(1, radius);
-  const denom = r * 2 + 1;
-  if (horizontal) {
-    for (let y = 0; y < h; y++) {
-      const row = y * w;
-      for (let x = 0; x < w; x++) {
-        let sum = 0;
-        for (let k = -r; k <= r; k++) {
-          const xx = Math.min(w - 1, Math.max(0, x + k));
-          sum += src[row + xx];
-        }
-        out[row + x] = sum / denom;
-      }
-    }
-  } else {
-    for (let x = 0; x < w; x++) {
-      for (let y = 0; y < h; y++) {
-        let sum = 0;
-        for (let k = -r; k <= r; k++) {
-          const yy = Math.min(h - 1, Math.max(0, y + k));
-          sum += src[yy * w + x];
-        }
-        out[y * w + x] = sum / denom;
-      }
+): boolean {
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const xx = x + dx;
+      const yy = y + dy;
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) return true;
+      if ((alpha[yy * w + xx] ?? 0) < 16) return true;
     }
   }
-  return out;
+  return false;
 }
 
 /**
- * Blur alpha only (RGB unchanged). 3 separable box passes ≈ small gaussian.
- * Does not change core-vs-feather classification at α≥128 beyond a ~radius inset.
+ * Anti-alias only the silhouette boundary. Interior α stays 255 so
+ * `pointInMask` (≥128) does not shrink the printable core.
  */
 export function featherMaskAlphaFromRgba(
   data: Uint8ClampedArray,
@@ -74,15 +61,17 @@ export function featherMaskAlphaFromRgba(
 ): Uint8ClampedArray {
   if (!(w > 0) || !(h > 0)) return data;
   const r = Math.max(1, Math.round(radiusPx));
-  let alpha = new Float64Array(w * h);
+  const alpha = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) alpha[i] = data[i * 4 + 3];
-  for (let pass = 0; pass < 3; pass++) {
-    alpha = boxBlurAlpha1D(alpha, w, h, r, true);
-    alpha = boxBlurAlpha1D(alpha, w, h, r, false);
-  }
   const out = new Uint8ClampedArray(data);
-  for (let i = 0; i < w * h; i++) {
-    out[i * 4 + 3] = Math.round(alpha[i]);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (alpha[i] < 16) continue;
+      if (hasTransparentNeighbor(alpha, w, h, x, y, r)) {
+        out[i * 4 + 3] = 160;
+      }
+    }
   }
   return out;
 }
