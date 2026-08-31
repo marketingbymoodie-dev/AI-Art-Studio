@@ -163,6 +163,29 @@ function mockupCanvasRect(view: FlatViewCalibration, blank: HTMLImageElement): R
   return { x: 0, y: 0, width: w, height: h };
 }
 
+/** Magenta fill of this size’s catalog print rect — harvest pink is one size only. */
+function drawCatalogSizePinkGuide(
+  ctx: CanvasRenderingContext2D,
+  view: FlatViewCalibration,
+  blank: HTMLImageElement,
+  layerAdjust: CalibratorLayerAdjust,
+) {
+  const nr = view.visibleRectNormalized;
+  if (!nr) return;
+  const canvas = mockupCanvasRect(view, blank);
+  const dest = adjustCalibratorDrawRect(canvas, layerAdjust, canvas.width, canvas.height);
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = "#FF00FF";
+  ctx.fillRect(
+    dest.x + nr.x * dest.width,
+    dest.y + nr.y * dest.height,
+    nr.width * dest.width,
+    nr.height * dest.height,
+  );
+  ctx.restore();
+}
+
 function drawPinkReference(
   ctx: CanvasRenderingContext2D,
   pink: HTMLImageElement,
@@ -468,7 +491,7 @@ export default function FlatCalibrationMapperPage() {
       catalogSizeMode
         ? Promise.resolve(null)
         : loadImageFirst(model.assets.shading, view.shadingUrl),
-      loadImageFirst(model.assets.pink),
+      catalogSizeMode ? Promise.resolve(null) : loadImageFirst(model.assets.pink),
       // Shared harvest masks/shading are one silhouette (usually the first size).
       // Catalog size blanks each have their own hanging photo — drop them so
       // art clips to the dashed print rect, matching the storefront.
@@ -491,7 +514,7 @@ export default function FlatCalibrationMapperPage() {
     }
     setBlankLoadError(null);
 
-    const layerOnlyPink = activeLayer === "pink" && showPink;
+    const layerOnlyPink = activeLayer === "pink" && showPink && (catalogSizeMode || !!pinkImg);
     const layerOnlyMask = activeLayer === "mask" && showMask && !showBlank && !showShading && !artImg;
 
     const previewW = edgeWrapMode
@@ -501,14 +524,18 @@ export default function FlatCalibrationMapperPage() {
       ? flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg }).previewH
       : mockupCanvasRect(view, blankImg).height;
 
-    if (layerOnlyPink && pinkImg) {
+    if (layerOnlyPink) {
       canvas.width = previewW;
       canvas.height = previewH;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.fillStyle = edgeWrapMode ? "#d4d4d4" : "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+      if (catalogSizeMode) {
+        drawCatalogSizePinkGuide(ctx, view, blankImg, geometry.blank);
+      } else if (pinkImg) {
+        drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+      }
     } else if (layerOnlyMask && maskImg) {
       canvas.width = previewW;
       canvas.height = previewH;
@@ -548,8 +575,12 @@ export default function FlatCalibrationMapperPage() {
 
       const ctx = canvas.getContext("2d");
       if (ctx) {
-        if (showPink && pinkImg && activeLayer !== "pink") {
-          drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+        if (showPink && activeLayer !== "pink") {
+          if (catalogSizeMode) {
+            drawCatalogSizePinkGuide(ctx, view, blankImg, geometry.blank);
+          } else if (pinkImg) {
+            drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+          }
         }
         if (showMask && maskImg && activeLayer !== "mask") {
           drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask, edgeWrapMode);
@@ -782,7 +813,11 @@ export default function FlatCalibrationMapperPage() {
               <div className="space-y-2 rounded border p-2">
                 <div className="text-xs font-medium">Visible layers</div>
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs">Pink reference (magenta mockup)</Label>
+                  <Label className="text-xs">
+                    {catalogSizeMode
+                      ? "Print area (magenta)"
+                      : "Pink reference (magenta mockup)"}
+                  </Label>
                   <Switch checked={showPink} onCheckedChange={setShowPink} />
                 </div>
                 <div className="flex items-center justify-between">
