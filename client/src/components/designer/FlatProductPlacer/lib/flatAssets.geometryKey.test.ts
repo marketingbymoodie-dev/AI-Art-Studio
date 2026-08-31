@@ -123,28 +123,28 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
     expect(r.width / r.height).not.toBeCloseTo(1.5, 2);
   });
 
-  it("refits indoor tapestry 88x104 from measured fabric bbox, not shared harvest 2:3", () => {
+  it("refits indoor tapestry 50x60 to 5:6 inch letterbox, not harvest 2:3", () => {
     const m = {
       ...wallDecalManifest(),
       blueprintId: 241,
       name: "Indoor Wall Tapestry",
       blanks: {
         "26x36": { front: "https://example.com/harvest-26x36.png" },
-        "88x104": { front: "https://example.com/harvest-88x104.png" },
+        "50x60": { front: "https://example.com/harvest-50x60.png" },
       },
     };
-    const calib = resolveFlatViewCalibration(m, "88x104", "front", {
-      sizeAspectRatio: "88:104",
+    const calib = resolveFlatViewCalibration(m, "26x36", "front", {
+      sizeAspectRatio: "50:60",
       refitCatalogSizeGuide: true,
       catalogBlueprintId: 241,
-      catalogSizeKey: "88x104",
+      catalogSizeKey: "50x60",
     });
     const r = calib!.visibleRectNormalized!;
-    expect(r.height).toBeGreaterThan(0.78);
-    expect(r.width / r.height).toBeCloseTo(0.70996 / 0.82324, 2);
+    expect(r.width / r.height).toBeCloseTo(5 / 6, 2);
+    expect(r.height).toBeCloseTo(0.75 * 0.965, 3);
     expect(r.width / r.height).not.toBeCloseTo(2 / 3, 2);
     expect(calib?.printFileDims).toEqual({
-      width: Math.round((3600 * 88) / 104),
+      width: 3000,
       height: 3600,
     });
   });

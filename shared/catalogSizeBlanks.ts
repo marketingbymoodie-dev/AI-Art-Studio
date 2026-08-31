@@ -115,55 +115,26 @@ export const CATALOG_SIZE_BLANK_PRINT_INSET = 0.965;
 
 export type NormRect = { x: number; y: number; width: number; height: number };
 
-/**
- * Outer fabric+shadow bbox on the 1024² indoor-tapestry catalog PNGs
- * (non-near-white pixels). Print guide insets this by PRINT_INSET.
- */
-export const CATALOG_SIZE_BLANK_SHEET_RECTS: Partial<
-  Record<CatalogSizeBlankBlueprintId, Record<string, NormRect>>
-> = {
-  [CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry]: {
-    "26x36": { x: 0.21484, y: 0.12012, width: 0.54688, height: 0.74512 },
-    "36x26": { x: 0.08398, y: 0.17871, width: 0.81152, height: 0.60156 },
-    "50x60": { x: 0.15332, y: 0.10938, width: 0.66699, height: 0.78223 },
-    "60x50": { x: 0.08301, y: 0.16211, width: 0.81055, height: 0.68945 },
-    "68x80": { x: 0.14062, y: 0.10742, width: 0.69531, height: 0.78418 },
-    "80x68": { x: 0.10449, y: 0.16309, width: 0.77637, height: 0.66211 },
-    "88x104": { x: 0.1377, y: 0.08203, width: 0.70996, height: 0.82324 },
-    "104x88": { x: 0.08887, y: 0.15332, width: 0.7959, height: 0.71387 },
-  },
-};
-
-export function insetNormRect(
-  rect: NormRect,
-  printInset: number = CATALOG_SIZE_BLANK_PRINT_INSET,
-): NormRect {
-  const width = rect.width * printInset;
-  const height = rect.height * printInset;
-  const round = (n: number) => +n.toFixed(5);
-  return {
-    x: round(rect.x + (rect.width - width) / 2),
-    y: round(rect.y + (rect.height - height) / 2),
-    width: round(width),
-    height: round(height),
-  };
+function aspectRatioFromSizeKey(
+  sizeKey: string | null | undefined,
+): string | null {
+  if (!sizeKey) return null;
+  const dim = extractDimensionalKey(sizeKey) || sizeKey;
+  const [w, h] = dim.split("x").map(Number);
+  return w > 0 && h > 0 ? `${w}:${h}` : null;
 }
 
 /**
- * Per-size print guide: measured fabric bbox when we have one (tapestry),
- * otherwise the shared letterbox used by wall decals / comforter.
+ * Print guide for catalog-size-blank products (wall decals, comforter, tapestry).
+ * Always the inch-aspect letterbox — never measured droop bboxes. 241 used to
+ * read a hand-tuned sheet table and desynced from the blank photo.
  */
 export function visibleRectForCatalogSizeBlank(
-  blueprintId: number | null | undefined,
+  _blueprintId: number | null | undefined,
   sizeKey: string | null | undefined,
   aspectRatio?: string | null,
 ): NormRect | null {
-  if (isCatalogSizeBlankBlueprint(blueprintId) && sizeKey) {
-    const dim = extractDimensionalKey(sizeKey) || sizeKey;
-    const sheet = CATALOG_SIZE_BLANK_SHEET_RECTS[blueprintId]?.[dim];
-    if (sheet) return insetNormRect(sheet);
-  }
-  return visibleRectForCatalogSizeAspect(aspectRatio);
+  return visibleRectForCatalogSizeAspect(aspectRatio || aspectRatioFromSizeKey(sizeKey));
 }
 
 /**

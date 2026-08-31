@@ -395,8 +395,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   // ---------- Preload blank / mask / shading for every available view ----------
   useEffect(() => {
     let cancelled = false;
-    const hasExistingAssets = availableViews.some((v) => assets[v].blank);
-    if (!hasExistingAssets) setAssetsLoading(true);
+    // Catalog-size-blank (tapestry): drop the previous size's blank/mask/shading
+    // immediately. Colour-only swaps still keep prior pixels to avoid a flash.
+    if (refitCatalogSizeGuide) {
+      setAssets({ front: EMPTY_ASSETS, back: EMPTY_ASSETS });
+      setAssetsLoading(true);
+    } else {
+      const hasExistingAssets = availableViews.some((v) => assets[v].blank);
+      if (!hasExistingAssets) setAssetsLoading(true);
+    }
     setAssetError(null);
     (async () => {
       const next: Record<ViewName, LoadedAssets> = {
@@ -422,6 +429,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           !refitCatalogSizeGuide && calib.maskUrl
             ? loadFlatImageRelaxed(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
+          !refitCatalogSizeGuide &&
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||

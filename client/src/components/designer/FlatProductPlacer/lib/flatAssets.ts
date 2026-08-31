@@ -235,7 +235,12 @@ export function resolveFlatViewCalibration(
       opts.catalogSizeKey,
       opts.sizeAspectRatio,
     );
-    const dims = printFileDimsForAspectRatio(opts.sizeAspectRatio);
+    const dims = printFileDimsForAspectRatio(
+      opts.sizeAspectRatio ||
+        (opts.catalogSizeKey
+          ? String(opts.catalogSizeKey).replace(/(\d+)x(\d+)/i, "$1:$2")
+          : null),
+    );
     if (rect) {
       return {
         ...merged,
@@ -444,6 +449,7 @@ export async function loadFlatViewAssets(
   if (!blankUrl || !calib) return null;
 
   const shouldLoadShading =
+    !refitCatalogSizeGuide &&
     !!calib.shadingUrl &&
     (!!manifest.edgeWrap ||
       calib.shadingMode === "map" ||

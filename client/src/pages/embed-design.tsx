@@ -17173,7 +17173,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   )}
                   <FlatProductPlacer
                     ref={flatPlacerRef}
-                    key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
+                    key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${catalogSizeKey ?? ""}-${orientationBlankOverride ?? ""}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
                     manifest={productTypeConfig.flatCalibration}
                     colorId={flatBlankColorId}
                     placementGeometryKey={flatPlacerGeometryKey}

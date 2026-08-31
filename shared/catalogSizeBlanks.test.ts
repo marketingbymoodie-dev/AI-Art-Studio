@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   applyCatalogSizeBlanks,
   CATALOG_SIZE_BLANK_BLUEPRINTS,
-  CATALOG_SIZE_BLANK_PRINT_INSET,
   catalogSizeCalibratorModels,
   isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
@@ -95,22 +94,16 @@ describe("catalogSizeBlanks", () => {
     expect(catalogSizeCalibratorModels(421)).toBeNull();
   });
 
-  it("uses measured fabric bbox per tapestry size (not one shared letterbox)", () => {
-    const portrait = visibleRectForCatalogSizeBlank(241, "26x36", "26:36");
-    const large = visibleRectForCatalogSizeBlank(241, "88x104", "88:104");
-    const landscape = visibleRectForCatalogSizeBlank(241, "36x26", "36:26");
-    expect(portrait).toBeTruthy();
-    expect(large).toBeTruthy();
-    expect(landscape).toBeTruthy();
-    expect(portrait!.height).toBeCloseTo(0.74512 * CATALOG_SIZE_BLANK_PRINT_INSET, 4);
-    expect(large!.height).toBeCloseTo(0.82324 * CATALOG_SIZE_BLANK_PRINT_INSET, 4);
-    expect(large!.height).toBeGreaterThan(portrait!.height);
-    expect(landscape!.width).toBeGreaterThan(portrait!.width);
-    const letterbox26 = visibleRectForCatalogSizeAspect("26:36");
-    expect(portrait!.width / portrait!.height).not.toBeCloseTo(
-      letterbox26!.width / letterbox26!.height,
-      2,
-    );
+  it("uses inch-aspect letterbox for tapestry (same source as wall decals)", () => {
+    const portrait = visibleRectForCatalogSizeBlank(241, "50x60", "50:60");
+    const fromKeyOnly = visibleRectForCatalogSizeBlank(241, "50x60");
+    const landscape = visibleRectForCatalogSizeBlank(241, "60x50", "60:50");
+    const letterbox = visibleRectForCatalogSizeAspect("50:60");
+    expect(portrait).toEqual(letterbox);
+    expect(fromKeyOnly).toEqual(letterbox);
+    expect(portrait!.width / portrait!.height).toBeCloseTo(5 / 6, 2);
+    expect(landscape!.width / landscape!.height).toBeCloseTo(6 / 5, 2);
+    expect(portrait).not.toEqual(landscape);
   });
 
   it("resolves tapestry portrait vs landscape size keys", () => {
