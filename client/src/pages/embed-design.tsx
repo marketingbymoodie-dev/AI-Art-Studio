@@ -818,6 +818,23 @@ function normalizeVariantToken(value: string): string {
   return value.toLowerCase().trim().replace(/[\s_-]+/g, "_");
 }
 
+/** Hosted Apply panels (`url`) or in-memory rasters (`dataUrl`) → fetch payload. */
+function panelsFromSavedAopPrintUrls(
+  raw: unknown,
+): Array<{ position: string; dataUrl: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ position: string; dataUrl: string }> = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as { position?: unknown; url?: unknown; dataUrl?: unknown };
+    const position = String(rec.position || "").trim();
+    const url = String(rec.url || rec.dataUrl || "").trim();
+    if (!position || !url) continue;
+    out.push({ position, dataUrl: url });
+  }
+  return out;
+}
+
 /** Resolve a saved size value (id, name, or XL / X-Large alias) to the config size id. */
 function resolvePrintSizeId(
   stored: string | null | undefined,
@@ -3331,7 +3348,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   selectedSizeRef.current = selectedSize;
   /** Saved-design colour must win over the product's first/base colour. */
   const pendingRestoreColorRef = useRef<string | null>(null);
+  const pendingRestoreSizeRef = useRef<string | null>(null);
+  const pendingRestoreStyleRef = useRef<SavedStyleHints | null>(null);
   const restoringSavedDesignRef = useRef(false);
+  /** True when AOP print panels are in lastAopPanelUrlsRef (load restore or Apply). */
+  const [aopPrintPanelsReady, setAopPrintPanelsReady] = useState(false);
+  /** Refresh clicked before the hoodie placer mounted — flush once it is. */
+  const pendingAopRefreshRef = useRef(false);
   const onTesterDesignStatusRef = useRef<
     ((status: TesterDesignStatus) => void) | undefined
   >(undefined);
@@ -5099,6 +5122,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
     aopPersonMockupsRef.current = [];
     aopBaseMockupsRef.current = [];
     flatFrontMockupsRef.current = [];
@@ -5115,14 +5139,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       generationModel: coerceStyleHint(ds?.generationModel) || null,
     };
     setLoadedDecorStyle(loadedStyle);
-    setSelectedPreset(
-      resolveSavedStyleDropdownId(
+    pendingRestoreStyleRef.current = loadedStyle;
+    {
+      const styleId = resolveSavedStyleDropdownId(
         filteredStylePresets,
         loadedStyle,
         stylePresets,
         `saved-design:${designId}`,
-      ),
-    );
+      );
+      setSelectedPreset(styleId);
+      if (styleId) pendingRestoreStyleRef.current = null;
+    }
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
     placementFrozenSigRef.current = null;
@@ -5164,9 +5191,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setTransform(restoredTransform);
         initialTransformRef.current = restoredTransform;
       }
-      if (ds.selectedSize) {
-        const nextSize = resolvePrintSizeId(ds.selectedSize, printSizes);
-        if (nextSize) setSelectedSize(nextSize);
+      const storedSizeRaw =
+        (typeof ds.selectedSize === "string" && ds.selectedSize.trim()) || "";
+      if (storedSizeRaw) {
+        pendingRestoreSizeRef.current = storedSizeRaw;
+        const nextSize = resolvePrintSizeId(storedSizeRaw, printSizes);
+        if (nextSize) {
+          setSelectedSize(nextSize);
+          pendingRestoreSizeRef.current = null;
+        }
       }
       const storedColor =
         (typeof ds.selectedFrameColor === "string" && ds.selectedFrameColor.trim()) ||
@@ -5215,6 +5248,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // resume exactly where they left off.
       if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
         setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
+      }
+      // Refresh / Printify rebuild is keyed on lastAopPanelUrlsRef. Apply
+      // persists aopPrintPanelUrls; restore them here so the gate is winnable.
+      const restoredPanels = panelsFromSavedAopPrintUrls(ds.aopPrintPanelUrls).map((p) => ({
+        position: p.position,
+        dataUrl: abs(p.dataUrl) || p.dataUrl,
+      }));
+      if (restoredPanels.length > 0) {
+        lastAopPanelUrlsRef.current = restoredPanels;
+        setAopPrintPanelsReady(true);
+        console.log(
+          "[LoadDesign] Restored aopPrintPanelUrls",
+          restoredPanels.map((p) => p.position).join(","),
+        );
       }
       // Mesh composites matching the placer (not Printify cameras). Restore
       // these as Front/Back so reopen matches what the customer last applied.
@@ -5341,8 +5388,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     } else {
       if (topLevel.size) {
+        pendingRestoreSizeRef.current = String(topLevel.size).trim() || pendingRestoreSizeRef.current;
         const nextSize = resolvePrintSizeId(topLevel.size, printSizes);
-        if (nextSize) setSelectedSize(nextSize);
+        if (nextSize) {
+          setSelectedSize(nextSize);
+          pendingRestoreSizeRef.current = null;
+        }
       }
       if (topLevel.frameColor) {
         pendingRestoreColorRef.current = topLevel.frameColor;
@@ -5363,8 +5414,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // size/color/style live on the top-level saved-design row. Always fall back to
     // those values so Edit Pattern -> Apply can regenerate mockups.
     if (!ds?.selectedSize && topLevel.size) {
+      if (!pendingRestoreSizeRef.current) {
+        pendingRestoreSizeRef.current = String(topLevel.size).trim() || null;
+      }
       const nextSize = resolvePrintSizeId(topLevel.size, printSizes);
-      if (nextSize) setSelectedSize(nextSize);
+      if (nextSize) {
+        setSelectedSize(nextSize);
+        pendingRestoreSizeRef.current = null;
+      }
     }
     if (!pendingRestoreColorRef.current && topLevel.frameColor) {
       pendingRestoreColorRef.current = topLevel.frameColor;
@@ -5579,6 +5636,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setFlatApplyStatus("idle");
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -5750,6 +5808,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setFlatApplyStatus("idle");
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -5928,6 +5987,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setFlatApplyStatus("idle");
       setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
+      setAopPrintPanelsReady(false);
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
@@ -6221,6 +6281,36 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (next) setSelectedFrameColor(next);
     }
   }, [frameColorObjects, productTypeConfig?.variantMap, selectedFrameColor]);
+
+  useEffect(() => {
+    const pending = pendingRestoreSizeRef.current;
+    if (!pending || printSizes.length === 0) return;
+    const next = resolvePrintSizeId(pending, printSizes);
+    if (next) {
+      setSelectedSize(next);
+      pendingRestoreSizeRef.current = null;
+    }
+  }, [printSizes]);
+
+  useEffect(() => {
+    const hints = pendingRestoreStyleRef.current;
+    if (!hints) return;
+    if (selectedPreset) {
+      pendingRestoreStyleRef.current = null;
+      return;
+    }
+    if (filteredStylePresets.length === 0) return;
+    const id = resolveSavedStyleDropdownId(
+      filteredStylePresets,
+      hints,
+      stylePresets,
+      "saved-design-retry",
+    );
+    if (id) {
+      setSelectedPreset(id);
+      pendingRestoreStyleRef.current = null;
+    }
+  }, [filteredStylePresets, stylePresets, selectedPreset]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -6706,6 +6796,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Track the most recent per-panel rasters so the Retry button can replay them.
       if (panelUrls && panelUrls.length > 0) {
         lastAopPanelUrlsRef.current = panelUrls;
+        setAopPrintPanelsReady(true);
       }
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
       const body = JSON.stringify(payload);
@@ -7521,7 +7612,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor,
       transform.scale,
       transform.x,
-      transform.y
+      transform.y,
+      useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
+      aopPlacementSettings?.mirrorMode,
+      useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFrameColor]);
@@ -7561,7 +7655,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         selectedFrameColor,
         transform.scale,
         transform.x,
-        transform.y
+        transform.y,
+        useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
+        aopPlacementSettings?.mirrorMode,
+        useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined,
       );
     } else {
       setMockupsStale(true);
@@ -8075,6 +8172,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
     const saveBlocking = flatSaveBlocking || aopSaveBlocking;
     const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
+    const cartNeedsSize = !String(selectedSize || "").trim();
+    const cartCanRefresh =
+      !useAopCustomizer ||
+      aopPrintPanelsReady ||
+      !!hoodieAopPlacerRef.current ||
+      !!hoodieAopPlacerState;
     const shouldDisable =
       waitingForMockups ||
       isAddingToCart ||
@@ -8086,9 +8189,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ? "Saving design\u2026"
       : waitingForMockups || mockupsUpdating
         ? "Updating mockups…"
-        : mockupsStaleBlocksCart
-          ? "Refresh Mockups to Continue"
-          : "Add to Cart";
+        : cartNeedsSize && generatedDesign
+          ? "Select a size"
+          : mockupsStaleBlocksCart && cartCanRefresh
+            ? "Refresh Mockups to Continue"
+            : "Add to Cart";
 
     const cartFrontPrice = parseFloat(
       shopifyVariants.find((v) => String(v.id) === String(variantId))?.price || "0",
@@ -8107,7 +8212,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -8124,7 +8229,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!snap || savedJobIdRef.current !== jobId) return;
         window.parent.postMessage({
           type: 'AI_ART_STUDIO_CART_STATE',
-          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking,
+          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize,
           disabled: shouldDisable,
           waitingForMockups,
           label,
@@ -8135,7 +8240,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }, '*');
       });
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -8758,6 +8863,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setReuseAwaitingGenerate(false);
     setReuseRegenerateBasePrompt(null);
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
+    pendingRestoreSizeRef.current = null;
+    pendingRestoreStyleRef.current = null;
     setShowPatternStep(false);
     setAopPendingMotifUrl(null);
     setAopPatternUrl(null);
@@ -9743,6 +9851,148 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     toast,
   ]);
 
+  /** Stale AOP/Printify mockups: rebuild from panels or flush, never silent no-op. */
+  const refreshStaleMockups = useCallback(async () => {
+    if (!String(selectedSize || "").trim()) {
+      setVariantError("Select a size to continue.");
+      toast({
+        title: "Select a size",
+        description: "Choose a size, then you can refresh mockups or add to cart.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!generatedDesign?.imageUrl || !productTypeConfig) {
+      toast({
+        title: "Can't refresh mockups",
+        description: "Artwork is missing. Generate or reload the design.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const runFetch = async (
+      panels?: Array<{ position: string; dataUrl: string }>,
+    ) => {
+      setMockupError(null);
+      setMockupFailed(false);
+      try {
+        const result = await fetchPrintifyMockups(
+          toAbsoluteImageUrl(generatedDesign.imageUrl),
+          productTypeConfig.id,
+          selectedSize,
+          selectedFrameColor || "default",
+          transform.scale,
+          transform.x,
+          transform.y,
+          useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
+          aopPlacementSettings?.mirrorMode,
+          useAopCustomizer
+            ? (panels ?? lastAopPanelUrlsRef.current ?? undefined)
+            : undefined,
+        );
+        if (!result?.ok) {
+          toast({
+            title: "Couldn't refresh mockups",
+            description: result?.error || "Try again.",
+            variant: "destructive",
+          });
+        }
+      } catch (err: any) {
+        toast({
+          title: "Couldn't refresh mockups",
+          description: err?.message || "Try again.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    if (useAopCustomizer) {
+      if (hoodieAopPlacerRef.current) {
+        try {
+          const applied = await flushHoodieAopPlacer({ force: true });
+          if (applied) return;
+        } catch (err: any) {
+          toast({
+            title: "Couldn't refresh mockups",
+            description: err?.message || "Try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+      const panels = lastAopPanelUrlsRef.current;
+      if (panels?.length) {
+        await runFetch(panels);
+        return;
+      }
+      if (!hoodieAopPlacerRef.current && (hoodieAopPlacerState || generatedDesign.imageUrl)) {
+        pendingAopRefreshRef.current = true;
+        setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+        setShowPatternStep(true);
+        toast({
+          title: "Rebuilding mockups…",
+          description: "Re-opening the hoodie editor so mockups can rebuild.",
+        });
+        return;
+      }
+      toast({
+        title: "Can't refresh mockups",
+        description: "Apply your pattern in the hoodie editor, then try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    await runFetch();
+  }, [
+    selectedSize,
+    generatedDesign?.imageUrl,
+    productTypeConfig,
+    selectedFrameColor,
+    transform.scale,
+    transform.x,
+    transform.y,
+    useAopCustomizer,
+    aopPatternUrl,
+    aopPlacementSettings?.mirrorMode,
+    hoodieAopPlacerState,
+    fetchPrintifyMockups,
+    flushHoodieAopPlacer,
+    toast,
+  ]);
+
+  useEffect(() => {
+    if (!pendingAopRefreshRef.current || !showPatternStep) return;
+    let cancelled = false;
+    let attempts = 0;
+    const t = window.setInterval(() => {
+      if (cancelled || !pendingAopRefreshRef.current) {
+        window.clearInterval(t);
+        return;
+      }
+      if (!hoodieAopPlacerRef.current) {
+        if (++attempts > 40) {
+          window.clearInterval(t);
+          pendingAopRefreshRef.current = false;
+          toast({
+            title: "Can't refresh mockups",
+            description: "Apply your pattern in the hoodie editor, then try again.",
+            variant: "destructive",
+          });
+        }
+        return;
+      }
+      window.clearInterval(t);
+      pendingAopRefreshRef.current = false;
+      void refreshStaleMockups();
+    }, 50);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [showPatternStep, refreshStaleMockups, toast]);
+
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
       // Mesh AOP: flush deferred placement before test order.
@@ -10299,20 +10549,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !flatOnTheFlyCart
     ) {
       console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation before cart add');
-      setMockupError(null);
-      setMockupFailed(false);
-      setMockupsStale(true); // will show "Refresh Mockups to Continue" then auto-proceed
-      // Trigger mockup generation — once done, atcWaitingForMockups will clear
-      // and the user can click Add to Cart again (or we auto-proceed via the button state)
-      fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
-        productTypeConfig.id,
-        selectedSize,
-        selectedFrameColor || 'default',
-        transform.scale,
-        transform.x,
-        transform.y
-      );
+      await refreshStaleMockups();
       return; // don't proceed with cart add yet — wait for mockups
     }
 
@@ -10929,6 +11166,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         mockupPanels?.length
       ) {
         lastAopPanelUrlsRef.current = mockupPanels;
+        setAopPrintPanelsReady(true);
         void fetchPrintifyMockups(
           frontHosted,
           productTypeConfig.id,
@@ -10976,6 +11214,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               hoodieAopMockups: { front: frontHosted, back: backHosted },
               productTypeId: productTypeId || undefined,
               pageHandle: activeProductContext.pageHandle || undefined,
+              selectedSize: selectedSizeRef.current || selectedSize || null,
+              selectedFrameColor:
+                selectedFrameColorRef.current || selectedFrameColor || undefined,
+              stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : null,
+              catalogSlug:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.catalogSlug ||
+                loadedDecorStyle?.catalogSlug ||
+                null,
+              styleName:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.name ||
+                loadedDecorStyle?.styleName ||
+                null,
+              outputMode:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.outputMode ||
+                loadedDecorStyle?.outputMode ||
+                null,
             },
           }),
         }).catch((e) => {
@@ -11058,6 +11312,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     activeProductContext.pageHandle,
     selectedSize,
     selectedFrameColor,
+    selectedPreset,
+    filteredStylePresets,
+    loadedDecorStyle,
     transform.scale,
     fetchPrintifyMockups,
   ]);
@@ -13349,6 +13606,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setLifestyleShotLoading(true);
       setLifestyleShotError(null);
       lastAopPanelUrlsRef.current = panels;
+      setAopPrintPanelsReady(true);
       // Body/lumbar pillows have no Front Person cameras — request in-situ
       // lifestyle/context (bed/room). Fall back to product cameras if none.
       const isPillowAop = isPillowWrapBlueprint(
@@ -14089,6 +14347,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   );
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
+  const atcNeedsSize = !String(selectedSize || "").trim();
+  const atcCanRefresh =
+    !useAopCustomizer ||
+    aopPrintPanelsReady ||
+    !!hoodieAopPlacerRef.current ||
+    !!hoodieAopPlacerState;
+  const atcShowSelectSize = !!(generatedDesign && atcNeedsSize);
+  const atcShowRefresh =
+    atcMockupsStaleBlocks && !atcNeedsSize && atcCanRefresh;
   const atcCatalogMiss = !findVariantId({ quiet: true });
   const atcPendingFreeze = atcUpdatesPending || saveStatePending;
   const atcPrimaryDisabled =
@@ -14098,7 +14365,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     flatPlacerSaveBlocking ||
     aopPlacerSaveBlocking ||
     atcPendingFreeze ||
-    (atcCatalogMiss && !atcMockupsStaleBlocks && !(useAopCustomizer && !aopPatternUrl));
+    (atcCatalogMiss &&
+      !atcMockupsStaleBlocks &&
+      !atcNeedsSize &&
+      !(useAopCustomizer && !aopPatternUrl));
   const showingMockupAtArtworkSlot = !!(
     showsPrintifyMockupPreview &&
     generatedDesign?.imageUrl &&
@@ -14140,36 +14410,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   handleApplyPatternToContinue();
                   return;
                 }
-                if (atcMockupsStaleBlocks) {
-                  if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                    if (generatedDesign?.imageUrl) {
-                      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                      setShowPatternStep(true);
-                    }
-                    return;
-                  }
-                  if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                    setMockupError(null);
-                    setMockupFailed(false);
-                    setPrintifyMockups([]);
-                    setPrintifyMockupImages([]);
-                    setSelectedMockupIndex(0);
-                    setMockupsStale(false);
-                    mockupColorCacheRef.current = {};
-                    currentMockupColorRef.current = '';
-                    fetchPrintifyMockups(
-                      toAbsoluteImageUrl(generatedDesign.imageUrl),
-                      productTypeConfig.id,
-                      selectedSize,
-                      selectedFrameColor || 'default',
-                      transform.scale,
-                      transform.x,
-                      transform.y,
-                      useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                      aopPlacementSettings?.mirrorMode,
-                      useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                    );
-                  }
+                if (atcShowSelectSize || atcMockupsStaleBlocks) {
+                  void refreshStaleMockups();
                 } else {
                   handleAddToCart();
                 }
@@ -14195,7 +14437,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Updating mockups…</span>
                 </>
-              ) : atcMockupsStaleBlocks ? (
+              ) : atcShowSelectSize ? (
+                <span className="shimmer-text-white">Select a size</span>
+              ) : atcShowRefresh ? (
                 <>
                   <RefreshCcw className="w-5 h-5 mr-2" />
                   <span className="shimmer-text-white">Refresh Mockups to Continue</span>
@@ -15676,37 +15920,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             handleApplyPatternToContinue();
                             return;
                           }
-                          if (atcMockupsStaleBlocks) {
-                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                              if (generatedDesign?.imageUrl) {
-                                setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                                setShowPatternStep(true);
-                              }
-                              return;
-                            }
-                            // Refresh mockups first, then the button will switch to Add to Cart
-                            if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                              setMockupError(null);
-                              setMockupFailed(false);
-                              setPrintifyMockups([]);
-                              setPrintifyMockupImages([]);
-                              setSelectedMockupIndex(0);
-                              setMockupsStale(false);
-                              mockupColorCacheRef.current = {};
-                              currentMockupColorRef.current = '';
-                              fetchPrintifyMockups(
-                                toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                productTypeConfig.id,
-                                selectedSize,
-                                selectedFrameColor || 'default',
-                                transform.scale,
-                                transform.x,
-                                transform.y,
-                                useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                                aopPlacementSettings?.mirrorMode,
-                                useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                              );
-                            }
+                          if (atcShowSelectSize || atcMockupsStaleBlocks) {
+                            void refreshStaleMockups();
                           } else {
                             handleAddToCart();
                           }
@@ -15732,7 +15947,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Updating mockups…</span>
                           </>
-                        ) : atcMockupsStaleBlocks ? (
+                        ) : atcShowSelectSize ? (
+                          <span className="shimmer-text-white">Select a size</span>
+                        ) : atcShowRefresh ? (
                           <>
                             <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
@@ -17708,34 +17925,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         variant="outline"
                         size="sm"
                         onClick={() => {
-                          if (generatedDesign?.imageUrl && productTypeConfig) {
-                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                              setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                              setShowPatternStep(true);
-                              return;
-                            }
-                            if (!selectedSize) return;
-                            setMockupError(null);
-                            setMockupFailed(false);
-                            setPrintifyMockups([]);
-                            setPrintifyMockupImages([]);
-                            setSelectedMockupIndex(0);
-                            setMockupsStale(false);
-                            mockupColorCacheRef.current = {};
-                            currentMockupColorRef.current = '';
-                            fetchPrintifyMockups(
-                              toAbsoluteImageUrl(generatedDesign.imageUrl),
-                              productTypeConfig.id,
-                              selectedSize,
-                              selectedFrameColor || 'default',
-                              transform.scale,
-                              transform.x,
-                              transform.y,
-                              useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                              aopPlacementSettings?.mirrorMode,
-                              useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                            );
-                          }
+                          void refreshStaleMockups();
                         }}
                         disabled={mockupLoading || !generatedDesign?.imageUrl}
                         title="Refresh Mockups"
@@ -17766,29 +17956,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     type="button"
                     className="text-xs text-destructive underline shrink-0"
                     onClick={() => {
-                      if (generatedDesign?.imageUrl && productTypeConfig) {
-                        if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                          setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                          setShowPatternStep(true);
-                          return;
-                        }
-                        if (!selectedSize) return;
-                        setMockupError(null);
-                        setMockupFailed(false);
-                        setMockupTriggered(true);
-                        fetchPrintifyMockups(
-                          toAbsoluteImageUrl(generatedDesign.imageUrl),
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || "default",
-                          transform.scale,
-                          50,
-                          50,
-                          useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                          aopPlacementSettings?.mirrorMode,
-                          useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                        );
-                      }
+                      void refreshStaleMockups();
                     }}
                   >
                     Retry
