@@ -1719,12 +1719,17 @@ function findStylePresetForFill(
     const key = String(raw || "").trim();
     if (!key) continue;
     const lower = key.toLowerCase();
-    const hit = presets.find(
-      (p) =>
-        p.id === key ||
-        String(p.catalogSlug || "").toLowerCase() === lower ||
-        String(p.name || "").toLowerCase() === lower,
-    );
+    const keySlug = resolveCatalogSlug({ catalogSlug: key, name: key });
+    const hit = presets.find((p) => {
+      if (p.id === key) return true;
+      if (String(p.catalogSlug || "").toLowerCase() === lower) return true;
+      if (String(p.name || "").toLowerCase() === lower) return true;
+      const presetSlug = resolveCatalogSlug({
+        catalogSlug: p.catalogSlug,
+        name: p.name,
+      });
+      return !!(keySlug && presetSlug && keySlug === presetSlug);
+    });
     if (hit) return hit;
   }
   return undefined;
@@ -4217,15 +4222,29 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
   }, [productTypeConfig?.printifyBlueprintId, productTypeConfig?.sizeChart]);
 
-  // Remap saved slug/name to the merchant style id. Keep floating catalog
-  // slugs so a reopened design still gates the fill picker.
+  // Saved jobs store a slug, name, or foreign merchant id. Map that onto
+  // the current dropdown option so Art Style + the fill picker both light up.
   useEffect(() => {
-    if (!selectedPreset || selectedPreset === "" || filteredStylePresets.length === 0) return;
-    const match = findStylePresetForFill(filteredStylePresets, selectedPreset);
+    if (filteredStylePresets.length === 0) return;
+    const match = findStylePresetForFill(
+      filteredStylePresets,
+      selectedPreset,
+      loadedDecorStyle?.stylePreset,
+      loadedDecorStyle?.catalogSlug,
+      loadedDecorStyle?.styleName,
+    );
     if (match) {
-      if (match.id !== selectedPreset) setSelectedPreset(match.id);
+      if (selectedPreset !== match.id) setSelectedPreset(match.id);
       return;
     }
+    if (
+      loadedDecorStyle?.stylePreset ||
+      loadedDecorStyle?.catalogSlug ||
+      loadedDecorStyle?.styleName
+    ) {
+      return;
+    }
+    if (!selectedPreset) return;
     if (
       isFloatingCatalogStyle({ catalogSlug: selectedPreset, outputMode: loadedDecorStyle?.outputMode }) ||
       resolveCatalogSlug({ catalogSlug: selectedPreset, name: selectedPreset })
@@ -4233,7 +4252,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
     setSelectedPreset("");
-  }, [filteredStylePresets, selectedPreset, loadedDecorStyle?.outputMode]);
+  }, [filteredStylePresets, selectedPreset, loadedDecorStyle]);
 
   const defaultProductTypeConfig: ProductTypeConfig = {
     id: 0,
@@ -4943,13 +4962,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           prompt: sharedDesign.prompt,
         });
         setPrompt(sharedDesign.prompt);
-        setSelectedPreset(sharedDesign.stylePreset || "");
+        const sharedMatch = findStylePresetForFill(
+          filteredStylePresets,
+          sharedDesign.stylePreset,
+        );
+        setSelectedPreset(sharedMatch?.id || sharedDesign.stylePreset || "");
         setLoadedDecorStyle({
           stylePreset: sharedDesign.stylePreset || null,
-          catalogSlug: null,
-          styleName: null,
-          outputMode: null,
-          generationModel: null,
+          catalogSlug: sharedMatch?.catalogSlug || null,
+          styleName: sharedMatch?.name || null,
+          outputMode: sharedMatch?.outputMode || null,
+          generationModel: sharedMatch?.generationModel || null,
         });
         setSelectedSize(sharedDesign.size);
         setSelectedFrameColor(sharedDesign.frameColor);
@@ -4996,13 +5019,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     mockupColorCacheRef.current = {};
     currentMockupColorRef.current = "";
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
-    setLoadedDecorStyle({
+    const loadedStyle = {
       stylePreset: (typeof ds?.stylePreset === "string" && ds.stylePreset) || topLevel.stylePreset || null,
       catalogSlug: typeof ds?.catalogSlug === "string" ? ds.catalogSlug : null,
       styleName: typeof ds?.styleName === "string" ? ds.styleName : null,
       outputMode: typeof ds?.outputMode === "string" ? ds.outputMode : null,
       generationModel: typeof ds?.generationModel === "string" ? ds.generationModel : null,
-    });
+    };
+    setLoadedDecorStyle(loadedStyle);
+    const resolvedStyle = findStylePresetForFill(
+      filteredStylePresets,
+      loadedStyle.stylePreset,
+      loadedStyle.catalogSlug,
+      loadedStyle.styleName,
+    );
+    setSelectedPreset(
+      resolvedStyle?.id || loadedStyle.stylePreset || loadedStyle.catalogSlug || loadedStyle.styleName || "",
+    );
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
     placementFrozenSigRef.current = null;
@@ -5064,7 +5097,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           restoringSavedDesignRef.current = false;
         }
       }
-      if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
       if (typeof ds.decorBackgroundFill === "string") {
         setDecorBackgroundFill(ds.decorBackgroundFill);
       } else if (
@@ -5263,7 +5295,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (next) setSelectedFrameColor(next);
       restoringSavedDesignRef.current = false;
     }
-    if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
     const savedProductTypeId = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
