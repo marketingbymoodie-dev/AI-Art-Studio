@@ -27,6 +27,7 @@ import {
   isDecorFloatingNativeFillPath,
   resolveStyleGenerationForProduct,
 } from "@shared/decorBackgroundFill";
+import { classifyGenerationFailure } from "@shared/generationFailure";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -3200,11 +3201,13 @@ console.log("[api/shopify/generate] saved image", result);
       });
     } catch (error: any) {
       console.error("Error generating artwork:", error);
-      // Return detailed error message for debugging
       const errorMessage = error?.message || String(error) || "Unknown error";
-      res.status(500).json({
-        error: "Failed to generate artwork",
-        details: errorMessage
+      const classified = classifyGenerationFailure(errorMessage);
+      res.status(classified.httpStatus).json({
+        error: classified.kind === "retriable" ? "Failed to generate artwork" : classified.code,
+        code: classified.code,
+        message: classified.userMessage,
+        details: errorMessage,
       });
     }
   });

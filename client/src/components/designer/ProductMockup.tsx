@@ -115,9 +115,17 @@ const MOCKUP_WAIT_PHASES = [
   { at: 16000, text: "Almost Ready" },
 ];
 
-function GeneratingLoader({ isAop = false }: { isAop?: boolean }) {
+export function GeneratingLoader({
+  isAop = false,
+  headline,
+}: {
+  isAop?: boolean;
+  headline?: { line1: string; line2: string };
+}) {
   ensureStyles();
-  const messages = isAop
+  const messages = headline
+    ? [headline]
+    : isAop
     ? [
         { line1: "Generating", line2: "Artwork" },
         GENERATING_WAIT_LINE,

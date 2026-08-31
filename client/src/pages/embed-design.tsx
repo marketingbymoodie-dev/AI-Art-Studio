@@ -143,7 +143,14 @@ import {
   resolveLiveFillHex,
   shouldShowDecorFloatingFill,
 } from "@shared/decorBackgroundFill";
+import {
+  classifyGenerationFailure,
+  extractHttpErrorPayload,
+  GenerationRequestError,
+  toGenerationRequestError,
+} from "@shared/generationFailure";
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
+import { PreviewStudioGenOverlay } from "@/components/designer/PreviewStudioGenOverlay";
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
@@ -1218,8 +1225,8 @@ function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null
  * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
  * is broken by Shopify's service worker) and window.fetch everywhere else.
  */
-/** AI generate with a reference image routinely exceeds 30s. */
-const GENERATE_REQUEST_TIMEOUT_MS = 180_000;
+/** Preview Studio sync generate — settle at 90s so the loader cannot spin forever. */
+const GENERATE_REQUEST_TIMEOUT_MS = 90_000;
 
 function isAbortLikeError(err: unknown): boolean {
   if (!err) return false;
@@ -8216,25 +8223,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         throw new Error('Generation timed out after 5 minutes');
       }
 
-      // ── Non-storefront: synchronous request (unchanged) ──
-      const response = await fetchWithTimeoutSimple(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }, GENERATE_REQUEST_TIMEOUT_MS);
-      const data = await response.json();
-      if (!response.ok) {
-        if (data.requiresLogin) {
+      // ── Non-storefront: synchronous request (Preview Studio + Shopify admin) ──
+      try {
+        const response = await fetchWithTimeoutSimple(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }, GENERATE_REQUEST_TIMEOUT_MS);
+        return await response.json();
+      } catch (err: unknown) {
+        const failBody = extractHttpErrorPayload(err);
+        if (failBody?.requiresLogin) {
           setLoginError("Please log in to your account to create designs.");
-        } else if (data.requiresCredits || data.needsCredits) {
+        } else if (failBody?.requiresCredits || failBody?.needsCredits) {
           setLoginError("No credits remaining. Please purchase more credits to continue.");
-        } else if (data.error === 'GALLERY_FULL' || data.galleryFull) {
+        } else if (failBody?.error === "GALLERY_FULL" || failBody?.galleryFull) {
           setShowGalleryFullModal(true);
-          throw new Error('GALLERY_FULL');
+          throw new Error("GALLERY_FULL");
         }
-        throw new Error(data.error || "Failed to generate design");
+        throw toGenerationRequestError(err);
       }
-      return data;
     },
     onSuccess: (data, variables) => {
       const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
@@ -8609,6 +8617,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setLoginError(null);
     },
   });
+
+  const studioGenFailure = useMemo(() => {
+    if (!isAdminTester || generateMutation.isPending || !generateMutation.isError) return null;
+    const err = generateMutation.error;
+    const msg = err instanceof Error ? err.message : String(err ?? "");
+    if (msg === "GALLERY_FULL" || /credit/i.test(msg)) return null;
+    return classifyGenerationFailure(err);
+  }, [isAdminTester, generateMutation.isPending, generateMutation.isError, generateMutation.error]);
+
+  const focusStudioPromptField = useCallback(() => {
+    const el =
+      (document.getElementById("prompt") as HTMLTextAreaElement | null) ||
+      (document.querySelector('[data-testid="input-prompt"]') as HTMLTextAreaElement | null);
+    el?.focus();
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -16406,12 +16430,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           {/* Artwork preview panel — left on desktop, second on mobile */}
           <div
             ref={artworkColumnRef}
-            className={`order-2 min-w-0 w-full ${
+            className={`relative order-2 min-w-0 w-full ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-1 lg:col-span-2 flex min-h-0 flex-col"
                 : "space-y-3 md:order-1"
             }`}
           >
+            {isAdminTester && (generateMutation.isPending || studioGenFailure) ? (
+              <PreviewStudioGenOverlay
+                pending={generateMutation.isPending}
+                failure={generateMutation.isPending ? null : studioGenFailure}
+                onRetry={() => handleQuotesOrGenerateClick()}
+                onEditPrompt={focusStudioPromptField}
+              />
+            ) : null}
 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
