@@ -252,6 +252,10 @@ import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolve
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
+import {
+  aopPanelCaptureSignaturesMatch,
+  canonicalAopPanelCaptureSignature,
+} from "@shared/aopPanelCaptureSignature";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
@@ -3355,6 +3359,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [aopPrintPanelsReady, setAopPrintPanelsReady] = useState(false);
   /** Refresh clicked before the hoodie placer mounted — flush once it is. */
   const pendingAopRefreshRef = useRef(false);
+  /** Last persisted / restored aopPanelCaptureSignature (raw string or object). */
+  const storedAopPanelCaptureSignatureRef = useRef<unknown>(null);
   const onTesterDesignStatusRef = useRef<
     ((status: TesterDesignStatus) => void) | undefined
   >(undefined);
@@ -5123,6 +5129,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
     aopPersonMockupsRef.current = [];
     aopBaseMockupsRef.current = [];
     flatFrontMockupsRef.current = [];
@@ -5263,6 +5270,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           restoredPanels.map((p) => p.position).join(","),
         );
       }
+      storedAopPanelCaptureSignatureRef.current =
+        ds.aopPanelCaptureSignature ?? null;
       // Mesh composites matching the placer (not Printify cameras). Restore
       // these as Front/Back so reopen matches what the customer last applied.
       const savedPtForMesh = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
@@ -5637,6 +5646,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -5809,6 +5819,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -5988,6 +5999,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
       setAopPrintPanelsReady(false);
+      storedAopPanelCaptureSignatureRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
@@ -8185,7 +8197,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       mockupsUpdating ||
       saveBlocking ||
       saveStatePending;
-    const label = saveBlocking
+    const label = isAddingToCart
+      ? "Adding to Cart..."
+      : saveBlocking
       ? "Saving design\u2026"
       : waitingForMockups || mockupsUpdating
         ? "Updating mockups…"
@@ -8212,7 +8226,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -8229,7 +8243,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!snap || savedJobIdRef.current !== jobId) return;
         window.parent.postMessage({
           type: 'AI_ART_STUDIO_CART_STATE',
-          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize,
+          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart,
           disabled: shouldDisable,
           waitingForMockups,
           label,
@@ -8864,6 +8878,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setReuseRegenerateBasePrompt(null);
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
     pendingRestoreSizeRef.current = null;
     pendingRestoreStyleRef.current = null;
     setShowPatternStep(false);
@@ -10456,6 +10471,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
+    // Pending covers flush/skip + snapshot + resolve + cart/add — not just the tail.
+    setIsAddingToCart(true);
+    try {
     // Only re-raster/upload when placement actually changed — a clean Apply
     // already left https mockup URLs ready for shadow SKU + cart.
     const flatNeedsFlush = !!(
@@ -10474,12 +10492,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
+    const aopHasRestoredPanels = !!(lastAopPanelUrlsRef.current?.length);
+    const aopCanReusePanels = !!(
+      useAopCustomizer &&
+      aopHasRestoredPanels &&
+      aopPanelCaptureSignaturesMatch(
+        storedAopPanelCaptureSignatureRef.current,
+        hoodieAopPlacerState,
+      )
+    );
     const aopNeedsFlush = !!(
       useAopCustomizer &&
       productTypeConfig?.panelMappingTemplate &&
-      (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
+      !aopCanReusePanels
     );
-    if (aopNeedsFlush) {
+    if (aopCanReusePanels) {
+      console.log("[AOP] ATC reusing stored print panels — capture signature matches");
+    } else if (aopNeedsFlush) {
       try {
         await flushHoodieAopPlacer({ force: true });
         if (aopPanelPersistPromiseRef.current) {
@@ -10552,8 +10581,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       await refreshStaleMockups();
       return; // don't proceed with cart add yet — wait for mockups
     }
-
-    setIsAddingToCart(true);
 
     // Normalize variant ID (strip GID prefix if present)
     const normalizedVariant = normalizeVariantId(variantId);
@@ -10978,6 +11005,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     } finally {
       setIsAddingToCart(false);
     }
+    } finally {
+      setIsAddingToCart(false);
+    }
   };
 
   /**
@@ -11025,19 +11055,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const panelJobId = savedJobIdRef.current;
       const seq = ++aopPanelPersistSeqRef.current;
       const isStale = () => seq !== aopPanelPersistSeqRef.current;
-      const panelCaptureSignature = JSON.stringify({
-        mode: result.state.mode,
-        artworkUrl: result.state.artworkUrl,
-        backgroundColor: result.state.backgroundColor,
-        tileSettings: result.state.tileSettings,
-        pocketsEnabled: result.state.pocketsEnabled,
-        placements: result.state.placements,
-        enabled: result.state.enabled,
-        sleevesMirrored: result.state.sleevesMirrored,
-        legsSynced: result.state.legsSynced,
-        legsMirrored: result.state.legsMirrored,
-        wrapBackMode: result.state.wrapBackMode,
-      });
+      const panelCaptureSignature = canonicalAopPanelCaptureSignature(result.state);
       const panelsForSave = isAdminTester
         ? (result.renderPrintPanels() ?? mockupPanels)
         : (fullPrintPanels ?? result.renderPrintPanels());
@@ -11067,6 +11085,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
             }),
           });
+          storedAopPanelCaptureSignatureRef.current = panelCaptureSignature;
           console.log(
             "[HoodieAopApply] Saved aopPrintPanelUrls on job",
             panelJobId,
