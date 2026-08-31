@@ -40,6 +40,7 @@ import {
   flatApparelOpaqueTrimmed,
   flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
+  flatMaskCoreUncovered,
   flatPlacementRectPx,
   flatVisibleRectPx,
   flatPlacementScaleMax,
@@ -1133,6 +1134,72 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     state,
   ]);
 
+  const tapestryView = state?.view ?? "front";
+  const tapestryMask = assets[tapestryView]?.mask ?? null;
+  const tapestryBlank = assets[tapestryView]?.blank ?? null;
+  const tapestryPlacement =
+    state?.placements[tapestryView] ?? DEFAULT_ARTWORK_PLACEMENT;
+  const tapestryEnabled = !!state?.enabled[tapestryView];
+  const [tapestryMaskGap, setTapestryMaskGap] = useState(false);
+  const tapestryGapRafRef = useRef(0);
+
+  useEffect(() => {
+    const calib = state ? resolveCalib(tapestryView) : undefined;
+    if (
+      !probeCatalogGuide ||
+      !tapestryEnabled ||
+      !artworkImg ||
+      !tapestryMask ||
+      !calib ||
+      state?.backgroundColor
+    ) {
+      setTapestryMaskGap(false);
+      return;
+    }
+    const mW = tapestryBlank?.naturalWidth || calib.mockupDims?.width || 1;
+    const mH = tapestryBlank?.naturalHeight || calib.mockupDims?.height || 1;
+    const placed = {
+      ...tapestryPlacement,
+      scale: clampPlacementScale(tapestryPlacement.scale),
+    };
+    // Same rect renderFlatView uses — not the inch-aspect overlay letterbox.
+    const renderRect = flatPlacementRectPx(calib, tapestryMask, mW, mH, {
+      edgeWrapMode,
+      decorMode,
+    });
+    cancelAnimationFrame(tapestryGapRafRef.current);
+    tapestryGapRafRef.current = requestAnimationFrame(() => {
+      setTapestryMaskGap(
+        flatMaskCoreUncovered(
+          tapestryMask,
+          artworkImg,
+          placed,
+          renderRect,
+          mW,
+          mH,
+        ),
+      );
+    });
+    return () => cancelAnimationFrame(tapestryGapRafRef.current);
+  }, [
+    probeCatalogGuide,
+    tapestryEnabled,
+    artworkImg,
+    tapestryMask,
+    tapestryBlank,
+    tapestryView,
+    tapestryPlacement.scale,
+    tapestryPlacement.offsetX,
+    tapestryPlacement.offsetY,
+    tapestryPlacement.rotationDeg,
+    state,
+    resolveCalib,
+    state?.backgroundColor,
+    clampPlacementScale,
+    edgeWrapMode,
+    decorMode,
+  ]);
+
   // ---------- Render guards ----------
   if (!state || (assetsLoading && !hasDisplayableAssets)) {
     return (
@@ -1203,9 +1270,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (decorMode || fabricWeave || probeCatalogGuide) {
+    } else if (probeCatalogGuide) {
+      // 241: core mask pixels via pointInMask — not the inch-aspect rectangle.
+      if (!state.backgroundColor && tapestryMaskGap) {
+        coverageWarning = "edge-gap";
+      }
+    } else if (decorMode || fabricWeave) {
       // Live fill covers the opening independently of motif scale.
-      // 241 tapestry: under-coverage (white strips), not apparel trim.
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }

@@ -1255,6 +1255,151 @@ export function flatApparelArtworkTrimmed(
 }
 
 /**
+ * Overflow / floating silhouette: historical `alpha <= 16` means outside.
+ * `pointInMask` is inclusive (`>=`), so overflow passes `threshold + 1`.
+ */
+export const MASK_ALPHA_OVERFLOW_THRESHOLD = 16;
+/**
+ * 241 core printable. Feather ramp (1–127) is ignored so a soft mask edge
+ * cannot report a perpetual uncovered rim.
+ */
+export const MASK_ALPHA_THRESHOLD = 128;
+/** Artwork counts as covering a core mask sample. */
+export const ART_COVER_ALPHA = 10;
+/**
+ * At least this many samples along the mask AABB long side, and never a
+ * coarser step than {@link TAPESTRY_COVERAGE_MAX_STEP_PX}.
+ * 256 @ 1024² catalog blank ≈ 4 mockup px; clamped to 2 px so a few-mm
+ * white strip on 50×60 (~3 mm) and 104" (~5 mm) cannot sit between samples.
+ */
+export const TAPESTRY_COVERAGE_MIN_AXIS = 256;
+export const TAPESTRY_COVERAGE_MAX_STEP_PX = 2;
+
+const maskRgbaCache = new WeakMap<
+  HTMLImageElement,
+  { data: Uint8ClampedArray; width: number; height: number } | null
+>();
+
+export function readMaskRgbaCached(
+  mask: HTMLImageElement,
+): { data: Uint8ClampedArray; width: number; height: number } | null {
+  if (maskRgbaCache.has(mask)) return maskRgbaCache.get(mask)!;
+  const width = mask.naturalWidth || mask.width;
+  const height = mask.naturalHeight || mask.height;
+  if (width <= 0 || height <= 0) {
+    maskRgbaCache.set(mask, null);
+    return null;
+  }
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    maskRgbaCache.set(mask, null);
+    return null;
+  }
+  try {
+    ctx.drawImage(mask, 0, 0, width, height);
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const hit = { data, width, height };
+    maskRgbaCache.set(mask, hit);
+    return hit;
+  } catch {
+    maskRgbaCache.set(mask, null);
+    return null;
+  }
+}
+
+/**
+ * Overflow rule + 241 coverage share this lookup: map a mockup-space point
+ * onto the mask bitmap and test alpha (inclusive `>= minAlpha`).
+ * Out of the canvas → not in the mask.
+ */
+export function pointInMask(
+  data: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasX: number,
+  canvasY: number,
+  canvasW: number,
+  canvasH: number,
+  minAlpha: number,
+): boolean {
+  if (
+    !(maskW > 0) ||
+    !(maskH > 0) ||
+    !(canvasW > 0) ||
+    !(canvasH > 0) ||
+    canvasX < 0 ||
+    canvasY < 0 ||
+    canvasX >= canvasW ||
+    canvasY >= canvasH
+  ) {
+    return false;
+  }
+  const mx = Math.min(maskW - 1, Math.max(0, Math.floor(canvasX * (maskW / canvasW))));
+  const my = Math.min(maskH - 1, Math.max(0, Math.floor(canvasY * (maskH / canvasH))));
+  return data[(my * maskW + mx) * 4 + 3] >= minAlpha;
+}
+
+export function tapestryCoverageSampleStep(aabbW: number, aabbH: number): number {
+  const long = Math.max(aabbW, aabbH, 1);
+  return Math.max(
+    1,
+    Math.min(
+      TAPESTRY_COVERAGE_MAX_STEP_PX,
+      Math.floor(long / TAPESTRY_COVERAGE_MIN_AXIS) || 1,
+    ),
+  );
+}
+
+/**
+ * True when any CORE mask sample (`pointInMask` ≥ {@link MASK_ALPHA_THRESHOLD})
+ * is not covered by opaque art (alpha > {@link ART_COVER_ALPHA}).
+ * Pure: callers supply aligned RGBA buffers (art already placed).
+ */
+export function maskCoreUncoveredFromRgba(
+  maskData: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  artData: Uint8ClampedArray,
+  artW: number,
+  artH: number,
+  canvasW: number,
+  canvasH: number,
+  sampleBounds: Rect,
+  sampleStep: number,
+): boolean {
+  if (!(canvasW > 0) || !(canvasH > 0) || !(sampleStep > 0)) return false;
+  const x0 = sampleBounds.x;
+  const y0 = sampleBounds.y;
+  const x1 = sampleBounds.x + sampleBounds.width;
+  const y1 = sampleBounds.y + sampleBounds.height;
+  for (let y = y0; y < y1; y += sampleStep) {
+    for (let x = x0; x < x1; x += sampleStep) {
+      if (
+        !pointInMask(
+          maskData,
+          maskW,
+          maskH,
+          x,
+          y,
+          canvasW,
+          canvasH,
+          MASK_ALPHA_THRESHOLD,
+        )
+      ) {
+        continue;
+      }
+      const ax = Math.min(artW - 1, Math.max(0, Math.floor(x * (artW / canvasW))));
+      const ay = Math.min(artH - 1, Math.max(0, Math.floor(y * (artH / canvasH))));
+      if (artData[(ay * artW + ax) * 4 + 3] <= ART_COVER_ALPHA) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True when the axis-aligned art box sits inside the dashed guide AABB but
  * still overlaps transparent mask pixels (silhouette / print-window clip).
  * Samples the art-box perimeter in mask space — cheap and catches the common
@@ -1265,28 +1410,14 @@ export function flatMaskRejectsArtBox(
   artBox: Rect,
   canvasW: number,
   canvasH: number,
-  alphaThreshold = 16,
+  alphaThreshold = MASK_ALPHA_OVERFLOW_THRESHOLD,
 ): boolean {
   if (!mask || artBox.width <= 0 || artBox.height <= 0) return false;
-  const mw = mask.naturalWidth || mask.width;
-  const mh = mask.naturalHeight || mask.height;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const { data, width: mw, height: mh } = pixels;
   if (mw <= 0 || mh <= 0 || canvasW <= 0 || canvasH <= 0) return false;
 
-  const c = document.createElement("canvas");
-  c.width = mw;
-  c.height = mh;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return false;
-  let data: Uint8ClampedArray;
-  try {
-    ctx.drawImage(mask, 0, 0, mw, mh);
-    data = ctx.getImageData(0, 0, mw, mh).data;
-  } catch {
-    return false;
-  }
-
-  const sx = mw / canvasW;
-  const sy = mh / canvasH;
   const steps = 24;
   const samples: Array<{ x: number; y: number }> = [];
   for (let i = 0; i <= steps; i++) {
@@ -1311,14 +1442,74 @@ export function flatMaskRejectsArtBox(
     );
   }
 
+  // Inclusive `pointInMask` ≥ (threshold+1) ≡ historical `!(alpha <= threshold)`.
+  const overflowMinAlpha = alphaThreshold + 1;
   for (const p of samples) {
-    if (p.x < 0 || p.y < 0 || p.x >= canvasW || p.y >= canvasH) return true;
-    const mx = Math.min(mw - 1, Math.max(0, Math.floor(p.x * sx)));
-    const my = Math.min(mh - 1, Math.max(0, Math.floor(p.y * sy)));
-    const a = data[(my * mw + mx) * 4 + 3];
-    if (a <= alphaThreshold) return true;
+    if (!pointInMask(data, mw, mh, p.x, p.y, canvasW, canvasH, overflowMinAlpha)) {
+      return true;
+    }
   }
   return false;
+}
+
+/**
+ * 241 under-coverage: invert the overflow rule. Walk core mask samples via
+ * {@link pointInMask} (`>= 128`); warn if any is not covered by opaque art.
+ * Uses the same placement rect as `renderFlatView` (`flatPlacementRectPx`).
+ */
+export function flatMaskCoreUncovered(
+  mask: HTMLImageElement | null,
+  artwork: HTMLImageElement,
+  placement: ArtworkPlacement,
+  placementRect: Rect,
+  canvasW: number,
+  canvasH: number,
+): boolean {
+  if (!mask || !(canvasW > 0) || !(canvasH > 0)) return false;
+  if (!(placementRect.width > 0) || !(placementRect.height > 0)) return false;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const artW = artwork.naturalWidth || artwork.width || 0;
+  const artH = artwork.naturalHeight || artwork.height || 0;
+  if (!(artW > 0) || !(artH > 0)) return false;
+
+  const artCanvas = document.createElement("canvas");
+  artCanvas.width = canvasW;
+  artCanvas.height = canvasH;
+  const actx = artCanvas.getContext("2d", { willReadFrequently: true });
+  if (!actx) return false;
+  const box = flatArtBox(placementRect, placement, artW, artH);
+  drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
+  let artData: Uint8ClampedArray;
+  try {
+    artData = actx.getImageData(0, 0, canvasW, canvasH).data;
+  } catch {
+    return false;
+  }
+
+  const nativeBounds = flatMaskAlphaBoundsCached(mask);
+  const sampleBounds = nativeBounds
+    ? scaleRectToCanvas(
+        nativeBounds,
+        pixels.width,
+        pixels.height,
+        canvasW,
+        canvasH,
+      )
+    : { x: 0, y: 0, width: canvasW, height: canvasH };
+  const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
+  return maskCoreUncoveredFromRgba(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    artData,
+    canvasW,
+    canvasH,
+    canvasW,
+    canvasH,
+    sampleBounds,
+    step,
+  );
 }
 
 /**
