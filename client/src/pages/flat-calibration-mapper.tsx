@@ -76,7 +76,7 @@ type CalibratorState = {
   /** Providers skipped during multi-provider blank fill (e.g. Printify decorator 6002). */
   harvestWarnings?: string[];
   harvestProviderIds?: number[];
-  modelPickerLabel?: "phone" | "variant" | null;
+  modelPickerLabel?: "phone" | "variant" | "size" | null;
   edgeWrap?: boolean;
   models: ModelAssets[];
 };
@@ -276,9 +276,11 @@ export default function FlatCalibrationMapperPage() {
   const modelPickerLabel =
     data?.modelPickerLabel === "phone"
       ? "Phone model"
-      : data?.modelPickerLabel === "variant"
-        ? "Variant"
-        : "Model";
+      : data?.modelPickerLabel === "size"
+        ? "Size"
+        : data?.modelPickerLabel === "variant"
+          ? "Variant"
+          : "Model";
 
   useEffect(() => {
     if (data?.harvestComplete && harvestPhase === "running") {

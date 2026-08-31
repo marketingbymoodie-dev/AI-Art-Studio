@@ -3,6 +3,7 @@ import {
   applyCatalogSizeBlanks,
   CATALOG_SIZE_BLANK_BLUEPRINTS,
   CATALOG_SIZE_BLANK_PRINT_INSET,
+  catalogSizeCalibratorModels,
   isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
   visibleRectForCatalogSizeAspect,
@@ -76,6 +77,22 @@ describe("catalogSizeBlanks", () => {
       true,
     );
     expect(isCatalogSizeBlankBlueprint(1649)).toBe(false);
+  });
+
+  it("lists every tapestry catalog size as a calibrator model", () => {
+    const models = catalogSizeCalibratorModels(241);
+    expect(models?.map((m) => m.id)).toEqual([
+      "26x36",
+      "36x26",
+      "50x60",
+      "60x50",
+      "68x80",
+      "80x68",
+      "88x104",
+      "104x88",
+    ]);
+    expect(models?.[0]?.name).toBe("26 × 36");
+    expect(catalogSizeCalibratorModels(421)).toBeNull();
   });
 
   it("uses measured fabric bbox per tapestry size (not one shared letterbox)", () => {

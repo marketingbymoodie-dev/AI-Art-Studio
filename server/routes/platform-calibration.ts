@@ -55,6 +55,14 @@ import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
 import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
 import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
+import {
+  catalogSizeCalibratorModels,
+  isCatalogSizeBlankBlueprint,
+  printFileDimsForAspectRatio,
+  resolveCatalogSizeBlankUrlMap,
+  visibleRectForCatalogSizeBlank,
+} from "@shared/catalogSizeBlanks";
+import { getSupabaseDesignPublicUrl } from "../supabaseDesigns";
 import { db } from "../db";
 import { customizerPages } from "@shared/schema";
 import { eq, inArray } from "drizzle-orm";
@@ -726,11 +734,41 @@ function phoneModelsFromProduct(productType: any): Array<{ id: string; name: str
     .map((s: any) => ({ id: String(s.id), name: String(s.name || s.id) }));
 }
 
+function applyCatalogSizeGuideToCalibratorView(
+  blueprintId: number,
+  sizeKey: string,
+  baseView: Record<string, any> | null,
+): Record<string, any> | null {
+  if (!baseView) return baseView;
+  const dim = sizeKey.includes("x") ? sizeKey : null;
+  const [w, h] = dim ? dim.split("x").map(Number) : [0, 0];
+  const aspect = w > 0 && h > 0 ? `${w}:${h}` : null;
+  const rect = visibleRectForCatalogSizeBlank(blueprintId, sizeKey, aspect);
+  if (!rect) return baseView;
+  const dims = printFileDimsForAspectRatio(aspect);
+  return {
+    ...baseView,
+    visibleRectNormalized: rect,
+    printBoundsNormalized: rect,
+    ...(dims ? { printFileDims: dims } : {}),
+    mockupDims:
+      baseView.mockupDims?.width &&
+      baseView.mockupDims.width === baseView.mockupDims.height
+        ? baseView.mockupDims
+        : { width: 1024, height: 1024 },
+  };
+}
+
 function resolveCalibratorModels(
   entry: FlatCanonicalEntry,
   manifest: Awaited<ReturnType<typeof loadCanonicalManifest>>,
   refProduct: any | null,
 ): Array<{ id: string; name: string }> {
+  // Tapestry / comforter / wall decals: Printify harvest is one shared colour
+  // blank. Size variants live in seeded catalog PNGs — list those, not harvest keys.
+  const catalogModels = catalogSizeCalibratorModels(entry.blueprintId);
+  if (catalogModels && catalogModels.length > 0) return catalogModels;
+
   if (manifest?.blanks && Object.keys(manifest.blanks).length > 0) {
     return Object.keys(manifest.blanks).map((id) => ({
       id,
@@ -922,18 +960,27 @@ export function registerPlatformCalibrationRoutes(
 
       const models = resolveCalibratorModels(entry, manifest, refProduct);
       const harvest = resolveHarvestOutcome(manifest);
+      const catalogBlankUrls = isCatalogSizeBlankBlueprint(blueprintId)
+        ? resolveCatalogSizeBlankUrlMap(blueprintId, getSupabaseDesignPublicUrl)
+        : null;
       const modelPickerLabel =
         models.length <= 1
           ? null
           : entry.category === "phone-cases"
             ? "phone"
-            : "variant";
+            : catalogBlankUrls
+              ? "size"
+              : "variant";
 
       const view: ViewName = "front";
       const modelPayload = await Promise.all(
         models.map(async (m) => {
-          const baseView = mergeViewCalibration(manifest as any, m.id, view);
+          const merged = mergeViewCalibration(manifest as any, m.id, view);
+          const baseView = catalogBlankUrls
+            ? applyCatalogSizeGuideToCalibratorView(blueprintId, m.id, merged)
+            : merged;
           const blankFallbackUrl =
+            catalogBlankUrls?.[m.id] ??
             (manifest as any)?.blanks?.[m.id]?.[view] ??
             (manifest as any)?.blanks?.[m.id]?.front ??
             null;

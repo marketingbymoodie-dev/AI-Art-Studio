@@ -32,6 +32,17 @@ export function isCatalogSizeBlankBlueprint(
   );
 }
 
+/** One calibrator model per seeded catalog size (26×36, 36×26, …). */
+export function catalogSizeCalibratorModels(
+  blueprintId: number | null | undefined,
+): Array<{ id: string; name: string }> | null {
+  if (!isCatalogSizeBlankBlueprint(blueprintId)) return null;
+  return Object.keys(CATALOG_SIZE_BLANK_STORAGE_PATHS[blueprintId]).map((id) => ({
+    id,
+    name: id.replace(/x/i, " × "),
+  }));
+}
+
 /** Build size→URL map using a public-URL resolver (e.g. Supabase getPublicUrl). */
 export function resolveCatalogSizeBlankUrlMap(
   blueprintId: number | null | undefined,
