@@ -192,6 +192,7 @@ import {
 import {
   isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
+  shouldProbeCatalogBlankGuide,
 } from "@shared/catalogSizeBlanks";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
@@ -4153,6 +4154,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [printSizes, selectedSize]);
 
   const catalogSizeBlankBlueprint = isCatalogSizeBlankBlueprint(
+    productTypeConfig?.printifyBlueprintId,
+  );
+  const probeCatalogGuide = shouldProbeCatalogBlankGuide(
     productTypeConfig?.printifyBlueprintId,
   );
 
@@ -8588,6 +8592,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           edgeWrapMode: flatEdgeWrapMode,
           decorMode: flatDecorMode,
           fabricWeave: !!flatFabricWeave,
+          probeCatalogGuide,
           zoomPercent: zoomDefault,
         });
         const artworkAbs = toAbsoluteImageUrl(imageUrl);
@@ -8615,6 +8620,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             edgeWrapMode: flatEdgeWrapMode,
             decorMode: flatDecorMode,
             fabricWeave: !!flatFabricWeave,
+            probeCatalogGuide,
           }),
         };
         setFlatPlacerState(seededFlatState);
@@ -9403,6 +9409,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           edgeWrapMode: flatEdgeWrapMode,
           decorMode: flatDecorMode,
           fabricWeave: !!flatFabricWeave,
+          probeCatalogGuide,
           zoomPercent: zoomDefault,
         });
         const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
@@ -9429,6 +9436,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             edgeWrapMode: flatEdgeWrapMode,
             decorMode: flatDecorMode,
             fabricWeave: !!flatFabricWeave,
+            probeCatalogGuide,
           }),
         });
       } else {
@@ -12289,6 +12297,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           edgeWrapMode: flatEdgeWrapMode,
           decorMode: flatDecorMode,
           fabricWeave: !!flatFabricWeave,
+          probeCatalogGuide,
           zoomPercent: defaultZoom,
         });
         setFlatPlacerState({
@@ -12313,6 +12322,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             edgeWrapMode: flatEdgeWrapMode,
             decorMode: flatDecorMode,
             fabricWeave: !!flatFabricWeave,
+            probeCatalogGuide,
           }),
         });
         setFlatPlacerEditOpen(true);
@@ -12333,6 +12343,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       flatEdgeWrapMode,
       flatDecorMode,
       flatFabricWeave,
+      probeCatalogGuide,
       defaultZoom,
       supportsPrintPlacementSelection,
       printPlacement,

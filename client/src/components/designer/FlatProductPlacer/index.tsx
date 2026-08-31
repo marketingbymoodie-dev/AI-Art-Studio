@@ -42,7 +42,6 @@ import {
   flatFitPlacementToSafeArea,
   flatMaskCoreUncovered,
   flatPlacementRectPx,
-  flatVisibleRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   flatPrintCanvasPreviewDims,
@@ -355,9 +354,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const defaultPlacement = useMemo<ArtworkPlacement>(
     () => ({
       ...DEFAULT_ARTWORK_PLACEMENT,
-      scale: flatDefaultPlacementScale({ edgeWrapMode, decorMode, fabricWeave }),
+      scale: flatDefaultPlacementScale({
+        edgeWrapMode,
+        decorMode,
+        fabricWeave,
+        probeCatalogGuide,
+      }),
     }),
-    [edgeWrapMode, decorMode, fabricWeave],
+    [edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide],
   );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
   /** View-only zoom of the editor canvas (does not change print placement). */
@@ -558,10 +562,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           edgeWrapMode,
           decorMode,
           fabricWeave,
+          probeCatalogGuide,
         }),
       };
     });
-  }, [geometryKey, availableViews, defaultPlacement, edgeWrapMode, decorMode, fabricWeave]);
+  }, [geometryKey, availableViews, defaultPlacement, edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -612,7 +617,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   // user drags are never overwritten (needsSafeFit cleared; placement edits
   // also clear it via applyPlacementToState).
   useEffect(() => {
-    if (!flatShouldFitToSafeArea({ edgeWrapMode, decorMode, fabricWeave })) {
+    if (!flatShouldFitToSafeArea({ edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide })) {
       if (stateRef.current?.needsSafeFit) {
         setState((prev) => (prev?.needsSafeFit ? { ...prev, needsSafeFit: false } : prev));
       }
@@ -658,6 +663,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     defaultPlacement,
     edgeWrapMode,
     fabricWeave,
+    probeCatalogGuide,
     manifest,
     state?.needsSafeFit,
   ]);
@@ -673,7 +679,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [applyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
-  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode, fabricWeave });
+  const scaleMax = flatPlacementScaleMax({
+    edgeWrapMode,
+    decorMode,
+    fabricWeave,
+    probeCatalogGuide,
+  });
 
   const clampPlacementScale = useCallback(
     (scale: number) => Math.max(FLAT_SCALE_FIT_FLOOR, Math.min(scaleMax, scale)),
@@ -841,7 +852,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const computeTrimStatus = useCallback((): FlatTrimStatus => {
     const empty: FlatTrimStatus = { front: false, back: false, clippedSides: [] };
-    if (!state || !artworkImg || edgeWrapMode || decorMode || fabricWeave) {
+    // 241 uses under-coverage (tapestryMaskGap), not apparel overflow/trim.
+    if (
+      !state ||
+      !artworkImg ||
+      edgeWrapMode ||
+      decorMode ||
+      fabricWeave ||
+      probeCatalogGuide
+    ) {
       return empty;
     }
     const clippedSides: Array<"front" | "back"> = [];
@@ -877,6 +896,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode,
     decorMode,
     fabricWeave,
+    probeCatalogGuide,
     availableViews,
     manifest,
     colorId,
@@ -1162,7 +1182,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       ...tapestryPlacement,
       scale: clampPlacementScale(tapestryPlacement.scale),
     };
-    // Same rect renderFlatView uses — not the inch-aspect overlay letterbox.
+    // Same mask AABB as placementRect / renderFlatView / dashed overlay.
     const renderRect = flatPlacementRectPx(calib, tapestryMask, mW, mH, {
       edgeWrapMode,
       decorMode,
@@ -1236,18 +1256,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const displayMockupW = printCanvasLayout?.previewW ?? mockupW;
   const displayMockupH = printCanvasLayout?.previewH ?? mockupH;
 
+  // 241 shares the harvested mask AABB with overlay, coverage, and renderFlatView
+  // so scale/offset, the dashed box, and the warning use one coordinate system.
   const placementRect =
     edgeWrapMode && calib
       ? printCanvasLayout!.printCanvas
-      : calib && probeCatalogGuide
-        ? // 241: dashed box = inch-aspect letterbox, not mask AABB / apparel boost.
-          flatVisibleRectPx(calib, mockupW, mockupH)
-        : calib
-          ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
-              edgeWrapMode,
-              decorMode,
-            })
-          : null;
+      : calib
+        ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
+            edgeWrapMode,
+            decorMode,
+          })
+        : null;
 
   const displayEdgeGuides =
     edgeWrapMode && calib
@@ -1271,7 +1290,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         coverageWarning = "edge-gap";
       }
     } else if (probeCatalogGuide) {
-      // 241: core mask pixels via pointInMask — not the inch-aspect rectangle.
+      // 241 banner = coverageShortfall (flatMaskCoreUncovered / tapestryMaskGap).
+      // Do NOT use apparel overflow (flatMaskRejectsArtBox / printAreaClipped) —
+      // art past the droop edge is overflow, not white strips.
       if (!state.backgroundColor && tapestryMaskGap) {
         coverageWarning = "edge-gap";
       }
@@ -1411,6 +1432,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               innerGuideRect={displayEdgeGuides?.inner ?? null}
               outerGuideRect={displayEdgeGuides?.outer ?? null}
               placementRect={placementRect}
+              guideMask={probeCatalogGuide ? viewAssets.mask : null}
               mockupWidth={displayMockupW}
               mockupHeight={displayMockupH}
               scaleMax={scaleMax}

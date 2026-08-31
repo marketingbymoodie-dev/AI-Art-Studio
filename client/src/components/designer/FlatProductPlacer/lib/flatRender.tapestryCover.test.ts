@@ -3,6 +3,7 @@ import {
   ART_COVER_ALPHA,
   MASK_ALPHA_OVERFLOW_THRESHOLD,
   MASK_ALPHA_THRESHOLD,
+  maskCoreOutlineFromRgba,
   maskCoreUncoveredFromRgba,
   pointInMask,
   tapestryCoverageSampleStep,
@@ -165,5 +166,53 @@ describe("maskCoreUncoveredFromRgba", () => {
         1,
       ),
     ).toBe(true);
+  });
+});
+
+describe("maskCoreOutlineFromRgba (241 dashed droop)", () => {
+  it("traces a filled rect and stays inside the core AABB", () => {
+    const w = 32;
+    const h = 32;
+    const mask = rgba(w, h, 0);
+    for (let y = 8; y < 24; y++) {
+      for (let x = 6; x < 26; x++) {
+        setAlpha(mask, w, x, y, 255);
+      }
+    }
+    const pts = maskCoreOutlineFromRgba(mask, w, h, w, h);
+    expect(pts).toBeTruthy();
+    expect(pts!.length).toBeGreaterThan(4);
+    for (const p of pts!) {
+      expect(p.x).toBeGreaterThanOrEqual(5);
+      expect(p.x).toBeLessThanOrEqual(27);
+      expect(p.y).toBeGreaterThanOrEqual(7);
+      expect(p.y).toBeLessThanOrEqual(25);
+    }
+  });
+
+  it("ignores feather (alpha 80) so the outline hugs core printable, not the ramp", () => {
+    const w = 24;
+    const h = 24;
+    const mask = rgba(w, h, 0);
+    for (let y = 4; y < 20; y++) {
+      for (let x = 4; x < 20; x++) {
+        const core = x >= 6 && x < 18 && y >= 6 && y < 18;
+        setAlpha(mask, w, x, y, core ? 255 : 80);
+      }
+    }
+    const pts = maskCoreOutlineFromRgba(mask, w, h, w, h);
+    expect(pts).toBeTruthy();
+    for (const p of pts!) {
+      expect(p.x).toBeGreaterThanOrEqual(5);
+      expect(p.x).toBeLessThanOrEqual(19);
+      expect(p.y).toBeGreaterThanOrEqual(5);
+      expect(p.y).toBeLessThanOrEqual(19);
+    }
+  });
+
+  it("returns null for an empty mask", () => {
+    const w = 8;
+    const h = 8;
+    expect(maskCoreOutlineFromRgba(rgba(w, h, 0), w, h, w, h)).toBeNull();
   });
 });

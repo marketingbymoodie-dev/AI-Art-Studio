@@ -12,6 +12,7 @@ import {
   flatArtBox,
   flatArtContentFractionsCached,
   flatVisibleRectPx,
+  tapestryMaskOutlinePoints,
   FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
   type ArtContentFractions,
@@ -47,6 +48,11 @@ export type FlatDesignRectOverlayProps = {
   /** Placement coordinate rect in mockup px (defaults to visible print rect). */
   placementRect?: Rect | null;
   /**
+   * 241 droop mask: stroke this silhouette as the dashed print guide instead
+   * of the AABB/letterbox rectangle. Placement math still uses placementRect.
+   */
+  guideMask?: HTMLImageElement | null;
+  /**
    * Canvas bitmap size (blank px). Prefer this over reading canvasRef.width
    * during render — internal canvas resize does not re-render the overlay, so
    * falling back to mockupDims can desync guide % vs warning math.
@@ -73,6 +79,7 @@ export default function FlatDesignRectOverlay({
   innerGuideRect = null,
   outerGuideRect = null,
   placementRect = null,
+  guideMask = null,
   mockupWidth,
   mockupHeight,
   scaleMax = FLAT_SCALE_MAX,
@@ -129,6 +136,13 @@ export default function FlatDesignRectOverlay({
     if (edgeWrapMode && innerGuideRect) return innerGuideRect;
     return rect;
   }, [edgeWrapMode, innerGuideRect, rect]);
+  const maskOutline = useMemo(
+    () =>
+      !edgeWrapMode && guideMask
+        ? tapestryMaskOutlinePoints(guideMask, mockupW, mockupH)
+        : null,
+    [edgeWrapMode, guideMask, mockupW, mockupH],
+  );
   const box = useMemo(
     () => flatArtBox(rect, placement, artW, artH),
     [rect, placement, artW, artH],
@@ -350,7 +364,29 @@ export default function FlatDesignRectOverlay({
         />
       )}
 
-      {showInnerGuide && (edgeWrapMode ? safeGuideRect : rect) && (
+      {showInnerGuide && maskOutline && maskOutline.length > 2 && (
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          viewBox={`0 0 ${mockupW} ${mockupH}`}
+          preserveAspectRatio="none"
+          data-testid="flat-tapestry-mask-outline"
+        >
+          <polygon
+            points={maskOutline.map((p) => `${p.x},${p.y}`).join(" ")}
+            fill="none"
+            stroke="rgb(125 211 252 / 0.95)"
+            strokeWidth={2}
+            strokeDasharray="7 5"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            style={{ filter: "drop-shadow(0 0 1px rgba(0,0,0,0.55))" }}
+          />
+        </svg>
+      )}
+
+      {showInnerGuide &&
+        !(maskOutline && maskOutline.length > 2) &&
+        (edgeWrapMode ? safeGuideRect : rect) && (
       <div
         className={`pointer-events-none absolute border-2 border-dashed ${
           edgeWrapMode

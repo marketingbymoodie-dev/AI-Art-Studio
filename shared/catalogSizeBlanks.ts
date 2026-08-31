@@ -126,8 +126,9 @@ function aspectRatioFromSizeKey(
 
 /**
  * Indoor wall tapestry (241) catalog-size-blank path: size-only droop mask +
- * under-coverage warning. The dashed box stays inch-aspect letterbox
- * (`visibleRectForCatalogSizeAspect`); do not use this as a live AABB probe.
+ * under-coverage warning. Editor dashed box traces the probed mask outline
+ * (not the inch-aspect letterbox). Other catalog-size-blank products do not
+ * use this flag.
  */
 export function shouldProbeCatalogBlankGuide(
   blueprintId: number | null | undefined,

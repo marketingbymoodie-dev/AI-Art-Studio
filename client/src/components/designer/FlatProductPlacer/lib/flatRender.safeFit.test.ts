@@ -51,6 +51,13 @@ describe("flatShouldFitToSafeArea", () => {
     expect(flatShouldFitToSafeArea({ edgeWrapMode: true })).toBe(false);
     expect(flatShouldFitToSafeArea({ fabricWeave: true })).toBe(false);
   });
+
+  it("skips contain-fit for 241 catalog probe (cover baseline, no fabricWeave)", () => {
+    expect(flatShouldFitToSafeArea({ probeCatalogGuide: true })).toBe(false);
+    expect(flatDefaultPlacementScale({ probeCatalogGuide: true })).toBe(1);
+    expect(flatShouldFitToSafeArea({})).toBe(true);
+    expect(flatDefaultPlacementScale({})).toBe(FLAT_APPAREL_DEFAULT_SCALE);
+  });
 });
 
 describe("flatContainPlacementScale", () => {

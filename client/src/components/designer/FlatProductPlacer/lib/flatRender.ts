@@ -63,10 +63,11 @@ export function flatPlacementScaleMax(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
   fabricWeave?: boolean;
+  probeCatalogGuide?: boolean;
 }): number {
   if (opts.edgeWrapMode) return FLAT_SCALE_MAX_EDGE_WRAP;
   if (opts.decorMode) return FLAT_SCALE_MAX_DECOR;
-  if (opts.fabricWeave) return FLAT_SCALE_MAX_FABRIC;
+  if (opts.fabricWeave || opts.probeCatalogGuide) return FLAT_SCALE_MAX_FABRIC;
   return FLAT_SCALE_MAX;
 }
 
@@ -75,10 +76,14 @@ export function flatDefaultPlacementScale(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
   fabricWeave?: boolean;
+  /** Blueprint 241: cover the mask AABB (do not use apparel 0.85). */
+  probeCatalogGuide?: boolean;
   /** Percent zoom used for decor / edge-wrap / fabric (e.g. 110). Ignored for apparel. */
   zoomPercent?: number;
 }): number {
   const max = flatPlacementScaleMax(opts);
+  // 241: cover baseline in mask-AABB units — not apparel 85% and not contain-fit.
+  if (opts.probeCatalogGuide) return Math.min(max, 1);
   if (opts.edgeWrapMode || opts.decorMode || opts.fabricWeave) {
     const pct = typeof opts.zoomPercent === "number" ? opts.zoomPercent : 100;
     return Math.max(FLAT_SCALE_MIN, Math.min(max, pct / 100));
@@ -88,15 +93,21 @@ export function flatDefaultPlacementScale(opts: {
 
 /**
  * Apparel chest prints (DTG / non-bleed) get a first-open contain-fit into
- * the dashed print guide. Decor / edge-wrap / tapestry are meant to cover or
- * bleed the print area — do not shrink those.
+ * the dashed print guide. Decor / edge-wrap / tapestry (241 + 1649 weave)
+ * are meant to cover or bleed the print area — do not shrink those.
  */
 export function flatShouldFitToSafeArea(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
   fabricWeave?: boolean;
+  probeCatalogGuide?: boolean;
 }): boolean {
-  return !opts.edgeWrapMode && !opts.decorMode && !opts.fabricWeave;
+  return (
+    !opts.edgeWrapMode &&
+    !opts.decorMode &&
+    !opts.fabricWeave &&
+    !opts.probeCatalogGuide
+  );
 }
 
 /**
@@ -1340,6 +1351,131 @@ export function pointInMask(
   const mx = Math.min(maskW - 1, Math.max(0, Math.floor(canvasX * (maskW / canvasW))));
   const my = Math.min(maskH - 1, Math.max(0, Math.floor(canvasY * (maskH / canvasH))));
   return data[(my * maskW + mx) * 4 + 3] >= minAlpha;
+}
+
+/** Downsample cap for the 241 dashed droop outline (overlay only). */
+export const TAPESTRY_OUTLINE_MAX_DIM = 256;
+
+/**
+ * Core-mask silhouette polyline in canvas/mockup px (alpha ≥ minAlpha).
+ * Used by the 241 editor dashed box so it traces the droop, not the
+ * inch-aspect letterbox. Overflow / apparel trim do not call this.
+ */
+export function maskCoreOutlineFromRgba(
+  data: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasW: number,
+  canvasH: number,
+  minAlpha = MASK_ALPHA_THRESHOLD,
+): Array<{ x: number; y: number }> | null {
+  if (!(maskW > 0) || !(maskH > 0) || !(canvasW > 0) || !(canvasH > 0)) {
+    return null;
+  }
+  const scale = Math.min(1, TAPESTRY_OUTLINE_MAX_DIM / Math.max(maskW, maskH));
+  const sw = Math.max(1, Math.round(maskW * scale));
+  const sh = Math.max(1, Math.round(maskH * scale));
+  const inside = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const mx = Math.min(maskW - 1, Math.floor((x + 0.5) * (maskW / sw)));
+      const my = Math.min(maskH - 1, Math.floor((y + 0.5) * (maskH / sh)));
+      if (data[(my * maskW + mx) * 4 + 3] >= minAlpha) inside[y * sw + x] = 1;
+    }
+  }
+
+  let startX = -1;
+  let startY = -1;
+  outer: for (let x = 0; x < sw; x++) {
+    for (let y = 0; y < sh; y++) {
+      if (inside[y * sw + x]) {
+        startX = x;
+        startY = y;
+        break outer;
+      }
+    }
+  }
+  if (startX < 0) return null;
+
+  const n8: Array<[number, number]> = [
+    [0, -1],
+    [1, -1],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+    [-1, 1],
+    [-1, 0],
+    [-1, -1],
+  ];
+  const isIn = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < sw && y < sh && inside[y * sw + x] === 1;
+
+  // Moore-neighbor: start looking north-west of the left-edge seed.
+  const path: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
+  let cx = startX;
+  let cy = startY;
+  let dir = 7;
+  const maxSteps = sw * sh * 2;
+  for (let i = 0; i < maxSteps; i++) {
+    let found = -1;
+    for (let k = 0; k < 8; k++) {
+      const d = (dir + k) % 8;
+      const nx = cx + n8[d][0];
+      const ny = cy + n8[d][1];
+      if (isIn(nx, ny)) {
+        found = d;
+        break;
+      }
+    }
+    if (found < 0) break;
+    cx += n8[found][0];
+    cy += n8[found][1];
+    // Next search starts two steps counter-clockwise from the walk dir
+    // so we hug the boundary (standard Moore backtrack).
+    dir = (found + 6) % 8;
+    if (cx === startX && cy === startY && path.length > 2) break;
+    path.push({ x: cx, y: cy });
+  }
+  if (path.length < 3) return null;
+
+  const stride = path.length > 120 ? Math.ceil(path.length / 80) : 1;
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < path.length; i += stride) {
+    out.push({
+      x: (path[i].x + 0.5) * (canvasW / sw),
+      y: (path[i].y + 0.5) * (canvasH / sh),
+    });
+  }
+  const last = path[path.length - 1];
+  const tail = out[out.length - 1];
+  if (
+    !tail ||
+    tail.x !== (last.x + 0.5) * (canvasW / sw) ||
+    tail.y !== (last.y + 0.5) * (canvasH / sh)
+  ) {
+    out.push({
+      x: (last.x + 0.5) * (canvasW / sw),
+      y: (last.y + 0.5) * (canvasH / sh),
+    });
+  }
+  return out;
+}
+
+export function tapestryMaskOutlinePoints(
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): Array<{ x: number; y: number }> | null {
+  if (!mask) return null;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return null;
+  return maskCoreOutlineFromRgba(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+  );
 }
 
 export function tapestryCoverageSampleStep(aabbW: number, aabbH: number): number {
