@@ -23,6 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolvePublicTemplateName } from "@shared/aopTemplateNaming";
+import { isMapperMockupSrc, mapperMockupFilenameFromSrc } from "./aopMapperFilename";
 import { readAssetBuffer, readTemplateText, TEMPLATES_DIR, MOCKUPS_DIR } from "./aopMapperStorage";
 import {
   ensureHoodieTemplatesBucket,
@@ -134,6 +135,25 @@ export function sanitiseTemplateForPublish(t: any, publicName: string): any {
   return clone;
 }
 
+/** Rewrite view mockup.src to public CDN URLs. Never leave an admin mapper path. */
+export function applyPublishedMockupUrls(
+  template: any,
+  urls: { front?: string; back?: string },
+): void {
+  if (!template?.views || typeof template.views !== "object") return;
+  for (const view of ["front", "back"] as const) {
+    const viewObj = template.views[view];
+    if (!viewObj || typeof viewObj !== "object") continue;
+    const url = urls[view];
+    if (!url) continue;
+    if (viewObj.mockup && typeof viewObj.mockup === "object") {
+      viewObj.mockup.src = url;
+    } else {
+      viewObj.mockup = { src: url };
+    }
+  }
+}
+
 export type AutoPublishResult =
   | {
       ok: true;
@@ -219,10 +239,16 @@ export async function autoPublishHoodieTemplate(
       } else {
         const draftName = `${adminName}-${view}.png`;
         const altName = `${publicName}-${view}.png`;
+        const fromSrc = mapperMockupFilenameFromSrc(tpl.views?.[view]?.mockup?.src);
         buf =
           (await readAssetBuffer("mockups", draftName)) ??
-          (await readAssetBuffer("mockups", altName));
-        if (!buf) continue;
+          (await readAssetBuffer("mockups", altName)) ??
+          (fromSrc ? await readAssetBuffer("mockups", fromSrc) : null);
+        if (!buf) {
+          const existing = publicHoodieTemplateUrl(`mockups/${publicName}-${view}.png`);
+          if (existing) newMockupUrls[view] = existing;
+          continue;
+        }
       }
 
       const filename = `mockups/${publicName}-${view}.png`;
@@ -241,17 +267,13 @@ export async function autoPublishHoodieTemplate(
 
     const sanitised = sanitiseTemplateForPublish(tpl, publicName);
     for (const view of ["front", "back"] as const) {
-      const url = newMockupUrls[view];
-      if (!url || !sanitised.views?.[view]) continue;
-      if (
-        sanitised.views[view].mockup &&
-        typeof sanitised.views[view].mockup === "object"
-      ) {
-        sanitised.views[view].mockup.src = url;
-      } else {
-        sanitised.views[view].mockup = { src: url };
-      }
+      if (newMockupUrls[view]) continue;
+      const leftover = sanitised.views?.[view]?.mockup?.src;
+      if (!isMapperMockupSrc(leftover)) continue;
+      const existing = publicHoodieTemplateUrl(`mockups/${publicName}-${view}.png`);
+      if (existing) newMockupUrls[view] = existing;
     }
+    applyPublishedMockupUrls(sanitised, newMockupUrls);
 
     const jsonBuf = Buffer.from(JSON.stringify(sanitised, null, 2), "utf-8");
     const jsonFilename = `templates/${publicName}.json`;

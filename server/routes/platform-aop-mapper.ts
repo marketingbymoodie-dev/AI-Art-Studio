@@ -20,13 +20,13 @@ import {
   writeAssetBuffer,
   writeTemplateText,
 } from "../aopMapperStorage";
+import { isSafeMapperFilename } from "../aopMapperFilename";
 import { requirePlatformAdmin } from "../platformAdmin";
 
-const HOODIE_MAPPER_HANDLER_VERSION = "2026-07-05-platform+supabase";
+const HOODIE_MAPPER_HANDLER_VERSION = "2026-08-31-public-mockup-get";
 const PROJECT_ROOT = process.cwd();
 
 const SAFE_NAME_RE = /^[a-zA-Z0-9_\-]+$/;
-const SAFE_FILENAME_RE = /^[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|webp)$/i;
 const MAX_TEMPLATE_BYTES = 8 * 1024 * 1024;
 const MAX_MOCKUP_BYTES = 30 * 1024 * 1024;
 const MAX_SOURCE_PANEL_BYTES = 60 * 1024 * 1024;
@@ -42,7 +42,7 @@ function isSafeName(name: string): boolean {
 }
 
 function isSafeFilename(name: string): boolean {
-  return SAFE_FILENAME_RE.test(name) && name.length <= 96;
+  return isSafeMapperFilename(name);
 }
 
 function readRawBody(req: Request, max: number): Promise<Buffer> {
@@ -255,15 +255,17 @@ export function registerPlatformAopMapperRoutes(
     }
   }));
 
-  app.get(`${BASE}/mockups/:filename`, isAuthenticated, adminOnly(async (req, res) => {
+  // Public GET: storefront <img> cannot send a session cookie. Filename
+  // allowlist is the only gate — do not drop auth on any sibling route.
+  app.get(`${BASE}/mockups/:filename`, async (req, res) => {
     const filename = req.params.filename;
     if (!isSafeFilename(filename)) return res.status(400).send("Invalid filename");
     const buf = await readAssetBuffer("mockups", filename);
     if (!buf) return res.status(404).send("Not found");
     res.setHeader("Content-Type", contentTypeForFilename(filename));
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(buf);
-  }));
+  });
 
   app.post(`${BASE}/mockups/:filename`, isAuthenticated, adminOnly(async (req, res) => {
     const filename = req.params.filename;

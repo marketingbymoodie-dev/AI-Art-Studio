@@ -7,6 +7,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { isSafeMapperFilename } from "./aopMapperFilename";
 import {
   downloadFromHoodieTemplatesBucket,
   isSupabaseHoodieTemplatesConfigured,
@@ -21,7 +22,6 @@ export const LOCAL_MOCKUPS_DIR = path.resolve(LOCAL_ROOT, "mockups");
 export const LOCAL_SOURCE_PANELS_DIR = path.resolve(LOCAL_ROOT, "source-panels");
 export const LOCAL_REFERENCE_OVERLAYS_DIR = path.resolve(LOCAL_ROOT, "reference-overlays");
 
-const SAFE_FILENAME_RE = /^[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|webp)$/i;
 
 type AssetKind = "mockups" | "source-panels" | "reference-overlays";
 
@@ -161,7 +161,7 @@ async function listAssetEntries(
     const dir = localDir(kind);
     try {
       for (const f of await fs.promises.readdir(dir)) {
-        if (!SAFE_FILENAME_RE.test(f)) continue;
+        if (!isSafeMapperFilename(f)) continue;
         const full = path.join(dir, f);
         const stat = await fs.promises.stat(full);
         out.set(f, {
@@ -180,7 +180,7 @@ async function listAssetEntries(
     const prefix = `drafts/${kind}/`;
     const files = await listHoodieTemplatesBucketFiles(prefix);
     for (const f of files) {
-      if (!SAFE_FILENAME_RE.test(f.name)) continue;
+      if (!isSafeMapperFilename(f.name)) continue;
       out.set(f.name, {
         filename: f.name,
         url: `${urlBase}/${encodeURIComponent(f.name)}`,
