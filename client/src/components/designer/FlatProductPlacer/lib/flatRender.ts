@@ -249,6 +249,11 @@ export type FlatRenderInput = {
    * Used when harvest only has one blank (canonical zip hoodie).
    */
   garmentColorHex?: string | null;
+  /**
+   * 241 preview only: multiply/overlay the catalog blank's fabric shading
+   * onto the composited art. Never used by `bakeFlatPrintFile`.
+   */
+  catalogBlankShade?: boolean;
 };
 
 function parseCssHex(hex: string): { r: number; g: number; b: number } | null {
@@ -1494,6 +1499,76 @@ export function tapestryCoverageSampleStep(aabbW: number, aabbH: number): number
  * is not covered by opaque art (alpha > {@link ART_COVER_ALPHA}).
  * Pure: callers supply aligned RGBA buffers (art already placed).
  */
+/** True when (x,y) lies inside the (possibly rotated) artwork draw box. */
+export function pointInFlatArtBox(
+  box: Rect,
+  x: number,
+  y: number,
+  rotationDeg = 0,
+): boolean {
+  if (!(box.width > 0) || !(box.height > 0)) return false;
+  const deg = Number.isFinite(rotationDeg) ? Number(rotationDeg) : 0;
+  if (!deg) {
+    return (
+      x >= box.x &&
+      y >= box.y &&
+      x < box.x + box.width &&
+      y < box.y + box.height
+    );
+  }
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const rad = (-deg * Math.PI) / 180;
+  const dx = x - cx;
+  const dy = y - cy;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  return Math.abs(lx) <= box.width / 2 && Math.abs(ly) <= box.height / 2;
+}
+
+/**
+ * 241 coverage in one coordinate space: core mask samples (α≥128) vs the
+ * geometric art box (scale=1 covers `placementRect`). No rasterized art alpha
+ * — drawImage fringe at the AABB extrema is not a real white strip.
+ */
+export function maskCoreUncoveredByArtBox(
+  maskData: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasW: number,
+  canvasH: number,
+  sampleBounds: Rect,
+  sampleStep: number,
+  artBox: Rect,
+  rotationDeg = 0,
+): boolean {
+  if (!(canvasW > 0) || !(canvasH > 0) || !(sampleStep > 0)) return false;
+  const x0 = sampleBounds.x;
+  const y0 = sampleBounds.y;
+  const x1 = sampleBounds.x + sampleBounds.width;
+  const y1 = sampleBounds.y + sampleBounds.height;
+  for (let y = y0; y < y1; y += sampleStep) {
+    for (let x = x0; x < x1; x += sampleStep) {
+      if (
+        !pointInMask(
+          maskData,
+          maskW,
+          maskH,
+          x,
+          y,
+          canvasW,
+          canvasH,
+          MASK_ALPHA_THRESHOLD,
+        )
+      ) {
+        continue;
+      }
+      if (!pointInFlatArtBox(artBox, x, y, rotationDeg)) return true;
+    }
+  }
+  return false;
+}
+
 export function maskCoreUncoveredFromRgba(
   maskData: Uint8ClampedArray,
   maskW: number,
@@ -1589,9 +1664,9 @@ export function flatMaskRejectsArtBox(
 }
 
 /**
- * 241 under-coverage: invert the overflow rule. Walk core mask samples via
- * {@link pointInMask} (`>= 128`); warn if any is not covered by opaque art.
- * Uses the same placement rect as `renderFlatView` (`flatPlacementRectPx`).
+ * 241 under-coverage: walk core mask samples via {@link pointInMask} (`>= 128`);
+ * warn if any lies outside the geometric art box (same `placementRect` as
+ * `renderFlatView`). Scale 1 = box covers the core AABB — no over-scale default.
  */
 export function flatMaskCoreUncovered(
   mask: HTMLImageElement | null,
@@ -1609,20 +1684,7 @@ export function flatMaskCoreUncovered(
   const artH = artwork.naturalHeight || artwork.height || 0;
   if (!(artW > 0) || !(artH > 0)) return false;
 
-  const artCanvas = document.createElement("canvas");
-  artCanvas.width = canvasW;
-  artCanvas.height = canvasH;
-  const actx = artCanvas.getContext("2d", { willReadFrequently: true });
-  if (!actx) return false;
   const box = flatArtBox(placementRect, placement, artW, artH);
-  drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
-  let artData: Uint8ClampedArray;
-  try {
-    artData = actx.getImageData(0, 0, canvasW, canvasH).data;
-  } catch {
-    return false;
-  }
-
   const nativeBounds = flatMaskAlphaBoundsCached(mask);
   const sampleBounds = nativeBounds
     ? scaleRectToCanvas(
@@ -1634,17 +1696,16 @@ export function flatMaskCoreUncovered(
       )
     : { x: 0, y: 0, width: canvasW, height: canvasH };
   const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
-  return maskCoreUncoveredFromRgba(
+  return maskCoreUncoveredByArtBox(
     pixels.data,
     pixels.width,
     pixels.height,
-    artData,
-    canvasW,
-    canvasH,
     canvasW,
     canvasH,
     sampleBounds,
     step,
+    box,
+    placement.rotationDeg ?? 0,
   );
 }
 
@@ -2065,6 +2126,35 @@ function applyPhoneCaseMapShading(
  * When `fabricWeave` is set (tapestry): simple coloured blank multiply only —
  * no procedural weave grid. Printify's photo mockup is available on demand.
  */
+/**
+ * 241 editor/preview: let the catalog blank's folds/shadows read through the
+ * print. Preview composite only — bake never calls this.
+ */
+function applyCatalogBlankShading(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+): void {
+  const cloth = document.createElement("canvas");
+  cloth.width = w;
+  cloth.height = h;
+  const cctx = cloth.getContext("2d");
+  if (!cctx) return;
+  cctx.drawImage(blank, 0, 0, w, h);
+  clipLayerToArt(cloth, artCanvas);
+
+  artCtx.save();
+  artCtx.globalCompositeOperation = "multiply";
+  artCtx.globalAlpha = 0.58;
+  artCtx.drawImage(cloth, 0, 0);
+  artCtx.globalCompositeOperation = "overlay";
+  artCtx.globalAlpha = 0.38;
+  artCtx.drawImage(cloth, 0, 0);
+  artCtx.restore();
+}
+
 function applyShading(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,
@@ -2074,8 +2164,12 @@ function applyShading(
   w: number,
   h: number,
   artworkCorsClean: boolean,
-  opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
+  opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean; catalogBlankShade?: boolean },
 ): void {
+  if (opts?.catalogBlankShade) {
+    applyCatalogBlankShading(artCanvas, artCtx, blank, w, h);
+    return;
+  }
   if (opts?.fabricWeave) {
     applySimpleBlankMultiply(artCanvas, artCtx, blank, w, h);
     return;
@@ -2907,6 +3001,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     printCanvasBackgroundColor = null,
     decorMode = false,
     fabricWeave = false,
+    catalogBlankShade = false,
     layerAdjust,
     previewLayers,
     garmentColorHex = null,
@@ -3256,6 +3351,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     {
       phoneCaseMap: shadeMode === "map" && !!shading && !!edgeWrapMode,
       fabricWeave: fabricWeave && !edgeWrapMode,
+      catalogBlankShade: catalogBlankShade && !edgeWrapMode && !fabricWeave,
     },
   );
 

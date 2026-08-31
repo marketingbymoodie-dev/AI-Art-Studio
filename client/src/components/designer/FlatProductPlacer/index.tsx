@@ -30,6 +30,7 @@ import {
   resolveFlatBlank,
   resolveFlatViewCalibration,
   shouldProbeCatalogBlankGuide,
+  featherCatalogGuideMask,
   resolveCalibratorLayerAdjust,
   withFlatAssetVersion,
   type FlatViewName,
@@ -450,14 +451,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ? loadFlatImageRelaxed(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
             : Promise.resolve(null),
         ]);
+        const mask =
+          loadCatalogTapestryMask && m ? await featherCatalogGuideMask(m) : m;
         if (
           !refitCatalogSizeGuide &&
           flatCalibrationSwappedToLandscape(manifest, colorId, v, landscapeOrientation)
         ) {
-          const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+          const oriented = await orientFlatHarvestPixelsForLandscape(mask, s);
           next[v] = { blank: b, mask: oriented.mask, shading: oriented.shading };
         } else {
-          next[v] = { blank: b, mask: m, shading: s };
+          next[v] = { blank: b, mask, shading: s };
         }
       }
       if (cancelled) return;
@@ -741,6 +744,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               : null,
           decorMode,
           fabricWeave,
+          catalogBlankShade: probeCatalogGuide,
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
@@ -769,6 +773,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       clampPlacementScale,
       defaultPlacement,
       garmentColorHex,
+      probeCatalogGuide,
     ],
   );
 

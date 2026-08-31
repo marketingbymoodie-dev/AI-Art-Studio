@@ -59,6 +59,26 @@ describe("bakeFlatPrintFile color-only bleed", () => {
     expect(filledCenter.g).toBe(noneCenter.g);
     expect(filledCenter.b).toBe(noneCenter.b);
   });
+
+  it("bakes flat artwork with no blank shading or mask composite", async () => {
+    const raw = Buffer.alloc(16 * 16 * 4, 255);
+    for (let i = 0; i < 16 * 16; i++) {
+      raw[i * 4] = 220;
+      raw[i * 4 + 1] = 30;
+      raw[i * 4 + 2] = 30;
+    }
+    const art = await sharp(raw, { raw: { width: 16, height: 16, channels: 4 } }).png().toBuffer();
+    const baked = await bakeFlatPrintFile({
+      artworkBuffer: art,
+      placement: { scale: 1, offsetX: 0, offsetY: 0 },
+      printFileDims: { width: 16, height: 16 },
+    });
+    const px = await rgbaAt(baked.buffer, 8, 8);
+    expect(px.r).toBeGreaterThan(200);
+    expect(px.g).toBeLessThan(50);
+    expect(px.b).toBeLessThan(50);
+    expect(px.a).toBe(255);
+  });
 });
 
 describe("prepareBakeUploadBuffer", () => {

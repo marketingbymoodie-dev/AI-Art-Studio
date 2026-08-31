@@ -6,6 +6,7 @@ import {
   visibleRectForCatalogSizeBlank,
   type NormRect,
 } from "@shared/catalogSizeBlanks";
+import { featherMaskAlphaFromRgba, maskAlphaLooksBinary } from "@shared/maskFeather";
 import {
   extractDimensionalKey,
   swapDecorSizeDimensionId,
@@ -430,6 +431,41 @@ export async function loadFlatImageRelaxed(url: string): Promise<HTMLImageElemen
   return loadFlatImage(url, { cors: false });
 }
 
+/**
+ * 241 only: anti-alias a hard magenta mask so the droop edge is not jagged.
+ * Skips already-soft masks (re-harvested). Hood / poster never call this.
+ */
+export async function featherCatalogGuideMask(
+  mask: HTMLImageElement | null,
+): Promise<HTMLImageElement | null> {
+  if (!mask) return null;
+  const w = mask.naturalWidth || mask.width;
+  const h = mask.naturalHeight || mask.height;
+  if (!(w > 0) || !(h > 0)) return mask;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return mask;
+  try {
+    ctx.drawImage(mask, 0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h);
+    if (!maskAlphaLooksBinary(img.data, w, h)) return mask;
+    const feathered = featherMaskAlphaFromRgba(img.data, w, h);
+    img.data.set(feathered);
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    return mask;
+  }
+  const dataUrl = canvas.toDataURL("image/png");
+  return new Promise((resolve) => {
+    const out = new Image();
+    out.onload = () => resolve(out);
+    out.onerror = () => resolve(mask);
+    out.src = dataUrl;
+  });
+}
+
 function imagePixelSize(img: HTMLImageElement): { w: number; h: number } {
   return { w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
 }
@@ -552,12 +588,14 @@ export async function loadFlatViewAssets(
   ]);
   if (!b) return null;
   // Catalog-blank refit already has the correct AR — don't rotate harvest masks.
+  const mask =
+    loadCatalogTapestryMask && m ? await featherCatalogGuideMask(m) : m;
   if (
     !refitCatalogSizeGuide &&
     flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)
   ) {
-    const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+    const oriented = await orientFlatHarvestPixelsForLandscape(mask, s);
     return { blank: b, mask: oriented.mask, shading: oriented.shading };
   }
-  return { blank: b, mask: m, shading: s };
+  return { blank: b, mask, shading: s };
 }

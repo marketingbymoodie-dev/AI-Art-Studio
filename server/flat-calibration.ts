@@ -23,7 +23,12 @@ import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "
 import {
   isCatalogSizeBlankBlueprint,
   printFileDimsForAspectRatio,
+  shouldProbeCatalogBlankGuide,
 } from "@shared/catalogSizeBlanks";
+import {
+  featherMaskAlphaFromRgba,
+  maskAlphaLooksBinary,
+} from "@shared/maskFeather";
 import {
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
@@ -552,6 +557,24 @@ async function analyzeMagenta(buffer: Buffer): Promise<MagentaAnalysis> {
 
 function rawToPng(raw: Buffer, width: number, height: number): Promise<Buffer> {
   return sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+}
+
+/**
+ * 241 only: soften the hard magenta silhouette so the droop edge is not
+ * stair-stepped. Hood / poster harvest stays binary (this is a no-op).
+ */
+function maybeFeatherTapestryMaskRaw(
+  blueprintId: number,
+  raw: Buffer,
+  width: number,
+  height: number,
+): Buffer {
+  if (!shouldProbeCatalogBlankGuide(blueprintId) || !(width > 0) || !(height > 0)) {
+    return raw;
+  }
+  const data = new Uint8ClampedArray(raw);
+  if (!maskAlphaLooksBinary(data, width, height)) return raw;
+  return Buffer.from(featherMaskAlphaFromRgba(data, width, height));
 }
 
 /**
@@ -1857,7 +1880,13 @@ async function harvestPerBlankGeometry(args: {
 
       let maskUrl: string | null = null;
       if (a.found) {
-        const maskPng = await rawToPng(geoDerived.maskRaw, geoDerived.mockupW, geoDerived.mockupH);
+        const maskRaw = maybeFeatherTapestryMaskRaw(
+          blueprintId,
+          geoDerived.maskRaw,
+          geoDerived.mockupW,
+          geoDerived.mockupH,
+        );
+        const maskPng = await rawToPng(maskRaw, geoDerived.mockupW, geoDerived.mockupH);
         const maskPath = calPaths
           ? calPaths.mask
           : `${storageKey}/mask-${safe}-${view}.png`;
@@ -3086,7 +3115,13 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct, placeholderDims.get(view));
       let maskUrl: string | null = null;
       if (a.found) {
-        const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);
+        const maskRaw = maybeFeatherTapestryMaskRaw(
+          blueprintId,
+          geo.maskRaw,
+          geo.mockupW,
+          geo.mockupH,
+        );
+        const maskPng = await rawToPng(maskRaw, geo.mockupW, geo.mockupH);
         maskUrl = await uploadToFlatCalibrationBucket(`${storageKey}/mask-${view}.png`, maskPng, "image/png");
         if (calibratorMode) {
           await uploadToFlatCalibrationBucket(

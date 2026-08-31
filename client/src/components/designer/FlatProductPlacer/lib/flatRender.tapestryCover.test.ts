@@ -4,7 +4,9 @@ import {
   MASK_ALPHA_OVERFLOW_THRESHOLD,
   MASK_ALPHA_THRESHOLD,
   maskCoreOutlineFromRgba,
+  maskCoreUncoveredByArtBox,
   maskCoreUncoveredFromRgba,
+  pointInFlatArtBox,
   pointInMask,
   tapestryCoverageSampleStep,
   TAPESTRY_COVERAGE_MAX_STEP_PX,
@@ -166,6 +168,77 @@ describe("maskCoreUncoveredFromRgba", () => {
         1,
       ),
     ).toBe(true);
+  });
+});
+
+describe("maskCoreUncoveredByArtBox (100% = geometric cover)", () => {
+  const w = 64;
+  const h = 64;
+  const bounds = { x: 10, y: 10, width: 40, height: 40 };
+  const droop = rgba(w, h, 0);
+  // Inset ellipse-ish core: extrema sit on the AABB, corners of the AABB
+  // are outside the droop (same shape as a hanging tapestry).
+  for (let y = 12; y < 48; y++) {
+    for (let x = 12; x < 48; x++) {
+      const nx = (x - 30) / 16;
+      const ny = (y - 30) / 18;
+      if (nx * nx + ny * ny <= 1) setAlpha(droop, w, x, y, 255);
+    }
+  }
+
+  it("scale-1 box covering the AABB does not warn (no 102% hack)", () => {
+    expect(
+      maskCoreUncoveredByArtBox(
+        droop,
+        w,
+        h,
+        w,
+        h,
+        bounds,
+        1,
+        { x: 10, y: 10, width: 40, height: 40 },
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("shrunk box leaves a mid-edge gap", () => {
+    expect(
+      maskCoreUncoveredByArtBox(
+        droop,
+        w,
+        h,
+        w,
+        h,
+        bounds,
+        1,
+        { x: 16, y: 16, width: 28, height: 28 },
+        0,
+      ),
+    ).toBe(true);
+  });
+
+  it("offset exposing a thin strip warns", () => {
+    expect(
+      maskCoreUncoveredByArtBox(
+        droop,
+        w,
+        h,
+        w,
+        h,
+        bounds,
+        1,
+        { x: 18, y: 10, width: 40, height: 40 },
+        0,
+      ),
+    ).toBe(true);
+  });
+
+  it("pointInFlatArtBox matches the unrotated cover rect", () => {
+    const box = { x: 10, y: 10, width: 40, height: 40 };
+    expect(pointInFlatArtBox(box, 10, 10)).toBe(true);
+    expect(pointInFlatArtBox(box, 49.9, 49.9)).toBe(true);
+    expect(pointInFlatArtBox(box, 50, 30)).toBe(false);
   });
 });
 
