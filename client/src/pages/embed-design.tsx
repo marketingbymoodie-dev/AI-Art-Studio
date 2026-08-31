@@ -1627,13 +1627,15 @@ function persistCustomerRecord(next: CustomerInfo) {
 
 function hasStoredLoggedInIdentity(): boolean {
   // Must stay in sync with isSignedIn() in appai-customizer-tray.js.
-  // ONLY appai_customer.isLoggedIn === true counts. Never fall back to
-  // appai_customer_id presence: the anonymous bootstrap writes that id for
-  // every visitor, and older app versions wrote it WITHOUT the
-  // appai_customer record — that legacy state suppressed the sign-in panel
-  // for anonymous visitors ("just opens a customizer page").
+  // ONLY AppAI OTP/Google counts: isLoggedIn === true AND an email.
+  // Never fall back to appai_customer_id or a Shopify customer.id —
+  // those hid the tray Sign in row for store-logged-in visitors.
   const c = readStoredCustomerRecord();
-  return c?.isLoggedIn === true;
+  return (
+    c?.isLoggedIn === true &&
+    typeof c.email === "string" &&
+    c.email.includes("@")
+  );
 }
 
 /** Dedupe carousel/mockup URLs by origin+pathname (ignore query strings). */
@@ -2785,12 +2787,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             prev?.email ||
             stored?.email ||
             undefined;
-          const isKnownLoggedInCustomer =
-            data.signedIn === true ||
-            prev?.isLoggedIn === true ||
-            stored?.isLoggedIn === true ||
-            !!email ||
-            !!shopifyCustomerId;
+          // Server signedIn is OTP/Google only. Do not treat Shopify
+          // customerId or a leftover email as AppAI sign-in — that hid
+          // the customizer-tray Sign in row after a designer visit.
+          const isKnownLoggedInCustomer = data.signedIn === true;
           const next = {
             ...(prev || stored || { id: data.customerId, isLoggedIn: false }),
             id: data.customerId,
@@ -3179,7 +3179,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   });
   const artworksRemaining = creditBreakdown.total;
   const hasGenerationCapacity = artworksRemaining > 0;
-  const storefrontLoggedIn = customer?.isLoggedIn === true;
+  const storefrontLoggedIn =
+    customer?.isLoggedIn === true &&
+    typeof customer.email === "string" &&
+    customer.email.includes("@");
   useEffect(() => {
     if (!isCreatorStorefront || !creatorUsernameParam || !storefrontCustomerId || !storefrontLoggedIn) {
       return;

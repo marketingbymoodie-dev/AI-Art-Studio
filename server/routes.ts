@@ -11885,6 +11885,7 @@ ${orientationExtra}
       });
       const aliases = await storage.getCustomerAliases(customer.id).catch(() => []);
       const emailAlias = aliases.find((a) => a.aliasType === "otp_email");
+      const googleAlias = aliases.find((a) => a.aliasType === "google");
       let email = emailAlias?.aliasValue || null;
       if (!email) {
         try {
@@ -11894,9 +11895,11 @@ ${orientationExtra}
           /* email column may be missing on older DBs */
         }
       }
+      // AppAI OTP/Google only — a Shopify customer.id in the iframe query
+      // must not mark the visitor signed in or the tray hides Sign in.
       const signedIn =
-        !!email ||
-        !!shopifyCustomerId ||
+        !!emailAlias ||
+        !!googleAlias ||
         (typeof customer.userId === "string" && customer.userId.startsWith("email:"));
       return res.json({
         ok: true,
