@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { findGeometryBlankKey, resolveFlatBlank, resolveFlatViewCalibration } from "./flatAssets";
+import {
+  catalogSizeExactMaskUrl,
+  findGeometryBlankKey,
+  resolveFlatBlank,
+  resolveFlatViewCalibration,
+} from "./flatAssets";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 
 function posterManifest(): FlatCalibrationManifest {
@@ -147,6 +152,72 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
       width: 3000,
       height: 3600,
     });
+  });
+
+  it("uses exact catalogSizeKey mask for 241 and never axis-swaps to 60x50", () => {
+    const m = {
+      ...wallDecalManifest(),
+      blueprintId: 241,
+      name: "Indoor Wall Tapestry",
+      views: {
+        front: {
+          maskUrl: "https://example.com/shared-ghost-mask.png",
+          printFileDims: { width: 2400, height: 3600 },
+          mockupDims: { width: 1024, height: 1024 },
+          visibleRectNormalized: { x: 0.2, y: 0.1, width: 0.6, height: 0.8 },
+        } as any,
+      },
+      geometryByBlank: {
+        "50x60": {
+          front: { maskUrl: "https://example.com/50x60-droop.png" },
+        },
+        "60x50": {
+          front: { maskUrl: "https://example.com/60x50-droop.png" },
+        },
+      },
+    };
+    expect(catalogSizeExactMaskUrl(m, "50x60", "front")).toBe(
+      "https://example.com/50x60-droop.png",
+    );
+    expect(catalogSizeExactMaskUrl(m, "50-60", "front")).toBe(
+      "https://example.com/50x60-droop.png",
+    );
+    expect(catalogSizeExactMaskUrl(m, "60x50", "front")).toBe(
+      "https://example.com/60x50-droop.png",
+    );
+    const calib = resolveFlatViewCalibration(m, "26x36", "front", {
+      sizeAspectRatio: "50:60",
+      refitCatalogSizeGuide: true,
+      catalogBlueprintId: 241,
+      catalogSizeKey: "50x60",
+    });
+    expect(calib?.maskUrl).toBe("https://example.com/50x60-droop.png");
+    expect(calib?.maskUrl).not.toBe("https://example.com/shared-ghost-mask.png");
+    expect(calib?.maskUrl).not.toBe("https://example.com/60x50-droop.png");
+    const r = calib!.visibleRectNormalized!;
+    expect(r.width / r.height).toBeCloseTo(5 / 6, 2);
+  });
+
+  it("does not fall back to another size's mask when 241 key is missing", () => {
+    const m = {
+      ...wallDecalManifest(),
+      blueprintId: 241,
+      blanks: {},
+      geometryByBlank: {
+        "60x50": {
+          front: { maskUrl: "https://example.com/60x50-droop.png" },
+        },
+      },
+    };
+    expect(catalogSizeExactMaskUrl(m, "50x60", "front")).toBeNull();
+    const calib = resolveFlatViewCalibration(m, "50x60", "front", {
+      sizeAspectRatio: "50:60",
+      refitCatalogSizeGuide: true,
+      catalogBlueprintId: 241,
+      catalogSizeKey: "50x60",
+    });
+    expect(calib?.maskUrl).toBeNull();
+    expect(findGeometryBlankKey(m, "50x60")).toBe("60x50");
   });
 });
 

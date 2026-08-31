@@ -6,7 +6,10 @@ import {
   visibleRectForCatalogSizeBlank,
   type NormRect,
 } from "@shared/catalogSizeBlanks";
-import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
+import {
+  extractDimensionalKey,
+  swapDecorSizeDimensionId,
+} from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
 import type { CalibratorLayerAdjust, FlatRenderInput } from "./flatRender";
 
@@ -103,6 +106,32 @@ export function findGeometryBlankKey(
     if (swapped && swapped !== id) {
       return findGeometryBlankKey(manifest, swapped, { allowDimensionSwap: false });
     }
+  }
+  return null;
+}
+
+/**
+ * 241 droop mask: exact `catalogSizeKey` on geometryByBlank only.
+ * Never axis-swap, never views.front / findGeometryBlankKey (those ghost).
+ */
+export function catalogSizeExactMaskUrl(
+  manifest: FlatCalibrationManifest,
+  catalogSizeKey: string | null | undefined,
+  view: FlatViewName,
+): string | null {
+  if (!catalogSizeKey) return null;
+  const geo = (manifest as FlatCalibrationManifestWithGeometry).geometryByBlank;
+  if (!geo) return null;
+  const keys = [catalogSizeKey];
+  const dim =
+    extractDimensionalKey(catalogSizeKey) ||
+    (catalogSizeKey.match(/^(\d+)-(\d+)$/)
+      ? `${catalogSizeKey.split("-")[0]}x${catalogSizeKey.split("-")[1]}`
+      : null);
+  if (dim && dim !== catalogSizeKey) keys.push(dim);
+  for (const key of keys) {
+    const url = geo[key]?.[view]?.maskUrl;
+    if (typeof url === "string" && url.trim()) return url.trim();
   }
   return null;
 }
@@ -245,6 +274,10 @@ export function resolveFlatViewCalibration(
           : null),
     );
     if (rect) {
+      const tapestry = shouldProbeCatalogBlankGuide(opts.catalogBlueprintId);
+      const exactMask = tapestry
+        ? catalogSizeExactMaskUrl(manifest, opts.catalogSizeKey, view)
+        : null;
       return {
         ...merged,
         visibleRectNormalized: rect,
@@ -255,6 +288,8 @@ export function resolveFlatViewCalibration(
           merged.mockupDims.width === merged.mockupDims.height
             ? merged.mockupDims
             : { width: 1024, height: 1024 },
+        // 241: size-only droop mask. Never keep shared / axis-swapped maskUrl.
+        ...(tapestry ? { maskUrl: exactMask, shadingUrl: null } : {}),
       };
     }
   }
@@ -502,11 +537,13 @@ export async function loadFlatViewAssets(
     view === "front" && opts?.blankUrlOverride
       ? blankUrl
       : withFlatAssetVersion(blankUrl, assetVersion);
+  const loadCatalogTapestryMask =
+    shouldProbeCatalogBlankGuide(opts?.catalogBlueprintId) && refitCatalogSizeGuide;
   const [b, m, s] = await Promise.all([
     loadFlatImage(versionedBlankUrl),
-    // Shared harvest masks are 2:3-shaped — drop them when the guide was
-    // rebuilt for the catalog size AR or they clip the wrong silhouette.
-    !refitCatalogSizeGuide && calib.maskUrl
+    // 241: load the size-keyed droop mask (calib.maskUrl is exact-key only).
+    // Other catalog-size-blank products still skip shared harvest masks.
+    (loadCatalogTapestryMask || !refitCatalogSizeGuide) && calib.maskUrl
       ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, assetVersion))
       : Promise.resolve(null),
     shouldLoadShading

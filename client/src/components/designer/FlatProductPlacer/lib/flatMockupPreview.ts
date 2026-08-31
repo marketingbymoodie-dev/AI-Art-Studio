@@ -2,13 +2,10 @@ import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/a
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 import type { FlatProductPlacerState } from "../index";
 import {
-  applyProbedCatalogGuide,
   loadFlatImageRelaxed,
   loadFlatViewAssets,
-  probeCatalogBlankSilhouette,
   resolveFlatBlank,
   resolveFlatViewCalibration,
-  shouldProbeCatalogBlankGuide,
   type FlatViewName,
 } from "./flatAssets";
 import { renderFlatView } from "./flatRender";
@@ -53,9 +50,7 @@ export async function renderFlatMockupDataUrl(
     catalogSizeKey: opts?.catalogSizeKey,
   });
   if (!assets?.blank || !calibBase) return null;
-  const calib = shouldProbeCatalogBlankGuide(opts?.catalogBlueprintId)
-    ? applyProbedCatalogGuide(calibBase, probeCatalogBlankSilhouette(assets.blank))
-    : calibBase;
+  const calib = calibBase;
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =

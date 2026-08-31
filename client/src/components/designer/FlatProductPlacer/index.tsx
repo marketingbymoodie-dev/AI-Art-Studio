@@ -27,8 +27,6 @@ import {
   loadFlatImageRelaxed,
   flatCalibrationSwappedToLandscape,
   orientFlatHarvestPixelsForLandscape,
-  applyProbedCatalogGuide,
-  probeCatalogBlankSilhouette,
   resolveFlatBlank,
   resolveFlatViewCalibration,
   shouldProbeCatalogBlankGuide,
@@ -394,18 +392,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     front: EMPTY_ASSETS,
     back: EMPTY_ASSETS,
   });
-  const [probedGuideByView, setProbedGuideByView] = useState<
-    Partial<Record<ViewName, { x: number; y: number; width: number; height: number }>>
-  >({});
   const [assetsLoading, setAssetsLoading] = useState(true);
   const [assetError, setAssetError] = useState<string | null>(null);
   const resolveCalib = useCallback(
-    (view: ViewName) => {
-      const base = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
-      if (!base) return undefined;
-      return applyProbedCatalogGuide(base, probedGuideByView[view]);
-    },
-    [manifest, colorId, calibOpts, probedGuideByView],
+    (view: ViewName) => resolveFlatViewCalibration(manifest, colorId, view, calibOpts),
+    [manifest, colorId, calibOpts],
   );
 
   // ---------- Preload blank / mask / shading for every available view ----------
@@ -415,7 +406,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     // immediately. Colour-only swaps still keep prior pixels to avoid a flash.
     if (refitCatalogSizeGuide) {
       setAssets({ front: EMPTY_ASSETS, back: EMPTY_ASSETS });
-      setProbedGuideByView({});
       setAssetsLoading(true);
     } else {
       const hasExistingAssets = availableViews.some((v) => assets[v].blank);
@@ -427,9 +417,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         front: EMPTY_ASSETS,
         back: EMPTY_ASSETS,
       };
-      const nextGuides: Partial<
-        Record<ViewName, { x: number; y: number; width: number; height: number }>
-      > = {};
       for (const v of availableViews) {
         // Use colorId (e.g. 20x30:white) for mask/geometry — size-only geometryKey
         // misses decorPerSize geometryByBlank and falls back to the shared 11×14 mask.
@@ -440,13 +427,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         // Version-pin harvest assets to the manifest generation — stable
         // canonical URLs are overwritten on re-harvest and a stale cached
         // mask silently desyncs the clip from the fresh guide geometry.
+        const loadCatalogTapestryMask = probeCatalogGuide && refitCatalogSizeGuide;
         const [b, m, s] = await Promise.all([
           loadFlatImageRelaxed(
             isOverrideBlank
               ? blankUrl
               : withFlatAssetVersion(blankUrl, manifest.generatedAt),
           ),
-          !refitCatalogSizeGuide && calib.maskUrl
+          (loadCatalogTapestryMask || !refitCatalogSizeGuide) && calib.maskUrl
             ? loadFlatImageRelaxed(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
           !refitCatalogSizeGuide &&
@@ -466,13 +454,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         } else {
           next[v] = { blank: b, mask: m, shading: s };
         }
-        if (probeCatalogGuide && b) {
-          const probed = probeCatalogBlankSilhouette(b);
-          if (probed) nextGuides[v] = probed;
-        }
       }
       if (cancelled) return;
-      setProbedGuideByView(nextGuides);
       setAssets(next);
       const anyBlank = availableViews.some((v) => next[v].blank);
       const err = anyBlank ? null : "Could not load product images";
@@ -1189,8 +1172,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const placementRect =
     edgeWrapMode && calib
       ? printCanvasLayout!.printCanvas
-      : calib && probedGuideByView[state.view]
-        ? flatVisibleRectPx(calib, mockupW, mockupH)
+      : calib && probeCatalogGuide
+        ? // 241: dashed box = inch-aspect letterbox, not mask AABB / apparel boost.
+          flatVisibleRectPx(calib, mockupW, mockupH)
         : calib
           ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
               edgeWrapMode,
@@ -1219,8 +1203,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (decorMode || fabricWeave) {
+    } else if (decorMode || fabricWeave || probeCatalogGuide) {
       // Live fill covers the opening independently of motif scale.
+      // 241 tapestry: under-coverage (white strips), not apparel trim.
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
@@ -1765,6 +1750,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && probeCatalogGuide && !fabricWeave && !edgeWrapMode && !decorMode && (
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-tapestry-gap-warning"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Artwork doesn&apos;t cover the full tapestry — white strips will show
+              along the edges. Scale up or reposition.
+            </span>
+          </div>
+        )}
+
         {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && !fabricWeave && (
           <div
             className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
@@ -1814,9 +1812,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </>
             ) : applyStatus === "error" ? (
               <span className="text-destructive">Couldn't save — try add to cart again</span>
-            ) : coverageWarning === "trim" && !fabricWeave ? (
+            ) : coverageWarning === "trim" && !fabricWeave && !probeCatalogGuide ? (
               <span className="font-medium text-amber-700" data-testid="flat-trim-status">
                 Edges will be trimmed — scale down or reposition
+              </span>
+            ) : coverageWarning === "edge-gap" && probeCatalogGuide && !fabricWeave ? (
+              <span className="font-medium text-amber-700" data-testid="flat-tapestry-gap-status">
+                White strips will show — scale up or reposition
               </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">

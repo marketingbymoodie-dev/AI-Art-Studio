@@ -4139,6 +4139,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const catalogSizeKey = useMemo(() => {
     const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    const hyphen = String(selectedSize || "").match(/^(\d+)-(\d+)$/);
     return (
       extractDimensionalKey(selectedSize) ||
       (sizeConfig
@@ -4146,7 +4147,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           (sizeConfig.width && sizeConfig.height
             ? `${Math.round(sizeConfig.width)}x${Math.round(sizeConfig.height)}`
             : null)
-        : null)
+        : null) ||
+      (hyphen ? `${hyphen[1]}x${hyphen[2]}` : null)
     );
   }, [printSizes, selectedSize]);
 

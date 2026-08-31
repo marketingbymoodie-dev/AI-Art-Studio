@@ -60,6 +60,7 @@ import {
   isCatalogSizeBlankBlueprint,
   printFileDimsForAspectRatio,
   resolveCatalogSizeBlankUrlMap,
+  shouldProbeCatalogBlankGuide,
   visibleRectForCatalogSizeBlank,
 } from "@shared/catalogSizeBlanks";
 import { getSupabaseDesignPublicUrl } from "../supabaseDesigns";
@@ -738,6 +739,7 @@ function applyCatalogSizeGuideToCalibratorView(
   blueprintId: number,
   sizeKey: string,
   baseView: Record<string, any> | null,
+  exactMaskUrl?: string | null,
 ): Record<string, any> | null {
   if (!baseView) return baseView;
   const dim = sizeKey.includes("x") ? sizeKey : null;
@@ -746,6 +748,7 @@ function applyCatalogSizeGuideToCalibratorView(
   const rect = visibleRectForCatalogSizeBlank(blueprintId, sizeKey, aspect);
   if (!rect) return baseView;
   const dims = printFileDimsForAspectRatio(aspect);
+  const tapestry = shouldProbeCatalogBlankGuide(blueprintId);
   return {
     ...baseView,
     visibleRectNormalized: rect,
@@ -756,6 +759,7 @@ function applyCatalogSizeGuideToCalibratorView(
       baseView.mockupDims.width === baseView.mockupDims.height
         ? baseView.mockupDims
         : { width: 1024, height: 1024 },
+    ...(tapestry ? { maskUrl: exactMaskUrl ?? null, shadingUrl: null } : {}),
   };
 }
 
@@ -836,6 +840,7 @@ async function assetUrlsForStorage(
   view: ViewName,
   baseView: Record<string, any> | null,
   blankFallbackUrl?: string | null,
+  opts?: { skipSharedMask?: boolean },
 ) {
   const safe = modelId.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
   const paths = calibratorLayerPaths(storageKey, safe, view);
@@ -848,7 +853,8 @@ async function assetUrlsForStorage(
     resolveFlatCalibrationAssetUrl(paths.blank, blankFallbackUrl),
     resolveFlatCalibrationAssetUrl(
       paths.mask,
-      baseView?.maskUrl ?? publicFlatCalibrationUrl(shared.mask) ?? null,
+      baseView?.maskUrl ??
+        (opts?.skipSharedMask ? null : publicFlatCalibrationUrl(shared.mask) ?? null),
     ),
     resolveFlatCalibrationAssetUrl(
       paths.shading,
@@ -976,8 +982,15 @@ export function registerPlatformCalibrationRoutes(
       const modelPayload = await Promise.all(
         models.map(async (m) => {
           const merged = mergeViewCalibration(manifest as any, m.id, view);
+          const exactMask =
+            (manifest as any)?.geometryByBlank?.[m.id]?.[view]?.maskUrl ?? null;
           const baseView = catalogBlankUrls
-            ? applyCatalogSizeGuideToCalibratorView(blueprintId, m.id, merged)
+            ? applyCatalogSizeGuideToCalibratorView(
+                blueprintId,
+                m.id,
+                merged,
+                typeof exactMask === "string" ? exactMask : null,
+              )
             : merged;
           const blankFallbackUrl =
             catalogBlankUrls?.[m.id] ??
@@ -987,7 +1000,14 @@ export function registerPlatformCalibrationRoutes(
           return {
             modelId: m.id,
             name: m.name,
-            assets: await assetUrlsForStorage(storageKey, m.id, view, baseView, blankFallbackUrl),
+            assets: await assetUrlsForStorage(
+              storageKey,
+              m.id,
+              view,
+              baseView,
+              blankFallbackUrl,
+              { skipSharedMask: shouldProbeCatalogBlankGuide(blueprintId) },
+            ),
             geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
             baseView,
           };

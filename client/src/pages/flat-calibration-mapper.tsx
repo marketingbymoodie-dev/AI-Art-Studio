@@ -31,6 +31,7 @@ import {
   type WeaveConfig,
 } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import type { FlatViewCalibration } from "@/pages/embed-design";
+import { shouldProbeCatalogBlankGuide } from "@shared/catalogSizeBlanks";
 import {
   AlertTriangle,
   ArrowDown,
@@ -297,6 +298,7 @@ export default function FlatCalibrationMapperPage() {
   const artScaleMax = flatPlacementScaleMax({ edgeWrapMode });
   const showModelPicker = models.length > 1;
   const catalogSizeMode = data?.modelPickerLabel === "size";
+  const tapestryMaskMode = shouldProbeCatalogBlankGuide(blueprintId);
   const modelPickerLabel =
     data?.modelPickerLabel === "phone"
       ? "Phone model"
@@ -346,10 +348,10 @@ export default function FlatCalibrationMapperPage() {
   }, [models, selectedModelId]);
 
   useEffect(() => {
-    if (catalogSizeMode && (activeLayer === "mask" || activeLayer === "shading")) {
+    if (catalogSizeMode && !tapestryMaskMode && (activeLayer === "mask" || activeLayer === "shading")) {
       setActiveLayer("stack");
     }
-  }, [catalogSizeMode, activeLayer]);
+  }, [catalogSizeMode, tapestryMaskMode, activeLayer]);
 
   useEffect(() => {
     if (selectedModel?.geometry) {
@@ -495,7 +497,7 @@ export default function FlatCalibrationMapperPage() {
       // Shared harvest masks/shading are one silhouette (usually the first size).
       // Catalog size blanks each have their own hanging photo — drop them so
       // art clips to the dashed print rect, matching the storefront.
-      catalogSizeMode
+      catalogSizeMode && !tapestryMaskMode
         ? Promise.resolve(null)
         : loadImageFirst(model.assets.mask, view.maskUrl),
       loadImage(testArtUrl),
@@ -603,6 +605,7 @@ export default function FlatCalibrationMapperPage() {
     weavePreview,
     weaveCfg,
     catalogSizeMode,
+    tapestryMaskMode,
   ]);
 
   // blankLoadError is set inside renderPreview; not a render dependency.
@@ -848,7 +851,7 @@ export default function FlatCalibrationMapperPage() {
                   <option value="stack">All layers (stack)</option>
                   <option value="blank">Blank only</option>
                   {!catalogSizeMode && <option value="shading">Shading only</option>}
-                  {!catalogSizeMode && <option value="mask">Mask only</option>}
+                  {(!catalogSizeMode || tapestryMaskMode) && <option value="mask">Mask only</option>}
                   <option value="pink">Pink reference only</option>
                 </select>
               </div>

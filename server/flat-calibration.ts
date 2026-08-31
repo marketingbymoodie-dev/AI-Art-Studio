@@ -1542,28 +1542,35 @@ export function buildHarvestColorsFromProductType(productType: {
   const apparelProduct = isApparelHarvestProduct(productType.designerType, sizes);
 
   // Tapestry / orientation products: harvest one blank per size (26×36 vs 36×26).
+  // Size ids may be `50-60` (hyphen) while catalogSizeKey is `50x60`.
+  const dimensionalCatalogKey = (size: { id?: string; name?: string }) =>
+    extractDimensionalKey(String(size.id || "")) ||
+    extractDimensionalKey(String(size.name || "")) ||
+    (String(size.id || "").match(/^(\d+)-(\d+)$/)
+      ? `${RegExp.$1}x${RegExp.$2}`
+      : null);
+  const allSizesDimensional =
+    sizes.length > 1 &&
+    sizes.every((s: any) => !!dimensionalCatalogKey(s));
   const orientationAsSize =
     !apparelProduct &&
-    sizes.length > 1 &&
-    frameColors.length > 0 &&
-    sizes.every(
-      (s: any) =>
-        !!extractDimensionalKey(String(s.id)) || !!extractDimensionalKey(String(s.name || "")),
-    ) &&
-    frameColorsRedundantWithSizes(
-      sizes.map((s: any) => ({
-        id: String(s.id),
-        name: String(s.name || s.id),
-        width: s.width,
-        height: s.height,
-      })),
-      frameColors.map((fc: any) => ({ id: String(fc.id), name: String(fc.name || fc.id) })),
-      "Option",
-    );
+    allSizesDimensional &&
+    (frameColors.length === 0 ||
+      frameColorsRedundantWithSizes(
+        sizes.map((s: any) => ({
+          id: String(s.id),
+          name: String(s.name || s.id),
+          width: s.width,
+          height: s.height,
+        })),
+        frameColors.map((fc: any) => ({ id: String(fc.id), name: String(fc.name || fc.id) })),
+        "Option",
+      ));
 
   if (orientationAsSize) {
     for (const size of sizes) {
       const sizeId = String(size.id);
+      const catalogKey = dimensionalCatalogKey(size) || sizeId;
       const matchedFc =
         frameColors.find((fc: any) => String(fc.id) === sizeId) ||
         frameColors.find(
@@ -1571,9 +1578,12 @@ export function buildHarvestColorsFromProductType(productType: {
             extractDimensionalKey(String(fc.id)) === extractDimensionalKey(sizeId) ||
             extractDimensionalKey(String(fc.name)) === extractDimensionalKey(String(size.name || sizeId)),
         );
-      const colorId = matchedFc ? String(matchedFc.id) : sizeId;
+      const colorId = matchedFc ? String(matchedFc.id) : frameColors.length === 0 ? "default" : sizeId;
       const variantId =
         resolveVariantIdForHarvest(variantMap, sizeId, colorId, {
+          allowSizeFallbackForColor: true,
+        }) ??
+        resolveVariantIdForHarvest(variantMap, sizeId, "default", {
           allowSizeFallbackForColor: true,
         }) ??
         resolveVariantIdForHarvest(variantMap, sizeId, sizeId, {
@@ -1581,8 +1591,8 @@ export function buildHarvestColorsFromProductType(productType: {
         });
       if (variantId == null) continue;
       pushColor({
-        id: sizeId,
-        name: size.name || sizeId,
+        id: catalogKey,
+        name: size.name || catalogKey,
         hex: matchedFc?.hex,
         variantId,
       });
@@ -1953,6 +1963,12 @@ export type HarvestOptions = {
    * after T Shirt and Sons harvested White/*).
    */
   skipBlankColorIds?: string[];
+  /**
+   * Restrict the per-blank pass to these ids (e.g. tapestry `50x60` probe).
+   * Matching uses extractDimensionalKey so `50''_x_60''` hits `50x60`.
+   * Stored geometryByBlank keys are rewritten to the dimensional catalogSizeKey.
+   */
+  onlyColorIds?: string[];
   /**
    * Multi-provider fill: harvest blank garment photos only — skip probe / reg /
    * shading. Those steps call shop create and fail with Printify 6002 for
@@ -3162,6 +3178,27 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
                   }
                 : null,
           });
+    if (opts.onlyColorIds && opts.onlyColorIds.length > 0) {
+      const colorSizeKey = (id: string, name?: string) =>
+        extractDimensionalKey(id) ||
+        extractDimensionalKey(name || "") ||
+        (id.match(/^(\d+)-(\d+)$/) ? `${id.split("-")[0]}x${id.split("-")[1]}` : id);
+      const wanted = new Set(
+        opts.onlyColorIds.map((id) => colorSizeKey(String(id))),
+      );
+      colors = colors
+        .filter((c) => {
+          const dim = colorSizeKey(c.id, c.name);
+          return wanted.has(dim) || wanted.has(c.id);
+        })
+        .map((c) => {
+          const dim = colorSizeKey(c.id, c.name);
+          return wanted.has(dim) ? { ...c, id: dim } : c;
+        });
+      console.log(
+        `[flat-calibration] ${name}: onlyColorIds → ${colors.map((c) => c.id).join(", ") || "(none)"}`,
+      );
+    }
     if (skipBlankKeys.size > 0) {
       const before = colors.length;
       colors = colors.filter(

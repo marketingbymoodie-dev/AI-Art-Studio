@@ -125,9 +125,9 @@ function aspectRatioFromSizeKey(
 }
 
 /**
- * Indoor wall tapestry catalog photos are hanging fabric on a white wall —
- * not the 0.75 letterbox used by wall-decal sticker PNGs. Probe the loaded
- * blank (non-near-white pixels) so the dashed box matches that photo.
+ * Indoor wall tapestry (241) catalog-size-blank path: size-only droop mask +
+ * under-coverage warning. The dashed box stays inch-aspect letterbox
+ * (`visibleRectForCatalogSizeAspect`); do not use this as a live AABB probe.
  */
 export function shouldProbeCatalogBlankGuide(
   blueprintId: number | null | undefined,
