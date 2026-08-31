@@ -14636,6 +14636,7 @@ ${orientationExtra}
             promptPlaceholder: fields.promptPlaceholder,
             generationQuality: fields.generationQuality,
             ...(fields.outputMode ? { outputMode: fields.outputMode } : {}),
+            ...(fields.generationModel ? { generationModel: fields.generationModel } : {}),
             ...(isVerbatimShortcutCatalogSlug(preset.id)
               ? {
                   userSlotSchema: null,

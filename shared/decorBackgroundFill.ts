@@ -208,10 +208,9 @@ export function resolveStyleGenerationForProduct(
   } | null,
   designerType?: string | null,
 ) {
-  const generationModel =
-    !isApparelDesignerType(designerType) && isFloatingCatalogStyle(style)
-      ? GENERATION_MODEL_GPT_IMAGE_2
-      : style?.generationModel;
+  const generationModel = isFloatingCatalogStyle(style)
+    ? GENERATION_MODEL_GPT_IMAGE_2
+    : style?.generationModel;
   return resolveStyleGeneration({
     generationModel,
     generationQuality: style?.generationQuality,

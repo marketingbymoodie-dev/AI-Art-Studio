@@ -19,6 +19,10 @@ export const WIDEN_TO_ALL_TYPES_FLOATING_SLUGS = [
   "centered-graphic",
   "illustrated-motif",
   "pattern-maker",
+  "vintage-print",
+  "one-color-print",
+  "retro-sunset-stack",
+  "playful-cartoon",
 ] as const;
 
 const EXTRA_NAME_ALIASES: Array<{ name: string; slug: string; category?: string }> = [
@@ -127,7 +131,7 @@ export function isGraphicsCatalogSlug(slug: string | null | undefined): boolean 
   return norm(slug).startsWith("graphics-");
 }
 
-/** Floating output — All-types keepers plus retired Graphics slugs. */
+/** Floating output — All-types keepers, 2026-08 GPT styles, plus retired Graphics slugs. */
 export function isFloatingCatalogStyle(opts?: {
   outputMode?: string | null;
   catalogSlug?: string | null;

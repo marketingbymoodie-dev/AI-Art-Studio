@@ -1,6 +1,8 @@
 /**
  * Platform catalog art styles added 2026-08 (Vintage Print, One-Color Print,
  * Retro Sunset Stack, Playful Cartoon) + Minimalist override of minimal-line.
+ * The four 2026-08 styles are All-types floating (GPT-Image-2), same family as
+ * Centered Graphic / Illustrated Motif / Pattern Maker.
  */
 
 export const ART_STYLE_VERBATIM_PLACEHOLDER =
@@ -26,6 +28,7 @@ export const MINIMALIST_APPAREL_STYLE =
 export const MINIMAL_LINE_DECOR_STYLE =
   "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of";
 
+/** 2026-08 catalog slugs — now All-types floating; name kept for seed sync. */
 export const NEW_APPAREL_CATALOG_SLUGS = [
   "vintage-print",
   "one-color-print",
@@ -69,8 +72,10 @@ export function catalogRowFieldsFromPreset(preset: {
   generationQuality: string | null;
   userSlotSchema: unknown;
   outputMode: string | null;
+  generationModel: string | null;
 } {
   const verbatim = isVerbatimShortcutCatalogSlug(preset.id);
+  const outputMode = preset.outputMode ?? null;
   return {
     name: preset.name,
     catalogSlug: preset.id === "none" ? null : preset.id,
@@ -79,6 +84,7 @@ export function catalogRowFieldsFromPreset(preset: {
     promptPlaceholder: preset.promptPlaceholder ?? null,
     generationQuality: preset.generationQuality ?? null,
     userSlotSchema: verbatim ? null : (preset.userSlotSchema ?? null),
-    outputMode: preset.outputMode ?? null,
+    outputMode,
+    generationModel: outputMode === "floating" ? "gpt-image-2" : null,
   };
 }

@@ -2,6 +2,7 @@
  * Report-only catalog style ↔ model audit.
  * Does not write generationModel. Catalog default is nano-banana when unset.
  */
+import { WIDEN_TO_ALL_TYPES_FLOATING_SLUGS } from "./styleCatalog";
 import { isGptImage2Model } from "./styleGeneration";
 
 export type CatalogBaseKind = "full-bleed" | "floating-transparent" | "apparel" | "custom";
@@ -41,11 +42,7 @@ export function classifyCatalogStyleIntent(preset: {
         "Dual intent: stored catalog prefix is decor full-bleed (nano-banana matches). Apparel compose uses an isolated treatment that wants GPT-Image-2. Review per surface — do not treat as a hard catalog mismatch.",
     };
   }
-  if (
-    slug === "centered-graphic" ||
-    slug === "illustrated-motif" ||
-    slug === "pattern-maker"
-  ) {
+  if ((WIDEN_TO_ALL_TYPES_FLOATING_SLUGS as readonly string[]).includes(slug)) {
     return { base: "floating-transparent", recommendedModel: "GPT-Image-2" };
   }
   if (cat === "decor") return { base: "full-bleed", recommendedModel: "nano-banana" };

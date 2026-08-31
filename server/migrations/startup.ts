@@ -2514,7 +2514,7 @@ async function migrateQuotesInterpretiveStyle(): Promise<number> {
 
 /**
  * Insert missing STYLE_PRESETS catalog slugs for every merchant, and sync
- * Minimalist + the four new apparel styles in place (no dupes).
+ * Minimalist + the four 2026-08 floating styles in place (no dupes).
  */
 export async function ensureCatalogStylesForAllMerchants(): Promise<{
   inserted: number;
@@ -2558,8 +2558,13 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
                  WHEN catalog_slug = 'minimal-line' THEN prompt_prefix
                  ELSE $6
                END,
+               output_mode = COALESCE($7, output_mode),
+               generation_model = CASE
+                 WHEN $7 = 'floating' THEN 'gpt-image-2'
+                 ELSE generation_model
+               END,
                updated_at = NOW()
-           WHERE id = $7`,
+           WHERE id = $8`,
           [
             fields.name,
             fields.category,
@@ -2567,6 +2572,7 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
             fields.generationQuality,
             fields.userSlotSchema,
             fields.promptPrefix,
+            fields.outputMode,
             hit.id,
           ],
         );
@@ -2576,8 +2582,8 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
         await pool.query(
           `INSERT INTO style_presets (
            merchant_id, name, catalog_slug, prompt_prefix, category, is_active, sort_order,
-           prompt_placeholder, generation_quality, user_slot_schema, output_mode
-         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10)`,
+           prompt_placeholder, generation_quality, user_slot_schema, output_mode, generation_model
+         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11)`,
         [
           m.id,
           fields.name,
@@ -2589,6 +2595,7 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
           fields.generationQuality,
           fields.userSlotSchema,
           fields.outputMode,
+          fields.generationModel,
         ],
       );
       inserted++;

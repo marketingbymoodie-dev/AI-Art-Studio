@@ -60,6 +60,10 @@ describe("retired Graphics twin slugs", () => {
     expect(isFloatingCatalogStyle({ catalogSlug: "centered-graphic" })).toBe(true);
     expect(isFloatingCatalogStyle({ outputMode: "floating" })).toBe(true);
     expect(isFloatingCatalogStyle({ catalogSlug: "minimal-line" })).toBe(false);
+    expect(isFloatingCatalogStyle({ catalogSlug: "playful-cartoon" })).toBe(true);
+    expect(isFloatingCatalogStyle({ catalogSlug: "vintage-print" })).toBe(true);
+    expect(isFloatingCatalogStyle({ catalogSlug: "one-color-print" })).toBe(true);
+    expect(isFloatingCatalogStyle({ catalogSlug: "retro-sunset-stack" })).toBe(true);
   });
 });
 

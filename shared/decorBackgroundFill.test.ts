@@ -217,6 +217,19 @@ describe("shouldShowDecorFloatingFill", () => {
         outputMode: null,
       }),
     ).toBe(true);
+    expect(
+      shouldShowDecorFloatingFill({
+        designerType: "generic",
+        catalogSlug: "playful-cartoon",
+        styleName: "Playful Cartoon",
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowDecorFloatingFill({
+        designerType: "pillow",
+        catalogSlug: "vintage-print",
+      }),
+    ).toBe(true);
   });
 
   it("stays off for apparel, full-bleed decor, and PatternCustomizer AOP", () => {
@@ -261,11 +274,27 @@ describe("resolveStyleGenerationForProduct", () => {
     expect(g.nativeTransparent).toBe(true);
   });
 
-  it("does not force GPT for floating styles on apparel", () => {
+  it("forces GPT-Image-2 for floating styles on apparel (native transparent garment float)", () => {
     const g = resolveStyleGenerationForProduct(
       { catalogSlug: "centered-graphic", outputMode: "floating", generationModel: null },
       "apparel",
     );
-    expect(g.model).toBeNull();
+    expect(g.model).toBe("gpt-image-2");
+    expect(g.nativeTransparent).toBe(true);
+  });
+
+  it("routes the 2026-08 floating styles to GPT-Image-2 on decor and apparel", () => {
+    for (const slug of [
+      "vintage-print",
+      "one-color-print",
+      "retro-sunset-stack",
+      "playful-cartoon",
+    ] as const) {
+      const decor = resolveStyleGenerationForProduct({ catalogSlug: slug }, "generic");
+      expect(decor.model).toBe("gpt-image-2");
+      expect(decor.nativeTransparent).toBe(true);
+      const apparel = resolveStyleGenerationForProduct({ catalogSlug: slug }, "apparel");
+      expect(apparel.model).toBe("gpt-image-2");
+    }
   });
 });
