@@ -8594,6 +8594,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           fabricWeave: !!flatFabricWeave,
           probeCatalogGuide,
           zoomPercent: zoomDefault,
+          blueprintId: productTypeConfig?.printifyBlueprintId,
         });
         const artworkAbs = toAbsoluteImageUrl(imageUrl);
         // Honor Print Side dropdown — do not force back off when "both" is selected.
@@ -8621,6 +8622,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             decorMode: flatDecorMode,
             fabricWeave: !!flatFabricWeave,
             probeCatalogGuide,
+            blueprintId: productTypeConfig?.printifyBlueprintId,
           }),
         };
         setFlatPlacerState(seededFlatState);
@@ -9411,6 +9413,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           fabricWeave: !!flatFabricWeave,
           probeCatalogGuide,
           zoomPercent: zoomDefault,
+          blueprintId: productTypeConfig?.printifyBlueprintId,
         });
         const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
         // Honor Print Side dropdown — do not force back off when "both" is selected.
@@ -9437,6 +9440,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             decorMode: flatDecorMode,
             fabricWeave: !!flatFabricWeave,
             probeCatalogGuide,
+            blueprintId: productTypeConfig?.printifyBlueprintId,
           }),
         });
       } else {
@@ -12299,6 +12303,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           fabricWeave: !!flatFabricWeave,
           probeCatalogGuide,
           zoomPercent: defaultZoom,
+          blueprintId: productTypeConfig?.printifyBlueprintId,
         });
         setFlatPlacerState({
           view: "front",
@@ -12323,6 +12328,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             decorMode: flatDecorMode,
             fabricWeave: !!flatFabricWeave,
             probeCatalogGuide,
+            blueprintId: productTypeConfig?.printifyBlueprintId,
           }),
         });
         setFlatPlacerEditOpen(true);

@@ -56,6 +56,7 @@ import type {
   FlatCalibrationManifest,
   FlatViewCalibration,
 } from "@/pages/embed-design";
+import { flatArtFitForBlueprint, isBeanieBlueprint } from "@shared/hoodieTemplate";
 
 /**
  * Customer-facing placer for "on-the-fly" flat / mesh products.
@@ -361,9 +362,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         decorMode,
         fabricWeave,
         probeCatalogGuide,
+        blueprintId: manifest.blueprintId,
       }),
     }),
-    [edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide],
+    [edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide, manifest.blueprintId],
   );
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
   /** View-only zoom of the editor canvas (does not change print placement). */
@@ -567,6 +569,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           decorMode,
           fabricWeave,
           probeCatalogGuide,
+          blueprintId: manifest.blueprintId,
         }),
       };
     });
@@ -621,7 +624,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   // user drags are never overwritten (needsSafeFit cleared; placement edits
   // also clear it via applyPlacementToState).
   useEffect(() => {
-    if (!flatShouldFitToSafeArea({ edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide })) {
+    if (!flatShouldFitToSafeArea({
+      edgeWrapMode,
+      decorMode,
+      fabricWeave,
+      probeCatalogGuide,
+      blueprintId: manifest.blueprintId,
+    })) {
       if (stateRef.current?.needsSafeFit) {
         setState((prev) => (prev?.needsSafeFit ? { ...prev, needsSafeFit: false } : prev));
       }
@@ -740,7 +749,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           printCanvasBackgroundColor:
-            edgeWrapMode || decorMode || fabricWeave || !!decorGenerateFill
+            edgeWrapMode ||
+            decorMode ||
+            fabricWeave ||
+            !!decorGenerateFill ||
+            isBeanieBlueprint(manifest.blueprintId)
               ? state.backgroundColor
               : null,
           decorMode,
@@ -1293,7 +1306,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     };
     // Opaque-content bounds: transparent PNG padding must not trigger false
     // trim warnings (nothing visible is clipped) nor fake print-area coverage.
-    const box = flatVisibleArtBoxAxisAligned(placementRect, placed, artworkImg);
+    const box = flatVisibleArtBoxAxisAligned(
+      placementRect,
+      placed,
+      artworkImg,
+      flatArtFitForBlueprint(manifest.blueprintId),
+    );
     if (edgeWrapMode) {
       // Phone: gap warn only when no customer bg fills the blue canvas.
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
@@ -1311,7 +1329,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatApparelOpaqueTrimmed(placementRect, placed, artworkImg)) {
+    } else if (
+      flatApparelOpaqueTrimmed(
+        placementRect,
+        placed,
+        artworkImg,
+        flatArtFitForBlueprint(manifest.blueprintId),
+      )
+    ) {
       // Apparel: only real opaque pixels past the guide — a rotated design's
       // hollow bounding-box corners are empty and must never warn.
       coverageWarning = "trim";
@@ -1442,6 +1467,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               innerGuideRect={displayEdgeGuides?.inner ?? null}
               outerGuideRect={displayEdgeGuides?.outer ?? null}
               placementRect={placementRect}
+              artFit={flatArtFitForBlueprint(manifest.blueprintId)}
               guideMask={probeCatalogGuide ? viewAssets.mask : null}
               mockupWidth={displayMockupW}
               mockupHeight={displayMockupH}
@@ -1584,6 +1610,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             : "w-full shrink-0 space-y-4 lg:w-80"
         }
       >
+        {isBeanieBlueprint(manifest.blueprintId) && (
+          <p
+            className="rounded border border-border bg-muted/40 px-3 py-2 text-[11px] leading-snug text-muted-foreground"
+            data-testid="beanie-both-sides-note"
+          >
+            This beanie prints the same design on the front and back.
+          </p>
+        )}
+
         {/* View row: Front always; Back only when available */}
         {availableViews.length > 1 && (
           <div>

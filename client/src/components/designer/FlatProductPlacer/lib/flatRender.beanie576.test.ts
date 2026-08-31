@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyBeaniePreviewPlacementRect,
   clipFlatArtToPrintArea,
+  flatArtBox,
+  flatDefaultPlacementScale,
+  flatOverflows,
+  flatShouldFitToSafeArea,
 } from "./flatRender";
+import { flatArtFitForBlueprint } from "@shared/hoodieTemplate";
 
 describe("576 beanie preview-only placement", () => {
   const rect = { x: 100, y: 100, width: 200, height: 200 };
@@ -19,6 +24,46 @@ describe("576 beanie preview-only placement", () => {
     expect(applyBeaniePreviewPlacementRect(450, rect)).toEqual(rect);
     expect(applyBeaniePreviewPlacementRect(241, rect)).toEqual(rect);
     expect(applyBeaniePreviewPlacementRect(null, rect)).toEqual(rect);
+  });
+});
+
+describe("576 beanie contain-fit (241 stays cover)", () => {
+  const square = { x: 0, y: 0, width: 200, height: 200 };
+  const tallArt = { w: 100, h: 200 };
+  const place = { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 };
+
+  it("contain-fits tall art inside the print rect — no top/bottom crop", () => {
+    const box = flatArtBox(square, place, tallArt.w, tallArt.h, "contain");
+    expect(box.width).toBeCloseTo(100, 5);
+    expect(box.height).toBeCloseTo(200, 5);
+    expect(box.x).toBeCloseTo(50, 5);
+    expect(box.y).toBeCloseTo(0, 5);
+    expect(flatOverflows(square, box, 0.5)).toBe(false);
+  });
+
+  it("cover still crops tall art (tapestry / default path)", () => {
+    const box = flatArtBox(square, place, tallArt.w, tallArt.h, "cover");
+    expect(box.width).toBeCloseTo(200, 5);
+    expect(box.height).toBeCloseTo(400, 5);
+    expect(flatOverflows(square, box, 0.5)).toBe(true);
+    expect(flatArtFitForBlueprint(241)).toBe("cover");
+  });
+
+  it("+15% preview grows the contain box but does not overflow the display rect", () => {
+    const harvest = { x: 20, y: 20, width: 160, height: 160 };
+    const display = applyBeaniePreviewPlacementRect(576, harvest);
+    const box = flatArtBox(display, place, tallArt.w, tallArt.h, "contain");
+    expect(box.height).toBeCloseTo(display.height, 5);
+    expect(box.width).toBeCloseTo(display.height / 2, 5);
+    expect(flatOverflows(display, box, 0.5)).toBe(false);
+    expect(box.height).toBeGreaterThan(harvest.height);
+  });
+
+  it("skips cover-relative first-open fit and seeds scale 1", () => {
+    expect(flatShouldFitToSafeArea({ blueprintId: 576 })).toBe(false);
+    expect(flatDefaultPlacementScale({ blueprintId: 576 })).toBe(1);
+    expect(flatShouldFitToSafeArea({ probeCatalogGuide: true })).toBe(false);
+    expect(flatDefaultPlacementScale({ probeCatalogGuide: true })).toBe(1);
   });
 });
 

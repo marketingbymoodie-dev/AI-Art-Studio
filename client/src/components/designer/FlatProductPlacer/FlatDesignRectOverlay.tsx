@@ -18,6 +18,7 @@ import {
   type ArtContentFractions,
   type Rect,
 } from "./lib/flatRender";
+import type { FlatArtFit } from "@shared/hoodieTemplate";
 import type { FlatViewCalibration } from "@/pages/embed-design";
 
 /**
@@ -47,6 +48,8 @@ export type FlatDesignRectOverlayProps = {
   outerGuideRect?: Rect | null;
   /** Placement coordinate rect in mockup px (defaults to visible print rect). */
   placementRect?: Rect | null;
+  /** 576 contain; default cover (241 / apparel / decor). */
+  artFit?: FlatArtFit;
   /**
    * 241 droop mask: stroke this silhouette as the dashed print guide instead
    * of the AABB/letterbox rectangle. Placement math still uses placementRect.
@@ -79,6 +82,7 @@ export default function FlatDesignRectOverlay({
   innerGuideRect = null,
   outerGuideRect = null,
   placementRect = null,
+  artFit = "cover",
   guideMask = null,
   mockupWidth,
   mockupHeight,
@@ -144,8 +148,8 @@ export default function FlatDesignRectOverlay({
     [edgeWrapMode, guideMask, mockupW, mockupH],
   );
   const box = useMemo(
-    () => flatArtBox(rect, placement, artW, artH),
-    [rect, placement, artW, artH],
+    () => flatArtBox(rect, placement, artW, artH, artFit),
+    [rect, placement, artW, artH, artFit],
   );
 
   // Opaque-content bounds: the visible ring/handles hug the artwork pixels,
@@ -230,7 +234,7 @@ export default function FlatDesignRectOverlay({
       const drag = dragRef.current;
       if (drag?.mode === "translate") {
         const cur = latestPlacementRef.current;
-        const currentBox = flatArtBox(drag.rect, cur, artW, artH);
+        const currentBox = flatArtBox(drag.rect, cur, artW, artH, artFit);
         const snapX = SNAP_SCREEN_PX * (mockupW / drag.canvasRect.width);
         const snapY = SNAP_SCREEN_PX * (mockupH / drag.canvasRect.height);
         const rectCx = drag.rect.x + drag.rect.width / 2;

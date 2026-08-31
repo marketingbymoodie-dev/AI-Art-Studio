@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
-import { bakeFlatPrintFile, prepareBakeUploadBuffer } from "./flat-print-file";
+import { bakeFlatPrintFile, flatArtBox, prepareBakeUploadBuffer } from "./flat-print-file";
 
 async function rgbaAt(
   buffer: Buffer,
@@ -78,6 +78,52 @@ describe("bakeFlatPrintFile color-only bleed", () => {
     expect(px.g).toBeLessThan(50);
     expect(px.b).toBeLessThan(50);
     expect(px.a).toBe(255);
+  });
+});
+
+describe("576 beanie contain bake", () => {
+  it("keeps print-file dims and does not crop tall art at scale 1", async () => {
+    const raw = Buffer.alloc(50 * 200 * 4, 0);
+    for (let i = 0; i < 50 * 200; i++) {
+      raw[i * 4] = 200;
+      raw[i * 4 + 1] = 20;
+      raw[i * 4 + 2] = 20;
+      raw[i * 4 + 3] = 255;
+    }
+    const art = await sharp(raw, { raw: { width: 50, height: 200, channels: 4 } }).png().toBuffer();
+    const printFileDims = { width: 200, height: 200 };
+    const coverBox = flatArtBox(
+      { x: 0, y: 0, width: 200, height: 200 },
+      { scale: 1, offsetX: 0, offsetY: 0 },
+      50,
+      200,
+      "cover",
+    );
+    const containBox = flatArtBox(
+      { x: 0, y: 0, width: 200, height: 200 },
+      { scale: 1, offsetX: 0, offsetY: 0 },
+      50,
+      200,
+      "contain",
+    );
+    expect(coverBox.height).toBeGreaterThan(200);
+    expect(containBox.height).toBeCloseTo(200, 5);
+    expect(containBox.width).toBeCloseTo(50, 5);
+
+    const baked = await bakeFlatPrintFile({
+      artworkBuffer: art,
+      placement: { scale: 1, offsetX: 0, offsetY: 0 },
+      printFileDims,
+      backgroundColor: "#00AA00",
+      artFit: "contain",
+    });
+    expect(baked.width).toBe(200);
+    expect(baked.height).toBe(200);
+    const top = await rgbaAt(baked.buffer, 4, 4);
+    expect(top).toEqual({ r: 0, g: 170, b: 0, a: 255 });
+    const center = await rgbaAt(baked.buffer, 100, 100);
+    expect(center.r).toBeGreaterThan(180);
+    expect(center.g).toBeLessThan(40);
   });
 });
 

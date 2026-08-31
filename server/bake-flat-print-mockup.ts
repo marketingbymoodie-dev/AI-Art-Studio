@@ -17,6 +17,7 @@ import {
   placementForPrintMatch,
 } from "./flat-order-fulfillment";
 import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
+import { flatArtFitForBlueprint } from "@shared/hoodieTemplate";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
 import {
   TOTE_FOLDED_CANVAS_HEIGHT,
@@ -184,6 +185,7 @@ export async function bakeFlatPrintForMockup(
       printFileDims: dims,
       placementRect,
       backgroundColor,
+      artFit: flatArtFitForBlueprint(args.productType.printifyBlueprintId),
     });
     const designKey = `mockup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const url = await persistBakedPrintFile(

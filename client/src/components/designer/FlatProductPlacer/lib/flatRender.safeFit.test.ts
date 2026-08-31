@@ -58,6 +58,13 @@ describe("flatShouldFitToSafeArea", () => {
     expect(flatShouldFitToSafeArea({})).toBe(true);
     expect(flatDefaultPlacementScale({})).toBe(FLAT_APPAREL_DEFAULT_SCALE);
   });
+
+  it("576 uses contain draw baseline — not apparel cover-relative first-open fit", () => {
+    expect(flatShouldFitToSafeArea({ blueprintId: 576 })).toBe(false);
+    expect(flatDefaultPlacementScale({ blueprintId: 576 })).toBe(1);
+    expect(flatShouldFitToSafeArea({ probeCatalogGuide: true, blueprintId: 241 })).toBe(false);
+    expect(flatDefaultPlacementScale({ probeCatalogGuide: true, blueprintId: 241 })).toBe(1);
+  });
 });
 
 describe("flatContainPlacementScale", () => {

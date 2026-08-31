@@ -56,6 +56,7 @@ import {
   type FlatPlacement,
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
+import { flatArtFitForBlueprint } from "@shared/hoodieTemplate";
 import {
   resolveVariantFromMap,
   resolveVariantForSizeOnly,
@@ -854,6 +855,7 @@ async function buildPrintAreasForDesign(
       printFileDims: { width: dims.width, height: dims.height },
       placementRect: placementRect ?? undefined,
       backgroundColor: design.backgroundColor ?? null,
+      artFit: flatArtFitForBlueprint((design.productType as { printifyBlueprintId?: number | null }).printifyBlueprintId),
     });
     const url = await persistBakedPrintFile(design.productType.id, design.designId, view, baked.buffer);
     if (!url) {

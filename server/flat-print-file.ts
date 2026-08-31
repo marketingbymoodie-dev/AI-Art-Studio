@@ -27,6 +27,7 @@
  * client/browser coupling. Keep the two in sync if the placement math changes.
  */
 import sharp from "sharp";
+import type { FlatArtFit } from "@shared/hoodieTemplate";
 import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
@@ -46,20 +47,23 @@ export type PrintFileDims = { width: number; height: number };
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 
 /**
- * Server-side port of the client `flatArtBox`. Baseline (scale=1) = the
- * smallest uniform scale that fully COVERS `rect`; reducing scale reveals
- * background at the edges (matching the preview's coverage behaviour).
+ * Server-side port of the client `flatArtBox`. Baseline (scale=1) = cover
+ * unless `fit` is `"contain"` (576 beanie: fit-inside, no crop).
  */
 export function flatArtBox(
   rect: Rect,
   placement: FlatPlacement,
   artW: number,
   artH: number,
+  fit: FlatArtFit = "cover",
 ): Rect {
   const aspectSafeW = artW > 0 ? artW : 1;
   const aspectSafeH = artH > 0 ? artH : 1;
-  const cover = Math.max(rect.width / aspectSafeW, rect.height / aspectSafeH);
-  const k = cover * placement.scale;
+  const baseline =
+    fit === "contain"
+      ? Math.min(rect.width / aspectSafeW, rect.height / aspectSafeH)
+      : Math.max(rect.width / aspectSafeW, rect.height / aspectSafeH);
+  const k = baseline * placement.scale;
   const drawW = aspectSafeW * k;
   const drawH = aspectSafeH * k;
   const cx = rect.x + rect.width * (0.5 + placement.offsetX);
@@ -89,6 +93,8 @@ export type BakeFlatPrintFileArgs = {
    * or change placement math. When unset, the bake stays transparent.
    */
   backgroundColor?: string | null;
+  /** 576 contain; default cover. Print file pixel size is unchanged. */
+  artFit?: FlatArtFit;
 };
 
 function parseBakeBackground(
@@ -136,7 +142,7 @@ export async function bakeFlatPrintFile(
 
   const rect: Rect =
     args.placementRect ?? { x: 0, y: 0, width: printW, height: printH };
-  const box = flatArtBox(rect, placement, artW, artH);
+  const box = flatArtBox(rect, placement, artW, artH, args.artFit ?? "cover");
 
   const drawW = Math.max(1, Math.round(box.width));
   const drawH = Math.max(1, Math.round(box.height));

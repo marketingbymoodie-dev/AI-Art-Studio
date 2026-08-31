@@ -33,7 +33,9 @@ import { drawMeshWarp } from "@/components/hoodie-template-mapper/lib/meshWarp";
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   BEANIE_PREVIEW_PLACEMENT_SCALE,
+  flatArtFitForBlueprint,
   isBeanieBlueprint,
+  type FlatArtFit,
   type MeshGrid,
   type Pt,
 } from "@shared/hoodieTemplate";
@@ -85,10 +87,14 @@ export function flatDefaultPlacementScale(opts: {
   probeCatalogGuide?: boolean;
   /** Percent zoom used for decor / edge-wrap / fabric (e.g. 110). Ignored for apparel. */
   zoomPercent?: number;
+  /** 576: contain baseline at scale=1 (not apparel 0.85 cover). */
+  blueprintId?: number | null;
 }): number {
   const max = flatPlacementScaleMax(opts);
   // 241: cover baseline in mask-AABB units — not apparel 85% and not contain-fit.
   if (opts.probeCatalogGuide) return Math.min(max, 1);
+  // 576: scale=1 is already contain (full art). Cover-relative 0.85 would letterbox twice.
+  if (isBeanieBlueprint(opts.blueprintId)) return Math.min(max, 1);
   if (opts.edgeWrapMode || opts.decorMode || opts.fabricWeave) {
     const pct = typeof opts.zoomPercent === "number" ? opts.zoomPercent : 100;
     return Math.max(FLAT_SCALE_MIN, Math.min(max, pct / 100));
@@ -106,7 +112,10 @@ export function flatShouldFitToSafeArea(opts: {
   decorMode?: boolean;
   fabricWeave?: boolean;
   probeCatalogGuide?: boolean;
+  /** 576 uses contain as the draw baseline — skip cover-relative first-open fit. */
+  blueprintId?: number | null;
 }): boolean {
+  if (isBeanieBlueprint(opts.blueprintId)) return false;
   return (
     !opts.edgeWrapMode &&
     !opts.decorMode &&
@@ -991,10 +1000,11 @@ export function flatVisibleArtBoxAxisAligned(
   rect: Rect,
   placement: ArtworkPlacement,
   artwork: HTMLImageElement,
+  fit: FlatArtFit = "cover",
 ): Rect {
   const artW = artwork.naturalWidth || artwork.width || 1;
   const artH = artwork.naturalHeight || artwork.height || 1;
-  const fullBox = flatArtBox(rect, placement, artW, artH);
+  const fullBox = flatArtBox(rect, placement, artW, artH, fit);
   const content = flatArtContentFractionsCached(artwork);
   const sub = flatArtContentSubRect(fullBox, content);
   const deg = Number.isFinite(placement.rotationDeg)
@@ -1103,19 +1113,22 @@ export function flatEdgeWrapViewportLayout(
 
 /**
  * Artwork bounding box (mockup px) for a given placement. Baseline (scale=1)
- * = the smallest uniform scale that fully COVERS the rect, so reducing scale
- * reveals garment at the edges (the coverage warning's trigger).
+ * = cover (fill+crop) unless `fit` is `"contain"` (576: fit-inside, no crop).
  */
 export function flatArtBox(
   rect: Rect,
   placement: ArtworkPlacement,
   artW: number,
   artH: number,
+  fit: FlatArtFit = "cover",
 ): Rect {
   const aspectSafeW = artW > 0 ? artW : 1;
   const aspectSafeH = artH > 0 ? artH : 1;
-  const cover = Math.max(rect.width / aspectSafeW, rect.height / aspectSafeH);
-  const k = cover * placement.scale;
+  const baseline =
+    fit === "contain"
+      ? Math.min(rect.width / aspectSafeW, rect.height / aspectSafeH)
+      : Math.max(rect.width / aspectSafeW, rect.height / aspectSafeH);
+  const k = baseline * placement.scale;
   const drawW = aspectSafeW * k;
   const drawH = aspectSafeH * k;
   const cx = rect.x + rect.width * (0.5 + placement.offsetX);
@@ -1132,8 +1145,9 @@ export function flatArtBoxAxisAligned(
   placement: ArtworkPlacement,
   artW: number,
   artH: number,
+  fit: FlatArtFit = "cover",
 ): Rect {
-  const box = flatArtBox(rect, placement, artW, artH);
+  const box = flatArtBox(rect, placement, artW, artH, fit);
   const deg = Number.isFinite(placement.rotationDeg) ? Number(placement.rotationDeg) : 0;
   if (!deg) return box;
   const cx = box.x + box.width / 2;
@@ -1272,15 +1286,16 @@ export function flatApparelOpaqueTrimmed(
   guideRect: Rect,
   placement: ArtworkPlacement,
   artwork: HTMLImageElement,
+  fit: FlatArtFit = "cover",
 ): boolean {
-  const aabb = flatVisibleArtBoxAxisAligned(guideRect, placement, artwork);
+  const aabb = flatVisibleArtBoxAxisAligned(guideRect, placement, artwork, fit);
   if (!flatApparelGuideTrimmed(guideRect, aabb)) return false;
   const outline = flatArtOpaqueOutlineCached(artwork);
   // Unreadable pixels (tainted canvas) — keep the conservative box answer.
   if (!outline) return true;
   const artW = artwork.naturalWidth || artwork.width || 1;
   const artH = artwork.naturalHeight || artwork.height || 1;
-  const fullBox = flatArtBox(guideRect, placement, artW, artH);
+  const fullBox = flatArtBox(guideRect, placement, artW, artH, fit);
   const deg = Number.isFinite(placement.rotationDeg)
     ? Number(placement.rotationDeg)
     : 0;
@@ -3315,6 +3330,8 @@ export function renderFlatView(input: FlatRenderInput): void {
     blueprintId,
     flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }),
   );
+  const artFit = flatArtFitForBlueprint(blueprintId);
+  const beanieContain = artFit === "contain";
 
   const art = document.createElement("canvas");
   art.width = W;
@@ -3342,7 +3359,7 @@ export function renderFlatView(input: FlatRenderInput): void {
         pctx.fillRect(printRect.x, printRect.y, printRect.width, printRect.height);
       }
       if (hasArt && artwork) {
-        const box = flatArtBox(printRect, placement, artW, artH);
+        const box = flatArtBox(printRect, placement, artW, artH, artFit);
         drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
       }
       if (areaFill || hasArt) {
@@ -3354,28 +3371,48 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (!drewMesh) {
     if (areaFill) {
-      actx.fillStyle = areaFill;
-      actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+      if (beanieContain && mask) {
+        // Fill the dome only — do not destination-in the contained art
+        // afterwards (that re-clips bow/paws after the +15% preview nudge).
+        const fillLayer = document.createElement("canvas");
+        fillLayer.width = W;
+        fillLayer.height = H;
+        const fctx = fillLayer.getContext("2d");
+        if (fctx) {
+          fctx.fillStyle = areaFill;
+          fctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+          clipFlatArtToPrintArea(fctx, {
+            mask,
+            rect: { x: 0, y: 0, width: W, height: H },
+            canvasW: W,
+            canvasH: H,
+            fabricWeave: fabricWeave && !edgeWrapMode,
+          });
+          actx.drawImage(fillLayer, 0, 0);
+        }
+      } else {
+        actx.fillStyle = areaFill;
+        actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+      }
     }
     if (hasArt && artwork) {
-      const box = flatArtBox(rect, placement, artW, artH);
+      const box = flatArtBox(rect, placement, artW, artH, artFit);
       drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
     }
   }
 
-  // 576: clip to the harvested dome mask only. The harvest AABB
-  // (visibleRect / printBounds, ~11.5% inset) must not destination-out the
-  // top of Printify's real print area. Bake never calls this clip.
-  clipFlatArtToPrintArea(actx, {
-    mask,
-    rect:
-      isBeanieBlueprint(blueprintId) && mask
-        ? { x: 0, y: 0, width: W, height: H }
-        : rect,
-    canvasW: W,
-    canvasH: H,
-    fabricWeave: fabricWeave && !edgeWrapMode,
-  });
+  // 576 contain: art is already fit-inside. Skip destination-in so the
+  // preview-only +15% rect does not re-clip top/bottom. Other products keep
+  // mask+rect clip (241 cover unchanged).
+  if (!beanieContain) {
+    clipFlatArtToPrintArea(actx, {
+      mask,
+      rect,
+      canvasW: W,
+      canvasH: H,
+      fabricWeave: fabricWeave && !edgeWrapMode,
+    });
+  }
 
   const shadeMode: "blank" | "map" =
     view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;

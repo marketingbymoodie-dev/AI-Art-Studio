@@ -1049,6 +1049,15 @@ export function isBeanieBlueprint(blueprintId: number | null | undefined): boole
   return Number(blueprintId) === BEANIE_BLUEPRINT_ID;
 }
 
+/** Placement draw baseline. 576 contain-fits; everyone else (incl. 241) covers. */
+export type FlatArtFit = "cover" | "contain";
+
+export function flatArtFitForBlueprint(
+  blueprintId: number | null | undefined,
+): FlatArtFit {
+  return isBeanieBlueprint(blueprintId) ? "contain" : "cover";
+}
+
 export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {
   if (blueprintId == null) return false;
   return PILLOW_WRAP_BLUEPRINT_IDS.includes(blueprintId);

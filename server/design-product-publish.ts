@@ -20,6 +20,7 @@
 import { uploadImageToPrintify, getBlueprintVariantPlaceholders } from "./printify-mockups";
 import { PRINTIFY_PANEL_POSITION_ALIASES } from "@shared/pulloverPocketPrintMerge";
 import { bakeFlatPrintFile, uploadPrintFileToPrintify, type FlatPlacement } from "./flat-print-file";
+import { flatArtFitForBlueprint } from "@shared/hoodieTemplate";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
 import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
 import { compositeFillBehindNativeAlpha } from "./compositeFillBehind";
@@ -244,6 +245,7 @@ async function buildFlatPlaceholders(
         printFileDims: { width: dims.width, height: dims.height },
         placementRect: placementRect ?? undefined,
         backgroundColor,
+        artFit: flatArtFitForBlueprint((productType as { printifyBlueprintId?: number | null }).printifyBlueprintId),
       });
       const imageId = await uploadPrintFileToPrintify(apiToken, `design-${job.id}-${view}.png`, baked.buffer);
       placeholders.push({ position: view, images: [{ id: imageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
