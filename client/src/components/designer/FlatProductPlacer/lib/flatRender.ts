@@ -201,7 +201,7 @@ export type FlatRenderInput = {
   mask: HTMLImageElement | null;
   /** Gray-pass shading map (used only when `view.shadingMode === "map"`). */
   shading: HTMLImageElement | null;
-  /** Customer artwork. `null` → render the plain blank. */
+  /** Customer artwork. `null` → no art on this face (fill still applies). */
   artwork: HTMLImageElement | null;
   view: FlatViewCalibration;
   placement: ArtworkPlacement;
@@ -213,8 +213,9 @@ export type FlatRenderInput = {
   /** Edge-print phone cases — placement uses full print bounds, not safe zone. */
   edgeWrapMode?: boolean;
   /**
-   * Phone cases: customer fill under artwork out to the blue dashed print
-   * canvas. When unset, preview keeps Printify grey guide chrome only.
+   * Customer fill under artwork. Phone cases: out to the blue dashed print
+   * canvas (grey chrome when unset). Decor / tote: both faces, even when
+   * that view's artwork is off — matches the bake.
    */
   printCanvasBackgroundColor?: string | null;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
@@ -294,6 +295,27 @@ function imgDims(img: HTMLImageElement): { w: number; h: number } {
     w: img.naturalWidth || img.width,
     h: img.naturalHeight || img.height,
   };
+}
+
+/** Valid `#RRGGBB` print-canvas fill, or null. */
+export function parsePrintCanvasFillHex(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const hex = raw.trim();
+  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
+}
+
+/**
+ * A view still composites a print layer when artwork is off but a fill hex
+ * is set (tote / pillow back with print-on-back disabled).
+ */
+export function flatViewPaintsPrintLayer(
+  artwork: HTMLImageElement | null,
+  printCanvasBackgroundColor?: string | null,
+): boolean {
+  if (parsePrintCanvasFillHex(printCanvasBackgroundColor)) return true;
+  if (!artwork) return false;
+  const { w, h } = imgDims(artwork);
+  return w > 0 && h > 0;
 }
 
 /** True when blank and mask share the same pixel coordinate space (±8%). */
@@ -2655,11 +2677,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
-    const customerBg =
-      typeof printCanvasBackgroundColor === "string" &&
-      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
-        ? printCanvasBackgroundColor.trim()
-        : null;
+    const customerBg = parsePrintCanvasFillHex(printCanvasBackgroundColor);
 
     // Step 1: Always Printify grey guide chrome for the print canvas (blue
     // dashed). Customer bg is mask-clipped in step 2b so the outer grey box
@@ -2832,10 +2850,13 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(blankDrawSource, 0, 0, W, H);
-  if (!artwork) return;
 
-  const { w: artW, h: artH } = imgDims(artwork);
-  if (artW <= 0 || artH <= 0) return;
+  const areaFill = parsePrintCanvasFillHex(printCanvasBackgroundColor);
+  const { w: artW, h: artH } = artwork ? imgDims(artwork) : { w: 0, h: 0 };
+  const hasArt = !!(artwork && artW > 0 && artH > 0);
+  // Fill both faces even when this view's artwork is off (print-on-back
+  // independent of bg). Matches tote / pillow bake.
+  if (!hasArt && !areaFill) return;
 
   const rect = flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode });
 
@@ -2860,35 +2881,30 @@ export function renderFlatView(input: FlatRenderInput): void {
     const printRect: Rect = { x: 0, y: 0, width: printW, height: printH };
     const mesh = buildMeshGrid(view, scaleX, scaleY, printRect);
     if (pctx && mesh) {
-      const meshFill =
-        typeof printCanvasBackgroundColor === "string" &&
-        /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
-          ? printCanvasBackgroundColor.trim()
-          : null;
-      if (meshFill) {
-        pctx.fillStyle = meshFill;
+      if (areaFill) {
+        pctx.fillStyle = areaFill;
         pctx.fillRect(printRect.x, printRect.y, printRect.width, printRect.height);
       }
-      const box = flatArtBox(printRect, placement, artW, artH);
-      drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
-      drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
-      drewMesh = true;
+      if (hasArt && artwork) {
+        const box = flatArtBox(printRect, placement, artW, artH);
+        drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
+      }
+      if (areaFill || hasArt) {
+        drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
+        drewMesh = true;
+      }
     }
   }
-
-  const areaFill =
-    typeof printCanvasBackgroundColor === "string" &&
-    /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
-      ? printCanvasBackgroundColor.trim()
-      : null;
 
   if (!drewMesh) {
     if (areaFill) {
       actx.fillStyle = areaFill;
       actx.fillRect(rect.x, rect.y, rect.width, rect.height);
     }
-    const box = flatArtBox(rect, placement, artW, artH);
-    drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
+    if (hasArt && artwork) {
+      const box = flatArtBox(rect, placement, artW, artH);
+      drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
+    }
   }
 
   clipFlatArtToPrintArea(actx, {

@@ -71,6 +71,8 @@ import type {
  *     `{scale:1}` so its own clamp does not shrink coverage.
  *   - Phone cases (`edgeWrapMode`): optional `backgroundColor` fills the blue
  *     dashed print canvas under cutout artwork.
+ *   - Decor / tote fill: `backgroundColor` paints BOTH faces, even when
+ *     artwork is off on a side (print-on-back is independent of fill).
  */
 
 type ViewName = FlatViewName;
@@ -1614,6 +1616,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
+        {!edgeWrapMode && decorGenerateFill && (
+          <DecorFloatingFillPicker
+            value={decorGenerateFill.value}
+            onChange={(next) => {
+              setBgColor(next === "none" ? null : next);
+              decorGenerateFill.onChange(next);
+            }}
+            swatches={artPalette.slice(0, 4)}
+          />
+        )}
+
         {/* Scale slider (capped at 1.0) */}
         {viewEnabled && (
           <div>
@@ -1653,16 +1666,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
-            {!edgeWrapMode && decorGenerateFill && (
-              <DecorFloatingFillPicker
-                value={decorGenerateFill.value}
-                onChange={(next) => {
-                  setBgColor(next === "none" ? null : next);
-                  decorGenerateFill.onChange(next);
-                }}
-                swatches={artPalette.slice(0, 4)}
-              />
-            )}
             {decorMode && !edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
                 Scale above 100% to zoom in and crop built-in borders. The dashed

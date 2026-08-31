@@ -24,8 +24,9 @@ type DecorFloatingFillPickerProps = {
 };
 
 /**
- * Live fill behind floating GPT artwork. White / None / any hex.
- * Same control on pillow, poster, tote, tapestry — not the phone edge-wrap strip.
+ * Live fill behind floating GPT artwork. Defaults to white; any hex via
+ * swatch / field / eyedropper. "None" is a checkerboard swatch (transparent),
+ * not a White/None text toggle.
  */
 export function DecorFloatingFillPicker({
   value,
@@ -58,30 +59,6 @@ export function DecorFloatingFillPicker({
   return (
     <div className="mt-2" data-testid="decor-floating-fill-picker">
       <Label className="text-xs">Background</Label>
-      <div className="mt-1 flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => onChange(DEFAULT_DECOR_BACKGROUND_FILL)}
-          className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
-            !isNone && hex === DEFAULT_DECOR_BACKGROUND_FILL
-              ? "border-foreground bg-foreground text-background"
-              : "border-border bg-card text-muted-foreground hover:bg-muted"
-          }`}
-        >
-          White
-        </button>
-        <button
-          type="button"
-          onClick={() => onChange("none")}
-          className={`rounded border px-2 py-1 text-[10px] font-semibold transition ${
-            isNone
-              ? "border-foreground bg-foreground text-background"
-              : "border-border bg-card text-muted-foreground hover:bg-muted"
-          }`}
-        >
-          None
-        </button>
-      </div>
       <div className="mt-1.5 flex items-center gap-2">
         <input
           type="color"
@@ -135,6 +112,26 @@ export function DecorFloatingFillPicker({
             style={{ backgroundColor: s.hex }}
           />
         ))}
+        <button
+          type="button"
+          onClick={() => onChange("none")}
+          title="None (transparent)"
+          aria-label="None (transparent)"
+          aria-pressed={isNone}
+          data-testid="decor-fill-none"
+          className={`h-6 w-6 rounded border-2 transition ${
+            isNone
+              ? "border-primary ring-2 ring-primary/40"
+              : "border-border hover:border-foreground/40"
+          }`}
+          style={{
+            backgroundImage:
+              "linear-gradient(45deg, #d1d5db 25%, transparent 25%), linear-gradient(-45deg, #d1d5db 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #d1d5db 75%), linear-gradient(-45deg, transparent 75%, #d1d5db 75%)",
+            backgroundSize: "8px 8px",
+            backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0",
+            backgroundColor: "#fff",
+          }}
+        />
       </div>
       {hint ? (
         <p className="mt-1 text-[10px] text-muted-foreground leading-snug">{hint}</p>
