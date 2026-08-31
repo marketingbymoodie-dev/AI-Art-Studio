@@ -171,6 +171,7 @@ import {
 } from "@shared/creatorArtworkLibrary";
 import {
   canvasOrientationFromAspect,
+  extractDimensionalKey,
   filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
@@ -4093,7 +4094,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     !selectedSizeCoverage.shippable
   );
 
+  const catalogSizeKey = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    return (
+      extractDimensionalKey(selectedSize) ||
+      (sizeConfig
+        ? extractDimensionalKey(sizeConfig.name) ||
+          (sizeConfig.width && sizeConfig.height
+            ? `${Math.round(sizeConfig.width)}x${Math.round(sizeConfig.height)}`
+            : null)
+        : null)
+    );
+  }, [printSizes, selectedSize]);
+
+  const catalogSizeBlankBlueprint = isCatalogSizeBlankBlueprint(
+    productTypeConfig?.printifyBlueprintId,
+  );
+
   const orientationBlankOverride = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (catalogSizeBlankBlueprint && selectedSize) {
+      const byCatalogSize = resolveBlankUrlForSize(
+        productTypeConfig?.baseMockupImages,
+        sizeConfig || { id: selectedSize, name: selectedSize },
+        productTypeConfig?.aspectRatio,
+      );
+      if (byCatalogSize) return byCatalogSize;
+    }
     if (!hasMixedCanvasOrientation || !sizeCanvasOrientation || !selectedSize) {
       return null;
     }
@@ -4124,7 +4151,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       if (hasOrientationBlank) return null;
     }
-    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
     const bySize = resolveBlankUrlForSize(
       productTypeConfig?.baseMockupImages,
       sizeConfig || { id: selectedSize, name: selectedSize },
@@ -4154,6 +4180,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     productTypeConfig?.aspectRatio,
     catalogBlankByOrientation,
     catalogPreviewImages,
+    catalogSizeBlankBlueprint,
   ]);
 
   const applyCanvasOrientation = useCallback(
@@ -13721,9 +13748,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl,
               garmentColorHex: colorizeSharedBlank ? selectedGarmentHex : null,
               catalogSizeAspectRatio:
-                !flatDecorMode && orientationBlankOverride
+                !flatDecorMode &&
+                (orientationBlankOverride || catalogSizeBlankBlueprint)
                   ? catalogSizeAspectRatio
                   : null,
+              catalogBlueprintId: catalogSizeBlankBlueprint
+                ? productTypeConfig?.printifyBlueprintId ?? null
+                : null,
+              catalogSizeKey: catalogSizeBlankBlueprint ? catalogSizeKey : null,
             },
           );
           if (cancelled || !dataUrl) continue;
@@ -13825,6 +13857,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     colorizeSharedBlank,
     selectedGarmentHex,
     catalogSizeAspectRatio,
+    catalogSizeBlankBlueprint,
+    catalogSizeKey,
+    productTypeConfig?.printifyBlueprintId,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
     flatPlacerActive,
@@ -16961,10 +16996,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         : null
                     }
                     catalogSizeAspectRatio={
-                      !flatDecorMode && orientationBlankOverride
+                      !flatDecorMode &&
+                      (orientationBlankOverride || catalogSizeBlankBlueprint)
                         ? catalogSizeAspectRatio
                         : null
                     }
+                    catalogBlueprintId={
+                      catalogSizeBlankBlueprint
+                        ? productTypeConfig?.printifyBlueprintId ?? null
+                        : null
+                    }
+                    catalogSizeKey={catalogSizeBlankBlueprint ? catalogSizeKey : null}
                     // Tester auto-flushes Apply after generate; never seed "saved"
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}

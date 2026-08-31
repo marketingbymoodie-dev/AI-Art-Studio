@@ -20,21 +20,28 @@ export async function renderFlatMockupDataUrl(
     landscapeOrientation?: boolean;
     blankUrlOverride?: string | null;
     catalogSizeAspectRatio?: string | null;
+    catalogBlueprintId?: number | null;
+    catalogSizeKey?: string | null;
     garmentColorHex?: string | null;
   },
 ): Promise<string | null> {
   const refitCatalogSizeGuide =
-    !!opts?.blankUrlOverride && !!opts?.catalogSizeAspectRatio;
+    !!opts?.blankUrlOverride &&
+    !!(opts?.catalogSizeAspectRatio || opts?.catalogSizeKey);
   const assets = await loadFlatViewAssets(manifest, colorId, view, {
     landscapeOrientation: opts?.landscapeOrientation,
     blankUrlOverride: opts?.blankUrlOverride,
     sizeAspectRatio: opts?.catalogSizeAspectRatio,
     refitCatalogSizeGuide,
+    catalogBlueprintId: opts?.catalogBlueprintId,
+    catalogSizeKey: opts?.catalogSizeKey,
   });
   const calib = resolveFlatViewCalibration(manifest, colorId, view, {
     landscapeOrientation: !!opts?.landscapeOrientation,
     sizeAspectRatio: opts?.catalogSizeAspectRatio,
     refitCatalogSizeGuide,
+    catalogBlueprintId: opts?.catalogBlueprintId,
+    catalogSizeKey: opts?.catalogSizeKey,
   });
   if (!assets?.blank || !calib) return null;
 

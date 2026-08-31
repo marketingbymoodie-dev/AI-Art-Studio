@@ -122,6 +122,32 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
     expect(r.width).toBeCloseTo(0.75 * 0.965, 3);
     expect(r.width / r.height).not.toBeCloseTo(1.5, 2);
   });
+
+  it("refits indoor tapestry 88x104 from measured fabric bbox, not shared harvest 2:3", () => {
+    const m = {
+      ...wallDecalManifest(),
+      blueprintId: 241,
+      name: "Indoor Wall Tapestry",
+      blanks: {
+        "26x36": { front: "https://example.com/harvest-26x36.png" },
+        "88x104": { front: "https://example.com/harvest-88x104.png" },
+      },
+    };
+    const calib = resolveFlatViewCalibration(m, "88x104", "front", {
+      sizeAspectRatio: "88:104",
+      refitCatalogSizeGuide: true,
+      catalogBlueprintId: 241,
+      catalogSizeKey: "88x104",
+    });
+    const r = calib!.visibleRectNormalized!;
+    expect(r.height).toBeGreaterThan(0.78);
+    expect(r.width / r.height).toBeCloseTo(0.70996 / 0.82324, 2);
+    expect(r.width / r.height).not.toBeCloseTo(2 / 3, 2);
+    expect(calib?.printFileDims).toEqual({
+      width: Math.round((3600 * 88) / 104),
+      height: 3600,
+    });
+  });
 });
 
 describe("resolveFlatBlank", () => {

@@ -1,7 +1,7 @@
 import { API_BASE } from "@/lib/urlBase";
 import {
   printFileDimsForAspectRatio,
-  visibleRectForCatalogSizeAspect,
+  visibleRectForCatalogSizeBlank,
 } from "@shared/catalogSizeBlanks";
 import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
@@ -191,6 +191,8 @@ export function resolveFlatViewCalibration(
     landscapeOrientation?: boolean;
     sizeAspectRatio?: string | null;
     refitCatalogSizeGuide?: boolean;
+    catalogBlueprintId?: number | null;
+    catalogSizeKey?: string | null;
   },
 ): FlatViewCalibration | undefined {
   const base = manifest.views[view];
@@ -227,8 +229,12 @@ export function resolveFlatViewCalibration(
   // Square catalog blanks (wall decals / tapestry): harvest often only stored one shared
   // 2:3 guide. When the blank PNG is size-specific, rebuild the dashed rect
   // from the selected size AR so 18×24 / 24×18 aren't stuck on 2:3 / 3:2.
-  if (opts?.refitCatalogSizeGuide && opts.sizeAspectRatio) {
-    const rect = visibleRectForCatalogSizeAspect(opts.sizeAspectRatio);
+  if (opts?.refitCatalogSizeGuide && (opts.sizeAspectRatio || opts.catalogSizeKey)) {
+    const rect = visibleRectForCatalogSizeBlank(
+      opts.catalogBlueprintId,
+      opts.catalogSizeKey,
+      opts.sizeAspectRatio,
+    );
     const dims = printFileDimsForAspectRatio(opts.sizeAspectRatio);
     if (rect) {
       return {
@@ -418,6 +424,8 @@ export async function loadFlatViewAssets(
     blankUrlOverride?: string | null;
     sizeAspectRatio?: string | null;
     refitCatalogSizeGuide?: boolean;
+    catalogBlueprintId?: number | null;
+    catalogSizeKey?: string | null;
   },
 ): Promise<FlatLoadedViewAssets | null> {
   const blank = resolveFlatBlank(manifest, colorId);
@@ -430,6 +438,8 @@ export async function loadFlatViewAssets(
     landscapeOrientation,
     sizeAspectRatio: opts?.sizeAspectRatio,
     refitCatalogSizeGuide,
+    catalogBlueprintId: opts?.catalogBlueprintId,
+    catalogSizeKey: opts?.catalogSizeKey,
   });
   if (!blankUrl || !calib) return null;
 

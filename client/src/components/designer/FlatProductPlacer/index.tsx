@@ -173,6 +173,9 @@ export type FlatProductPlacerProps = {
    * square catalog size blank so the dashed guide matches that size (wall decals / tapestry).
    */
   catalogSizeAspectRatio?: string | null;
+  /** Blueprint + size token so tapestry guides use the measured fabric bbox. */
+  catalogBlueprintId?: number | null;
+  catalogSizeKey?: string | null;
   /**
    * On-demand lifestyle/context action under "Placement ready".
    * `active` = shimmer + clickable; inactive = dimmed, no shimmer.
@@ -315,6 +318,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       landscapeOrientation = false,
       blankUrlOverride = null,
       catalogSizeAspectRatio = null,
+      catalogBlueprintId = null,
+      catalogSizeKey = null,
       lifestyleAction = null,
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
@@ -325,14 +330,23 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
-  const refitCatalogSizeGuide = !!blankUrlOverride && !!catalogSizeAspectRatio;
+  const refitCatalogSizeGuide =
+    !!blankUrlOverride && !!(catalogSizeAspectRatio || catalogSizeKey);
   const calibOpts = useMemo(
     () => ({
       landscapeOrientation,
       sizeAspectRatio: catalogSizeAspectRatio,
       refitCatalogSizeGuide,
+      catalogBlueprintId,
+      catalogSizeKey,
     }),
-    [landscapeOrientation, catalogSizeAspectRatio, refitCatalogSizeGuide],
+    [
+      landscapeOrientation,
+      catalogSizeAspectRatio,
+      refitCatalogSizeGuide,
+      catalogBlueprintId,
+      catalogSizeKey,
+    ],
   );
   const defaultPlacement = useMemo<ArtworkPlacement>(
     () => ({
