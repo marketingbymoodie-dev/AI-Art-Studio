@@ -150,6 +150,7 @@ import {
   applyCatalogSizeBlanks,
   isCatalogSizeBlankBlueprint,
   resolveCatalogSizeBlankUrlMap,
+  shouldProbeCatalogBlankGuide,
 } from "@shared/catalogSizeBlanks";
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
@@ -1030,6 +1031,8 @@ interface SaveImageOptions {
   vectorize?: boolean;
   /** Native-transparent model — skip chroma / processApparelMotif. */
   skipChroma?: boolean;
+  /** 241 contain path: do not center-crop the generation to print AR. */
+  printifyBlueprintId?: number | null;
 }
 
 function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
@@ -1037,8 +1040,15 @@ function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity, vectorize, skipChroma } =
-    options || {};
+  const {
+    isApparel = false,
+    isAllOverPrint = false,
+    targetDims,
+    bgRemovalSensitivity,
+    vectorize,
+    skipChroma,
+    printifyBlueprintId,
+  } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -1078,7 +1088,11 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     // letterboxes in the editor. stripLetterboxBars used to crop those bars
     // (portrait → top/bottom) and stretch the rest — 241 saw a traveling top cut.
 
-    if (targetDims && targetDims.width !== targetDims.height) {
+    if (
+      targetDims &&
+      targetDims.width !== targetDims.height &&
+      !shouldProbeCatalogBlankGuide(printifyBlueprintId)
+    ) {
       const outputFormat =
         actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
           ? "jpeg"
@@ -3080,6 +3094,7 @@ console.log("[api/generate] replicate returned", {
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
   vectorize: resolveApparelVectorize(styleVectorizeEnabled),
   skipChroma: styleGen.nativeTransparent,
+  printifyBlueprintId: productType?.printifyBlueprintId,
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -4044,6 +4059,7 @@ ${orientationExtra}
           bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
           vectorize: resolveApparelVectorize(embedVectorizeEnabled),
           skipChroma: embedStyleGen.nativeTransparent,
+          printifyBlueprintId: productType?.printifyBlueprintId,
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -4057,6 +4073,7 @@ ${orientationExtra}
             bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
             vectorize: resolveApparelVectorize(embedVectorizeEnabled),
             skipChroma: embedStyleGen.nativeTransparent,
+            printifyBlueprintId: productType?.printifyBlueprintId,
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -9172,6 +9189,7 @@ ${orientationExtra}
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
               vectorize: resolveApparelVectorize(sfVectorizeEnabled),
               skipChroma: sfStyleGen.nativeTransparent,
+              printifyBlueprintId: productType?.printifyBlueprintId,
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -9186,6 +9204,7 @@ ${orientationExtra}
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                 vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 skipChroma: sfStyleGen.nativeTransparent,
+                printifyBlueprintId: productType?.printifyBlueprintId,
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;

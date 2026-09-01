@@ -30,6 +30,7 @@ export async function renderFlatMockupDataUrl(
     catalogBlueprintId?: number | null;
     catalogSizeKey?: string | null;
     garmentColorHex?: string | null;
+    generationModel?: string | null;
   },
 ): Promise<string | null> {
   const refitCatalogSizeGuide =
@@ -82,6 +83,7 @@ export async function renderFlatMockupDataUrl(
     printCanvasBackgroundColor: bg,
     garmentColorHex: opts?.garmentColorHex ?? null,
     blueprintId: manifest.blueprintId,
+    generationModel: opts?.generationModel ?? null,
   });
 
   try {

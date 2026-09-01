@@ -182,6 +182,8 @@ export type FlatProductPlacerProps = {
   /** Blueprint + size token so tapestry guides use the measured fabric bbox. */
   catalogBlueprintId?: number | null;
   catalogSizeKey?: string | null;
+  /** 241 preview scale: Nano Banana +15%, GPT-Image-2 1.0. */
+  generationModel?: string | null;
   /**
    * On-demand lifestyle/context action under "Placement ready".
    * `active` = shimmer + clickable; inactive = dimmed, no shimmer.
@@ -326,6 +328,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       catalogSizeAspectRatio = null,
       catalogBlueprintId = null,
       catalogSizeKey = null,
+      generationModel = null,
       lifestyleAction = null,
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
@@ -766,6 +769,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
           garmentColorHex,
           blueprintId: manifest.blueprintId,
+          generationModel,
         });
         return true;
       } catch (e) {
@@ -791,6 +795,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       defaultPlacement,
       garmentColorHex,
       probeCatalogGuide,
+      generationModel,
     ],
   );
 
@@ -1201,6 +1206,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         edgeWrapMode,
         decorMode,
       }),
+      generationModel,
     );
     const placed = {
       ...tapestryPlacement,
@@ -1243,6 +1249,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode,
     decorMode,
     clampPlacementScale,
+    generationModel,
   ]);
 
   // ---------- Render guards ----------
@@ -1293,6 +1300,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               edgeWrapMode,
               decorMode,
             }),
+            generationModel,
           )
         : null;
 

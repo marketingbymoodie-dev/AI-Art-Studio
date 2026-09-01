@@ -12,6 +12,7 @@ import {
   type CanvasOrientation,
   type SizeLike,
 } from "./productVariantOptions";
+import { isGptImage2Model } from "./styleGeneration";
 
 /** Printify blueprint IDs with shared size blanks. */
 export const CATALOG_SIZE_BLANK_BLUEPRINTS = {
@@ -141,6 +142,16 @@ export function shouldProbeCatalogBlankGuide(
  * matches Printify's printed size. Bake / `bakeFlatPrintFile` stay at 1.0.
  */
 export const TAPESTRY_PREVIEW_PLACEMENT_SCALE = 1.15;
+/** GPT-Image-2 241 preview matches Printify without the Nano Banana bump. */
+export const TAPESTRY_PREVIEW_PLACEMENT_SCALE_GPT_IMAGE_2 = 1;
+
+export function tapestryPreviewPlacementScale(
+  generationModel?: string | null,
+): number {
+  return isGptImage2Model(generationModel)
+    ? TAPESTRY_PREVIEW_PLACEMENT_SCALE_GPT_IMAGE_2
+    : TAPESTRY_PREVIEW_PLACEMENT_SCALE;
+}
 
 /**
  * Bounding box of fabric/shadow pixels in a white-studio catalog blank.

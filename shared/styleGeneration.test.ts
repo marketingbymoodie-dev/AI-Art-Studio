@@ -60,6 +60,10 @@ describe("mapGptImage2AspectRatio", () => {
     expect(mapGptImage2AspectRatio("16:9")).toBe("3:2");
     expect(mapGptImage2AspectRatio("9:16")).toBe("2:3");
     expect(mapGptImage2AspectRatio("2:3")).toBe("2:3");
+    // Gemini maps 50:60 → 4:5; GPT then maps 4:5 (0.8) → 2:3 (taller),
+    // which resizeToAspectRatio used to center-crop top/bottom to 5:6.
+    expect(mapGptImage2AspectRatio("4:5")).toBe("2:3");
+    expect(mapGptImage2AspectRatio("50:60")).toBe("1:1");
   });
 });
 

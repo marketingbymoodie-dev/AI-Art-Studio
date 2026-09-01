@@ -41,7 +41,7 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   shouldProbeCatalogBlankGuide,
-  TAPESTRY_PREVIEW_PLACEMENT_SCALE,
+  tapestryPreviewPlacementScale,
 } from "@shared/catalogSizeBlanks";
 import type {
   FlatTier,
@@ -277,6 +277,8 @@ export type FlatRenderInput = {
    * here — bakeFlatPrintFile never receives this input.
    */
   blueprintId?: number | null;
+  /** 241 preview scale is per source model (Nano Banana +15%, GPT-Image-2 1.0). */
+  generationModel?: string | null;
 };
 
 function parseCssHex(hex: string): { r: number; g: number; b: number } | null {
@@ -1088,26 +1090,30 @@ export function applyBeaniePreviewPlacementRect(
 }
 
 /**
- * Preview-only: grow 241's placement rect 15% so the editor matches Printify.
- * Must not be used by `bakeFlatPrintFile` / `resolveFlatBakePlacementRect`.
- * User `placement.scale` still multiplies this rect — slider down shrinks bake.
+ * Preview-only: grow 241's placement rect so the editor matches Printify.
+ * Nano Banana +15%; GPT-Image-2 1.0. Bake must not call this.
  */
 export function applyTapestryPreviewPlacementRect(
   blueprintId: number | null | undefined,
   rect: Rect,
+  generationModel?: string | null,
 ): Rect {
   if (!shouldProbeCatalogBlankGuide(blueprintId)) return rect;
-  return scaleRectFromCenter(rect, TAPESTRY_PREVIEW_PLACEMENT_SCALE);
+  const factor = tapestryPreviewPlacementScale(generationModel);
+  if (factor === 1) return rect;
+  return scaleRectFromCenter(rect, factor);
 }
 
 /** Display-only rect bump (576 and/or 241). Bake must not call this. */
 export function applyFlatPreviewPlacementRect(
   blueprintId: number | null | undefined,
   rect: Rect,
+  generationModel?: string | null,
 ): Rect {
   return applyTapestryPreviewPlacementRect(
     blueprintId,
     applyBeaniePreviewPlacementRect(blueprintId, rect),
+    generationModel,
   );
 }
 
@@ -3198,6 +3204,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     previewLayers,
     garmentColorHex = null,
     blueprintId = null,
+    generationModel = null,
   } = input;
   const coloredBlank =
     !edgeWrapMode &&
@@ -3476,6 +3483,7 @@ export function renderFlatView(input: FlatRenderInput): void {
   const rect = applyFlatPreviewPlacementRect(
     blueprintId,
     flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }),
+    generationModel,
   );
   const artFit = flatArtFitForBlueprint(blueprintId);
 

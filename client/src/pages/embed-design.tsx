@@ -351,6 +351,8 @@ interface GeneratedDesign {
   id: string;
   imageUrl: string;
   prompt: string;
+  /** Model that produced this image — 241 preview scale keys off it. */
+  generationModel?: string | null;
 }
 
 const DEFAULT_AOP_PATTERN_SETTINGS: {
@@ -5143,7 +5145,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Size/colour mockup cache is per-design — never reuse across designs.
     mockupColorCacheRef.current = {};
     currentMockupColorRef.current = "";
-    setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     const loadedStyle = {
       stylePreset: coerceStyleHint(ds?.stylePreset) || coerceStyleHint(topLevel.stylePreset) || null,
       catalogSlug: coerceStyleHint(ds?.catalogSlug) || null,
@@ -5151,6 +5152,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       outputMode: coerceStyleHint(ds?.outputMode) || null,
       generationModel: coerceStyleHint(ds?.generationModel) || null,
     };
+    setGeneratedDesign({
+      id: designId,
+      imageUrl: absUrl,
+      prompt: promptText || "",
+      generationModel: loadedStyle.generationModel || null,
+    });
     setLoadedDecorStyle(loadedStyle);
     pendingRestoreStyleRef.current = loadedStyle;
     {
@@ -8421,21 +8428,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const designId = data.designId || data.design?.id || crypto.randomUUID();
       setAddedToCart(false);
       const composedPrompt = composeReuseRegenerateUserPrompt(reuseRegenerateBasePrompt, prompt);
+      const active = findStylePresetForFill(filteredStylePresets, selectedPreset);
+      const generationModel = active?.generationModel || loadedDecorStyle?.generationModel || null;
       setGeneratedDesign({
         id: designId,
         imageUrl: imageUrl,
         prompt: composedPrompt || prompt,
+        generationModel,
       });
-      {
-        const active = findStylePresetForFill(filteredStylePresets, selectedPreset);
-        setLoadedDecorStyle({
-          stylePreset: selectedPreset || null,
-          catalogSlug: active?.catalogSlug || null,
-          styleName: active?.name || null,
-          outputMode: active?.outputMode || null,
-          generationModel: active?.generationModel || null,
-        });
-      }
+      setLoadedDecorStyle({
+        stylePreset: selectedPreset || null,
+        catalogSlug: active?.catalogSlug || null,
+        styleName: active?.name || null,
+        outputMode: active?.outputMode || null,
+        generationModel,
+      });
       if (reuseRegenerateBasePrompt) {
         setPrompt(composedPrompt);
         setReuseRegenerateBasePrompt(null);
@@ -11502,6 +11509,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             artworkUrl: artworkUrl || null,
             productTypeId: productTypeId || undefined,
             pageHandle: activeProductContext.pageHandle || undefined,
+            generationModel:
+              generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
           },
           productTypeId: productTypeId || undefined,
           pageHandle: activeProductContext.pageHandle || undefined,
@@ -11643,6 +11652,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 artworkUrl: artworkUrl || null,
                 productTypeId: productTypeId || undefined,
                 pageHandle: activeProductContext.pageHandle || undefined,
+                generationModel:
+                  generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
               },
               productTypeId: productTypeId || undefined,
               pageHandle: activeProductContext.pageHandle || undefined,
@@ -14058,6 +14069,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 ? productTypeConfig?.printifyBlueprintId ?? null
                 : null,
               catalogSizeKey: catalogSizeBlankBlueprint ? catalogSizeKey : null,
+              generationModel:
+                generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
             },
           );
           if (cancelled || !dataUrl) continue;
@@ -17268,6 +17281,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         : null
                     }
                     catalogSizeKey={catalogSizeBlankBlueprint ? catalogSizeKey : null}
+                    generationModel={
+                      generatedDesign?.generationModel ||
+                      loadedDecorStyle?.generationModel ||
+                      null
+                    }
                     // Tester auto-flushes Apply after generate; never seed "saved"
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}

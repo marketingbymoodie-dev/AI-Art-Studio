@@ -299,12 +299,17 @@ describe("maskCoreOutlineFromRgba (241 dashed droop)", () => {
 describe("241 tapestry preview-only placement", () => {
   const rect = { x: 100, y: 100, width: 200, height: 200 };
 
-  it("grows the placement rect 15% for blueprint 241 only", () => {
+  it("grows the placement rect 15% for Nano Banana on blueprint 241", () => {
     const next = applyTapestryPreviewPlacementRect(241, rect);
     expect(next.width).toBeCloseTo(230, 5);
     expect(next.height).toBeCloseTo(230, 5);
     expect(next.x).toBeCloseTo(85, 5);
     expect(next.y).toBeCloseTo(85, 5);
+  });
+
+  it("does not grow GPT-Image-2 241 preview (scale 1.0)", () => {
+    expect(applyTapestryPreviewPlacementRect(241, rect, "gpt-image-2")).toEqual(rect);
+    expect(applyFlatPreviewPlacementRect(241, rect, "gpt-image-2")).toEqual(rect);
   });
 
   it("does not change beanie / wall-decal / unset rects", () => {
