@@ -277,7 +277,7 @@ export type FlatRenderInput = {
    * here — bakeFlatPrintFile never receives this input.
    */
   blueprintId?: number | null;
-  /** 241 preview scale is per source model (Nano Banana +15%, GPT-Image-2 1.0). */
+  /** 241 preview scale is per source model (both +15% today). */
   generationModel?: string | null;
 };
 
@@ -1091,7 +1091,7 @@ export function applyBeaniePreviewPlacementRect(
 
 /**
  * Preview-only: grow 241's placement rect so the editor matches Printify.
- * Nano Banana +15%; GPT-Image-2 1.0. Bake must not call this.
+ * Both models +15% (per-model hook kept). Bake must not call this.
  */
 export function applyTapestryPreviewPlacementRect(
   blueprintId: number | null | undefined,

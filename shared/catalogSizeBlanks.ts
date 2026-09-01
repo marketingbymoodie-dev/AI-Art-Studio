@@ -142,8 +142,8 @@ export function shouldProbeCatalogBlankGuide(
  * matches Printify's printed size. Bake / `bakeFlatPrintFile` stay at 1.0.
  */
 export const TAPESTRY_PREVIEW_PLACEMENT_SCALE = 1.15;
-/** GPT-Image-2 241 preview matches Printify without the Nano Banana bump. */
-export const TAPESTRY_PREVIEW_PLACEMENT_SCALE_GPT_IMAGE_2 = 1;
+/** Per-model hook — both models use +15% until a split is needed again. */
+export const TAPESTRY_PREVIEW_PLACEMENT_SCALE_GPT_IMAGE_2 = 1.15;
 
 export function tapestryPreviewPlacementScale(
   generationModel?: string | null,

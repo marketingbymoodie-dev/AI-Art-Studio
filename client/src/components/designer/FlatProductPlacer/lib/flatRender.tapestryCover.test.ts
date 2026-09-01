@@ -307,9 +307,12 @@ describe("241 tapestry preview-only placement", () => {
     expect(next.y).toBeCloseTo(85, 5);
   });
 
-  it("does not grow GPT-Image-2 241 preview (scale 1.0)", () => {
-    expect(applyTapestryPreviewPlacementRect(241, rect, "gpt-image-2")).toEqual(rect);
-    expect(applyFlatPreviewPlacementRect(241, rect, "gpt-image-2")).toEqual(rect);
+  it("grows GPT-Image-2 241 preview the same +15% as Nano Banana", () => {
+    const gpt = applyTapestryPreviewPlacementRect(241, rect, "gpt-image-2");
+    const banana = applyTapestryPreviewPlacementRect(241, rect, null);
+    expect(gpt.width).toBeCloseTo(230, 5);
+    expect(gpt).toEqual(banana);
+    expect(applyFlatPreviewPlacementRect(241, rect, "gpt-image-2").width).toBeCloseTo(230, 5);
   });
 
   it("does not change beanie / wall-decal / unset rects", () => {

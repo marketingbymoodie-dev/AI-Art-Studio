@@ -122,7 +122,7 @@ describe("catalogSizeBlanks", () => {
     expect(shouldProbeCatalogBlankGuide(759)).toBe(false);
     expect(TAPESTRY_PREVIEW_PLACEMENT_SCALE).toBe(1.15);
     expect(tapestryPreviewPlacementScale(null)).toBe(1.15);
-    expect(tapestryPreviewPlacementScale("gpt-image-2")).toBe(1);
+    expect(tapestryPreviewPlacementScale("gpt-image-2")).toBe(1.15);
   });
 
   it("uses inch-aspect letterbox for tapestry (same source as wall decals)", () => {

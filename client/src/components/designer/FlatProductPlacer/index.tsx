@@ -182,7 +182,7 @@ export type FlatProductPlacerProps = {
   /** Blueprint + size token so tapestry guides use the measured fabric bbox. */
   catalogBlueprintId?: number | null;
   catalogSizeKey?: string | null;
-  /** 241 preview scale: Nano Banana +15%, GPT-Image-2 1.0. */
+  /** 241 preview scale (per-model hook; both currently +15%). */
   generationModel?: string | null;
   /**
    * On-demand lifestyle/context action under "Placement ready".
