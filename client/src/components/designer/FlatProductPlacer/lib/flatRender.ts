@@ -3331,7 +3331,6 @@ export function renderFlatView(input: FlatRenderInput): void {
     flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }),
   );
   const artFit = flatArtFitForBlueprint(blueprintId);
-  const beanieContain = artFit === "contain";
 
   const art = document.createElement("canvas");
   art.width = W;
@@ -3371,29 +3370,8 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (!drewMesh) {
     if (areaFill) {
-      if (beanieContain && mask) {
-        // Fill the dome only — do not destination-in the contained art
-        // afterwards (that re-clips bow/paws after the +15% preview nudge).
-        const fillLayer = document.createElement("canvas");
-        fillLayer.width = W;
-        fillLayer.height = H;
-        const fctx = fillLayer.getContext("2d");
-        if (fctx) {
-          fctx.fillStyle = areaFill;
-          fctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-          clipFlatArtToPrintArea(fctx, {
-            mask,
-            rect: { x: 0, y: 0, width: W, height: H },
-            canvasW: W,
-            canvasH: H,
-            fabricWeave: fabricWeave && !edgeWrapMode,
-          });
-          actx.drawImage(fillLayer, 0, 0);
-        }
-      } else {
-        actx.fillStyle = areaFill;
-        actx.fillRect(rect.x, rect.y, rect.width, rect.height);
-      }
+      actx.fillStyle = areaFill;
+      actx.fillRect(rect.x, rect.y, rect.width, rect.height);
     }
     if (hasArt && artwork) {
       const box = flatArtBox(rect, placement, artW, artH, artFit);
@@ -3401,18 +3379,20 @@ export function renderFlatView(input: FlatRenderInput): void {
     }
   }
 
-  // 576 contain: art is already fit-inside. Skip destination-in so the
-  // preview-only +15% rect does not re-clip top/bottom. Other products keep
-  // mask+rect clip (241 cover unchanged).
-  if (!beanieContain) {
-    clipFlatArtToPrintArea(actx, {
-      mask,
-      rect,
-      canvasW: W,
-      canvasH: H,
-      fabricWeave: fabricWeave && !edgeWrapMode,
-    });
-  }
+  // Contain (576) or cover (everyone else) then clip art+fill together.
+  // 576: mask silhouette only — full-canvas guide so harvest AABB is not
+  // destination-out'd on top of the dome. Bake never calls this clip;
+  // Printify maps the rectangular print file onto the hat.
+  clipFlatArtToPrintArea(actx, {
+    mask,
+    rect:
+      isBeanieBlueprint(blueprintId) && mask
+        ? { x: 0, y: 0, width: W, height: H }
+        : rect,
+    canvasW: W,
+    canvasH: H,
+    fabricWeave: fabricWeave && !edgeWrapMode,
+  });
 
   const shadeMode: "blank" | "map" =
     view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;

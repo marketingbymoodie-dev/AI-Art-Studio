@@ -67,7 +67,7 @@ describe("576 beanie contain-fit (241 stays cover)", () => {
   });
 });
 
-describe("576 beanie clip skips harvest-rect destination-out", () => {
+describe("576 beanie clip restores dome destination-in on art+fill", () => {
   it("full-canvas guide + mask does not erase a top inset band", () => {
     const fillRect = vi.fn();
     const actx = {
@@ -85,5 +85,6 @@ describe("576 beanie clip skips harvest-rect destination-out", () => {
     });
     expect(mode).toBe("mask+rect");
     expect(fillRect).not.toHaveBeenCalled();
+    expect(actx.drawImage).toHaveBeenCalled();
   });
 });
