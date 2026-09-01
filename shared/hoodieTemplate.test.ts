@@ -560,7 +560,7 @@ describe("beanie blueprint 576", () => {
     expect(isBeanieBlueprint(241)).toBe(false);
     expect(isBeanieBlueprint(null)).toBe(false);
     expect(flatArtFitForBlueprint(576)).toBe("contain");
-    expect(flatArtFitForBlueprint(241)).toBe("cover");
+    expect(flatArtFitForBlueprint(241)).toBe("contain");
     expect(flatArtFitForBlueprint(450)).toBe("cover");
   });
 });

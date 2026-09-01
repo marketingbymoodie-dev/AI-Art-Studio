@@ -27,7 +27,7 @@ describe("576 beanie preview-only placement", () => {
   });
 });
 
-describe("576 beanie contain-fit (241 stays cover)", () => {
+describe("576 beanie contain-fit", () => {
   const square = { x: 0, y: 0, width: 200, height: 200 };
   const tallArt = { w: 100, h: 200 };
   const place = { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 };
@@ -41,12 +41,12 @@ describe("576 beanie contain-fit (241 stays cover)", () => {
     expect(flatOverflows(square, box, 0.5)).toBe(false);
   });
 
-  it("cover still crops tall art (tapestry / default path)", () => {
+  it("cover still crops tall art (non-contain flats); 241 is contain", () => {
     const box = flatArtBox(square, place, tallArt.w, tallArt.h, "cover");
     expect(box.width).toBeCloseTo(200, 5);
     expect(box.height).toBeCloseTo(400, 5);
     expect(flatOverflows(square, box, 0.5)).toBe(true);
-    expect(flatArtFitForBlueprint(241)).toBe("cover");
+    expect(flatArtFitForBlueprint(241)).toBe("contain");
   });
 
   it("+15% preview grows the contain box but does not overflow the display rect", () => {

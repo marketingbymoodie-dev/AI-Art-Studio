@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyBeaniePreviewPlacementRect,
   applyFlatPreviewPlacementRect,
   applyTapestryPreviewPlacementRect,
+  clipFlatArtToPrintArea,
+  flatArtBox,
   ART_COVER_ALPHA,
   MASK_ALPHA_OVERFLOW_THRESHOLD,
   MASK_ALPHA_THRESHOLD,
@@ -314,5 +316,63 @@ describe("241 tapestry preview-only placement", () => {
     expect(applyFlatPreviewPlacementRect(241, rect).width).toBeCloseTo(230, 5);
     expect(applyFlatPreviewPlacementRect(576, rect).width).toBeCloseTo(230, 5);
     expect(applyBeaniePreviewPlacementRect(241, rect)).toEqual(rect);
+  });
+
+  it("contain-fits a circular (square) wreath inside a tall droop without crop", () => {
+    const droop = { x: 0, y: 0, width: 100, height: 140 };
+    const box = flatArtBox(
+      droop,
+      { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      200,
+      200,
+      "contain",
+    );
+    expect(box.width).toBeCloseTo(100, 5);
+    expect(box.height).toBeCloseTo(100, 5);
+    expect(box.x).toBeCloseTo(0, 5);
+    expect(box.y).toBeCloseTo(20, 5);
+  });
+});
+
+describe("241 bg-gap uses fill rect, not art size", () => {
+  it("core samples inside the display fill are covered; a smaller fill gaps", () => {
+    const w = 32;
+    const h = 32;
+    const mask = rgba(w, h, 0);
+    for (let y = 8; y < 24; y++) {
+      for (let x = 8; x < 24; x++) setAlpha(mask, w, x, y, 255);
+    }
+    const harvest = { x: 8, y: 8, width: 16, height: 16 };
+    const display = applyFlatPreviewPlacementRect(241, harvest);
+    const step = 1;
+    expect(
+      maskCoreUncoveredByArtBox(mask, w, h, w, h, harvest, step, display, 0),
+    ).toBe(false);
+    const tooSmall = { x: 10, y: 10, width: 8, height: 8 };
+    expect(
+      maskCoreUncoveredByArtBox(mask, w, h, w, h, harvest, step, tooSmall, 0),
+    ).toBe(true);
+  });
+});
+
+describe("241 clip is droop mask only (no harvest AABB crop)", () => {
+  it("full-canvas guide + mask does not destination-out the AABB margins", () => {
+    const fillRect = vi.fn();
+    const actx = {
+      globalCompositeOperation: "source-over" as GlobalCompositeOperation,
+      fillStyle: "#000",
+      fillRect,
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    const mask = { naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement;
+    const mode = clipFlatArtToPrintArea(actx, {
+      mask,
+      rect: { x: 0, y: 0, width: 1024, height: 1024 },
+      canvasW: 1024,
+      canvasH: 1024,
+    });
+    expect(mode).toBe("mask+rect");
+    expect(fillRect).not.toHaveBeenCalled();
+    expect(actx.drawImage).toHaveBeenCalled();
   });
 });

@@ -1783,6 +1783,44 @@ export function flatMaskCoreUncovered(
 }
 
 /**
+ * 241 bg-gap: true when any droop-core sample sits outside `fillRect`.
+ * Uses the same display rect as the placer (+15% preview). Art size is ignored.
+ */
+export function flatPrintAreaUncoveredByFill(
+  mask: HTMLImageElement | null,
+  fillRect: Rect,
+  canvasW: number,
+  canvasH: number,
+): boolean {
+  if (!mask || !(canvasW > 0) || !(canvasH > 0)) return false;
+  if (!(fillRect.width > 0) || !(fillRect.height > 0)) return true;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const nativeBounds = flatMaskAlphaBoundsCached(mask);
+  const sampleBounds = nativeBounds
+    ? scaleRectToCanvas(
+        nativeBounds,
+        pixels.width,
+        pixels.height,
+        canvasW,
+        canvasH,
+      )
+    : { x: 0, y: 0, width: canvasW, height: canvasH };
+  const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
+  return maskCoreUncoveredByArtBox(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+    sampleBounds,
+    step,
+    fillRect,
+    0,
+  );
+}
+
+/**
  * Edge-wrap products: artwork must extend past the safe back-face zone so edges
  * receive print. True when any edge of the artwork box stops short of the safe zone.
  */
@@ -2193,13 +2231,6 @@ function applyPhoneCaseMapShading(
 }
 
 /**
- * Multiply a normalized shading layer over the artwork layer, restricted to
- * the artwork's own alpha so transparent (garment) pixels stay untouched.
- *
- * When `fabricWeave` is set (tapestry): simple coloured blank multiply only —
- * no procedural weave grid. Printify's photo mockup is available on demand.
- */
-/**
  * 241 editor/preview: let the catalog blank's folds/shadows read through the
  * print. Preview composite only — bake never calls this.
  */
@@ -2219,11 +2250,10 @@ function applyCatalogBlankShading(
   clipLayerToArt(cloth, artCanvas);
 
   artCtx.save();
+  // Fold/drape only — multiply darkens. Overlay of the light catalog blank
+  // was lifting midtones (pastel wash vs Printify). Bake never calls this.
   artCtx.globalCompositeOperation = "multiply";
   artCtx.globalAlpha = 0.58;
-  artCtx.drawImage(cloth, 0, 0);
-  artCtx.globalCompositeOperation = "overlay";
-  artCtx.globalAlpha = 0.38;
   artCtx.drawImage(cloth, 0, 0);
   artCtx.restore();
 }
@@ -3407,14 +3437,14 @@ export function renderFlatView(input: FlatRenderInput): void {
     }
   }
 
-  // Contain (576) or cover (everyone else) then clip art+fill together.
-  // 576: mask silhouette only — full-canvas guide so harvest AABB is not
-  // destination-out'd on top of the dome. Bake never calls this clip;
-  // Printify maps the rectangular print file onto the hat.
+  // Clip the composite (art + bg), not the source. 576 dome / 241 droop:
+  // mask only — full-canvas guide so harvest AABB is not destination-out'd
+  // on top of the silhouette. Bake never calls this clip.
   clipFlatArtToPrintArea(actx, {
     mask,
     rect:
-      isBeanieBlueprint(blueprintId) && mask
+      (isBeanieBlueprint(blueprintId) || shouldProbeCatalogBlankGuide(blueprintId)) &&
+      mask
         ? { x: 0, y: 0, width: W, height: H }
         : rect,
     canvasW: W,

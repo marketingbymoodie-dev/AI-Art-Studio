@@ -41,8 +41,8 @@ import {
   flatApparelOpaqueTrimmed,
   flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
-  flatMaskCoreUncovered,
   applyFlatPreviewPlacementRect,
+  flatPrintAreaUncoveredByFill,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
@@ -753,7 +753,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             decorMode ||
             fabricWeave ||
             !!decorGenerateFill ||
-            isBeanieBlueprint(manifest.blueprintId)
+            isBeanieBlueprint(manifest.blueprintId) ||
+            probeCatalogGuide
               ? state.backgroundColor
               : null,
           decorMode,
@@ -872,7 +873,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const computeTrimStatus = useCallback((): FlatTrimStatus => {
     const empty: FlatTrimStatus = { front: false, back: false, clippedSides: [] };
-    // 241 uses under-coverage (tapestryMaskGap), not apparel overflow/trim.
+    // 241 uses bg-gap (tapestryMaskGap), not apparel overflow/trim.
     if (
       !state ||
       !artworkImg ||
@@ -1177,65 +1178,50 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const tapestryView = state?.view ?? "front";
   const tapestryMask = assets[tapestryView]?.mask ?? null;
   const tapestryBlank = assets[tapestryView]?.blank ?? null;
-  const tapestryPlacement =
-    state?.placements[tapestryView] ?? DEFAULT_ARTWORK_PLACEMENT;
   const tapestryEnabled = !!state?.enabled[tapestryView];
   const [tapestryMaskGap, setTapestryMaskGap] = useState(false);
   const tapestryGapRafRef = useRef(0);
 
   useEffect(() => {
     const calib = state ? resolveCalib(tapestryView) : undefined;
-    if (
-      !probeCatalogGuide ||
-      !tapestryEnabled ||
-      !artworkImg ||
-      !tapestryMask ||
-      !calib ||
-      state?.backgroundColor
-    ) {
+    if (!probeCatalogGuide || !tapestryEnabled || !tapestryMask || !calib) {
       setTapestryMaskGap(false);
       return;
     }
     const mW = tapestryBlank?.naturalWidth || calib.mockupDims?.width || 1;
     const mH = tapestryBlank?.naturalHeight || calib.mockupDims?.height || 1;
-    const placed = {
-      ...tapestryPlacement,
-      scale: clampPlacementScale(tapestryPlacement.scale),
-    };
-    // Same mask AABB as placementRect / renderFlatView / dashed overlay.
-    const renderRect = flatPlacementRectPx(calib, tapestryMask, mW, mH, {
-      edgeWrapMode,
-      decorMode,
-    });
+    // Same +15% display rect as renderFlatView / overlay — not the raw harvest box.
+    const displayRect = applyFlatPreviewPlacementRect(
+      catalogBlueprintId ?? manifest.blueprintId,
+      flatPlacementRectPx(calib, tapestryMask, mW, mH, {
+        edgeWrapMode,
+        decorMode,
+      }),
+    );
     cancelAnimationFrame(tapestryGapRafRef.current);
     tapestryGapRafRef.current = requestAnimationFrame(() => {
+      // Warn only when bg does not reach droop edges. No bg → uncovered print area.
+      // Art size is ignored (contain letterbox is not a white-strip).
+      if (!state?.backgroundColor) {
+        setTapestryMaskGap(true);
+        return;
+      }
       setTapestryMaskGap(
-        flatMaskCoreUncovered(
-          tapestryMask,
-          artworkImg,
-          placed,
-          renderRect,
-          mW,
-          mH,
-        ),
+        flatPrintAreaUncoveredByFill(tapestryMask, displayRect, mW, mH),
       );
     });
     return () => cancelAnimationFrame(tapestryGapRafRef.current);
   }, [
     probeCatalogGuide,
     tapestryEnabled,
-    artworkImg,
     tapestryMask,
     tapestryBlank,
     tapestryView,
-    tapestryPlacement.scale,
-    tapestryPlacement.offsetX,
-    tapestryPlacement.offsetY,
-    tapestryPlacement.rotationDeg,
+    catalogBlueprintId,
+    manifest.blueprintId,
     state,
     resolveCalib,
     state?.backgroundColor,
-    clampPlacementScale,
     edgeWrapMode,
     decorMode,
   ]);
@@ -1318,10 +1304,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         coverageWarning = "edge-gap";
       }
     } else if (probeCatalogGuide) {
-      // 241 banner = coverageShortfall (flatMaskCoreUncovered / tapestryMaskGap).
-      // Do NOT use apparel overflow (flatMaskRejectsArtBox / printAreaClipped) —
-      // art past the droop edge is overflow, not white strips.
-      if (!state.backgroundColor && tapestryMaskGap) {
+      // 241: bg-gap only (same +15% display rect). Art letterbox is not a warning.
+      if (tapestryMaskGap) {
         coverageWarning = "edge-gap";
       }
     } else if (decorMode || fabricWeave) {
@@ -1895,8 +1879,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Artwork doesn&apos;t cover the full tapestry — white strips will show
-              along the edges. Scale up or reposition.
+              Background doesn&apos;t reach the tapestry edges — white strips will
+              show. Choose a fill that covers the droop, or pick a colour.
             </span>
           </div>
         )}
@@ -1956,7 +1940,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </span>
             ) : coverageWarning === "edge-gap" && probeCatalogGuide && !fabricWeave ? (
               <span className="font-medium text-amber-700" data-testid="flat-tapestry-gap-status">
-                White strips will show — scale up or reposition
+                White strips will show — fill the droop with a background colour
               </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">

@@ -1,3 +1,5 @@
+import { shouldProbeCatalogBlankGuide } from "./catalogSizeBlanks";
+
 /**
  * Shared types for the Hoodie Template Mapper (admin remapping engine).
  *
@@ -1049,13 +1051,16 @@ export function isBeanieBlueprint(blueprintId: number | null | undefined): boole
   return Number(blueprintId) === BEANIE_BLUEPRINT_ID;
 }
 
-/** Placement draw baseline. 576 contain-fits; everyone else (incl. 241) covers. */
+/** Placement draw baseline. 576 and 241 contain-fit; other flats cover. */
 export type FlatArtFit = "cover" | "contain";
 
 export function flatArtFitForBlueprint(
   blueprintId: number | null | undefined,
 ): FlatArtFit {
-  return isBeanieBlueprint(blueprintId) ? "contain" : "cover";
+  if (isBeanieBlueprint(blueprintId) || shouldProbeCatalogBlankGuide(blueprintId)) {
+    return "contain";
+  }
+  return "cover";
 }
 
 export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {
