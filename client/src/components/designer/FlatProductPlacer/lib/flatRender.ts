@@ -1642,6 +1642,52 @@ export function maskCoreUncoveredByArtBox(
   return false;
 }
 
+/**
+ * 241 composite coverage: a droop-core sample is covered if it sits in the
+ * bg fill rect OR the displayed art box (contain + preview +15% + user scale).
+ * Full-bleed art with no hex fill still counts as covered.
+ */
+export function maskCoreUncoveredByComposite(
+  maskData: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasW: number,
+  canvasH: number,
+  sampleBounds: Rect,
+  sampleStep: number,
+  fillRect: Rect | null,
+  artBox: Rect | null,
+  artRotationDeg = 0,
+): boolean {
+  if (!(canvasW > 0) || !(canvasH > 0) || !(sampleStep > 0)) return false;
+  const x0 = sampleBounds.x;
+  const y0 = sampleBounds.y;
+  const x1 = sampleBounds.x + sampleBounds.width;
+  const y1 = sampleBounds.y + sampleBounds.height;
+  for (let y = y0; y < y1; y += sampleStep) {
+    for (let x = x0; x < x1; x += sampleStep) {
+      if (
+        !pointInMask(
+          maskData,
+          maskW,
+          maskH,
+          x,
+          y,
+          canvasW,
+          canvasH,
+          MASK_ALPHA_THRESHOLD,
+        )
+      ) {
+        continue;
+      }
+      const inFill = !!(fillRect && pointInFlatArtBox(fillRect, x, y, 0));
+      const inArt = !!(artBox && pointInFlatArtBox(artBox, x, y, artRotationDeg));
+      if (!inFill && !inArt) return true;
+    }
+  }
+  return false;
+}
+
 export function maskCoreUncoveredFromRgba(
   maskData: Uint8ClampedArray,
   maskW: number,
@@ -1757,7 +1803,7 @@ export function flatMaskCoreUncovered(
   const artH = artwork.naturalHeight || artwork.height || 0;
   if (!(artW > 0) || !(artH > 0)) return false;
 
-  const box = flatArtBox(placementRect, placement, artW, artH);
+  const box = flatArtBox(placementRect, placement, artW, artH, "contain");
   const nativeBounds = flatMaskAlphaBoundsCached(mask);
   const sampleBounds = nativeBounds
     ? scaleRectToCanvas(
@@ -1817,6 +1863,49 @@ export function flatPrintAreaUncoveredByFill(
     step,
     fillRect,
     0,
+  );
+}
+
+/**
+ * 241 warning: uncovered print area when neither the bg fill nor the displayed
+ * art box (contain × +15% display rect × user scale) reaches a droop-core sample.
+ */
+export function flatPrintAreaUncoveredByComposite(
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+  opts: {
+    fillRect: Rect | null;
+    artBox: Rect | null;
+    artRotationDeg?: number;
+  },
+): boolean {
+  if (!mask || !(canvasW > 0) || !(canvasH > 0)) return false;
+  if (!opts.fillRect && !opts.artBox) return true;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const nativeBounds = flatMaskAlphaBoundsCached(mask);
+  const sampleBounds = nativeBounds
+    ? scaleRectToCanvas(
+        nativeBounds,
+        pixels.width,
+        pixels.height,
+        canvasW,
+        canvasH,
+      )
+    : { x: 0, y: 0, width: canvasW, height: canvasH };
+  const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
+  return maskCoreUncoveredByComposite(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+    sampleBounds,
+    step,
+    opts.fillRect,
+    opts.artBox,
+    opts.artRotationDeg ?? 0,
   );
 }
 

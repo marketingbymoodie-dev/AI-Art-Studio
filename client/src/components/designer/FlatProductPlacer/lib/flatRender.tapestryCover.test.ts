@@ -10,6 +10,7 @@ import {
   MASK_ALPHA_THRESHOLD,
   maskCoreOutlineFromRgba,
   maskCoreUncoveredByArtBox,
+  maskCoreUncoveredByComposite,
   maskCoreUncoveredFromRgba,
   pointInFlatArtBox,
   pointInMask,
@@ -351,6 +352,73 @@ describe("241 bg-gap uses fill rect, not art size", () => {
     const tooSmall = { x: 10, y: 10, width: 8, height: 8 };
     expect(
       maskCoreUncoveredByArtBox(mask, w, h, w, h, harvest, step, tooSmall, 0),
+    ).toBe(true);
+  });
+});
+
+describe("241 composite coverage (art or bg)", () => {
+  const w = 32;
+  const h = 32;
+  const harvest = { x: 8, y: 8, width: 16, height: 16 };
+  const display = applyFlatPreviewPlacementRect(241, harvest);
+  const step = 1;
+  const mask = rgba(w, h, 0);
+  for (let y = 8; y < 24; y++) {
+    for (let x = 8; x < 24; x++) setAlpha(mask, w, x, y, 255);
+  }
+
+  it("full-bleed art covering the droop does not warn without a bg hex", () => {
+    expect(
+      maskCoreUncoveredByComposite(
+        mask, w, h, w, h, harvest, step, null, display, 0,
+      ),
+    ).toBe(false);
+  });
+
+  it("shrunk art with no fill warns", () => {
+    const small = { x: 12, y: 12, width: 8, height: 8 };
+    expect(
+      maskCoreUncoveredByComposite(
+        mask, w, h, w, h, harvest, step, null, small, 0,
+      ),
+    ).toBe(true);
+  });
+
+  it("shrunk art plus a fill that covers the droop does not warn", () => {
+    const small = { x: 12, y: 12, width: 8, height: 8 };
+    expect(
+      maskCoreUncoveredByComposite(
+        mask, w, h, w, h, harvest, step, display, small, 0,
+      ),
+    ).toBe(false);
+  });
+
+  it("contain + user scale of displayRect is the art box the warning reads", () => {
+    const artBox = flatArtBox(
+      display,
+      { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      16,
+      16,
+      "contain",
+    );
+    expect(artBox.width).toBeCloseTo(display.width, 5);
+    expect(artBox.height).toBeCloseTo(display.height, 5);
+    expect(
+      maskCoreUncoveredByComposite(
+        mask, w, h, w, h, harvest, step, null, artBox, 0,
+      ),
+    ).toBe(false);
+    const shrunk = flatArtBox(
+      display,
+      { scale: 0.4, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      16,
+      16,
+      "contain",
+    );
+    expect(
+      maskCoreUncoveredByComposite(
+        mask, w, h, w, h, harvest, step, null, shrunk, 0,
+      ),
     ).toBe(true);
   });
 });

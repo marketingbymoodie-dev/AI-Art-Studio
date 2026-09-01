@@ -42,7 +42,8 @@ import {
   flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
   applyFlatPreviewPlacementRect,
-  flatPrintAreaUncoveredByFill,
+  flatArtBox,
+  flatPrintAreaUncoveredByComposite,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
@@ -1179,6 +1180,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const tapestryMask = assets[tapestryView]?.mask ?? null;
   const tapestryBlank = assets[tapestryView]?.blank ?? null;
   const tapestryEnabled = !!state?.enabled[tapestryView];
+  const tapestryPlacement =
+    state?.placements[tapestryView] ?? DEFAULT_ARTWORK_PLACEMENT;
   const [tapestryMaskGap, setTapestryMaskGap] = useState(false);
   const tapestryGapRafRef = useRef(0);
 
@@ -1191,23 +1194,33 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     const mW = tapestryBlank?.naturalWidth || calib.mockupDims?.width || 1;
     const mH = tapestryBlank?.naturalHeight || calib.mockupDims?.height || 1;
     // Same +15% display rect as renderFlatView / overlay — not the raw harvest box.
+    const bp = catalogBlueprintId ?? manifest.blueprintId;
     const displayRect = applyFlatPreviewPlacementRect(
-      catalogBlueprintId ?? manifest.blueprintId,
+      bp,
       flatPlacementRectPx(calib, tapestryMask, mW, mH, {
         edgeWrapMode,
         decorMode,
       }),
     );
+    const placed = {
+      ...tapestryPlacement,
+      scale: clampPlacementScale(tapestryPlacement.scale),
+    };
+    const artW = artworkImg?.naturalWidth || artworkImg?.width || 0;
+    const artH = artworkImg?.naturalHeight || artworkImg?.height || 0;
+    // Same contain box the canvas draws (displayRect × user scale).
+    const artBox =
+      artworkImg && artW > 0 && artH > 0
+        ? flatArtBox(displayRect, placed, artW, artH, flatArtFitForBlueprint(bp))
+        : null;
     cancelAnimationFrame(tapestryGapRafRef.current);
     tapestryGapRafRef.current = requestAnimationFrame(() => {
-      // Warn only when bg does not reach droop edges. No bg → uncovered print area.
-      // Art size is ignored (contain letterbox is not a white-strip).
-      if (!state?.backgroundColor) {
-        setTapestryMaskGap(true);
-        return;
-      }
       setTapestryMaskGap(
-        flatPrintAreaUncoveredByFill(tapestryMask, displayRect, mW, mH),
+        flatPrintAreaUncoveredByComposite(tapestryMask, mW, mH, {
+          fillRect: state?.backgroundColor ? displayRect : null,
+          artBox,
+          artRotationDeg: placed.rotationDeg ?? 0,
+        }),
       );
     });
     return () => cancelAnimationFrame(tapestryGapRafRef.current);
@@ -1217,6 +1230,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     tapestryMask,
     tapestryBlank,
     tapestryView,
+    tapestryPlacement.scale,
+    tapestryPlacement.offsetX,
+    tapestryPlacement.offsetY,
+    tapestryPlacement.rotationDeg,
+    artworkImg,
     catalogBlueprintId,
     manifest.blueprintId,
     state,
@@ -1224,6 +1242,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     state?.backgroundColor,
     edgeWrapMode,
     decorMode,
+    clampPlacementScale,
   ]);
 
   // ---------- Render guards ----------
@@ -1304,7 +1323,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         coverageWarning = "edge-gap";
       }
     } else if (probeCatalogGuide) {
-      // 241: bg-gap only (same +15% display rect). Art letterbox is not a warning.
+      // 241: composite gap (art box and/or bg fill vs droop core). Same +15% rect.
       if (tapestryMaskGap) {
         coverageWarning = "edge-gap";
       }
@@ -1879,8 +1898,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Background doesn&apos;t reach the tapestry edges — white strips will
-              show. Choose a fill that covers the droop, or pick a colour.
+              Artwork doesn&apos;t reach the tapestry edges — white strips will
+              show. Scale up so the design covers the droop, or pick a fill
+              colour.
             </span>
           </div>
         )}
@@ -1940,7 +1960,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </span>
             ) : coverageWarning === "edge-gap" && probeCatalogGuide && !fabricWeave ? (
               <span className="font-medium text-amber-700" data-testid="flat-tapestry-gap-status">
-                White strips will show — fill the droop with a background colour
+                White strips will show — scale up or pick a background colour
               </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">
