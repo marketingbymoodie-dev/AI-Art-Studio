@@ -176,6 +176,7 @@ async function main() {
     console.log(`[tapestry-mask] synced pt ${pt.id} (${pt.name})`);
   }
   console.log(`[tapestry-mask] done. ${sizeKey} mask ready on ${synced} product type(s). Eyeball 50x60 before harvesting more sizes.`);
+  process.exit(0);
 }
 
 main().catch((err) => {
