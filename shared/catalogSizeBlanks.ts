@@ -137,6 +137,12 @@ export function shouldProbeCatalogBlankGuide(
 }
 
 /**
+ * Preview-only: 241 Place-on-item art renders 15% larger so the editor
+ * matches Printify's printed size. Bake / `bakeFlatPrintFile` stay at 1.0.
+ */
+export const TAPESTRY_PREVIEW_PLACEMENT_SCALE = 1.15;
+
+/**
  * Bounding box of fabric/shadow pixels in a white-studio catalog blank.
  * Not a hand-tuned table — derived from the same image the customer sees.
  */

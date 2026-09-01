@@ -7,6 +7,7 @@ import {
   resolveBlankUrlForSize,
   probeSilhouetteRectFromRgba,
   shouldProbeCatalogBlankGuide,
+  TAPESTRY_PREVIEW_PLACEMENT_SCALE,
   visibleRectForCatalogSizeAspect,
   visibleRectForCatalogSizeBlank,
 } from "./catalogSizeBlanks";
@@ -118,6 +119,7 @@ describe("catalogSizeBlanks", () => {
     expect(rect).toEqual({ x: 0.2, y: 0.1, width: 0.5, height: 0.7 });
     expect(shouldProbeCatalogBlankGuide(241)).toBe(true);
     expect(shouldProbeCatalogBlankGuide(759)).toBe(false);
+    expect(TAPESTRY_PREVIEW_PLACEMENT_SCALE).toBe(1.15);
   });
 
   it("uses inch-aspect letterbox for tapestry (same source as wall decals)", () => {

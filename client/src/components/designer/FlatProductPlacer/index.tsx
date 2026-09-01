@@ -42,7 +42,7 @@ import {
   flatDefaultPlacementScale,
   flatFitPlacementToSafeArea,
   flatMaskCoreUncovered,
-  applyBeaniePreviewPlacementRect,
+  applyFlatPreviewPlacementRect,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
@@ -1282,7 +1282,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode && calib
       ? printCanvasLayout!.printCanvas
       : calib
-        ? applyBeaniePreviewPlacementRect(
+        ? applyFlatPreviewPlacementRect(
             manifest.blueprintId,
             flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
               edgeWrapMode,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyBeaniePreviewPlacementRect,
+  applyFlatPreviewPlacementRect,
+  applyTapestryPreviewPlacementRect,
   ART_COVER_ALPHA,
   MASK_ALPHA_OVERFLOW_THRESHOLD,
   MASK_ALPHA_THRESHOLD,
@@ -287,5 +290,29 @@ describe("maskCoreOutlineFromRgba (241 dashed droop)", () => {
     const w = 8;
     const h = 8;
     expect(maskCoreOutlineFromRgba(rgba(w, h, 0), w, h, w, h)).toBeNull();
+  });
+});
+
+describe("241 tapestry preview-only placement", () => {
+  const rect = { x: 100, y: 100, width: 200, height: 200 };
+
+  it("grows the placement rect 15% for blueprint 241 only", () => {
+    const next = applyTapestryPreviewPlacementRect(241, rect);
+    expect(next.width).toBeCloseTo(230, 5);
+    expect(next.height).toBeCloseTo(230, 5);
+    expect(next.x).toBeCloseTo(85, 5);
+    expect(next.y).toBeCloseTo(85, 5);
+  });
+
+  it("does not change beanie / wall-decal / unset rects", () => {
+    expect(applyTapestryPreviewPlacementRect(576, rect)).toEqual(rect);
+    expect(applyTapestryPreviewPlacementRect(759, rect)).toEqual(rect);
+    expect(applyTapestryPreviewPlacementRect(null, rect)).toEqual(rect);
+  });
+
+  it("composed display helper grows 241 and still grows 576", () => {
+    expect(applyFlatPreviewPlacementRect(241, rect).width).toBeCloseTo(230, 5);
+    expect(applyFlatPreviewPlacementRect(576, rect).width).toBeCloseTo(230, 5);
+    expect(applyBeaniePreviewPlacementRect(241, rect)).toEqual(rect);
   });
 });

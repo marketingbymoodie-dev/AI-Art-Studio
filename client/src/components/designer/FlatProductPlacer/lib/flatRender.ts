@@ -39,6 +39,10 @@ import {
   type MeshGrid,
   type Pt,
 } from "@shared/hoodieTemplate";
+import {
+  shouldProbeCatalogBlankGuide,
+  TAPESTRY_PREVIEW_PLACEMENT_SCALE,
+} from "@shared/catalogSizeBlanks";
 import type {
   FlatTier,
   FlatViewCalibration,
@@ -1081,6 +1085,30 @@ export function applyBeaniePreviewPlacementRect(
 ): Rect {
   if (!isBeanieBlueprint(blueprintId)) return rect;
   return scaleRectFromCenter(rect, BEANIE_PREVIEW_PLACEMENT_SCALE);
+}
+
+/**
+ * Preview-only: grow 241's placement rect 15% so the editor matches Printify.
+ * Must not be used by `bakeFlatPrintFile` / `resolveFlatBakePlacementRect`.
+ * User `placement.scale` still multiplies this rect — slider down shrinks bake.
+ */
+export function applyTapestryPreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+): Rect {
+  if (!shouldProbeCatalogBlankGuide(blueprintId)) return rect;
+  return scaleRectFromCenter(rect, TAPESTRY_PREVIEW_PLACEMENT_SCALE);
+}
+
+/** Display-only rect bump (576 and/or 241). Bake must not call this. */
+export function applyFlatPreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+): Rect {
+  return applyTapestryPreviewPlacementRect(
+    blueprintId,
+    applyBeaniePreviewPlacementRect(blueprintId, rect),
+  );
 }
 
 /** Edge-wrap overlay guides: outer = print canvas, inner = safe zone. */
@@ -3326,7 +3354,7 @@ export function renderFlatView(input: FlatRenderInput): void {
   // independent of bg). Matches tote / pillow bake.
   if (!hasArt && !areaFill) return;
 
-  const rect = applyBeaniePreviewPlacementRect(
+  const rect = applyFlatPreviewPlacementRect(
     blueprintId,
     flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }),
   );
