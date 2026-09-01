@@ -1,6 +1,9 @@
 /**
  * Crop cream/white letterbox bars that image models paint inside an already
  * correct-aspect canvas (common with Vintage Poster on landscape frames).
+ *
+ * Not called from saveImageToStorage — flats (241 and others) must keep the
+ * original generation; contain-fit letterboxes unused margin instead.
  */
 import sharp from "sharp";
 

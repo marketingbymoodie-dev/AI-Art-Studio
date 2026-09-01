@@ -90,4 +90,34 @@ describe("stripLetterboxBars", () => {
     expect(result.changed).toBe(true);
     expect(result.left + result.right).toBeGreaterThanOrEqual(140);
   });
+
+  it("on a portrait canvas crops a cream top bar (the 241 editor cut)", async () => {
+    const w = 200;
+    const h = 280;
+    const topBar = 36;
+    const raw = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3;
+        if (y < topBar) {
+          raw[i] = 236;
+          raw[i + 1] = 220;
+          raw[i + 2] = 190;
+        } else {
+          raw[i] = 40;
+          raw[i + 1] = 70;
+          raw[i + 2] = 50;
+        }
+      }
+    }
+    const input = await sharp(raw, { raw: { width: w, height: h, channels: 3 } })
+      .png()
+      .toBuffer();
+    const result = await stripLetterboxBars(input);
+    expect(result.changed).toBe(true);
+    expect(result.top).toBeGreaterThanOrEqual(30);
+    expect(result.bottom).toBe(0);
+    expect(result.left).toBe(0);
+    expect(result.right).toBe(0);
+  });
 });

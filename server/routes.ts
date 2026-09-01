@@ -152,7 +152,6 @@ import {
   resolveCatalogSizeBlankUrlMap,
 } from "@shared/catalogSizeBlanks";
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
-import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { ensureShopifyCarrierService } from "./printify-checkout-shipping";
 import { isCreatorPlatformShop } from "./creator-host";
@@ -1075,20 +1074,9 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
   } else {
-    // Vintage Poster (and similar) often paints cream letterbox bars inside an
-    // already-correct landscape/portrait canvas — strip those so flat placement
-    // fills the dashed print rect edge-to-edge.
-    try {
-      const stripped = await stripLetterboxBars(buffer);
-      if (stripped.changed) {
-        buffer = stripped.buffer;
-        console.log(
-          `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
-        );
-      }
-    } catch (err) {
-      console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
-    }
+    // Keep the model's full canvas (cream/blank margins included). Contain-fit
+    // letterboxes in the editor. stripLetterboxBars used to crop those bars
+    // (portrait → top/bottom) and stretch the rest — 241 saw a traveling top cut.
 
     if (targetDims && targetDims.width !== targetDims.height) {
       const outputFormat =
