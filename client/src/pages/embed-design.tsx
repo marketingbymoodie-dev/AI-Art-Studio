@@ -1976,6 +1976,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Ref for the pre-shadow product poll timer — declared early so the mount cleanup can reference it.
   const preShadowPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preShadowJobIdRef = useRef<string | null>(null);
+  /**
+   * Retail (dollars string, e.g. "18.95") last synced against the shadow
+   * variant via resolve-design-variant. On the next ATC for the same
+   * (job, retail) we can use preShadowVariantId directly and fire the
+   * resolve call in the background — saves the ~1.5-3s Admin round-trip.
+   *
+   * Cleared whenever the design job or displayed retail changes so a
+   * price drift is picked up on the next ATC.
+   */
+  const preShadowSyncedRetailRef = useRef<{ jobId: string; retail: string } | null>(null);
 
   // Merge anonymous session into customer account when customer is logged in.
   // Fire once on mount; backend is idempotent so re-merging is safe.
@@ -5741,6 +5751,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupFailed(false);
     setVariantError(null);
     preShadowJobIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
@@ -5915,6 +5926,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupFailed(false);
     setVariantError(null);
     preShadowJobIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
@@ -6562,6 +6574,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const startShadowVariantPoll = useCallback((jobId: string | null, shop: string, initialDelay = 0) => {
     if (!jobId || !shop) return;
     preShadowJobIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
@@ -8723,6 +8736,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       preShadowJobIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
 
@@ -10560,6 +10574,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               placementFrozenSigRef.current = liveSig;
               lastFlatGalleryMockupKeyRef.current = "";
               preShadowJobIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
             }
           } catch (forkErr) {
             console.warn("[Design Studio] fork-placement failed:", forkErr);
@@ -10775,16 +10790,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor,
       productTypeId,
     );
-    if (productTypeConfig?.isAllOverPrint && shopDomain && savedJobIdRef.current) {
-      const aopSnap = await freezeAopLineSnapshot(shopDomain, savedJobIdRef.current);
-      if (aopSnap) {
-        properties[LINE_AOP_PANELS_KEY] = aopSnap;
-      } else {
-        console.error(
-          "[AOP] ATC without _aop_pl — fulfillment will fall back to shared job panels (last-write-wins). Flat/mesh lines are unaffected.",
-        );
-      }
-    }
+    // freezeAopLineSnapshot fires in parallel with resolve-design-variant below.
+    // Snapshot needs the job's aopPrintPanelUrls in DB (persisted at Apply); resolve
+    // needs mockup URL + variant. Serialising them added ~500-1500ms per ATC.
+    const aopSnapshotPromise: Promise<string | null> =
+      productTypeConfig?.isAllOverPrint && shopDomain && savedJobIdRef.current
+        ? freezeAopLineSnapshot(shopDomain, savedJobIdRef.current)
+        : Promise.resolve(null);
+
     const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnapAtc = encodeFlatLinePlacement(liveFlatAtc);
     if (flatSnapAtc) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnapAtc;
@@ -10847,24 +10860,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !!shadowDesignId &&
       preShadowJobIdRef.current === shadowDesignId;
 
-    let finalVariantId = normalizedVariant;
-    // Always resolve before ATC so reuse re-reads the live base front price
-    // (then both-tier override). Skipping resolve left stale $27 shadows in cart.
-    if (shopDomain) {
-      for (let attempt = 0; attempt < 3; attempt++) {
+    // Skip the on-demand resolve wait when preShadow is already synced against
+    // the same (job, retail). The shadow variant image / title were already
+    // written when it was minted; syncShadowVariantPrice is fired in the
+    // background so any Admin price drift is corrected asynchronously.
+    // A different retail (both-tier surcharge, retail change) invalidates the
+    // fast path and forces an inline resolve so the customer pays the right price.
+    const canSkipResolveInline =
+      preShadowMatchesJob &&
+      !!preShadowVariantId &&
+      !!displayedRetailForAtc &&
+      preShadowSyncedRetailRef.current?.jobId === shadowDesignId &&
+      preShadowSyncedRetailRef.current?.retail === displayedRetailForAtc;
+
+    /** Best-effort resolve-design-variant with a single retry on network failure. */
+    const runResolveVariant = async (
+      opts: { attempts: number; label: string },
+    ): Promise<{ shadowVariantId: string | null; matched: boolean }> => {
+      if (!shopDomain || !mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
+        return { shadowVariantId: null, matched: false };
+      }
+      for (let attempt = 0; attempt < opts.attempts; attempt++) {
         if (attempt > 0) {
           await new Promise((r) => setTimeout(r, 1200 * attempt));
-          const retriedMockup = await ensureCartMockupUrl(getPreferredMockupUrl());
-          if (retriedMockup) mockupFullUrl = retriedMockup;
-        }
-        if (!mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
-          console.warn("[Design Studio] Shadow resolve skipped — mockup not hosted yet", attempt);
-          continue;
         }
         try {
-          console.log(
-            `[Design Studio] Resolving unique design variant before cart add (attempt ${attempt + 1})...`,
-          );
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 20000);
           const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
@@ -10887,41 +10907,91 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           if (resolveRes.ok) {
             const data = await resolveRes.json();
             if (data.success && data.variantId) {
-              finalVariantId = data.variantId;
-              console.log("[Design Studio] Resolved unique variant (on demand):", {
-                variantId: finalVariantId,
+              console.log(`[Design Studio] ${opts.label} resolved shadow variant:`, {
+                variantId: data.variantId,
                 reused: !!data.reused,
                 created: !!data.created,
-                persistDesignId: data.designId,
-                matchedKey: data.matchedKey,
-                price: data.price,
                 priceSource: data.priceSource,
-                liveFrontPrice: data.liveFrontPrice,
               });
-              if (normalizeVariantId(finalVariantId) !== normalizedVariant) break;
+              const shadowId = String(data.variantId);
+              const matched = normalizeVariantId(shadowId) !== normalizedVariant;
+              if (matched) return { shadowVariantId: shadowId, matched: true };
             }
           } else {
-            console.warn("[Design Studio] resolve-design-variant failed:", resolveRes.status);
+            console.warn(`[Design Studio] ${opts.label} failed:`, resolveRes.status);
           }
         } catch (e: any) {
-          console.warn("[Design Studio] resolve-design-variant error/timeout:", e?.message || e);
+          console.warn(`[Design Studio] ${opts.label} error/timeout:`, e?.message || e);
         }
       }
-      if (
-        preShadowMatchesJob &&
-        preShadowVariantId &&
-        normalizeVariantId(finalVariantId) === normalizedVariant
-      ) {
-        finalVariantId = preShadowVariantId;
-        console.warn("[Design Studio] Resolve did not return a shadow — falling back to pre-created variant", finalVariantId);
+      return { shadowVariantId: null, matched: false };
+    };
+
+    // Kick off the (possibly fast-path) resolve in parallel with freezeAopLineSnapshot.
+    // canSkipResolveInline → still fires but not awaited: the cart uses preShadow now,
+    // and price sync happens server-side in the background.
+    const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean }> = canSkipResolveInline
+      ? Promise.resolve({ shadowVariantId: preShadowVariantId, matched: true })
+      : runResolveVariant({ attempts: 3, label: "resolve-design-variant" });
+
+    if (canSkipResolveInline) {
+      console.log(
+        "[Design Studio] ATC fast-path — reusing preShadow variant",
+        preShadowVariantId,
+        "for job",
+        shadowDesignId,
+        "@ retail",
+        displayedRetailForAtc,
+      );
+      // Fire the resolve in the background so any Admin price drift is corrected
+      // for the NEXT ATC. Never awaited — cart proceeds immediately.
+      void runResolveVariant({ attempts: 1, label: "resolve-design-variant (bg price sync)" }).catch(() => {});
+    }
+
+    // Await both parallel workstreams before adding to cart. Snapshot must be
+    // stamped as _aop_pl BEFORE the cart line exists (INVARIANT: no cart line
+    // without a per-line panel snapshot on AOP).
+    let finalVariantId = normalizedVariant;
+    try {
+      const [aopSnap, resolveResult] = await Promise.all([
+        aopSnapshotPromise,
+        inlineResolvePromise,
+      ]);
+      if (aopSnap) {
+        properties[LINE_AOP_PANELS_KEY] = aopSnap;
+      } else if (productTypeConfig?.isAllOverPrint) {
+        console.error(
+          "[AOP] ATC without _aop_pl — fulfillment will fall back to shared job panels (last-write-wins). Flat/mesh lines are unaffected.",
+        );
       }
-      if (preShadowProductId && shopDomain && normalizeVariantId(finalVariantId) !== normalizedVariant) {
-        safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
-        }).catch(() => {});
+      if (resolveResult.matched && resolveResult.shadowVariantId) {
+        finalVariantId = resolveResult.shadowVariantId;
+        if (displayedRetailForAtc) {
+          preShadowSyncedRetailRef.current = {
+            jobId: shadowDesignId,
+            retail: displayedRetailForAtc,
+          };
+        }
       }
+    } catch (parallelErr: any) {
+      console.warn("[Design Studio] ATC snapshot+resolve failed:", parallelErr?.message || parallelErr);
+    }
+
+    if (
+      shopDomain &&
+      preShadowMatchesJob &&
+      preShadowVariantId &&
+      normalizeVariantId(finalVariantId) === normalizedVariant
+    ) {
+      finalVariantId = preShadowVariantId;
+      console.warn("[Design Studio] Resolve did not return a shadow — falling back to pre-created variant", finalVariantId);
+    }
+    if (preShadowProductId && shopDomain && normalizeVariantId(finalVariantId) !== normalizedVariant) {
+      safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
+      }).catch(() => {});
     }
 
     try {
@@ -17162,6 +17232,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   setMockupFailed(false);
                   setMockupsStale(false);
                   preShadowJobIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
                   setPreShadowVariantId(null);
                   setPreShadowProductId(null);
                   if (preShadowPollRef.current) {
