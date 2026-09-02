@@ -87,11 +87,20 @@ function isLetterboxBand(meanLuma: number, variance: number): boolean {
  */
 export async function stripLetterboxBars(
   input: Buffer,
-  opts?: { minBarFraction?: number; maxBarFraction?: number },
+  opts?: {
+    minBarFraction?: number;
+    maxBarFraction?: number;
+    /** Default true: stretch cropped art back to the original canvas. */
+    resizeBack?: boolean;
+    /** Strip horizontal and vertical bars together (reuse double-letterbox). */
+    allowBothAxes?: boolean;
+  },
 ): Promise<LetterboxStripResult> {
   const minBarFraction = opts?.minBarFraction ?? 0.04;
   // Vintage posters often leave ~20% each side (40% total) inside a landscape canvas.
   const maxBarFraction = opts?.maxBarFraction ?? 0.48;
+  const resizeBack = opts?.resizeBack !== false;
+  const allowBothAxes = opts?.allowBothAxes === true;
 
   const { data, info } = await sharp(input)
     .removeAlpha()
@@ -146,13 +155,15 @@ export async function stripLetterboxBars(
     top + bottom > 0 &&
     h - top - bottom >= Math.floor(h * 0.45);
 
-  if (landscape && useSides) useVert = false;
-  if (portrait && useVert) useSides = false;
-  if (!landscape && !portrait) {
-    // Square: keep the larger letterbox axis only.
-    if (useSides && useVert) {
-      if (sideFrac >= vertFrac) useVert = false;
-      else useSides = false;
+  if (!allowBothAxes) {
+    if (landscape && useSides) useVert = false;
+    if (portrait && useVert) useSides = false;
+    if (!landscape && !portrait) {
+      // Square: keep the larger letterbox axis only.
+      if (useSides && useVert) {
+        if (sideFrac >= vertFrac) useVert = false;
+        else useSides = false;
+      }
     }
   }
 
@@ -174,11 +185,43 @@ export async function stripLetterboxBars(
   const cropW = w - left - right;
   const cropH = h - top - bottom;
 
-  const buffer = await sharp(input)
-    .extract({ left: cropLeft, top: cropTop, width: cropW, height: cropH })
-    .resize(w, h, { fit: "fill" })
-    .png()
-    .toBuffer();
+  let pipeline = sharp(input).extract({
+    left: cropLeft,
+    top: cropTop,
+    width: cropW,
+    height: cropH,
+  });
+  if (resizeBack) {
+    pipeline = pipeline.resize(w, h, { fit: "fill" });
+  }
+  const buffer = await pipeline.png().toBuffer();
 
   return { buffer, changed: true, left, right, top, bottom };
+}
+
+/** Fetch a data URL or http image, crop letterbox bars, return a PNG data URL. */
+export async function stripLetterboxFromImageSource(
+  src: string,
+  opts?: { resizeBack?: boolean; allowBothAxes?: boolean },
+): Promise<{ url: string; changed: boolean }> {
+  let buffer: Buffer | null = null;
+  if (src.startsWith("data:")) {
+    const comma = src.indexOf(",");
+    if (comma < 0) return { url: src, changed: false };
+    buffer = Buffer.from(src.slice(comma + 1), "base64");
+  } else if (/^https?:\/\//i.test(src)) {
+    const res = await fetch(src);
+    if (!res.ok) return { url: src, changed: false };
+    buffer = Buffer.from(await res.arrayBuffer());
+  }
+  if (!buffer?.length) return { url: src, changed: false };
+  const result = await stripLetterboxBars(buffer, {
+    resizeBack: opts?.resizeBack ?? false,
+    allowBothAxes: opts?.allowBothAxes ?? true,
+  });
+  if (!result.changed) return { url: src, changed: false };
+  return {
+    url: `data:image/png;base64,${result.buffer.toString("base64")}`,
+    changed: true,
+  };
 }

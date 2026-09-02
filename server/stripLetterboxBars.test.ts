@@ -120,4 +120,35 @@ describe("stripLetterboxBars", () => {
     expect(result.left).toBe(0);
     expect(result.right).toBe(0);
   });
+
+  it("on a square canvas can strip all four bars when allowBothAxes", async () => {
+    const w = 200;
+    const h = 200;
+    const bar = 30;
+    const raw = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3;
+        const inset = x >= bar && x < w - bar && y >= bar && y < h - bar;
+        if (!inset) {
+          raw[i] = 250;
+          raw[i + 1] = 250;
+          raw[i + 2] = 250;
+        } else {
+          raw[i] = 30;
+          raw[i + 1] = 60;
+          raw[i + 2] = 120;
+        }
+      }
+    }
+    const input = await sharp(raw, { raw: { width: w, height: h, channels: 3 } })
+      .png()
+      .toBuffer();
+    const result = await stripLetterboxBars(input, { allowBothAxes: true });
+    expect(result.changed).toBe(true);
+    expect(result.left).toBeGreaterThanOrEqual(25);
+    expect(result.right).toBeGreaterThanOrEqual(25);
+    expect(result.top).toBeGreaterThanOrEqual(25);
+    expect(result.bottom).toBeGreaterThanOrEqual(25);
+  });
 });

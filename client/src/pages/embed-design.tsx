@@ -8338,6 +8338,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       creatorUsername?: string;
       creatorId?: string;
       creatorSessionId?: string;
+      reuseRegenerate?: boolean;
     }) => {
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/generate`
@@ -9339,6 +9340,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             : undefined,
         quotesVoice: quotesNow && selectedStyleOption ? selectedStyleOption : undefined,
         referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
+        reuseRegenerate: !!reuseRegenerateBasePrompt,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
         sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,

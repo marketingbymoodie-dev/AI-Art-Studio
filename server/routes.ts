@@ -126,6 +126,8 @@ import {
   styleBackgroundApiFields,
 } from "@shared/styleBackgroundConfig";
 import { findCatalogPreset, isLiteralTextCatalogSlug, resolveCatalogSlug } from "@shared/styleCatalog";
+import { isReuseRegeneratePrompt } from "@shared/reuseArtworkPrompt";
+import { stripLetterboxBars, stripLetterboxFromImageSource } from "./stripLetterboxBars";
 import {
   isQuotesCatalogSlug,
   migrateQuotesInventFragment,
@@ -1040,6 +1042,36 @@ interface SaveImageOptions {
   skipChroma?: boolean;
   /** 241 contain path: do not center-crop the generation to print AR. */
   printifyBlueprintId?: number | null;
+  /** Reuse-regen only: crop painted letterbox bars. Never for 241/759 probe path. */
+  stripReuseLetterbox?: boolean;
+}
+
+function requestWantsReuseLetterboxStrip(
+  body: { reuseRegenerate?: unknown } | null | undefined,
+  ...texts: Array<string | null | undefined>
+): boolean {
+  if (body?.reuseRegenerate === true) return true;
+  return texts.some((t) => isReuseRegeneratePrompt(t));
+}
+
+async function stripReuseReferenceUrls(urls: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const u of urls) {
+    try {
+      const next = await stripLetterboxFromImageSource(u, {
+        resizeBack: false,
+        allowBothAxes: true,
+      });
+      if (next.changed) {
+        console.log("[reuse] stripped letterbox bars from a reference image");
+      }
+      out.push(next.url);
+    } catch (err) {
+      console.warn("[reuse] letterbox strip skipped:", (err as Error)?.message);
+      out.push(u);
+    }
+  }
+  return out;
 }
 
 function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
@@ -1055,6 +1087,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     vectorize,
     skipChroma,
     printifyBlueprintId,
+    stripReuseLetterbox,
   } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
@@ -1094,6 +1127,23 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     // Keep the model's full canvas (cream/blank margins included). Contain-fit
     // letterboxes in the editor. stripLetterboxBars used to crop those bars
     // (portrait → top/bottom) and stretch the rest — 241 saw a traveling top cut.
+    if (
+      stripReuseLetterbox &&
+      !shouldProbeCatalogBlankGuide(printifyBlueprintId)
+    ) {
+      const stripped = await stripLetterboxBars(buffer, {
+        allowBothAxes: true,
+        resizeBack: true,
+      });
+      if (stripped.changed) {
+        buffer = stripped.buffer;
+        extension = "png";
+        actualMimeType = "image/png";
+        console.log(
+          `[saveImageToStorage] reuse letterbox stripped L${stripped.left} R${stripped.right} T${stripped.top} B${stripped.bottom}`,
+        );
+      }
+    }
 
     if (
       targetDims &&
@@ -3012,6 +3062,11 @@ ${orientationExtra}
           console.warn("[Generate] Could not process reference image, skipping:", refErr);
         }
       }
+      if (requestWantsReuseLetterboxStrip(req.body, rawUserPromptAdmin, prompt)) {
+        const stripped = await stripReuseReferenceUrls(customerImageUrls);
+        customerImageUrls.length = 0;
+        customerImageUrls.push(...stripped);
+      }
       const customerImageUrl: string | null = customerImageUrls[0] || null;
 
       // Build image input array: style base images (when no user subject) + customer reference
@@ -3112,9 +3167,10 @@ console.log("[api/generate] replicate returned", {
   targetDims,
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
   vectorize: resolveApparelVectorize(styleVectorizeEnabled),
-  skipChroma: styleGen.nativeTransparent,
-  printifyBlueprintId: productType?.printifyBlueprintId,
-});
+          skipChroma: styleGen.nativeTransparent,
+          printifyBlueprintId: productType?.printifyBlueprintId,
+          stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptAdmin, prompt),
+        });
 
 console.log("[api/shopify/generate] saved image", result);
 
@@ -3997,6 +4053,11 @@ ${orientationExtra}
           console.warn("[Shopify Generate] Could not process reference image, skipping:", refErr);
         }
       }
+      if (requestWantsReuseLetterboxStrip(req.body, rawUserPromptEmbed, prompt)) {
+        const stripped = await stripReuseReferenceUrls(embedCustomerImageUrls);
+        embedCustomerImageUrls.length = 0;
+        embedCustomerImageUrls.push(...stripped);
+      }
       const embedCustomerImageUrl: string | null = embedCustomerImageUrls[0] || null;
 
       // Check if this is an apparel product (covers both DB and hardcoded styles)
@@ -4079,6 +4140,7 @@ ${orientationExtra}
           vectorize: resolveApparelVectorize(embedVectorizeEnabled),
           skipChroma: embedStyleGen.nativeTransparent,
           printifyBlueprintId: productType?.printifyBlueprintId,
+          stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptEmbed, prompt),
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -4093,6 +4155,7 @@ ${orientationExtra}
             vectorize: resolveApparelVectorize(embedVectorizeEnabled),
             skipChroma: embedStyleGen.nativeTransparent,
             printifyBlueprintId: productType?.printifyBlueprintId,
+            stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptEmbed, prompt),
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -9150,6 +9213,11 @@ ${orientationExtra}
               console.warn(`${W} Could not process reference image, skipping:`, refErr);
             }
           }
+          if (requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt)) {
+            const stripped = await stripReuseReferenceUrls(sfCustomerImageUrls);
+            sfCustomerImageUrls.length = 0;
+            sfCustomerImageUrls.push(...stripped);
+          }
           const sfCustomerImageUrl: string | null = sfCustomerImageUrls[0] || null;
           console.log(`${W} ref image resolved +${Date.now() - wStart}ms`);
 
@@ -9239,6 +9307,7 @@ ${orientationExtra}
               vectorize: resolveApparelVectorize(sfVectorizeEnabled),
               skipChroma: sfStyleGen.nativeTransparent,
               printifyBlueprintId: productType?.printifyBlueprintId,
+              stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt),
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -9254,6 +9323,7 @@ ${orientationExtra}
                 vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 skipChroma: sfStyleGen.nativeTransparent,
                 printifyBlueprintId: productType?.printifyBlueprintId,
+                stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt),
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
