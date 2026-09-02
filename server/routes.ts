@@ -23378,6 +23378,7 @@ ${orientationExtra}
     "appai-customizer-embed.js",
     "appai-cart-guard.js",
     "appai-cart-images.js",
+    "appai-print-files-gate.js",
   ]);
   app.get("/api/proxy/theme-asset/:name", (req: Request, res: Response) => {
     const name = String(req.params.name || "");

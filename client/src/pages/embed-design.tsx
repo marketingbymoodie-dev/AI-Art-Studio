@@ -11,6 +11,7 @@ import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators
 import { reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import {
   LINE_AOP_PANELS_KEY,
+  LINE_AOP_PENDING_KEY,
   LINE_FLAT_PLACEMENT_KEY,
   LINE_TOTE_PLACEMENT_KEY,
   encodeFlatLinePlacement,
@@ -261,6 +262,30 @@ import {
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
   return `${sizeId || "default"}:${colorId || "default"}`;
+}
+
+const AOP_FINALIZE_JOBS_KEY = "appai:aopFinalizeJobs";
+
+function rememberAopFinalizeJob(jobId: string, shop: string) {
+  try {
+    const raw = sessionStorage.getItem(AOP_FINALIZE_JOBS_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, { shop: string; at: number }>) : {};
+    map[jobId] = { shop, at: Date.now() };
+    sessionStorage.setItem(AOP_FINALIZE_JOBS_KEY, JSON.stringify(map));
+  } catch {
+    /* iframe storage may be blocked */
+  }
+}
+
+function forgetAopFinalizeJob(jobId: string) {
+  try {
+    const raw = sessionStorage.getItem(AOP_FINALIZE_JOBS_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, { shop: string; at: number }>) : {};
+    delete map[jobId];
+    sessionStorage.setItem(AOP_FINALIZE_JOBS_KEY, JSON.stringify(map));
+  } catch {
+    /* iframe storage may be blocked */
+  }
 }
 
 async function freezeAopLineSnapshot(shop: string, jobId: string): Promise<string | null> {
@@ -3405,6 +3430,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // upload can never overwrite the panels from a newer apply (last-apply-wins).
   const aopPanelPersistSeqRef = useRef(0);
   const aopPanelPersistPromiseRef = useRef<Promise<void> | null>(null);
+  /** True only while persistPrintPanels uploads are actually running (not a leftover resolved promise). */
+  const aopPanelPersistInFlightRef = useRef(false);
+  const aopFinalizePendingCountRef = useRef(0);
+  const aopFinalizeToastRef = useRef<{ dismiss: () => void } | null>(null);
   const showPatternStepRef = useRef(false);
   showPatternStepRef.current = showPatternStep;
   // Flat placer (apron / tee / phone etc.) open — keep the design after ATC so
@@ -3431,6 +3460,50 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
+
+  const beginAopFinalizeToast = useCallback((jobId: string, shop: string) => {
+    rememberAopFinalizeJob(jobId, shop);
+    try {
+      window.parent.postMessage(
+        { type: "AI_ART_STUDIO_PRINT_FILES_PENDING", jobId, shop },
+        "*",
+      );
+    } catch {
+      /* ignore */
+    }
+    if (aopFinalizePendingCountRef.current === 0) {
+      aopFinalizeToastRef.current = toast({
+        title: "Finalising print files…",
+        description: "Checkout unlocks when your print files are ready.",
+        duration: 120_000,
+      });
+    }
+    aopFinalizePendingCountRef.current += 1;
+  }, [toast]);
+
+  const endAopFinalizeToast = useCallback((jobId: string, ok: boolean) => {
+    forgetAopFinalizeJob(jobId);
+    try {
+      window.parent.postMessage(
+        { type: ok ? "AI_ART_STUDIO_PRINT_FILES_READY" : "AI_ART_STUDIO_PRINT_FILES_FAILED", jobId },
+        "*",
+      );
+    } catch {
+      /* ignore */
+    }
+    aopFinalizePendingCountRef.current = Math.max(0, aopFinalizePendingCountRef.current - 1);
+    if (aopFinalizePendingCountRef.current === 0) {
+      aopFinalizeToastRef.current?.dismiss();
+      aopFinalizeToastRef.current = null;
+      if (!ok) {
+        toast({
+          variant: "destructive",
+          title: "Couldn’t finalise print files",
+          description: "Please try adding to cart again before checkout.",
+        });
+      }
+    }
+  }, [toast]);
 
   const activeEarnRungs = useMemo(() => {
     if (!rewardLadderPublic?.rungs?.length) return [] as PublicRewardRung[];
@@ -10624,15 +10697,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
     if (aopCanReusePanels) {
       console.log("[AOP] ATC reusing stored print panels — capture signature matches");
-      if (aopPanelPersistPromiseRef.current) {
-        await aopPanelPersistPromiseRef.current;
-      }
     } else if (aopNeedsFlush) {
       try {
         await flushHoodieAopPlacer({ force: true });
-        if (aopPanelPersistPromiseRef.current) {
-          await aopPanelPersistPromiseRef.current;
-        }
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         skipGalleryPersistRef.current = false;
@@ -10790,11 +10857,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor,
       productTypeId,
     );
-    // freezeAopLineSnapshot fires in parallel with resolve-design-variant below.
-    // Snapshot needs the job's aopPrintPanelUrls in DB (persisted at Apply); resolve
-    // needs mockup URL + variant. Serialising them added ~500-1500ms per ATC.
+    // freezeAopLineSnapshot fires in parallel with resolve-design-variant below
+    // only when Apply's 12-upload persist is already done. If persist is still
+    // running, skip the snapshot on the ATC critical path — cart returns now,
+    // and we stamp _aop_pl in the background (checkout stays gated until then).
+    const aopPersistInFlightAtClick = aopPanelPersistInFlightRef.current;
     const aopSnapshotPromise: Promise<string | null> =
-      productTypeConfig?.isAllOverPrint && shopDomain && savedJobIdRef.current
+      productTypeConfig?.isAllOverPrint &&
+      shopDomain &&
+      savedJobIdRef.current &&
+      !aopPersistInFlightAtClick
         ? freezeAopLineSnapshot(shopDomain, savedJobIdRef.current)
         : Promise.resolve(null);
 
@@ -10948,10 +11020,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       void runResolveVariant({ attempts: 1, label: "resolve-design-variant (bg price sync)" }).catch(() => {});
     }
 
-    // Await both parallel workstreams before adding to cart. Snapshot must be
-    // stamped as _aop_pl BEFORE the cart line exists (INVARIANT: no cart line
-    // without a per-line panel snapshot on AOP).
+    // Await resolve (+ snapshot only when persist is already done). AOP lines
+    // without a ready snapshot get `_print_files_pending` and finalize after cart-add.
     let finalVariantId = normalizedVariant;
+    let needsBackgroundAopFinalize = false;
     try {
       const [aopSnap, resolveResult] = await Promise.all([
         aopSnapshotPromise,
@@ -10959,10 +11031,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ]);
       if (aopSnap) {
         properties[LINE_AOP_PANELS_KEY] = aopSnap;
-      } else if (productTypeConfig?.isAllOverPrint) {
-        console.error(
-          "[AOP] ATC without _aop_pl — fulfillment will fall back to shared job panels (last-write-wins). Flat/mesh lines are unaffected.",
-        );
+        delete properties[LINE_AOP_PENDING_KEY];
+      } else if (productTypeConfig?.isAllOverPrint && savedJobIdRef.current) {
+        if (aopPanelPersistInFlightRef.current || aopPersistInFlightAtClick) {
+          properties[LINE_AOP_PENDING_KEY] = "1";
+          needsBackgroundAopFinalize = true;
+          console.log("[AOP] ATC returning before panel persist — checkout gated until _aop_pl stamps");
+        } else {
+          const lateSnap = await freezeAopLineSnapshot(shopDomain, savedJobIdRef.current);
+          if (lateSnap) {
+            properties[LINE_AOP_PANELS_KEY] = lateSnap;
+          } else {
+            properties[LINE_AOP_PENDING_KEY] = "1";
+            needsBackgroundAopFinalize = true;
+            console.warn("[AOP] Snapshot missed after persist — background retry + checkout gate");
+          }
+        }
       }
       if (resolveResult.matched && resolveResult.shadowVariantId) {
         finalVariantId = resolveResult.shadowVariantId;
@@ -11015,6 +11099,57 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       /* sessionStorage may be blocked in the iframe */
     }
 
+    const kickBackgroundAopFinalize = (creatorCartId?: string) => {
+      const jobId = savedJobIdRef.current;
+      if (!needsBackgroundAopFinalize || !jobId || !shopDomain) return;
+      beginAopFinalizeToast(jobId, shopDomain);
+      void (async () => {
+        try {
+          if (aopPanelPersistPromiseRef.current) {
+            await aopPanelPersistPromiseRef.current;
+          }
+          let snap: string | null = null;
+          for (let i = 0; i < 8 && !snap; i++) {
+            snap = await freezeAopLineSnapshot(shopDomain, jobId);
+            if (!snap) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+          }
+          if (!snap) {
+            endAopFinalizeToast(jobId, false);
+            return;
+          }
+          if (isCreatorStorefront && creatorCartId) {
+            const stampRes = await safeFetch(`${API_BASE}/api/creators/cart/stamp-aop-pl`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                creatorUsername: creatorUsernameParam,
+                cartId: creatorCartId,
+                jobId,
+                snapshot: snap,
+              }),
+            });
+            if (!stampRes.ok) {
+              endAopFinalizeToast(jobId, false);
+              return;
+            }
+          } else {
+            try {
+              window.parent.postMessage(
+                { type: "AI_ART_STUDIO_STAMP_AOP_PL", jobId, shop: shopDomain, snapshot: snap },
+                "*",
+              );
+            } catch {
+              /* ignore */
+            }
+          }
+          endAopFinalizeToast(jobId, true);
+        } catch (err) {
+          console.error("[AOP] background finalize failed", err);
+          endAopFinalizeToast(jobId, false);
+        }
+      })();
+    };
+
     // Creator Marketplace: Storefront API cart on platform shop → checkout URL.
     // Checkout thumbnails come from the shadow variant image (not line properties),
     // so never send the base catalog variant — that shows the generic product photo.
@@ -11058,15 +11193,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           itemCount: Number(cartData.itemCount) || (existingCart?.itemCount || 0) + 1,
           username: creatorUsernameParam,
         });
+        kickBackgroundAopFinalize(String(cartData.cartId));
         placementFrozenSigRef.current = encodeFlatLinePlacement(
           flatPlacerRef.current?.getState() || flatPlacerState,
         );
         setAddedToCart(true);
         const itemCount = Number(cartData.itemCount) || 1;
-        toast({
-          title: itemCount > 1 ? `Added to cart (${itemCount} items)` : "Added to cart",
-          description: "Keep designing another product, or open the cart when you’re ready to checkout.",
-        });
+        if (!needsBackgroundAopFinalize) {
+          toast({
+            title: itemCount > 1 ? `Added to cart (${itemCount} items)` : "Added to cart",
+            description: "Keep designing another product, or open the cart when you’re ready to checkout.",
+          });
+        }
         setIsAddingToCart(false);
         setTimeout(() => {
           setAddedToCart(false);
@@ -11094,11 +11232,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
         if (result.success) {
           console.log('[Design Studio] Storefront add-to-cart success');
+          kickBackgroundAopFinalize();
           setAddedToCart(true);
-          toast({
-            title: "Added to cart!",
-            description: "Your custom design has been added to the cart.",
-          });
+          if (!needsBackgroundAopFinalize) {
+            toast({
+              title: "Added to cart!",
+              description: "Your custom design has been added to the cart.",
+            });
+          }
           // Tell parent to re-run cart image swap after a short delay so the
           // freshly-added item's DOM element is in place.
           if (mockupFullUrl) {
@@ -11155,6 +11296,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
       if (cartResponse.ok) {
         console.log('[Design Studio] Admin-embedded cart add success');
+        kickBackgroundAopFinalize();
         setAddedToCart(true);
         toast({
           title: "Added to cart!",
@@ -11244,6 +11386,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         emitTesterDesignStatus({ jobId: panelJobId, aopPanels: "saving" });
       }
       const persistWork = (async () => {
+        aopPanelPersistInFlightRef.current = true;
         try {
           if (isStale()) return;
           const aopPrintPanelUrls = await Promise.all(
@@ -11273,6 +11416,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         } catch (e) {
           console.error("[HoodieAopApply] Failed to persist print panels:", e);
           if (!isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        } finally {
+          aopPanelPersistInFlightRef.current = false;
         }
       })();
       aopPanelPersistPromiseRef.current = persistWork;
