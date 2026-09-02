@@ -119,6 +119,12 @@ import {
 } from "./storefront-wallet-view";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, mergeCatalogStyleOptions, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { catalogRowFieldsFromPreset, isVerbatimShortcutCatalogSlug } from "@shared/catalogArtStyles";
+import {
+  persistBackgroundRequired,
+  persistBackgroundSelectorEnabled,
+  persistDefaultBackgroundColor,
+  styleBackgroundApiFields,
+} from "@shared/styleBackgroundConfig";
 import { findCatalogPreset, isLiteralTextCatalogSlug, resolveCatalogSlug } from "@shared/styleCatalog";
 import {
   isQuotesCatalogSlug,
@@ -2249,6 +2255,12 @@ export async function registerRoutes(
       userSlotSchema: (s as any).userSlotSchema ?? null,
       generationModel: (s as any).generationModel ?? null,
       outputMode: (s as any).outputMode ?? null,
+      ...styleBackgroundApiFields({
+        catalogSlug: s.id === "none" ? null : s.id,
+        backgroundSelectorEnabled: (s as any).backgroundSelectorEnabled ?? null,
+        defaultBackgroundColor: (s as any).defaultBackgroundColor ?? null,
+        backgroundRequired: (s as any).backgroundRequired ?? null,
+      }),
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -2296,6 +2308,12 @@ export async function registerRoutes(
                 ),
                 generationModel: (s as any).generationModel ?? null,
                 outputMode: (s as any).outputMode ?? (hardcoded as any)?.outputMode ?? null,
+                ...styleBackgroundApiFields({
+                  catalogSlug: resolveCatalogSlug(s),
+                  backgroundSelectorEnabled: (s as any).backgroundSelectorEnabled ?? null,
+                  defaultBackgroundColor: (s as any).defaultBackgroundColor ?? null,
+                  backgroundRequired: (s as any).backgroundRequired ?? null,
+                }),
               };
             })
           : hardcodedFallback,
@@ -6745,6 +6763,12 @@ ${orientationExtra}
         ),
         generationModel: s.generationModel ?? null,
         outputMode: s.outputMode ?? (hardcoded as any)?.outputMode ?? null,
+        ...styleBackgroundApiFields({
+          catalogSlug: resolveCatalogSlug(s),
+          backgroundSelectorEnabled: s.backgroundSelectorEnabled ?? null,
+          defaultBackgroundColor: s.defaultBackgroundColor ?? null,
+          backgroundRequired: s.backgroundRequired ?? null,
+        }),
       };
     });
   }
@@ -6766,6 +6790,12 @@ ${orientationExtra}
       userSlotSchema: (s as any).userSlotSchema ?? null,
       generationModel: (s as any).generationModel ?? null,
       outputMode: (s as any).outputMode ?? null,
+      ...styleBackgroundApiFields({
+        catalogSlug: s.id === "none" ? null : s.id,
+        backgroundSelectorEnabled: (s as any).backgroundSelectorEnabled ?? null,
+        defaultBackgroundColor: (s as any).defaultBackgroundColor ?? null,
+        backgroundRequired: (s as any).backgroundRequired ?? null,
+      }),
     }));
   }
 
@@ -14463,6 +14493,12 @@ ${orientationExtra}
           promptPlaceholder: s.promptPlaceholder ?? (hardcoded as any)?.promptPlaceholder ?? null,
           baseImageUrl: s.baseImageUrl ?? (hardcoded as any)?.baseImageUrl ?? null,
           baseImageUrls: s.baseImageUrls ?? null,
+          ...styleBackgroundApiFields({
+            catalogSlug: resolveCatalogSlug(s),
+            backgroundSelectorEnabled: s.backgroundSelectorEnabled ?? null,
+            defaultBackgroundColor: s.defaultBackgroundColor ?? null,
+            backgroundRequired: s.backgroundRequired ?? null,
+          }),
         };
       });
       res.json(enriched);
@@ -14482,7 +14518,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -14505,6 +14541,15 @@ ${orientationExtra}
         ...(generationQuality !== undefined ? { generationQuality: persistGenerationQuality(generationQuality) ?? null } : {}),
         ...(vectorizeEnabled !== undefined ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null } : {}),
         ...(userSlotSchema !== undefined ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null } : {}),
+        ...(backgroundSelectorEnabled !== undefined
+          ? { backgroundSelectorEnabled: persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null }
+          : {}),
+        ...(defaultBackgroundColor !== undefined
+          ? { defaultBackgroundColor: persistDefaultBackgroundColor(defaultBackgroundColor) ?? null }
+          : {}),
+        ...(backgroundRequired !== undefined
+          ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+          : {}),
       } as any);
       configCache.delete("global"); // invalidate so storefront picks up new style
       res.json(preset);
@@ -14530,7 +14575,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -14557,7 +14602,34 @@ ${orientationExtra}
         ...(userSlotSchema !== undefined
           ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null }
           : {}),
+        ...(backgroundSelectorEnabled !== undefined
+          ? { backgroundSelectorEnabled: persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null }
+          : {}),
+        ...(defaultBackgroundColor !== undefined
+          ? { defaultBackgroundColor: persistDefaultBackgroundColor(defaultBackgroundColor) ?? null }
+          : {}),
+        ...(backgroundRequired !== undefined
+          ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+          : {}),
       } as any);
+      const bgFanOut =
+        backgroundSelectorEnabled !== undefined ||
+        defaultBackgroundColor !== undefined ||
+        backgroundRequired !== undefined;
+      const catalogSlug = resolveCatalogSlug(updated || preset);
+      if (bgFanOut && catalogSlug) {
+        await storage.updateStyleBackgroundByCatalogSlug(catalogSlug, {
+          ...(backgroundSelectorEnabled !== undefined
+            ? { backgroundSelectorEnabled: persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null }
+            : {}),
+          ...(defaultBackgroundColor !== undefined
+            ? { defaultBackgroundColor: persistDefaultBackgroundColor(defaultBackgroundColor) ?? null }
+            : {}),
+          ...(backgroundRequired !== undefined
+            ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+            : {}),
+        });
+      }
 
       configCache.delete("global"); // invalidate so storefront picks up new placeholder
       res.json(updated);
@@ -14668,6 +14740,9 @@ ${orientationExtra}
             catalogSlug: preset.id,
             promptPlaceholder: fields.promptPlaceholder,
             generationQuality: fields.generationQuality,
+            backgroundSelectorEnabled: fields.backgroundSelectorEnabled,
+            defaultBackgroundColor: fields.defaultBackgroundColor,
+            backgroundRequired: fields.backgroundRequired,
             ...(fields.outputMode ? { outputMode: fields.outputMode } : {}),
             ...(fields.generationModel ? { generationModel: fields.generationModel } : {}),
             ...(isVerbatimShortcutCatalogSlug(preset.id)

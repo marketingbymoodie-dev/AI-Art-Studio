@@ -98,6 +98,9 @@ export default function AdminStyles() {
   const [vectorizeEnabled, setVectorizeEnabled] = useState(false);
   const [literalTextStyle, setLiteralTextStyle] = useState(false);
   const [literalMaxWords, setLiteralMaxWords] = useState(6);
+  const [bgSelectorMode, setBgSelectorMode] = useState<"auto" | "on" | "off">("auto");
+  const [bgDefaultColor, setBgDefaultColor] = useState<string>("");
+  const [bgRequired, setBgRequired] = useState(false);
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const MAX_BASE_IMAGES = 5;
 
@@ -232,6 +235,9 @@ export default function AdminStyles() {
         descriptionOptional: !!(style as any).descriptionOptional,
         userSlotSchema: (style as any).userSlotSchema || null,
         options: (style as any).options || null,
+        backgroundSelectorEnabled: (style as any).backgroundSelectorEnabled ?? null,
+        defaultBackgroundColor: (style as any).defaultBackgroundColor ?? null,
+        backgroundRequired: (style as any).backgroundRequired ?? null,
         isActive: false, // start inactive so merchant can rename before enabling
       };
       const response = await apiRequest("POST", "/api/admin/styles", payload);
@@ -284,6 +290,9 @@ export default function AdminStyles() {
     setVectorizeEnabled(false);
     setLiteralTextStyle(false);
     setLiteralMaxWords(6);
+    setBgSelectorMode("auto");
+    setBgDefaultColor("");
+    setBgRequired(false);
     setSubStylesEnabled(false);
     setSubStyleLabel("Style");
     setSubStyleRequired(true);
@@ -313,6 +322,10 @@ export default function AdminStyles() {
     const literal = findLiteralSlot(parseUserSlotSchema((style as any).userSlotSchema));
     setLiteralTextStyle(!!literal);
     setLiteralMaxWords(literal?.maxWords && literal.maxWords > 0 ? Number(literal.maxWords) : 6);
+    const bgOn = (style as any).backgroundSelectorEnabled;
+    setBgSelectorMode(bgOn === true ? "on" : bgOn === false ? "off" : "auto");
+    setBgDefaultColor(typeof (style as any).defaultBackgroundColor === "string" ? (style as any).defaultBackgroundColor : "");
+    setBgRequired(!!(style as any).backgroundRequired);
 
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
@@ -462,6 +475,9 @@ export default function AdminStyles() {
       userSlotSchema: literalTextStyle
         ? { slots: [{ id: "text", kind: "literal" as const, maxWords: literalMaxWords || 6 }] }
         : null,
+      backgroundSelectorEnabled: bgSelectorMode === "auto" ? null : bgSelectorMode === "on",
+      defaultBackgroundColor: bgDefaultColor || null,
+      backgroundRequired: bgRequired ? true : null,
     };
 
     if (editingStyle) {
@@ -836,6 +852,100 @@ export default function AdminStyles() {
                   onCheckedChange={setVectorizeEnabled}
                   data-testid="switch-vectorize-enabled"
                 />
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="space-y-2">
+                  <Label>Background colour selector</Label>
+                  <Select
+                    value={bgSelectorMode}
+                    onValueChange={(v) => setBgSelectorMode(v as "auto" | "on" | "off")}
+                  >
+                    <SelectTrigger data-testid="select-bg-selector-mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto — keep today’s product/style behaviour</SelectItem>
+                      <SelectItem value="on">On — show selector + swatches</SelectItem>
+                      <SelectItem value="off">Off — hide selector</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Controls the editor Background picker only. Does not change how fill composites or Printify bake dims.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="style-default-bg">Default background</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="style-default-bg"
+                      type="color"
+                      value={/^#[0-9A-Fa-f]{6}$/.test(bgDefaultColor) ? bgDefaultColor : "#FFFFFF"}
+                      onChange={(e) => setBgDefaultColor(e.target.value.toUpperCase())}
+                      className="h-9 w-10 cursor-pointer rounded border border-input bg-background"
+                      aria-label="Default background colour"
+                      data-testid="input-default-bg-color"
+                    />
+                    <Input
+                      value={bgDefaultColor === "none" ? "" : bgDefaultColor}
+                      placeholder="Auto / inherit"
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        if (!v) {
+                          setBgDefaultColor("");
+                          return;
+                        }
+                        if (/^#[0-9A-Fa-f]{6}$/.test(v)) setBgDefaultColor(v.toUpperCase());
+                      }}
+                      className="h-9 flex-1"
+                      data-testid="input-default-bg-hex"
+                    />
+                    <Button
+                      type="button"
+                      variant={bgDefaultColor === "none" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setBgDefaultColor("none")}
+                      data-testid="button-default-bg-none"
+                    >
+                      None
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setBgDefaultColor("")}
+                      data-testid="button-default-bg-inherit"
+                    >
+                      Auto
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Hex for a starting fill, None for transparent, Auto to keep today’s default.
+                  </p>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5 pr-3">
+                    <Label htmlFor="bg-required" className="text-sm font-medium">
+                      Background required
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Reserved for later. Does not block generate yet.
+                    </p>
+                  </div>
+                  <Switch
+                    id="bg-required"
+                    checked={bgRequired}
+                    onCheckedChange={setBgRequired}
+                    data-testid="switch-bg-required"
+                  />
+                </div>
+                {bgSelectorMode === "on" &&
+                  styleCategory === "decor" &&
+                  generationModel !== "gpt-image-2" && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="note-bg-unusual">
+                      This looks like a full-bleed style. The selector is allowed — fill usually only shows in the editor preview, not on the print.
+                    </p>
+                  )}
               </div>
 
               {/* Prompt Prefix — auto-resizing textarea */}

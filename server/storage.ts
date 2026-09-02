@@ -108,6 +108,14 @@ export interface IStorage {
   getAllActiveStylePresets(): Promise<StylePresetDB[]>;
   createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB>;
   updateStylePreset(id: number, updates: Partial<StylePresetDB>): Promise<StylePresetDB | undefined>;
+  updateStyleBackgroundByCatalogSlug(
+    catalogSlug: string,
+    updates: {
+      backgroundSelectorEnabled?: boolean | null;
+      defaultBackgroundColor?: string | null;
+      backgroundRequired?: boolean | null;
+    },
+  ): Promise<void>;
   deleteStylePreset(id: number): Promise<void>;
   
   // Shopify Installations
@@ -889,6 +897,22 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .where(eq(stylePresets.id, id))
       .returning();
     return updated;
+  }
+
+  async updateStyleBackgroundByCatalogSlug(
+    catalogSlug: string,
+    updates: {
+      backgroundSelectorEnabled?: boolean | null;
+      defaultBackgroundColor?: string | null;
+      backgroundRequired?: boolean | null;
+    },
+  ): Promise<void> {
+    const slug = String(catalogSlug || "").trim();
+    if (!slug) return;
+    await db
+      .update(stylePresets)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(stylePresets.catalogSlug, slug));
   }
 
   async deleteStylePreset(id: number): Promise<void> {

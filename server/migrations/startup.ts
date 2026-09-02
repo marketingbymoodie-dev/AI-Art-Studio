@@ -99,6 +99,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "style_presets",         column: "aspect_ratios",               type: "JSONB" },
   { table: "style_presets",         column: "user_slot_schema",            type: "JSONB" },
   { table: "style_presets",         column: "catalog_slug",                type: "TEXT" },
+  { table: "style_presets",         column: "background_selector_enabled", type: "BOOLEAN" },
+  { table: "style_presets",         column: "default_background_color",    type: "TEXT" },
+  { table: "style_presets",         column: "background_required",         type: "BOOLEAN" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -209,6 +212,19 @@ const DATA_MIGRATIONS: string[] = [
    SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
    WHERE (catalog_slug = 'vintage-poster' OR (catalog_slug IS NULL AND LOWER(name) = 'vintage poster'))
      AND (prompt_prefix IS NULL OR btrim(prompt_prefix) = '')`,
+  // Per-style bg config: only Watercolor + Free 4 All change. Null = inherit today's gate.
+  `UPDATE style_presets
+   SET background_selector_enabled = TRUE,
+       default_background_color = '#FFFFFF',
+       updated_at = NOW()
+   WHERE catalog_slug = 'watercolor'
+     AND background_selector_enabled IS NULL`,
+  `UPDATE style_presets
+   SET background_selector_enabled = TRUE,
+       default_background_color = 'none',
+       updated_at = NOW()
+   WHERE catalog_slug = 'free-4-all'
+     AND background_selector_enabled IS NULL`,
   // Wall Decals: product-level AR was portrait 2:3; per-size ARs are authoritative.
   `UPDATE product_types
    SET aspect_ratio = '1:1'
@@ -2582,8 +2598,9 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
         await pool.query(
           `INSERT INTO style_presets (
            merchant_id, name, catalog_slug, prompt_prefix, category, is_active, sort_order,
-           prompt_placeholder, generation_quality, user_slot_schema, output_mode, generation_model
-         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11)`,
+           prompt_placeholder, generation_quality, user_slot_schema, output_mode, generation_model,
+           background_selector_enabled, default_background_color, background_required
+         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
           m.id,
           fields.name,
@@ -2596,6 +2613,9 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
           fields.userSlotSchema,
           fields.outputMode,
           fields.generationModel,
+          fields.backgroundSelectorEnabled,
+          fields.defaultBackgroundColor,
+          fields.backgroundRequired,
         ],
       );
       inserted++;

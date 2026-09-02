@@ -1,3 +1,5 @@
+import { catalogStyleBackgroundDefaults } from "./styleBackgroundConfig";
+
 /**
  * Platform catalog art styles added 2026-08 (Vintage Print, One-Color Print,
  * Retro Sunset Stack, Playful Cartoon) + Minimalist override of minimal-line.
@@ -63,6 +65,9 @@ export function catalogRowFieldsFromPreset(preset: {
   generationQuality?: string;
   userSlotSchema?: unknown;
   outputMode?: string;
+  backgroundSelectorEnabled?: boolean | null;
+  defaultBackgroundColor?: string | null;
+  backgroundRequired?: boolean | null;
 }): {
   name: string;
   catalogSlug: string | null;
@@ -73,9 +78,13 @@ export function catalogRowFieldsFromPreset(preset: {
   userSlotSchema: unknown;
   outputMode: string | null;
   generationModel: string | null;
+  backgroundSelectorEnabled: boolean | null;
+  defaultBackgroundColor: string | null;
+  backgroundRequired: boolean | null;
 } {
   const verbatim = isVerbatimShortcutCatalogSlug(preset.id);
   const outputMode = preset.outputMode ?? null;
+  const bg = catalogStyleBackgroundDefaults(preset.id === "none" ? null : preset.id);
   return {
     name: preset.name,
     catalogSlug: preset.id === "none" ? null : preset.id,
@@ -86,5 +95,10 @@ export function catalogRowFieldsFromPreset(preset: {
     userSlotSchema: verbatim ? null : (preset.userSlotSchema ?? null),
     outputMode,
     generationModel: outputMode === "floating" ? "gpt-image-2" : null,
+    backgroundSelectorEnabled:
+      preset.backgroundSelectorEnabled ?? bg.backgroundSelectorEnabled,
+    defaultBackgroundColor:
+      preset.defaultBackgroundColor ?? bg.defaultBackgroundColor,
+    backgroundRequired: preset.backgroundRequired ?? bg.backgroundRequired,
   };
 }

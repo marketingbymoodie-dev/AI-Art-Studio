@@ -557,6 +557,14 @@ export const stylePresets = pgTable("style_presets", {
   aspectRatios: jsonb("aspect_ratios"),
   /** Slot definitions the customer fills. */
   userSlotSchema: jsonb("user_slot_schema"),
+  /**
+   * Background picker + default fill. Null = inherit today's floating/product gate.
+   * These are the global style values; a later per-merchant override can sit on top.
+   */
+  backgroundSelectorEnabled: boolean("background_selector_enabled"),
+  /** "#RRGGBB" | "none" | null (inherit). */
+  defaultBackgroundColor: text("default_background_color"),
+  backgroundRequired: boolean("background_required"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1191,7 +1199,7 @@ export const STYLE_PRESETS = [
   
   // Decor Artwork - Full-bleed styles for prints, posters, wall art
   { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop filling the entire canvas. The portrait should look like a classic oil painting of nobility with the background extending to all edges. Create full-bleed artwork of", category: "decor" },
-  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of", category: "decor" },
+  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of", category: "decor", backgroundSelectorEnabled: true, defaultBackgroundColor: "#FFFFFF" },
   { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic full-bleed oil painting in the style of impressionism that fills the entire canvas with rich brushstrokes extending to all edges of", category: "decor" },
   { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of", category: "decor" },
   {
@@ -1215,6 +1223,8 @@ export const STYLE_PRESETS = [
     promptPrefix: "",
     category: "apparel",
     promptPlaceholder: "Your prompt will have no base style applied. Describe your design freely...",
+    backgroundSelectorEnabled: true,
+    defaultBackgroundColor: "none",
   },
   {
     id: "pattern-maker",

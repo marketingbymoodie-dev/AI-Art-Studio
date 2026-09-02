@@ -142,8 +142,8 @@ import {
   DEFAULT_DECOR_BACKGROUND_FILL,
   parseLiveFillHex,
   resolveLiveFillHex,
-  shouldShowDecorFloatingFill,
 } from "@shared/decorBackgroundFill";
+import { resolveStyleBackgroundConfig } from "@shared/styleBackgroundConfig";
 import {
   classifyGenerationFailure,
   extractHttpErrorPayload,
@@ -3995,7 +3995,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const styleId = active?.id || selectedPreset || loadedDecorStyle?.stylePreset || null;
     if (!active && !catalogSlug && !styleName && !styleId) return false;
     if (!generatedDesign?.imageUrl && !active && !selectedPreset) return false;
-    return shouldShowDecorFloatingFill({
+    const productOpts = {
       isApparelProduct: isApparel,
       designerType: productTypeConfig?.designerType,
       catalogSlug,
@@ -4005,7 +4005,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       generationModel: active?.generationModel || loadedDecorStyle?.generationModel,
       useAopCustomizer,
       edgeWrapMode: flatEdgeWrapMode,
-    });
+    };
+    return resolveStyleBackgroundConfig(
+      {
+        catalogSlug,
+        outputMode: productOpts.outputMode,
+        backgroundSelectorEnabled: active?.backgroundSelectorEnabled,
+        defaultBackgroundColor: active?.defaultBackgroundColor,
+        backgroundRequired: active?.backgroundRequired,
+      },
+      productOpts,
+      null,
+    ).visible;
   }, [
     filteredStylePresets,
     stylePresets,
@@ -4039,6 +4050,43 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const seedFlatBackgroundColor = (): string | null => {
     if (flatEdgeWrapMode) return "#FFFFFF";
+    const active = resolveSelectableStylePreset(
+      filteredStylePresets,
+      {
+        stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
+        catalogSlug: loadedDecorStyle?.catalogSlug,
+        styleName: loadedDecorStyle?.styleName,
+      },
+      { pool: stylePresets },
+    );
+    const catalogSlug =
+      active?.catalogSlug ||
+      loadedDecorStyle?.catalogSlug ||
+      selectedPreset ||
+      null;
+    const cfg = resolveStyleBackgroundConfig(
+      {
+        catalogSlug,
+        outputMode: active?.outputMode || loadedDecorStyle?.outputMode,
+        backgroundSelectorEnabled: active?.backgroundSelectorEnabled,
+        defaultBackgroundColor: active?.defaultBackgroundColor,
+        backgroundRequired: active?.backgroundRequired,
+      },
+      {
+        isApparelProduct: isApparel,
+        designerType: productTypeConfig?.designerType,
+        catalogSlug,
+        styleName: active?.name || loadedDecorStyle?.styleName || null,
+        styleId: active?.id || selectedPreset || loadedDecorStyle?.stylePreset || null,
+        outputMode: active?.outputMode || loadedDecorStyle?.outputMode,
+        generationModel: active?.generationModel || loadedDecorStyle?.generationModel,
+        useAopCustomizer,
+        edgeWrapMode: flatEdgeWrapMode,
+      },
+      null,
+    );
+    if (cfg.defaultRaw === "none") return null;
+    if (cfg.defaultFill) return cfg.defaultFill;
     if (showDecorFloatingFill) return liveDecorFillHex;
     return null;
   };
@@ -16199,7 +16247,34 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     <StyleSelector
                       stylePresets={filteredStylePresets}
                       selectedStyle={selectedPreset}
-                      onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
+                      onStyleChange={(id) => {
+                        setSelectedPreset(id);
+                        setSelectedStyleOption("");
+                        const preset = filteredStylePresets.find((p) => p.id === id);
+                        const catalogSlug = preset?.catalogSlug || id || null;
+                        const cfg = resolveStyleBackgroundConfig(
+                          {
+                            catalogSlug,
+                            outputMode: preset?.outputMode,
+                            backgroundSelectorEnabled: preset?.backgroundSelectorEnabled,
+                            defaultBackgroundColor: preset?.defaultBackgroundColor,
+                            backgroundRequired: preset?.backgroundRequired,
+                          },
+                          {
+                            isApparelProduct: isApparel,
+                            designerType: productTypeConfig?.designerType,
+                            catalogSlug,
+                            styleName: preset?.name || null,
+                            styleId: id,
+                            outputMode: preset?.outputMode,
+                            generationModel: preset?.generationModel,
+                            useAopCustomizer,
+                            edgeWrapMode: flatEdgeWrapMode,
+                          },
+                          null,
+                        );
+                        applyLiveDecorFill(cfg.defaultFill ?? "none");
+                      }}
                     />
                     {/* Reserve helper-line height so Art Style / Size triggers stay aligned. */}
                     <div className="mt-0.5 min-h-[1rem]">

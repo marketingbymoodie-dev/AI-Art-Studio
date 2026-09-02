@@ -36,6 +36,9 @@ export interface StylePreset {
   descriptionOptional?: boolean;
   generationModel?: string | null;
   outputMode?: string | null;
+  backgroundSelectorEnabled?: boolean | null;
+  defaultBackgroundColor?: string | null;
+  backgroundRequired?: boolean | null;
   userSlotSchema?: {
     slots: Array<{
       id: string;

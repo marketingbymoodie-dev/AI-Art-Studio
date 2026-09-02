@@ -2373,9 +2373,17 @@ export function registerCreatorMarketplaceRoutes(
           generationQuality,
           vectorizeEnabled,
           userSlotSchema,
+          backgroundSelectorEnabled,
+          defaultBackgroundColor,
+          backgroundRequired,
         } = req.body || {};
         const { persistGenerationModel, persistGenerationQuality, persistVectorizeEnabled } = await import("@shared/styleGeneration");
         const { persistUserSlotSchema } = await import("@shared/promptLayers");
+        const {
+          persistBackgroundRequired,
+          persistBackgroundSelectorEnabled,
+          persistDefaultBackgroundColor,
+        } = await import("@shared/styleBackgroundConfig");
         const style = await updatePlatformStyle(id, {
           ...(name !== undefined ? { name } : {}),
           ...(promptPrefix !== undefined ? { promptPrefix } : {}),
@@ -2398,7 +2406,47 @@ export function registerCreatorMarketplaceRoutes(
           ...(userSlotSchema !== undefined
             ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null }
             : {}),
+          ...(backgroundSelectorEnabled !== undefined
+            ? {
+                backgroundSelectorEnabled:
+                  persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null,
+              }
+            : {}),
+          ...(defaultBackgroundColor !== undefined
+            ? {
+                defaultBackgroundColor:
+                  persistDefaultBackgroundColor(defaultBackgroundColor) ?? null,
+              }
+            : {}),
+          ...(backgroundRequired !== undefined
+            ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+            : {}),
         } as any);
+        const bgFanOut =
+          backgroundSelectorEnabled !== undefined ||
+          defaultBackgroundColor !== undefined ||
+          backgroundRequired !== undefined;
+        const { resolveCatalogSlug } = await import("@shared/styleCatalog");
+        const catalogSlug = resolveCatalogSlug(style);
+        if (bgFanOut && catalogSlug) {
+          await storage.updateStyleBackgroundByCatalogSlug(catalogSlug, {
+            ...(backgroundSelectorEnabled !== undefined
+              ? {
+                  backgroundSelectorEnabled:
+                    persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null,
+                }
+              : {}),
+            ...(defaultBackgroundColor !== undefined
+              ? {
+                  defaultBackgroundColor:
+                    persistDefaultBackgroundColor(defaultBackgroundColor) ?? null,
+                }
+              : {}),
+            ...(backgroundRequired !== undefined
+              ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+              : {}),
+          });
+        }
         res.json(style);
       } catch (e: any) {
         console.error("[creators] update platform style failed:", e);
