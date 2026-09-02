@@ -1,6 +1,6 @@
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
-import { shouldProbeCatalogBlankGuide } from "@shared/catalogSizeBlanks";
+import { shouldApplyCatalogBlankShading } from "@shared/catalogSizeBlanks";
 import type { FlatProductPlacerState } from "../index";
 import {
   loadFlatImageRelaxed,
@@ -78,7 +78,7 @@ export async function renderFlatMockupDataUrl(
     edgeWrapMode: !!manifest.edgeWrap,
     decorMode: opts?.decorMode === true || !!manifest.decorPerSize,
     fabricWeave: opts?.fabricWeave === true,
-    catalogBlankShade: shouldProbeCatalogBlankGuide(opts?.catalogBlueprintId),
+    catalogBlankShade: shouldApplyCatalogBlankShading(opts?.catalogBlueprintId),
     // Phone cases: customer BG colour must survive colour-swap re-bake.
     printCanvasBackgroundColor: bg,
     garmentColorHex: opts?.garmentColorHex ?? null,

@@ -321,9 +321,10 @@ describe("241 tapestry preview-only placement", () => {
     expect(applyTapestryPreviewPlacementRect(null, rect)).toEqual(rect);
   });
 
-  it("composed display helper grows 241 and still grows 576", () => {
+  it("composed display helper grows 241 and still grows 576; 759 stays 1.0", () => {
     expect(applyFlatPreviewPlacementRect(241, rect).width).toBeCloseTo(230, 5);
     expect(applyFlatPreviewPlacementRect(576, rect).width).toBeCloseTo(230, 5);
+    expect(applyFlatPreviewPlacementRect(759, rect)).toEqual(rect);
     expect(applyBeaniePreviewPlacementRect(241, rect)).toEqual(rect);
   });
 

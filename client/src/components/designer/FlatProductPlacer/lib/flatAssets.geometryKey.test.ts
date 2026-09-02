@@ -198,6 +198,32 @@ describe("resolveFlatViewCalibration catalog size blank refit", () => {
     expect(r.width / r.height).toBeCloseTo(5 / 6, 2);
   });
 
+  it("uses exact catalogSizeKey mask for 759 and never axis-swaps to 18x12", () => {
+    const m = {
+      ...wallDecalManifest(),
+      geometryByBlank: {
+        "12x18": {
+          front: { maskUrl: "https://example.com/12x18-decal.png" },
+        },
+        "18x12": {
+          front: { maskUrl: "https://example.com/18x12-decal.png" },
+        },
+      },
+    };
+    expect(catalogSizeExactMaskUrl(m, "12x18", "front")).toBe(
+      "https://example.com/12x18-decal.png",
+    );
+    const calib = resolveFlatViewCalibration(m, "default", "front", {
+      sizeAspectRatio: "12:18",
+      refitCatalogSizeGuide: true,
+      catalogBlueprintId: 759,
+      catalogSizeKey: "12x18",
+    });
+    expect(calib?.maskUrl).toBe("https://example.com/12x18-decal.png");
+    expect(calib?.maskUrl).not.toBe("https://example.com/shared-2x3-mask.png");
+    expect(calib?.maskUrl).not.toBe("https://example.com/18x12-decal.png");
+  });
+
   it("does not fall back to another size's mask when 241 key is missing", () => {
     const m = {
       ...wallDecalManifest(),

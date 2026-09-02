@@ -13,8 +13,6 @@ import {
 } from "../shared/catalogSizeBlanks";
 import { maskAlphaLooksBinary, TAPESTRY_MASK_FEATHER_RADIUS_PX } from "../shared/maskFeather";
 
-const BLUEPRINT_ID = CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry;
-const SIZE_KEYS = Object.keys(CATALOG_SIZE_BLANK_STORAGE_PATHS[BLUEPRINT_ID]);
 const CORE = 128;
 
 function argValue(name: string): string | undefined {
@@ -127,10 +125,17 @@ function fail(msg: string): never {
 }
 
 async function main() {
+  const rawBp = argValue("blueprint") || String(CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry);
+  const BLUEPRINT_ID = Number(rawBp);
+  const sizeTable = CATALOG_SIZE_BLANK_STORAGE_PATHS[BLUEPRINT_ID as keyof typeof CATALOG_SIZE_BLANK_STORAGE_PATHS];
+  if (!sizeTable) {
+    throw new Error(`Unknown catalog-size blueprint ${rawBp}`);
+  }
+  const SIZE_KEYS = Object.keys(sizeTable);
   const rawSize = argValue("size") || "";
   const sizeKey = rawSize ? extractDimensionalKey(rawSize) || rawSize : "";
   if (sizeKey && !SIZE_KEYS.includes(sizeKey)) {
-    throw new Error(`Unknown tapestry size ${rawSize}. Expected one of: ${SIZE_KEYS.join(", ")}`);
+    throw new Error(`Unknown size ${rawSize} for ${BLUEPRINT_ID}. Expected one of: ${SIZE_KEYS.join(", ")}`);
   }
 
   let url = argValue("url") || "";

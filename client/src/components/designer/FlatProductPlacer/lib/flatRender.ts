@@ -40,6 +40,8 @@ import {
   type Pt,
 } from "@shared/hoodieTemplate";
 import {
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
+  decalPreviewPlacementScale,
   shouldProbeCatalogBlankGuide,
   tapestryPreviewPlacementScale,
 } from "@shared/catalogSizeBlanks";
@@ -1098,13 +1100,25 @@ export function applyTapestryPreviewPlacementRect(
   rect: Rect,
   generationModel?: string | null,
 ): Rect {
-  if (!shouldProbeCatalogBlankGuide(blueprintId)) return rect;
+  if (blueprintId !== CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry) return rect;
   const factor = tapestryPreviewPlacementScale(generationModel);
   if (factor === 1) return rect;
   return scaleRectFromCenter(rect, factor);
 }
 
-/** Display-only rect bump (576 and/or 241). Bake must not call this. */
+/** Preview-only 759 bump (1.0 until a test order measures a mismatch). */
+export function applyDecalPreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+  generationModel?: string | null,
+): Rect {
+  if (blueprintId !== CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals) return rect;
+  const factor = decalPreviewPlacementScale(generationModel);
+  if (factor === 1) return rect;
+  return scaleRectFromCenter(rect, factor);
+}
+
+/** Display-only rect bump (576 / 241 / 759). Bake must not call this. */
 export function applyFlatPreviewPlacementRect(
   blueprintId: number | null | undefined,
   rect: Rect,
@@ -1112,7 +1126,11 @@ export function applyFlatPreviewPlacementRect(
 ): Rect {
   return applyTapestryPreviewPlacementRect(
     blueprintId,
-    applyBeaniePreviewPlacementRect(blueprintId, rect),
+    applyDecalPreviewPlacementRect(
+      blueprintId,
+      applyBeaniePreviewPlacementRect(blueprintId, rect),
+      generationModel,
+    ),
     generationModel,
   );
 }

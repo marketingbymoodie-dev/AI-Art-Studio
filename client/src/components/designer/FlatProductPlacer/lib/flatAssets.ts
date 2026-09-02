@@ -2,6 +2,7 @@ import { API_BASE } from "@/lib/urlBase";
 import {
   printFileDimsForAspectRatio,
   probeSilhouetteRectFromRgba,
+  shouldApplyCatalogBlankShading,
   shouldProbeCatalogBlankGuide,
   visibleRectForCatalogSizeBlank,
   type NormRect,
@@ -275,8 +276,8 @@ export function resolveFlatViewCalibration(
           : null),
     );
     if (rect) {
-      const tapestry = shouldProbeCatalogBlankGuide(opts.catalogBlueprintId);
-      const exactMask = tapestry
+      const probePrint = shouldProbeCatalogBlankGuide(opts.catalogBlueprintId);
+      const exactMask = probePrint
         ? catalogSizeExactMaskUrl(manifest, opts.catalogSizeKey, view)
         : null;
       return {
@@ -289,8 +290,8 @@ export function resolveFlatViewCalibration(
           merged.mockupDims.width === merged.mockupDims.height
             ? merged.mockupDims
             : { width: 1024, height: 1024 },
-        // 241: size-only droop mask. Never keep shared / axis-swapped maskUrl.
-        ...(tapestry ? { maskUrl: exactMask, shadingUrl: null } : {}),
+        // 241 / 759: size-only print mask. Never keep shared / axis-swapped maskUrl.
+        ...(probePrint ? { maskUrl: exactMask, shadingUrl: null } : {}),
       };
     }
   }
@@ -336,7 +337,7 @@ export function probeCatalogBlankSilhouette(
   }
 }
 
-export { shouldProbeCatalogBlankGuide };
+export { shouldApplyCatalogBlankShading, shouldProbeCatalogBlankGuide };
 
 export function resolveFlatBlank(
   manifest: FlatCalibrationManifest,
@@ -573,13 +574,13 @@ export async function loadFlatViewAssets(
     view === "front" && opts?.blankUrlOverride
       ? blankUrl
       : withFlatAssetVersion(blankUrl, assetVersion);
-  const loadCatalogTapestryMask =
+  const loadCatalogPrintMask =
     shouldProbeCatalogBlankGuide(opts?.catalogBlueprintId) && refitCatalogSizeGuide;
   const [b, m, s] = await Promise.all([
     loadFlatImage(versionedBlankUrl),
     // 241: load the size-keyed droop mask (calib.maskUrl is exact-key only).
     // Other catalog-size-blank products still skip shared harvest masks.
-    (loadCatalogTapestryMask || !refitCatalogSizeGuide) && calib.maskUrl
+    (loadCatalogPrintMask || !refitCatalogSizeGuide) && calib.maskUrl
       ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, assetVersion))
       : Promise.resolve(null),
     shouldLoadShading
@@ -589,7 +590,7 @@ export async function loadFlatViewAssets(
   if (!b) return null;
   // Catalog-blank refit already has the correct AR — don't rotate harvest masks.
   const mask =
-    loadCatalogTapestryMask && m ? await featherCatalogGuideMask(m) : m;
+    loadCatalogPrintMask && m ? await featherCatalogGuideMask(m) : m;
   if (
     !refitCatalogSizeGuide &&
     flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)

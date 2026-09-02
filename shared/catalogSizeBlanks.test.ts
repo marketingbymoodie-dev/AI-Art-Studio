@@ -6,6 +6,8 @@ import {
   isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
   probeSilhouetteRectFromRgba,
+  DECAL_PREVIEW_PLACEMENT_SCALE,
+  shouldApplyCatalogBlankShading,
   shouldProbeCatalogBlankGuide,
   TAPESTRY_PREVIEW_PLACEMENT_SCALE,
   tapestryPreviewPlacementScale,
@@ -119,8 +121,12 @@ describe("catalogSizeBlanks", () => {
     const rect = probeSilhouetteRectFromRgba(data, w, h, { printInset: 1 });
     expect(rect).toEqual({ x: 0.2, y: 0.1, width: 0.5, height: 0.7 });
     expect(shouldProbeCatalogBlankGuide(241)).toBe(true);
-    expect(shouldProbeCatalogBlankGuide(759)).toBe(false);
+    expect(shouldProbeCatalogBlankGuide(759)).toBe(true);
+    expect(shouldProbeCatalogBlankGuide(2706)).toBe(false);
+    expect(shouldApplyCatalogBlankShading(241)).toBe(true);
+    expect(shouldApplyCatalogBlankShading(759)).toBe(false);
     expect(TAPESTRY_PREVIEW_PLACEMENT_SCALE).toBe(1.15);
+    expect(DECAL_PREVIEW_PLACEMENT_SCALE).toBe(1);
     expect(tapestryPreviewPlacementScale(null)).toBe(1.15);
     expect(tapestryPreviewPlacementScale("gpt-image-2")).toBe(1.15);
   });

@@ -30,6 +30,7 @@ import {
   resolveFlatBlank,
   resolveFlatViewCalibration,
   shouldProbeCatalogBlankGuide,
+  shouldApplyCatalogBlankShading,
   featherCatalogGuideMask,
   resolveCalibratorLayerAdjust,
   withFlatAssetVersion,
@@ -763,7 +764,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               : null,
           decorMode,
           fabricWeave,
-          catalogBlankShade: probeCatalogGuide,
+          catalogBlankShade: shouldApplyCatalogBlankShading(
+            catalogBlueprintId ?? manifest.blueprintId,
+          ),
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
@@ -1906,8 +1909,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Artwork doesn&apos;t reach the tapestry edges — white strips will
-              show. Scale up so the design covers the droop, or pick a fill
+              Artwork doesn&apos;t reach the print edges — white strips will
+              show. Scale up so the design covers the area, or pick a fill
               colour.
             </span>
           </div>

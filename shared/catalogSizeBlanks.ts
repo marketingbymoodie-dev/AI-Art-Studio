@@ -126,12 +126,22 @@ function aspectRatioFromSizeKey(
 }
 
 /**
- * Indoor wall tapestry (241) catalog-size-blank path: size-only droop mask +
- * under-coverage warning. Editor dashed box traces the probed mask outline
- * (not the inch-aspect letterbox). Other catalog-size-blank products do not
- * use this flag.
+ * Catalog-size-blank print-shape path (241 tapestry + 759 wall decals):
+ * size-only magenta mask, contain-fit, bg-fill, per-pixel coverage warning,
+ * persist crop-skip. Dashed box traces the probed mask, not the inch letterbox.
+ * Comforter (2706) stays off.
  */
 export function shouldProbeCatalogBlankGuide(
+  blueprintId: number | null | undefined,
+): boolean {
+  return (
+    blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry ||
+    blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals
+  );
+}
+
+/** 241 only — hanging cloth folds. 759 vinyl/fabric sheet is flat. */
+export function shouldApplyCatalogBlankShading(
   blueprintId: number | null | undefined,
 ): boolean {
   return blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry;
@@ -151,6 +161,18 @@ export function tapestryPreviewPlacementScale(
   return isGptImage2Model(generationModel)
     ? TAPESTRY_PREVIEW_PLACEMENT_SCALE_GPT_IMAGE_2
     : TAPESTRY_PREVIEW_PLACEMENT_SCALE;
+}
+
+/**
+ * Preview-only 759 bump. 1.0 until a test order shows editor ≠ Printify.
+ * Bake must stay at 1.0.
+ */
+export const DECAL_PREVIEW_PLACEMENT_SCALE = 1.0;
+
+export function decalPreviewPlacementScale(
+  _generationModel?: string | null,
+): number {
+  return DECAL_PREVIEW_PLACEMENT_SCALE;
 }
 
 /**

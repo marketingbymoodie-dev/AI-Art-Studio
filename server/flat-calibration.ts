@@ -1900,7 +1900,7 @@ async function harvestPerBlankGeometry(args: {
     try {
       if (shouldProbeCatalogBlankGuide(blueprintId)) {
         console.log(
-          `[flat-calibration] 241 ${color.id}/${view} magenta probe ${dims.width}×${dims.height}`,
+          `[flat-calibration] ${blueprintId} ${color.id}/${view} magenta probe ${dims.width}×${dims.height}`,
         );
       }
       const magId = await uploadImage(
