@@ -66,6 +66,35 @@ export function parseStoredAopPanelCaptureSignature(
   return canonicalAopPanelCaptureSignature(raw);
 }
 
+/**
+ * ATC reuse: skip panel rebuild only on a definite signature match.
+ *
+ * After Saved-Design load the AOP fallback remounts HoodieAopPlacer, which
+ * template-merges `enabled` / placements and overwrites parent live state.
+ * Comparing stored vs that seeded live state falsely misses. If the customer
+ * has not edited since resume/apply, match stored against the last persisted
+ * capture state instead. Pending edits, missing panels, or unparseable /
+ * legacy signatures always rebuild.
+ */
+export function aopCanReuseStoredPanels(opts: {
+  storedSignature: unknown;
+  liveState: unknown;
+  lastPersistedState: unknown;
+  hasRestoredPanels: boolean;
+  hasPendingChanges: boolean;
+}): boolean {
+  if (!opts.hasRestoredPanels) return false;
+  if (!parseStoredAopPanelCaptureSignature(opts.storedSignature)) return false;
+  if (aopPanelCaptureSignaturesMatch(opts.storedSignature, opts.liveState)) {
+    return true;
+  }
+  if (opts.hasPendingChanges) return false;
+  return aopPanelCaptureSignaturesMatch(
+    opts.storedSignature,
+    opts.lastPersistedState,
+  );
+}
+
 export function aopPanelCaptureSignaturesMatch(
   stored: unknown,
   current: unknown,

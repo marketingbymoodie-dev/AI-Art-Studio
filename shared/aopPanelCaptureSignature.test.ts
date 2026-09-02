@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
   canonicalAopPanelCaptureSignature,
   parseStoredAopPanelCaptureSignature,
@@ -60,5 +61,81 @@ describe("canonicalAopPanelCaptureSignature", () => {
       placements: { "front-body": { front: { x: 0.5, y: 0.5 } } },
     };
     expect(aopPanelCaptureSignaturesMatch(persisted, moved)).toBe(false);
+  });
+});
+
+describe("aopCanReuseStoredPanels", () => {
+  const persisted = canonicalAopPanelCaptureSignature(baseState);
+
+  it("reuses when live still matches persist (same-session Apply → ATC)", () => {
+    expect(
+      aopCanReuseStoredPanels({
+        storedSignature: persisted,
+        liveState: baseState,
+        lastPersistedState: baseState,
+        hasRestoredPanels: true,
+        hasPendingChanges: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("reuses after remount seed-fill when the customer has not edited", () => {
+    const seededLive = {
+      ...baseState,
+      enabled: {
+        ...baseState.enabled,
+        trim: false,
+        "left-sleeve": false,
+        "right-sleeve": false,
+      },
+      trimEnabled: false,
+    };
+    expect(aopPanelCaptureSignaturesMatch(persisted, seededLive)).toBe(false);
+    expect(
+      aopCanReuseStoredPanels({
+        storedSignature: persisted,
+        liveState: seededLive,
+        lastPersistedState: baseState,
+        hasRestoredPanels: true,
+        hasPendingChanges: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("rebuilds when the customer edited since load/apply", () => {
+    const moved = {
+      ...baseState,
+      placements: { "front-body": { front: { x: 0.5, y: 0.5 } } },
+    };
+    expect(
+      aopCanReuseStoredPanels({
+        storedSignature: persisted,
+        liveState: moved,
+        lastPersistedState: baseState,
+        hasRestoredPanels: true,
+        hasPendingChanges: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("rebuilds when panels or signature are missing / unparseable", () => {
+    expect(
+      aopCanReuseStoredPanels({
+        storedSignature: persisted,
+        liveState: baseState,
+        lastPersistedState: baseState,
+        hasRestoredPanels: false,
+        hasPendingChanges: false,
+      }),
+    ).toBe(false);
+    expect(
+      aopCanReuseStoredPanels({
+        storedSignature: "not-json",
+        liveState: baseState,
+        lastPersistedState: baseState,
+        hasRestoredPanels: true,
+        hasPendingChanges: false,
+      }),
+    ).toBe(false);
   });
 });

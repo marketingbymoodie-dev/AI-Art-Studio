@@ -254,7 +254,7 @@ import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync"
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 import {
-  aopPanelCaptureSignaturesMatch,
+  aopCanReuseStoredPanels,
   canonicalAopPanelCaptureSignature,
 } from "@shared/aopPanelCaptureSignature";
 
@@ -707,6 +707,22 @@ function toAbsoluteImageUrl(url: string): string {
     return `${assetBase.replace(/\/$/, "")}${url}`;
   }
   return buildAppUrl(url);
+}
+
+/** Same motif after load even when persist stored a relative / proxy URL. */
+function aopArtworkUrlsMatch(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const na = toAbsoluteImageUrl(a);
+  const nb = toAbsoluteImageUrl(b);
+  if (na === nb) return true;
+  try {
+    const pa = new URL(na, "https://appai.local").pathname.replace(/\/+$/, "");
+    const pb = new URL(nb, "https://appai.local").pathname.replace(/\/+$/, "");
+    return pa.length > 1 && pa === pb;
+  } catch {
+    return false;
+  }
 }
 
 function isTemporaryPrintifyMockupUrl(url: string): boolean {
@@ -3364,6 +3380,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const pendingAopRefreshRef = useRef(false);
   /** Last persisted / restored aopPanelCaptureSignature (raw string or object). */
   const storedAopPanelCaptureSignatureRef = useRef<unknown>(null);
+  /** HoodieAopPlacer state last written at Apply / load — not remount seed-fill. */
+  const lastPersistedAopCaptureStateRef = useRef<unknown>(null);
   const onTesterDesignStatusRef = useRef<
     ((status: TesterDesignStatus) => void) | undefined
   >(undefined);
@@ -5186,6 +5204,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
     storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     aopPersonMockupsRef.current = [];
     aopBaseMockupsRef.current = [];
     flatFrontMockupsRef.current = [];
@@ -5333,6 +5352,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
       storedAopPanelCaptureSignatureRef.current =
         ds.aopPanelCaptureSignature ?? null;
+      lastPersistedAopCaptureStateRef.current =
+        ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === "object"
+          ? ds.hoodieAopPlacerState
+          : null;
       // Mesh composites matching the placer (not Printify cameras). Restore
       // these as Front/Back so reopen matches what the customer last applied.
       const savedPtForMesh = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
@@ -5708,6 +5731,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
     storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -5881,6 +5905,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
     storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -6061,6 +6086,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       lastAopPanelUrlsRef.current = null;
       setAopPrintPanelsReady(false);
       storedAopPanelCaptureSignatureRef.current = null;
+      lastPersistedAopCaptureStateRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
@@ -8945,6 +8971,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     lastAopPanelUrlsRef.current = null;
     setAopPrintPanelsReady(false);
     storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     pendingRestoreSizeRef.current = null;
     pendingRestoreStyleRef.current = null;
     setShowPatternStep(false);
@@ -10564,13 +10591,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
 
     const aopHasRestoredPanels = !!(lastAopPanelUrlsRef.current?.length);
+    const aopPendingEdits = !!hoodieAopPlacerRef.current?.hasPendingChanges();
     const aopCanReusePanels = !!(
       useAopCustomizer &&
-      aopHasRestoredPanels &&
-      aopPanelCaptureSignaturesMatch(
-        storedAopPanelCaptureSignatureRef.current,
-        hoodieAopPlacerState,
-      )
+      aopCanReuseStoredPanels({
+        storedSignature: storedAopPanelCaptureSignatureRef.current,
+        liveState: hoodieAopPlacerState,
+        lastPersistedState: lastPersistedAopCaptureStateRef.current,
+        hasRestoredPanels: aopHasRestoredPanels,
+        hasPendingChanges: aopPendingEdits,
+      })
     );
     const aopNeedsFlush = !!(
       useAopCustomizer &&
@@ -10579,6 +10609,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
     if (aopCanReusePanels) {
       console.log("[AOP] ATC reusing stored print panels — capture signature matches");
+      if (aopPanelPersistPromiseRef.current) {
+        await aopPanelPersistPromiseRef.current;
+      }
     } else if (aopNeedsFlush) {
       try {
         await flushHoodieAopPlacer({ force: true });
@@ -11097,6 +11130,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     result: HoodieAopPlacerApplyResult,
   ) => {
     setHoodieAopPlacerState(result.state);
+    lastPersistedAopCaptureStateRef.current = result.state;
+    storedAopPanelCaptureSignatureRef.current =
+      canonicalAopPanelCaptureSignature(result.state);
     setAopPlacementDirty(false);
     // NOTE: Do NOT call `setShowPatternStep(false)` here. Apply is deferred
     // (ATC / leave / Printers Mockup) — closing on every apply would boot
@@ -11157,6 +11193,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }),
           });
           storedAopPanelCaptureSignatureRef.current = panelCaptureSignature;
+          lastPersistedAopCaptureStateRef.current = result.state;
           console.log(
             "[HoodieAopApply] Saved aopPrintPanelUrls on job",
             panelJobId,
@@ -16899,7 +16936,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       // New artwork remounts the placer. Spreading a prior
                       // placement makes HoodieAopPlacer treat it as a resume
                       // and skip the persist that unlocks Send a Test Order.
-                      ...(hoodieAopPlacerState?.artworkUrl === aopPendingMotifUrl
+                      ...(aopArtworkUrlsMatch(
+                        hoodieAopPlacerState?.artworkUrl,
+                        aopPendingMotifUrl,
+                      )
                         ? hoodieAopPlacerState
                         : {}),
                       // Always seed the latest AI-generated motif as the
@@ -16925,7 +16965,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     // Fresh designs still apply once for the first cart image.
                     skipInitialAutoApply={
                       !!hoodieAopPlacerState &&
-                      hoodieAopPlacerState.artworkUrl === aopPendingMotifUrl
+                      aopArtworkUrlsMatch(
+                        hoodieAopPlacerState.artworkUrl,
+                        aopPendingMotifUrl,
+                      )
                     }
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
