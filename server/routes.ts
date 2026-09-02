@@ -148,6 +148,7 @@ import {
 import { resolveSizeAspectRatio, sortDimensionalSizesAscending } from "@shared/productVariantOptions";
 import {
   applyCatalogSizeBlanks,
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
   isCatalogSizeBlankBlueprint,
   resolveCatalogSizeBlankUrlMap,
   shouldProbeCatalogBlankGuide,
@@ -6299,6 +6300,24 @@ ${orientationExtra}
       let baseMockupImages = typeof productType.baseMockupImages === 'string'
         ? JSON.parse(productType.baseMockupImages)
         : productType.baseMockupImages || {};
+      // Preview Studio has no Shopify variant photos. Attach 759 size-keyed
+      // catalog blanks so the dashed box uses the same PNG + mask as the
+      // storefront. In-memory only — do not persist or rewrite primary/gallery.
+      if (
+        productType.printifyBlueprintId ===
+        CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals
+      ) {
+        const mergedDecalBlanks = mergeCatalogSizeBlanksIfNeeded(
+          productType.printifyBlueprintId,
+          baseMockupImages,
+        );
+        if (mergedDecalBlanks.blanksBySize) {
+          baseMockupImages = {
+            ...baseMockupImages,
+            blanksBySize: mergedDecalBlanks.blanksBySize,
+          };
+        }
+      }
 
       // Self-heal empty base mockups. Catalogue-activated products (esp. AOP)
       // can land with baseMockupImages `{}` — the storefront still shows a blank

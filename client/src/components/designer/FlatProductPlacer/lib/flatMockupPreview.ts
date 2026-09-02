@@ -1,6 +1,9 @@
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
-import { shouldApplyCatalogBlankShading } from "@shared/catalogSizeBlanks";
+import {
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
+  shouldApplyCatalogBlankShading,
+} from "@shared/catalogSizeBlanks";
 import type { FlatProductPlacerState } from "../index";
 import {
   loadFlatImageRelaxed,
@@ -34,8 +37,9 @@ export async function renderFlatMockupDataUrl(
   },
 ): Promise<string | null> {
   const refitCatalogSizeGuide =
-    !!opts?.blankUrlOverride &&
-    !!(opts?.catalogSizeAspectRatio || opts?.catalogSizeKey);
+    !!(opts?.catalogSizeAspectRatio || opts?.catalogSizeKey) &&
+    (!!opts?.blankUrlOverride ||
+      opts?.catalogBlueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals);
   const assets = await loadFlatViewAssets(manifest, colorId, view, {
     landscapeOrientation: opts?.landscapeOrientation,
     blankUrlOverride: opts?.blankUrlOverride,

@@ -21,6 +21,7 @@ import {
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
+import { CATALOG_SIZE_BLANK_BLUEPRINTS } from "@shared/catalogSizeBlanks";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
@@ -341,8 +342,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
   const probeCatalogGuide = shouldProbeCatalogBlankGuide(catalogBlueprintId);
+  const isWallDecal =
+    catalogBlueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals;
   const refitCatalogSizeGuide =
-    !!blankUrlOverride && !!(catalogSizeAspectRatio || catalogSizeKey);
+    !!(catalogSizeAspectRatio || catalogSizeKey) &&
+    (!!blankUrlOverride || isWallDecal);
   const calibOpts = useMemo(
     () => ({
       landscapeOrientation,
@@ -659,6 +663,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
         edgeWrapMode,
         decorMode,
+        skipApparelPrintGuideBoost: isWallDecal,
       });
       if (!(pRect.width > 0 && pRect.height > 0)) continue;
       const cur = placements[v] ?? defaultPlacement;
@@ -904,6 +909,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
         edgeWrapMode,
         decorMode,
+        skipApparelPrintGuideBoost: isWallDecal,
       });
       const placed = {
         ...(state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT),
@@ -1074,6 +1080,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
           edgeWrapMode,
           decorMode,
+          skipApparelPrintGuideBoost: isWallDecal,
         });
         const cr = canvas.getBoundingClientRect();
         const deltaMock = mockupDeltaFromScreenNudge(
@@ -1208,6 +1215,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       flatPlacementRectPx(calib, tapestryMask, mW, mH, {
         edgeWrapMode,
         decorMode,
+        skipApparelPrintGuideBoost: isWallDecal,
       }),
       generationModel,
     );
@@ -1302,6 +1310,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
               edgeWrapMode,
               decorMode,
+              skipApparelPrintGuideBoost: isWallDecal,
             }),
             generationModel,
           )

@@ -1037,13 +1037,18 @@ export function flatPlacementRectPx(
   mask: HTMLImageElement | null,
   canvasW: number,
   canvasH: number,
-  opts: { edgeWrapMode?: boolean; decorMode?: boolean },
+  opts: {
+    edgeWrapMode?: boolean;
+    decorMode?: boolean;
+    /** 759 only: never apply apparel 1.2 height boost (Preview Studio mask miss). */
+    skipApparelPrintGuideBoost?: boolean;
+  },
 ): Rect {
   if (opts.edgeWrapMode) {
     return flatPrintCanvasLayout(view).printCanvas;
   }
   const harvest = flatVisibleRectPx(view, canvasW, canvasH);
-  // Decor / wall-decal guides are mat openings — do not stretch to print AR.
+  // Decor mat openings — do not stretch to print AR.
   if (opts.decorMode) return harvest;
 
   if (mask) {
@@ -1061,6 +1066,10 @@ export function flatPlacementRectPx(
     // guide would extend past where the mask actually clips.
     return harvest;
   }
+
+  // 759: Preview Studio can miss the size-keyed mask; do not inflate with
+  // apparel 1.2. 241 keeps the historical no-mask fallback.
+  if (opts.skipApparelPrintGuideBoost) return harvest;
 
   // No mask at all — clip is fillRect(rect), so the boosted rect stays WYSIWYG.
   return expandPrintGuideToPrintFileAspect(
@@ -3500,7 +3509,12 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   const rect = applyFlatPreviewPlacementRect(
     blueprintId,
-    flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }),
+    flatPlacementRectPx(view, mask, W, H, {
+      edgeWrapMode,
+      decorMode,
+      skipApparelPrintGuideBoost:
+        blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals,
+    }),
     generationModel,
   );
   const artFit = flatArtFitForBlueprint(blueprintId);
