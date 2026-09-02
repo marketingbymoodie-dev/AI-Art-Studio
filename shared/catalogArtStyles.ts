@@ -1,5 +1,3 @@
-import { catalogStyleBackgroundDefaults } from "./styleBackgroundConfig";
-
 /**
  * Platform catalog art styles added 2026-08 (Vintage Print, One-Color Print,
  * Retro Sunset Stack, Playful Cartoon) + Minimalist override of minimal-line.
@@ -53,6 +51,41 @@ export function isVerbatimShortcutCatalogSlug(slug: string | null | undefined): 
 
 export function isMinimalLineCatalogSlug(slug: string | null | undefined): boolean {
   return String(slug || "").trim().toLowerCase() === "minimal-line";
+}
+
+/**
+ * Catalog seed defaults for the global bg picker. Lives here (not in
+ * styleBackgroundConfig) so schema → catalogArtStyles stays a leaf and does
+ * not cycle through styleCatalog → STYLE_PRESETS.
+ */
+export function catalogStyleBackgroundDefaults(
+  catalogSlug: string | null | undefined,
+): {
+  backgroundSelectorEnabled: boolean | null;
+  defaultBackgroundColor: string | null;
+  backgroundRequired: boolean | null;
+} {
+  const slug = String(catalogSlug || "").trim().toLowerCase();
+  if (slug === "watercolor") {
+    return {
+      backgroundSelectorEnabled: true,
+      defaultBackgroundColor: "#FFFFFF",
+      backgroundRequired: null,
+    };
+  }
+  // Free 4 All is not floating — isolated pixels, no chroma plate.
+  if (slug === "free-4-all") {
+    return {
+      backgroundSelectorEnabled: true,
+      defaultBackgroundColor: "none",
+      backgroundRequired: null,
+    };
+  }
+  return {
+    backgroundSelectorEnabled: null,
+    defaultBackgroundColor: null,
+    backgroundRequired: null,
+  };
 }
 
 /** Fields copied into style_presets on seed / reseed / all-merchant insert. */

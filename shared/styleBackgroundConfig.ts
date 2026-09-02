@@ -6,6 +6,7 @@
  * without changing call sites — pass null until that layer exists.
  */
 
+import { catalogStyleBackgroundDefaults } from "./catalogArtStyles";
 import { DEFAULT_DECOR_BACKGROUND_FILL, parseLiveFillHex, shouldShowDecorFloatingFill } from "./decorBackgroundFill";
 import { isFloatingCatalogStyle } from "./styleCatalog";
 
@@ -27,32 +28,7 @@ export type ResolvedStyleBackground = {
 
 const HEX_RE = /^#[0-9A-F]{6}$/;
 
-export function catalogStyleBackgroundDefaults(
-  catalogSlug: string | null | undefined,
-): StyleBackgroundConfig {
-  const slug = String(catalogSlug || "").trim().toLowerCase();
-  if (slug === "watercolor") {
-    return {
-      backgroundSelectorEnabled: true,
-      defaultBackgroundColor: "#FFFFFF",
-      backgroundRequired: null,
-    };
-  }
-  // Free 4 All is not floating — isolated pixels, no chroma plate.
-  // Transparent matches PatternCustomizer and avoids a forced white plate.
-  if (slug === "free-4-all") {
-    return {
-      backgroundSelectorEnabled: true,
-      defaultBackgroundColor: "none",
-      backgroundRequired: null,
-    };
-  }
-  return {
-    backgroundSelectorEnabled: null,
-    defaultBackgroundColor: null,
-    backgroundRequired: null,
-  };
-}
+export { catalogStyleBackgroundDefaults };
 
 /** Persist admin payload. `undefined` = omit from the SQL update. */
 export function persistBackgroundSelectorEnabled(
