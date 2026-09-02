@@ -1,5 +1,5 @@
 export const REUSE_REGENERATE_PREFIX =
-  "Recreate this artwork as closely as possible for the new product aspect ratio.";
+  "Recreate this artwork for the new product aspect ratio. Fill the canvas edge-to-edge — extend the scene, wash, and background as needed. Do not copy white bars, letterbox strips, cream padding, or borders from the reference; they are not part of the design.";
 
 /** Peel nested regenerate wrappers down to the customer's original idea. */
 export function unwrapReuseOriginalIdea(raw?: string | null): string {
