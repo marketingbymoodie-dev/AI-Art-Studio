@@ -11818,6 +11818,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    // Active Art Style dropdown only — not generate-time loadedDecorStyle.
+    // A style change between generate and Apply must persist the new selection.
+    const activeStyleId =
+      selectedPreset && selectedPreset !== "" ? selectedPreset : null;
+    const activeStyleRow = activeStyleId
+      ? filteredStylePresets.find((p) => String(p.id) === String(activeStyleId)) ||
+        stylePresets.find((p) => String(p.id) === String(activeStyleId))
+      : undefined;
+    const flatApplyStyleHints = {
+      stylePreset: activeStyleId,
+      catalogSlug: activeStyleRow?.catalogSlug ?? null,
+      styleName: activeStyleRow?.name ?? null,
+      outputMode: activeStyleRow?.outputMode ?? null,
+    };
+
     const persistTesterPlacement = async () => {
       const jobId = savedJobIdRef.current;
       const shop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
@@ -11852,6 +11867,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             pageHandle: activeProductContext.pageHandle || undefined,
             generationModel:
               generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
+            ...flatApplyStyleHints,
           },
           productTypeId: productTypeId || undefined,
           pageHandle: activeProductContext.pageHandle || undefined,
@@ -11995,6 +12011,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 pageHandle: activeProductContext.pageHandle || undefined,
                 generationModel:
                   generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
+                ...flatApplyStyleHints,
               },
               productTypeId: productTypeId || undefined,
               pageHandle: activeProductContext.pageHandle || undefined,
@@ -12049,8 +12066,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     frameColorsArePhoneModels,
     flatPlacerEditOpen,
     generatedDesign?.imageUrl,
+    generatedDesign?.generationModel,
+    loadedDecorStyle?.generationModel,
     productTypeId,
     activeProductContext.pageHandle,
+    selectedPreset,
+    filteredStylePresets,
+    stylePresets,
   ]);
 
   const handleFlatPlacerViewChange = useCallback(() => {

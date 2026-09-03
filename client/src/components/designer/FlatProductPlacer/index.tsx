@@ -759,14 +759,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           printCanvasBackgroundColor:
-            edgeWrapMode ||
-            decorMode ||
-            fabricWeave ||
-            !!decorGenerateFill ||
-            isBeanieBlueprint(manifest.blueprintId) ||
-            probeCatalogGuide
-              ? state.backgroundColor
-              : null,
+            normalizeBgHex(String(state.backgroundColor ?? "")) ?? null,
           decorMode,
           fabricWeave,
           catalogBlankShade: shouldApplyCatalogBlankShading(
