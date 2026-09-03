@@ -6017,15 +6017,75 @@ ${orientationExtra}
         });
 
         // Guard non-JSON / non-OK Shopify responses BEFORE JSON.parse so an
-        // Admin 401 (or a Cloudflare interstitial HTML page) surfaces as a
-        // clean 502 to the theme instead of crashing with "Unexpected token '<'".
+        // Admin 401 (or a Cloudflare interstitial HTML page) does not crash
+        // with "Unexpected token '<'". A guard trip logs the upstream status
+        // + a short body sample, then falls through to the existing fallback
+        // chain (public endpoint → DB-cached variants) so a transient Shopify
+        // hiccup still serves ATC. 502 is only returned when every fallback
+        // is exhausted.
         const adminContentType = (adminResponse.headers.get('content-type') || '').toLowerCase();
-        if (!adminResponse.ok || !adminContentType.includes('application/json')) {
+        const adminUpstreamFailed = !adminResponse.ok || !adminContentType.includes('application/json');
+        if (adminUpstreamFailed) {
           const rawBody = await adminResponse.text().catch(() => '');
           console.warn(
             `[Product Variants] Shopify Admin non-JSON/non-OK: status=${adminResponse.status} ` +
               `content-type=${adminContentType || '(none)'} body=${rawBody.slice(0, 200)}`,
           );
+
+          // Fallback 1: public /products/{handle}.json (no auth required).
+          // Guarded before JSON.parse so an HTML soft-404 / redirect can't
+          // crash us either.
+          if (productType.shopifyProductHandle) {
+            try {
+              const publicUrl = `https://${shopDomain}/products/${productType.shopifyProductHandle}.json`;
+              console.log(`[Product Variants] Trying public endpoint: ${publicUrl}`);
+              const publicResponse = await fetch(publicUrl);
+              const publicCT = (publicResponse.headers.get('content-type') || '').toLowerCase();
+              if (publicResponse.ok && publicCT.includes('application/json')) {
+                const publicData = await publicResponse.json();
+                const publicVariants = publicData.product?.variants || [];
+                if (publicVariants.length > 0) {
+                  console.log(`[Product Variants] Fetched ${publicVariants.length} variants via public endpoint`);
+                  return res.json({
+                    variants: publicVariants.map((v: any) => ({
+                      id: v.id,
+                      title: v.title,
+                      option1: v.option1,
+                      option2: v.option2,
+                      option3: v.option3,
+                      price: v.price,
+                      available: v.available,
+                    })),
+                    source: "public",
+                  });
+                }
+              } else {
+                const pubBody = await publicResponse.text().catch(() => '');
+                console.warn(
+                  `[Product Variants] Public endpoint non-JSON/non-OK: status=${publicResponse.status} ` +
+                    `content-type=${publicCT || '(none)'} body=${pubBody.slice(0, 200)}`,
+                );
+              }
+            } catch (publicError) {
+              console.log(`[Product Variants] Public endpoint failed:`, publicError);
+            }
+          }
+
+          // Fallback 2: Use product type's own variant data from our database.
+          // This allows add-to-cart to work even when Shopify API has auth issues.
+          const fallbackVariants = enrichVariantsWithShopifyPrices(
+            buildFallbackVariantsFromProductType(productType),
+            [],
+          );
+          if (fallbackVariants.length > 0) {
+            console.log(
+              `[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`,
+            );
+            return res.json({ variants: fallbackVariants, source: "fallback" });
+          }
+
+          // All fallbacks exhausted — surface the upstream failure so the
+          // theme can show a meaningful error instead of pretending fine.
           return res.status(502).json({
             error: 'shopify_auth_or_upstream',
             status: adminResponse.status,
@@ -6072,6 +6132,9 @@ ${orientationExtra}
       // Fetch public product JSON from Shopify (handle path only)
       const response = await fetch(fetchUrl);
 
+      // Parse guard: the handle branch never had a fallback chain, so a
+      // non-JSON / non-OK storefront response returns 404 as it always did.
+      // The guard just prevents JSON.parse from crashing on an HTML body.
       const publicContentType = (response.headers.get('content-type') || '').toLowerCase();
       if (!response.ok || !publicContentType.includes('application/json')) {
         const rawBody = await response.text().catch(() => '');
@@ -6080,10 +6143,7 @@ ${orientationExtra}
             `status=${response.status} content-type=${publicContentType || '(none)'} ` +
             `body=${rawBody.slice(0, 200)}`,
         );
-        return res.status(502).json({
-          error: 'shopify_auth_or_upstream',
-          status: response.status,
-        });
+        return res.status(404).json({ error: "Product not found" });
       }
 
       const data = await response.json();
