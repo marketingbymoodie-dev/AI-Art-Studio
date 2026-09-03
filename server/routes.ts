@@ -6034,7 +6034,10 @@ ${orientationExtra}
 
           // Fallback 1: public /products/{handle}.json (no auth required).
           // Guarded before JSON.parse so an HTML soft-404 / redirect can't
-          // crash us either.
+          // crash us either. Routed through mapVariantsForCatalogResponse
+          // so the shape matches Admin-200 (imageSrc + ?? null defaults).
+          // Public endpoint prices come straight from the storefront JSON,
+          // which returns real merchant-set prices — no suppression needed.
           if (productType.shopifyProductHandle) {
             try {
               const publicUrl = `https://${shopDomain}/products/${productType.shopifyProductHandle}.json`;
@@ -6044,18 +6047,11 @@ ${orientationExtra}
               if (publicResponse.ok && publicCT.includes('application/json')) {
                 const publicData = await publicResponse.json();
                 const publicVariants = publicData.product?.variants || [];
+                const publicImages = publicData.product?.images || [];
                 if (publicVariants.length > 0) {
                   console.log(`[Product Variants] Fetched ${publicVariants.length} variants via public endpoint`);
                   return res.json({
-                    variants: publicVariants.map((v: any) => ({
-                      id: v.id,
-                      title: v.title,
-                      option1: v.option1,
-                      option2: v.option2,
-                      option3: v.option3,
-                      price: v.price,
-                      available: v.available,
-                    })),
+                    variants: mapVariantsForCatalogResponse(publicVariants, true, publicImages),
                     source: "public",
                   });
                 }
@@ -6072,14 +6068,27 @@ ${orientationExtra}
           }
 
           // Fallback 2: Use product type's own variant data from our database.
-          // This allows add-to-cart to work even when Shopify API has auth issues.
           // Routed through mapVariantsForCatalogResponse so every row carries
           // the same shape as the Admin-200 success path (imageSrc included).
+          //
+          // Price-integrity guard: this fallback runs after Admin upstream
+          // failed, so enrichVariantsWithShopifyPrices has no live prices to
+          // merge and every row's price stays at the hardcoded "0.00" from
+          // buildFallbackVariantsFromProductType. Serving a shape-perfect
+          // 200 with $0 prices is worse than a loud 502 — it sails past
+          // every downstream check and lands zero-price variants in cart.
+          // If ANY variant is unpriced, suppress the fallback entirely and
+          // fall through to the 502. Root-cause of the enrichment gap is
+          // tracked separately (see docs/tickets/shopify-token-refresh-401-followup.md
+          // for context — the same auth outage that triggers this branch).
           const fallbackVariants = enrichVariantsWithShopifyPrices(
             buildFallbackVariantsFromProductType(productType),
             [],
           );
-          if (fallbackVariants.length > 0) {
+          const fallbackHasUnpriced = fallbackVariants.some(
+            (v) => !v.price || Number.parseFloat(String(v.price)) <= 0,
+          );
+          if (fallbackVariants.length > 0 && !fallbackHasUnpriced) {
             console.log(
               `[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`,
             );
@@ -6088,9 +6097,17 @@ ${orientationExtra}
               source: "fallback",
             });
           }
+          if (fallbackVariants.length > 0 && fallbackHasUnpriced) {
+            console.warn(
+              `[Product Variants] Suppressing DB fallback for ${shopDomain} productTypeId ${productTypeId}: ` +
+                `${fallbackVariants.length} variants but at least one has zero/missing price — ` +
+                `refusing to serve $0 into cart. Returning 502 instead.`,
+            );
+          }
 
-          // All fallbacks exhausted — surface the upstream failure so the
-          // theme can show a meaningful error instead of pretending fine.
+          // All fallbacks exhausted (or suppressed for price integrity) —
+          // surface the upstream failure so the theme can show a meaningful
+          // error instead of pretending fine.
           return res.status(502).json({
             error: 'shopify_auth_or_upstream',
             status: adminResponse.status,
@@ -6109,7 +6126,17 @@ ${orientationExtra}
             buildFallbackVariantsFromProductType(productType),
             variants,
           );
-          if (fallbackVariants.length > 0) {
+          // Same price-integrity guard as the outer fallback. Here enrich
+          // merges from the live Admin `variants` list, so rows usually get
+          // real prices — but a name-mismatch or an Admin variant with its
+          // own zero price would leave some rows at $0. Refuse to serve
+          // partially-priced fallback: log and fall through to the empty
+          // baseVariants 200 (which the theme can render as "no variants
+          // available" rather than adding $0 to cart).
+          const fallbackHasUnpriced = fallbackVariants.some(
+            (v) => !v.price || Number.parseFloat(String(v.price)) <= 0,
+          );
+          if (fallbackVariants.length > 0 && !fallbackHasUnpriced) {
             console.log(
               `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
             );
@@ -6117,6 +6144,13 @@ ${orientationExtra}
               variants: mapVariantsForCatalogResponse(fallbackVariants, true, productImages),
               source: "fallback",
             });
+          }
+          if (fallbackVariants.length > 0 && fallbackHasUnpriced) {
+            console.warn(
+              `[Product Variants] Suppressing inner DB fallback for ${shopDomain} productTypeId ${productTypeId}: ` +
+                `${fallbackVariants.length} variants but at least one has zero/missing price after enrichment — ` +
+                `refusing to serve $0 into cart. Returning empty baseVariants instead.`,
+            );
           }
           if (variants.length > 0) {
             console.warn(
