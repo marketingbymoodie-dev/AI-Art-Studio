@@ -3415,6 +3415,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const pendingAopRefreshRef = useRef(false);
   /** Last persisted / restored aopPanelCaptureSignature (raw string or object). */
   const storedAopPanelCaptureSignatureRef = useRef<unknown>(null);
+  /** Customer closed the AOP editor via Back — fallback must not reopen it. */
+  const aopEditorDismissedRef = useRef(false);
+  const lastAopArtworkUrlForDismissRef = useRef<string | null>(null);
   /** HoodieAopPlacer state last written at Apply / load — not remount seed-fill. */
   const lastPersistedAopCaptureStateRef = useRef<unknown>(null);
   const onTesterDesignStatusRef = useRef<
@@ -7494,6 +7497,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
 
+  // New AOP artwork (generate / import / load) clears dismiss so the fallback
+  // can open the editor. Same imageUrl signal the fallback treats as "fresh".
+  useEffect(() => {
+    const url = generatedDesign?.imageUrl
+      ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+      : null;
+    if (url && url !== lastAopArtworkUrlForDismissRef.current) {
+      aopEditorDismissedRef.current = false;
+    }
+    lastAopArtworkUrlForDismissRef.current = url;
+  }, [generatedDesign?.imageUrl]);
+
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
   useEffect(() => {
@@ -7504,7 +7519,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     ) return;
 
     if (useAopCustomizer) {
-      if (showPatternStep) return;
+      if (showPatternStep || aopEditorDismissedRef.current) return;
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
       if (!hoodieAopPlacerState) setAopPatternUrl(null);
@@ -17130,6 +17145,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                               embeddedContext.onLeaveProduct();
                               return;
                             }
+                            aopEditorDismissedRef.current = true;
                             setShowPatternStep(false);
                           });
                         }}
