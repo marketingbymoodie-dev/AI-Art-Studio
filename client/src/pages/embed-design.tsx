@@ -11463,15 +11463,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupLoading(true);
     setMockupTriggered(true);
     try {
-      const [frontHosted, backHosted] = await Promise.all([
-        ensureHostedUrl(frontDataUrl),
-        backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
-      ]);
+      // Cart / shadow-SKU read the front raster only. Await that upload;
+      // host the back in the background and feed save-state / save-mockups
+      // once it lands (those writes were already fire-and-forget).
+      const frontHosted = await ensureHostedUrl(frontDataUrl);
+      const backHostedPromise = backDataUrl
+        ? ensureHostedUrl(backDataUrl)
+        : Promise.resolve<string | null>(null);
 
       const images: { url: string; label: string }[] = [
         { url: frontHosted, label: "front" },
       ];
-      if (backHosted) images.push({ url: backHosted, label: "back" });
+      // Keep the previous back slot so Printers Mockup index stays stable
+      // while the new back raster uploads off the critical path.
+      const priorBack = aopBaseMockupsRef.current.find((img) => img.label === "back");
+      if (priorBack) images.push(priorBack);
 
       aopBaseMockupsRef.current = images;
       // Keep on-demand Printers/lifestyle shots across placement applies —
@@ -11540,101 +11546,119 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       //      gallery reads as the thumbnail, so without it product-20
       //      designs would fall back to the raw artwork on a flat hoodie
       //      instead of the customer's actual placement preview.
-      if (isStorefront && savedJobIdRef.current && shopDomain) {
-        const jobId = savedJobIdRef.current;
-        void safeFetch(`${API_BASE}/api/storefront/save-state`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId,
-            shop: shopDomain,
-            productTypeId: productTypeId || undefined,
-            pageHandle: activeProductContext.pageHandle || undefined,
-            designState: {
-              hoodieAopPlacerState: result.state,
-              aopPatternUrl: frontHosted,
-              hoodieAopMockups: { front: frontHosted, back: backHosted },
-              productTypeId: productTypeId || undefined,
-              pageHandle: activeProductContext.pageHandle || undefined,
-              selectedSize: selectedSizeRef.current || selectedSize || null,
-              selectedFrameColor:
-                selectedFrameColorRef.current || selectedFrameColor || undefined,
-              stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : null,
-              catalogSlug:
-                filteredStylePresets.find((p) => p.id === selectedPreset)?.catalogSlug ||
-                loadedDecorStyle?.catalogSlug ||
-                null,
-              styleName:
-                filteredStylePresets.find((p) => p.id === selectedPreset)?.name ||
-                loadedDecorStyle?.styleName ||
-                null,
-              outputMode:
-                filteredStylePresets.find((p) => p.id === selectedPreset)?.outputMode ||
-                loadedDecorStyle?.outputMode ||
-                null,
-            },
-          }),
-        }).catch((e) => {
-          console.error("[HoodieAopApply] Failed to persist designState:", e);
-        });
-
-        // `save-mockups` persists hosted http(s) and clean data: previews.
-        // Relative App Proxy paths (`/apps/appai/objects/...`) must be
-        // converted to an absolute app-origin URL so they survive; data:
-        // must stay data: (never host-concat).
-        const frontAbs = toAbsoluteMockupUrlForSave(frontHosted);
-        const backAbs = toAbsoluteMockupUrlForSave(backHosted);
-        // Include current on-demand Printers/lifestyle shots so Saved Designs /
-        // ATC reopen keep them (front/back-only overwrite dropped them before).
-        const onDemandAbs = aopPersonMockupsRef.current
-          .map((m) => toAbsoluteMockupUrlForSave(m.url))
-          .filter((u): u is string => !!u && u.startsWith("http"));
-        const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
-          (u): u is string => !!u,
-        );
-        if (mockupUrls.length > 0) {
-          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+      void backHostedPromise
+        .then((backHosted) => {
+          if (backHosted) {
+            const baseWithBack = [
+              { url: frontHosted, label: "front" },
+              { url: backHosted, label: "back" },
+            ];
+            aopBaseMockupsRef.current = baseWithBack;
+            const withBackOnDemand = [...baseWithBack, ...aopPersonMockupsRef.current];
+            setPrintifyMockupImages(withBackOnDemand);
+            setPrintifyMockups(withBackOnDemand.map((i) => i.url));
+            if (!priorBack) {
+              setSelectedMockupIndex((prev) => (prev >= 1 ? prev + 1 : prev));
+            }
+          }
+          if (!(isStorefront && savedJobIdRef.current && shopDomain)) return;
+          const jobId = savedJobIdRef.current;
+          void safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
               productTypeId: productTypeId || undefined,
-              // Front first (gallery thumbnail), back second.
-              mockupUrls,
+              pageHandle: activeProductContext.pageHandle || undefined,
+              designState: {
+                hoodieAopPlacerState: result.state,
+                aopPatternUrl: frontHosted,
+                hoodieAopMockups: { front: frontHosted, back: backHosted },
+                productTypeId: productTypeId || undefined,
+                pageHandle: activeProductContext.pageHandle || undefined,
+                selectedSize: selectedSizeRef.current || selectedSize || null,
+                selectedFrameColor:
+                  selectedFrameColorRef.current || selectedFrameColor || undefined,
+                stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : null,
+                catalogSlug:
+                  filteredStylePresets.find((p) => p.id === selectedPreset)?.catalogSlug ||
+                  loadedDecorStyle?.catalogSlug ||
+                  null,
+                styleName:
+                  filteredStylePresets.find((p) => p.id === selectedPreset)?.name ||
+                  loadedDecorStyle?.styleName ||
+                  null,
+                outputMode:
+                  filteredStylePresets.find((p) => p.id === selectedPreset)?.outputMode ||
+                  loadedDecorStyle?.outputMode ||
+                  null,
+              },
             }),
-          })
-            .then(() => {
-              // Tell the parent storefront page to re-pull the gallery so a
-              // changed thumbnail shows up the next time the Saved Designs
-              // drawer is opened — no full page reload needed. Posted after
-              // the DB write resolves so the refetch sees the new URL.
-              try {
-                window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
-              } catch {
-                /* cross-origin parent — ignore */
-              }
-              // Also refresh the in-iframe (product-page) Saved Designs
-              // gallery so its thumbnail updates on the fly without the
-              // customer reopening the panel.
-              if (storefrontCustomerId && shopDomain) {
-                void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
-                })
-                  .then((r) => r.json())
-                  .then((d) => {
-                    if (d?.designs) setSavedDesigns(d.designs);
-                  })
-                  .catch(() => {});
-              }
+          }).catch((e) => {
+            console.error("[HoodieAopApply] Failed to persist designState:", e);
+          });
+
+          // `save-mockups` persists hosted http(s) and clean data: previews.
+          // Relative App Proxy paths (`/apps/appai/objects/...`) must be
+          // converted to an absolute app-origin URL so they survive; data:
+          // must stay data: (never host-concat).
+          const frontAbs = toAbsoluteMockupUrlForSave(frontHosted);
+          const backAbs = toAbsoluteMockupUrlForSave(backHosted);
+          // Include current on-demand Printers/lifestyle shots so Saved Designs /
+          // ATC reopen keep them (front/back-only overwrite dropped them before).
+          const onDemandAbs = aopPersonMockupsRef.current
+            .map((m) => toAbsoluteMockupUrlForSave(m.url))
+            .filter((u): u is string => !!u && u.startsWith("http"));
+          const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
+            (u): u is string => !!u,
+          );
+          if (mockupUrls.length > 0) {
+            void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId,
+                shop: shopDomain,
+                productTypeId: productTypeId || undefined,
+                // Front first (gallery thumbnail), back second.
+                mockupUrls,
+              }),
             })
-            .catch((e) => {
-              console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
-            });
-        }
-      }
+              .then(() => {
+                // Tell the parent storefront page to re-pull the gallery so a
+                // changed thumbnail shows up the next time the Saved Designs
+                // drawer is opened — no full page reload needed. Posted after
+                // the DB write resolves so the refetch sees the new URL.
+                try {
+                  window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+                } catch {
+                  /* cross-origin parent — ignore */
+                }
+                // Also refresh the in-iframe (product-page) Saved Designs
+                // gallery so its thumbnail updates on the fly without the
+                // customer reopening the panel.
+                if (storefrontCustomerId && shopDomain) {
+                  void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+                  })
+                    .then((r) => r.json())
+                    .then((d) => {
+                      if (d?.designs) setSavedDesigns(d.designs);
+                    })
+                    .catch(() => {});
+                }
+              })
+              .catch((e) => {
+                console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
+              });
+          }
+        })
+        .catch((e) => {
+          console.error("[HoodieAopApply] Back mockup upload failed:", e);
+        });
     } catch (err: any) {
       console.error("[HoodieAopApply] Upload failed:", err);
       setMockupError(err?.message || "Failed to apply design");
