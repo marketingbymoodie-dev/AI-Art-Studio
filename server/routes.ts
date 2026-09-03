@@ -4992,7 +4992,9 @@ ${orientationExtra}
 
       // Publish to Online Store so /cart/add.js accepts the variant IDs
       try {
-        await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+        const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+        const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+        await ensureProductPublishedToOnlineStore(shopDomain, pubAccessToken, shopifyProductId);
         console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
       } catch (pubErr: any) {
         console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
@@ -5171,7 +5173,9 @@ ${orientationExtra}
 
           // Publish to Online Store so /cart/add.js accepts the variant IDs
           try {
-            await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+            const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+            const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+            await ensureProductPublishedToOnlineStore(shopDomain, pubAccessToken, shopifyProductId);
             console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
           } catch (pubErr: any) {
             console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
@@ -5425,7 +5429,9 @@ ${orientationExtra}
       }
 
       try {
-        await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+        const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+        const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+        await ensureProductPublishedToOnlineStore(shopDomain, pubAccessToken, shopifyProductId);
         console.log(`[Update Shopify] Product ${shopifyProductId} published to Online Store`);
       } catch (pubErr: any) {
         console.warn(`[Update Shopify] Failed to publish product ${shopifyProductId}: ${pubErr.message}`);
@@ -5993,92 +5999,67 @@ ${orientationExtra}
           return res.status(404).json({ error: "Product not published to Shopify yet" });
         }
         
+        // Resolve a fresh Admin token when possible; fall back to the stored
+        // column when the /admin/oauth/access_token refresh path is down (see
+        // docs/tickets/shopify-token-refresh-401-followup.md). Falls back
+        // safely because the helper never mutates or blanks installation.
+        const tokenReady = await ensureValidOfflineAccessToken(installation);
+        const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+
         // Use Shopify Admin API to get product variants
         const adminApiUrl = `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`;
         console.log(`[Product Variants] Fetching from Admin API: ${adminApiUrl}`);
-        
+
         const adminResponse = await fetch(adminApiUrl, {
           headers: {
-            'X-Shopify-Access-Token': installation.accessToken
+            'X-Shopify-Access-Token': accessToken
           }
         });
-        
-        if (!adminResponse.ok) {
-          const errorText = await adminResponse.text().catch(() => '');
-          console.log(`[Product Variants] Admin API failed with status ${adminResponse.status}: ${errorText}`);
-          
-          // Fallback 1: Try the public product JSON endpoint (no auth required)
-          if (productType.shopifyProductHandle) {
-            try {
-              const publicUrl = `https://${shopDomain}/products/${productType.shopifyProductHandle}.json`;
-              console.log(`[Product Variants] Trying public endpoint: ${publicUrl}`);
-              const publicResponse = await fetch(publicUrl);
-              if (publicResponse.ok) {
-                const publicData = await publicResponse.json();
-                const publicVariants = publicData.product?.variants || [];
-                if (publicVariants.length > 0) {
-                  console.log(`[Product Variants] Fetched ${publicVariants.length} variants via public endpoint`);
-                  return res.json({
-                    variants: publicVariants.map((v: any) => ({
-                      id: v.id,
-                      title: v.title,
-                      option1: v.option1,
-                      option2: v.option2,
-                      option3: v.option3,
-                      price: v.price,
-                      available: v.available
-                    })),
-                    source: "public"
-                  });
-                }
-              }
-            } catch (publicError) {
-              console.log(`[Product Variants] Public endpoint failed:`, publicError);
-            }
-          }
-          
-          // Fallback 2: Use product type's own variant data from our database
-          // This allows add-to-cart to work even when Shopify API has auth issues
-          const fallbackVariants = enrichVariantsWithShopifyPrices(
-            buildFallbackVariantsFromProductType(productType),
-            [],
-          );
-          if (fallbackVariants.length > 0) {
-            console.log(`[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`);
-            return res.json({ variants: fallbackVariants, source: "fallback" });
-          }
-          
-          return res.status(404).json({ error: "Could not fetch product variants from Shopify" });
-        } else {
-          const data = await adminResponse.json();
-          const variants = data.product?.variants || [];
-          const productImages = data.product?.images || [];
-          
-          console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
 
-          const baseVariants = selectBaseCatalogVariants(variants);
-          if (baseVariants.length === 0) {
-            const fallbackVariants = enrichVariantsWithShopifyPrices(
-              buildFallbackVariantsFromProductType(productType),
-              variants,
-            );
-            if (fallbackVariants.length > 0) {
-              console.log(
-                `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
-              );
-              return res.json({ variants: fallbackVariants, source: "fallback" });
-            }
-            if (variants.length > 0) {
-              console.warn(
-                `[Product Variants] All ${variants.length} Admin variants filtered out; sample option3:`,
-                variants[0]?.option3,
-              );
-            }
-          }
-          return res.json({
-            variants: mapVariantsForCatalogResponse(baseVariants, true, productImages),
+        // Guard non-JSON / non-OK Shopify responses BEFORE JSON.parse so an
+        // Admin 401 (or a Cloudflare interstitial HTML page) surfaces as a
+        // clean 502 to the theme instead of crashing with "Unexpected token '<'".
+        const adminContentType = (adminResponse.headers.get('content-type') || '').toLowerCase();
+        if (!adminResponse.ok || !adminContentType.includes('application/json')) {
+          const rawBody = await adminResponse.text().catch(() => '');
+          console.warn(
+            `[Product Variants] Shopify Admin non-JSON/non-OK: status=${adminResponse.status} ` +
+              `content-type=${adminContentType || '(none)'} body=${rawBody.slice(0, 200)}`,
+          );
+          return res.status(502).json({
+            error: 'shopify_auth_or_upstream',
+            status: adminResponse.status,
           });
         }
+
+        const data = await adminResponse.json();
+        const variants = data.product?.variants || [];
+        const productImages = data.product?.images || [];
+
+        console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
+
+        const baseVariants = selectBaseCatalogVariants(variants);
+        if (baseVariants.length === 0) {
+          const fallbackVariants = enrichVariantsWithShopifyPrices(
+            buildFallbackVariantsFromProductType(productType),
+            variants,
+          );
+          if (fallbackVariants.length > 0) {
+            console.log(
+              `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
+            );
+            return res.json({ variants: fallbackVariants, source: "fallback" });
+          }
+          if (variants.length > 0) {
+            console.warn(
+              `[Product Variants] All ${variants.length} Admin variants filtered out; sample option3:`,
+              variants[0]?.option3,
+            );
+          }
+        }
+        return res.json({
+          variants: mapVariantsForCatalogResponse(baseVariants, true, productImages),
+        });
       } else {
         // Use handle to fetch from public endpoint
         const safeHandle = (handle as string).replace(/[^a-z0-9-]/gi, '');
@@ -6087,21 +6068,30 @@ ${orientationExtra}
         }
         fetchUrl = `https://${shopDomain}/products/${safeHandle}.json`;
       }
-      
-      // Fetch public product JSON from Shopify
+
+      // Fetch public product JSON from Shopify (handle path only)
       const response = await fetch(fetchUrl);
-      
-      if (!response.ok) {
-        console.log(`[Product Variants] Failed to fetch from ${fetchUrl}: ${response.status}`);
-        return res.status(404).json({ error: "Product not found" });
+
+      const publicContentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (!response.ok || !publicContentType.includes('application/json')) {
+        const rawBody = await response.text().catch(() => '');
+        console.warn(
+          `[Product Variants] Public storefront non-JSON/non-OK: url=${fetchUrl} ` +
+            `status=${response.status} content-type=${publicContentType || '(none)'} ` +
+            `body=${rawBody.slice(0, 200)}`,
+        );
+        return res.status(502).json({
+          error: 'shopify_auth_or_upstream',
+          status: response.status,
+        });
       }
-      
+
       const data = await response.json();
       const variants = data.product?.variants || [];
       const productImages = data.product?.images || [];
-      
+
       console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
-      
+
       const baseVariants = selectBaseCatalogVariants(variants);
       res.json({
         variants: mapVariantsForCatalogResponse(baseVariants, false, productImages),
@@ -20860,7 +20850,9 @@ ${orientationExtra}
     // Default publications to Online Store only (draft stays invisible until activated, but
     // the merchant's "Manage publishing" panel shouldn't show Point of Sale on for these).
     try {
-      await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId), { hideFromSearch: false });
+      const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+      const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+      await ensureProductPublishedToOnlineStore(shop, pubAccessToken, Number(shopifyProductId), { hideFromSearch: false });
     } catch (e: any) {
       console.warn("[design-products] Failed to set default sales channel:", e?.message);
     }
@@ -21089,7 +21081,9 @@ ${orientationExtra}
         if (status === "active") {
           // Standalone design products should stay discoverable in search/collections —
           // only the shadow checkout SKUs use hideFromSearch (the default).
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId), { hideFromSearch: false });
+          const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+          const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+          await ensureProductPublishedToOnlineStore(shop, pubAccessToken, Number(row.shopifyProductId), { hideFromSearch: false });
         }
       } catch (e: any) {
         console.warn("[design-products] Shopify status update failed:", e.message);
@@ -21903,7 +21897,9 @@ ${orientationExtra}
         // Ensure the product is published to the Online Store sales channel
         // (required for the customizer page URL to resolve and for /cart/add.js)
         try {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+          const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+          const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+          await ensureProductPublishedToOnlineStore(shop, pubAccessToken, productIdNum);
           console.log(`[customizer-pages] Product ${productIdNum} published to Online Store (unlisted)`);
         } catch (pubErr: any) {
           console.warn(`[customizer-pages] Failed to publish product ${productIdNum} to Online Store: ${pubErr.message}`);
