@@ -6073,6 +6073,8 @@ ${orientationExtra}
 
           // Fallback 2: Use product type's own variant data from our database.
           // This allows add-to-cart to work even when Shopify API has auth issues.
+          // Routed through mapVariantsForCatalogResponse so every row carries
+          // the same shape as the Admin-200 success path (imageSrc included).
           const fallbackVariants = enrichVariantsWithShopifyPrices(
             buildFallbackVariantsFromProductType(productType),
             [],
@@ -6081,7 +6083,10 @@ ${orientationExtra}
             console.log(
               `[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`,
             );
-            return res.json({ variants: fallbackVariants, source: "fallback" });
+            return res.json({
+              variants: mapVariantsForCatalogResponse(fallbackVariants, true),
+              source: "fallback",
+            });
           }
 
           // All fallbacks exhausted — surface the upstream failure so the
@@ -6108,7 +6113,10 @@ ${orientationExtra}
             console.log(
               `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
             );
-            return res.json({ variants: fallbackVariants, source: "fallback" });
+            return res.json({
+              variants: mapVariantsForCatalogResponse(fallbackVariants, true, productImages),
+              source: "fallback",
+            });
           }
           if (variants.length > 0) {
             console.warn(
