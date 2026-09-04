@@ -366,6 +366,12 @@ export function pickLowestPricedShopifyVariant<T extends { price?: string | numb
   return best ?? variants[0];
 }
 
+/**
+ * Shop-currency headline amount only. Do not pass presentment / Ajax cents in.
+ * ATC MUST send this shop-currency number (via buildPriceMap / displayedRetail*),
+ * never the converted headline string — wiring presentment into ATC re-mints
+ * shadow products (2026-08 bug). Display conversion lives in presentmentDisplay.ts.
+ */
 export function resolveStorefrontHeadlinePrice(args: {
   variants: Array<{ id?: string | number; price?: string | number | null }>;
   sizeSelected: boolean;

@@ -1480,19 +1480,95 @@
       }
     }
 
-    function sendShopifyVariants() {
-      if (!config.shopifyVariants || config.shopifyVariants.length === 0) return;
+    function readCartCurrencyCookie() {
+      try {
+        var parts = document.cookie.split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].replace(/^\s+/, '').split('=');
+          if (p[0] === 'cart_currency' && p[1]) return decodeURIComponent(p[1]).toUpperCase();
+        }
+      } catch (_) {}
+      return '';
+    }
+
+    function readPresentmentMeta() {
+      var s = window.Shopify || {};
+      var cur = (s.currency && s.currency.active) ? String(s.currency.active).toUpperCase() : '';
+      if (!cur) cur = readCartCurrencyCookie();
+      var rate = s.currency && s.currency.rate != null ? parseFloat(s.currency.rate) : NaN;
+      var root = document.getElementById('appai-root');
+      var shopCur = root && root.getAttribute('data-shop-currency');
+      return {
+        currency: cur || '',
+        rate: isFinite(rate) ? rate : null,
+        shopCurrency: shopCur ? String(shopCur).toUpperCase() : '',
+        country: s.country ? String(s.country).toUpperCase() : '',
+        locale: s.locale ? String(s.locale) : ''
+      };
+    }
+
+    function fetchPresentmentPricesByVariantId(handle, done) {
+      if (!handle) { done({}); return; }
+      fetch('/products/' + encodeURIComponent(handle) + '.js', { credentials: 'same-origin' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(p) {
+          var map = {};
+          var list = p && p.variants;
+          if (list) {
+            for (var i = 0; i < list.length; i++) {
+              var v = list[i];
+              if (!v || v.id == null || v.price == null) continue;
+              var cents = parseInt(v.price, 10);
+              if (isFinite(cents) && cents > 0) map[String(v.id)] = cents;
+            }
+          }
+          done(map);
+        })
+        .catch(function() { done({}); });
+    }
+
+    function postShopifyVariantsMessage(variants, baseVariantId, pricesByVariantId) {
+      if (!iframe || !iframe.contentWindow) return;
+      if (!variants || variants.length === 0) return;
+      var meta = readPresentmentMeta();
       try {
         iframe.contentWindow.postMessage({
           type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
-          variants: config.shopifyVariants,
-          baseVariantId: config.selectedVariant || null,
+          variants: variants,
+          baseVariantId: baseVariantId || null,
           productTypeId: config.productTypeId || null,
+          presentment: {
+            currency: meta.currency,
+            rate: meta.rate,
+            shopCurrency: meta.shopCurrency || null,
+            country: meta.country || null,
+            locale: meta.locale || null,
+            pricesByVariantId: pricesByVariantId || {}
+          }
         }, iframeOrigin || '*');
-        console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
-      } catch(e) {
+      } catch (e) {
         console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
       }
+    }
+
+    function sendShopifyVariants() {
+      if (!config.shopifyVariants || config.shopifyVariants.length === 0) return;
+      var finished = false;
+      function finish(map) {
+        if (finished && map && Object.keys(map).length === 0) return;
+        finished = true;
+        postShopifyVariantsMessage(
+          config.shopifyVariants,
+          config.selectedVariant || null,
+          map || {}
+        );
+        console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
+      }
+      var timer = setTimeout(function() { finish({}); }, 1600);
+      fetchPresentmentPricesByVariantId(config.productHandle || '', function(map) {
+        clearTimeout(timer);
+        finish(map);
+      });
     }
 
     function sendStylePresets() {
@@ -2001,17 +2077,7 @@
         if (Array.isArray(data.variants)) config.shopifyVariants = data.variants;
         console.log(B, 'Updated parent product context after in-app switch — productTypeId:', config.productTypeId, 'productId:', config.productId);
         if (Array.isArray(data.variants) && data.variants.length > 0) {
-          try {
-            iframe.contentWindow.postMessage({
-              type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
-              variants: data.variants,
-              baseVariantId: data.selectedVariant || config.selectedVariant || null,
-              productTypeId: config.productTypeId || null,
-            }, iframeOrigin || '*');
-            console.log(B, 'Re-sent SHOPIFY_VARIANTS after product switch:', data.variants.length, 'variants');
-          } catch(e) {
-            console.warn(B, 'Failed to re-send SHOPIFY_VARIANTS after product switch:', e.message);
-          }
+          sendShopifyVariants();
         }
         return;
       }

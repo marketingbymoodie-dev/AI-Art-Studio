@@ -252,6 +252,7 @@ import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
 import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
+import { formatStorefrontHeadlineDisplay } from "@shared/presentmentDisplay";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 import {
@@ -7979,6 +7980,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Used to render a variant selector inside the generator on customizer pages.
   const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
+  /** Presentment sibling from parent — DISPLAY ONLY. Never merge into variants[].price. */
+  const [presentmentPricesByVariantId, setPresentmentPricesByVariantId] = useState<
+    Record<string, number>
+  >({});
+  const [activeCurrency, setActiveCurrency] = useState<string | null>(null);
+  const presentmentMetaRef = useRef<{
+    rate: number | null;
+    shopCurrency: string | null;
+    country: string | null;
+    locale: string | null;
+  }>({ rate: null, shopCurrency: null, country: null, locale: null });
 
   const mintedCatalog = useMemo(
     () =>
@@ -10926,8 +10938,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const mappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
     const displayedFromSizeDropdown =
       mappedCents > 0 ? (mappedCents / 100).toFixed(2) : null;
-    // Charge exactly what the size dropdown / headline showed — never a
-    // leftover Admin GET of a different variant ($18.95 on page → $27 in cart).
+    // Headline is presentment display-only (≈ €16,95). ATC MUST send shop
+    // currency from buildPriceMap / variant.price — never the converted
+    // headline. Wiring headline presentment into resolve-design-variant or
+    // CART_STATE.price re-mints shadow products (2026-08 bug).
     const displayedRetailForAtc =
       bothPriceOverride ||
       displayedFromSizeDropdown ||
@@ -13117,6 +13131,35 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         console.log('[Design Studio] SHOPIFY_VARIANTS received:', mapped.length, 'variants');
         setShopifyVariants(mapped);
         setVariants(mapped);
+        const pres = event.data.presentment;
+        if (pres && typeof pres === "object") {
+          const cur =
+            pres.currency != null && String(pres.currency).trim()
+              ? String(pres.currency).trim().toUpperCase()
+              : null;
+          setActiveCurrency(cur);
+          const rawPrices =
+            pres.pricesByVariantId && typeof pres.pricesByVariantId === "object"
+              ? pres.pricesByVariantId
+              : {};
+          const cleaned: Record<string, number> = {};
+          for (const [k, v] of Object.entries(rawPrices as Record<string, unknown>)) {
+            const n = Number(v);
+            if (Number.isFinite(n) && n > 0) cleaned[String(k)] = Math.round(n);
+          }
+          setPresentmentPricesByVariantId(cleaned);
+          presentmentMetaRef.current = {
+            rate:
+              pres.rate != null && Number.isFinite(Number(pres.rate))
+                ? Number(pres.rate)
+                : null,
+            shopCurrency: pres.shopCurrency
+              ? String(pres.shopCurrency).trim().toUpperCase()
+              : null,
+            country: pres.country ? String(pres.country).trim().toUpperCase() : null,
+            locale: pres.locale ? String(pres.locale) : null,
+          };
+        }
         const base = event.data.baseVariantId ? String(event.data.baseVariantId) : null;
         if (base) {
           setShopifyVariantId(base);
@@ -16253,12 +16296,42 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   const priceMap = buildPriceMap();
                   const mappedCents =
                     sizeSelected && selectedSize ? priceMap[selectedSize] : undefined;
-                  // Size dropdown and headline must show the same number.
-                  if (sizeSelected && mappedCents && mappedCents > 0) {
+                  const presentmentHeadline = (
+                    shopAmount: number,
+                    showFrom: boolean,
+                    variantId?: string | null,
+                  ) => {
+                    const meta = presentmentMetaRef.current;
+                    const display = formatStorefrontHeadlineDisplay({
+                      shopAmount,
+                      showFrom,
+                      variantId,
+                      activeCurrency,
+                      shopCurrency: meta.shopCurrency,
+                      rate: meta.rate,
+                      pricesByVariantId: presentmentPricesByVariantId,
+                      country: meta.country,
+                      locale: meta.locale,
+                      allowAjaxPresentment: !printPlacementUsesBoth,
+                    });
                     return (
                       <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                        {`$${(mappedCents / 100).toFixed(2)}`}
+                        {display.text}
+                        {display.converted ? (
+                          <span className="block text-[11px] font-normal leading-tight">
+                            Final price at checkout
+                          </span>
+                        ) : null}
                       </p>
+                    );
+                  };
+                  // Size dropdown stays shop-currency (buildPriceMap). Headline may
+                  // show presentment display-only. Do not sync those numbers.
+                  if (sizeSelected && mappedCents && mappedCents > 0) {
+                    return presentmentHeadline(
+                      mappedCents / 100,
+                      false,
+                      shopifyVariantId,
                     );
                   }
                   const activeId = sizeSelected
@@ -16294,12 +16367,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     printPlacementUsesBoth,
                   });
                   if (!headline) return null;
-                  return (
-                    <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                      {headline.showFrom
-                        ? `from $${headline.amount.toFixed(2)}`
-                        : `$${headline.amount.toFixed(2)}`}
-                    </p>
+                  return presentmentHeadline(
+                    headline.amount,
+                    headline.showFrom,
+                    selected?.id ?? shopifyVariantId ?? shopifyVariants[0]?.id,
                   );
                 })()}
               </div>
