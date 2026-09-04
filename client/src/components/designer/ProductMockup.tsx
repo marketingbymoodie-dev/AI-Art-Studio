@@ -756,11 +756,12 @@ export function ProductMockup({
     typeof document !== "undefined" &&
     document.documentElement.dataset.appaiEmbed === "true" &&
     document.documentElement.dataset.appaiMobileNativeScroll !== "true";
-  const touchAction: CSSProperties["touchAction"] = showTransformOverlay
-    ? "none"
-    : isDesktopEmbed
-      ? "auto"
-      : "pan-y";
+  // May 4: pan-y on the preview so empty garment scrolls. Jun 30: auto on
+  // desktop embed so Chrome does not consume wheel before parent forward.
+  // Never none on this box — none belongs on the artwork rect only.
+  const touchAction: CSSProperties["touchAction"] = isDesktopEmbed
+    ? "auto"
+    : "pan-y";
 
   const zoomOriginFromEvent = useCallback((clientX: number, clientY: number) => {
     const el = containerRef.current;

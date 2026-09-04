@@ -522,13 +522,12 @@ html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hood
   touch-action: auto !important;
 }
 
-/* Don't apply touch-action: manipulation to the canvas / artwork drag surfaces
-   — they handle their own multi-touch (rotate / pinch). They opt back in to
-   default touch handling here. */
-html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-drag-surface],
-html[data-appai-embed][data-appai-mobile-native-scroll] canvas {
-  touch-action: none;
-}
+/* Mobile-native: do NOT set touch-action:none on canvas or a full-bleed
+   preview wrapper. That eats vertical iframe scroll (finger on empty garment
+   cannot pan). Artwork bbox / handles already set touch-action:none locally
+   (DesignRectHandlesOverlay, FlatDesignRectOverlay, ArtworkTransformOverlay
+   dashed rect). Empty canvas stays the browser default so pan-y can scroll.
+   Do not put pan-y on html/body — Chrome then double-scrolls with JS forward. */
 
 /* Storefront embed: Radix Select dropdown contrast — merchant theme CSS vars
    can leave popover/highlight pairs unreadable (black on black). These rules
