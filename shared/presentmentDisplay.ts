@@ -68,12 +68,53 @@ export function presentmentNumberLocale(
   return lang || "en";
 }
 
+/**
+ * Shopify Markets fixed defaults — not merchant-customizable.
+ * These currencies use 2-decimal Ajax subunits (cents / haléře / pence).
+ * Round UP to the next whole major unit. Already on the unit → no bump.
+ */
+const WHOLE_UNIT_CURRENCIES = new Set(["AUD", "CAD", "NZD", "USD", "CZK", "GBP"]);
+
+/**
+ * Display-only: ceil UP to Shopify's increment. Already on increment → no bump.
+ * EUR uses a .95 ending (not multiples of 0.95).
+ * JPY Ajax is forced-cents (¥6,475 arrives as 647500); 100 yen = 10000 subunits.
+ * Unknown / unverified currencies (incl. KRW) stay raw.
+ */
+export function ceilPresentmentEstimateCents(
+  cents: number,
+  currency: string | null | undefined,
+): number {
+  const n = Math.round(Number(cents));
+  if (!Number.isFinite(n) || n <= 0) return n;
+  const cur = String(currency || "").trim().toUpperCase();
+  if (WHOLE_UNIT_CURRENCIES.has(cur)) {
+    if (n % 100 === 0) return n;
+    return Math.ceil(n / 100) * 100;
+  }
+  if (cur === "EUR") {
+    const whole = Math.floor(n / 100);
+    const frac = n - whole * 100;
+    if (frac === 95) return n;
+    if (frac < 95) return whole * 100 + 95;
+    return (whole + 1) * 100 + 95;
+  }
+  if (cur === "JPY") {
+    const step = 10000;
+    if (n % step === 0) return n;
+    return Math.ceil(n / step) * step;
+  }
+  return n;
+}
+
 export function formatPresentmentMoney(
   cents: number,
   currency: string,
   country?: string | null,
   locale?: string | null,
 ): string {
+  // Ajax / cart.js money is always 2-decimal subunits, including JPY/KRW
+  // (¥6,475 arrives as 647500). Do not skip this divide for zero-decimal ISO.
   const amount = cents / 100;
   const cur = String(currency || "USD").toUpperCase();
   const loc = presentmentNumberLocale(cur, country, locale);
@@ -112,6 +153,8 @@ export function formatStorefrontHeadlineDisplay(args: PresentmentHeadlineInput):
   if (cents == null || cents <= 0 || !args.activeCurrency) {
     return shopFallback();
   }
+
+  cents = ceilPresentmentEstimateCents(cents, args.activeCurrency);
 
   const money = formatPresentmentMoney(
     cents,
