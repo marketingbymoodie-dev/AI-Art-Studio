@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyToteFoldedArtworkCalibration,
   composeToteFoldedCanvas,
   normalizeToteFoldedPanelDims,
-  TOTE_FOLDED_ARTWORK_CALIBRATION,
-  TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID,
   TOTE_FOLDED_CONTAIN_BOOST,
+  TOTE_FOLDED_PRINT_CALIBRATION,
   toteFoldedArtBox,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
@@ -64,23 +62,25 @@ describe("composeToteFoldedCanvas", () => {
         1024 *
           containK *
           TOTE_FOLDED_CONTAIN_BOOST *
-          TOTE_FOLDED_ARTWORK_CALIBRATION,
+          TOTE_FOLDED_PRINT_CALIBRATION,
       ),
     );
     expect(TOTE_FOLDED_CONTAIN_BOOST).toBeCloseTo(0.864, 5);
-    expect(TOTE_FOLDED_ARTWORK_CALIBRATION).toBeCloseTo(0.97, 5);
+    expect(TOTE_FOLDED_PRINT_CALIBRATION).toBeCloseTo(1.03, 5);
     expect(box.drawH).toBeLessThan(containH);
     expect(box.drawH).toBeLessThan(prior096H);
     expect(box.drawH).toBeLessThan(TOTE_FOLDED_PANEL_HEIGHT);
   });
 
-  it("applies artwork calibration only for adjustable tote bp 1300", () => {
-    expect(TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID).toBe(
-      ADJUSTABLE_TOTE_BLUEPRINT_ID,
-    );
-    expect(applyToteFoldedArtworkCalibration(1300, 1)).toBeCloseTo(0.97, 5);
-    expect(applyToteFoldedArtworkCalibration(836, 1)).toBe(1);
-    expect(applyToteFoldedArtworkCalibration(77, 1)).toBe(1);
+  it("print calibration is print-only and only used by tote folded bake (bp 1300)", () => {
+    expect(ADJUSTABLE_TOTE_BLUEPRINT_ID).toBe(1300);
+    expect(TOTE_FOLDED_PRINT_CALIBRATION).toBeGreaterThan(1);
+    expect(
+      usesToteFoldedFulfillment({
+        isAllOverPrint: true,
+        printifyBlueprintId: 836,
+      }),
+    ).toBe(false);
   });
 
   it("uses full-face offset fractions with no print-only Y lift", () => {

@@ -46,7 +46,6 @@ import {
   tapestryPreviewPlacementScale,
 } from "@shared/catalogSizeBlanks";
 import { isFlatToteBlueprint } from "@shared/productLayoutPolicy";
-import { withToteFoldedArtworkCalibration } from "@shared/toteFoldedLayout";
 import type {
   FlatTier,
   FlatViewCalibration,
@@ -3562,12 +3561,8 @@ export function renderFlatView(input: FlatRenderInput): void {
         pctx.fillRect(printRect.x, printRect.y, printRect.width, printRect.height);
       }
       if (hasArt && artwork) {
-        const drawPlacement = withToteFoldedArtworkCalibration(
-          blueprintId,
-          placement,
-        );
-        const box = flatArtBox(printRect, drawPlacement, artW, artH, artFit);
-        drawFlatArtwork(pctx, artwork, box, drawPlacement.rotationDeg ?? 0);
+        const box = flatArtBox(printRect, placement, artW, artH, artFit);
+        drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
       }
       if (areaFill || hasArt) {
         drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
@@ -3582,12 +3577,8 @@ export function renderFlatView(input: FlatRenderInput): void {
       actx.fillRect(rect.x, rect.y, rect.width, rect.height);
     }
     if (hasArt && artwork) {
-      const drawPlacement = withToteFoldedArtworkCalibration(
-        blueprintId,
-        placement,
-      );
-      const box = flatArtBox(rect, drawPlacement, artW, artH, artFit);
-      drawFlatArtwork(actx, artwork, box, drawPlacement.rotationDeg ?? 0);
+      const box = flatArtBox(rect, placement, artW, artH, artFit);
+      drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
     }
   }
 
