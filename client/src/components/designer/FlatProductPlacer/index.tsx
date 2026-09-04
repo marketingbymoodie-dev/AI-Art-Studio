@@ -61,6 +61,7 @@ import type {
   FlatViewCalibration,
 } from "@/pages/embed-design";
 import { flatArtFitForBlueprint, isBeanieBlueprint } from "@shared/hoodieTemplate";
+import { withToteFoldedArtworkCalibration } from "@shared/toteFoldedLayout";
 
 /**
  * Customer-facing placer for "on-the-fly" flat / mesh products.
@@ -1333,10 +1334,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled && placementRect) {
-    const placed = {
+    const placed = withToteFoldedArtworkCalibration(manifest.blueprintId, {
       ...placement,
       scale: clampPlacementScale(placement.scale),
-    };
+    });
     // Opaque-content bounds: transparent PNG padding must not trigger false
     // trim warnings (nothing visible is clipped) nor fake print-area coverage.
     const box = flatVisibleArtBoxAxisAligned(
@@ -1494,6 +1495,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               view={calib}
               artwork={artworkImg}
               placement={{ ...placement, scale: displayScale }}
+              blueprintId={manifest.blueprintId}
               edgeWrapMode={edgeWrapMode}
               innerGuideRect={displayEdgeGuides?.inner ?? null}
               outerGuideRect={displayEdgeGuides?.outer ?? null}

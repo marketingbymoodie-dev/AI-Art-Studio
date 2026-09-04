@@ -64,6 +64,34 @@ export type ToteFoldedArtBox = {
  */
 export const TOTE_FOLDED_CONTAIN_BOOST = 0.864;
 
+/**
+ * Artwork-only baseline vs the bag (Adjustable Tote bp 1300).
+ * Same factor on print ({@link toteFoldedArtBox}) and display
+ * (`flatArtBox` via {@link applyToteFoldedArtworkCalibration}).
+ * Do not change the bag mockup, folded canvas, or background fill.
+ */
+export const TOTE_FOLDED_ARTWORK_CALIBRATION = 0.97;
+
+/** Hardcoded here so this module does not import productLayoutPolicy (cycle). */
+export const TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID = 1300;
+
+export function applyToteFoldedArtworkCalibration(
+  blueprintId: number | null | undefined,
+  scale: number,
+): number {
+  return Number(blueprintId) === TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID
+    ? scale * TOTE_FOLDED_ARTWORK_CALIBRATION
+    : scale;
+}
+
+export function withToteFoldedArtworkCalibration<T extends { scale: number }>(
+  blueprintId: number | null | undefined,
+  placement: T,
+): T {
+  const scale = applyToteFoldedArtworkCalibration(blueprintId, placement.scale);
+  return scale === placement.scale ? placement : { ...placement, scale };
+}
+
 export function toteFoldedArtBox(
   sourceWidth: number,
   sourceHeight: number,
@@ -77,7 +105,11 @@ export function toteFoldedArtBox(
   const panelW = TOTE_FOLDED_PANEL_WIDTH;
   const panelH = TOTE_FOLDED_PANEL_HEIGHT;
   const contain = Math.min(panelW / sw, panelH / sh);
-  const k = contain * TOTE_FOLDED_CONTAIN_BOOST * scale;
+  const k =
+    contain *
+    TOTE_FOLDED_CONTAIN_BOOST *
+    TOTE_FOLDED_ARTWORK_CALIBRATION *
+    scale;
   const drawW = Math.max(1, Math.round(sw * k));
   const drawH = Math.max(1, Math.round(sh * k));
   const cx = panelW * (0.5 + offsetX);

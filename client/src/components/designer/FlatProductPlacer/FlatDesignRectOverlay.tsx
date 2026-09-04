@@ -20,6 +20,11 @@ import {
 } from "./lib/flatRender";
 import type { FlatArtFit } from "@shared/hoodieTemplate";
 import type { FlatViewCalibration } from "@/pages/embed-design";
+import {
+  TOTE_FOLDED_ARTWORK_CALIBRATION,
+  TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID,
+  withToteFoldedArtworkCalibration,
+} from "@shared/toteFoldedLayout";
 
 /**
  * Self-contained drag/resize/rotate overlay for the flat-product placer.
@@ -40,6 +45,8 @@ export type FlatDesignRectOverlayProps = {
   view: FlatViewCalibration;
   artwork: HTMLImageElement;
   placement: ArtworkPlacement;
+  /** Adjustable tote (1300) artwork calibration — display box only; stored scale stays raw. */
+  blueprintId?: number | null;
   /** Phone cases / rigid edge-wrap products (not apparel). */
   edgeWrapMode?: boolean;
   /** Safe visible back-face guide in mockup px (edge-wrap inner dashed line). */
@@ -78,6 +85,7 @@ export default function FlatDesignRectOverlay({
   view,
   artwork,
   placement,
+  blueprintId = null,
   edgeWrapMode = false,
   innerGuideRect = null,
   outerGuideRect = null,
@@ -147,9 +155,13 @@ export default function FlatDesignRectOverlay({
         : null,
     [edgeWrapMode, guideMask, mockupW, mockupH],
   );
+  const drawPlacement = useMemo(
+    () => withToteFoldedArtworkCalibration(blueprintId, placement),
+    [blueprintId, placement],
+  );
   const box = useMemo(
-    () => flatArtBox(rect, placement, artW, artH, artFit),
-    [rect, placement, artW, artH, artFit],
+    () => flatArtBox(rect, drawPlacement, artW, artH, artFit),
+    [rect, drawPlacement, artW, artH, artFit],
   );
 
   // Opaque-content bounds: the visible ring/handles hug the artwork pixels,
@@ -217,10 +229,15 @@ export default function FlatDesignRectOverlay({
       // distance to the centre, against the content's cover-baseline half-dims.
       const halfW = Math.abs(mx - drag.scaleCenter.x);
       const halfH = Math.abs(my - drag.scaleCenter.y);
-      const cover = Math.max(
-        drag.rect.width / Math.max(1, artW),
-        drag.rect.height / Math.max(1, artH),
-      );
+      const toteCal =
+        Number(blueprintId) === TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID
+          ? TOTE_FOLDED_ARTWORK_CALIBRATION
+          : 1;
+      const cover =
+        Math.max(
+          drag.rect.width / Math.max(1, artW),
+          drag.rect.height / Math.max(1, artH),
+        ) * toteCal;
       const baseW = (artW * drag.content.width * cover) / 2;
       const baseH = (artH * drag.content.height * cover) / 2;
       // Pick whichever axis the pointer pushed proportionally further.
@@ -234,7 +251,13 @@ export default function FlatDesignRectOverlay({
       const drag = dragRef.current;
       if (drag?.mode === "translate") {
         const cur = latestPlacementRef.current;
-        const currentBox = flatArtBox(drag.rect, cur, artW, artH, artFit);
+        const currentBox = flatArtBox(
+          drag.rect,
+          withToteFoldedArtworkCalibration(blueprintId, cur),
+          artW,
+          artH,
+          artFit,
+        );
         const snapX = SNAP_SCREEN_PX * (mockupW / drag.canvasRect.width);
         const snapY = SNAP_SCREEN_PX * (mockupH / drag.canvasRect.height);
         const rectCx = drag.rect.x + drag.rect.width / 2;
@@ -272,7 +295,7 @@ export default function FlatDesignRectOverlay({
     };
     // onChange is read fresh from closure each move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mockupW, mockupH, artW, artH, onChange, scaleMax]);
+  }, [mockupW, mockupH, artW, artH, onChange, scaleMax, blueprintId, artFit]);
 
   const startDrag = (
     e: React.PointerEvent<HTMLDivElement>,

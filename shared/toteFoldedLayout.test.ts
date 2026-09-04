@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyToteFoldedArtworkCalibration,
   composeToteFoldedCanvas,
   normalizeToteFoldedPanelDims,
+  TOTE_FOLDED_ARTWORK_CALIBRATION,
+  TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID,
   TOTE_FOLDED_CONTAIN_BOOST,
   toteFoldedArtBox,
   TOTE_FOLDED_CANVAS_HEIGHT,
@@ -38,11 +41,15 @@ describe("composeToteFoldedCanvas", () => {
     expect(out.width).toBe(TOTE_FOLDED_CANVAS_WIDTH);
     expect(out.height).toBe(TOTE_FOLDED_CANVAS_HEIGHT);
 
-    const cx = Math.floor(TOTE_FOLDED_PANEL_WIDTH / 2);
-    const topRow = Math.floor(TOTE_FOLDED_PANEL_HEIGHT / 2);
-    const bottomRow = TOTE_FOLDED_PANEL_HEIGHT + Math.floor(TOTE_FOLDED_PANEL_HEIGHT / 2);
-    const topIdx = (topRow * TOTE_FOLDED_CANVAS_WIDTH + cx) * 4;
-    const bottomIdx = (bottomRow * TOTE_FOLDED_CANVAS_WIDTH + cx) * 4;
+    // Sample inside the art box, well into the right (red) half — panel
+    // centre can fall on the split after calibration rounding.
+    const box = toteFoldedArtBox(w, h);
+    const sampleX = box.left + Math.floor(box.drawW * 0.75);
+    const sampleY = box.top + Math.floor(box.drawH * 0.5);
+    const topIdx = (sampleY * TOTE_FOLDED_CANVAS_WIDTH + sampleX) * 4;
+    const bottomIdx =
+      ((TOTE_FOLDED_PANEL_HEIGHT + sampleY) * TOTE_FOLDED_CANVAS_WIDTH + sampleX) *
+      4;
     expect(out.pixels[topIdx]).toBe(255);
     expect(out.pixels[bottomIdx]).toBe(0);
   });
@@ -52,11 +59,28 @@ describe("composeToteFoldedCanvas", () => {
     const containK = Math.min(TOTE_FOLDED_PANEL_WIDTH / 512, TOTE_FOLDED_PANEL_HEIGHT / 1024) * 0.6;
     const containH = Math.round(1024 * containK);
     const prior096H = Math.round(1024 * containK * 0.96);
-    expect(box.drawH).toBe(Math.round(1024 * containK * TOTE_FOLDED_CONTAIN_BOOST));
+    expect(box.drawH).toBe(
+      Math.round(
+        1024 *
+          containK *
+          TOTE_FOLDED_CONTAIN_BOOST *
+          TOTE_FOLDED_ARTWORK_CALIBRATION,
+      ),
+    );
     expect(TOTE_FOLDED_CONTAIN_BOOST).toBeCloseTo(0.864, 5);
+    expect(TOTE_FOLDED_ARTWORK_CALIBRATION).toBeCloseTo(0.97, 5);
     expect(box.drawH).toBeLessThan(containH);
     expect(box.drawH).toBeLessThan(prior096H);
     expect(box.drawH).toBeLessThan(TOTE_FOLDED_PANEL_HEIGHT);
+  });
+
+  it("applies artwork calibration only for adjustable tote bp 1300", () => {
+    expect(TOTE_FOLDED_ARTWORK_CALIBRATION_BLUEPRINT_ID).toBe(
+      ADJUSTABLE_TOTE_BLUEPRINT_ID,
+    );
+    expect(applyToteFoldedArtworkCalibration(1300, 1)).toBeCloseTo(0.97, 5);
+    expect(applyToteFoldedArtworkCalibration(836, 1)).toBe(1);
+    expect(applyToteFoldedArtworkCalibration(77, 1)).toBe(1);
   });
 
   it("uses full-face offset fractions with no print-only Y lift", () => {
