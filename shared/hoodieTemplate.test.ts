@@ -16,6 +16,7 @@ import {
   BEANIE_BLUEPRINT_ID,
   BEANIE_PREVIEW_PLACEMENT_SCALE,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT,
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
@@ -52,7 +53,9 @@ import {
   isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
+  IDENTITY_TRANSFORM_2D,
   normalizeHoodieTemplate,
+  restorePulloverFrontRightSleeveSourceRect,
   panelsEligibleForView,
   SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   SWEATSHIRT_TRIM_PANEL_KEYS,
@@ -344,6 +347,106 @@ describe("pullover hoodie panel keys (bp 450)", () => {
       "front",
       "front_pocket",
     ]);
+  });
+
+  it("fills missing pullover front right_sleeve sourceRect only (bp 450)", () => {
+    const sleeve = (
+      view: "front" | "back",
+      panelKey: "left_sleeve" | "right_sleeve",
+      sourceRect: { x: number; y: number; width: number; height: number } | null,
+    ) => ({
+      id: `lyr_${view}_${panelKey}`,
+      view,
+      panelKey,
+      kind: "panel" as const,
+      name: panelKey,
+      visible: true,
+      locked: false,
+      zIndex: 1,
+      opacity: 1,
+      blendMode: "normal" as const,
+      maskPath: "",
+      cornerPins: null,
+      mesh: createDefaultMesh({ x: 0, y: 0, width: 80, height: 200 }, 4, 4, sourceRect),
+      transform: { ...IDENTITY_TRANSFORM_2D },
+      productionPanelAssignment: null,
+      productionPanelSrc: null,
+      isExclusion: false,
+    });
+    const raw = createFreshAopTemplate({
+      name: "pullover-sleeve-sr-test",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const stale = {
+      ...raw,
+      views: {
+        front: {
+          ...raw.views.front,
+          layers: [
+            sleeve("front", "left_sleeve", null),
+            sleeve("front", "right_sleeve", null),
+          ],
+        },
+        back: {
+          ...raw.views.back,
+          layers: [
+            sleeve("back", "left_sleeve", { ...PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT }),
+            sleeve("back", "right_sleeve", { ...PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT }),
+          ],
+        },
+      },
+    };
+    const normalized = normalizeHoodieTemplate(stale);
+    const frontRight = normalized.views.front.layers.find((l) => l.panelKey === "right_sleeve");
+    const frontLeft = normalized.views.front.layers.find((l) => l.panelKey === "left_sleeve");
+    const backRight = normalized.views.back.layers.find((l) => l.panelKey === "right_sleeve");
+    const backLeft = normalized.views.back.layers.find((l) => l.panelKey === "left_sleeve");
+    expect(frontRight?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(frontLeft?.mesh?.sourceRect).toBeNull();
+    expect(backRight?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(backLeft?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(frontRight?.mesh?.targetPoints).toEqual(stale.views.front.layers[1].mesh?.targetPoints);
+  });
+
+  it("does not rewrite zip 451 sleeve sourceRects", () => {
+    const raw = createFreshAopTemplate({
+      name: "zip-sleeve-sr-test",
+      blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    });
+    const withSleeve = {
+      ...raw,
+      views: {
+        ...raw.views,
+        front: {
+          ...raw.views.front,
+          layers: [
+            {
+              id: "lyr_zip_front_right",
+              view: "front" as const,
+              panelKey: "right_sleeve" as const,
+              kind: "panel" as const,
+              name: "right_sleeve",
+              visible: true,
+              locked: false,
+              zIndex: 1,
+              opacity: 1,
+              blendMode: "normal" as const,
+              maskPath: "",
+              cornerPins: null,
+              mesh: createDefaultMesh({ x: 0, y: 0, width: 80, height: 200 }, 4, 4, null),
+              transform: { ...IDENTITY_TRANSFORM_2D },
+              productionPanelAssignment: null,
+              productionPanelSrc: null,
+              isExclusion: false,
+            },
+          ],
+        },
+      },
+    };
+    expect(restorePulloverFrontRightSleeveSourceRect(withSleeve)).toBe(withSleeve);
+    expect(
+      normalizeHoodieTemplate(withSleeve).views.front.layers[0].mesh?.sourceRect,
+    ).toBeNull();
   });
 
   it("normalizeHoodieTemplate migrates stale pullover templates with front_pocket in trim", () => {

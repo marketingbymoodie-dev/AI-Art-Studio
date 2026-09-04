@@ -41,6 +41,18 @@ export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
  * (0.93 × 0.95 ≈ another 5% after the first merchant trim.)
  */
 export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
+/**
+ * Zip + pullover back sleeve meshes were calibrated to this sheet.
+ * Pullover front `right_sleeve` shipped with `sourceRect: null`, so
+ * `renderHoodFlatPanel` sized the bake from Printify placeholder / artwork
+ * dims and produced a wrong-UV flat (back mockup + `right_sleeve` print).
+ */
+export const PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT: SourceRect = {
+  x: 0,
+  y: 0,
+  width: 1024,
+  height: 1002,
+};
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /**
@@ -1464,6 +1476,56 @@ export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
  * pass the result straight into the store. Existing values are
  * preserved — defaults only fill genuinely-undefined fields.
  */
+function sleeveSourceRectIsCalibrated(
+  rect: SourceRect | null | undefined,
+): boolean {
+  return Boolean(rect && rect.width > 0 && rect.height > 0);
+}
+
+/**
+ * Pullover bp 450 only: fill the missing front `right_sleeve` sourceRect
+ * so the front→back sleeve bake uses the 1024×1002 sheet zip uses.
+ * Does not remesh targetPoints (front view already sits on the pullover
+ * photo) and does not touch front-left (same null sourceRect, but the
+ * mesh is already a rigid zip copy and was not confirmed broken).
+ */
+export function restorePulloverFrontRightSleeveSourceRect(
+  template: HoodieTemplate,
+): HoodieTemplate {
+  if (
+    !isPulloverHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "pullover-hoodie-aop"
+  ) {
+    return template;
+  }
+  const layers = template.views.front?.layers;
+  if (!layers?.length) return template;
+  let changed = false;
+  const nextLayers = layers.map((layer) => {
+    if (layer.panelKey !== "right_sleeve" || !layer.mesh) return layer;
+    if (sleeveSourceRectIsCalibrated(layer.mesh.sourceRect)) return layer;
+    changed = true;
+    return {
+      ...layer,
+      mesh: {
+        ...layer.mesh,
+        sourceRect: { ...PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT },
+      },
+    };
+  });
+  if (!changed) return template;
+  return {
+    ...template,
+    views: {
+      ...template.views,
+      front: {
+        ...template.views.front,
+        layers: nextLayers,
+      },
+    },
+  };
+}
+
 export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
   let designGroups =
     template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
@@ -1542,7 +1604,7 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     ...template,
     placerEditor: resolvedPlacer,
   });
-  return {
+  return restorePulloverFrontRightSleeveSourceRect({
     ...template,
     placerEditor: resolvedPlacer,
     printFileLayout,
@@ -1551,7 +1613,7 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration:
       template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
-  };
+  });
 }
 
 /** Matches `SAFE_NAME_RE` in `server/routes/hoodie-template-mapper.ts`. */
