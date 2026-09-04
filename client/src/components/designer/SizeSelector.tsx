@@ -17,6 +17,11 @@ interface SizeSelectorProps {
   /** Override label — phone cases use "Model". */
   label?: string;
   prices?: Record<string, number>;
+  /**
+   * Shop-currency ISO to append after `$40.95` when presentment ≠ shop.
+   * DISPLAY ONLY — do not change `prices` cents. Omit when USD is active.
+   */
+  priceCurrencyCode?: string | null;
   /** Size ids that are out of stock for the current colour (Product Intelligence). */
   outOfStockSizeIds?: Set<string> | string[];
   /** Minted Shopify catalog — greys sizes that are not minted for the selected colour. */
@@ -32,6 +37,7 @@ export function SizeSelector({
   showLabel = true,
   label = "Size",
   prices,
+  priceCurrencyCode,
   outOfStockSizeIds,
   mintedCatalog = null,
   selectedColorName,
@@ -76,7 +82,9 @@ export function SizeSelector({
               >
                 <span className={disabled ? "opacity-50" : undefined}>
                   {size.name}
-                  {prices?.[size.id] ? ` - $${(prices[size.id] / 100).toFixed(2)}` : ""}
+                  {prices?.[size.id]
+                    ? ` - $${(prices[size.id] / 100).toFixed(2)}${priceCurrencyCode ? ` ${priceCurrencyCode}` : ""}`
+                    : ""}
                   {reason ? ` — ${reason}` : ""}
                 </span>
               </SelectItem>

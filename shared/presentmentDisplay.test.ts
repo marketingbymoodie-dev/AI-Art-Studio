@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendIsoCurrencyCode,
   ceilPresentmentEstimateCents,
   formatPresentmentMoney,
+  formatShopCurrencyDropdownPrice,
   formatStorefrontHeadlineDisplay,
   isShopCurrencyPresentment,
 } from "./presentmentDisplay";
@@ -40,6 +42,7 @@ describe("formatStorefrontHeadlineDisplay", () => {
       allowAjaxPresentment: true,
     });
     expect(out).toEqual({ text: "$18.95", converted: false });
+    expect(out.text).not.toContain("USD");
   });
 
   it("from-prefix USD is unchanged", () => {
@@ -54,6 +57,7 @@ describe("formatStorefrontHeadlineDisplay", () => {
       allowAjaxPresentment: true,
     });
     expect(out.text).toBe("from $18.95");
+    expect(out.text).not.toContain("USD");
   });
 
   it("uses Ajax presentment cents, not rate × shop", () => {
@@ -71,7 +75,8 @@ describe("formatStorefrontHeadlineDisplay", () => {
     });
     expect(out.converted).toBe(true);
     expect(out.text).toContain("≈");
-    expect(out.text.replace(/\s/g, "")).toMatch(/€16,95/);
+    expect(out.text.replace(/\s/g, "")).toMatch(/€16,95EUR/);
+    expect(out.text).toMatch(/EUR/);
     expect(out.text).not.toContain("16,55");
     expect(out.text).not.toContain("16.55");
   });
@@ -90,7 +95,7 @@ describe("formatStorefrontHeadlineDisplay", () => {
       allowAjaxPresentment: false,
     });
     expect(out.converted).toBe(true);
-    expect(out.text.replace(/\s/g, "")).toMatch(/€23,95/);
+    expect(out.text.replace(/\s/g, "")).toMatch(/€23,95EUR/);
   });
 
   it("ceils a raw AUD rate estimate up to the next whole dollar", () => {
@@ -108,7 +113,44 @@ describe("formatStorefrontHeadlineDisplay", () => {
     });
     expect(out.converted).toBe(true);
     expect(out.text).toContain("≈");
-    expect(out.text.replace(/\s/g, "")).toMatch(/\$41\.00|A\$41\.00/);
+    expect(out.text.replace(/\s/g, "")).toMatch(/\$41\.00AUD|A\$41\.00AUD/);
+    expect(out.text).toContain("AUD");
+  });
+
+  it("appends NZD after a dollar-symbol estimate", () => {
+    const out = formatStorefrontHeadlineDisplay({
+      shopAmount: 40.95,
+      showFrom: false,
+      variantId: "1",
+      activeCurrency: "NZD",
+      shopCurrency: "USD",
+      rate: 1.73,
+      pricesByVariantId: { "1": 7100 },
+      country: "NZ",
+      locale: "en",
+      allowAjaxPresentment: true,
+    });
+    expect(out.converted).toBe(true);
+    expect(out.text).toContain("≈");
+    expect(out.text).toContain("NZD");
+    expect(out.text.replace(/\s/g, "")).toMatch(/\$71\.00NZD|NZ\$71\.00NZD/);
+  });
+});
+
+describe("appendIsoCurrencyCode", () => {
+  it("places ISO after the figure", () => {
+    expect(appendIsoCurrencyCode("$71.00", "NZD")).toBe("$71.00 NZD");
+    expect(appendIsoCurrencyCode("€16,95", "EUR")).toBe("€16,95 EUR");
+  });
+});
+
+describe("formatShopCurrencyDropdownPrice", () => {
+  it("stays a bare shop dollar when presentment is shop currency", () => {
+    expect(formatShopCurrencyDropdownPrice(4095, "USD", false)).toBe("$40.95");
+  });
+
+  it("labels shop USD when presentment is another currency", () => {
+    expect(formatShopCurrencyDropdownPrice(4095, "USD", true)).toBe("$40.95 USD");
   });
 });
 

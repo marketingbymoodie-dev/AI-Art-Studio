@@ -156,12 +156,42 @@ export function formatStorefrontHeadlineDisplay(args: PresentmentHeadlineInput):
 
   cents = ceilPresentmentEstimateCents(cents, args.activeCurrency);
 
-  const money = formatPresentmentMoney(
-    cents,
+  const money = appendIsoCurrencyCode(
+    formatPresentmentMoney(
+      cents,
+      args.activeCurrency,
+      args.country,
+      args.locale,
+    ),
     args.activeCurrency,
-    args.country,
-    args.locale,
   );
   const core = args.showFrom ? `from ${money}` : money;
   return { text: `≈ ${core}`, converted: true };
+}
+
+/**
+ * Shopify money_with_currency: ISO-4217 after the figure (`$71.00 NZD`).
+ * Header picker on this shop is `NZD $`, not `NZ$` — same ISO, different slot.
+ */
+export function appendIsoCurrencyCode(
+  formattedMoney: string,
+  currency: string | null | undefined,
+): string {
+  const code = String(currency || "").trim().toUpperCase();
+  if (!code || !formattedMoney) return formattedMoney;
+  return `${formattedMoney} ${code}`;
+}
+
+/**
+ * Size-dropdown shop-currency dollars. DISPLAY ONLY — never convert cents.
+ * Code is appended only when the caller says presentment ≠ shop currency.
+ */
+export function formatShopCurrencyDropdownPrice(
+  cents: number,
+  shopCurrency: string | null | undefined,
+  showShopCurrencyCode: boolean,
+): string {
+  const amount = `$${(Number(cents) / 100).toFixed(2)}`;
+  if (!showShopCurrencyCode) return amount;
+  return appendIsoCurrencyCode(amount, shopCurrency || "USD");
 }

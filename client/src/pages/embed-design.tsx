@@ -252,7 +252,10 @@ import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
 import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
-import { formatStorefrontHeadlineDisplay } from "@shared/presentmentDisplay";
+import {
+  formatStorefrontHeadlineDisplay,
+  isShopCurrencyPresentment,
+} from "@shared/presentmentDisplay";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 import {
@@ -7991,6 +7994,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     country: string | null;
     locale: string | null;
   }>({ rate: null, shopCurrency: null, country: null, locale: null });
+
+  /** Display-only ISO on size prices when the headline is another currency. */
+  const sizeDropdownCurrencyCode = useMemo(() => {
+    const meta = presentmentMetaRef.current;
+    if (isShopCurrencyPresentment(activeCurrency, meta.shopCurrency, meta.rate)) {
+      return null;
+    }
+    return String(meta.shopCurrency || "USD").trim().toUpperCase() || "USD";
+  }, [activeCurrency]);
 
   const mintedCatalog = useMemo(
     () =>
@@ -16746,6 +16758,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         label={isPhoneCaseProduct ? "Model" : "Size"}
                         onSizeChange={applySelectedSize}
                         prices={buildPriceMap()}
+                        priceCurrencyCode={sizeDropdownCurrencyCode}
                         outOfStockSizeIds={outOfStockSizeIds}
                         mintedCatalog={mintedCatalog}
                         selectedColorName={
@@ -16773,6 +16786,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       label={isPhoneCaseProduct ? "Model" : "Size"}
                       onSizeChange={applySelectedSize}
                       prices={buildPriceMap()}
+                      priceCurrencyCode={sizeDropdownCurrencyCode}
                       outOfStockSizeIds={outOfStockSizeIds}
                       mintedCatalog={mintedCatalog}
                       selectedColorName={
