@@ -52,6 +52,7 @@ import {
   flatPrintCanvasPreviewDims,
   flatShouldFitToSafeArea,
   renderFlatView,
+  shouldSyncFlatFaceScale,
   FLAT_SCALE_FIT_FLOOR,
   type Rect,
 } from "./lib/flatRender";
@@ -257,10 +258,12 @@ function applyPlacementToState(
   view: ViewName,
   next: ArtworkPlacement,
   _availableViews: ViewName[],
+  syncScaleAcrossFaces: boolean,
 ): FlatProductPlacerState {
   const placements = { ...prev.placements, [view]: next };
-  // Print-on-back uses the same artwork — keep scale matched to the side being edited.
-  if (prev.enabled.front && prev.enabled.back) {
+  // Totes only: keep both faces at the same scale while both prints are on.
+  // Locked flat apparel writes this view only (pre-40a5a6c).
+  if (syncScaleAcrossFaces && prev.enabled.front && prev.enabled.back) {
     const other: ViewName = view === "front" ? "back" : "front";
     const otherCur = placements[other] ?? next;
     placements[other] = { ...otherCur, scale: next.scale };
@@ -376,6 +379,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     }),
     [edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide, manifest.blueprintId],
   );
+  const syncScaleAcrossFaces = shouldSyncFlatFaceScale({
+    blueprintId: manifest.blueprintId,
+    edgeWrapMode,
+    decorMode,
+    fabricWeave,
+    probeCatalogGuide,
+  });
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
   /** View-only zoom of the editor canvas (does not change print placement). */
   const [previewZoom, setPreviewZoom] = useState(1);
@@ -543,6 +553,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         typeof parentEnabledBack === "boolean" ? parentEnabledBack : prev.enabled.back;
       if (prev.enabled.front === front && prev.enabled.back === back) return prev;
       const placements = { ...prev.placements };
+      // One-shot seed when back first turns on (rising edge only). Apparel can
+      // then diverge; later scale edits do not re-apply this copy.
       if (back && !prev.enabled.back) {
         placements.back = { ...placements.back, scale: placements.front.scale };
       }
@@ -985,6 +997,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!prev) return prev;
       const enabled = { ...prev.enabled, [view]: on };
       const placements = { ...prev.placements };
+      // One-shot seed — same rising-edge as the Print Side dropdown sync.
       if (view === "back" && on && !prev.enabled.back) {
         placements.back = { ...placements.back, scale: placements.front.scale };
       }
@@ -996,10 +1009,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (view: ViewName, next: ArtworkPlacement) => {
       const clamped = { ...next, scale: clampPlacementScale(next.scale) };
       setState((prev) =>
-        prev ? applyPlacementToState(prev, view, clamped, availableViews) : prev,
+        prev ? applyPlacementToState(prev, view, clamped, availableViews, syncScaleAcrossFaces) : prev,
       );
     },
-    [availableViews, clampPlacementScale],
+    [availableViews, clampPlacementScale, syncScaleAcrossFaces],
   );
 
   const setScale = useCallback(
@@ -1012,10 +1025,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           view,
           { ...cur, scale: clampPlacementScale(scale) },
           availableViews,
+          syncScaleAcrossFaces,
         );
       });
     },
-    [availableViews, clampPlacementScale, defaultPlacement],
+    [availableViews, clampPlacementScale, defaultPlacement, syncScaleAcrossFaces],
   );
 
   const setBgColor = useCallback((hex: string | null) => {
@@ -1050,10 +1064,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           view,
           { ...defaultPlacement },
           availableViews,
+          syncScaleAcrossFaces,
         );
       });
     },
-    [availableViews, defaultPlacement],
+    [availableViews, defaultPlacement, syncScaleAcrossFaces],
   );
 
   const nudgePlacement = useCallback(
@@ -1096,10 +1111,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           offsetY:
             axis === "y" ? clamp(cur.offsetY + dOff) : cur.offsetY,
         };
-        return applyPlacementToState(prev, view, next, availableViews);
+        return applyPlacementToState(prev, view, next, availableViews, syncScaleAcrossFaces);
       });
     },
-    [manifest, colorId, assets, edgeWrapMode, decorMode, availableViews, calibOpts],
+    [manifest, colorId, assets, edgeWrapMode, decorMode, availableViews, calibOpts, syncScaleAcrossFaces],
   );
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);

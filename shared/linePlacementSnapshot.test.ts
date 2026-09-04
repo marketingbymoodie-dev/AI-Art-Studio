@@ -26,6 +26,21 @@ describe("flat line placement snapshot", () => {
     expect(decoded?.enabled.back).toBe(false);
   });
 
+  it("preserves independent front and back scales", () => {
+    const encoded = encodeFlatLinePlacement({
+      placements: {
+        front: { scale: 0.85, offsetX: 0, offsetY: 0 },
+        back: { scale: 1.2, offsetX: 0.1, offsetY: -0.05 },
+      },
+      enabled: { front: true, back: true },
+    });
+    const decoded = decodeFlatLinePlacement(encoded);
+    expect(decoded?.placements.front.scale).toBeCloseTo(0.85);
+    expect(decoded?.placements.back.scale).toBeCloseTo(1.2);
+    expect(decoded?.placements.back.offsetX).toBeCloseTo(0.1);
+    expect(decoded?.enabled.back).toBe(true);
+  });
+
   it("keeps two different snapshots distinct", () => {
     const a = encodeFlatLinePlacement({
       placements: { front: { scale: 1.4, offsetX: 0, offsetY: 0 } },

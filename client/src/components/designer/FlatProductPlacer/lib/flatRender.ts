@@ -45,6 +45,7 @@ import {
   shouldProbeCatalogBlankGuide,
   tapestryPreviewPlacementScale,
 } from "@shared/catalogSizeBlanks";
+import { isFlatToteBlueprint } from "@shared/productLayoutPolicy";
 import type {
   FlatTier,
   FlatViewCalibration,
@@ -128,6 +129,21 @@ export function flatShouldFitToSafeArea(opts: {
     !opts.fabricWeave &&
     !opts.probeCatalogGuide
   );
+}
+
+/**
+ * Continuous front↔back scale copy (40a5a6c). Keep for flat totes; skip for
+ * locked DTG apparel so each face can scale independently.
+ */
+export function shouldSyncFlatFaceScale(opts: {
+  blueprintId?: number | null;
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+  fabricWeave?: boolean;
+  probeCatalogGuide?: boolean;
+}): boolean {
+  if (isFlatToteBlueprint(opts.blueprintId)) return true;
+  return !flatShouldFitToSafeArea(opts);
 }
 
 /**

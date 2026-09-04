@@ -7,6 +7,7 @@ import {
   flatFitPlacementToSafeArea,
   flatOverflows,
   flatShouldFitToSafeArea,
+  shouldSyncFlatFaceScale,
   FLAT_APPAREL_DEFAULT_SCALE,
 } from "./flatRender";
 
@@ -115,5 +116,23 @@ describe("flatFitPlacementToSafeArea", () => {
     });
     expect(fitted.scale).toBeCloseTo(FLAT_APPAREL_DEFAULT_SCALE, 5);
     expect(fitted.offsetX).toBe(0);
+  });
+});
+
+describe("shouldSyncFlatFaceScale", () => {
+  it("does not sync locked flat apparel (hoodie / tee)", () => {
+    expect(shouldSyncFlatFaceScale({ blueprintId: 77 })).toBe(false);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 66 })).toBe(false);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 5 })).toBe(false);
+  });
+
+  it("keeps the tote scale copy", () => {
+    expect(shouldSyncFlatFaceScale({ blueprintId: 836 })).toBe(true);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 1300 })).toBe(true);
+  });
+
+  it("leaves decor / phone on the existing copy path", () => {
+    expect(shouldSyncFlatFaceScale({ blueprintId: 77, decorMode: true })).toBe(true);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 421, edgeWrapMode: true })).toBe(true);
   });
 });
