@@ -472,7 +472,9 @@ function customerGroupEnabledByDefault(
       : false;
   }
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
-    if (groupId === "front-body" || groupId === "back-body" || groupId === "hood") {
+    // Fresh hoodie: front + hood on, back off (customer can enable). Saved
+    // `back-body: true` still wins in mergeSavedCustomerEnabled.
+    if (groupId === "front-body" || groupId === "hood") {
       return group.enabled !== false;
     }
     return false;

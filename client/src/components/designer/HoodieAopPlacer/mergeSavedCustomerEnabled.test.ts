@@ -43,4 +43,14 @@ describe("mergeSavedCustomerEnabled", () => {
     expect(merged["left-sleeve"]).toBe(true);
     expect(merged["right-sleeve"]).toBe(true);
   });
+
+  it("restores a saved hoodie back-on over a fresh back-off default", () => {
+    const freshHoodie = { ...base, "back-body": false };
+    const merged = mergeSavedCustomerEnabled(freshHoodie, {
+      "front-body": true,
+      "back-body": true,
+    });
+    expect(merged["back-body"]).toBe(true);
+    expect(merged["front-body"]).toBe(true);
+  });
 });
