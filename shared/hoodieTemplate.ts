@@ -33,14 +33,28 @@ export type HoodieView = "front" | "back";
  */
 /** Printify blueprint 450 (pullover) — front/back/sleeves + kangaroo pocket panel. */
 export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
-/** Preview-only: pullover front chest placement renders ~5% larger to match Printify. */
-export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
 /**
- * Place-on-item print export only: shrink pullover main `front` artwork so the
- * chest print file isn't clipped at the neck / hood seam on Printify.
- * (0.93 × 0.95 ≈ another 5% after the first merchant trim.)
+ * Must stay 1 — pullover preview == print (zip WYSIWYG). The old 1.05
+ * preview bump vs 0.8835 print shrink is what made Printify sit higher
+ * than the customizer.
  */
-export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
+export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1;
+export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 1;
+/**
+ * Zip known-good front.scale / hood.scale (1.05 / 1.49). Applied to
+ * pullover as a ratio vs each group's own contain-fit — not zip rects.
+ */
+export const PULLOVER_FRONT_TO_HOOD_SCALE_RATIO = 1.05 / 1.49;
+export const PULLOVER_HOOD_PLACE_SCALE = 1.49;
+export const PULLOVER_FRONT_BODY_PLACE_SCALE =
+  PULLOVER_HOOD_PLACE_SCALE * PULLOVER_FRONT_TO_HOOD_SCALE_RATIO;
+/** Zip hood offsetY; pullover hood mesh union matches zip. */
+export const PULLOVER_HOOD_PLACE_OFFSET_Y = 59;
+/**
+ * Zip front offsetY/frontH (−278.845 / 558.384) × pullover front mesh
+ * height (547.935) so neck framing matches zip in pullover panel space.
+ */
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -273.627;
 /**
  * Zip + pullover back sleeve meshes were calibrated to this sheet.
  * Pullover front sleeve meshes shipped with `sourceRect: null`, so
@@ -861,7 +875,14 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
       id: "hood",
       name: "Hood",
       panelKeys: ["left_hood", "right_hood"],
-      placement: { front: { ...blank }, back: { ...blank } },
+      placement: {
+        front: {
+          ...blank,
+          scale: PULLOVER_HOOD_PLACE_SCALE,
+          offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+        },
+        back: { ...blank },
+      },
       seamAllowance: 0,
       lockedRatio: null,
       enabled: true,
@@ -874,7 +895,14 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
       // `trim` is always force-disabled at render time (waistband/cuffs
       // must stay solid), so a pocket left there could never show artwork.
       panelKeys: ["front", "front_pocket"],
-      placement: { front: { ...blank }, back: { ...blank } },
+      placement: {
+        front: {
+          ...blank,
+          scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+          offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+        },
+        back: { ...blank },
+      },
       seamAllowance: 0,
       lockedRatio: null,
       enabled: true,
@@ -1483,6 +1511,74 @@ function sleeveSourceRectIsCalibrated(
 }
 
 /**
+ * Pullover bp 450 only: seed front-body + hood front placements to the
+ * zip's proven scale ratio (0.7047) and panel-normalized Y framing.
+ * Does not touch back, sleeves, pocket keys, or zip templates.
+ */
+export function restorePulloverFrontHoodZipFraming(
+  template: HoodieTemplate,
+): HoodieTemplate {
+  if (
+    !isPulloverHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "pullover-hoodie-aop"
+  ) {
+    return template;
+  }
+  const groups = template.designGroups;
+  if (!groups?.length) return template;
+  let changed = false;
+  const nextGroups = groups.map((g) => {
+    if (g.id === "front-body") {
+      const front = g.placement?.front;
+      if (
+        front?.scale === PULLOVER_FRONT_BODY_PLACE_SCALE &&
+        front.offsetY === PULLOVER_FRONT_BODY_PLACE_OFFSET_Y
+      ) {
+        return g;
+      }
+      changed = true;
+      return {
+        ...g,
+        placement: {
+          ...g.placement,
+          front: {
+            ...(front ?? DEFAULT_GROUP_PLACEMENT),
+            scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+            offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+          },
+          back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+        },
+      };
+    }
+    if (g.id === "hood") {
+      const front = g.placement?.front;
+      if (
+        front?.scale === PULLOVER_HOOD_PLACE_SCALE &&
+        front.offsetY === PULLOVER_HOOD_PLACE_OFFSET_Y
+      ) {
+        return g;
+      }
+      changed = true;
+      return {
+        ...g,
+        placement: {
+          ...g.placement,
+          front: {
+            ...(front ?? DEFAULT_GROUP_PLACEMENT),
+            scale: PULLOVER_HOOD_PLACE_SCALE,
+            offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+          },
+          back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+        },
+      };
+    }
+    return g;
+  });
+  if (!changed) return template;
+  return { ...template, designGroups: nextGroups };
+}
+
+/**
  * Pullover bp 450 only: fill missing front left/right sleeve sourceRects
  * so the front→back sleeve bake uses the 1024×1002 sheet zip uses.
  * Does not remesh targetPoints or touch back-view sleeve meshes.
@@ -1607,16 +1703,18 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     ...template,
     placerEditor: resolvedPlacer,
   });
-  return restorePulloverFrontSleeveSourceRects({
-    ...template,
-    placerEditor: resolvedPlacer,
-    printFileLayout,
-    garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
-    designGroups,
-    tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
-    realWorldCalibration:
-      template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
-  });
+  return restorePulloverFrontHoodZipFraming(
+    restorePulloverFrontSleeveSourceRects({
+      ...template,
+      placerEditor: resolvedPlacer,
+      printFileLayout,
+      garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
+      designGroups,
+      tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
+      realWorldCalibration:
+        template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
+    }),
+  );
 }
 
 /** Matches `SAFE_NAME_RE` in `server/routes/hoodie-template-mapper.ts`. */

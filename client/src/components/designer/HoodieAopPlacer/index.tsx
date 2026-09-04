@@ -831,9 +831,9 @@ function unionLegDesignRects(
 }
 
 /**
- * Resolve template + overrides for preview/export. Pullover hoodies merge the
- * hood panels into front-body when linked. Zip hoodies keep admin-tuned per-group
- * placements; hood link only propagates edit deltas, not render-time overrides.
+ * Resolve template + overrides for preview/export. Pullover and zip both
+ * keep hood + front-body as two placements (zip's front:hood ratio).
+ * hoodLinked only propagates edit deltas — it does not merge panel keys.
  */
 function buildEffectiveRenderConfig(
   template: HoodieTemplate,
@@ -874,23 +874,9 @@ function buildEffectiveRenderConfig(
     groups = migrateFrontPocketOutOfTrimGroup(groups);
   }
 
-  if (state.hoodLinked && isPulloverHoodieBlueprint(template.blueprintId)) {
-    groups = groups.map((g) => {
-      if (g.id === "front-body") {
-        const keys = new Set<HoodiePanelKey>([
-          ...g.panelKeys,
-          "left_hood",
-          "right_hood",
-        ]);
-        return { ...g, panelKeys: [...keys] };
-      }
-      if (g.id === "hood") {
-        return { ...g, panelKeys: [] as HoodiePanelKey[] };
-      }
-      return g;
-    });
-    enabled = { ...enabled, hood: false };
-  }
+  // Linked pullover keeps two placements (front-body + hood), same as zip.
+  // Do not merge hood panels into front-body — that discarded the zip
+  // front:hood scale/Y ratio. hoodLinked still drives edit-delta UI only.
 
   return {
     template: { ...template, designGroups: groups },

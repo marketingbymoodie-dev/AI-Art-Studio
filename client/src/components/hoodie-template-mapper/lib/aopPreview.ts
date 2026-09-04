@@ -64,11 +64,8 @@ import {
   isBeanieBlueprint,
   isBodyPillowBlueprint,
   isBomberJacketBlueprint,
-  isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
   migrateFrontPocketOutOfTrimGroup,
-  PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
-  PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   isPillowWrapBlueprint,
@@ -1689,19 +1686,6 @@ function applyFrontBodyPreviewPlacementScale(
   if (isBeanieBlueprint(template.blueprintId)) {
     for (const [id, info] of Array.from(rects.entries())) {
       rects.set(id, scaleDesignRectEffective(info, BEANIE_PREVIEW_PLACEMENT_SCALE));
-    }
-    return;
-  }
-  if (
-    isPulloverHoodieBlueprint(template.blueprintId) ||
-    template.hoodieType === "pullover-hoodie-aop"
-  ) {
-    const fb = rects.get("front-body");
-    if (fb) {
-      rects.set(
-        "front-body",
-        scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
-      );
     }
     return;
   }
@@ -3592,17 +3576,6 @@ export function renderFlatPrintPanels(
     let rect = group
       ? rects.get(group.id) ?? null
       : rects.get("__legacy__") ?? rects.get("__ungrouped__") ?? null;
-    // Place-on-item: pullover chest print files read a bit large vs pocket on
-    // Printify — shrink only the main front panel export (not preview/pocket).
-    if (
-      mode === "single-sheet" &&
-      panelKey === "front" &&
-      rect &&
-      (isPulloverHoodieBlueprint(template.blueprintId) ||
-        template.hoodieType === "pullover-hoodie-aop")
-    ) {
-      rect = scaleDesignRectEffective(rect, PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE);
-    }
     // Mirror renderAopPreview's skipArtwork semantics exactly so the print
     // file matches the preview: single-sheet honours the group rect's
     // enabled flag; tile mode has no group rects (group toggles don't mute

@@ -16,6 +16,11 @@ import {
   BEANIE_BLUEPRINT_ID,
   BEANIE_PREVIEW_PLACEMENT_SCALE,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+  PULLOVER_FRONT_BODY_PLACE_SCALE,
+  PULLOVER_FRONT_TO_HOOD_SCALE_RATIO,
+  PULLOVER_HOOD_PLACE_OFFSET_Y,
+  PULLOVER_HOOD_PLACE_SCALE,
   PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT,
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
@@ -339,6 +344,87 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     // Pockets on actually shows artwork — `trim` is always force-disabled.
     expect(frontBody?.panelKeys).toEqual(["front", "front_pocket"]);
     expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
+  });
+
+  it("seeds pullover front-body + hood to the zip front:hood ratio", () => {
+    const groups = defaultPulloverDesignGroups();
+    const front = groups.find((g) => g.id === "front-body")!.placement.front;
+    const hood = groups.find((g) => g.id === "hood")!.placement.front;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(front.scale / hood.scale).toBeCloseTo(PULLOVER_FRONT_TO_HOOD_SCALE_RATIO, 6);
+    expect(front.scale / hood.scale).toBeCloseTo(0.7047, 4);
+    expect(groups.find((g) => g.id === "back-body")!.placement.front.scale).toBe(1);
+    expect(groups.find((g) => g.id === "back-body")!.placement.front.offsetY).toBe(0);
+  });
+
+  it("normalizeHoodieTemplate heals stale pullover front/hood framing, not zip", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-framing-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const staleGroups = pullover.designGroups!.map((g) => {
+      if (g.id === "front-body" || g.id === "hood") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: staleGroups });
+    const front = healed.designGroups!.find((g) => g.id === "front-body")!.placement.front;
+    const hood = healed.designGroups!.find((g) => g.id === "hood")!.placement.front;
+    const back = healed.designGroups!.find((g) => g.id === "back-body")!.placement;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(front.scale / hood.scale).toBeCloseTo(0.7047, 4);
+    expect(back.front.scale).toBe(1);
+    expect(back.front.offsetY).toBe(0);
+    expect(back.back.scale).toBe(1);
+
+    const zip = createFreshAopTemplate({
+      name: "zip-framing-untouched",
+      blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    });
+    const zipStale = {
+      ...zip,
+      designGroups: zip.designGroups!.map((g) => {
+        if (g.id === "front-body") {
+          return {
+            ...g,
+            placement: {
+              front: { scale: 1.05, offsetX: 0, offsetY: -278.85, rotationDeg: 0 },
+              back: { ...g.placement.back },
+            },
+          };
+        }
+        if (g.id === "hood") {
+          return {
+            ...g,
+            placement: {
+              front: { scale: 1.49, offsetX: 0, offsetY: 59, rotationDeg: 0 },
+              back: { ...g.placement.back },
+            },
+          };
+        }
+        return g;
+      }),
+    };
+    const zipNorm = normalizeHoodieTemplate(zipStale);
+    expect(zipNorm.designGroups!.find((g) => g.id === "front-body")!.placement.front).toEqual(
+      zipStale.designGroups!.find((g) => g.id === "front-body")!.placement.front,
+    );
+    expect(zipNorm.designGroups!.find((g) => g.id === "hood")!.placement.front).toEqual(
+      zipStale.designGroups!.find((g) => g.id === "hood")!.placement.front,
+    );
   });
 
   it("designGroupsForBlueprint picks pullover defaults for 450", () => {
