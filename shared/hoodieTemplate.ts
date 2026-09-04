@@ -43,9 +43,9 @@ export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
 export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
 /**
  * Zip + pullover back sleeve meshes were calibrated to this sheet.
- * Pullover front `right_sleeve` shipped with `sourceRect: null`, so
+ * Pullover front sleeve meshes shipped with `sourceRect: null`, so
  * `renderHoodFlatPanel` sized the bake from Printify placeholder / artwork
- * dims and produced a wrong-UV flat (back mockup + `right_sleeve` print).
+ * dims and produced a wrong-UV flat (back mockup + sleeve print).
  */
 export const PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT: SourceRect = {
   x: 0,
@@ -1483,13 +1483,11 @@ function sleeveSourceRectIsCalibrated(
 }
 
 /**
- * Pullover bp 450 only: fill the missing front `right_sleeve` sourceRect
+ * Pullover bp 450 only: fill missing front left/right sleeve sourceRects
  * so the front→back sleeve bake uses the 1024×1002 sheet zip uses.
- * Does not remesh targetPoints (front view already sits on the pullover
- * photo) and does not touch front-left (same null sourceRect, but the
- * mesh is already a rigid zip copy and was not confirmed broken).
+ * Does not remesh targetPoints or touch back-view sleeve meshes.
  */
-export function restorePulloverFrontRightSleeveSourceRect(
+export function restorePulloverFrontSleeveSourceRects(
   template: HoodieTemplate,
 ): HoodieTemplate {
   if (
@@ -1502,7 +1500,12 @@ export function restorePulloverFrontRightSleeveSourceRect(
   if (!layers?.length) return template;
   let changed = false;
   const nextLayers = layers.map((layer) => {
-    if (layer.panelKey !== "right_sleeve" || !layer.mesh) return layer;
+    if (
+      (layer.panelKey !== "left_sleeve" && layer.panelKey !== "right_sleeve") ||
+      !layer.mesh
+    ) {
+      return layer;
+    }
     if (sleeveSourceRectIsCalibrated(layer.mesh.sourceRect)) return layer;
     changed = true;
     return {
@@ -1604,7 +1607,7 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     ...template,
     placerEditor: resolvedPlacer,
   });
-  return restorePulloverFrontRightSleeveSourceRect({
+  return restorePulloverFrontSleeveSourceRects({
     ...template,
     placerEditor: resolvedPlacer,
     printFileLayout,

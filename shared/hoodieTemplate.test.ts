@@ -55,7 +55,7 @@ import {
   mockupDrawRect,
   IDENTITY_TRANSFORM_2D,
   normalizeHoodieTemplate,
-  restorePulloverFrontRightSleeveSourceRect,
+  restorePulloverFrontSleeveSourceRects,
   panelsEligibleForView,
   SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   SWEATSHIRT_TRIM_PANEL_KEYS,
@@ -349,7 +349,7 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     ]);
   });
 
-  it("fills missing pullover front right_sleeve sourceRect only (bp 450)", () => {
+  it("fills missing pullover front left and right sleeve sourceRects (bp 450)", () => {
     const sleeve = (
       view: "front" | "back",
       panelKey: "left_sleeve" | "right_sleeve",
@@ -402,10 +402,13 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     const backRight = normalized.views.back.layers.find((l) => l.panelKey === "right_sleeve");
     const backLeft = normalized.views.back.layers.find((l) => l.panelKey === "left_sleeve");
     expect(frontRight?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
-    expect(frontLeft?.mesh?.sourceRect).toBeNull();
+    expect(frontLeft?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
     expect(backRight?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
     expect(backLeft?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(frontLeft?.mesh?.targetPoints).toEqual(stale.views.front.layers[0].mesh?.targetPoints);
     expect(frontRight?.mesh?.targetPoints).toEqual(stale.views.front.layers[1].mesh?.targetPoints);
+    expect(backLeft?.mesh?.targetPoints).toEqual(stale.views.back.layers[0].mesh?.targetPoints);
+    expect(backRight?.mesh?.targetPoints).toEqual(stale.views.back.layers[1].mesh?.targetPoints);
   });
 
   it("does not rewrite zip 451 sleeve sourceRects", () => {
@@ -420,6 +423,25 @@ describe("pullover hoodie panel keys (bp 450)", () => {
         front: {
           ...raw.views.front,
           layers: [
+            {
+              id: "lyr_zip_front_left",
+              view: "front" as const,
+              panelKey: "left_sleeve" as const,
+              kind: "panel" as const,
+              name: "left_sleeve",
+              visible: true,
+              locked: false,
+              zIndex: 1,
+              opacity: 1,
+              blendMode: "normal" as const,
+              maskPath: "",
+              cornerPins: null,
+              mesh: createDefaultMesh({ x: 0, y: 0, width: 80, height: 200 }, 4, 4, null),
+              transform: { ...IDENTITY_TRANSFORM_2D },
+              productionPanelAssignment: null,
+              productionPanelSrc: null,
+              isExclusion: false,
+            },
             {
               id: "lyr_zip_front_right",
               view: "front" as const,
@@ -443,10 +465,10 @@ describe("pullover hoodie panel keys (bp 450)", () => {
         },
       },
     };
-    expect(restorePulloverFrontRightSleeveSourceRect(withSleeve)).toBe(withSleeve);
-    expect(
-      normalizeHoodieTemplate(withSleeve).views.front.layers[0].mesh?.sourceRect,
-    ).toBeNull();
+    expect(restorePulloverFrontSleeveSourceRects(withSleeve)).toBe(withSleeve);
+    const zipNorm = normalizeHoodieTemplate(withSleeve);
+    expect(zipNorm.views.front.layers[0].mesh?.sourceRect).toBeNull();
+    expect(zipNorm.views.front.layers[1].mesh?.sourceRect).toBeNull();
   });
 
   it("normalizeHoodieTemplate migrates stale pullover templates with front_pocket in trim", () => {
