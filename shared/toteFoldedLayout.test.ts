@@ -4,7 +4,9 @@ import {
   normalizeToteFoldedPanelDims,
   TOTE_FOLDED_CONTAIN_BOOST,
   TOTE_FOLDED_PRINT_CALIBRATION,
+  TOTE_FOLDED_PRINT_OPENING_LIFT,
   toteFoldedArtBox,
+  toteFoldedFaceArtBoxes,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
@@ -39,15 +41,14 @@ describe("composeToteFoldedCanvas", () => {
     expect(out.width).toBe(TOTE_FOLDED_CANVAS_WIDTH);
     expect(out.height).toBe(TOTE_FOLDED_CANVAS_HEIGHT);
 
-    // Sample inside the art box, well into the right (red) half — panel
-    // centre can fall on the split after calibration rounding.
-    const box = toteFoldedArtBox(w, h);
-    const sampleX = box.left + Math.floor(box.drawW * 0.75);
-    const sampleY = box.top + Math.floor(box.drawH * 0.5);
-    const topIdx = (sampleY * TOTE_FOLDED_CANVAS_WIDTH + sampleX) * 4;
+    // Sample inside each face box (opening lift moves them apart on the sheet).
+    const { front, back } = toteFoldedFaceArtBoxes(w, h);
+    const sampleX = front.left + Math.floor(front.drawW * 0.75);
+    const frontY = front.top + Math.floor(front.drawH * 0.5);
+    const backY = back.top + Math.floor(back.drawH * 0.5);
+    const topIdx = (frontY * TOTE_FOLDED_CANVAS_WIDTH + sampleX) * 4;
     const bottomIdx =
-      ((TOTE_FOLDED_PANEL_HEIGHT + sampleY) * TOTE_FOLDED_CANVAS_WIDTH + sampleX) *
-      4;
+      ((TOTE_FOLDED_PANEL_HEIGHT + backY) * TOTE_FOLDED_CANVAS_WIDTH + sampleX) * 4;
     expect(out.pixels[topIdx]).toBe(255);
     expect(out.pixels[bottomIdx]).toBe(0);
   });
@@ -83,11 +84,33 @@ describe("composeToteFoldedCanvas", () => {
     ).toBe(false);
   });
 
-  it("uses full-face offset fractions with no print-only Y lift", () => {
+  it("uses full-face offset fractions on the shared box (no shared Y lift)", () => {
     const a = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
     const b = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0.1, offsetY: 0 });
     expect(b.left - a.left).toBe(Math.round(TOTE_FOLDED_PANEL_WIDTH * 0.1));
     expect(a.top).toBe(Math.round(TOTE_FOLDED_PANEL_HEIGHT * 0.5 - a.drawH / 2));
+  });
+
+  it("lifts front toward sheet top and back toward sheet bottom (not a shared Y)", () => {
+    expect(TOTE_FOLDED_PRINT_OPENING_LIFT).toBeCloseTo(0.02, 5);
+    const base = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
+    const { front, back } = toteFoldedFaceArtBoxes(100, 100, {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+    });
+    const lift = Math.round(TOTE_FOLDED_PANEL_HEIGHT * TOTE_FOLDED_PRINT_OPENING_LIFT);
+    expect(front.top).toBe(base.top - lift);
+    expect(back.top).toBe(base.top + lift);
+    expect(front.left).toBe(base.left);
+    expect(back.left).toBe(base.left);
+    expect(front.drawH).toBe(base.drawH);
+    expect(back.drawH).toBe(base.drawH);
+    expect(front.top).not.toBe(back.top);
+    const frontOuterGap = front.top;
+    const backOuterGap = TOTE_FOLDED_PANEL_HEIGHT - (back.top + back.drawH);
+    // Odd drawH + Math.round on the shared box can differ by 1px.
+    expect(Math.abs(frontOuterGap - backOuterGap)).toBeLessThanOrEqual(1);
   });
 });
 

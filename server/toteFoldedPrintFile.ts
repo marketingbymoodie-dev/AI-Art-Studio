@@ -4,7 +4,7 @@ import {
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
   clipToteArtBoxToPanel,
-  toteFoldedArtBox,
+  toteFoldedFaceArtBoxes,
   type ToteFoldedPlacement,
 } from "@shared/toteFoldedLayout";
 
@@ -36,39 +36,44 @@ export async function buildToteFoldedPrintPng(
   const meta = await sharp(source).ensureAlpha().metadata();
   const sw = Math.max(1, meta.width || 1);
   const sh = Math.max(1, meta.height || 1);
-  const box = toteFoldedArtBox(sw, sh, placement);
-  const visible = clipToteArtBoxToPanel(box);
+  const { front, back } = toteFoldedFaceArtBoxes(sw, sh, placement);
+  const frontVisible = clipToteArtBoxToPanel(front);
+  const backVisible = clipToteArtBoxToPanel(back);
 
-  const art = await sharp(source).ensureAlpha().resize(box.drawW, box.drawH).png().toBuffer();
+  const art = await sharp(source).ensureAlpha().resize(front.drawW, front.drawH).png().toBuffer();
   const composites: sharp.OverlayOptions[] = [];
-  if (visible) {
+  if (frontVisible) {
     const face = await sharp(art)
       .extract({
-        left: visible.srcLeft,
-        top: visible.srcTop,
-        width: visible.width,
-        height: visible.height,
+        left: frontVisible.srcLeft,
+        top: frontVisible.srcTop,
+        width: frontVisible.width,
+        height: frontVisible.height,
       })
       .png()
       .toBuffer();
-    composites.push({ input: face, left: visible.dstLeft, top: visible.dstTop });
-    if (printBack) {
-      const art180 = await sharp(art).rotate(180).png().toBuffer();
-      const face180 = await sharp(art180)
-        .extract({
-          left: visible.srcLeft,
-          top: visible.srcTop,
-          width: visible.width,
-          height: visible.height,
-        })
-        .png()
-        .toBuffer();
-      composites.push({
-        input: face180,
-        left: visible.dstLeft,
-        top: TOTE_FOLDED_PANEL_HEIGHT + visible.dstTop,
-      });
-    }
+    composites.push({
+      input: face,
+      left: frontVisible.dstLeft,
+      top: frontVisible.dstTop,
+    });
+  }
+  if (printBack && backVisible) {
+    const art180 = await sharp(art).rotate(180).png().toBuffer();
+    const face180 = await sharp(art180)
+      .extract({
+        left: backVisible.srcLeft,
+        top: backVisible.srcTop,
+        width: backVisible.width,
+        height: backVisible.height,
+      })
+      .png()
+      .toBuffer();
+    composites.push({
+      input: face180,
+      left: backVisible.dstLeft,
+      top: TOTE_FOLDED_PANEL_HEIGHT + backVisible.dstTop,
+    });
   }
 
   return sharp({

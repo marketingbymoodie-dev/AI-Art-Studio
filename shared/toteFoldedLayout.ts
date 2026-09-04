@@ -59,8 +59,9 @@ export type ToteFoldedArtBox = {
 
 /**
  * Contain-fit the art in one tote face, then apply {@link TOTE_FOLDED_CONTAIN_BOOST}.
- * Print-only Y nudges broke front/back replica alignment (bottom panel is
- * the same box rotated 180°), so offsets stay exactly what the editor sent.
+ * A shared print-only Y (same sheet direction on both faces) un-mirrors the
+ * 180° back — do not add that. Opening lift is applied per-face in
+ * {@link toteFoldedFaceArtBoxes} (opposite sheet directions).
  */
 export const TOTE_FOLDED_CONTAIN_BOOST = 0.864;
 
@@ -70,6 +71,14 @@ export const TOTE_FOLDED_CONTAIN_BOOST = 0.864;
  * 1.03 = 3% more print coverage than the preview for the same slider.
  */
 export const TOTE_FOLDED_PRINT_CALIBRATION = 1.03;
+
+/**
+ * Print-only, per-face: each box moves this fraction of face height toward
+ * its outer sheet edge (front toward sheet top, back toward sheet bottom).
+ * Because the back is 180° flipped, that is both faces toward the bag opening.
+ * Not a shared sheet Y — see {@link toteFoldedFaceArtBoxes}.
+ */
+export const TOTE_FOLDED_PRINT_OPENING_LIFT = 0.02;
 
 export function toteFoldedArtBox(
   sourceWidth: number,
@@ -95,6 +104,24 @@ export function toteFoldedArtBox(
     drawH,
     left: Math.round(cx - drawW / 2),
     top: Math.round(cy - drawH / 2),
+  };
+}
+
+/**
+ * Split the shared {@link toteFoldedArtBox} into front/back boxes.
+ * Front `top` decreases (toward sheet top); back `top` increases (toward
+ * sheet bottom). Same customer scale/offset; lift is print-only.
+ */
+export function toteFoldedFaceArtBoxes(
+  sourceWidth: number,
+  sourceHeight: number,
+  placement?: ToteFoldedPlacement,
+): { front: ToteFoldedArtBox; back: ToteFoldedArtBox } {
+  const base = toteFoldedArtBox(sourceWidth, sourceHeight, placement);
+  const lift = Math.round(TOTE_FOLDED_PANEL_HEIGHT * TOTE_FOLDED_PRINT_OPENING_LIFT);
+  return {
+    front: { ...base, top: base.top - lift },
+    back: { ...base, top: base.top + lift },
   };
 }
 
@@ -139,7 +166,7 @@ export function clipToteArtBoxToPanel(
  */
 export function composeToteFoldedCanvas(input: ToteFoldedBuildInput): ToteFoldedBuildResult {
   const { sourceWidth, sourceHeight, pixels } = input;
-  const { drawW, drawH, left, top } = toteFoldedArtBox(
+  const { front, back } = toteFoldedFaceArtBoxes(
     sourceWidth,
     sourceHeight,
     input.placement,
@@ -159,7 +186,12 @@ export function composeToteFoldedCanvas(input: ToteFoldedBuildInput): ToteFolded
     return [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]] as const;
   };
 
-  const writePanel = (panelTop: number, rotate180: boolean) => {
+  const writePanel = (
+    panelTop: number,
+    rotate180: boolean,
+    box: ToteFoldedArtBox,
+  ) => {
+    const { drawW, drawH, left, top } = box;
     for (let dy = 0; dy < panelH; dy++) {
       for (let dx = 0; dx < panelW; dx++) {
         let lx = dx - left;
@@ -182,9 +214,9 @@ export function composeToteFoldedCanvas(input: ToteFoldedBuildInput): ToteFolded
     }
   };
 
-  writePanel(0, false);
+  writePanel(0, false, front);
   if (input.placement?.printBack !== false) {
-    writePanel(panelH, true);
+    writePanel(panelH, true, back);
   }
 
   return { width: canvasW, height: canvasH, pixels: out };
