@@ -51,14 +51,103 @@
     return el;
   }
 
+  var APPAI_UNFIX_ATTR = 'data-appai-unfix-scroll';
+  var APPAI_UNFIX_STYLE_ID = 'appai-unfix-scroll-style';
+  var APPAI_DRAWER_OPEN_SEL = [
+    '[aria-modal="true"]',
+    'dialog[open]',
+    'cart-drawer.active',
+    'cart-drawer[open]',
+    'cart-drawer.is-open',
+    'cart-drawer[aria-hidden="false"]',
+    '.cart-drawer.active',
+    '.cart-drawer.is-open',
+    'menu-drawer[open]',
+    'header-drawer[open]',
+    'details[open].menu-opening',
+    'details.menu-opening[open]',
+    '.drawer.is-open',
+    '.drawer--open',
+    '.drawer.active',
+    '.js-drawer-open',
+    '[data-drawer-open="true"]'
+  ].join(',');
+
+  /** Overflow hidden/clip — drawer/modal lock, never a reason to unfix. */
+  function appaiOverflowIsLocked() {
+    try {
+      var htmlOy = window.getComputedStyle(document.documentElement).overflowY;
+      if (htmlOy === 'hidden' || htmlOy === 'clip') return true;
+      if (document.body) {
+        var bodyOy = window.getComputedStyle(document.body).overflowY;
+        if (bodyOy === 'hidden' || bodyOy === 'clip') return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function appaiHasScrollLockClass(el) {
+    if (!el || !el.classList) return false;
+    var names = [
+      'overflow-hidden', 'overflowHidden', 'drawer-open', 'js-drawer-open',
+      'lock-scroll', 'scroll-lock', 'menu-open', 'cart-open'
+    ];
+    for (var i = 0; i < names.length; i++) {
+      if (el.classList.contains(names[i])) return true;
+    }
+    return false;
+  }
+
+  /** iOS drawer lock: inline position:fixed + top:-scrollY. top:0 is not a lock. */
+  function appaiHasIosBodyScrollLock() {
+    var body = document.body;
+    if (!body || body.style.position !== 'fixed') return false;
+    var top = body.style.top;
+    if (!top) return false;
+    var n = parseFloat(top);
+    return isFinite(n) && n < 0;
+  }
+
+  /**
+   * Transient drawer/modal lock — NOT the theme's standing layout
+   * position:fixed. We never use position:fixed alone as the signal.
+   * overflow:hidden is a drawer lock only when there is no inner page
+   * scroller; Savor/Ritual keep overflow:hidden as layout and scroll
+   * .page-wrapper.
+   */
+  function appaiIsTransientScrollLock() {
+    if (appaiHasIosBodyScrollLock()) return true;
+    try {
+      if (appaiHasScrollLockClass(document.documentElement)) return true;
+      if (appaiHasScrollLockClass(document.body)) return true;
+      if (document.querySelector(APPAI_DRAWER_OPEN_SEL)) return true;
+    } catch (e) {}
+    if (appaiOverflowIsLocked() && !appaiHasExistingOverflowScroller()) return true;
+    return false;
+  }
+
+  /**
+   * Standing layout lock (html/body position:fixed with no inner scroller).
+   * While OUR unfix is on, computed position is static — remember via the
+   * tagged attr so we do not flap on/off.
+   */
+  function appaiDocumentIsFixedLayout() {
+    try {
+      if (document.documentElement.getAttribute(APPAI_UNFIX_ATTR) === '1') return true;
+      if (window.getComputedStyle(document.documentElement).position === 'fixed') return true;
+      if (document.body && window.getComputedStyle(document.body).position === 'fixed') return true;
+    } catch (e) {}
+    return false;
+  }
+
   /** True when the document itself is not the page scroller (Savor/Ritual). */
   function appaiDocumentScrollLocked() {
     try {
-      var oy = window.getComputedStyle(document.documentElement).overflowY;
-      return oy === 'hidden' || oy === 'clip';
-    } catch (e) {
-      return false;
-    }
+      if (document.documentElement.getAttribute(APPAI_UNFIX_ATTR) === '1') return false;
+      if (appaiDocumentIsFixedLayout()) return true;
+      if (appaiOverflowIsLocked()) return true;
+    } catch (e) {}
+    return false;
   }
 
   /** Genuine overflow scroller — never overflow:visible (#MainContent / main). */
@@ -71,6 +160,84 @@
       return false;
     }
   }
+
+  function appaiHasScrollRange(el) {
+    return !!(el && el.scrollHeight > el.clientHeight + 1);
+  }
+
+  function appaiHasExistingOverflowScroller() {
+    if (document.body && appaiIsOverflowScroller(document.body) && appaiHasScrollRange(document.body)) {
+      return true;
+    }
+    var wrapper = appaiScrollRootForEmbedIframe();
+    return !!(wrapper && appaiIsOverflowScroller(wrapper) && appaiHasScrollRange(wrapper));
+  }
+
+  function appaiEnsureUnfixStyle() {
+    if (document.getElementById(APPAI_UNFIX_STYLE_ID)) return;
+    var style = document.createElement('style');
+    style.id = APPAI_UNFIX_STYLE_ID;
+    style.setAttribute(APPAI_UNFIX_ATTR, '1');
+    // Overflow is deliberately omitted so a drawer can still set overflow:hidden.
+    style.textContent =
+      'html[' + APPAI_UNFIX_ATTR + '="1"],html[' + APPAI_UNFIX_ATTR + '="1"] body{' +
+      'position:static !important;' +
+      'height:auto !important;' +
+      'max-height:none !important;' +
+      '}';
+    document.head.appendChild(style);
+  }
+
+  function appaiClearScrollUnfix() {
+    try {
+      document.documentElement.removeAttribute(APPAI_UNFIX_ATTR);
+    } catch (e) {}
+    var style = document.getElementById(APPAI_UNFIX_STYLE_ID);
+    if (style && style.parentNode) style.parentNode.removeChild(style);
+  }
+
+  /**
+   * Unlock a standing fixed-body LAYOUT so document.scrollingElement has
+   * range. Never applied for a drawer lock, never if a real overflow
+   * wrapper already exists, never on desktop.
+   */
+  function appaiSyncScrollUnfix() {
+    var allow =
+      appaiIsMobileScrollMode() &&
+      !appaiIsTransientScrollLock() &&
+      !appaiHasExistingOverflowScroller() &&
+      appaiDocumentIsFixedLayout();
+    if (!allow) {
+      appaiClearScrollUnfix();
+      return false;
+    }
+    appaiEnsureUnfixStyle();
+    document.documentElement.setAttribute(APPAI_UNFIX_ATTR, '1');
+    return true;
+  }
+
+  function appaiInstallUnfixObserver() {
+    if (window.__APPAI_UNFIX_OBS__) return;
+    window.__APPAI_UNFIX_OBS__ = true;
+    var sync = function () { appaiSyncScrollUnfix(); };
+    try {
+      var obs = new MutationObserver(sync);
+      var attrs = { attributes: true, attributeFilter: ['class', 'style', 'open', 'aria-hidden', 'aria-modal', 'aria-expanded'] };
+      obs.observe(document.documentElement, attrs);
+      var watchBody = function () {
+        if (!document.body) return;
+        obs.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: attrs.attributeFilter
+        });
+      };
+      if (document.body) watchBody();
+      else document.addEventListener('DOMContentLoaded', watchBody);
+    } catch (e) {}
+  }
+  appaiInstallUnfixObserver();
 
   /** If the theme scrolls a wrapper around the embed (some Horizon layouts), find it. */
   function appaiScrollRootForEmbedIframe() {
@@ -727,6 +894,7 @@
       studioContainer.style.height = appaiMobileFrameHeight() + 'px';
       studioContainer.style.overflow = 'hidden';
       studioContainer.style.webkitOverflowScrolling = 'touch';
+      appaiSyncScrollUnfix();
     }
     // Undo mobile framing when switching back to desktop mode live (theme
     // editor toggle). 600px matches the container's pre-mount default so
@@ -737,6 +905,7 @@
       studioContainer.style.height = '600px';
       studioContainer.style.overflow = '';
       studioContainer.style.webkitOverflowScrolling = '';
+      appaiClearScrollUnfix();
     }
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -2059,12 +2228,10 @@
       // resolved per event: some themes scroll an inner wrapper (Savor's
       // .page-wrapper), not <html>.
       var _resolveTouchScroller = function (dy) {
-        // Viewport for BOTH directions — do not gate +dy on
-        // top+viewH<docH (false on height:100% themes; scrollHeight ≈
-        // innerHeight even though scrollingElement.scrollBy moves the page).
-        // Wrapper only if html overflow is locked AND the ancestor is a
-        // real overflow:auto|scroll scroller (Savor .page-wrapper).
-        // Tall overflow:visible (#MainContent/main) must never win.
+        // After unfix, scrollingElement has range in both directions.
+        // Wrapper only when the document is still locked (Savor/Ritual
+        // overflow:hidden + .page-wrapper). Tall overflow:visible
+        // (#MainContent/main) must never win.
         var viewport = document.scrollingElement || document.documentElement;
         var wrapper = appaiScrollRootForEmbedIframe();
         if (
@@ -2079,6 +2246,8 @@
       };
       if (data.type === 'ai-art-studio:touchscroll') {
         stopFling();
+        appaiSyncScrollUnfix();
+        if (appaiIsTransientScrollLock()) return;
         var _tsDy = data.deltaY || 0;
         appaiInstantScrollBy(_resolveTouchScroller(_tsDy), _tsDy, 0);
         return;
@@ -2089,11 +2258,12 @@
       }
       if (data.type === 'ai-art-studio:touchfling') {
         stopFling();
+        if (appaiIsTransientScrollLock()) return;
         var flingV = data.velocityY || 0;
         var alive = true;
         stopFling = function() { alive = false; };
         (function step() {
-          if (!alive || Math.abs(flingV) < 0.5) return;
+          if (!alive || Math.abs(flingV) < 0.5 || appaiIsTransientScrollLock()) return;
           appaiInstantScrollBy(_resolveTouchScroller(flingV), flingV, 0);
           flingV *= 0.95; // friction: decays to ~0 in ~55 rAF frames (~0.9 s)
           requestAnimationFrame(step);
