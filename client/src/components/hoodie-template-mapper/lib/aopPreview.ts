@@ -3480,43 +3480,50 @@ function finalizePillowWrapPrintPanels(
 }
 
 /**
- * Place-mode pocket print = 1:1 crop of the already-baked host front canvas.
- * Valid only because the front Place bake is a linear anisotropic resize of
- * the front mask-AABB slice (`buildFlatMeshTargetPoints` — mockup targetPoints
- * discarded). If `renderHoodFlatPanel`'s Place branch ever warps, this breaks.
- * Do not full-bleed stretch the crop onto the pocket placeholder.
+ * Place-mode pocket print = crop of the host front canvas, then a uniform
+ * resample to the live placeholder dims. The crop rect is already
+ * placeholder-aspect (canvas-space rebuild); dest w/h share one scale.
+ * Valid only because the front Place bake is a linear anisotropic resize
+ * of the front mask-AABB slice. If `renderHoodFlatPanel`'s Place branch
+ * ever warps, this breaks.
  */
 function cropFrontCanvasToPocketWindow(
   frontCanvas: HTMLCanvasElement,
   window: { x: number; y: number; width: number; height: number },
   bg: string,
+  destW: number,
+  destH: number,
 ): HTMLCanvasElement | null {
   if (!(window.width > 0) || !(window.height > 0)) return null;
+  if (!(destW > 0) || !(destH > 0) || !Number.isFinite(destW) || !Number.isFinite(destH)) {
+    return null;
+  }
   const overlap = intersectRectWithCanvas(
     window,
     frontCanvas.width,
     frontCanvas.height,
   );
   if (!overlap) return null;
-  const w = Math.max(1, Math.round(window.width));
-  const h = Math.max(1, Math.round(window.height));
+  const outW = Math.max(1, Math.round(destW));
+  const outH = Math.max(1, Math.round(destH));
+  const u = outW / window.width;
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = outW;
+  canvas.height = outH;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(0, 0, outW, outH);
   ctx.drawImage(
     frontCanvas,
     overlap.x,
     overlap.y,
     overlap.width,
     overlap.height,
-    overlap.x - window.x,
-    overlap.y - window.y,
-    overlap.width,
-    overlap.height,
+    (overlap.x - window.x) * u,
+    (overlap.y - window.y) * u,
+    overlap.width * u,
+    overlap.height * u,
   );
   return canvas;
 }
@@ -3628,7 +3635,13 @@ function appendPlaceModePocketCrops(
       );
       continue;
     }
-    const cropped = cropFrontCanvasToPocketWindow(hostCanvas, window, backgroundColor);
+    const cropped = cropFrontCanvasToPocketWindow(
+      hostCanvas,
+      window,
+      backgroundColor,
+      dims.width,
+      dims.height,
+    );
     if (!cropped) {
       console.error(`[aop-print] Place pocket ${panelKey}: 1:1 crop failed. Skipping.`);
       continue;

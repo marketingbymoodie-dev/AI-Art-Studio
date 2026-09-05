@@ -219,15 +219,76 @@ export function punchOutRectOnCanvas(
 }
 
 /**
- * Place-mode pocket crop tunables. Aspect is always the live pocket
- * placeholder (never hardcoded). Scale/offsets are the Printify-loop knobs.
- * `POCKET_SEAM_PIN_X`: mockup-px zip line. `null` = midpoint of the two
- * pocket-mask inner edges. Set a number to nudge seam registration.
+ * Place-mode pocket crop tunables.
+ * Aspect is always the live pocket placeholder (never hardcoded).
+ *
+ * `POCKET_WINDOW_SCALE` = 1 is the smallest placeholder-aspect rect in
+ * front-canvas px that covers the mapped pocket-mask AABB (art reaches
+ * every pocket edge, no extra zoom). Derived from published L masks:
+ * zip cover is max(mappedW, mappedH×aspect) — height-only at scale 1
+ * would miss ~6% of pocket width after the canvas-space rebuild.
+ * Multiply this cover size; do not use separate X/Y scales.
+ *
+ * `POCKET_SEAM_PIN_X`: mockup-px zip line, mapped to canvas once, then
+ * pins the window's inner edge. `null` = midpoint of the two pocket-mask
+ * inner edges. Zip only.
  */
 export const POCKET_WINDOW_SCALE = 1;
 export const POCKET_WINDOW_OFFSET_X = 0;
 export const POCKET_WINDOW_OFFSET_Y = 0;
 export const POCKET_SEAM_PIN_X: number | null = null;
+
+/** Mockup point → host-canvas px. The anisotropic map is only for points. */
+export function mapMockupPointToFrontCanvas(
+  frontMaskBb: MockupBbox,
+  pt: MockupPoint,
+  frontCanvasW: number,
+  frontCanvasH: number,
+): MockupPoint | null {
+  if (!(frontMaskBb.width > 0) || !(frontMaskBb.height > 0)) return null;
+  if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return null;
+  return {
+    x: (pt.x - frontMaskBb.x) * (frontCanvasW / frontMaskBb.width),
+    y: (pt.y - frontMaskBb.y) * (frontCanvasH / frontMaskBb.height),
+  };
+}
+
+/**
+ * Smallest placeholder-aspect size that covers a canvas-space box, then × scale.
+ * Width and height share one basis — never scaleX for width and scaleY for height.
+ */
+export function canvasSpacePocketCoverSize(
+  mappedPocketW: number,
+  mappedPocketH: number,
+  aspect: number,
+  scale = 1,
+): { width: number; height: number } | null {
+  if (!(aspect > 0) || !Number.isFinite(aspect)) return null;
+  if (!(mappedPocketW > 0) || !(mappedPocketH > 0) || !(scale > 0)) return null;
+  const coverW = Math.max(mappedPocketW, mappedPocketH * aspect);
+  const width = coverW * scale;
+  const height = width / aspect;
+  if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    return null;
+  }
+  return { width, height };
+}
+
+/** Shift a rect to sit inside the canvas without changing size (aspect stays). */
+export function shiftRectToFitCanvas(
+  rect: PulloverPocketOverlayRect,
+  canvasW: number,
+  canvasH: number,
+): PulloverPocketOverlayRect | null {
+  if (rect.width > canvasW + 1e-6 || rect.height > canvasH + 1e-6) return null;
+  let x = rect.x;
+  let y = rect.y;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x + rect.width > canvasW) x = canvasW - rect.width;
+  if (y + rect.height > canvasH) y = canvasH - rect.height;
+  return { x, y, width: rect.width, height: rect.height };
+}
 
 /** Canvas-space overlap of a crop window with the host bake. */
 export function intersectRectWithCanvas(
@@ -292,11 +353,15 @@ export function isDegeneratePocketPrintDims(
 }
 
 /**
- * Placeholder-aspect pocket window in host-canvas pixels.
- * Pullover (`seamSide` null): centered on the pocket mask AABB.
- * Zip: inner edge pinned to `seamPinX` (mockup), grow outward.
- * Returns null if aspect is unusable or the mapped window misses the
- * canvas entirely — callers must skip, not invent a zip fallback aspect.
+ * Placeholder-aspect pocket window, built in front-canvas pixels.
+ * 1. Map pocket center (+ zip pin X) through the anisotropic AABB→canvas
+ *    map once. After this, that map must not touch width or height.
+ * 2. Size from one canvas-space cover rect × pocketWindowScale, aspect
+ *    locked to the live placeholder. Pullover: center on mapped center.
+ *    Zip: pin inner edge to the mapped zip line, grow outward, then
+ *    shift-to-fit so the half stays on its host canvas (zipper-gap only).
+ * Returns null if aspect is unusable or the rect misses the canvas —
+ * callers must skip, not invent a zip fallback aspect.
  */
 export function buildPocketWindowOnFrontCanvas(opts: {
   frontMaskBb: MockupBbox;
@@ -309,44 +374,81 @@ export function buildPocketWindowOnFrontCanvas(opts: {
   offsetY?: number;
   /** Zip only: "left" pins the window's left edge (pocket_left); "right" pins the right. */
   seamSide?: "left" | "right" | null;
-  /** Mockup-px zip line. Ignored when `seamSide` is null (pullover). */
+  /** Mockup-px zip line. Mapped to canvas once. Ignored when `seamSide` is null. */
   seamPinX?: number | null;
 }): PulloverPocketOverlayRect | null {
   const aspect = opts.pocketAspect;
   if (!(aspect > 0) || !Number.isFinite(aspect)) return null;
-  if (!(opts.pocketMaskBb.height > 0) || !(opts.frontMaskBb.width > 0) || !(opts.frontMaskBb.height > 0)) {
+  if (
+    !(opts.pocketMaskBb.width > 0) ||
+    !(opts.pocketMaskBb.height > 0) ||
+    !(opts.frontMaskBb.width > 0) ||
+    !(opts.frontMaskBb.height > 0)
+  ) {
     return null;
   }
-  const scale = opts.scale ?? POCKET_WINDOW_SCALE;
-  const height = opts.pocketMaskBb.height * scale;
-  const width = height * aspect;
-  const cy = opts.pocketMaskBb.y + opts.pocketMaskBb.height / 2;
-  const pinX = opts.seamPinX;
-  let windowRect: MockupBbox;
-  if (opts.seamSide === "left" && pinX != null && Number.isFinite(pinX)) {
-    windowRect = { x: pinX, y: cy - height / 2, width, height };
-  } else if (opts.seamSide === "right" && pinX != null && Number.isFinite(pinX)) {
-    windowRect = { x: pinX - width, y: cy - height / 2, width, height };
-  } else {
-    const cx = opts.pocketMaskBb.x + opts.pocketMaskBb.width / 2;
-    windowRect = { x: cx - width / 2, y: cy - height / 2, width, height };
-  }
-  const mapped = pocketOverlayRectOnFrontPanel(
+  const center = mapMockupPointToFrontCanvas(
     opts.frontMaskBb,
-    windowRect,
+    {
+      x: opts.pocketMaskBb.x + opts.pocketMaskBb.width / 2,
+      y: opts.pocketMaskBb.y + opts.pocketMaskBb.height / 2,
+    },
     opts.frontCanvasW,
     opts.frontCanvasH,
   );
+  const pocketMin = mapMockupPointToFrontCanvas(
+    opts.frontMaskBb,
+    { x: opts.pocketMaskBb.x, y: opts.pocketMaskBb.y },
+    opts.frontCanvasW,
+    opts.frontCanvasH,
+  );
+  const pocketMax = mapMockupPointToFrontCanvas(
+    opts.frontMaskBb,
+    {
+      x: opts.pocketMaskBb.x + opts.pocketMaskBb.width,
+      y: opts.pocketMaskBb.y + opts.pocketMaskBb.height,
+    },
+    opts.frontCanvasW,
+    opts.frontCanvasH,
+  );
+  if (!center || !pocketMin || !pocketMax) return null;
+  const size = canvasSpacePocketCoverSize(
+    Math.abs(pocketMax.x - pocketMin.x),
+    Math.abs(pocketMax.y - pocketMin.y),
+    aspect,
+    opts.scale ?? POCKET_WINDOW_SCALE,
+  );
+  if (!size) return null;
+  const { width, height } = size;
+  let x: number;
+  let y = center.y - height / 2;
+  const pinX = opts.seamPinX;
+  if (
+    (opts.seamSide === "left" || opts.seamSide === "right") &&
+    pinX != null &&
+    Number.isFinite(pinX)
+  ) {
+    const pin = mapMockupPointToFrontCanvas(
+      opts.frontMaskBb,
+      { x: pinX, y: opts.pocketMaskBb.y + opts.pocketMaskBb.height / 2 },
+      opts.frontCanvasW,
+      opts.frontCanvasH,
+    );
+    if (!pin) return null;
+    x = opts.seamSide === "left" ? pin.x : pin.x - width;
+  } else {
+    x = center.x - width / 2;
+  }
   const placed: PulloverPocketOverlayRect = {
-    x: mapped.x + (opts.offsetX ?? POCKET_WINDOW_OFFSET_X),
-    y: mapped.y + (opts.offsetY ?? POCKET_WINDOW_OFFSET_Y),
-    width: mapped.width,
-    height: mapped.height,
+    x: x + (opts.offsetX ?? POCKET_WINDOW_OFFSET_X),
+    y: y + (opts.offsetY ?? POCKET_WINDOW_OFFSET_Y),
+    width,
+    height,
   };
   if (!intersectRectWithCanvas(placed, opts.frontCanvasW, opts.frontCanvasH)) {
     return null;
   }
-  return placed;
+  return shiftRectToFitCanvas(placed, opts.frontCanvasW, opts.frontCanvasH);
 }
 
 export function pocketPlacementBiasIsNonzero(
