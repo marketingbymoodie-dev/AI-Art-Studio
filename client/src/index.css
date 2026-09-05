@@ -464,20 +464,12 @@ html[data-appai-embed]:not([data-appai-mobile-native-scroll]) body {
   min-height: 0;
 }
 
+/* Option A: same contract as desktop — parent owns scroll, iframe grows. */
 html[data-appai-embed][data-appai-mobile-native-scroll],
 html[data-appai-embed][data-appai-mobile-native-scroll] body {
-  min-height: 100%;
-  overflow-y: auto;
-  /* `none` (not `contain`) suppresses the iOS rubber-band bounce at the
-     iframe scroll boundary. Without this, reaching the bottom of the iframe
-     content shows a soft bounce that visually fights the parent-page scroll
-     handoff fired by the boundary touch handler in embed-design.tsx. */
-  overscroll-behavior-y: none;
-  -webkit-overflow-scrolling: touch;
-  /* The iframe scrolls internally on mobile, but its scrollbar would render
-     right next to the Shopify page's scrollbar (a confusing double bar).
-     Hide OUR internal one — scrolling itself is untouched. */
-  scrollbar-width: none;
+  overflow: hidden;
+  height: auto;
+  min-height: 0;
 }
 
 html[data-appai-embed][data-appai-mobile-native-scroll]::-webkit-scrollbar,

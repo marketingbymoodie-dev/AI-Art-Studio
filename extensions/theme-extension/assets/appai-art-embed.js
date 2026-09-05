@@ -889,13 +889,10 @@
       var h = window.visualViewport && window.visualViewport.height ? window.visualViewport.height : window.innerHeight;
       return Math.max(520, Math.floor(h - 24));
     }
-    function applyMobileNativeScrollFrame() {
-      if (!mobileNativeScroll || !studioContainer) return;
-      studioContainer.style.height = appaiMobileFrameHeight() + 'px';
-      studioContainer.style.overflow = 'hidden';
-      studioContainer.style.webkitOverflowScrolling = 'touch';
-      appaiSyncScrollUnfix();
-    }
+    // Option A: do not pin studioContainer to the viewport. Height is driven
+    // only by ai-art-studio:resize (same path as desktop). A live pin here
+    // would overwrite the posted content height on every URL-bar resize.
+    function applyMobileNativeScrollFrame() {}
     // Undo mobile framing when switching back to desktop mode live (theme
     // editor toggle). 600px matches the container's pre-mount default so
     // there is no flash of collapsed height before the iframe's first
@@ -992,15 +989,10 @@
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
     ensureAppaiLoadingCover();
-    applyMobileNativeScrollFrame();
-    // Registered unconditionally (not gated on the mount-time mode) because
-    // mobileNativeScroll can flip live via the matchMedia 'change' listener
-    // below (Shopify theme editor mobile-preview toggle). The function itself
-    // no-ops when not currently in mobile mode, so this is a cheap no-op most
-    // of the time on desktop.
-    var resizeFrame = function() { applyMobileNativeScrollFrame(); };
-    window.addEventListener('resize', resizeFrame, { passive: true });
-    if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
+    // Baseline like desktop: 600px + reset overflow so the first
+    // ai-art-studio:resize message can drive the real content height.
+    // Do not attach window/visualViewport resize pins — nothing may re-pin.
+    clearMobileNativeScrollFrame();
     
     const params = new URLSearchParams();
     params.set('shop', normaliseMyshopifyShopForApi(config.shopDomain));
@@ -2173,7 +2165,6 @@
 
       // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
-        if (mobileNativeScroll) return;
         var newH = Math.max(data.height || 0, 400);
         studioContainer.style.height = newH + 'px';
         return;

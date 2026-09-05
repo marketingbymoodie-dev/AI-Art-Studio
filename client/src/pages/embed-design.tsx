@@ -13467,7 +13467,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     // Send resize messages so the parent container grows with our content (no scrollbar).
-    if (mobileNativeScroll) return;
     // Debounced to 120ms and filtered to ignore sub-threshold changes so the iframe
     // container does not jump while the mobile URL bar is auto-hiding/showing.
     let lastSent = 0;
@@ -13637,18 +13636,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return !!el?.closest(ARTWORK_DRAG_SURFACE_SELECTOR);
   };
 
-  // Mobile native scroll mode: minimal, passive boundary-only touch handoff.
-  // The iframe scrolls its own content natively (no JS per frame). But iOS
-  // Safari does NOT propagate iframe touch-scroll to the parent — once the
-  // iframe hits its top/bottom boundary the user gets stuck and can't reach
-  // the footer (or the area above the iframe). This handler does nothing
-  // while the iframe is scrolling internally; only when scrollTop is at the
-  // boundary AND the finger keeps moving in the same direction does it
-  // forward deltaY to the parent. Listener is `passive: true` so it never
-  // blocks the native iframe scroll.
+  // Boundary-only handoff. Option A: inverted gate — OFF on mobile-native
+  // (path (b) below owns those gestures).
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    if (!mobileNativeScroll) return;
+    if (mobileNativeScroll) return;
     let lastY = 0;
     let pendingDeltaY = 0;
     let rafId = 0;
@@ -13699,13 +13691,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
-  // Legacy (non-mobile-native) touch-scroll forwarding effect. Only attaches
-  // when `mobileNativeScroll` is false — desktop or any context where the
-  // iframe is a full-content-height block in the parent page and we need to
-  // forward gestures so the parent scrolls.
+  // Full-gesture touch-scroll forwarder (path b). Option A: inverted gate —
+  // ON for mobile-native. preventDefault after commit; artwork latch first.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    if (mobileNativeScroll) return;
+    if (!mobileNativeScroll) return;
     const PAGE_SCROLL_THRESHOLD_PX = 6;
     const HORIZONTAL_GESTURE_RATIO = 1.25;
     let touchStartX = 0;
