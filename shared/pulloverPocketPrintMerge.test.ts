@@ -208,6 +208,7 @@ describe("buildPocketWindowOnFrontCanvas", () => {
       frontCanvasW: 800,
       frontCanvasH: 1000,
       pocketAspect: aspect,
+      scale: 1,
       offsetX: 12,
       offsetY: -8,
     });

@@ -233,7 +233,7 @@ export function punchOutRectOnCanvas(
  * pins the window's inner edge. `null` = midpoint of the two pocket-mask
  * inner edges. Zip only.
  */
-export const POCKET_WINDOW_SCALE = 1;
+export const POCKET_WINDOW_SCALE = 1.05;
 export const POCKET_WINDOW_OFFSET_X = 0;
 export const POCKET_WINDOW_OFFSET_Y = 0;
 export const POCKET_SEAM_PIN_X: number | null = null;
