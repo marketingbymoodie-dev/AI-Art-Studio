@@ -69,6 +69,7 @@ import {
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   isKangarooPocketPanelKey,
+  isPulloverHoodieBlueprint,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   resolvePrintFileLayout,
@@ -82,18 +83,7 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   shouldExportPulloverPocketAsPrintifyPanel,
-  pocketPrintHostPanelKey,
-  isDegeneratePocketPrintDims,
-  buildPocketWindowOnFrontCanvas,
-  computeZipPocketSeamPinX,
-  intersectRectWithCanvas,
-  templateHasNonzeroFrontBakeMismatchRisk,
-  templateHasNonzeroPocketPlacementBias,
-  zipPocketSeamSide,
-  POCKET_SEAM_PIN_X,
-  POCKET_WINDOW_SCALE,
-  POCKET_WINDOW_OFFSET_X,
-  POCKET_WINDOW_OFFSET_Y,
+  applyPocketSourceInsetToBbox,
 } from "@shared/pulloverPocketPrintMerge";
 import {
   BODY_PRINT_BLEED_PANEL_KEYS,
@@ -1047,7 +1037,11 @@ function samplingBboxForLayer(
     layer.panelKey,
     panelBiasOverrides?.[group.id],
   );
-  return applyPanelPlacementBiasToBbox(bb, layerRect, bias);
+  let sample = applyPanelPlacementBiasToBbox(bb, layerRect, bias);
+  if (isKangarooPocketPanelKey(layer.panelKey)) {
+    sample = applyPocketSourceInsetToBbox(sample, layerRect.union.height);
+  }
+  return sample;
 }
 
 function synthesiseSeamAwareSourceRect(
@@ -1173,7 +1167,7 @@ export function synthesiseLeggingsMirroredSourceRect(
   return synthesiseSeamAwareSourceRect(panelBb, perPanelRect, aw, ah, "none");
 }
 
-function artworkSourceRectForPanel(
+export function artworkSourceRectForPanel(
   panelBb: Aabb,
   panelKey: HoodiePanelKey | null | undefined,
   groupRect: DesignRectInfo,
@@ -1202,6 +1196,84 @@ export function buildFlatMeshTargetPoints(mesh: MeshGrid, flatW: number, flatH: 
     }
   }
   return points;
+}
+
+/**
+ * Dest-space V (0 = hood AABB top, 1 = bottom) where hood artV meets
+ * the front panel's top sample. Clear dest below this — do not shrink
+ * the artwork slice. Null = no clip.
+ */
+export function pulloverHoodNeckDestClipT(
+  hoodMaskBb: Aabb,
+  hoodRect: DesignRectInfo,
+  frontMaskTopY: number,
+  frontRect: DesignRectInfo,
+): number | null {
+  const hoodH = hoodRect.effective.height;
+  const frontH = frontRect.effective.height;
+  if (!(hoodH > 0) || !(frontH > 0) || !(hoodMaskBb.height > 0)) return null;
+  const vFrontTop = (frontMaskTopY - frontRect.effective.y) / frontH;
+  const destT =
+    (vFrontTop * hoodH - hoodMaskBb.y + hoodRect.effective.y) / hoodMaskBb.height;
+  if (!Number.isFinite(destT)) return null;
+  if (destT >= 1) return null;
+  if (destT <= 0) return 0;
+  return destT;
+}
+
+function isPulloverHoodieTemplate(template: HoodieTemplate): boolean {
+  return (
+    isPulloverHoodieBlueprint(template.blueprintId) ||
+    template.hoodieType === "pullover-hoodie-aop"
+  );
+}
+
+function pulloverFrontMaskTopY(template: HoodieTemplate): number | null {
+  let top: number | null = null;
+  for (const layer of template.views.front?.layers ?? []) {
+    if (layer.panelKey !== "front" || layer.isExclusion || !layer.visible) continue;
+    const bb = aabbOf(svgPathToAnchors(layer.maskPath));
+    if (bb) top = top == null ? bb.y : Math.min(top, bb.y);
+  }
+  return top;
+}
+
+export function resolvePulloverHoodNeckDestClipT(
+  template: HoodieTemplate,
+  hoodLayer: MaskLayer,
+  hoodRect: DesignRectInfo,
+  frontBodyRect: DesignRectInfo | null | undefined,
+): number | null {
+  if (!isPulloverHoodieTemplate(template)) return null;
+  const key = hoodLayer.panelKey;
+  if (key !== "left_hood" && key !== "right_hood") return null;
+  if (!frontBodyRect) return null;
+  const hoodBb = aabbOf(svgPathToAnchors(hoodLayer.maskPath));
+  const frontTop = pulloverFrontMaskTopY(template);
+  if (!hoodBb || frontTop == null) return null;
+  return pulloverHoodNeckDestClipT(hoodBb, hoodRect, frontTop, frontBodyRect);
+}
+
+function applyPulloverHoodPreviewDestClip(
+  ctx: CanvasRenderingContext2D,
+  template: HoodieTemplate,
+  hoodLayer: MaskLayer,
+  hoodMaskBb: Aabb | null,
+  hoodRect: DesignRectInfo | null,
+  frontBodyRect: DesignRectInfo | null,
+): void {
+  if (!hoodMaskBb || !hoodRect) return;
+  const destT = resolvePulloverHoodNeckDestClipT(
+    template,
+    hoodLayer,
+    hoodRect,
+    frontBodyRect,
+  );
+  if (destT == null) return;
+  const yJoin = hoodMaskBb.y + destT * hoodMaskBb.height;
+  ctx.beginPath();
+  ctx.rect(-1e6, -1e6, 2e6, yJoin + 1e6);
+  ctx.clip();
 }
 
 /**
@@ -1255,6 +1327,11 @@ export function renderHoodFlatPanel(
     sleevesMirrored?: boolean;
     /** Mirror left leg relative to right (leggings). */
     legsMirrored?: boolean;
+    /**
+     * Dest-space clip (0–1 from panel top). Pixels below this stay
+     * transparent so the composite bg shows — pullover hood neck join.
+     */
+    destClipT?: number | null;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -1309,11 +1386,14 @@ export function renderHoodFlatPanel(
             ? "right"
             : "none"
         : "none";
-    const sampleBb = applyPanelPlacementBiasToBbox(
+    let sampleBb = applyPanelPlacementBiasToBbox(
       bb,
       frontRect,
       options?.panelPlacementBias,
     );
+    if (isKangarooPocketPanelKey(frontLayer.panelKey)) {
+      sampleBb = applyPocketSourceInsetToBbox(sampleBb, frontRect.union.height);
+    }
     const rotForSlice = frontRect.rotationDeg ?? 0;
     const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
     slice = artworkSourceRectForPanel(
@@ -1350,6 +1430,11 @@ export function renderHoodFlatPanel(
       options?.legsMirrored,
     ),
   });
+  const destClipT = options?.destClipT;
+  if (typeof destClipT === "number" && destClipT < 1 && flatH > 0) {
+    const y0 = Math.max(0, Math.min(flatH, Math.round(destClipT * flatH)));
+    if (y0 < flatH) ctx.clearRect(0, y0, flatW, flatH - y0);
+  }
   return canvas;
 }
 
@@ -2279,6 +2364,21 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       : panelMutedByCustomer ||
         (mode === "single-sheet" && !groupEnabled);
 
+    if (
+      mode === "single-sheet" &&
+      layerRect &&
+      (layer.panelKey === "left_hood" || layer.panelKey === "right_hood")
+    ) {
+      applyPulloverHoodPreviewDestClip(
+        pctx,
+        template,
+        layer,
+        layerBb,
+        layerRect,
+        getFrontRects().get("front-body") ?? null,
+      );
+    }
+
     // Background colour fill — sits UNDER the artwork inside each
     // panel's polygon. Explicit `backgroundColor` fills every panel;
     // overlay panels (pocket, cuffs, waistband) auto-fill white when
@@ -2437,6 +2537,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           fallbackSize,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
+          destClipT: resolvePulloverHoodNeckDestClipT(
+            template,
+            frontLayer,
+            frontRect,
+            getFrontRects().get("front-body") ?? null,
+          ),
         });
         if (flat) {
           // Like hood: warp the FULL flat through the back mesh. Mesh UVs
@@ -3480,177 +3586,6 @@ function finalizePillowWrapPrintPanels(
 }
 
 /**
- * Place-mode pocket print = crop of the host front canvas, then a uniform
- * resample to the live placeholder dims. The crop rect is already
- * placeholder-aspect (canvas-space rebuild); dest w/h share one scale.
- * Valid only because the front Place bake is a linear anisotropic resize
- * of the front mask-AABB slice. If `renderHoodFlatPanel`'s Place branch
- * ever warps, this breaks.
- */
-function cropFrontCanvasToPocketWindow(
-  frontCanvas: HTMLCanvasElement,
-  window: { x: number; y: number; width: number; height: number },
-  bg: string,
-  destW: number,
-  destH: number,
-): HTMLCanvasElement | null {
-  if (!(window.width > 0) || !(window.height > 0)) return null;
-  if (!(destW > 0) || !(destH > 0) || !Number.isFinite(destW) || !Number.isFinite(destH)) {
-    return null;
-  }
-  const overlap = intersectRectWithCanvas(
-    window,
-    frontCanvas.width,
-    frontCanvas.height,
-  );
-  if (!overlap) return null;
-  const outW = Math.max(1, Math.round(destW));
-  const outH = Math.max(1, Math.round(destH));
-  const u = outW / window.width;
-  const canvas = document.createElement("canvas");
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, outW, outH);
-  ctx.drawImage(
-    frontCanvas,
-    overlap.x,
-    overlap.y,
-    overlap.width,
-    overlap.height,
-    (overlap.x - window.x) * u,
-    (overlap.y - window.y) * u,
-    overlap.width * u,
-    overlap.height * u,
-  );
-  return canvas;
-}
-
-function appendPlaceModePocketCrops(
-  out: FlatPrintPanelExport[],
-  params: {
-    template: HoodieTemplate;
-    placeholders: Map<string, { width: number; height: number }>;
-    panelEnabledOverrides?: Partial<Record<string, boolean>>;
-    groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
-    backgroundColor: string;
-  },
-): void {
-  const { template, placeholders, panelEnabledOverrides, groupPanelBiasOverrides, backgroundColor } =
-    params;
-  if (
-    templateHasNonzeroPocketPlacementBias(
-      template.designGroups,
-      groupPanelBiasOverrides,
-    )
-  ) {
-    console.warn(
-      "[aop-print] front-body panelPlacementBias.pocket is nonzero; " +
-        "Place pocket crops ignore pocket bias (forced 0). Pullover host " +
-        "`front` is not in FRONT_CHEST_PANEL_KEYS so a pocket-only nudge " +
-        "would shift the crop off the body UV.",
-    );
-  }
-  if (
-    templateHasNonzeroFrontBakeMismatchRisk(
-      template.designGroups,
-      groupPanelBiasOverrides,
-    )
-  ) {
-    console.warn(
-      "[aop-print] front-body chest bias or seamAllowance is nonzero; " +
-        "Place pocket crop uses the raw front mask AABB while the host " +
-        "bake may have used a biased/remapped box. Live templates are 0.",
-    );
-  }
-  const hostByKey = new Map<string, HTMLCanvasElement>();
-  for (const p of out) {
-    hostByKey.set(p.panelKey, p.canvas);
-  }
-  const exportLayers = collectPrintExportLayers(template);
-  const pocketBbByKey = new Map<string, ReturnType<typeof aabbOf>>();
-  for (const { view, layer, panelKey } of exportLayers) {
-    if (view !== "front" || !isKangarooPocketPanelKey(panelKey)) continue;
-    pocketBbByKey.set(panelKey, aabbOf(svgPathToAnchors(layer.maskPath)));
-  }
-  const computedSeamPinX = computeZipPocketSeamPinX(
-    pocketBbByKey.get("pocket_left"),
-    pocketBbByKey.get("pocket_right"),
-  );
-  const seamPinX = POCKET_SEAM_PIN_X ?? computedSeamPinX;
-  for (const { view, layer, panelKey } of exportLayers) {
-    if (view !== "front" || !isKangarooPocketPanelKey(panelKey)) continue;
-    if (panelEnabledOverrides?.[panelKey] === false) continue;
-    const hostKey = pocketPrintHostPanelKey(panelKey);
-    const hostCanvas = hostKey ? hostByKey.get(hostKey) : undefined;
-    const position = hoodiePanelKeyToPrintifyPosition(panelKey);
-    const dims = resolveExportPanelDims(
-      layer,
-      panelKey,
-      template,
-      view,
-      placeholders,
-    );
-    if (isDegeneratePocketPrintDims(dims)) {
-      console.error(
-        `[aop-print] Place pocket ${panelKey}: missing/degenerate print dims ` +
-          `(placeholder + sourceRect). Skipping crop — not falling back to a zip aspect.`,
-      );
-      continue;
-    }
-    if (!hostCanvas || !hostKey) {
-      console.error(
-        `[aop-print] Place pocket ${panelKey}: no host front bake (${hostKey ?? "unmapped"}). Skipping.`,
-      );
-      continue;
-    }
-    const hostLayer = findFrontLayerByPanelKey(template, hostKey);
-    const frontMaskBb = hostLayer
-      ? aabbOf(svgPathToAnchors(hostLayer.maskPath))
-      : null;
-    const pocketMaskBb = aabbOf(svgPathToAnchors(layer.maskPath));
-    if (!frontMaskBb || !pocketMaskBb) {
-      console.error(
-        `[aop-print] Place pocket ${panelKey}: missing front/pocket mask AABB. Skipping.`,
-      );
-      continue;
-    }
-    const window = buildPocketWindowOnFrontCanvas({
-      frontMaskBb,
-      pocketMaskBb,
-      frontCanvasW: hostCanvas.width,
-      frontCanvasH: hostCanvas.height,
-      pocketAspect: dims.width / dims.height,
-      scale: POCKET_WINDOW_SCALE,
-      offsetX: POCKET_WINDOW_OFFSET_X,
-      offsetY: POCKET_WINDOW_OFFSET_Y,
-      seamSide: zipPocketSeamSide(panelKey),
-      seamPinX,
-    });
-    if (!window) {
-      console.error(
-        `[aop-print] Place pocket ${panelKey}: window construction failed (aspect=${dims.width}/${dims.height}). Skipping.`,
-      );
-      continue;
-    }
-    const cropped = cropFrontCanvasToPocketWindow(
-      hostCanvas,
-      window,
-      backgroundColor,
-      dims.width,
-      dims.height,
-    );
-    if (!cropped) {
-      console.error(`[aop-print] Place pocket ${panelKey}: 1:1 crop failed. Skipping.`);
-      continue;
-    }
-    out.push({ position, panelKey, canvas: cropped });
-  }
-}
-
-/**
  * Export the flat per-panel print files for a template + customer state —
  * the "Phase 5 production export" counterpart of `renderAopPreview`. These
  * are the images submitted to Printify order `print_areas` (one per
@@ -3780,11 +3715,6 @@ export function renderFlatPrintPanels(
       continue;
     }
 
-    if (mode === "single-sheet" && isKangarooPocketPanelKey(panelKey)) {
-      // Pass 2: 1:1 crop of the host front bake. Do not renderHoodFlatPanel.
-      continue;
-    }
-
     let artCanvas: HTMLCanvasElement | null = null;
 
     if (mode === "tile" && tileSettings) {
@@ -3895,6 +3825,12 @@ export function renderFlatPrintPanels(
           panelPlacementBias: panelBias,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
+          destClipT: resolvePulloverHoodNeckDestClipT(
+            template,
+            bakeLayer,
+            bakeRect,
+            rectsByView.get("front")?.get("front-body") ?? null,
+          ),
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the
@@ -3979,16 +3915,6 @@ export function renderFlatPrintPanels(
     pctx.drawImage(artCanvas, 0, 0);
 
     out.push({ position, panelKey, canvas: panel });
-  }
-
-  if (mode === "single-sheet" && artwork) {
-    appendPlaceModePocketCrops(out, {
-      template,
-      placeholders,
-      panelEnabledOverrides,
-      groupPanelBiasOverrides,
-      backgroundColor: bg,
-    });
   }
 
   const afterPullover = finalizePulloverPrintPanelsForPrintify(

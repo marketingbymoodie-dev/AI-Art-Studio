@@ -11,6 +11,10 @@ import {
   intersectRectWithCanvas,
   mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
+  applyPocketSourceInsetToBbox,
+  pocketSampleInsetMockupY,
+  POCKET_WINDOW_OFFSET_Y,
+  POCKET_SOURCE_INSET_CANVAS_REF_H,
   pocketPlacementBiasIsNonzero,
   pocketPrintHostPanelKey,
   templateHasNonzeroFrontBakeMismatchRisk,
@@ -381,5 +385,20 @@ describe("buildPocketWindowOnFrontCanvas", () => {
         },
       ]),
     ).toBe(true);
+  });
+});
+
+describe("pocket source inset (sewn fold)", () => {
+  it("converts POCKET_WINDOW_OFFSET_Y canvas px into a mockup-Y shift up", () => {
+    expect(POCKET_WINDOW_OFFSET_Y).toBe(-100);
+    const dy = pocketSampleInsetMockupY(524.93);
+    expect(dy).toBeCloseTo((-100 * 524.93) / POCKET_SOURCE_INSET_CANVAS_REF_H, 5);
+    expect(dy).toBeLessThan(0);
+    const shifted = applyPocketSourceInsetToBbox(
+      { x: 343.83, y: 635.48, width: 318.81, height: 193.44 },
+      524.93,
+    );
+    expect(shifted.y).toBeCloseTo(635.48 + dy, 5);
+    expect(shifted.x).toBe(343.83);
   });
 });

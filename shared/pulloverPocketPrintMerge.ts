@@ -235,8 +235,31 @@ export function punchOutRectOnCanvas(
  */
 export const POCKET_WINDOW_SCALE = 1.05;
 export const POCKET_WINDOW_OFFSET_X = 0;
+/** Sewn-fold source inset (canvas px, negative = sample higher on the body). */
 export const POCKET_WINDOW_OFFSET_Y = -100;
 export const POCKET_SEAM_PIN_X: number | null = null;
+/** Canvas-H used to convert `POCKET_WINDOW_OFFSET_Y` into mockup px (~10 mm at 3200). */
+export const POCKET_SOURCE_INSET_CANVAS_REF_H = 3200;
+
+/** Canvas-px inset → mockup-px shift on the pocket sample bbox. */
+export function pocketSampleInsetMockupY(
+  frontMaskH: number,
+  canvasH = POCKET_SOURCE_INSET_CANVAS_REF_H,
+  offsetY = POCKET_WINDOW_OFFSET_Y,
+): number {
+  if (!(frontMaskH > 0) || !(canvasH > 0)) return 0;
+  return offsetY * (frontMaskH / canvasH);
+}
+
+/** Shift a pocket sample bbox up/down for the sewn-fold inset. */
+export function applyPocketSourceInsetToBbox<T extends MockupBbox>(
+  bb: T,
+  frontMaskH: number,
+): T {
+  const dy = pocketSampleInsetMockupY(frontMaskH);
+  if (dy === 0) return bb;
+  return { ...bb, y: bb.y + dy };
+}
 
 /** Mockup point → host-canvas px. The anisotropic map is only for points. */
 export function mapMockupPointToFrontCanvas(
