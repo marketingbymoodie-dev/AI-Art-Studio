@@ -54,7 +54,7 @@ export const PULLOVER_HOOD_PLACE_OFFSET_Y = 59;
  * Zip front offsetY/frontH (−278.845 / 558.384) × pullover front mesh
  * height (547.935) so neck framing matches zip in pullover panel space.
  */
-export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -218.6;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -365.6;
 /**
  * Zip + pullover back sleeve meshes were calibrated to this sheet.
  * Pullover front sleeve meshes shipped with `sourceRect: null`, so

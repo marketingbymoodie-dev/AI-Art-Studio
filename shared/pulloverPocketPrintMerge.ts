@@ -235,7 +235,7 @@ export function punchOutRectOnCanvas(
  */
 export const POCKET_WINDOW_SCALE = 1.05;
 export const POCKET_WINDOW_OFFSET_X = 0;
-export const POCKET_WINDOW_OFFSET_Y = 0;
+export const POCKET_WINDOW_OFFSET_Y = -100;
 export const POCKET_SEAM_PIN_X: number | null = null;
 
 /** Mockup point → host-canvas px. The anisotropic map is only for points. */

@@ -181,6 +181,7 @@ describe("buildPocketWindowOnFrontCanvas", () => {
       frontCanvasH: 1000,
       pocketAspect: aspect,
       scale: 1,
+      offsetY: 0,
     });
     const zoomed = buildPocketWindowOnFrontCanvas({
       frontMaskBb: frontBb,
@@ -189,6 +190,7 @@ describe("buildPocketWindowOnFrontCanvas", () => {
       frontCanvasH: 1000,
       pocketAspect: aspect,
       scale: 1.25,
+      offsetY: 0,
     });
     expect(zoomed!.width).toBeCloseTo(base!.width * 1.25);
     expect(zoomed!.height).toBeCloseTo(base!.height * 1.25);
