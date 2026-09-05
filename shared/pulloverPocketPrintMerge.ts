@@ -1,4 +1,10 @@
-import { isPulloverHoodieBlueprint } from "./hoodieTemplate";
+import {
+  isPulloverHoodieBlueprint,
+  mergeFrontBodyPanelPlacementBias,
+  type DesignGroup,
+  type FrontBodyPanelPlacementBias,
+  type HoodiePanelKey,
+} from "./hoodieTemplate";
 
 export type PulloverPocketOverlayRect = {
   x: number;
@@ -210,6 +216,178 @@ export function punchOutRectOnCanvas(
 ): void {
   ctx.fillStyle = fillColor;
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+}
+
+/**
+ * Place-mode pocket crop tunables. Aspect is always the live pocket
+ * placeholder (never hardcoded). Scale/offsets are the Printify-loop knobs.
+ * `POCKET_SEAM_PIN_X`: mockup-px zip line. `null` = midpoint of the two
+ * pocket-mask inner edges. Set a number to nudge seam registration.
+ */
+export const POCKET_WINDOW_SCALE = 1;
+export const POCKET_WINDOW_OFFSET_X = 0;
+export const POCKET_WINDOW_OFFSET_Y = 0;
+export const POCKET_SEAM_PIN_X: number | null = null;
+
+/** Canvas-space overlap of a crop window with the host bake. */
+export function intersectRectWithCanvas(
+  rect: PulloverPocketOverlayRect,
+  canvasW: number,
+  canvasH: number,
+): PulloverPocketOverlayRect | null {
+  const x0 = Math.max(rect.x, 0);
+  const y0 = Math.max(rect.y, 0);
+  const x1 = Math.min(rect.x + rect.width, canvasW);
+  const y1 = Math.min(rect.y + rect.height, canvasH);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  if (!(width > 1e-6) || !(height > 1e-6)) return null;
+  return { x: x0, y: y0, width, height };
+}
+
+export function zipPocketSeamSide(
+  pocketKey: HoodiePanelKey | string | null | undefined,
+): "left" | "right" | null {
+  if (pocketKey === "pocket_left") return "left";
+  if (pocketKey === "pocket_right") return "right";
+  return null;
+}
+
+/**
+ * Zip line in mockup px: midpoint of pocket_left's left edge and
+ * pocket_right's right edge (the two mask inner edges across the zipper gap).
+ */
+export function computeZipPocketSeamPinX(
+  pocketLeftBb: MockupBbox | null | undefined,
+  pocketRightBb: MockupBbox | null | undefined,
+): number | null {
+  if (!pocketLeftBb || !pocketRightBb) return null;
+  if (!(pocketLeftBb.width > 0) || !(pocketRightBb.width > 0)) return null;
+  const leftInner = pocketLeftBb.x;
+  const rightInner = pocketRightBb.x + pocketRightBb.width;
+  if (!Number.isFinite(leftInner) || !Number.isFinite(rightInner)) return null;
+  return (leftInner + rightInner) / 2;
+}
+
+/** Zip halves crop from that half's front bake; pullover kangaroo from `front`. */
+export function pocketPrintHostPanelKey(
+  pocketKey: HoodiePanelKey | string | null | undefined,
+): HoodiePanelKey | null {
+  if (pocketKey === "pocket_left") return "front_left";
+  if (pocketKey === "pocket_right") return "front_right";
+  if (pocketKey === "front_pocket") return "front";
+  return null;
+}
+
+export function isDegeneratePocketPrintDims(
+  dims: { width: number; height: number } | null | undefined,
+): boolean {
+  return (
+    !dims ||
+    !(dims.width > 0) ||
+    !(dims.height > 0) ||
+    !Number.isFinite(dims.width) ||
+    !Number.isFinite(dims.height)
+  );
+}
+
+/**
+ * Placeholder-aspect pocket window in host-canvas pixels.
+ * Pullover (`seamSide` null): centered on the pocket mask AABB.
+ * Zip: inner edge pinned to `seamPinX` (mockup), grow outward.
+ * Returns null if aspect is unusable or the mapped window misses the
+ * canvas entirely — callers must skip, not invent a zip fallback aspect.
+ */
+export function buildPocketWindowOnFrontCanvas(opts: {
+  frontMaskBb: MockupBbox;
+  pocketMaskBb: MockupBbox;
+  frontCanvasW: number;
+  frontCanvasH: number;
+  pocketAspect: number;
+  scale?: number;
+  offsetX?: number;
+  offsetY?: number;
+  /** Zip only: "left" pins the window's left edge (pocket_left); "right" pins the right. */
+  seamSide?: "left" | "right" | null;
+  /** Mockup-px zip line. Ignored when `seamSide` is null (pullover). */
+  seamPinX?: number | null;
+}): PulloverPocketOverlayRect | null {
+  const aspect = opts.pocketAspect;
+  if (!(aspect > 0) || !Number.isFinite(aspect)) return null;
+  if (!(opts.pocketMaskBb.height > 0) || !(opts.frontMaskBb.width > 0) || !(opts.frontMaskBb.height > 0)) {
+    return null;
+  }
+  const scale = opts.scale ?? POCKET_WINDOW_SCALE;
+  const height = opts.pocketMaskBb.height * scale;
+  const width = height * aspect;
+  const cy = opts.pocketMaskBb.y + opts.pocketMaskBb.height / 2;
+  const pinX = opts.seamPinX;
+  let windowRect: MockupBbox;
+  if (opts.seamSide === "left" && pinX != null && Number.isFinite(pinX)) {
+    windowRect = { x: pinX, y: cy - height / 2, width, height };
+  } else if (opts.seamSide === "right" && pinX != null && Number.isFinite(pinX)) {
+    windowRect = { x: pinX - width, y: cy - height / 2, width, height };
+  } else {
+    const cx = opts.pocketMaskBb.x + opts.pocketMaskBb.width / 2;
+    windowRect = { x: cx - width / 2, y: cy - height / 2, width, height };
+  }
+  const mapped = pocketOverlayRectOnFrontPanel(
+    opts.frontMaskBb,
+    windowRect,
+    opts.frontCanvasW,
+    opts.frontCanvasH,
+  );
+  const placed: PulloverPocketOverlayRect = {
+    x: mapped.x + (opts.offsetX ?? POCKET_WINDOW_OFFSET_X),
+    y: mapped.y + (opts.offsetY ?? POCKET_WINDOW_OFFSET_Y),
+    width: mapped.width,
+    height: mapped.height,
+  };
+  if (!intersectRectWithCanvas(placed, opts.frontCanvasW, opts.frontCanvasH)) {
+    return null;
+  }
+  return placed;
+}
+
+export function pocketPlacementBiasIsNonzero(
+  bias: { offsetXPercent?: number; offsetYPercent?: number } | null | undefined,
+): boolean {
+  if (!bias) return false;
+  return (
+    Math.abs(bias.offsetXPercent ?? 0) > 1e-9 ||
+    Math.abs(bias.offsetYPercent ?? 0) > 1e-9
+  );
+}
+
+/** Crop frontBb is the raw mask AABB; bake uses biased AABB + seam remap. */
+export function templateHasNonzeroFrontBakeMismatchRisk(
+  groups: DesignGroup[] | undefined,
+  overrides?: Record<string, FrontBodyPanelPlacementBias | null | undefined>,
+): boolean {
+  for (const g of groups ?? []) {
+    if ((g.seamAllowance ?? 0) > 1e-9) return true;
+    const merged = mergeFrontBodyPanelPlacementBias(
+      g.panelPlacementBias,
+      overrides?.[g.id],
+    );
+    if (pocketPlacementBiasIsNonzero(merged.chest)) return true;
+  }
+  return false;
+}
+
+/** True when a front-body group (or override) stores a pocket UV nudge. */
+export function templateHasNonzeroPocketPlacementBias(
+  groups: DesignGroup[] | undefined,
+  overrides?: Record<string, FrontBodyPanelPlacementBias | null | undefined>,
+): boolean {
+  for (const g of groups ?? []) {
+    const merged = mergeFrontBodyPanelPlacementBias(
+      g.panelPlacementBias,
+      overrides?.[g.id],
+    );
+    if (pocketPlacementBiasIsNonzero(merged.pocket)) return true;
+  }
+  return false;
 }
 
 export function pocketOverlayRectOnFrontPanel(

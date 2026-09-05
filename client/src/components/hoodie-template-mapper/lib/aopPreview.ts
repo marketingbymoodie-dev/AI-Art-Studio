@@ -68,6 +68,7 @@ import {
   migrateFrontPocketOutOfTrimGroup,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
+  isKangarooPocketPanelKey,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   resolvePrintFileLayout,
@@ -79,7 +80,21 @@ import {
   mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
-import { shouldExportPulloverPocketAsPrintifyPanel } from "@shared/pulloverPocketPrintMerge";
+import {
+  shouldExportPulloverPocketAsPrintifyPanel,
+  pocketPrintHostPanelKey,
+  isDegeneratePocketPrintDims,
+  buildPocketWindowOnFrontCanvas,
+  computeZipPocketSeamPinX,
+  intersectRectWithCanvas,
+  templateHasNonzeroFrontBakeMismatchRisk,
+  templateHasNonzeroPocketPlacementBias,
+  zipPocketSeamSide,
+  POCKET_SEAM_PIN_X,
+  POCKET_WINDOW_SCALE,
+  POCKET_WINDOW_OFFSET_X,
+  POCKET_WINDOW_OFFSET_Y,
+} from "@shared/pulloverPocketPrintMerge";
 import {
   BODY_PRINT_BLEED_PANEL_KEYS,
   computeTilePxOnFlatCanvas,
@@ -3465,6 +3480,164 @@ function finalizePillowWrapPrintPanels(
 }
 
 /**
+ * Place-mode pocket print = 1:1 crop of the already-baked host front canvas.
+ * Valid only because the front Place bake is a linear anisotropic resize of
+ * the front mask-AABB slice (`buildFlatMeshTargetPoints` — mockup targetPoints
+ * discarded). If `renderHoodFlatPanel`'s Place branch ever warps, this breaks.
+ * Do not full-bleed stretch the crop onto the pocket placeholder.
+ */
+function cropFrontCanvasToPocketWindow(
+  frontCanvas: HTMLCanvasElement,
+  window: { x: number; y: number; width: number; height: number },
+  bg: string,
+): HTMLCanvasElement | null {
+  if (!(window.width > 0) || !(window.height > 0)) return null;
+  const overlap = intersectRectWithCanvas(
+    window,
+    frontCanvas.width,
+    frontCanvas.height,
+  );
+  if (!overlap) return null;
+  const w = Math.max(1, Math.round(window.width));
+  const h = Math.max(1, Math.round(window.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(
+    frontCanvas,
+    overlap.x,
+    overlap.y,
+    overlap.width,
+    overlap.height,
+    overlap.x - window.x,
+    overlap.y - window.y,
+    overlap.width,
+    overlap.height,
+  );
+  return canvas;
+}
+
+function appendPlaceModePocketCrops(
+  out: FlatPrintPanelExport[],
+  params: {
+    template: HoodieTemplate;
+    placeholders: Map<string, { width: number; height: number }>;
+    panelEnabledOverrides?: Partial<Record<string, boolean>>;
+    groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
+    backgroundColor: string;
+  },
+): void {
+  const { template, placeholders, panelEnabledOverrides, groupPanelBiasOverrides, backgroundColor } =
+    params;
+  if (
+    templateHasNonzeroPocketPlacementBias(
+      template.designGroups,
+      groupPanelBiasOverrides,
+    )
+  ) {
+    console.warn(
+      "[aop-print] front-body panelPlacementBias.pocket is nonzero; " +
+        "Place pocket crops ignore pocket bias (forced 0). Pullover host " +
+        "`front` is not in FRONT_CHEST_PANEL_KEYS so a pocket-only nudge " +
+        "would shift the crop off the body UV.",
+    );
+  }
+  if (
+    templateHasNonzeroFrontBakeMismatchRisk(
+      template.designGroups,
+      groupPanelBiasOverrides,
+    )
+  ) {
+    console.warn(
+      "[aop-print] front-body chest bias or seamAllowance is nonzero; " +
+        "Place pocket crop uses the raw front mask AABB while the host " +
+        "bake may have used a biased/remapped box. Live templates are 0.",
+    );
+  }
+  const hostByKey = new Map<string, HTMLCanvasElement>();
+  for (const p of out) {
+    hostByKey.set(p.panelKey, p.canvas);
+  }
+  const exportLayers = collectPrintExportLayers(template);
+  const pocketBbByKey = new Map<string, ReturnType<typeof aabbOf>>();
+  for (const { view, layer, panelKey } of exportLayers) {
+    if (view !== "front" || !isKangarooPocketPanelKey(panelKey)) continue;
+    pocketBbByKey.set(panelKey, aabbOf(svgPathToAnchors(layer.maskPath)));
+  }
+  const computedSeamPinX = computeZipPocketSeamPinX(
+    pocketBbByKey.get("pocket_left"),
+    pocketBbByKey.get("pocket_right"),
+  );
+  const seamPinX = POCKET_SEAM_PIN_X ?? computedSeamPinX;
+  for (const { view, layer, panelKey } of exportLayers) {
+    if (view !== "front" || !isKangarooPocketPanelKey(panelKey)) continue;
+    if (panelEnabledOverrides?.[panelKey] === false) continue;
+    const hostKey = pocketPrintHostPanelKey(panelKey);
+    const hostCanvas = hostKey ? hostByKey.get(hostKey) : undefined;
+    const position = hoodiePanelKeyToPrintifyPosition(panelKey);
+    const dims = resolveExportPanelDims(
+      layer,
+      panelKey,
+      template,
+      view,
+      placeholders,
+    );
+    if (isDegeneratePocketPrintDims(dims)) {
+      console.error(
+        `[aop-print] Place pocket ${panelKey}: missing/degenerate print dims ` +
+          `(placeholder + sourceRect). Skipping crop — not falling back to a zip aspect.`,
+      );
+      continue;
+    }
+    if (!hostCanvas || !hostKey) {
+      console.error(
+        `[aop-print] Place pocket ${panelKey}: no host front bake (${hostKey ?? "unmapped"}). Skipping.`,
+      );
+      continue;
+    }
+    const hostLayer = findFrontLayerByPanelKey(template, hostKey);
+    const frontMaskBb = hostLayer
+      ? aabbOf(svgPathToAnchors(hostLayer.maskPath))
+      : null;
+    const pocketMaskBb = aabbOf(svgPathToAnchors(layer.maskPath));
+    if (!frontMaskBb || !pocketMaskBb) {
+      console.error(
+        `[aop-print] Place pocket ${panelKey}: missing front/pocket mask AABB. Skipping.`,
+      );
+      continue;
+    }
+    const window = buildPocketWindowOnFrontCanvas({
+      frontMaskBb,
+      pocketMaskBb,
+      frontCanvasW: hostCanvas.width,
+      frontCanvasH: hostCanvas.height,
+      pocketAspect: dims.width / dims.height,
+      scale: POCKET_WINDOW_SCALE,
+      offsetX: POCKET_WINDOW_OFFSET_X,
+      offsetY: POCKET_WINDOW_OFFSET_Y,
+      seamSide: zipPocketSeamSide(panelKey),
+      seamPinX,
+    });
+    if (!window) {
+      console.error(
+        `[aop-print] Place pocket ${panelKey}: window construction failed (aspect=${dims.width}/${dims.height}). Skipping.`,
+      );
+      continue;
+    }
+    const cropped = cropFrontCanvasToPocketWindow(hostCanvas, window, backgroundColor);
+    if (!cropped) {
+      console.error(`[aop-print] Place pocket ${panelKey}: 1:1 crop failed. Skipping.`);
+      continue;
+    }
+    out.push({ position, panelKey, canvas: cropped });
+  }
+}
+
+/**
  * Export the flat per-panel print files for a template + customer state —
  * the "Phase 5 production export" counterpart of `renderAopPreview`. These
  * are the images submitted to Printify order `print_areas` (one per
@@ -3591,6 +3764,11 @@ export function renderFlatPrintPanels(
       if (solid) {
         out.push({ position, panelKey, canvas: solid });
       }
+      continue;
+    }
+
+    if (mode === "single-sheet" && isKangarooPocketPanelKey(panelKey)) {
+      // Pass 2: 1:1 crop of the host front bake. Do not renderHoodFlatPanel.
       continue;
     }
 
@@ -3788,6 +3966,16 @@ export function renderFlatPrintPanels(
     pctx.drawImage(artCanvas, 0, 0);
 
     out.push({ position, panelKey, canvas: panel });
+  }
+
+  if (mode === "single-sheet" && artwork) {
+    appendPlaceModePocketCrops(out, {
+      template,
+      placeholders,
+      panelEnabledOverrides,
+      groupPanelBiasOverrides,
+      backgroundColor: bg,
+    });
   }
 
   const afterPullover = finalizePulloverPrintPanelsForPrintify(

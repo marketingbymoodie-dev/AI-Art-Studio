@@ -3,8 +3,17 @@ import {
   expandHoodPanelImageIdsWithSiblingFallback,
   expandPanelImageIdsWithCollarAliases,
   expandPanelImageIdsWithPocketAliases,
+  isDegeneratePocketPrintDims,
   isPocketLikePrintifyPosition,
+  buildPocketWindowOnFrontCanvas,
+  computeZipPocketSeamPinX,
+  intersectRectWithCanvas,
   pocketOverlayRectOnFrontPanel,
+  pocketPlacementBiasIsNonzero,
+  pocketPrintHostPanelKey,
+  templateHasNonzeroFrontBakeMismatchRisk,
+  templateHasNonzeroPocketPlacementBias,
+  zipPocketSeamSide,
   resolvePocketFallbackImageId,
   resolvePrintifyPanelImageId,
   shouldExportPulloverPocketAsPrintifyPanel,
@@ -118,5 +127,224 @@ describe("pocketOverlayRectOnFrontPanel", () => {
     expect(dest.y).toBeCloseTo(700);
     expect(dest.width).toBeCloseTo(400);
     expect(dest.height).toBeCloseTo(240);
+  });
+});
+
+describe("buildPocketWindowOnFrontCanvas", () => {
+  const frontBb = { x: 100, y: 50, width: 400, height: 500 };
+  const pocketBb = { x: 200, y: 400, width: 150, height: 100 };
+
+  it("locks aspect to the resolved pocket dims (not a hardcoded zip ratio)", () => {
+    const aspect = 1375 / 1430;
+    const win = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+    });
+    expect(win).not.toBeNull();
+    expect(win!.width / win!.height).toBeCloseTo(aspect, 5);
+    const pulloverAspect = 4200 / 2550;
+    const pullover = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: pulloverAspect,
+    });
+    expect(pullover!.width / pullover!.height).toBeCloseTo(pulloverAspect, 5);
+  });
+
+  it("centers on the pocket AABB and applies scale / front-canvas offsets", () => {
+    const aspect = 2;
+    const base = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+      scale: 1,
+    });
+    const zoomed = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+      scale: 2,
+    });
+    expect(zoomed!.width).toBeCloseTo(base!.width * 2);
+    expect(zoomed!.height).toBeCloseTo(base!.height * 2);
+    expect(zoomed!.x + zoomed!.width / 2).toBeCloseTo(base!.x + base!.width / 2);
+    expect(zoomed!.y + zoomed!.height / 2).toBeCloseTo(base!.y + base!.height / 2);
+    const nudged = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+      offsetX: 12,
+      offsetY: -8,
+    });
+    expect(nudged!.x).toBeCloseTo(base!.x + 12);
+    expect(nudged!.y).toBeCloseTo(base!.y - 8);
+  });
+
+  it("returns null for degenerate aspect instead of inventing a fallback", () => {
+    expect(
+      buildPocketWindowOnFrontCanvas({
+        frontMaskBb: frontBb,
+        pocketMaskBb: pocketBb,
+        frontCanvasW: 800,
+        frontCanvasH: 1000,
+        pocketAspect: 0,
+      }),
+    ).toBeNull();
+    expect(isDegeneratePocketPrintDims(null)).toBe(true);
+    expect(isDegeneratePocketPrintDims({ width: 1375, height: 0 })).toBe(true);
+    expect(isDegeneratePocketPrintDims({ width: 1375, height: 1430 })).toBe(false);
+  });
+
+  it("maps zip/pullover pocket keys to the host front bake", () => {
+    expect(pocketPrintHostPanelKey("pocket_left")).toBe("front_left");
+    expect(pocketPrintHostPanelKey("pocket_right")).toBe("front_right");
+    expect(pocketPrintHostPanelKey("front_pocket")).toBe("front");
+    expect(pocketPrintHostPanelKey("back")).toBeNull();
+  });
+
+  it("pins zip halves to the computed seam midpoint, not each AABB inner edge", () => {
+    const pocketLeft = { x: 513.59, y: 580, width: 150.27, height: 187.7 };
+    const pocketRight = { x: 348.21, y: 580, width: 154.99, height: 187.7 };
+    const pinX = computeZipPocketSeamPinX(pocketLeft, pocketRight);
+    expect(pinX).toBeCloseTo((513.59 + 348.21 + 154.99) / 2, 5);
+    expect(zipPocketSeamSide("pocket_left")).toBe("left");
+    expect(zipPocketSeamSide("pocket_right")).toBe("right");
+    expect(zipPocketSeamSide("front_pocket")).toBeNull();
+
+    const frontLeft = { x: 513.23, y: 214.2, width: 206.37, height: 553.5 };
+    const frontRight = { x: 297.53, y: 214.2, width: 205.87, height: 553.5 };
+    const aspect = 1375 / 1430;
+    const leftWin = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontLeft,
+      pocketMaskBb: pocketLeft,
+      frontCanvasW: 2064,
+      frontCanvasH: 4071,
+      pocketAspect: aspect,
+      seamSide: "left",
+      seamPinX: pinX,
+    });
+    const rightWin = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontRight,
+      pocketMaskBb: pocketRight,
+      frontCanvasW: 2064,
+      frontCanvasH: 4071,
+      pocketAspect: aspect,
+      seamSide: "right",
+      seamPinX: pinX,
+    });
+    expect(leftWin).not.toBeNull();
+    expect(rightWin).not.toBeNull();
+    const leftInnerMockup = frontLeft.x + (leftWin!.x / 2064) * frontLeft.width;
+    const rightInnerMockup =
+      frontRight.x + ((rightWin!.x + rightWin!.width) / 2064) * frontRight.width;
+    expect(leftInnerMockup).toBeCloseTo(pinX!, 4);
+    expect(rightInnerMockup).toBeCloseTo(pinX!, 4);
+    expect(leftWin!.x).toBeLessThan(0);
+    expect(rightWin!.x + rightWin!.width).toBeGreaterThan(2064);
+  });
+
+  it("returns null when the mapped window misses the host canvas", () => {
+    expect(
+      buildPocketWindowOnFrontCanvas({
+        frontMaskBb: { x: 100, y: 50, width: 400, height: 500 },
+        pocketMaskBb: { x: 200, y: 400, width: 150, height: 100 },
+        frontCanvasW: 800,
+        frontCanvasH: 1000,
+        pocketAspect: 2,
+        offsetX: 5000,
+      }),
+    ).toBeNull();
+    expect(intersectRectWithCanvas({ x: -10, y: 0, width: 5, height: 10 }, 100, 100)).toBeNull();
+    expect(intersectRectWithCanvas({ x: -10, y: 0, width: 40, height: 10 }, 100, 100)).toEqual({
+      x: 0,
+      y: 0,
+      width: 30,
+      height: 10,
+    });
+  });
+
+  it("detects chest bias / seamAllowance bake-mismatch risk", () => {
+    expect(
+      templateHasNonzeroFrontBakeMismatchRisk([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      templateHasNonzeroFrontBakeMismatchRisk([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0.02,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      templateHasNonzeroFrontBakeMismatchRisk([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front_left", "front_right"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+          panelPlacementBias: { chest: { offsetXPercent: 1, offsetYPercent: 0 } },
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("detects nonzero pocket placement bias", () => {
+    expect(pocketPlacementBiasIsNonzero({ offsetXPercent: 0, offsetYPercent: 0 })).toBe(false);
+    expect(pocketPlacementBiasIsNonzero({ offsetXPercent: 0, offsetYPercent: 1 })).toBe(true);
+    expect(
+      templateHasNonzeroPocketPlacementBias([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+          panelPlacementBias: { pocket: { offsetXPercent: 0, offsetYPercent: 2 } },
+        },
+      ]),
+    ).toBe(true);
   });
 });
