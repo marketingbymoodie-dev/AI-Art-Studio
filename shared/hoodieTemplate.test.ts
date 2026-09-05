@@ -16,11 +16,13 @@ import {
   BEANIE_BLUEPRINT_ID,
   BEANIE_PREVIEW_PLACEMENT_SCALE,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
   PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
   PULLOVER_FRONT_BODY_PLACE_SCALE,
-  PULLOVER_FRONT_TO_HOOD_SCALE_RATIO,
   PULLOVER_HOOD_PLACE_OFFSET_Y,
   PULLOVER_HOOD_PLACE_SCALE,
+  PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
+  PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
   PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT,
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
@@ -346,16 +348,22 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
   });
 
-  it("seeds pullover front-body + hood to the zip front:hood ratio", () => {
+  it("seeds pullover front-body + hood as independent Printify compose constants", () => {
     const groups = defaultPulloverDesignGroups();
     const front = groups.find((g) => g.id === "front-body")!.placement.front;
     const hood = groups.find((g) => g.id === "hood")!.placement.front;
+    const pocketBias = groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket;
     expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
-    expect(front.scale / hood.scale).toBeCloseTo(PULLOVER_FRONT_TO_HOOD_SCALE_RATIO, 6);
-    expect(front.scale / hood.scale).toBeCloseTo(0.7047, 4);
+    expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.210335);
+    expect(PULLOVER_HOOD_PLACE_SCALE).toBe(1.203771);
+    expect(pocketBias).toEqual({
+      offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
+      offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+    });
     expect(groups.find((g) => g.id === "back-body")!.placement.front.scale).toBe(1);
     expect(groups.find((g) => g.id === "back-body")!.placement.front.offsetY).toBe(0);
   });
@@ -382,10 +390,16 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     const hood = healed.designGroups!.find((g) => g.id === "hood")!.placement.front;
     const back = healed.designGroups!.find((g) => g.id === "back-body")!.placement;
     expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
-    expect(front.scale / hood.scale).toBeCloseTo(0.7047, 4);
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
+    ).toEqual({
+      offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
+      offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+    });
     expect(back.front.scale).toBe(1);
     expect(back.front.offsetY).toBe(0);
     expect(back.back.scale).toBe(1);
@@ -425,6 +439,40 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(zipNorm.designGroups!.find((g) => g.id === "hood")!.placement.front).toEqual(
       zipStale.designGroups!.find((g) => g.id === "hood")!.placement.front,
     );
+  });
+
+  it("heals front offsetX when scale and offsetY already match", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-offsetx-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const partial = pullover.designGroups!.map((g) => {
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          panelPlacementBias: {
+            pocket: {
+              offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
+              offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+            },
+          },
+          placement: {
+            front: {
+              scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+              offsetX: 0,
+              offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+              rotationDeg: 0,
+            },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: partial });
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.placement.front.offsetX,
+    ).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
   });
 
   it("designGroupsForBlueprint picks pullover defaults for 450", () => {

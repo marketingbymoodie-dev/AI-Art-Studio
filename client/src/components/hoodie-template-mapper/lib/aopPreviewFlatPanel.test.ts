@@ -4,6 +4,7 @@ import {
   bakeArtworkPlacementRotation,
   remapSourceRectForPlacementRotation,
   buildFlatMeshTargetPoints,
+  artworkSliceSamplesMural,
   artworkSourceRectForPanel,
   computeGroupRects,
   leggingsArtworkFallingOffUnseenSide,
@@ -409,5 +410,22 @@ describe("artworkSourceRectForPanel pocket vs chest", () => {
     );
     expect(pocket.y).toBeGreaterThan(chest.y);
     expect(pocket.y / 2000).toBeCloseTo((350 - 50) / 500, 5);
+  });
+});
+
+describe("artworkSliceSamplesMural", () => {
+  it("is true when the slice sits inside the mural", () => {
+    expect(artworkSliceSamplesMural({ x: 10, y: 10, width: 80, height: 80 }, 100, 100)).toBe(
+      true,
+    );
+  });
+
+  it("is false when the slice is past the mural or only an edge sliver", () => {
+    expect(artworkSliceSamplesMural({ x: 0, y: 108, width: 100, height: 40 }, 100, 100)).toBe(
+      false,
+    );
+    expect(artworkSliceSamplesMural({ x: 0, y: 99.5, width: 100, height: 20 }, 100, 100)).toBe(
+      false,
+    );
   });
 });

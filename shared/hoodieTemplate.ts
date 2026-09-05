@@ -41,20 +41,23 @@ export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
 export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1;
 export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 1;
 /**
- * Zip known-good front.scale / hood.scale (1.05 / 1.49). Applied to
- * pullover as a ratio vs each group's own contain-fit — not zip rects.
+ * Pullover Place scales are independent contain-fit zooms (one per group).
+ * History: 1.05 / 1.49 (quotient 0.7047) was a zip-seed copy, not a
+ * physical front:hood lock — never derive one from the other at runtime.
+ * Current values compose those seeds with operator Printify scales
+ * (front ×1.1527, hood ×0.8079).
  */
-export const PULLOVER_FRONT_TO_HOOD_SCALE_RATIO = 1.05 / 1.49;
-export const PULLOVER_HOOD_PLACE_SCALE = 1.49;
-export const PULLOVER_FRONT_BODY_PLACE_SCALE =
-  PULLOVER_HOOD_PLACE_SCALE * PULLOVER_FRONT_TO_HOOD_SCALE_RATIO;
-/** Zip hood offsetY; pullover hood mesh union matches zip. */
-export const PULLOVER_HOOD_PLACE_OFFSET_Y = 59;
-/**
- * Zip front offsetY/frontH (−278.845 / 558.384) × pullover front mesh
- * height (547.935) so neck framing matches zip in pullover panel space.
- */
-export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -273.627;
+export const PULLOVER_HOOD_PLACE_SCALE = 1.203771;
+export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.210335;
+/** Operator Printify hood pos-top 3.66% (center-offset compose). */
+export const PULLOVER_HOOD_PLACE_OFFSET_Y = 57.429;
+/** Operator Printify front pos-left −0.59% (center-offset compose). */
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -2.527;
+/** Operator Printify front pos-top 2.09% (center-offset compose). */
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -304.439;
+/** Pocket residual vs new front rect (operator pocket left −11.13% / top 4.43%). */
+export const PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT = 9.7;
+export const PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT = -2.4;
 /**
  * Zip + pullover back sleeve meshes were calibrated to this sheet.
  * Pullover front sleeve meshes shipped with `sourceRect: null`, so
@@ -899,6 +902,7 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
         front: {
           ...blank,
           scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+          offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
           offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
         },
         back: { ...blank },
@@ -906,6 +910,12 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
       seamAllowance: 0,
       lockedRatio: null,
       enabled: true,
+      panelPlacementBias: {
+        pocket: {
+          offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
+          offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+        },
+      },
     },
     {
       id: "back-body",
@@ -1510,10 +1520,20 @@ function sleeveSourceRectIsCalibrated(
   return Boolean(rect && rect.width > 0 && rect.height > 0);
 }
 
+function pulloverPocketBiasMatches(
+  group: Pick<DesignGroup, "panelPlacementBias">,
+): boolean {
+  const pocket = group.panelPlacementBias?.pocket;
+  return (
+    pocket?.offsetXPercent === PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT &&
+    pocket?.offsetYPercent === PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT
+  );
+}
+
 /**
  * Pullover bp 450 only: seed front-body + hood front placements to the
- * zip's proven scale ratio (0.7047) and panel-normalized Y framing.
- * Does not touch back, sleeves, pocket keys, or zip templates.
+ * operator Printify compose (independent front/hood scales — not a
+ * derived ratio). Does not touch back, sleeves, or zip templates.
  */
 export function restorePulloverFrontHoodZipFraming(
   template: HoodieTemplate,
@@ -1532,18 +1552,28 @@ export function restorePulloverFrontHoodZipFraming(
       const front = g.placement?.front;
       if (
         front?.scale === PULLOVER_FRONT_BODY_PLACE_SCALE &&
-        front.offsetY === PULLOVER_FRONT_BODY_PLACE_OFFSET_Y
+        front.offsetX === PULLOVER_FRONT_BODY_PLACE_OFFSET_X &&
+        front.offsetY === PULLOVER_FRONT_BODY_PLACE_OFFSET_Y &&
+        pulloverPocketBiasMatches(g)
       ) {
         return g;
       }
       changed = true;
       return {
         ...g,
+        panelPlacementBias: {
+          ...g.panelPlacementBias,
+          pocket: {
+            offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
+            offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+          },
+        },
         placement: {
           ...g.placement,
           front: {
             ...(front ?? DEFAULT_GROUP_PLACEMENT),
             scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+            offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
             offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
           },
           back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },

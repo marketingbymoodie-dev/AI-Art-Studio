@@ -233,7 +233,8 @@ export function punchOutRectOnCanvas(
  * pins the window's inner edge. `null` = midpoint of the two pocket-mask
  * inner edges. Zip only.
  */
-export const POCKET_WINDOW_SCALE = 1.05;
+/** Pullover pocket vs new front zoom: 1.1527 / 1.0371. Applied to the live sample bbox (front_pocket only). */
+export const POCKET_WINDOW_SCALE = 1.1115;
 export const POCKET_WINDOW_OFFSET_X = 0;
 /** Sewn-fold source inset (canvas px, negative = sample higher on the body). */
 export const POCKET_WINDOW_OFFSET_Y = -100;
@@ -259,6 +260,35 @@ export function applyPocketSourceInsetToBbox<T extends MockupBbox>(
   const dy = pocketSampleInsetMockupY(frontMaskH);
   if (dy === 0) return bb;
   return { ...bb, y: bb.y + dy };
+}
+
+/** Grow/shrink a pocket sample bbox about its center (live Place path). */
+export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
+  bb: T,
+  scale = POCKET_WINDOW_SCALE,
+): T {
+  if (!(scale > 0) || scale === 1) return bb;
+  const cx = bb.x + bb.width / 2;
+  const cy = bb.y + bb.height / 2;
+  const w = bb.width * scale;
+  const h = bb.height * scale;
+  return { ...bb, x: cx - w / 2, y: cy - h / 2, width: w, height: h };
+}
+
+/**
+ * Sewn-fold Y inset, then (pullover `front_pocket` only) sample-bbox scale.
+ * Zip halves keep inset-only so 1.1115 does not change zip zoom.
+ */
+export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
+  bb: T,
+  frontMaskH: number,
+  panelKey?: HoodiePanelKey | null,
+): T {
+  const inset = applyPocketSourceInsetToBbox(bb, frontMaskH);
+  if (panelKey === "front_pocket") {
+    return applyPocketSourceScaleToBbox(inset);
+  }
+  return inset;
 }
 
 /** Mockup point → host-canvas px. The anisotropic map is only for points. */

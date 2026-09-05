@@ -82,7 +82,7 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   shouldExportPulloverPocketAsPrintifyPanel,
-  applyPocketSourceInsetToBbox,
+  applyPocketLiveSampleToBbox,
 } from "@shared/pulloverPocketPrintMerge";
 import {
   BODY_PRINT_BLEED_PANEL_KEYS,
@@ -1038,9 +1038,29 @@ function samplingBboxForLayer(
   );
   let sample = applyPanelPlacementBiasToBbox(bb, layerRect, bias);
   if (isKangarooPocketPanelKey(layer.panelKey)) {
-    sample = applyPocketSourceInsetToBbox(sample, layerRect.union.height);
+    sample = applyPocketLiveSampleToBbox(
+      sample,
+      layerRect.union.height,
+      layer.panelKey,
+    );
   }
   return sample;
+}
+
+/** True when the artwork slice overlaps the mural by more than an edge sliver. */
+export function artworkSliceSamplesMural(
+  slice: { x: number; y: number; width: number; height: number },
+  aw: number,
+  ah: number,
+): boolean {
+  if (!(slice.width > 0) || !(slice.height > 0) || !(aw > 0) || !(ah > 0)) {
+    return false;
+  }
+  const left = Math.max(slice.x, 0);
+  const top = Math.max(slice.y, 0);
+  const right = Math.min(slice.x + slice.width, aw);
+  const bottom = Math.min(slice.y + slice.height, ah);
+  return right - left > 1 && bottom - top > 1;
 }
 
 function synthesiseSeamAwareSourceRect(
@@ -1308,7 +1328,11 @@ export function renderHoodFlatPanel(
       options?.panelPlacementBias,
     );
     if (isKangarooPocketPanelKey(frontLayer.panelKey)) {
-      sampleBb = applyPocketSourceInsetToBbox(sampleBb, frontRect.union.height);
+      sampleBb = applyPocketLiveSampleToBbox(
+        sampleBb,
+        frontRect.union.height,
+        frontLayer.panelKey,
+      );
     }
     const rotForSlice = frontRect.rotationDeg ?? 0;
     const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
@@ -1327,8 +1351,11 @@ export function renderHoodFlatPanel(
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
   const rotDeg = frontRect.rotationDeg ?? 0;
-  const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
   const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
+  if (!artworkSliceSamplesMural(slice, bakedSize.width, bakedSize.height)) {
+    return canvas;
+  }
+  const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
   const bakedSlice = slice;
   // Bake through the same mesh topology the live preview uses, but with
   // targetPoints on a uniform flat grid so the entire Printify placeholder
@@ -2590,21 +2617,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       }
       if (synthSrc) {
         const rotDeg = layerRect?.rotationDeg ?? 0;
-        const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
         const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
-        drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
-          ...layer.mesh,
-          sourceRect: synthSrc,
-          // Keep calibration UV rotation only — Place rotation is baked
-          // into artSource so linked legs share one upright bitmap.
-          sourceRotation: layer.mesh.sourceRotation ?? 0,
-          sourceFlipX: meshSourceFlipXForPanel(
-            layer.panelKey,
-            layer.mesh.sourceFlipX,
-            params.sleevesMirrored,
-            params.legsMirrored,
-          ),
-        });
+        if (artworkSliceSamplesMural(synthSrc, bakedSize.width, bakedSize.height)) {
+          const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+          drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
+            ...layer.mesh,
+            sourceRect: synthSrc,
+            // Keep calibration UV rotation only — Place rotation is baked
+            // into artSource so linked legs share one upright bitmap.
+            sourceRotation: layer.mesh.sourceRotation ?? 0,
+            sourceFlipX: meshSourceFlipXForPanel(
+              layer.panelKey,
+              layer.mesh.sourceFlipX,
+              params.sleevesMirrored,
+              params.legsMirrored,
+            ),
+          });
+        }
       }
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw.
@@ -3744,7 +3773,11 @@ export function renderFlatPrintPanels(
             side,
             params.legsMirrored,
           );
-          if (slice.width > 0 && slice.height > 0) {
+          if (
+            slice.width > 0 &&
+            slice.height > 0 &&
+            artworkSliceSamplesMural(slice, bakedForSlice.width, bakedForSlice.height)
+          ) {
             const c = document.createElement("canvas");
             c.width = Math.max(1, Math.round(dims.width * outputScale));
             c.height = Math.max(1, Math.round(dims.height * outputScale));

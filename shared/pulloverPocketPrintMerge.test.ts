@@ -11,9 +11,12 @@ import {
   intersectRectWithCanvas,
   mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
+  applyPocketLiveSampleToBbox,
   applyPocketSourceInsetToBbox,
+  applyPocketSourceScaleToBbox,
   pocketSampleInsetMockupY,
   POCKET_WINDOW_OFFSET_Y,
+  POCKET_WINDOW_SCALE,
   POCKET_SOURCE_INSET_CANVAS_REF_H,
   pocketPlacementBiasIsNonzero,
   pocketPrintHostPanelKey,
@@ -400,5 +403,20 @@ describe("pocket source inset (sewn fold)", () => {
     );
     expect(shifted.y).toBeCloseTo(635.48 + dy, 5);
     expect(shifted.x).toBe(343.83);
+  });
+
+  it("scales the pullover pocket sample bbox about center and leaves zip inset-only", () => {
+    expect(POCKET_WINDOW_SCALE).toBe(1.1115);
+    const bb = { x: 100, y: 200, width: 200, height: 100 };
+    const scaled = applyPocketSourceScaleToBbox(bb);
+    expect(scaled.width).toBeCloseTo(200 * 1.1115, 5);
+    expect(scaled.height).toBeCloseTo(100 * 1.1115, 5);
+    expect(scaled.x + scaled.width / 2).toBeCloseTo(200, 5);
+    expect(scaled.y + scaled.height / 2).toBeCloseTo(250, 5);
+    const pullover = applyPocketLiveSampleToBbox(bb, 524.93, "front_pocket");
+    expect(pullover.width).toBeCloseTo(200 * 1.1115, 5);
+    const zip = applyPocketLiveSampleToBbox(bb, 524.93, "pocket_left");
+    expect(zip.width).toBe(200);
+    expect(zip.y).toBeCloseTo(bb.y + pocketSampleInsetMockupY(524.93), 5);
   });
 });
