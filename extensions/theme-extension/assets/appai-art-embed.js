@@ -2038,11 +2038,24 @@
       // resolved per event: some themes scroll an inner wrapper (Savor's
       // .page-wrapper), not <html>.
       var _resolveTouchScroller = function (dy) {
-        var pageEl = appaiGetPageScrollElement();
-        if (appaiCanScroll(pageEl, dy, 0)) return pageEl;
+        // Prefer document.scrollingElement. appaiGetPageScrollElement() falls
+        // through to #MainContent/main when html.clientHeight ~= scrollHeight
+        // (DevTools / height:100% themes) even though scrollingElement.scrollBy
+        // still moves the page (console-proven). Those nodes are overflow:visible
+        // — InstantScrollBy is a no-op and scrollTop stays 0.
+        // Measure leftover range with innerHeight, not el.clientHeight.
+        var viewport = document.scrollingElement || document.documentElement;
+        if (viewport) {
+          var viewH = window.innerHeight || viewport.clientHeight || 0;
+          var top = viewport.scrollTop || window.pageYOffset || 0;
+          var docH = viewport.scrollHeight || 0;
+          if ((dy > 0 && top + viewH < docH - 1) || (dy < 0 && top > 0)) {
+            return viewport;
+          }
+        }
         var wrapper = appaiScrollRootForEmbedIframe();
         if (wrapper && appaiCanScroll(wrapper, dy, 0)) return wrapper;
-        return pageEl;
+        return viewport;
       };
       if (data.type === 'ai-art-studio:touchscroll') {
         stopFling();
