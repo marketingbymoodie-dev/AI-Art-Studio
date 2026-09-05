@@ -51,6 +51,27 @@
     return el;
   }
 
+  /** True when the document itself is not the page scroller (Savor/Ritual). */
+  function appaiDocumentScrollLocked() {
+    try {
+      var oy = window.getComputedStyle(document.documentElement).overflowY;
+      return oy === 'hidden' || oy === 'clip';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** Genuine overflow scroller — never overflow:visible (#MainContent / main). */
+  function appaiIsOverflowScroller(el) {
+    if (!el) return false;
+    try {
+      var oy = window.getComputedStyle(el).overflowY;
+      return oy === 'auto' || oy === 'scroll' || oy === 'overlay';
+    } catch (e) {
+      return false;
+    }
+  }
+
   /** If the theme scrolls a wrapper around the embed (some Horizon layouts), find it. */
   function appaiScrollRootForEmbedIframe() {
     var iframe = document.querySelector('iframe[title="AI Art Design Studio"]');
@@ -2038,23 +2059,22 @@
       // resolved per event: some themes scroll an inner wrapper (Savor's
       // .page-wrapper), not <html>.
       var _resolveTouchScroller = function (dy) {
-        // Prefer document.scrollingElement. appaiGetPageScrollElement() falls
-        // through to #MainContent/main when html.clientHeight ~= scrollHeight
-        // (DevTools / height:100% themes) even though scrollingElement.scrollBy
-        // still moves the page (console-proven). Those nodes are overflow:visible
-        // — InstantScrollBy is a no-op and scrollTop stays 0.
-        // Measure leftover range with innerHeight, not el.clientHeight.
+        // Viewport for BOTH directions — do not gate +dy on
+        // top+viewH<docH (false on height:100% themes; scrollHeight ≈
+        // innerHeight even though scrollingElement.scrollBy moves the page).
+        // Wrapper only if html overflow is locked AND the ancestor is a
+        // real overflow:auto|scroll scroller (Savor .page-wrapper).
+        // Tall overflow:visible (#MainContent/main) must never win.
         var viewport = document.scrollingElement || document.documentElement;
-        if (viewport) {
-          var viewH = window.innerHeight || viewport.clientHeight || 0;
-          var top = viewport.scrollTop || window.pageYOffset || 0;
-          var docH = viewport.scrollHeight || 0;
-          if ((dy > 0 && top + viewH < docH - 1) || (dy < 0 && top > 0)) {
-            return viewport;
-          }
-        }
         var wrapper = appaiScrollRootForEmbedIframe();
-        if (wrapper && appaiCanScroll(wrapper, dy, 0)) return wrapper;
+        if (
+          appaiDocumentScrollLocked() &&
+          wrapper &&
+          appaiIsOverflowScroller(wrapper) &&
+          appaiCanScroll(wrapper, dy, 0)
+        ) {
+          return wrapper;
+        }
         return viewport;
       };
       if (data.type === 'ai-art-studio:touchscroll') {
