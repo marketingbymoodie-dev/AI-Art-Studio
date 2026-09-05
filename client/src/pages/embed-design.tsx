@@ -13627,6 +13627,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
+  // Bbox / handles only — empty canvas is a sibling (overlay root is
+  // pointer-events-none) so closest() misses it. All three: storefront AOP
+  // is design-rect-overlay, not data-appai-drag-surface.
+  const ARTWORK_DRAG_SURFACE_SELECTOR =
+    '[data-appai-drag-surface], [data-testid="design-rect-overlay"], [data-testid="flat-rect-overlay"]';
+  const touchStartedOnArtwork = (e: TouchEvent): boolean => {
+    const el = e.target instanceof Element ? e.target : (e.target as Node | null)?.parentElement;
+    return !!el?.closest(ARTWORK_DRAG_SURFACE_SELECTOR);
+  };
+
   // Mobile native scroll mode: minimal, passive boundary-only touch handoff.
   // The iframe scrolls its own content natively (no JS per frame). But iOS
   // Safari does NOT propagate iframe touch-scroll to the parent — once the
@@ -13642,6 +13652,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     let lastY = 0;
     let pendingDeltaY = 0;
     let rafId = 0;
+    let startedOnArtwork = false;
     const flush = () => {
       rafId = 0;
       const d = pendingDeltaY;
@@ -13652,6 +13663,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
+      startedOnArtwork = touchStartedOnArtwork(e);
       lastY = e.touches[0].clientY;
       pendingDeltaY = 0;
       if (rafId) {
@@ -13662,7 +13674,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const onTouchMove = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
-      if (showPatternStep) return;
+      if (startedOnArtwork) return;
       const y = e.touches[0].clientY;
       const dy = lastY - y; // positive = finger moving up = scroll-down direction
       lastY = y;
@@ -13685,7 +13697,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll, showPatternStep]);
+  }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   // Legacy (non-mobile-native) touch-scroll forwarding effect. Only attaches
   // when `mobileNativeScroll` is false — desktop or any context where the
@@ -13699,6 +13711,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     let touchStartX = 0;
     let touchStartY = 0;
     let touchLastY = 0;
+    let startedOnArtwork = false;
     let pageScrollGesture = false;
     let gestureBlocked = false;
     let pendingDeltaY = 0;
@@ -13750,6 +13763,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const onTouchStart = (e: TouchEvent) => {
       const touch = e.touches[0];
+      startedOnArtwork = touchStartedOnArtwork(e);
       touchStartX = touch?.clientX ?? 0;
       touchStartY = touch?.clientY ?? 0;
       touchLastY = touchStartY;
@@ -13766,7 +13780,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (showPatternStep) return;
+      if (startedOnArtwork) return;
       const currentY = e.touches[0]?.clientY ?? 0;
       const currentX = e.touches[0]?.clientX ?? touchStartX;
       const totalX = currentX - touchStartX;
@@ -13827,7 +13841,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       document.removeEventListener('touchend', onTouchEnd);
       document.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [isEmbedded, isStorefront, showPatternStep, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   // Counteract Radix UI's body scroll lock in iframe context.
   // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when
