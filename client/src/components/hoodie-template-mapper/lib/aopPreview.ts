@@ -69,7 +69,6 @@ import {
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   isKangarooPocketPanelKey,
-  isPulloverHoodieBlueprint,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   resolvePrintFileLayout,
@@ -1199,84 +1198,6 @@ export function buildFlatMeshTargetPoints(mesh: MeshGrid, flatW: number, flatH: 
 }
 
 /**
- * Dest-space V (0 = hood AABB top, 1 = bottom) where hood artV meets
- * the front panel's top sample. Clear dest below this — do not shrink
- * the artwork slice. Null = no clip.
- */
-export function pulloverHoodNeckDestClipT(
-  hoodMaskBb: Aabb,
-  hoodRect: DesignRectInfo,
-  frontMaskTopY: number,
-  frontRect: DesignRectInfo,
-): number | null {
-  const hoodH = hoodRect.effective.height;
-  const frontH = frontRect.effective.height;
-  if (!(hoodH > 0) || !(frontH > 0) || !(hoodMaskBb.height > 0)) return null;
-  const vFrontTop = (frontMaskTopY - frontRect.effective.y) / frontH;
-  const destT =
-    (vFrontTop * hoodH - hoodMaskBb.y + hoodRect.effective.y) / hoodMaskBb.height;
-  if (!Number.isFinite(destT)) return null;
-  if (destT >= 1) return null;
-  if (destT <= 0) return 0;
-  return destT;
-}
-
-function isPulloverHoodieTemplate(template: HoodieTemplate): boolean {
-  return (
-    isPulloverHoodieBlueprint(template.blueprintId) ||
-    template.hoodieType === "pullover-hoodie-aop"
-  );
-}
-
-function pulloverFrontMaskTopY(template: HoodieTemplate): number | null {
-  let top: number | null = null;
-  for (const layer of template.views.front?.layers ?? []) {
-    if (layer.panelKey !== "front" || layer.isExclusion || !layer.visible) continue;
-    const bb = aabbOf(svgPathToAnchors(layer.maskPath));
-    if (bb) top = top == null ? bb.y : Math.min(top, bb.y);
-  }
-  return top;
-}
-
-export function resolvePulloverHoodNeckDestClipT(
-  template: HoodieTemplate,
-  hoodLayer: MaskLayer,
-  hoodRect: DesignRectInfo,
-  frontBodyRect: DesignRectInfo | null | undefined,
-): number | null {
-  if (!isPulloverHoodieTemplate(template)) return null;
-  const key = hoodLayer.panelKey;
-  if (key !== "left_hood" && key !== "right_hood") return null;
-  if (!frontBodyRect) return null;
-  const hoodBb = aabbOf(svgPathToAnchors(hoodLayer.maskPath));
-  const frontTop = pulloverFrontMaskTopY(template);
-  if (!hoodBb || frontTop == null) return null;
-  return pulloverHoodNeckDestClipT(hoodBb, hoodRect, frontTop, frontBodyRect);
-}
-
-function applyPulloverHoodPreviewDestClip(
-  ctx: CanvasRenderingContext2D,
-  template: HoodieTemplate,
-  hoodLayer: MaskLayer,
-  hoodMaskBb: Aabb | null,
-  hoodRect: DesignRectInfo | null,
-  frontBodyRect: DesignRectInfo | null,
-): void {
-  if (!hoodMaskBb || !hoodRect) return;
-  const destT = resolvePulloverHoodNeckDestClipT(
-    template,
-    hoodLayer,
-    hoodRect,
-    frontBodyRect,
-  );
-  if (destT == null) return;
-  const yJoin = hoodMaskBb.y + destT * hoodMaskBb.height;
-  ctx.beginPath();
-  ctx.rect(-1e6, -1e6, 2e6, yJoin + 1e6);
-  ctx.clip();
-}
-
-/**
  * Render the flat printable panel for one front-view layer with a
  * mesh, given the user's artwork + the front-view group rect that
  * controls where the artwork lands on the union of single-sheet
@@ -1327,11 +1248,6 @@ export function renderHoodFlatPanel(
     sleevesMirrored?: boolean;
     /** Mirror left leg relative to right (leggings). */
     legsMirrored?: boolean;
-    /**
-     * Dest-space clip (0–1 from panel top). Pixels below this stay
-     * transparent so the composite bg shows — pullover hood neck join.
-     */
-    destClipT?: number | null;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -1430,11 +1346,6 @@ export function renderHoodFlatPanel(
       options?.legsMirrored,
     ),
   });
-  const destClipT = options?.destClipT;
-  if (typeof destClipT === "number" && destClipT < 1 && flatH > 0) {
-    const y0 = Math.max(0, Math.min(flatH, Math.round(destClipT * flatH)));
-    if (y0 < flatH) ctx.clearRect(0, y0, flatW, flatH - y0);
-  }
   return canvas;
 }
 
@@ -2364,21 +2275,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       : panelMutedByCustomer ||
         (mode === "single-sheet" && !groupEnabled);
 
-    if (
-      mode === "single-sheet" &&
-      layerRect &&
-      (layer.panelKey === "left_hood" || layer.panelKey === "right_hood")
-    ) {
-      applyPulloverHoodPreviewDestClip(
-        pctx,
-        template,
-        layer,
-        layerBb,
-        layerRect,
-        getFrontRects().get("front-body") ?? null,
-      );
-    }
-
     // Background colour fill — sits UNDER the artwork inside each
     // panel's polygon. Explicit `backgroundColor` fills every panel;
     // overlay panels (pocket, cuffs, waistband) auto-fill white when
@@ -2537,12 +2433,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           fallbackSize,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
-          destClipT: resolvePulloverHoodNeckDestClipT(
-            template,
-            frontLayer,
-            frontRect,
-            getFrontRects().get("front-body") ?? null,
-          ),
         });
         if (flat) {
           // Like hood: warp the FULL flat through the back mesh. Mesh UVs
@@ -3825,12 +3715,6 @@ export function renderFlatPrintPanels(
           panelPlacementBias: panelBias,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
-          destClipT: resolvePulloverHoodNeckDestClipT(
-            template,
-            bakeLayer,
-            bakeRect,
-            rectsByView.get("front")?.get("front-body") ?? null,
-          ),
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the

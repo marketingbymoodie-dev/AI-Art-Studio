@@ -29,7 +29,6 @@ import {
   renderAopPreview,
   renderAopPreviewToCanvas,
   renderHoodFlatPanel,
-  resolvePulloverHoodNeckDestClipT,
   resolveAopPreviewCanvasBounds,
   type AopPreviewMode,
   type ArtworkPlacement,
@@ -1275,12 +1274,6 @@ function FlatPanelThumbnails({
       const flat = renderHoodFlatPanel(layer, artwork, rect, {
         fallbackSize,
         panelPlacementBias: panelBias,
-        destClipT: resolvePulloverHoodNeckDestClipT(
-          template,
-          layer,
-          rect,
-          frontRects.get("front-body") ?? null,
-        ),
       });
       out.push({
         id: layer.id,

@@ -6,7 +6,6 @@ import {
   buildFlatMeshTargetPoints,
   artworkSourceRectForPanel,
   computeGroupRects,
-  pulloverHoodNeckDestClipT,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
   meshSourceFlipXForPanel,
@@ -375,50 +374,6 @@ describe("shouldComposePillowWrapPrintFile", () => {
         { position: "front", width: 8000, height: 3000 },
       ]),
     ).toBe(true);
-  });
-});
-
-describe("pulloverHoodNeckDestClipT", () => {
-  const hoodBb = { x: 400.59, y: 98.13, width: 207.1, height: 266.75 };
-  const hoodRect: DesignRectInfo = {
-    union: hoodBb,
-    base: hoodBb,
-    effective: { x: 400.59, y: 91.77625, width: 207.1, height: 397.4575 },
-    anchor: { x: 504, y: 231.5 },
-    hasSeamPair: true,
-    anchorIsSeam: true,
-    seamAllowance: 0,
-    groupId: "hood",
-    enabled: true,
-    rotationDeg: 0,
-  };
-  const frontRect: DesignRectInfo = {
-    union: { x: 292.28, y: 309.86, width: 428.35, height: 524.93 },
-    base: { x: 292.28, y: 309.86, width: 428.35, height: 524.93 },
-    effective: { x: 292.28, y: 23.10975, width: 428.35, height: 551.1765 },
-    anchor: { x: 506, y: 572.3 },
-    hasSeamPair: false,
-    anchorIsSeam: false,
-    seamAllowance: 0,
-    groupId: "front-body",
-    enabled: true,
-    rotationDeg: 0,
-  };
-
-  it("clips dest below the front-top artV (does not restretch)", () => {
-    const destT = pulloverHoodNeckDestClipT(hoodBb, hoodRect, 309.86, frontRect);
-    expect(destT).not.toBeNull();
-    expect(destT!).toBeGreaterThan(0);
-    expect(destT!).toBeLessThan(1);
-    expect(destT!).toBeCloseTo(0.751, 2);
-  });
-
-  it("returns null when the front-top already sits at or past the hood bottom", () => {
-    const far = {
-      ...frontRect,
-      effective: { ...frontRect.effective, y: -400 },
-    };
-    expect(pulloverHoodNeckDestClipT(hoodBb, hoodRect, 309.86, far)).toBeNull();
   });
 });
 
