@@ -472,6 +472,10 @@ html[data-appai-embed][data-appai-mobile-native-scroll] body {
   min-height: 0;
 }
 
+html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-pan-x-root] {
+  touch-action: pan-x;
+}
+
 html[data-appai-embed][data-appai-mobile-native-scroll]::-webkit-scrollbar,
 html[data-appai-embed][data-appai-mobile-native-scroll] body::-webkit-scrollbar {
   width: 0;

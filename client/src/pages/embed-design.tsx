@@ -15022,6 +15022,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           ? "bg-transparent"
           : "bg-background min-h-screen"
       }`}
+      {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
       {reuseBusy && (
         <div
