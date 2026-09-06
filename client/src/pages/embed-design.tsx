@@ -5481,7 +5481,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // seeds the customer's last placement / mode / link state so they
       // resume exactly where they left off.
       if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
-        setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
+        setHoodieAopPlacerState({
+          ...(ds.hoodieAopPlacerState as HoodieAopPlacerState),
+          // Same URL the AOP fallback / placer key uses — otherwise first
+          // mount drops placements and reseeds template defaults.
+          artworkUrl: absUrl,
+        });
+      }
+      if (useAopCustomizer && absUrl) {
+        setAopPendingMotifUrl(absUrl);
       }
       // Refresh / Printify rebuild is keyed on lastAopPanelUrlsRef. Apply
       // persists aopPrintPanelUrls; restore them here so the gate is winnable.
@@ -5809,9 +5817,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         const hasPrintFiles = (lastAopPanelUrlsRef.current?.length ?? 0) > 0;
         const printifyZoomReady = !useAopCustomizer && !usesFlatOnTheFlyPreview;
         const flatStateReady = !!(ds?.flatPlacerState && typeof ds.flatPlacerState === "object");
+        const aopResumeReady =
+          useAopCustomizer &&
+          hasPrintFiles &&
+          !!(ds?.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === "object");
         emitTesterDesignStatus({
           jobId: designId,
-          aopPanels: hasPrintFiles || printifyZoomReady || flatStateReady ? "saved" : "none",
+          aopPanels:
+            hasPrintFiles || printifyZoomReady || flatStateReady || aopResumeReady
+              ? "saved"
+              : "none",
         });
       }
     }
@@ -7599,7 +7614,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (showPatternStep || aopEditorDismissedRef.current) return;
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      // Saved-design restore sets hoodie state in this same commit cycle —
+      // don't wipe the restored mockup just because this closure is stale.
+      if (!hoodieAopPlacerState && !restoringSavedDesignRef.current) {
+        setAopPatternUrl(null);
+      }
       setShowPatternStep(true);
       return;
     }
@@ -10453,22 +10472,66 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     aopPersistKickAttemptedRef.current = false;
   }, [generatedDesign?.id]);
 
-  // Preview Studio: one cold-start kick only. Never loop after error / 429.
+  // Preview Studio: wait until the mesh placer can actually apply. A one-shot
+  // kick on the first showPatternStep frame returns false (template/artwork
+  // still loading) and used to leave "Syncing placement…" stuck forever.
   useEffect(() => {
     if (!isAdminTester || !useAopCustomizer || !showPatternStep) return;
-    if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
-    const status = testerDesignStatusRef.current.aopPanels;
-    if (!shouldKickAopPersist(status, aopPersistKickAttemptedRef.current)) return;
-    aopPersistKickAttemptedRef.current = true;
-    if (status === "none") {
-      emitTesterDesignStatus({ aopPanels: "saving" });
+    const jobId = savedJobIdRef.current;
+    if (!generatedDesign?.imageUrl || !jobId) return;
+
+    const hasRestoredPrintFiles = (lastAopPanelUrlsRef.current?.length ?? 0) > 0;
+    // Saved designs already have hosted print files. Don't force-apply on
+    // open — that raced the template load and stuck "Syncing placement…".
+    if (hasRestoredPrintFiles) {
+      aopPersistKickAttemptedRef.current = true;
+      emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+      return;
     }
-    void flushHoodieAopPlacer({ force: true }).catch((err) => {
-      console.warn("[AdminTester] AOP persist kick failed:", err);
-      const now = testerDesignStatusRef.current.aopPanels;
-      if (now === "saved" || now === "rateLimited" || now === "error") return;
-      emitTesterDesignStatus({ aopPanels: "error" });
-    });
+
+    if (!shouldKickAopPersist(testerDesignStatusRef.current.aopPanels, aopPersistKickAttemptedRef.current)) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < 40 && !cancelled; i++) {
+        if (!hoodieAopPlacerRef.current) {
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        const status = testerDesignStatusRef.current.aopPanels;
+        if (!shouldKickAopPersist(status, aopPersistKickAttemptedRef.current)) return;
+        aopPersistKickAttemptedRef.current = true;
+        if (status === "none" || status === "saving") {
+          emitTesterDesignStatus({ jobId, aopPanels: "saving" });
+        }
+        try {
+          const applied = await flushHoodieAopPlacer({ force: true });
+          if (cancelled) return;
+          if (applied) return;
+          // Placer mounted but artwork/template not ready — retry.
+          aopPersistKickAttemptedRef.current = false;
+        } catch (err) {
+          console.warn("[AdminTester] AOP persist kick failed:", err);
+          const now = testerDesignStatusRef.current.aopPanels;
+          if (now === "saved" || now === "rateLimited" || now === "error") return;
+          emitTesterDesignStatus({ aopPanels: "error" });
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (cancelled) return;
+      if (testerDesignStatusRef.current.aopPanels === "saving") {
+        emitTesterDesignStatus({
+          jobId,
+          aopPanels: hasRestoredPrintFiles ? "saved" : "error",
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     isAdminTester,
     useAopCustomizer,
@@ -17348,13 +17411,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
-                      // New artwork remounts the placer. Spreading a prior
-                      // placement makes HoodieAopPlacer treat it as a resume
-                      // and skip the persist that unlocks Send a Test Order.
-                      ...(aopArtworkUrlsMatch(
-                        hoodieAopPlacerState?.artworkUrl,
-                        aopPendingMotifUrl,
-                      )
+                      // Resume whenever we have saved placements — don't
+                      // require artwork URLs to match. Preview Studio load
+                      // used to drop offset/bg because job URL ≠ pending URL.
+                      ...((hoodieAopPlacerState?.placements ||
+                        hoodieAopPlacerState?.enabled ||
+                        aopArtworkUrlsMatch(
+                          hoodieAopPlacerState?.artworkUrl,
+                          aopPendingMotifUrl,
+                        ))
                         ? hoodieAopPlacerState
                         : {}),
                       // Always seed the latest AI-generated motif as the
@@ -17379,11 +17444,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     // Resume: skip one-shot initial apply (mockup already persisted).
                     // Fresh designs still apply once for the first cart image.
                     skipInitialAutoApply={
-                      !!hoodieAopPlacerState &&
-                      aopArtworkUrlsMatch(
-                        hoodieAopPlacerState.artworkUrl,
-                        aopPendingMotifUrl,
-                      )
+                      !!(
+                        hoodieAopPlacerState?.placements ||
+                        hoodieAopPlacerState?.enabled
+                      ) ||
+                      (!!hoodieAopPlacerState &&
+                        aopArtworkUrlsMatch(
+                          hoodieAopPlacerState.artworkUrl,
+                          aopPendingMotifUrl,
+                        ))
                     }
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
