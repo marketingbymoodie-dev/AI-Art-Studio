@@ -53,6 +53,10 @@
   var BTN_ID = 'appai-tray-launcher';
   var TRAY_ID = 'appai-customizer-tray';
   var OVERLAY_ID = 'appai-tray-overlay';
+  // Storefront mobile breakpoint (matches the theme's own ~750px cutoff).
+  var MOBILE_MAX_WIDTH = 749;
+  // How much of the peeked pill stays on-screen — just enough for the icon.
+  var PEEK_WIDTH_PX = 52;
 
   // ─── Settings ─────────────────────────────────────────────────────────
 
@@ -211,19 +215,30 @@
         'font-family:' + theme.buttonFontFamily + ';',
         'font-size:14.5px;font-weight:600;line-height:1;letter-spacing:0.01em;',
         'box-shadow:0 4px 16px rgba(0,0,0,0.22);',
-        'transition:transform 160ms ease,box-shadow 160ms ease,opacity 200ms ease,top 200ms ease;',
-        'opacity:0;transform:translateY(8px);',
+        // Horizontal (mobile peek, --appai-tray-tx) and vertical (fade-in /
+        // hover, --appai-tray-ty) offsets are independent CSS vars so JS
+        // never has to fight itself writing one `transform` shorthand for
+        // two unrelated states (see updatePillPeekState / buildLauncher).
+        'transition:transform 260ms cubic-bezier(0.4,0,0.2,1),box-shadow 160ms ease,opacity 200ms ease,top 200ms ease;',
+        'opacity:0;transform:translate(var(--appai-tray-tx,0px),var(--appai-tray-ty,8px));',
+        // Left-docked pill peeks by sliding left off-screen; for the icon
+        // (not the label) to stay in the visible sliver near the screen
+        // edge, it must be the trailing child there. Right-docked keeps the
+        // default order — its peek slides right, keeping the leading child
+        // (icon) visible instead.
+        (side === 'left' ? 'flex-direction:row-reverse;' : ''),
       '}',
-      '#' + BTN_ID + '.appai-visible{opacity:1;transform:translateY(0);}',
+      '#' + BTN_ID + '.appai-visible{opacity:1;}',
       // Hidden while a theme drawer/menu/dialog is open (see
       // startOverlaySuppression) — drawers cover the full viewport height on
       // mobile, so there is no "below the menu" to move to; fading out and
       // back (like chat widgets do) is the only placement that never fights
       // the theme's overlay.
-      '#' + BTN_ID + '.appai-suppressed{opacity:0 !important;pointer-events:none;transform:translateY(8px);}',
-      '#' + BTN_ID + ':hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,0.28);}',
-      '#' + BTN_ID + ':active{transform:translateY(0);}',
+      '#' + BTN_ID + '.appai-suppressed{opacity:0 !important;pointer-events:none;transform:translate(var(--appai-tray-tx,0px),8px) !important;}',
+      '#' + BTN_ID + ':hover{transform:translate(var(--appai-tray-tx,0px),-1px);box-shadow:0 6px 20px rgba(0,0,0,0.28);}',
+      '#' + BTN_ID + ':active{transform:translate(var(--appai-tray-tx,0px),0px);}',
       '#' + BTN_ID + ' svg{flex-shrink:0;}',
+      '#' + BTN_ID + ' .appai-tray-icon{display:inline-flex;align-items:center;flex-shrink:0;}',
       // Same shimmer treatment as the "Loading AI Art Studio" boot title,
       // recolored to sweep the theme's button text color.
       settings.shimmer ? [
@@ -236,6 +251,10 @@
           '-webkit-text-fill-color:transparent;color:transparent;',
           'animation:appai-tray-shimmer 2.4s linear infinite;',
         '}',
+        // The label's shimmer is off-screen while the pill is peeked on
+        // mobile — pulse the icon too so the visible sliver still invites a tap.
+        '@keyframes appai-tray-icon-pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}',
+        '#' + BTN_ID + ' .appai-tray-icon{animation:appai-tray-icon-pulse 2.2s ease-in-out infinite;}',
       ].join('') : '',
       '#' + OVERLAY_ID + '{',
         'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:2147483641;',
@@ -378,19 +397,74 @@
     btn.type = 'button';
     btn.setAttribute('aria-haspopup', 'dialog');
     btn.setAttribute('aria-label', settings.label + ' — open product customizer menu');
+    var iconSpan = document.createElement('span');
+    iconSpan.className = 'appai-tray-icon';
+    iconSpan.innerHTML = ICON_SPARK;
     var labelSpan = document.createElement('span');
     labelSpan.className = 'appai-tray-label';
     labelSpan.textContent = settings.label;
-    btn.innerHTML = ICON_SPARK;
+    btn.appendChild(iconSpan);
     btn.appendChild(labelSpan);
-    btn.addEventListener('click', openTray);
+    btn.addEventListener('click', onLauncherClick);
     document.body.appendChild(btn);
     startOffsetTracking(settings);
     startOverlaySuppression();
+    startPeekTracking();
     // Fade in after append so the transition runs.
     requestAnimationFrame(function () {
-      requestAnimationFrame(function () { btn.classList.add('appai-visible'); });
+      requestAnimationFrame(function () {
+        btn.style.setProperty('--appai-tray-ty', '0px');
+        btn.classList.add('appai-visible');
+      });
     });
+  }
+
+  // ─── Mobile docked peek (pill → icon-only; tap expands; tap again opens) ─
+  // Desktop is untouched: onLauncherClick opens the tray on the first click.
+
+  function isMobileViewport() {
+    try {
+      return window.matchMedia('(max-width:' + MOBILE_MAX_WIDTH + 'px)').matches;
+    } catch (_) {
+      return window.innerWidth <= MOBILE_MAX_WIDTH;
+    }
+  }
+
+  var _pillExpandedOnMobile = false;
+
+  function updatePillPeekState() {
+    var btn = document.getElementById(BTN_ID);
+    if (!btn || !_settings) return;
+    if (!isMobileViewport() || _pillExpandedOnMobile) {
+      btn.style.setProperty('--appai-tray-tx', '0px');
+      btn.classList.remove('appai-peeked');
+      return;
+    }
+    var side = _settings.position.indexOf('left') !== -1 ? 'left' : 'right';
+    var offset = side === 'left'
+      ? 'calc(-100% + ' + PEEK_WIDTH_PX + 'px)'
+      : 'calc(100% - ' + PEEK_WIDTH_PX + 'px)';
+    btn.style.setProperty('--appai-tray-tx', offset);
+    btn.classList.add('appai-peeked');
+  }
+
+  function startPeekTracking() {
+    updatePillPeekState();
+    window.addEventListener('resize', updatePillPeekState);
+  }
+
+  /**
+   * Mobile: pill starts peeked (icon only). First tap expands to the full
+   * pill (label visible); a second tap opens the tray. Desktop always opens
+   * on the first click — resizing past MOBILE_MAX_WIDTH drops the peek.
+   */
+  function onLauncherClick() {
+    if (isMobileViewport() && !_pillExpandedOnMobile) {
+      _pillExpandedOnMobile = true;
+      updatePillPeekState();
+      return;
+    }
+    openTray();
   }
 
   // ─── Vertical offset tracking ─────────────────────────────────────────
@@ -1284,6 +1358,9 @@
     if (tray) tray.classList.remove('appai-open');
     if (overlay) overlay.classList.remove('appai-open');
     document.body.style.overflow = '';
+    // Mobile: closing the tray returns the pill to its icon-only peek.
+    _pillExpandedOnMobile = false;
+    updatePillPeekState();
   }
 
   document.addEventListener('keydown', function (e) {

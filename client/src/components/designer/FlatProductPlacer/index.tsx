@@ -14,6 +14,7 @@ import {
 } from "@/components/designer/HoodieAopPlacer/extractPalette";
 import {
   FinePositionNudge,
+  FinePositionNudgeInline,
   mockupDeltaFromScreenNudge,
 } from "@/components/designer/placementNudge";
 import {
@@ -1641,6 +1642,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
           </div>
         )}
+        {/* Mobile: nudge under preview. Desktop: in controls column (below). */}
+        {!edgeWrapMode && viewEnabled && artworkImg && (
+          <FinePositionNudgeInline
+            className="relative z-10 border-t border-border bg-card px-3 py-2 lg:hidden"
+            onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
+          />
+        )}
       </div>
 
       {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
@@ -1685,8 +1693,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {/* Artwork enabled — skip for phone cases (single print side only). */}
-        {!edgeWrapMode && (
+        {/* Artwork enabled — skip for phone cases and any product with only
+            one print face (single side has nothing to toggle between). */}
+        {!edgeWrapMode && availableViews.length > 1 && (
           <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Print on {state.view === "front" ? "front" : "back"}
@@ -1906,7 +1915,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 tapestry weave under your design.
               </p>
             )}
-            <div className="mt-2">
+            <div className="mt-2 hidden lg:block">
               <FinePositionNudge
                 onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
                 hint="Drag the artwork box to move freely — it snaps to center within 10px. Tap the mockup backdrop to show or hide the bounding box. Right-click a nudge arrow for the opposite direction."
