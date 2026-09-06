@@ -1274,6 +1274,7 @@ function FlatPanelThumbnails({
       const flat = renderHoodFlatPanel(layer, artwork, rect, {
         fallbackSize,
         panelPlacementBias: panelBias,
+        blueprintId: template.blueprintId,
       });
       out.push({
         id: layer.id,

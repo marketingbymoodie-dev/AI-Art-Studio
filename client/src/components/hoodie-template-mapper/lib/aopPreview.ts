@@ -68,6 +68,7 @@ import {
   migrateFrontPocketOutOfTrimGroup,
   resolveFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
+  applyPulloverNeckSeamBleedToBbox,
   isKangarooPocketPanelKey,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
@@ -535,9 +536,9 @@ function panelFabricFillColor(
 ): string | null {
   if (backgroundColor) return backgroundColor;
   if (
-    skipArtwork &&
     layer.panelKey &&
-    OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey)
+    OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey) &&
+    (skipArtwork || isKangarooPocketPanelKey(layer.panelKey))
   ) {
     return DEFAULT_GARMENT_BACKGROUND;
   }
@@ -1045,7 +1046,7 @@ function samplingBboxForLayer(
       layerRect.effective,
     );
   }
-  return sample;
+  return applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId);
 }
 
 /**
@@ -1287,6 +1288,8 @@ export function renderHoodFlatPanel(
     sleevesMirrored?: boolean;
     /** Mirror left leg relative to right (leggings). */
     legsMirrored?: boolean;
+    /** Pullover neck sample expansion (print + preview callers pass this). */
+    blueprintId?: number | null;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -1354,6 +1357,11 @@ export function renderHoodFlatPanel(
         frontRect.effective,
       );
     }
+    sampleBb = applyPulloverNeckSeamBleedToBbox(
+      sampleBb,
+      frontLayer.panelKey,
+      options?.blueprintId,
+    );
     const rotForSlice = frontRect.rotationDeg ?? 0;
     const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
     slice = artworkSourceRectForPanel(
@@ -2480,6 +2488,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           fallbackSize,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
+          blueprintId: template.blueprintId,
         });
         if (flat) {
           // Like hood: warp the FULL flat through the back mesh. Mesh UVs
@@ -3766,6 +3775,7 @@ export function renderFlatPrintPanels(
           panelPlacementBias: panelBias,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
+          blueprintId: template.blueprintId,
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the
@@ -3783,7 +3793,7 @@ export function renderFlatPrintPanels(
                 : "none";
           const sampleBb = rect
             ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
-            : bb;
+            : applyPulloverNeckSeamBleedToBbox(bb, panelKey, template.blueprintId);
           const rotDeg = rect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
