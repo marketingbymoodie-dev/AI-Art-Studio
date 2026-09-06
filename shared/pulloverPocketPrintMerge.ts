@@ -241,9 +241,14 @@ export const POCKET_WINDOW_SCALE = 1.1115;
 export const POCKET_WINDOW_OFFSET_X = 0;
 /** Zip sewn-fold source inset (canvas px). Pullover no longer uses this. */
 export const POCKET_WINDOW_OFFSET_Y = -100;
-/** Printify pocket grey insets (Safe vs Print) as fractions of the unsewn AABB. */
+/**
+ * Printify pocket grey insets (Safe vs Print) as fractions of the unsewn AABB.
+ * Top is 0 — a Safe top inset left Print-minus-Safe as solid garment fill,
+ * so the stitch-line mural vanished under a white strip on the mockup.
+ * Dest uses the same numbers (not twice on dest).
+ */
 export const PULLOVER_POCKET_FINISHED_INSET = {
-  top: 0.0767,
+  top: 0,
   bottom: 0.0611,
   left: 0.0556,
   right: 0.0566,

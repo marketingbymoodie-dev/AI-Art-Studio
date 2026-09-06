@@ -2,6 +2,7 @@ import {
   isPulloverHoodieBlueprint,
   type HoodiePanelKey,
 } from "./hoodieTemplate";
+import { PULLOVER_POCKET_FINISHED_INSET } from "./pulloverPocketPrintMerge";
 
 /** Axis-aligned Safe rect as fractions of the Printify Print placeholder. */
 export type PrintSafeInsets = {
@@ -21,9 +22,9 @@ export type PrintSafeDestRect = {
 /**
  * Pullover bp 450 — Safe AABB vs Print placeholder (catalog SVG, 2026-09).
  * Dest-only. Do not reuse as source bleed or pocket sample inset.
- * Pocket numbers match `PULLOVER_POCKET_FINISHED_INSET` because both
- * come from the same Safe−Print read; dest applies them here, source
- * applies them in `applyFinishedPocketSampleToBbox` — not twice on dest.
+ * Pocket numbers match `PULLOVER_POCKET_FINISHED_INSET` (top is 0 so the
+ * stitch-line mural is captured). Dest applies them here, source in
+ * `applyFinishedPocketSampleToBbox` — not twice on dest.
  */
 const PULLOVER_PRINT_SAFE_INSETS: Partial<Record<HoodiePanelKey, PrintSafeInsets>> = {
   left_hood: { left: 0.1316, right: 0.0714, top: 0.0371, bottom: 0.0525 },
@@ -32,7 +33,12 @@ const PULLOVER_PRINT_SAFE_INSETS: Partial<Record<HoodiePanelKey, PrintSafeInsets
   back: { left: 0.0661, right: 0.0661, top: 0.0222, bottom: 0.0212 },
   left_sleeve: { left: 0.0782, right: 0.0782, top: 0.0238, bottom: 0.0232 },
   right_sleeve: { left: 0.0782, right: 0.0782, top: 0.024, bottom: 0.0232 },
-  front_pocket: { left: 0.0556, right: 0.0566, top: 0.0767, bottom: 0.0611 },
+  front_pocket: {
+    left: PULLOVER_POCKET_FINISHED_INSET.left,
+    right: PULLOVER_POCKET_FINISHED_INSET.right,
+    top: PULLOVER_POCKET_FINISHED_INSET.top,
+    bottom: PULLOVER_POCKET_FINISHED_INSET.bottom,
+  },
 };
 
 export function printSafeInsetsForPanel(
