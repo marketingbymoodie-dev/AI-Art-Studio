@@ -447,21 +447,14 @@ body[data-scroll-locked] {
 /* embed-design.tsx). Prevents overscroll-chaining to pull-to-refresh / glow */
 /* while JS forwarding handles the actual parent scroll.                      */
 /*                                                                            */
-/* Do not set touch-action here. We detect vertical page-scroll gestures in  */
-/* JS and call preventDefault only after intent is clear; CSS touch-action   */
-/* hints made Chrome commit some gestures natively while JS also forwarded.  */
-html[data-appai-embed],
-html[data-appai-embed] body {
-  overscroll-behavior-y: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* Desktop embed: parent iframe grows to content height — no inner scrollbar. */
+/* Desktop embed: JS wheel-forward owns vertical; contain blocks pull-to-refresh. */
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]),
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]) body {
   overflow: hidden;
   height: auto;
   min-height: 0;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Option A: same contract as desktop — parent owns scroll, iframe grows. */
@@ -470,10 +463,11 @@ html[data-appai-embed][data-appai-mobile-native-scroll] body {
   overflow: hidden;
   height: auto;
   min-height: 0;
+  overscroll-behavior-y: auto;
 }
 
 html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-pan-x-root] {
-  touch-action: pan-x;
+  touch-action: auto;
 }
 
 html[data-appai-embed][data-appai-mobile-native-scroll]::-webkit-scrollbar,

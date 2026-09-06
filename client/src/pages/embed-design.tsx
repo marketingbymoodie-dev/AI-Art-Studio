@@ -13691,8 +13691,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
-  // Full-gesture touch-scroll forwarder (path b). Option A: inverted gate —
-  // ON for mobile-native. preventDefault after commit; artwork latch first.
+  // Native-parent-scroll trial (Option A): iframe overflow:hidden has no
+  // range, so WebKit chains in-iframe vertical drags to the parent. Do not
+  // preventDefault or post touchscroll — InstantScrollBy was fighting that
+  // native scroll. Artwork latch and inner-scroller yield stay.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     if (!mobileNativeScroll) return;
@@ -13702,19 +13704,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     let touchStartY = 0;
     let touchLastY = 0;
     let startedOnArtwork = false;
-    let pageScrollGesture = false;
-    let gestureBlocked = false;
-    let pendingDeltaY = 0;
-    let rafId = 0;
-    // Track last few deltas to estimate fling velocity on touchend
-    const recentDeltas: number[] = [];
-
-    const canPageScrollInsideIframe = (deltaY: number): boolean => {
-      if (!mobileNativeScroll) return false;
-      const el = document.scrollingElement || document.documentElement;
-      const maxScrollTop = el.scrollHeight - el.clientHeight;
-      return deltaY > 0 ? el.scrollTop < maxScrollTop - 1 : el.scrollTop > 1;
-    };
 
     const canScrollNode = (node: Element, deltaY: number): boolean => {
       const style = window.getComputedStyle(node);
@@ -13737,35 +13726,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return false;
     };
 
-    const flushScroll = () => {
-      rafId = 0;
-      const deltaY = pendingDeltaY;
-      pendingDeltaY = 0;
-      if (Math.abs(deltaY) > 0.1) {
-        window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
-      }
-    };
-
-    const queueScroll = (deltaY: number) => {
-      pendingDeltaY += deltaY;
-      if (!rafId) rafId = window.requestAnimationFrame(flushScroll);
-    };
-
     const onTouchStart = (e: TouchEvent) => {
       const touch = e.touches[0];
       startedOnArtwork = touchStartedOnArtwork(e);
       touchStartX = touch?.clientX ?? 0;
       touchStartY = touch?.clientY ?? 0;
       touchLastY = touchStartY;
-      pageScrollGesture = false;
-      gestureBlocked = false;
-      pendingDeltaY = 0;
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
-        rafId = 0;
-      }
-      recentDeltas.length = 0;
-      // Cancel any ongoing fling when user touches again
       window.parent.postMessage({ type: 'ai-art-studio:touchcancel' }, '*');
     };
 
@@ -13775,61 +13741,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const currentX = e.touches[0]?.clientX ?? touchStartX;
       const totalX = currentX - touchStartX;
       const totalY = currentY - touchStartY;
-      const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
+      const deltaY = touchLastY - currentY;
       touchLastY = currentY;
       if (Math.abs(deltaY) < 0.5) return;
-      const target = e.target as Element | null;
-
-      if (!pageScrollGesture && !gestureBlocked) {
-        const absX = Math.abs(totalX);
-        const absY = Math.abs(totalY);
-        if (absX > PAGE_SCROLL_THRESHOLD_PX && absX > absY * HORIZONTAL_GESTURE_RATIO) {
-          gestureBlocked = true;
-          return;
-        }
-        if (absY < PAGE_SCROLL_THRESHOLD_PX) return;
-        if (isInsideScrollable(target, deltaY)) {
-          gestureBlocked = true;
-          return;
-        }
-        if (canPageScrollInsideIframe(deltaY)) {
-          gestureBlocked = true;
-          return;
-        }
-        pageScrollGesture = true;
+      const absX = Math.abs(totalX);
+      const absY = Math.abs(totalY);
+      if (absX > PAGE_SCROLL_THRESHOLD_PX && absX > absY * HORIZONTAL_GESTURE_RATIO) {
+        return;
       }
-
-      if (!pageScrollGesture || gestureBlocked) return;
-      e.preventDefault();
-      // Keep last 6 deltas for velocity estimation
-      recentDeltas.push(deltaY);
-      if (recentDeltas.length > 6) recentDeltas.shift();
-      queueScroll(deltaY);
-    };
-
-    const onTouchEnd = () => {
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
-        flushScroll();
+      if (absY < PAGE_SCROLL_THRESHOLD_PX) return;
+      if (isInsideScrollable(e.target as Element | null, deltaY)) {
+        return;
       }
-      if (!pageScrollGesture || recentDeltas.length < 2) return;
-      // Average of last few deltas = estimated velocity (px per touchmove frame)
-      const velocity = recentDeltas.reduce((a, b) => a + b, 0) / recentDeltas.length;
-      if (Math.abs(velocity) > 2) {
-        window.parent.postMessage({ type: 'ai-art-studio:touchfling', velocityY: velocity }, '*');
-      }
+      // Vertical page drag: no preventDefault, no touchscroll — native parent.
     };
 
     document.addEventListener('touchstart', onTouchStart, { passive: true });
-    document.addEventListener('touchmove', onTouchMove, { passive: false });
-    document.addEventListener('touchend', onTouchEnd, { passive: true });
-    document.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
     return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
-      document.removeEventListener('touchend', onTouchEnd);
-      document.removeEventListener('touchcancel', onTouchEnd);
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
