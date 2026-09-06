@@ -9,8 +9,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
-  Image, Loader2, Trash2, Wand2, Pencil, Sparkles, LayoutTemplate, Tag,
-  ExternalLink, Camera, Power, PowerOff, X,
+  Image, Loader2, Trash2, Wand2, Sparkles, LayoutTemplate, Tag,
+  ExternalLink, Camera, Power, PowerOff, X, FlaskConical,
 } from "lucide-react";
 import { normalizePreviewUrl } from "@shared/previewUrl";
 
@@ -199,6 +199,13 @@ export default function DesignsPage() {
     navigate(`/admin/design-studio?productTypeId=${productTypeId}`);
   };
 
+  const openSavedDesignInPreviewStudio = (design: SavedMerchantDesign) => {
+    if (!design.productTypeId) return;
+    navigate(
+      `/admin/create-product?productTypeId=${encodeURIComponent(design.productTypeId)}&loadDesignId=${encodeURIComponent(design.id)}`,
+    );
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-10">
@@ -206,7 +213,7 @@ export default function DesignsPage() {
           <div>
             <h1 className="text-2xl font-semibold">My Designs</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Create designs with your live customizer pages, then list your favorites as standalone products on your store.
+              Create designs with your live customizer pages, then reopen a saved design in Preview Studio to send a Printify test order, or list favorites as store products.
             </p>
           </div>
           {productsData && (
@@ -294,7 +301,18 @@ export default function DesignsPage() {
                 const isBusy = busyProductId === product?.id;
                 return (
                   <Card key={design.id} className="overflow-hidden" data-testid={`card-saved-design-${design.id}`}>
-                    <div className="aspect-[3/4] bg-muted relative overflow-hidden">
+                    <div
+                      className={`aspect-[3/4] bg-muted relative overflow-hidden${design.productTypeId ? " cursor-pointer" : ""}`}
+                      role={design.productTypeId ? "button" : undefined}
+                      tabIndex={design.productTypeId ? 0 : undefined}
+                      onClick={() => openSavedDesignInPreviewStudio(design)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openSavedDesignInPreviewStudio(design);
+                        }
+                      }}
+                    >
                       {design.mockupUrls?.[0] || design.artworkUrl ? (
                         <img
                           src={normalizePreviewUrl(design.mockupUrls?.[0] || design.artworkUrl) || ""}
@@ -331,11 +349,11 @@ export default function DesignsPage() {
                           size="sm"
                           className="flex-1"
                           disabled={!design.productTypeId}
-                          onClick={() => navigate(`/admin/design-studio?productTypeId=${design.productTypeId}&loadDesignId=${design.id}`)}
+                          onClick={() => openSavedDesignInPreviewStudio(design)}
                           data-testid={`button-continue-editing-${design.id}`}
                         >
-                          <Pencil className="h-3.5 w-3.5 mr-1" />
-                          Edit
+                          <FlaskConical className="h-3.5 w-3.5 mr-1" />
+                          Preview Studio
                         </Button>
                         <Button
                           variant="ghost"

@@ -120,23 +120,6 @@ export default function AdminCreateProduct() {
     }
   }, [openedFromCatalog, setLocation]);
 
-  const embeddedContext = useMemo(
-    () =>
-      selectedProductTypeId != null
-        ? {
-            mode: "admin-tester" as const,
-            productTypeId: selectedProductTypeId,
-            onTesterDesignStatus: handleTesterDesignStatus,
-            saveDesignRef,
-            flushDesignRef,
-            openEditorRef,
-            retryFailedUploadsRef,
-            onLeaveProduct: leaveProduct,
-          }
-        : undefined,
-    [selectedProductTypeId, handleTesterDesignStatus, leaveProduct],
-  );
-
   const {
     data: productTypesRaw,
     isLoading: productTypesLoading,
@@ -157,6 +140,32 @@ export default function AdminCreateProduct() {
   const { data: studioIdentity } = useQuery<DesignStudioIdentity>({
     queryKey: ["/api/appai/design-studio/identity"],
   });
+
+  const embeddedContext = useMemo(
+    () =>
+      selectedProductTypeId != null
+        ? {
+            mode: "admin-tester" as const,
+            productTypeId: selectedProductTypeId,
+            shop: studioIdentity?.shop,
+            customerId: studioIdentity?.customerId,
+            onTesterDesignStatus: handleTesterDesignStatus,
+            saveDesignRef,
+            flushDesignRef,
+            openEditorRef,
+            retryFailedUploadsRef,
+            onLeaveProduct: leaveProduct,
+          }
+        : undefined,
+    [
+      selectedProductTypeId,
+      handleTesterDesignStatus,
+      leaveProduct,
+      studioIdentity?.shop,
+      studioIdentity?.customerId,
+    ],
+  );
+
   const { data: planData } = useQuery<{
     planName: string | null;
     planStatus: string | null;
@@ -426,7 +435,8 @@ export default function AdminCreateProduct() {
             <p className="text-muted-foreground max-w-2xl">
               Try the AI art studio on your imported products before creating a Live Customizer Page.
               Generate artwork{canSaveDesigns ? ", optionally save to My Designs," : ""} and send a draft
-              Printify test order when you&apos;re ready. This does not put a page on your storefront — use
+              Printify test order when you&apos;re ready. Saved designs opened from My Designs land here
+              so you can resend them as test orders. This does not put a page on your storefront — use
               Customizer Pages → Create Page for that (supplier + suggested pricing required).
               Delete test orders in Printify if automatic fulfilment is enabled.
             </p>

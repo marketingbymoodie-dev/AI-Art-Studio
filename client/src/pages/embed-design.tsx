@@ -1653,6 +1653,10 @@ export interface EmbedDesignProps {
     | {
     mode: 'admin-tester';
     productTypeId: string | number;
+        /** Merchant shop ({handle}.myshopify.com) from design-studio identity — needed to reopen saved designs. */
+        shop?: string;
+        /** Merchant "My Designs" customer id — same identity used by the admin designs library. */
+        customerId?: string;
         /** Fired whenever the on-screen design's job id or panel-capture status changes,
          *  so the tester page can target test orders at the design on screen. */
         onTesterDesignStatus?: (status: TesterDesignStatus) => void;
@@ -1953,6 +1957,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     : detectRuntimeMode(searchParams);
 
   const isAdminTester = runtimeMode === 'admin-tester';
+  const [adminTesterShop, setAdminTesterShop] = useState<string | null>(() =>
+    embeddedContext?.mode === "admin-tester" && embeddedContext.shop
+      ? embeddedContext.shop
+      : null,
+  );
   // merchant-studio: merchant admin "My Designs" studio. Uses the same storefront endpoints
   // as real customers (see RuntimeMode doc above) — folded into isStorefront so config/
   // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
@@ -2578,6 +2587,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // merchant-studio runs in-process inside the admin app — there is no theme iframe or
     // referrer to inspect, so the shop domain is resolved server-side and passed explicitly.
     if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+    if (embeddedContext?.mode === 'admin-tester' && embeddedContext.shop) {
+      return embeddedContext.shop;
+    }
+    if (adminTesterShop) return adminTesterShop;
 
     // URL param is set by the theme embed (?shop=…). It is often the short handle only
     // (same as window.Shopify.shop), but /api/storefront/* must use *.myshopify.com
@@ -2608,6 +2621,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Get the myshopify.com domain specifically for API calls that require it
   const getMyShopifyDomain = (): string | null => {
     if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+    if (embeddedContext?.mode === 'admin-tester' && embeddedContext.shop) {
+      return embeddedContext.shop;
+    }
+    if (adminTesterShop) return adminTesterShop;
 
     const shopParam = searchParams.get("shop") || "";
     
@@ -2838,6 +2855,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const googleAuthNonceRef = useRef<string | null>(null);
   const googleAuthPopupRef = useRef<Window | null>(null);
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
+    if (embeddedContext?.mode === "admin-tester") {
+      return embeddedContext.customerId || null;
+    }
     try {
       return (
         localStorage.getItem("appai_customer_id") ||
@@ -2981,8 +3001,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // admin-tester: resolve merchant design-studio identity so manual "Save to My Designs"
   // can link generation_jobs rows the same way merchant-studio auto-save does.
+  // Parent Preview Studio may already pass shop + customerId from the same identity query.
   useEffect(() => {
     if (!isAdminTester) return;
+    if (embeddedContext?.mode === "admin-tester") {
+      if (embeddedContext.shop) {
+        adminTesterShopRef.current = embeddedContext.shop;
+        setAdminTesterShop(embeddedContext.shop);
+      }
+      if (embeddedContext.customerId) {
+        setStorefrontCustomerId(embeddedContext.customerId);
+      }
+    }
     safeFetch(`${API_BASE}/api/appai/design-studio/identity`, {
       credentials: 'include',
     })
@@ -2990,12 +3020,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       .then((data) => {
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
-        adminTesterShopRef.current = data.shop || null;
+        adminTesterShopRef.current = data.shop || adminTesterShopRef.current;
+        if (data.shop) setAdminTesterShop(data.shop);
         setGalleryLimit(data.savedLimit || 30);
         canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
       })
       .catch((err) => console.warn('[EmbedDesign] admin-tester identity bootstrap failed', err));
-  }, [isAdminTester]);
+  }, [isAdminTester, embeddedContext]);
 
   const completeStorefrontLogin = useCallback((data: {
     customerId: string;
@@ -5306,6 +5337,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (n.startsWith("/")) return buildAppUrl(n);
       return n;
     };
+    // Preview Studio: a restore must not look like a new placement edit (that
+    // would flip tester status back to "none" and block Send a Test Order).
+    suppressMockupStaleRef.current = true;
     // Prefer the job row artwork — never a stale designState.artworkUrl from another product.
     const preferredUrl =
       imageUrl ||
@@ -5372,13 +5406,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setFlatPlacerEditOpen(false);
     } else {
       setFlatPlacerEditOpen(Boolean((isAdminTester || openAppliedEditor) && usesFlatOnTheFlyPreview));
-    }
-    if (isAdminTester && designId) {
-      const designPt = String(topLevel.productTypeId || "").trim();
-      const currentPt = String(productTypeId || "").trim();
-      if (!designPt || !currentPt || designPt === currentPt) {
-        emitTesterDesignStatus({ jobId: designId, aopPanels: "none" });
-      }
     }
     // Immediately poll for a pre-existing shadow product for this design.
     // If the shadow product was created within the last 7 days, it will be returned
@@ -5774,6 +5801,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           console.warn("[LoadDesign] Auto background removal failed; using original artwork:", error);
         }
       })();
+    }
+    if (isAdminTester && designId) {
+      const designPt = String(topLevel.productTypeId || "").trim();
+      const currentPt = String(productTypeId || "").trim();
+      if (!designPt || !currentPt || designPt === currentPt) {
+        const hasPrintFiles = (lastAopPanelUrlsRef.current?.length ?? 0) > 0;
+        const printifyZoomReady = !useAopCustomizer && !usesFlatOnTheFlyPreview;
+        const flatStateReady = !!(ds?.flatPlacerState && typeof ds.flatPlacerState === "object");
+        emitTesterDesignStatus({
+          jobId: designId,
+          aopPanels: hasPrintFiles || printifyZoomReady || flatStateReady ? "saved" : "none",
+        });
+      }
     }
   };
 
@@ -14756,11 +14796,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return formatStorefrontCreditsSplit(creditBreakdown);
   })();
   useEffect(() => {
-    if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
+    const adminLibraryReady = isAdminTester && !!storefrontCustomerId && !!shopDomain;
+    if ((!isLoggedIn && !adminLibraryReady) || !storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
     })
       .then(r => r.json())
@@ -14771,7 +14813,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
-  }, [isLoggedIn, storefrontCustomerId, shopDomain]);
+  }, [isLoggedIn, isAdminTester, storefrontCustomerId, shopDomain]);
 
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
