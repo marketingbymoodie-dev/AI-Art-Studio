@@ -189,10 +189,10 @@ export function registerPlatformAopMapperRoutes(
                   resolve({
                     ok: false,
                     skipped: false,
-                    error: "auto-publish timed out (8s)",
-                    elapsedMs: 8000,
+                    error: "auto-publish timed out (15s)",
+                    elapsedMs: 15000,
                   }),
-                8000,
+                15000,
               ),
           ),
         ]);

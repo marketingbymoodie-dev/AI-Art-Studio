@@ -638,3 +638,42 @@ export function pocketOverlayRectOnFrontPanel(
     height: pocketBb.height * scaleY,
   };
 }
+
+/**
+ * Pullover kangaroo print = the front-print pixels sitting under the
+ * pocket mask. Source is that crop; dest is the pocket Safe rect (or the
+ * full pocket canvas when insets are omitted). Zip halves must not use this.
+ */
+export function pulloverPocketCropDrawRects(opts: {
+  frontBb: MockupBbox;
+  pocketBb: MockupBbox;
+  frontW: number;
+  frontH: number;
+  pocketW: number;
+  pocketH: number;
+  dest?: PulloverPocketOverlayRect | null;
+}): { source: PulloverPocketOverlayRect; dest: PulloverPocketOverlayRect } | null {
+  if (
+    !(opts.frontW > 0) ||
+    !(opts.frontH > 0) ||
+    !(opts.pocketW > 0) ||
+    !(opts.pocketH > 0)
+  ) {
+    return null;
+  }
+  const source = pocketOverlayRectOnFrontPanel(
+    opts.frontBb,
+    opts.pocketBb,
+    opts.frontW,
+    opts.frontH,
+  );
+  if (!(source.width > 1) || !(source.height > 1)) return null;
+  const dest = opts.dest ?? {
+    x: 0,
+    y: 0,
+    width: opts.pocketW,
+    height: opts.pocketH,
+  };
+  if (!(dest.width > 0) || !(dest.height > 0)) return null;
+  return { source, dest };
+}

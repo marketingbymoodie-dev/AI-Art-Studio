@@ -61,16 +61,22 @@ export type HostedPrintPanel = {
 export type PrintPanelInput = {
   position: string;
   dataUrl: string;
+  /** Extra reuse discriminator (e.g. garment background hex). */
+  reuseKey?: string;
 };
 
-/** Cheap stable fingerprint — length + sampled djb2. Not cryptographic. */
-export function hashPanelDataUrl(dataUrl: string): string {
+/**
+ * Cheap stable fingerprint. Hash every character — a 256-stride sample
+ * skipped most PNG bytes, so two same-size solid fills (navy vs teal
+ * sleeve) collided and the previous session's panel URL was reused.
+ */
+export function hashPanelDataUrl(dataUrl: string, reuseKey = ""): string {
+  const payload = reuseKey ? `${reuseKey}\0${dataUrl}` : dataUrl;
   let h = 5381;
-  const step = Math.max(1, Math.floor(dataUrl.length / 256));
-  for (let i = 0; i < dataUrl.length; i += step) {
-    h = ((h << 5) + h) ^ dataUrl.charCodeAt(i);
+  for (let i = 0; i < payload.length; i++) {
+    h = ((h << 5) + h) ^ payload.charCodeAt(i);
   }
-  return `${dataUrl.length}:${h >>> 0}`;
+  return `${payload.length}:${h >>> 0}`;
 }
 
 function isHostedHttpUrl(url: string): boolean {
@@ -130,13 +136,16 @@ export async function hostPrintPanelsBatched(opts: {
   previous?: HostedPrintPanel[] | null;
   host: (dataUrl: string) => Promise<string>;
   batchSize?: number;
+  /** Applied to every panel unless the panel sets its own reuseKey. */
+  reuseKey?: string;
 }): Promise<HostPrintPanelsResult> {
   const batchSize = Math.max(1, opts.batchSize ?? PRINT_PANEL_UPLOAD_BATCH_SIZE);
   const hosted: HostedPrintPanel[] = [];
   const toUpload: Array<PrintPanelInput & { hash: string }> = [];
+  const batchReuseKey = opts.reuseKey ?? "";
 
   for (const panel of opts.panels) {
-    const hash = hashPanelDataUrl(panel.dataUrl);
+    const hash = hashPanelDataUrl(panel.dataUrl, panel.reuseKey ?? batchReuseKey);
     const reused = findReusableHostedPanel(opts.previous, panel.position, hash);
     if (reused) {
       hosted.push({ position: panel.position, url: reused.url, hash });

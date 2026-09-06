@@ -34,6 +34,22 @@ describe("parseRetryAfterSec", () => {
   });
 });
 
+describe("hashPanelDataUrl", () => {
+  it("distinguishes same-length payloads that only differ in the middle", () => {
+    const a = `data:image/png;base64,${"A".repeat(8000)}TEAL${"B".repeat(8000)}`;
+    const b = `data:image/png;base64,${"A".repeat(8000)}NAVY${"B".repeat(8000)}`;
+    expect(a.length).toBe(b.length);
+    expect(hashPanelDataUrl(a)).not.toBe(hashPanelDataUrl(b));
+  });
+
+  it("treats a different reuseKey as a different panel", () => {
+    const dataUrl = "data:image/jpeg;base64,SOLIDFILL";
+    expect(hashPanelDataUrl(dataUrl, "#00B4C8")).not.toBe(
+      hashPanelDataUrl(dataUrl, "#1F2937"),
+    );
+  });
+});
+
 describe("hasReusableHostedPrintSet", () => {
   it("rejects restored URLs that have no content hash", () => {
     expect(
@@ -76,6 +92,25 @@ describe("hostPrintPanelsBatched", () => {
     expect(host).not.toHaveBeenCalled();
     expect(result.uploadsAttempted).toBe(0);
     expect(result.hosted).toHaveLength(4);
+  });
+
+  it("re-uploads when only the garment background reuseKey changed", async () => {
+    const previous = panels.map((p) => ({
+      position: p.position,
+      url: `https://cdn.example/${p.position}.jpg`,
+      hash: hashPanelDataUrl(p.dataUrl, "#1F2937"),
+    }));
+    const host = vi.fn(async () => "https://cdn.example/new-teal.jpg");
+    const result = await hostPrintPanelsBatched({
+      panels,
+      previous,
+      host,
+      reuseKey: "#00B4C8",
+    });
+    expect(host).toHaveBeenCalledTimes(4);
+    expect(result.hosted.every((h) => h.url === "https://cdn.example/new-teal.jpg")).toBe(
+      true,
+    );
   });
 
   it("uploads only the dirty panel", async () => {

@@ -65,7 +65,7 @@ import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedroppe
 import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
 import { API_BASE } from "@/lib/urlBase";
 import { safeFetch } from "@/lib/safeFetch";
-import { saveTemplate } from "@/components/hoodie-template-mapper/api";
+import { publishTemplateToSupabase, saveTemplate } from "@/components/hoodie-template-mapper/api";
 import {
   PocketSampleDragLayer,
   PulloverPlacementDefaultsPanel,
@@ -2267,7 +2267,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         return g;
       });
       const nextTemplate = { ...data.template, designGroups: nextGroups };
-      await saveTemplate(templateName, nextTemplate);
+      const saved = await saveTemplate(templateName, nextTemplate);
+      const publish = saved.publish;
+      if (!publish || (publish.ok === false && !publish.skipped)) {
+        await publishTemplateToSupabase(templateName);
+      }
       setData((prev) => (prev ? { ...prev, template: nextTemplate } : prev));
     } catch (e) {
       setDefaultsError(e instanceof Error ? e.message : "Failed to save defaults");

@@ -268,7 +268,6 @@ import {
   hasReusableHostedPrintSet,
   hostPrintPanelsBatched,
   isUploadRateLimitedError,
-  mergeHostedPrintPanels,
   parseRetryAfterSec,
   shouldKickAopPersist,
   type HostedPrintPanel,
@@ -11596,11 +11595,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               panels: panelsForSave,
               previous: lastHostedPrintPanelsRef.current,
               host: ensureHostedUrl,
+              reuseKey: result.state.backgroundColor ?? "",
             });
-            lastHostedPrintPanelsRef.current = mergeHostedPrintPanels(
-              lastHostedPrintPanelsRef.current,
-              hostedResult.hosted,
-            );
+            // Replace — never keep leftover sleeve/cuff/back URLs from the
+            // previous colour. Merge was how navy solids leaked into teal jobs.
+            lastHostedPrintPanelsRef.current = hostedResult.hosted;
+            if (hostedResult.hosted.length < positions.length && !hostedResult.rateLimited) {
+              throw new Error(
+                `Incomplete print panel upload (${hostedResult.hosted.length}/${positions.length})`,
+              );
+            }
             if (hostedResult.rateLimited) {
               const err = new UploadRateLimitedError(
                 hostedResult.rateLimited.retryAfterSec,
@@ -17716,11 +17720,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           panels: printPanels,
                           previous: lastHostedPrintPanelsRef.current,
                           host: ensureHostedUrl,
+                          reuseKey: nextPlacement?.bgColor ?? "",
                         });
-                        lastHostedPrintPanelsRef.current = mergeHostedPrintPanels(
-                          lastHostedPrintPanelsRef.current,
-                          hostedResult.hosted,
-                        );
+                        lastHostedPrintPanelsRef.current = hostedResult.hosted;
+                        if (
+                          hostedResult.hosted.length < printPanels.length &&
+                          !hostedResult.rateLimited
+                        ) {
+                          throw new Error(
+                            `Incomplete print panel upload (${hostedResult.hosted.length}/${printPanels.length})`,
+                          );
+                        }
                         if (hostedResult.rateLimited) {
                           const err = new UploadRateLimitedError(
                             hostedResult.rateLimited.retryAfterSec,
