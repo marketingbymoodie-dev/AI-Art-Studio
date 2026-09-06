@@ -21,6 +21,7 @@ export type AopPanelCaptureSource = {
   legsSynced?: unknown;
   legsMirrored?: unknown;
   wrapBackMode?: unknown;
+  pocketSample?: unknown;
 };
 
 export function canonicalAopPanelCaptureSignature(
@@ -47,6 +48,7 @@ export function canonicalAopPanelCaptureSignature(
     legsSynced: s.legsSynced ?? null,
     legsMirrored: s.legsMirrored ?? null,
     wrapBackMode: s.wrapBackMode ?? null,
+    pocketSample: s.pocketSample ?? null,
   });
 }
 
@@ -116,10 +118,15 @@ export function aopPanelCaptureSignaturesMatch(
   if (!currentRec) return false;
   // Legacy persist omitted trimEnabled. Fill from live so unchanged saved
   // hoodies can reuse; once we persist the new form, trim edits rebuild.
-  const storedForCompare =
-    !("trimEnabled" in storedRec) && currentRec.trimEnabled !== undefined
-      ? { ...storedRec, trimEnabled: currentRec.trimEnabled }
-      : storedRec;
+  let storedForCompare: AopPanelCaptureSource = storedRec;
+  // Legacy persist omitted trimEnabled / pocketSample. Fill from live so
+  // unchanged saved hoodies can reuse; once we persist the new form, edits rebuild.
+  if (!("trimEnabled" in storedRec) && currentRec.trimEnabled !== undefined) {
+    storedForCompare = { ...storedForCompare, trimEnabled: currentRec.trimEnabled };
+  }
+  if (!("pocketSample" in storedRec) && currentRec.pocketSample !== undefined) {
+    storedForCompare = { ...storedForCompare, pocketSample: currentRec.pocketSample };
+  }
   const a = canonicalAopPanelCaptureSignature(storedForCompare);
   const b = canonicalAopPanelCaptureSignature(currentRec);
   return !!a && !!b && a === b;

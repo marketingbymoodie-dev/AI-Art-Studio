@@ -260,8 +260,19 @@ import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 import {
   aopCanReuseStoredPanels,
+  aopPanelCaptureSignaturesMatch,
   canonicalAopPanelCaptureSignature,
 } from "@shared/aopPanelCaptureSignature";
+import {
+  UploadRateLimitedError,
+  hasReusableHostedPrintSet,
+  hostPrintPanelsBatched,
+  isUploadRateLimitedError,
+  mergeHostedPrintPanels,
+  parseRetryAfterSec,
+  shouldKickAopPersist,
+  type HostedPrintPanel,
+} from "@shared/storefrontDesignUpload";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
@@ -821,6 +832,17 @@ async function ensureHostedUrl(url: string): Promise<string> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataUrl: url, name: `design-${Date.now()}.png` }),
     });
+    if (uploadRes.status === 429) {
+      let body: unknown = null;
+      try {
+        body = await uploadRes.json();
+      } catch {
+        body = null;
+      }
+      throw new UploadRateLimitedError(
+        parseRetryAfterSec(uploadRes.headers.get("Retry-After"), body),
+      );
+    }
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
     const { objectPath } = await uploadRes.json();
     // The upload endpoint now returns an ABSOLUTE Supabase public URL when
@@ -1612,7 +1634,11 @@ export type TesterDesignStatus = {
    *   saved  — latest apply's panels are on the job
    *   error  — the latest capture failed (check console)
    */
-  aopPanels: 'none' | 'saving' | 'saved' | 'error';
+  aopPanels: 'none' | 'saving' | 'saved' | 'error' | 'rateLimited';
+  /** Seconds to wait after a 429 (also encoded in rateLimitedUntil). */
+  retryAfterSec?: number;
+  /** Epoch ms when a 429 cooldown ends. */
+  rateLimitedUntil?: number;
   /**
    * Flat apparel faces currently past the dashed print guide (trim warning).
    * Tester uses this to confirm before sending a clipped test order.
@@ -1636,6 +1662,8 @@ export interface EmbedDesignProps {
         flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Opens the AOP/flat placement editor (same UI as the live storefront). */
         openEditorRef?: React.MutableRefObject<(() => void) | null>;
+        /** Retry only failed / dirty print-panel uploads after a 429 cooldown. */
+        retryFailedUploadsRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Preview Studio: leave this product and return to the product list. */
         onLeaveProduct?: () => void;
       }
@@ -3424,6 +3452,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const lastAopArtworkUrlForDismissRef = useRef<string | null>(null);
   /** HoodieAopPlacer state last written at Apply / load — not remount seed-fill. */
   const lastPersistedAopCaptureStateRef = useRef<unknown>(null);
+  const lastHostedPrintPanelsRef = useRef<HostedPrintPanel[]>([]);
+  const aopPersistKickAttemptedRef = useRef(false);
   const onTesterDesignStatusRef = useRef<
     ((status: TesterDesignStatus) => void) | undefined
   >(undefined);
@@ -5434,6 +5464,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }));
       if (restoredPanels.length > 0) {
         lastAopPanelUrlsRef.current = restoredPanels;
+        lastHostedPrintPanelsRef.current = restoredPanels
+          .filter((p) => p.dataUrl.startsWith("http://") || p.dataUrl.startsWith("https://"))
+          .map((p) => ({ position: p.position, url: p.dataUrl, hash: "" }));
         setAopPrintPanelsReady(true);
         console.log(
           "[LoadDesign] Restored aopPrintPanelUrls",
@@ -10358,44 +10391,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [embeddedContext, openTesterPlacementEditor]);
 
   useEffect(() => {
+    if (embeddedContext?.mode !== "admin-tester") return;
+    const ref = embeddedContext.retryFailedUploadsRef;
+    if (!ref) return;
+    ref.current = async () => {
+      await flushHoodieAopPlacer({ force: true });
+    };
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, flushHoodieAopPlacer]);
+
+  useEffect(() => {
     if (!isAdminTester) return;
     emitTesterDesignStatus({
       placementEditorOpen: !!(showPatternStep || flatPlacerEditOpen),
     });
   }, [isAdminTester, showPatternStep, flatPlacerEditOpen, emitTesterDesignStatus]);
 
-  // Preview Studio: if the live AOP editor is open but persist never started
-  // (resume skip, late shop, etc.), kick one apply so the button can unlock.
+  useEffect(() => {
+    aopPersistKickAttemptedRef.current = false;
+  }, [generatedDesign?.id]);
+
+  // Preview Studio: one cold-start kick only. Never loop after error / 429.
   useEffect(() => {
     if (!isAdminTester || !useAopCustomizer || !showPatternStep) return;
     if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
-    const aopStatus = () => testerDesignStatusRef.current.aopPanels;
-    if (aopStatus() === "saved") return;
-    if (aopStatus() === "none") {
+    const status = testerDesignStatusRef.current.aopPanels;
+    if (!shouldKickAopPersist(status, aopPersistKickAttemptedRef.current)) return;
+    aopPersistKickAttemptedRef.current = true;
+    if (status === "none") {
       emitTesterDesignStatus({ aopPanels: "saving" });
     }
-    let cancelled = false;
-    void (async () => {
-      for (let i = 0; i < 20 && !cancelled; i++) {
-        await new Promise((r) => setTimeout(r, 400));
-        if (cancelled) return;
-        if (aopStatus() === "saved") return;
-        if (!hoodieAopPlacerRef.current) continue;
-        try {
-          await flushHoodieAopPlacer({ force: true });
-        } catch (err) {
-          if (!cancelled && aopStatus() !== "saved") {
-            console.warn("[AdminTester] AOP persist kick failed:", err);
-            emitTesterDesignStatus({ aopPanels: "error" });
-          }
-          return;
-        }
-        if (aopStatus() === "saved") return;
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void flushHoodieAopPlacer({ force: true }).catch((err) => {
+      console.warn("[AdminTester] AOP persist kick failed:", err);
+      const now = testerDesignStatusRef.current.aopPanels;
+      if (now === "saved" || now === "rateLimited" || now === "error") return;
+      emitTesterDesignStatus({ aopPanels: "error" });
+    });
   }, [
     isAdminTester,
     useAopCustomizer,
@@ -11383,9 +11416,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     result: HoodieAopPlacerApplyResult,
   ) => {
     setHoodieAopPlacerState(result.state);
-    lastPersistedAopCaptureStateRef.current = result.state;
-    storedAopPanelCaptureSignatureRef.current =
-      canonicalAopPanelCaptureSignature(result.state);
     setAopPlacementDirty(false);
     // NOTE: Do NOT call `setShowPatternStep(false)` here. Apply is deferred
     // (ATC / leave / Printers Mockup) — closing on every apply would boot
@@ -11410,6 +11440,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (!panelSaveShop) {
         console.warn("[HoodieAopApply] No shop for print-panel persist");
         if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+        if (isAdminTester) throw new Error("No shop for print-panel persist");
         return;
       }
       const panelJobId = savedJobIdRef.current;
@@ -11421,8 +11452,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         : (fullPrintPanels ?? result.renderPrintPanels());
       if (!panelsForSave?.length) {
         if (isAdminTester && !isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        if (isAdminTester) throw new Error("No print panels to persist");
         return;
       }
+      const positions = panelsForSave.map((p) => p.position);
+      const canSkipUploads =
+        aopPanelCaptureSignaturesMatch(
+          storedAopPanelCaptureSignatureRef.current,
+          result.state,
+        ) &&
+        hasReusableHostedPrintSet(lastHostedPrintPanelsRef.current, positions);
       if (isAdminTester) {
         emitTesterDesignStatus({ jobId: panelJobId, aopPanels: "saving" });
       }
@@ -11430,12 +11469,39 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         aopPanelPersistInFlightRef.current = true;
         try {
           if (isStale()) return;
-          const aopPrintPanelUrls = await Promise.all(
-            panelsForSave.map(async ({ position, dataUrl }) => ({
-              position,
-              url: await ensureHostedUrl(dataUrl),
-            })),
-          );
+          let aopPrintPanelUrls: Array<{ position: string; url: string }>;
+          if (canSkipUploads) {
+            aopPrintPanelUrls = lastHostedPrintPanelsRef.current
+              .filter((p) => positions.includes(p.position))
+              .map((p) => ({ position: p.position, url: p.url }));
+          } else {
+            const hostedResult = await hostPrintPanelsBatched({
+              panels: panelsForSave,
+              previous: lastHostedPrintPanelsRef.current,
+              host: ensureHostedUrl,
+            });
+            lastHostedPrintPanelsRef.current = mergeHostedPrintPanels(
+              lastHostedPrintPanelsRef.current,
+              hostedResult.hosted,
+            );
+            if (hostedResult.rateLimited) {
+              const err = new UploadRateLimitedError(
+                hostedResult.rateLimited.retryAfterSec,
+              );
+              if (!isStale()) {
+                emitTesterDesignStatus({
+                  aopPanels: "rateLimited",
+                  retryAfterSec: err.retryAfterSec,
+                  rateLimitedUntil: Date.now() + err.retryAfterSec * 1000,
+                });
+              }
+              throw err;
+            }
+            aopPrintPanelUrls = hostedResult.hosted.map((p) => ({
+              position: p.position,
+              url: p.url,
+            }));
+          }
           if (isStale()) return;
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
@@ -11453,10 +11519,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             panelJobId,
             aopPrintPanelUrls.map((p) => p.position).join(","),
           );
-          if (!isStale()) emitTesterDesignStatus({ aopPanels: "saved" });
+          if (!isStale()) {
+            emitTesterDesignStatus({
+              aopPanels: "saved",
+              retryAfterSec: undefined,
+              rateLimitedUntil: undefined,
+            });
+          }
         } catch (e) {
           console.error("[HoodieAopApply] Failed to persist print panels:", e);
-          if (!isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+          if (!isStale() && !isUploadRateLimitedError(e)) {
+            emitTesterDesignStatus({ aopPanels: "error" });
+          }
+          if (isAdminTester) throw e;
         } finally {
           aopPanelPersistInFlightRef.current = false;
         }
@@ -17508,12 +17583,32 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           : (options.printPanelUrls || options.panelUrls);
                         if (!printPanels?.length || isStale()) return;
 
-                        const aopPrintPanelUrls = await Promise.all(
-                          printPanels.map(async ({ position, dataUrl }) => ({
-                            position,
-                            url: await ensureHostedUrl(dataUrl),
-                          }))
+                        const hostedResult = await hostPrintPanelsBatched({
+                          panels: printPanels,
+                          previous: lastHostedPrintPanelsRef.current,
+                          host: ensureHostedUrl,
+                        });
+                        lastHostedPrintPanelsRef.current = mergeHostedPrintPanels(
+                          lastHostedPrintPanelsRef.current,
+                          hostedResult.hosted,
                         );
+                        if (hostedResult.rateLimited) {
+                          const err = new UploadRateLimitedError(
+                            hostedResult.rateLimited.retryAfterSec,
+                          );
+                          if (!isStale()) {
+                            emitTesterDesignStatus({
+                              aopPanels: "rateLimited",
+                              retryAfterSec: err.retryAfterSec,
+                              rateLimitedUntil: Date.now() + err.retryAfterSec * 1000,
+                            });
+                          }
+                          throw err;
+                        }
+                        const aopPrintPanelUrls = hostedResult.hosted.map((p) => ({
+                          position: p.position,
+                          url: p.url,
+                        }));
                         if (isStale()) return;
 
                         await safeFetch(`${API_BASE}/api/storefront/save-state`, {
@@ -17533,7 +17628,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
                       } catch (e) {
                         console.error("[AOP] Failed to persist print panel URLs:", e);
-                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
+                        if (!isStale() && !isUploadRateLimitedError(e)) {
+                          emitTesterDesignStatus({ aopPanels: 'error' });
+                        }
                       }
                     })();
                   }

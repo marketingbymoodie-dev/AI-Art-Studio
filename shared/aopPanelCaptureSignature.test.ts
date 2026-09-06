@@ -54,6 +54,20 @@ describe("canonicalAopPanelCaptureSignature", () => {
     expect(aopPanelCaptureSignaturesMatch(legacy, baseState)).toBe(true);
   });
 
+  it("does not match when pocketSample changed", () => {
+    const withPocket = {
+      ...baseState,
+      pocketSample: { offsetX: 0, offsetY: 0, scale: 1 },
+    };
+    const persisted = canonicalAopPanelCaptureSignature(withPocket);
+    expect(
+      aopPanelCaptureSignaturesMatch(persisted, {
+        ...withPocket,
+        pocketSample: { offsetX: 4, offsetY: -2, scale: 1.1 },
+      }),
+    ).toBe(false);
+  });
+
   it("does not match when placement changed", () => {
     const persisted = canonicalAopPanelCaptureSignature(baseState);
     const moved = {

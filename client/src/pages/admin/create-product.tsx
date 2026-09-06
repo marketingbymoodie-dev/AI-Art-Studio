@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -76,15 +76,19 @@ export default function AdminCreateProduct() {
   /** Flushes pending flat placement / zoom before a test order. */
   const flushDesignRef = useRef<(() => Promise<void>) | null>(null);
   const openEditorRef = useRef<(() => void) | null>(null);
+  const retryFailedUploadsRef = useRef<(() => Promise<void>) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
   const [placementEditorOpen, setPlacementEditorOpen] = useState(false);
   const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number | undefined>();
+  const [retryWaitSec, setRetryWaitSec] = useState(0);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
     setTesterPanelStatus(status.aopPanels);
     setPlacementEditorOpen(!!status.placementEditorOpen);
+    setRateLimitedUntil(status.rateLimitedUntil);
   }, []);
 
   const leaveProduct = useCallback(() => {
@@ -95,6 +99,8 @@ export default function AdminCreateProduct() {
     };
     setTesterHasDesign(false);
     setTesterPanelStatus("none");
+    setRateLimitedUntil(undefined);
+    setRetryWaitSec(0);
     setPlacementEditorOpen(false);
     setClipConfirmOpen(false);
     try {
@@ -124,6 +130,7 @@ export default function AdminCreateProduct() {
             saveDesignRef,
             flushDesignRef,
             openEditorRef,
+            retryFailedUploadsRef,
             onLeaveProduct: leaveProduct,
           }
         : undefined,
@@ -188,9 +195,13 @@ export default function AdminCreateProduct() {
       }
       // AOP panels and flat Apply both report aopPanels saved/error. Do not send
       // a test order until the on-screen design has been persisted for Printify.
+      if (testerStatusRef.current.aopPanels === "rateLimited") {
+        const wait = testerStatusRef.current.retryAfterSec ?? 60;
+        throw new Error(`Try again in ${wait} seconds`);
+      }
       if (testerStatusRef.current.aopPanels === "error") {
         throw new Error(
-          "Last print-file sync failed — nudge the artwork once, wait until the button says Send a Test Order, then try again.",
+          "Last print-file sync failed — use Retry failed uploads after the wait, not a full re-place.",
         );
       }
       if (testerStatusRef.current.aopPanels !== "saved") {
@@ -238,12 +249,21 @@ export default function AdminCreateProduct() {
   const requestPlaceOrTestOrder = useCallback(() => {
     const needsOpen =
       testerPanelStatus === "none" && testerHasDesign && !placementEditorOpen;
-    if (needsOpen || testerPanelStatus === "error") {
+    if (needsOpen) {
       openEditorRef.current?.();
       return;
     }
+    if (testerPanelStatus === "rateLimited") {
+      if (rateLimitedUntil && Date.now() < rateLimitedUntil) return;
+      void retryFailedUploadsRef.current?.();
+      return;
+    }
+    if (testerPanelStatus === "error") {
+      void retryFailedUploadsRef.current?.();
+      return;
+    }
     requestTestOrder();
-  }, [testerPanelStatus, testerHasDesign, placementEditorOpen, requestTestOrder]);
+  }, [testerPanelStatus, testerHasDesign, placementEditorOpen, requestTestOrder, rateLimitedUntil]);
 
   const saveDesignMutation = useMutation({
     mutationFn: async () => {
@@ -277,7 +297,22 @@ export default function AdminCreateProduct() {
     },
   });
 
+  useEffect(() => {
+    if (testerPanelStatus !== "rateLimited" || !rateLimitedUntil) {
+      setRetryWaitSec(0);
+      return;
+    }
+    const tick = () => {
+      setRetryWaitSec(Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000)));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [testerPanelStatus, rateLimitedUntil]);
+
   const syncingPrintFiles = testerPanelStatus === "saving";
+  const rateLimitedWaiting =
+    testerPanelStatus === "rateLimited" && retryWaitSec > 0;
   const testerBusy =
     testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
   const needsPlacement =
@@ -288,8 +323,10 @@ export default function AdminCreateProduct() {
       ? "Syncing placement…"
       : needsPlacement
         ? "Open placement editor"
-        : testerPanelStatus === "error"
-          ? "Retry placement"
+        : rateLimitedWaiting
+          ? `Try again in ${retryWaitSec} seconds`
+          : testerPanelStatus === "rateLimited" || testerPanelStatus === "error"
+            ? "Retry failed uploads"
           : testerHasDesign
             ? "Send a Test Order to Printify"
             : "Generate artwork first";
@@ -325,6 +362,7 @@ export default function AdminCreateProduct() {
           disabled={
             testOrderMutation.isPending ||
             syncingPrintFiles ||
+            rateLimitedWaiting ||
             (testerPanelStatus === "none" && !testerHasDesign)
           }
           data-testid="button-send-test-order"
@@ -347,9 +385,16 @@ export default function AdminCreateProduct() {
           Same editor as the live store — place the artwork, then Send a Test Order unlocks.
         </p>
       ) : null}
+      {testerPanelStatus === "rateLimited" ? (
+        <p className="text-xs text-destructive" data-testid="text-design-rate-limited">
+          {rateLimitedWaiting
+            ? `Upload rate-limited. Try again in ${retryWaitSec} seconds.`
+            : "Cooldown over. Retry failed uploads — this will not re-send unchanged panels."}
+        </p>
+      ) : null}
       {testerPanelStatus === "error" ? (
         <p className="text-xs text-destructive" data-testid="text-design-save-error">
-          Print file sync failed. Move or scale the artwork once to retry.
+          Print file sync failed. Retry failed uploads — do not re-place to force a full burst.
         </p>
       ) : null}
       {testerPanelStatus === "saved" && testerHasDesign ? (
