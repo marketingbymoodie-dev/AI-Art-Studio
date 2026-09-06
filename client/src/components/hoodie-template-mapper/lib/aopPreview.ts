@@ -84,7 +84,6 @@ import {
 import {
   shouldExportPulloverPocketAsPrintifyPanel,
   applyPulloverPocketSampleWindow,
-  pulloverPocketCropDrawRects,
 } from "@shared/pulloverPocketPrintMerge";
 import {
   printSafeDestRect,
@@ -3254,84 +3253,16 @@ function solidPanelCanvas(
 }
 
 /**
- * Pullover kangaroo pocket — mirror zip hoodie: keep `front_pocket` as its own
- * Printify panel upload. Live bp 450 placeholders include a pocket slot; when
- * we omit it the mockup server fills that slot with solid bgColor (blank pocket).
- * When pockets are off, drop the panel so the fill stays garment colour.
+ * Pullover kangaroo pocket — keep `front_pocket` as its own Printify upload.
+ * Print uses the same mesh bake as Preview Studio (front-body placement +
+ * pocket sample-window). Do not replace that canvas with a mockup-AABB crop
+ * of the front print — that ignored pocket X/Y/Scale and shrank the art.
  */
-function panelMaskAabbFromTemplate(
-  template: HoodieTemplate,
-  panelKey: HoodiePanelKey,
-): Aabb | null {
-  for (const view of ["front", "back"] as HoodieView[]) {
-    for (const layer of template.views[view]?.layers ?? []) {
-      if (
-        layer.panelKey !== panelKey ||
-        !layer.visible ||
-        layer.isExclusion ||
-        !layer.maskPath
-      ) {
-        continue;
-      }
-      const bb = aabbOf(svgPathToAnchors(layer.maskPath));
-      if (bb && bb.width > 0 && bb.height > 0) return bb;
-    }
-  }
-  return null;
-}
-
-/**
- * Replace the independently dest-stretched kangaroo bake with a crop of
- * the front print — the pixels sitting under the pocket on the body.
- */
-export function cropPulloverPocketPrintFromFrontPanel(
-  frontCanvas: HTMLCanvasElement,
-  pocketWidth: number,
-  pocketHeight: number,
-  frontBb: Aabb,
-  pocketBb: Aabb,
-  backgroundColor: string,
-  destInsets?: PrintSafeInsets | null,
-): HTMLCanvasElement | null {
-  const dest = destInsets
-    ? printSafeDestRect(pocketWidth, pocketHeight, destInsets)
-    : null;
-  const rects = pulloverPocketCropDrawRects({
-    frontBb,
-    pocketBb,
-    frontW: frontCanvas.width,
-    frontH: frontCanvas.height,
-    pocketW: pocketWidth,
-    pocketH: pocketHeight,
-    dest,
-  });
-  if (!rects) return null;
-  const out = document.createElement("canvas");
-  out.width = Math.max(1, Math.round(pocketWidth));
-  out.height = Math.max(1, Math.round(pocketHeight));
-  const ctx = out.getContext("2d");
-  if (!ctx) return null;
-  ctx.fillStyle = backgroundColor;
-  ctx.fillRect(0, 0, out.width, out.height);
-  ctx.drawImage(
-    frontCanvas,
-    rects.source.x,
-    rects.source.y,
-    rects.source.width,
-    rects.source.height,
-    rects.dest.x,
-    rects.dest.y,
-    rects.dest.width,
-    rects.dest.height,
-  );
-  return out;
-}
-
 export function finalizePulloverPrintPanelsForPrintify(
   panels: FlatPrintPanelExport[],
   template: HoodieTemplate,
   panelEnabledOverrides?: Partial<Record<string, boolean>>,
-  backgroundColor?: string | null,
+  _backgroundColor?: string | null,
 ): FlatPrintPanelExport[] {
   const pocketsEnabled = panelEnabledOverrides?.front_pocket !== false;
   if (
@@ -3343,30 +3274,11 @@ export function finalizePulloverPrintPanelsForPrintify(
   ) {
     return panels.filter((p) => p.panelKey !== "front_pocket");
   }
-  const front = panels.find((p) => p.panelKey === "front");
-  const pocket = panels.find((p) => p.panelKey === "front_pocket");
-  const frontBb = panelMaskAabbFromTemplate(template, "front");
-  const pocketBb = panelMaskAabbFromTemplate(template, "front_pocket");
-  const cropped =
-    front && pocket && frontBb && pocketBb
-      ? cropPulloverPocketPrintFromFrontPanel(
-          front.canvas,
-          pocket.canvas.width,
-          pocket.canvas.height,
-          frontBb,
-          pocketBb,
-          backgroundColor || DEFAULT_GARMENT_BACKGROUND,
-          printSafeInsetsForPanel("front_pocket", template.blueprintId),
-        )
-      : null;
-  return panels.map((p) => {
-    if (p.panelKey !== "front_pocket") return p;
-    return {
-      ...p,
-      position: hoodiePanelKeyToPrintifyPosition("front_pocket"),
-      canvas: cropped ?? p.canvas,
-    };
-  });
+  return panels.map((p) =>
+    p.panelKey === "front_pocket"
+      ? { ...p, position: hoodiePanelKeyToPrintifyPosition("front_pocket") }
+      : p,
+  );
 }
 
 /** Typical XL bp 433 `front` placeholder when product-type dims are missing. */

@@ -11,7 +11,6 @@ import {
   intersectRectWithCanvas,
   mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
-  pulloverPocketCropDrawRects,
   applyFinishedPocketSampleToBbox,
   applyPulloverPocketSampleWindow,
   applyPocketLiveSampleToBbox,
@@ -469,35 +468,5 @@ describe("pocket source inset (sewn fold)", () => {
       ZIP_HOODIE_BLUEPRINT_ID,
     );
     expect(zip).toEqual(applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left"));
-  });
-});
-
-describe("pulloverPocketCropDrawRects", () => {
-  it("maps the pocket mask onto the front print canvas and into the pocket dest", () => {
-    const rects = pulloverPocketCropDrawRects({
-      frontBb: { x: 0, y: 0, width: 1000, height: 1000 },
-      pocketBb: { x: 200, y: 600, width: 600, height: 200 },
-      frontW: 2000,
-      frontH: 2000,
-      pocketW: 800,
-      pocketH: 400,
-      dest: { x: 40, y: 30, width: 720, height: 340 },
-    });
-    expect(rects).not.toBeNull();
-    expect(rects!.source).toEqual({ x: 400, y: 1200, width: 1200, height: 400 });
-    expect(rects!.dest).toEqual({ x: 40, y: 30, width: 720, height: 340 });
-  });
-
-  it("returns null when the pocket bbox is empty", () => {
-    expect(
-      pulloverPocketCropDrawRects({
-        frontBb: { x: 0, y: 0, width: 1000, height: 1000 },
-        pocketBb: { x: 200, y: 600, width: 0, height: 200 },
-        frontW: 1000,
-        frontH: 1000,
-        pocketW: 800,
-        pocketH: 400,
-      }),
-    ).toBeNull();
   });
 });
