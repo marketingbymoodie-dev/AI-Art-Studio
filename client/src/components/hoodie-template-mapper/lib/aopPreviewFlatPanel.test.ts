@@ -4,6 +4,8 @@ import {
   bakeArtworkPlacementRotation,
   remapSourceRectForPlacementRotation,
   buildFlatMeshTargetPoints,
+  ARTWORK_SLICE_MIN_COVERAGE,
+  artworkSliceMuralCoverage,
   artworkSliceSamplesMural,
   artworkSourceRectForPanel,
   computeGroupRects,
@@ -414,18 +416,38 @@ describe("artworkSourceRectForPanel pocket vs chest", () => {
 });
 
 describe("artworkSliceSamplesMural", () => {
-  it("is true when the slice sits inside the mural", () => {
+  it("uses a 15% height-coverage threshold, not a 1px overlap", () => {
+    expect(ARTWORK_SLICE_MIN_COVERAGE).toBe(0.15);
+    // Fully inside — bridging / real pocket fill.
+    expect(artworkSliceMuralCoverage({ x: 10, y: 10, width: 80, height: 80 }, 100, 100)).toBe(1);
     expect(artworkSliceSamplesMural({ x: 10, y: 10, width: 80, height: 80 }, 100, 100)).toBe(
       true,
     );
-  });
-
-  it("is false when the slice is past the mural or only an edge sliver", () => {
+    // Past the mural — this design's pocket (artV > 1).
     expect(artworkSliceSamplesMural({ x: 0, y: 108, width: 100, height: 40 }, 100, 100)).toBe(
       false,
     );
-    expect(artworkSliceSamplesMural({ x: 0, y: 99.5, width: 100, height: 20 }, 100, 100)).toBe(
+    // Last-row sliver: 3% of a 200px window (the 6px-on-2048 warp case).
+    expect(artworkSliceMuralCoverage({ x: 0, y: 97, width: 100, height: 100 }, 100, 100)).toBeCloseTo(
+      0.03,
+      5,
+    );
+    expect(artworkSliceSamplesMural({ x: 0, y: 97, width: 100, height: 100 }, 100, 100)).toBe(
       false,
+    );
+    // Just below threshold (14%) still skip; 15% draws.
+    expect(artworkSliceSamplesMural({ x: 0, y: 86, width: 100, height: 100 }, 100, 100)).toBe(
+      false,
+    );
+    expect(artworkSliceSamplesMural({ x: 0, y: 85, width: 100, height: 100 }, 100, 100)).toBe(
+      true,
+    );
+    // Bridging: most of the window is mural, a little past the hem.
+    expect(
+      artworkSliceMuralCoverage({ x: 0, y: 70, width: 100, height: 40 }, 100, 100),
+    ).toBeCloseTo(0.75, 5);
+    expect(artworkSliceSamplesMural({ x: 0, y: 70, width: 100, height: 40 }, 100, 100)).toBe(
+      true,
     );
   });
 });

@@ -275,15 +275,33 @@ export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
   return { ...bb, x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
 
+/** Raw pocket-mask top already past the mural — fold inset would only catch the last row. */
+export function pocketRawTopPastMural(
+  sampleY: number,
+  effectiveY: number,
+  effectiveH: number,
+): boolean {
+  if (!(effectiveH > 0)) return false;
+  return (sampleY - effectiveY) / effectiveH >= 1;
+}
+
 /**
  * Sewn-fold Y inset, then (pullover `front_pocket` only) sample-bbox scale.
  * Zip halves keep inset-only so 1.1115 does not change zip zoom.
+ * Skips inset/scale when the raw pocket top is already artV >= 1.
  */
 export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
   bb: T,
   frontMaskH: number,
   panelKey?: HoodiePanelKey | null,
+  effective?: { y: number; height: number } | null,
 ): T {
+  if (
+    effective &&
+    pocketRawTopPastMural(bb.y, effective.y, effective.height)
+  ) {
+    return bb;
+  }
   const inset = applyPocketSourceInsetToBbox(bb, frontMaskH);
   if (panelKey === "front_pocket") {
     return applyPocketSourceScaleToBbox(inset);

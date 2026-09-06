@@ -1042,25 +1042,44 @@ function samplingBboxForLayer(
       sample,
       layerRect.union.height,
       layer.panelKey,
+      layerRect.effective,
     );
   }
   return sample;
 }
 
-/** True when the artwork slice overlaps the mural by more than an edge sliver. */
-export function artworkSliceSamplesMural(
+/**
+ * Skip the draw when only a last-row sliver of the mural lands in the
+ * window (warp would stretch it across the panel top). Height coverage
+ * is relative to the slice, so it holds at any mural size / Place scale.
+ */
+export const ARTWORK_SLICE_MIN_COVERAGE = 0.15;
+
+export function artworkSliceMuralCoverage(
   slice: { x: number; y: number; width: number; height: number },
   aw: number,
   ah: number,
-): boolean {
+): number {
   if (!(slice.width > 0) || !(slice.height > 0) || !(aw > 0) || !(ah > 0)) {
-    return false;
+    return 0;
   }
   const left = Math.max(slice.x, 0);
   const top = Math.max(slice.y, 0);
   const right = Math.min(slice.x + slice.width, aw);
   const bottom = Math.min(slice.y + slice.height, ah);
-  return right - left > 1 && bottom - top > 1;
+  const overlapW = right - left;
+  const overlapH = bottom - top;
+  if (overlapW <= 0 || overlapH <= 0) return 0;
+  return overlapH / slice.height;
+}
+
+/** True when the slice has enough mural to draw (not a last-row smear). */
+export function artworkSliceSamplesMural(
+  slice: { x: number; y: number; width: number; height: number },
+  aw: number,
+  ah: number,
+): boolean {
+  return artworkSliceMuralCoverage(slice, aw, ah) >= ARTWORK_SLICE_MIN_COVERAGE;
 }
 
 function synthesiseSeamAwareSourceRect(
@@ -1332,6 +1351,7 @@ export function renderHoodFlatPanel(
         sampleBb,
         frontRect.union.height,
         frontLayer.panelKey,
+        frontRect.effective,
       );
     }
     const rotForSlice = frontRect.rotationDeg ?? 0;
@@ -2665,19 +2685,21 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             seamSideForLayer(layer),
             params.legsMirrored,
           );
-          const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
-          const bakedSlice = slice;
-          pctx.drawImage(
-            artSource,
-            bakedSlice.x,
-            bakedSlice.y,
-            bakedSlice.width,
-            bakedSlice.height,
-            bb.x,
-            bb.y,
-            bb.width,
-            bb.height,
-          );
+          if (artworkSliceSamplesMural(slice, bakedForSlice.width, bakedForSlice.height)) {
+            const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+            const bakedSlice = slice;
+            pctx.drawImage(
+              artSource,
+              bakedSlice.x,
+              bakedSlice.y,
+              bakedSlice.width,
+              bakedSlice.height,
+              bb.x,
+              bb.y,
+              bb.width,
+              bb.height,
+            );
+          }
         }
       } else {
         const bb = layerBb;

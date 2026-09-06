@@ -14,6 +14,7 @@ import {
   applyPocketLiveSampleToBbox,
   applyPocketSourceInsetToBbox,
   applyPocketSourceScaleToBbox,
+  pocketRawTopPastMural,
   pocketSampleInsetMockupY,
   POCKET_WINDOW_OFFSET_Y,
   POCKET_WINDOW_SCALE,
@@ -418,5 +419,25 @@ describe("pocket source inset (sewn fold)", () => {
     const zip = applyPocketLiveSampleToBbox(bb, 524.93, "pocket_left");
     expect(zip.width).toBe(200);
     expect(zip.y).toBeCloseTo(bb.y + pocketSampleInsetMockupY(524.93), 5);
+  });
+
+  it("skips fold inset/scale when the raw pocket top is already past the mural", () => {
+    const bb = { x: 343.83, y: 635.48, width: 318.81, height: 193.44 };
+    // Job 1 front: raw pocket top artV ≈ 1.079.
+    expect(pocketRawTopPastMural(635.48, -49.785, 635.341)).toBe(true);
+    const skipped = applyPocketLiveSampleToBbox(bb, 524.93, "front_pocket", {
+      y: -49.785,
+      height: 635.341,
+    });
+    expect(skipped).toEqual(bb);
+    expect(pocketRawTopPastMural(400, -49.785, 635.341)).toBe(false);
+    const folded = applyPocketLiveSampleToBbox(
+      { x: 100, y: 400, width: 200, height: 100 },
+      524.93,
+      "front_pocket",
+      { y: -49.785, height: 635.341 },
+    );
+    expect(folded.width).toBeCloseTo(200 * 1.1115, 5);
+    expect(folded.y).not.toBe(400);
   });
 });
