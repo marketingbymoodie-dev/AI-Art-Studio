@@ -12,6 +12,7 @@ import {
   mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
   applyFinishedPocketSampleToBbox,
+  applyPulloverPocketSampleWindow,
   applyPocketLiveSampleToBbox,
   applyPocketSourceInsetToBbox,
   applyPocketSourceScaleToBbox,
@@ -30,7 +31,7 @@ import {
   shouldExportPulloverPocketAsPrintifyPanel,
   shouldMergePulloverPocketForPrintify,
 } from "./pulloverPocketPrintMerge";
-import { PULOVER_HOODIE_BLUEPRINT_ID } from "./hoodieTemplate";
+import { PULOVER_HOODIE_BLUEPRINT_ID, ZIP_HOODIE_BLUEPRINT_ID } from "./hoodieTemplate";
 
 describe("shouldExportPulloverPocketAsPrintifyPanel", () => {
   it("exports for pullover when pockets are on", () => {
@@ -440,5 +441,32 @@ describe("pocket source inset (sewn fold)", () => {
       { y: -49.785, height: 635.341 },
     );
     expect(finished).toEqual(applyFinishedPocketSampleToBbox({ x: 100, y: 400, width: 200, height: 100 }));
+  });
+
+  it("applies pullover pocket offset/scale after the finished inset, not before", () => {
+    const grey = { x: 100, y: 200, width: 200, height: 100 };
+    const finished = applyFinishedPocketSampleToBbox(grey);
+    const after = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "front_pocket",
+      null,
+      { offsetX: 10, offsetY: -4, scale: 1 },
+      PULOVER_HOODIE_BLUEPRINT_ID,
+    );
+    expect(after.width).toBeCloseTo(finished.width, 5);
+    expect(after.height).toBeCloseTo(finished.height, 5);
+    expect(after.x).toBeCloseTo(finished.x + 10, 5);
+    expect(after.y).toBeCloseTo(finished.y - 4, 5);
+    expect(POCKET_WINDOW_OFFSET_Y).toBe(-100);
+    const zip = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "pocket_left",
+      null,
+      { offsetX: 10, offsetY: -4, scale: 1.2 },
+      ZIP_HOODIE_BLUEPRINT_ID,
+    );
+    expect(zip).toEqual(applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left"));
   });
 });

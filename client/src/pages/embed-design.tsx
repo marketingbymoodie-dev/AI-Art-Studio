@@ -17271,6 +17271,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
                     onEngageLiveEditor={engageAopLiveEditor}
+                    allowTemplateDefaultsEdit={isAdminTester}
                     printersMockupAction={
                       canRequestAopPrintersMockup
                         ? {

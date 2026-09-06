@@ -523,6 +523,11 @@ export const DEFAULT_GROUP_PLACEMENT: GroupPlacement = {
 export type PanelPlacementBiasPercent = {
   offsetXPercent: number;
   offsetYPercent: number;
+  /** Pullover pocket sample-window (mockup px), applied AFTER finished inset. */
+  offsetX?: number;
+  offsetY?: number;
+  /** Pullover pocket sample-window scale, applied AFTER finished inset. */
+  scale?: number;
 };
 
 export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
@@ -599,9 +604,15 @@ export function mergePanelPlacementBiasPercent(
   base?: Partial<PanelPlacementBiasPercent> | null,
   override?: Partial<PanelPlacementBiasPercent> | null,
 ): PanelPlacementBiasPercent {
+  const offsetX = override?.offsetX ?? base?.offsetX;
+  const offsetY = override?.offsetY ?? base?.offsetY;
+  const scale = override?.scale ?? base?.scale;
   return {
     offsetXPercent: override?.offsetXPercent ?? base?.offsetXPercent ?? 0,
     offsetYPercent: override?.offsetYPercent ?? base?.offsetYPercent ?? 0,
+    ...(offsetX != null ? { offsetX } : {}),
+    ...(offsetY != null ? { offsetY } : {}),
+    ...(scale != null ? { scale } : {}),
   };
 }
 
@@ -680,7 +691,29 @@ export type DesignGroup = {
    * design rect width/height.
    */
   panelPlacementBias?: FrontBodyPanelPlacementBias;
+  /**
+   * Operator Save-as-defaults in Preview Studio. When true,
+   * `restorePulloverFrontHoodZipFraming` must not overwrite this group's
+   * placement or pocket bias.
+   */
+  placementAuthored?: boolean;
 };
+
+/** Keep operator-authored fields when normalize rebuilds a group object. */
+export function copyPreservedDesignGroupFields(
+  dest: DesignGroup,
+  prev: DesignGroup,
+): DesignGroup {
+  return {
+    ...dest,
+    placement: prev.placement,
+    seamAllowance: prev.seamAllowance,
+    lockedRatio: prev.lockedRatio,
+    enabled: prev.enabled,
+    panelPlacementBias: prev.panelPlacementBias,
+    placementAuthored: prev.placementAuthored,
+  };
+}
 
 /**
  * Repeating-tile mode settings — when the AOP mode is `tile`, the
@@ -1058,13 +1091,7 @@ export function migrateSweatshirtDesignGroups(groups: DesignGroup[]): DesignGrou
   return defaults.map((def) => {
     const prev = byId.get(def.id);
     if (!prev) return def;
-    return {
-      ...def,
-      placement: prev.placement,
-      seamAllowance: prev.seamAllowance,
-      lockedRatio: prev.lockedRatio,
-      enabled: prev.enabled,
-    };
+    return copyPreservedDesignGroupFields(def, prev);
   });
 }
 
@@ -1432,13 +1459,7 @@ export function mergeDesignGroupsForBlueprintSwitch(
   return defaults.map((def) => {
     const prev = existing.find((g) => g.id === def.id);
     if (!prev) return def;
-    return {
-      ...def,
-      placement: prev.placement,
-      seamAllowance: prev.seamAllowance,
-      lockedRatio: prev.lockedRatio,
-      enabled: prev.enabled,
-    };
+    return copyPreservedDesignGroupFields(def, prev);
   });
 }
 
@@ -1551,7 +1572,23 @@ function pulloverPocketBiasCleared(
   if (!pocket) return true;
   return (
     Math.abs(pocket.offsetXPercent ?? 0) < 1e-9 &&
-    Math.abs(pocket.offsetYPercent ?? 0) < 1e-9
+    Math.abs(pocket.offsetYPercent ?? 0) < 1e-9 &&
+    Math.abs(pocket.offsetX ?? 0) < 1e-9 &&
+    Math.abs(pocket.offsetY ?? 0) < 1e-9 &&
+    Math.abs((pocket.scale ?? 1) - 1) < 1e-9
+  );
+}
+
+function pulloverFrontPlacementIsSeed(
+  front: { scale: number; offsetX: number; offsetY: number; rotationDeg?: number } | undefined,
+  seed: { scale: number; offsetX: number; offsetY: number },
+): boolean {
+  if (!front) return false;
+  return (
+    front.scale === seed.scale &&
+    front.offsetX === seed.offsetX &&
+    front.offsetY === seed.offsetY &&
+    (front.rotationDeg ?? 0) === 0
   );
 }
 
@@ -1574,11 +1611,14 @@ export function restorePulloverFrontHoodZipFraming(
   let changed = false;
   const nextGroups = groups.map((g) => {
     if (g.id === "front-body") {
+      if (g.placementAuthored) return g;
       const front = g.placement?.front;
       if (
-        front?.scale === PULLOVER_FRONT_BODY_PLACE_SCALE &&
-        front.offsetX === PULLOVER_FRONT_BODY_PLACE_OFFSET_X &&
-        front.offsetY === PULLOVER_FRONT_BODY_PLACE_OFFSET_Y &&
+        pulloverFrontPlacementIsSeed(front, {
+          scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+          offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
+          offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+        }) &&
         pulloverPocketBiasCleared(g)
       ) {
         return g;
@@ -1596,16 +1636,21 @@ export function restorePulloverFrontHoodZipFraming(
             scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
             offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
             offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+            rotationDeg: 0,
           },
           back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
         },
       };
     }
     if (g.id === "hood") {
+      if (g.placementAuthored) return g;
       const front = g.placement?.front;
       if (
-        front?.scale === PULLOVER_HOOD_PLACE_SCALE &&
-        front.offsetY === PULLOVER_HOOD_PLACE_OFFSET_Y
+        pulloverFrontPlacementIsSeed(front, {
+          scale: PULLOVER_HOOD_PLACE_SCALE,
+          offsetX: 0,
+          offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+        })
       ) {
         return g;
       }
@@ -1617,7 +1662,9 @@ export function restorePulloverFrontHoodZipFraming(
           front: {
             ...(front ?? DEFAULT_GROUP_PLACEMENT),
             scale: PULLOVER_HOOD_PLACE_SCALE,
+            offsetX: 0,
             offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+            rotationDeg: 0,
           },
           back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
         },

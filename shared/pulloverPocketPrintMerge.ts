@@ -330,6 +330,42 @@ export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
   return applyPocketSourceInsetToBbox(bb, frontMaskH);
 }
 
+/**
+ * Pullover pocket sample-window after the finished inset (not dest, not bleed).
+ * Zip halves must not use this — they keep the −100 fold inset only.
+ */
+export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
+  bb: T,
+  bias?: { offsetX?: number; offsetY?: number; scale?: number } | null,
+): T {
+  if (!bias) return bb;
+  const scale = bias.scale ?? 1;
+  let next = bb;
+  if (scale > 0 && scale !== 1) {
+    next = applyPocketSourceScaleToBbox(next, scale);
+  }
+  const dx = bias.offsetX ?? 0;
+  const dy = bias.offsetY ?? 0;
+  if (dx === 0 && dy === 0) return next;
+  return { ...next, x: next.x + dx, y: next.y + dy };
+}
+
+/** Finished inset, then operator pocket offset/scale. Zip is unchanged. */
+export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
+  bb: T,
+  frontMaskH: number,
+  panelKey?: HoodiePanelKey | null,
+  effective?: { y: number; height: number } | null,
+  bias?: { offsetX?: number; offsetY?: number; scale?: number } | null,
+  blueprintId?: number | null,
+): T {
+  const inset = applyPocketLiveSampleToBbox(bb, frontMaskH, panelKey, effective);
+  if (!isPulloverHoodieBlueprint(blueprintId) || panelKey !== "front_pocket") {
+    return inset;
+  }
+  return applyPocketAuthoredSampleToBbox(inset, bias);
+}
+
 /** Mockup point → host-canvas px. The anisotropic map is only for points. */
 export function mapMockupPointToFrontCanvas(
   frontMaskBb: MockupBbox,

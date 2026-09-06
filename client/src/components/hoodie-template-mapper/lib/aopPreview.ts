@@ -83,7 +83,7 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   shouldExportPulloverPocketAsPrintifyPanel,
-  applyPocketLiveSampleToBbox,
+  applyPulloverPocketSampleWindow,
 } from "@shared/pulloverPocketPrintMerge";
 import {
   printSafeDestRect,
@@ -1044,11 +1044,13 @@ function samplingBboxForLayer(
   );
   let sample = applyPanelPlacementBiasToBbox(bb, layerRect, bias);
   if (isKangarooPocketPanelKey(layer.panelKey)) {
-    sample = applyPocketLiveSampleToBbox(
+    sample = applyPulloverPocketSampleWindow(
       sample,
       layerRect.union.height,
       layer.panelKey,
       layerRect.effective,
+      bias,
+      template.blueprintId,
     );
   }
   return applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId);
@@ -1465,11 +1467,13 @@ export function renderHoodFlatPanel(
       options?.panelPlacementBias,
     );
     if (isKangarooPocketPanelKey(frontLayer.panelKey)) {
-      sampleBb = applyPocketLiveSampleToBbox(
+      sampleBb = applyPulloverPocketSampleWindow(
         sampleBb,
         frontRect.union.height,
         frontLayer.panelKey,
         frontRect.effective,
+        options?.panelPlacementBias,
+        options?.blueprintId,
       );
     }
     sampleBb = applyPulloverNeckSeamBleedToBbox(
