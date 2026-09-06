@@ -105,7 +105,9 @@ export function hasReusableHostedPrintSet(
   if (!previous?.length || !positions.length) return false;
   return positions.every((pos) => {
     const found = previous.find((p) => p.position === pos);
-    return !!(found?.url && isHostedHttpUrl(found.url));
+    // Empty hash = restored URL from another session. Never treat that as
+    // a verified match — hoods were leaking the previous design's fill.
+    return !!(found?.url && found.hash && isHostedHttpUrl(found.url));
   });
 }
 

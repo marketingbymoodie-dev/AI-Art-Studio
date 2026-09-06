@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   UploadRateLimitedError,
   hashPanelDataUrl,
+  hasReusableHostedPrintSet,
   hostPrintPanelsBatched,
   parseRetryAfterSec,
   shouldKickAopPersist,
@@ -30,6 +31,29 @@ describe("parseRetryAfterSec", () => {
     expect(parseRetryAfterSec(null, { retryAfter: 12 })).toBe(12);
     expect(parseRetryAfterSec(null, { retryAfterSec: 9 })).toBe(9);
     expect(parseRetryAfterSec(null, {})).toBe(60);
+  });
+});
+
+describe("hasReusableHostedPrintSet", () => {
+  it("rejects restored URLs that have no content hash", () => {
+    expect(
+      hasReusableHostedPrintSet(
+        [{ position: "left_hood", url: "https://cdn.example/old-hood.jpg", hash: "" }],
+        ["left_hood"],
+      ),
+    ).toBe(false);
+  });
+
+  it("accepts a full set only when every position has a hash and https URL", () => {
+    expect(
+      hasReusableHostedPrintSet(
+        [
+          { position: "left_hood", url: "https://cdn.example/l.jpg", hash: "1:1" },
+          { position: "right_hood", url: "https://cdn.example/r.jpg", hash: "1:2" },
+        ],
+        ["left_hood", "right_hood"],
+      ),
+    ).toBe(true);
   });
 });
 

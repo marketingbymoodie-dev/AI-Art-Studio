@@ -6264,6 +6264,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setFlatApplyStatus("idle");
       setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
+      lastHostedPrintPanelsRef.current = [];
       setAopPrintPanelsReady(false);
       storedAopPanelCaptureSignatureRef.current = null;
       lastPersistedAopCaptureStateRef.current = null;
@@ -9187,6 +9188,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setReuseAwaitingGenerate(false);
     setReuseRegenerateBasePrompt(null);
     lastAopPanelUrlsRef.current = null;
+    lastHostedPrintPanelsRef.current = [];
     setAopPrintPanelsReady(false);
     storedAopPanelCaptureSignatureRef.current = null;
     lastPersistedAopCaptureStateRef.current = null;
@@ -10326,13 +10328,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
-      // Mesh AOP: flush deferred placement before test order.
-      if (
-        useAopCustomizer &&
-        productTypeConfig?.panelMappingTemplate &&
-        (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
-      ) {
-        await flushHoodieAopPlacer({ force: true });
+      // Mesh AOP: always re-bake before a Preview Studio test order so hood
+      // print files cannot keep the previous session's background colour.
+      if (useAopCustomizer && productTypeConfig?.panelMappingTemplate) {
+        if (
+          isAdminTester ||
+          aopPlacementDirty ||
+          hoodieAopPlacerRef.current?.hasPendingChanges()
+        ) {
+          await flushHoodieAopPlacer({ force: true });
+        }
       }
       // Printify zoom products: placement is persisted in the background; flush now.
       if (isAdminTester && !useAopCustomizer) {

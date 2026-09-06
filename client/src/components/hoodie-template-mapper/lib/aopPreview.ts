@@ -1407,6 +1407,13 @@ export function renderHoodFlatPanel(
      * meshes are calibrated to the full placeholder.
      */
     mapDestToSafe?: boolean;
+    /**
+     * When set, Print-minus-Safe stays transparent so the caller can
+     * composite this fill. Edge-extend of the Safe top row was showing
+     * up as a smeared strip on the pullover pocket (and stale-looking
+     * hood rims). Dest-stretch / Safe rect are unchanged.
+     */
+    backgroundColor?: string | null;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -1522,7 +1529,9 @@ export function renderHoodFlatPanel(
       options?.legsMirrored,
     ),
   });
-  if (insets) fillPrintGreyByEdgeExtend(canvas, insets);
+  if (insets && !options?.backgroundColor) {
+    fillPrintGreyByEdgeExtend(canvas, insets);
+  }
   return canvas;
 }
 
@@ -3899,6 +3908,7 @@ export function renderFlatPrintPanels(
           legsMirrored: params.legsMirrored,
           blueprintId: template.blueprintId,
           mapDestToSafe: true,
+          backgroundColor: bg,
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the
