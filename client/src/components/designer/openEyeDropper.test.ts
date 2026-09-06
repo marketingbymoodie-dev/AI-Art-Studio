@@ -1,63 +1,67 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { isEyeDropperSupported, openScreenEyeDropper } from "./openEyeDropper";
+import { describe, expect, it } from "vitest";
+import {
+  clampToRect,
+  clientPointToSnapshotPixel,
+  followArtworkPoint,
+  hexFromRgb,
+  sampleSnapshotHex,
+  type CanvasSnapshot,
+} from "./openEyeDropper";
 
-describe("openScreenEyeDropper", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.useRealTimers();
-  });
-
-  function stubRafAsTimeout() {
-    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
-      window.setTimeout(() => cb(0), 0),
-    );
+function snap(pixels: number[][]): CanvasSnapshot {
+  const height = pixels.length;
+  const width = pixels[0]?.length ?? 0;
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const [r, g, b, a = 255] = pixels[y][x];
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+      data[i + 3] = a;
+    }
   }
+  return { data, width, height };
+}
 
-  it("returns null when EyeDropper is missing", async () => {
-    vi.stubGlobal("EyeDropper", undefined);
-    await expect(openScreenEyeDropper()).resolves.toBeNull();
-    expect(isEyeDropperSupported()).toBe(false);
+describe("artwork eyedropper sampling", () => {
+  it("maps a client point to a snapshot pixel", () => {
+    const rect = { left: 100, top: 50, width: 200, height: 100 } as DOMRect;
+    const image = snap([
+      [[255, 0, 0], [0, 255, 0]],
+      [[0, 0, 255], [255, 255, 0]],
+    ]);
+    expect(clientPointToSnapshotPixel(100, 50, rect, image)).toEqual({ x: 0, y: 0 });
+    expect(clientPointToSnapshotPixel(199, 99, rect, image)).toEqual({ x: 0, y: 0 });
+    expect(clientPointToSnapshotPixel(250, 120, rect, image)).toEqual({ x: 1, y: 1 });
+    expect(clientPointToSnapshotPixel(50, 50, rect, image)).toBeNull();
   });
 
-  it("does not construct EyeDropper until after the click-yield", async () => {
-    vi.useFakeTimers();
-    stubRafAsTimeout();
-    const open = vi.fn().mockResolvedValue({ sRGBHex: "#112233" });
-    const ctor = vi.fn().mockImplementation(() => ({ open }));
-    vi.stubGlobal("EyeDropper", ctor);
-
-    const pending = openScreenEyeDropper();
-    expect(ctor).not.toHaveBeenCalled();
-
-    await vi.runAllTimersAsync();
-    await expect(pending).resolves.toBe("#112233");
-    expect(ctor).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledTimes(1);
+  it("samples opaque pixels and skips near-clear ones", () => {
+    const image = snap([
+      [
+        [17, 34, 51, 255],
+        [9, 9, 9, 4],
+      ],
+    ]);
+    expect(sampleSnapshotHex(image, 0, 0)).toBe("#112233");
+    expect(sampleSnapshotHex(image, 1, 0)).toBeNull();
   });
 
-  it("reuses the in-flight open instead of stacking sessions", async () => {
-    vi.useFakeTimers();
-    stubRafAsTimeout();
-    let release!: (value: { sRGBHex: string }) => void;
-    const open = vi.fn(
-      () =>
-        new Promise<{ sRGBHex: string }>((resolve) => {
-          release = resolve;
-        }),
-    );
-    vi.stubGlobal(
-      "EyeDropper",
-      vi.fn().mockImplementation(() => ({ open })),
-    );
+  it("damps follow so the loupe eases toward the pointer", () => {
+    const next = followArtworkPoint(0, 0, 100, 50, 0.2);
+    expect(next.x).toBeCloseTo(20);
+    expect(next.y).toBeCloseTo(10);
+  });
 
-    const first = openScreenEyeDropper();
-    const second = openScreenEyeDropper();
-    expect(second).toBe(first);
+  it("clamps the sample point to the canvas rect", () => {
+    const rect = { left: 10, top: 20, right: 110, bottom: 120 };
+    expect(clampToRect(0, 0, rect)).toEqual({ x: 10.5, y: 20.5 });
+    expect(clampToRect(200, 200, rect)).toEqual({ x: 109.5, y: 119.5 });
+  });
 
-    await vi.runAllTimersAsync();
-    release({ sRGBHex: "#abcdef" });
-    await expect(first).resolves.toBe("#abcdef");
-    await expect(second).resolves.toBe("#abcdef");
-    expect(open).toHaveBeenCalledTimes(1);
+  it("formats rgb as uppercase hex", () => {
+    expect(hexFromRgb(255, 128, 0)).toBe("#FF8000");
   });
 });

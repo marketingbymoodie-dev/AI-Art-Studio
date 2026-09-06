@@ -1,8 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, type RefObject } from "react";
 import { Pipette } from "lucide-react";
 import { DEFAULT_DECOR_BACKGROUND_FILL } from "@shared/decorBackgroundFill";
 import { Label } from "@/components/ui/label";
-import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
 
 type FillSwatch = { hex: string };
 
@@ -22,6 +21,10 @@ type DecorFloatingFillPickerProps = {
   hint?: string;
   /** Artwork-derived colours (hex). White + black are always appended. */
   swatches?: FillSwatch[];
+  /** When set, the pipette uses the artwork loupe on this canvas. */
+  canvasRef?: RefObject<HTMLCanvasElement | null>;
+  eyedropperOn?: boolean;
+  onEyedropperToggle?: () => void;
 };
 
 /**
@@ -34,6 +37,9 @@ export function DecorFloatingFillPicker({
   onChange,
   hint,
   swatches = [],
+  canvasRef,
+  eyedropperOn = false,
+  onEyedropperToggle,
 }: DecorFloatingFillPickerProps) {
   const hex = normalizeHex(value) ?? DEFAULT_DECOR_BACKGROUND_FILL;
   const isNone = value === "none";
@@ -42,11 +48,20 @@ export function DecorFloatingFillPicker({
     ...FIXED_SWATCHES,
   ].filter((s, i, all) => all.findIndex((x) => x.hex.toUpperCase() === s.hex.toUpperCase()) === i);
 
-  const triggerEyedropper = useCallback(async () => {
-    if (!isEyeDropperSupported()) return;
-    const hex = await openScreenEyeDropper();
-    const next = hex ? normalizeHex(hex) : null;
-    if (next) onChange(next);
+  const showEyedropper = !!canvasRef && !!onEyedropperToggle;
+
+  const triggerFallback = useCallback(async () => {
+    const W = window as unknown as {
+      EyeDropper?: new () => { open: () => Promise<{ sRGBHex?: string }> };
+    };
+    if (typeof W.EyeDropper !== "function") return;
+    try {
+      const r = await new W.EyeDropper().open();
+      const next = r?.sRGBHex ? normalizeHex(r.sRGBHex) : null;
+      if (next) onChange(next);
+    } catch {
+      /* cancelled */
+    }
   }, [onChange]);
 
   return (
@@ -77,16 +92,35 @@ export function DecorFloatingFillPicker({
           spellCheck={false}
           aria-label="Background hex"
         />
-        {isEyeDropperSupported() && (
+        {showEyedropper ? (
           <button
             type="button"
-            onClick={() => void triggerEyedropper()}
-            className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
-            title="Pick a colour from anywhere on screen"
+            onClick={onEyedropperToggle}
+            aria-pressed={eyedropperOn}
+            className={`flex h-8 w-8 items-center justify-center rounded border bg-card hover:bg-muted ${
+              eyedropperOn
+                ? "border-primary text-primary"
+                : "border-border text-card-foreground"
+            }`}
+            title="Pick a colour from the artwork"
             aria-label="Eyedropper"
           >
             <Pipette className="h-4 w-4" />
           </button>
+        ) : (
+          typeof window !== "undefined" &&
+          typeof (window as unknown as { EyeDropper?: unknown }).EyeDropper ===
+            "function" && (
+            <button
+              type="button"
+              onClick={() => void triggerFallback()}
+              className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
+              title="Pick a colour from the artwork"
+              aria-label="Eyedropper"
+            >
+              <Pipette className="h-4 w-4" />
+            </button>
+          )
         )}
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">

@@ -61,7 +61,7 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import DesignRectHandlesOverlay from "@/components/hoodie-template-mapper/DesignRectHandlesOverlay";
 import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
-import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
+import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
 import { API_BASE } from "@/lib/urlBase";
 import { safeFetch } from "@/lib/safeFetch";
 
@@ -1902,16 +1902,18 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     );
   }, [withFrontIfNeeded]);
 
-  const triggerEyedropper = useCallback(async () => {
-    if (!isEyeDropperSupported()) return;
-    eyedropperActiveRef.current = true;
-    try {
-      const hex = await openScreenEyeDropper();
-      if (hex) setBgColor(hex);
-    } finally {
-      eyedropperActiveRef.current = false;
-    }
-  }, [setBgColor]);
+  const [eyedropperOn, setEyedropperOn] = useState(false);
+  useEffect(() => {
+    eyedropperActiveRef.current = eyedropperOn;
+  }, [eyedropperOn]);
+  const closeEyedropper = useCallback(() => setEyedropperOn(false), []);
+  const pickEyedropper = useCallback(
+    (hex: string) => {
+      setBgColor(hex);
+      setEyedropperOn(false);
+    },
+    [setBgColor],
+  );
 
   // ---------- Apply hand-off (Stage 3 will subscribe) ----------
   const renderViewToCanvas = useCallback(
@@ -2222,6 +2224,12 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
 
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
+      <ArtworkEyedropperSession
+        canvasRef={canvasRef}
+        active={eyedropperOn}
+        onPick={pickEyedropper}
+        onCancel={closeEyedropper}
+      />
       {/* Left: live mockup with overlay */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
@@ -2846,17 +2854,20 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
               spellCheck={false}
             />
-            {isEyeDropperSupported() && (
-              <button
-                type="button"
-                onClick={() => void triggerEyedropper()}
-                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
-                title="Pick a colour from anywhere on screen"
-                aria-label="Eyedropper"
-              >
-                <Pipette className="h-4 w-4" />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setEyedropperOn((on) => !on)}
+              aria-pressed={eyedropperOn}
+              className={`flex h-8 w-8 items-center justify-center rounded border bg-card hover:bg-muted ${
+                eyedropperOn
+                  ? "border-primary text-primary"
+                  : "border-border text-card-foreground"
+              }`}
+              title="Pick a colour from the artwork"
+              aria-label="Eyedropper"
+            >
+              <Pipette className="h-4 w-4" />
+            </button>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {swatches.map((s) => (

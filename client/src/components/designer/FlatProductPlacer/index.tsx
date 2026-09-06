@@ -21,7 +21,7 @@ import {
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
-import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
+import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
 import { CATALOG_SIZE_BLANK_BLUEPRINTS } from "@shared/catalogSizeBlanks";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
@@ -1044,16 +1044,18 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     });
   }, []);
 
-  const triggerEyedropper = useCallback(async () => {
-    if (!isEyeDropperSupported()) return;
-    eyedropperActiveRef.current = true;
-    try {
-      const hex = await openScreenEyeDropper();
-      if (hex) setBgColor(hex);
-    } finally {
-      eyedropperActiveRef.current = false;
-    }
-  }, [setBgColor]);
+  const [eyedropperOn, setEyedropperOn] = useState(false);
+  useEffect(() => {
+    eyedropperActiveRef.current = eyedropperOn;
+  }, [eyedropperOn]);
+  const closeEyedropper = useCallback(() => setEyedropperOn(false), []);
+  const pickEyedropper = useCallback(
+    (hex: string) => {
+      setBgColor(hex);
+      setEyedropperOn(false);
+    },
+    [setBgColor],
+  );
 
   const resetView = useCallback(
     (view: ViewName) => {
@@ -1556,6 +1558,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           : "flex w-full flex-col gap-4 lg:flex-row"
       }
     >
+      <ArtworkEyedropperSession
+        canvasRef={canvasRef}
+        active={eyedropperOn}
+        onPick={pickEyedropper}
+        onCancel={closeEyedropper}
+      />
       {/* Live canvas + overlay (or lifestyle/context override) */}
       <div
         className={
@@ -1778,17 +1786,20 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
                 spellCheck={false}
               />
-              {isEyeDropperSupported() && (
-                <button
-                  type="button"
-                  onClick={() => void triggerEyedropper()}
-                  className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
-                  title="Pick a colour from anywhere on screen"
-                  aria-label="Eyedropper"
-                >
-                  <Pipette className="h-4 w-4" />
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setEyedropperOn((on) => !on)}
+                aria-pressed={eyedropperOn}
+                className={`flex h-8 w-8 items-center justify-center rounded border bg-card hover:bg-muted ${
+                  eyedropperOn
+                    ? "border-primary text-primary"
+                    : "border-border text-card-foreground"
+                }`}
+                title="Pick a colour from the artwork"
+                aria-label="Eyedropper"
+              >
+                <Pipette className="h-4 w-4" />
+              </button>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {[...artPalette.slice(0, 4), ...EDGE_WRAP_FIXED_SWATCHES].map((s) => (
@@ -1823,6 +1834,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               decorGenerateFill.onChange(next);
             }}
             swatches={artPalette.slice(0, 4)}
+            canvasRef={canvasRef}
+            eyedropperOn={eyedropperOn}
+            onEyedropperToggle={() => setEyedropperOn((on) => !on)}
           />
         )}
 
