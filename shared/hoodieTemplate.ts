@@ -45,19 +45,23 @@ export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 1;
  * History: 1.05 / 1.49 (quotient 0.7047) was a zip-seed copy, not a
  * physical front:hood lock — never derive one from the other at runtime.
  * Current values compose those seeds with operator Printify scales
- * (front ×1.1527, hood ×0.8079).
+ * (front ×1.1527, hood ×0.8079). N1 keeps hood scale (80.79%) and
+ * moves hood offsetY only so the neck stitch abuts (front unchanged).
  */
 export const PULLOVER_HOOD_PLACE_SCALE = 1.203771;
 export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.210335;
-/** Operator Printify hood pos-top 3.66% (center-offset compose). */
-export const PULLOVER_HOOD_PLACE_OFFSET_Y = 57.429;
+/** N1 stitch abut (was operator compose 57.429). Crown empty is accepted. */
+export const PULLOVER_HOOD_PLACE_OFFSET_Y = 84.445;
 /** Operator Printify front pos-left −0.59% (center-offset compose). */
 export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -2.527;
 /** Operator Printify front pos-top 2.09% (center-offset compose). */
 export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -304.439;
-/** Pocket residual vs new front rect (operator pocket left −11.13% / top 4.43%). */
-export const PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT = 9.7;
-export const PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT = -2.4;
+/**
+ * Printify hood-bottom / front-top grey (Safe−Print) as a fraction of
+ * that panel's mask height. Sample expansion only — not a dest clip.
+ */
+export const PULLOVER_HOOD_NECK_GREY_BLEED_FRAC = 0.0525;
+export const PULLOVER_FRONT_NECK_GREY_BLEED_FRAC = 0.0311;
 /**
  * Zip + pullover back sleeve meshes were calibrated to this sheet.
  * Pullover front sleeve meshes shipped with `sourceRect: null`, so
@@ -910,12 +914,6 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
       seamAllowance: 0,
       lockedRatio: null,
       enabled: true,
-      panelPlacementBias: {
-        pocket: {
-          offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
-          offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
-        },
-      },
     },
     {
       id: "back-body",
@@ -1072,6 +1070,32 @@ export function migrateSweatshirtDesignGroups(groups: DesignGroup[]): DesignGrou
 
 export function isPulloverHoodieBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === PULOVER_HOODIE_BLUEPRINT_ID;
+}
+
+type SampleBbox = { x: number; y: number; width: number; height: number };
+
+/**
+ * Expand the pullover hood-bottom / front-top sample AABB into the
+ * Printify grey so mural survives the fold and meets at the stitch.
+ * Does not clip dest. Zip and non-join panels are unchanged.
+ */
+export function applyPulloverNeckSeamBleedToBbox<T extends SampleBbox>(
+  bb: T,
+  panelKey: HoodiePanelKey | null | undefined,
+  blueprintId?: number | null,
+): T {
+  if (!isPulloverHoodieBlueprint(blueprintId)) return bb;
+  if (panelKey === "left_hood" || panelKey === "right_hood") {
+    const dy = bb.height * PULLOVER_HOOD_NECK_GREY_BLEED_FRAC;
+    if (!(dy > 0)) return bb;
+    return { ...bb, height: bb.height + dy };
+  }
+  if (panelKey === "front") {
+    const dy = bb.height * PULLOVER_FRONT_NECK_GREY_BLEED_FRAC;
+    if (!(dy > 0)) return bb;
+    return { ...bb, y: bb.y - dy, height: bb.height + dy };
+  }
+  return bb;
 }
 
 export function isZipHoodieBlueprint(blueprintId: number | null | undefined): boolean {
@@ -1520,20 +1544,21 @@ function sleeveSourceRectIsCalibrated(
   return Boolean(rect && rect.width > 0 && rect.height > 0);
 }
 
-function pulloverPocketBiasMatches(
+function pulloverPocketBiasCleared(
   group: Pick<DesignGroup, "panelPlacementBias">,
 ): boolean {
   const pocket = group.panelPlacementBias?.pocket;
+  if (!pocket) return true;
   return (
-    pocket?.offsetXPercent === PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT &&
-    pocket?.offsetYPercent === PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT
+    Math.abs(pocket.offsetXPercent ?? 0) < 1e-9 &&
+    Math.abs(pocket.offsetYPercent ?? 0) < 1e-9
   );
 }
 
 /**
- * Pullover bp 450 only: seed front-body + hood front placements to the
- * operator Printify compose (independent front/hood scales — not a
- * derived ratio). Does not touch back, sleeves, or zip templates.
+ * Pullover bp 450 only: seed front-body + hood front placements (N1
+ * stitch abut). Clears leftover pocket bias — finished-shape sampling
+ * replaced it. Does not touch back, sleeves, or zip templates.
  */
 export function restorePulloverFrontHoodZipFraming(
   template: HoodieTemplate,
@@ -1554,20 +1579,16 @@ export function restorePulloverFrontHoodZipFraming(
         front?.scale === PULLOVER_FRONT_BODY_PLACE_SCALE &&
         front.offsetX === PULLOVER_FRONT_BODY_PLACE_OFFSET_X &&
         front.offsetY === PULLOVER_FRONT_BODY_PLACE_OFFSET_Y &&
-        pulloverPocketBiasMatches(g)
+        pulloverPocketBiasCleared(g)
       ) {
         return g;
       }
       changed = true;
+      const nextBias = { ...g.panelPlacementBias };
+      delete nextBias.pocket;
       return {
         ...g,
-        panelPlacementBias: {
-          ...g.panelPlacementBias,
-          pocket: {
-            offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
-            offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
-          },
-        },
+        panelPlacementBias: Object.keys(nextBias).length > 0 ? nextBias : undefined,
         placement: {
           ...g.placement,
           front: {

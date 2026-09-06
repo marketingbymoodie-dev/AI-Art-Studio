@@ -233,11 +233,21 @@ export function punchOutRectOnCanvas(
  * pins the window's inner edge. `null` = midpoint of the two pocket-mask
  * inner edges. Zip only.
  */
-/** Pullover pocket vs new front zoom: 1.1527 / 1.0371. Applied to the live sample bbox (front_pocket only). */
+/**
+ * Printify pocket Safe÷Print leftover — zip overlay / canvas-space cover
+ * only. Pullover Place samples the finished per-edge inset instead.
+ */
 export const POCKET_WINDOW_SCALE = 1.1115;
 export const POCKET_WINDOW_OFFSET_X = 0;
-/** Sewn-fold source inset (canvas px, negative = sample higher on the body). */
+/** Zip sewn-fold source inset (canvas px). Pullover no longer uses this. */
 export const POCKET_WINDOW_OFFSET_Y = -100;
+/** Printify pocket grey insets (Safe vs Print) as fractions of the unsewn AABB. */
+export const PULLOVER_POCKET_FINISHED_INSET = {
+  top: 0.0767,
+  bottom: 0.0611,
+  left: 0.0556,
+  right: 0.0566,
+} as const;
 export const POCKET_SEAM_PIN_X: number | null = null;
 /** Canvas-H used to convert `POCKET_WINDOW_OFFSET_Y` into mockup px (~10 mm at 3200). */
 export const POCKET_SOURCE_INSET_CANVAS_REF_H = 3200;
@@ -262,7 +272,7 @@ export function applyPocketSourceInsetToBbox<T extends MockupBbox>(
   return { ...bb, y: bb.y + dy };
 }
 
-/** Grow/shrink a pocket sample bbox about its center (live Place path). */
+/** Grow/shrink a pocket sample bbox about its center (zip overlay path). */
 export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
   bb: T,
   scale = POCKET_WINDOW_SCALE,
@@ -273,6 +283,18 @@ export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
   const w = bb.width * scale;
   const h = bb.height * scale;
   return { ...bb, x: cx - w / 2, y: cy - h / 2, width: w, height: h };
+}
+
+/** Inset the unsewn grey pocket AABB to the finished sewn face (all four edges). */
+export function applyFinishedPocketSampleToBbox<T extends MockupBbox>(bb: T): T {
+  const left = bb.width * PULLOVER_POCKET_FINISHED_INSET.left;
+  const right = bb.width * PULLOVER_POCKET_FINISHED_INSET.right;
+  const top = bb.height * PULLOVER_POCKET_FINISHED_INSET.top;
+  const bottom = bb.height * PULLOVER_POCKET_FINISHED_INSET.bottom;
+  const width = bb.width - left - right;
+  const height = bb.height - top - bottom;
+  if (!(width > 0) || !(height > 0)) return bb;
+  return { ...bb, x: bb.x + left, y: bb.y + top, width, height };
 }
 
 /** Raw pocket-mask top already past the mural — fold inset would only catch the last row. */
@@ -286,9 +308,9 @@ export function pocketRawTopPastMural(
 }
 
 /**
- * Sewn-fold Y inset, then (pullover `front_pocket` only) sample-bbox scale.
- * Zip halves keep inset-only so 1.1115 does not change zip zoom.
- * Skips inset/scale when the raw pocket top is already artV >= 1.
+ * Pullover `front_pocket`: sample the finished per-edge inset.
+ * Zip halves keep the −100 fold inset (separate pass).
+ * Skips both when the raw (grey) pocket top is already artV >= 1.
  */
 export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
   bb: T,
@@ -302,11 +324,10 @@ export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
   ) {
     return bb;
   }
-  const inset = applyPocketSourceInsetToBbox(bb, frontMaskH);
   if (panelKey === "front_pocket") {
-    return applyPocketSourceScaleToBbox(inset);
+    return applyFinishedPocketSampleToBbox(bb);
   }
-  return inset;
+  return applyPocketSourceInsetToBbox(bb, frontMaskH);
 }
 
 /** Mockup point → host-canvas px. The anisotropic map is only for points. */

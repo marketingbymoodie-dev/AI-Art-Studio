@@ -21,8 +21,9 @@ import {
   PULLOVER_FRONT_BODY_PLACE_SCALE,
   PULLOVER_HOOD_PLACE_OFFSET_Y,
   PULLOVER_HOOD_PLACE_SCALE,
-  PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
-  PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+  PULLOVER_FRONT_NECK_GREY_BLEED_FRAC,
+  PULLOVER_HOOD_NECK_GREY_BLEED_FRAC,
+  applyPulloverNeckSeamBleedToBbox,
   PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT,
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
@@ -352,7 +353,6 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     const groups = defaultPulloverDesignGroups();
     const front = groups.find((g) => g.id === "front-body")!.placement.front;
     const hood = groups.find((g) => g.id === "hood")!.placement.front;
-    const pocketBias = groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket;
     expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
     expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
@@ -360,10 +360,8 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
     expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.210335);
     expect(PULLOVER_HOOD_PLACE_SCALE).toBe(1.203771);
-    expect(pocketBias).toEqual({
-      offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
-      offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
-    });
+    expect(PULLOVER_HOOD_PLACE_OFFSET_Y).toBe(84.445);
+    expect(groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket).toBeUndefined();
     expect(groups.find((g) => g.id === "back-body")!.placement.front.scale).toBe(1);
     expect(groups.find((g) => g.id === "back-body")!.placement.front.offsetY).toBe(0);
   });
@@ -396,10 +394,7 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
     expect(
       healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
-    ).toEqual({
-      offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
-      offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
-    });
+    ).toBeUndefined();
     expect(back.front.scale).toBe(1);
     expect(back.front.offsetY).toBe(0);
     expect(back.back.scale).toBe(1);
@@ -452,8 +447,8 @@ describe("pullover hoodie panel keys (bp 450)", () => {
           ...g,
           panelPlacementBias: {
             pocket: {
-              offsetXPercent: PULLOVER_POCKET_BIAS_OFFSET_X_PERCENT,
-              offsetYPercent: PULLOVER_POCKET_BIAS_OFFSET_Y_PERCENT,
+              offsetXPercent: 9.7,
+              offsetYPercent: -2.4,
             },
           },
           placement: {
@@ -473,6 +468,25 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(
       healed.designGroups!.find((g) => g.id === "front-body")!.placement.front.offsetX,
     ).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
+    ).toBeUndefined();
+  });
+
+  it("expands pullover hood-bottom and front-top sample AABBs into the grey", () => {
+    const hood = { x: 10, y: 98.13, width: 100, height: 266.75 };
+    const bledHood = applyPulloverNeckSeamBleedToBbox(hood, "left_hood", PULOVER_HOODIE_BLUEPRINT_ID);
+    expect(bledHood.y).toBe(98.13);
+    expect(bledHood.height).toBeCloseTo(266.75 * (1 + PULLOVER_HOOD_NECK_GREY_BLEED_FRAC), 5);
+    expect(bledHood.height - hood.height).toBeCloseTo(14, 1);
+    const front = { x: 0, y: 309.86, width: 428.35, height: 524.93 };
+    const bledFront = applyPulloverNeckSeamBleedToBbox(front, "front", PULOVER_HOODIE_BLUEPRINT_ID);
+    expect(bledFront.y).toBeCloseTo(309.86 - 16.33, 1);
+    expect(bledFront.height).toBeCloseTo(524.93 * (1 + PULLOVER_FRONT_NECK_GREY_BLEED_FRAC), 5);
+    expect(applyPulloverNeckSeamBleedToBbox(hood, "left_hood", ZIP_HOODIE_BLUEPRINT_ID)).toEqual(hood);
+    expect(applyPulloverNeckSeamBleedToBbox(front, "front_pocket", PULOVER_HOODIE_BLUEPRINT_ID)).toEqual(
+      front,
+    );
   });
 
   it("designGroupsForBlueprint picks pullover defaults for 450", () => {

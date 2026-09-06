@@ -11,6 +11,7 @@ import {
   intersectRectWithCanvas,
   mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
+  applyFinishedPocketSampleToBbox,
   applyPocketLiveSampleToBbox,
   applyPocketSourceInsetToBbox,
   applyPocketSourceScaleToBbox,
@@ -406,24 +407,25 @@ describe("pocket source inset (sewn fold)", () => {
     expect(shifted.x).toBe(343.83);
   });
 
-  it("scales the pullover pocket sample bbox about center and leaves zip inset-only", () => {
-    expect(POCKET_WINDOW_SCALE).toBe(1.1115);
-    const bb = { x: 100, y: 200, width: 200, height: 100 };
-    const scaled = applyPocketSourceScaleToBbox(bb);
-    expect(scaled.width).toBeCloseTo(200 * 1.1115, 5);
-    expect(scaled.height).toBeCloseTo(100 * 1.1115, 5);
-    expect(scaled.x + scaled.width / 2).toBeCloseTo(200, 5);
-    expect(scaled.y + scaled.height / 2).toBeCloseTo(250, 5);
-    const pullover = applyPocketLiveSampleToBbox(bb, 524.93, "front_pocket");
-    expect(pullover.width).toBeCloseTo(200 * 1.1115, 5);
-    const zip = applyPocketLiveSampleToBbox(bb, 524.93, "pocket_left");
-    expect(zip.width).toBe(200);
-    expect(zip.y).toBeCloseTo(bb.y + pocketSampleInsetMockupY(524.93), 5);
+  it("insets pullover pocket to the finished per-edge shape and leaves zip on −100", () => {
+    const grey = { x: 343.83, y: 635.48, width: 318.81, height: 193.44 };
+    const finished = applyFinishedPocketSampleToBbox(grey);
+    expect(finished.width).toBeCloseTo(283.04, 1);
+    expect(finished.height).toBeCloseTo(166.78, 1);
+    expect(finished.x).toBeCloseTo(361.56, 1);
+    expect(finished.y).toBeCloseTo(650.32, 1);
+    const pullover = applyPocketLiveSampleToBbox(grey, 524.93, "front_pocket", {
+      y: 0,
+      height: 2000,
+    });
+    expect(pullover).toEqual(finished);
+    const zip = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left");
+    expect(zip.width).toBe(318.81);
+    expect(zip.y).toBeCloseTo(grey.y + pocketSampleInsetMockupY(524.93), 5);
   });
 
-  it("skips fold inset/scale when the raw pocket top is already past the mural", () => {
+  it("skips finished inset when the raw pocket top is already past the mural", () => {
     const bb = { x: 343.83, y: 635.48, width: 318.81, height: 193.44 };
-    // Job 1 front: raw pocket top artV ≈ 1.079.
     expect(pocketRawTopPastMural(635.48, -49.785, 635.341)).toBe(true);
     const skipped = applyPocketLiveSampleToBbox(bb, 524.93, "front_pocket", {
       y: -49.785,
@@ -431,13 +433,12 @@ describe("pocket source inset (sewn fold)", () => {
     });
     expect(skipped).toEqual(bb);
     expect(pocketRawTopPastMural(400, -49.785, 635.341)).toBe(false);
-    const folded = applyPocketLiveSampleToBbox(
+    const finished = applyPocketLiveSampleToBbox(
       { x: 100, y: 400, width: 200, height: 100 },
       524.93,
       "front_pocket",
       { y: -49.785, height: 635.341 },
     );
-    expect(folded.width).toBeCloseTo(200 * 1.1115, 5);
-    expect(folded.y).not.toBe(400);
+    expect(finished).toEqual(applyFinishedPocketSampleToBbox({ x: 100, y: 400, width: 200, height: 100 }));
   });
 });
