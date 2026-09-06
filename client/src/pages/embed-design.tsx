@@ -9051,6 +9051,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         willFetch: shouldFetchMockups,
       });
       if (useAopCustomizer && imageUrl) {
+        lastAopPanelUrlsRef.current = null;
+        lastHostedPrintPanelsRef.current = [];
+        storedAopPanelCaptureSignatureRef.current = null;
+        lastPersistedAopCaptureStateRef.current = null;
         setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
@@ -10486,9 +10490,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!generatedDesign?.imageUrl || !jobId) return;
 
     const hasRestoredPrintFiles = (lastAopPanelUrlsRef.current?.length ?? 0) > 0;
-    // Saved designs already have hosted print files. Don't force-apply on
-    // open — that raced the template load and stuck "Syncing placement…".
-    if (hasRestoredPrintFiles) {
+    // Only skip for a saved-design reopen. Leftover panels from the previous
+    // generate must not mark this job saved or block a fresh persist.
+    if (hasRestoredPrintFiles && restoringSavedDesignRef.current) {
       aopPersistKickAttemptedRef.current = true;
       emitTesterDesignStatus({ jobId, aopPanels: "saved" });
       return;
@@ -10507,16 +10511,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
         const status = testerDesignStatusRef.current.aopPanels;
         if (!shouldKickAopPersist(status, aopPersistKickAttemptedRef.current)) return;
-        aopPersistKickAttemptedRef.current = true;
         if (status === "none" || status === "saving") {
           emitTesterDesignStatus({ jobId, aopPanels: "saving" });
         }
         try {
           const applied = await flushHoodieAopPlacer({ force: true });
-          if (cancelled) return;
-          if (applied) return;
-          // Placer mounted but artwork/template not ready — retry.
-          aopPersistKickAttemptedRef.current = false;
+          if (cancelled) {
+            aopPersistKickAttemptedRef.current = false;
+            return;
+          }
+          if (applied) {
+            aopPersistKickAttemptedRef.current = true;
+            return;
+          }
         } catch (err) {
           console.warn("[AdminTester] AOP persist kick failed:", err);
           const now = testerDesignStatusRef.current.aopPanels;
@@ -10530,18 +10537,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (testerDesignStatusRef.current.aopPanels === "saving") {
         emitTesterDesignStatus({
           jobId,
-          aopPanels: hasRestoredPrintFiles ? "saved" : "error",
+          aopPanels: "error",
         });
       }
     })();
     return () => {
       cancelled = true;
+      if (testerDesignStatusRef.current.aopPanels === "saving") {
+        aopPersistKickAttemptedRef.current = false;
+      }
     };
   }, [
     isAdminTester,
     useAopCustomizer,
     showPatternStep,
-    generatedDesign?.imageUrl,
     generatedDesign?.id,
     flushHoodieAopPlacer,
     emitTesterDesignStatus,
@@ -17444,20 +17453,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     onApply={handleHoodieAopApply}
                     onApplyStatusChange={(s) => {
                       setAopApplyStatus(s);
-                      if (s === "saved") setAopPlacementDirty(false);
+                      if (s === "saved") {
+                        setAopPlacementDirty(false);
+                        if (isAdminTester && savedJobIdRef.current) {
+                          emitTesterDesignStatus({
+                            jobId: savedJobIdRef.current,
+                            aopPanels: "saved",
+                          });
+                        }
+                      }
                     }}
                     // Resume: skip one-shot initial apply (mockup already persisted).
                     // Fresh designs still apply once for the first cart image.
                     skipInitialAutoApply={
-                      !!(
-                        hoodieAopPlacerState?.placements ||
-                        hoodieAopPlacerState?.enabled
-                      ) ||
-                      (!!hoodieAopPlacerState &&
-                        aopArtworkUrlsMatch(
-                          hoodieAopPlacerState.artworkUrl,
-                          aopPendingMotifUrl,
-                        ))
+                      !!hoodieAopPlacerState &&
+                      aopArtworkUrlsMatch(
+                        hoodieAopPlacerState.artworkUrl,
+                        aopPendingMotifUrl,
+                      )
                     }
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
