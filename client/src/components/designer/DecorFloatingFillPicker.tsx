@@ -2,6 +2,7 @@ import { useCallback, type RefObject } from "react";
 import { Pipette } from "lucide-react";
 import { DEFAULT_DECOR_BACKGROUND_FILL } from "@shared/decorBackgroundFill";
 import { Label } from "@/components/ui/label";
+import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
 
 type FillSwatch = { hex: string };
 
@@ -160,6 +161,9 @@ export function DecorFloatingFillPicker({
           }}
         />
       </div>
+      {!isNone ? (
+        <ShadeSpectrumRow hex={hex} selected={hex} onPick={onChange} />
+      ) : null}
       {hint ? (
         <p className="mt-1 text-[10px] text-muted-foreground leading-snug">{hint}</p>
       ) : null}

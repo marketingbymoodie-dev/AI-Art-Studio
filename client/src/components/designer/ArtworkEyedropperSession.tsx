@@ -12,7 +12,6 @@ import {
 } from "@/components/designer/openEyeDropper";
 
 const LOUPE_PX = 132;
-const LOUPE_OFFSET = 18;
 
 type ArtworkEyedropperSessionProps = {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -39,7 +38,6 @@ export function ArtworkEyedropperSession({
   const hexRef = useRef<string | null>(null);
   const loupeRef = useRef<HTMLCanvasElement | null>(null);
   const hintRef = useRef<HTMLDivElement | null>(null);
-  const hairRef = useRef<HTMLDivElement | null>(null);
   const swatchRef = useRef<HTMLSpanElement | null>(null);
   const hexLabelRef = useRef<HTMLSpanElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -86,7 +84,7 @@ export function ArtworkEyedropperSession({
               ctx.fillRect((dx + half) * cell, (dy + half) * cell, cell + 0.5, cell + 0.5);
             }
           }
-          ctx.strokeStyle = "rgba(255,255,255,0.22)";
+          ctx.strokeStyle = "rgba(255,255,255,0.18)";
           ctx.lineWidth = 1;
           for (let i = 1; i < ARTWORK_EYEDROPPER_LOUPE_CELLS; i += 1) {
             ctx.beginPath();
@@ -98,9 +96,14 @@ export function ArtworkEyedropperSession({
             ctx.lineTo(LOUPE_PX, i * cell);
             ctx.stroke();
           }
-          ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(half * cell + 0.5, half * cell + 0.5, cell - 1, cell - 1);
+          ctx.strokeStyle = "rgba(255,255,255,0.9)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(LOUPE_PX / 2, 10);
+          ctx.lineTo(LOUPE_PX / 2, LOUPE_PX - 10);
+          ctx.moveTo(10, LOUPE_PX / 2);
+          ctx.lineTo(LOUPE_PX - 10, LOUPE_PX / 2);
+          ctx.stroke();
         }
       }
 
@@ -109,7 +112,11 @@ export function ArtworkEyedropperSession({
         swatchRef.current.style.visibility = hex ? "visible" : "hidden";
       }
       if (hexLabelRef.current) {
-        hexLabelRef.current.textContent = hex ?? (inside ? "…" : "Move over artwork");
+        hexLabelRef.current.textContent = hex
+          ? `${hex} · click to pick`
+          : inside
+            ? "…"
+            : "Move the circle over the artwork";
       }
     };
 
@@ -119,24 +126,18 @@ export function ArtworkEyedropperSession({
       if (loupe) {
         const left = Math.min(
           window.innerWidth - LOUPE_PX - 8,
-          Math.max(8, clientX + LOUPE_OFFSET),
+          Math.max(8, clientX - LOUPE_PX / 2),
         );
         const top = Math.min(
           window.innerHeight - LOUPE_PX - 8,
-          Math.max(8, clientY - LOUPE_PX - LOUPE_OFFSET),
+          Math.max(8, clientY - LOUPE_PX / 2),
         );
         loupe.style.left = `${left}px`;
         loupe.style.top = `${top}px`;
       }
       if (hint) {
-        hint.style.left = `${Math.min(window.innerWidth - 220, Math.max(8, clientX - 90))}px`;
-        hint.style.top = `${Math.min(window.innerHeight - 36, clientY + 20)}px`;
-      }
-      const hair = hairRef.current;
-      if (hair) {
-        hair.style.left = `${clientX - 7}px`;
-        hair.style.top = `${clientY - 7}px`;
-        hair.style.opacity = insideRef.current ? "1" : "0";
+        hint.style.left = `${Math.min(window.innerWidth - 240, Math.max(8, clientX - 100))}px`;
+        hint.style.top = `${Math.min(window.innerHeight - 36, clientY + LOUPE_PX / 2 + 10)}px`;
       }
     };
 
@@ -268,12 +269,6 @@ export function ArtworkEyedropperSession({
         height={LOUPE_PX}
         className="pointer-events-none fixed rounded-full border-2 border-white shadow-lg"
         style={{ width: LOUPE_PX, height: LOUPE_PX, left: 8, top: 8 }}
-        aria-hidden
-      />
-      <div
-        ref={hairRef}
-        className="pointer-events-none fixed h-3.5 w-3.5 rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.65)]"
-        style={{ left: 0, top: 0, opacity: 0 }}
         aria-hidden
       />
       <div

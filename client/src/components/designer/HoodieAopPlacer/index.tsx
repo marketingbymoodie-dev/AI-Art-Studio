@@ -62,6 +62,7 @@ import {
 import DesignRectHandlesOverlay from "@/components/hoodie-template-mapper/DesignRectHandlesOverlay";
 import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
 import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
+import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
 import { API_BASE } from "@/lib/urlBase";
 import { safeFetch } from "@/lib/safeFetch";
 
@@ -2885,6 +2886,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               />
             ))}
           </div>
+          <ShadeSpectrumRow
+            hex={state.backgroundColor}
+            selected={state.backgroundColor}
+            onPick={setBgColor}
+          />
         </div>
 
         {/* Leggings: fine-position nudges (replaces former Replace artwork slot). */}

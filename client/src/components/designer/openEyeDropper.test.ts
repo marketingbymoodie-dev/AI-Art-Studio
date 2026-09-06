@@ -5,6 +5,7 @@ import {
   followArtworkPoint,
   hexFromRgb,
   sampleSnapshotHex,
+  shadeSpectrum,
   type CanvasSnapshot,
 } from "./openEyeDropper";
 
@@ -63,5 +64,14 @@ describe("artwork eyedropper sampling", () => {
 
   it("formats rgb as uppercase hex", () => {
     expect(hexFromRgb(255, 128, 0)).toBe("#FF8000");
+  });
+
+  it("builds a darker-to-lighter spectrum around the picked colour", () => {
+    const shades = shadeSpectrum("#C45A3A");
+    expect(shades.length).toBeGreaterThanOrEqual(3);
+    expect(shades).toContain("#C45A3A");
+    const mid = shades.indexOf("#C45A3A");
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(shades.length - 1);
   });
 });

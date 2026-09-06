@@ -22,6 +22,7 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
 import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
+import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
 import { CATALOG_SIZE_BLANK_BLUEPRINTS } from "@shared/catalogSizeBlanks";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
@@ -1052,9 +1053,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const pickEyedropper = useCallback(
     (hex: string) => {
       setBgColor(hex);
+      decorGenerateFill?.onChange(hex);
       setEyedropperOn(false);
     },
-    [setBgColor],
+    [setBgColor, decorGenerateFill],
   );
 
   const resetView = useCallback(
@@ -1818,6 +1820,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 />
               ))}
             </div>
+            <ShadeSpectrumRow
+              hex={state.backgroundColor}
+              selected={state.backgroundColor}
+              onPick={setBgColor}
+            />
             <p className="mt-1.5 text-[10px] text-muted-foreground leading-snug">
               Fills the masked phone case (including wrap edges) under your
               artwork. The grey print-canvas guide stays grey. Use None for

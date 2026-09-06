@@ -26,6 +26,7 @@ import {
   PLACEMENT_NUDGE_SCREEN_PX,
 } from "@/components/designer/placementNudge";
 import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
+import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
 import { placerSegmentClass } from "@/components/designer/placerControlStyles";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -3689,6 +3690,9 @@ export function PatternCustomizer({
           />
         </label>
       </div>
+      {bgColor && bgColor !== "transparent" ? (
+        <ShadeSpectrumRow hex={bgColor} selected={bgColor} onPick={setBgColor} />
+      ) : null}
     </div>
   );
 

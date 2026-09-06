@@ -99,3 +99,87 @@ export function clampToRect(
     y: Math.min(rect.bottom - 0.5, Math.max(rect.top + 0.5, y)),
   };
 }
+
+export function parseHexRgb(
+  hex: string,
+): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16),
+  };
+}
+
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h = 0;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s, l };
+}
+
+function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let rn = 0;
+  let gn = 0;
+  let bn = 0;
+  if (hp >= 0 && hp < 1) {
+    rn = c;
+    gn = x;
+  } else if (hp < 2) {
+    rn = x;
+    gn = c;
+  } else if (hp < 3) {
+    gn = c;
+    bn = x;
+  } else if (hp < 4) {
+    gn = x;
+    bn = c;
+  } else if (hp < 5) {
+    rn = x;
+    bn = c;
+  } else {
+    rn = c;
+    bn = x;
+  }
+  const m = l - c / 2;
+  return {
+    r: (rn + m) * 255,
+    g: (gn + m) * 255,
+    b: (bn + m) * 255,
+  };
+}
+
+/** Darker → picked → lighter chips for the same hue. */
+export function shadeSpectrum(hex: string, count: number = 5): string[] {
+  const rgb = parseHexRgb(hex);
+  if (!rgb) return [];
+  const { h, s, l } = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  const half = Math.floor(Math.max(3, count) / 2);
+  const out: string[] = [];
+  for (let i = -half; i <= half; i += 1) {
+    if (i === 0) {
+      out.push(hexFromRgb(rgb.r, rgb.g, rgb.b));
+      continue;
+    }
+    const nextL = Math.max(0.08, Math.min(0.94, l + i * 0.14));
+    const next = hslToRgb(h, s, nextL);
+    out.push(hexFromRgb(next.r, next.g, next.b));
+  }
+  return out.filter((c, i, all) => all.findIndex((x) => x === c) === i);
+}
