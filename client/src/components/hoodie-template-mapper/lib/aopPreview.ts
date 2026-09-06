@@ -86,6 +86,11 @@ import {
   applyPocketLiveSampleToBbox,
 } from "@shared/pulloverPocketPrintMerge";
 import {
+  printSafeDestRect,
+  printSafeInsetsForPanel,
+  type PrintSafeInsets,
+} from "@shared/hoodiePrintSafeInsets";
+import {
   BODY_PRINT_BLEED_PANEL_KEYS,
   computeTilePxOnFlatCanvas,
   computePreviewMeshTileStretch,
@@ -1223,18 +1228,122 @@ export function artworkSourceRectForPanel(
 }
 
 /** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
-export function buildFlatMeshTargetPoints(mesh: MeshGrid, flatW: number, flatH: number): Pt[] {
+export function buildFlatMeshTargetPoints(
+  mesh: MeshGrid,
+  flatW: number,
+  flatH: number,
+  dest?: { x: number; y: number; width: number; height: number } | null,
+): Pt[] {
   const { cols, rows } = mesh;
+  const ox = dest?.x ?? 0;
+  const oy = dest?.y ?? 0;
+  const dw = dest?.width ?? flatW;
+  const dh = dest?.height ?? flatH;
   const points: Pt[] = [];
   for (let r = 0; r < rows; r += 1) {
     for (let c = 0; c < cols; c += 1) {
       points.push({
-        x: (c / (cols - 1)) * flatW,
-        y: (r / (rows - 1)) * flatH,
+        x: ox + (c / (cols - 1)) * dw,
+        y: oy + (r / (rows - 1)) * dh,
       });
     }
   }
   return points;
+}
+
+/**
+ * Fill Print-minus-Safe (grey) by dest-space edge-extend after the Safe warp.
+ * Not a source restretch and not new bleed — v<0 / v>1 / side rims
+ * continue the Safe-edge pixels. Placeholder canvas size is unchanged.
+ */
+export function fillPrintGreyByEdgeExtend(
+  canvas: HTMLCanvasElement,
+  insets: PrintSafeInsets,
+): HTMLCanvasElement {
+  const w = canvas.width;
+  const h = canvas.height;
+  const dest = printSafeDestRect(w, h, insets);
+  if (dest.x <= 0 && dest.y <= 0 && dest.x + dest.width >= w && dest.y + dest.height >= h) {
+    return canvas;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+  const snap = document.createElement("canvas");
+  snap.width = dest.width;
+  snap.height = dest.height;
+  const sctx = snap.getContext("2d");
+  if (!sctx) return canvas;
+  sctx.drawImage(
+    canvas,
+    dest.x,
+    dest.y,
+    dest.width,
+    dest.height,
+    0,
+    0,
+    dest.width,
+    dest.height,
+  );
+  const prevSmooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  const botH = h - dest.y - dest.height;
+  const rightW = w - dest.x - dest.width;
+  if (dest.y > 0) {
+    ctx.drawImage(snap, 0, 0, dest.width, 1, dest.x, 0, dest.width, dest.y);
+  }
+  if (botH > 0) {
+    ctx.drawImage(
+      snap,
+      0,
+      dest.height - 1,
+      dest.width,
+      1,
+      dest.x,
+      dest.y + dest.height,
+      dest.width,
+      botH,
+    );
+  }
+  if (dest.x > 0) {
+    ctx.drawImage(snap, 0, 0, 1, dest.height, 0, dest.y, dest.x, dest.height);
+  }
+  if (rightW > 0) {
+    ctx.drawImage(
+      snap,
+      dest.width - 1,
+      0,
+      1,
+      dest.height,
+      dest.x + dest.width,
+      dest.y,
+      rightW,
+      dest.height,
+    );
+  }
+  if (dest.y > 0 && dest.x > 0) {
+    ctx.drawImage(snap, 0, 0, 1, 1, 0, 0, dest.x, dest.y);
+  }
+  if (dest.y > 0 && rightW > 0) {
+    ctx.drawImage(snap, dest.width - 1, 0, 1, 1, dest.x + dest.width, 0, rightW, dest.y);
+  }
+  if (botH > 0 && dest.x > 0) {
+    ctx.drawImage(snap, 0, dest.height - 1, 1, 1, 0, dest.y + dest.height, dest.x, botH);
+  }
+  if (botH > 0 && rightW > 0) {
+    ctx.drawImage(
+      snap,
+      dest.width - 1,
+      dest.height - 1,
+      1,
+      1,
+      dest.x + dest.width,
+      dest.y + dest.height,
+      rightW,
+      botH,
+    );
+  }
+  ctx.imageSmoothingEnabled = prevSmooth;
+  return canvas;
 }
 
 /**
@@ -1290,6 +1399,12 @@ export function renderHoodFlatPanel(
     legsMirrored?: boolean;
     /** Pullover neck sample expansion (print + preview callers pass this). */
     blueprintId?: number | null;
+    /**
+     * Print export only. Map UV 0–1 onto this panel's Safe rect and
+     * edge-extend grey. Preview bridge must leave this unset — back-view
+     * meshes are calibrated to the full placeholder.
+     */
+    mapDestToSafe?: boolean;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -1385,14 +1500,16 @@ export function renderHoodFlatPanel(
   }
   const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
   const bakedSlice = slice;
-  // Bake through the same mesh topology the live preview uses, but with
-  // targetPoints on a uniform flat grid so the entire Printify placeholder
-  // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
-  // into a fractional dest rect left most of the canvas white on Printify.
-  // Customer Place rotation is pre-baked into `artSource` (not mesh UV).
+  const insets = options?.mapDestToSafe
+    ? printSafeInsetsForPanel(frontLayer.panelKey, options.blueprintId)
+    : null;
+  const dest = insets ? printSafeDestRect(flatW, flatH, insets) : null;
+  // Print: UV 0–1 → Safe rect (preview uses sewn mesh dest). Preview
+  // bridge leaves dest null so the full placeholder still feeds the
+  // back-view warp. Customer Place rotation is pre-baked into artSource.
   drawMeshWarp(ctx, artSource, bakedSize.width, bakedSize.height, {
     ...frontLayer.mesh,
-    targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
+    targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH, dest),
     sourceRect: bakedSlice,
     sourceFlipX: meshSourceFlipXForPanel(
       frontLayer.panelKey,
@@ -1401,6 +1518,7 @@ export function renderHoodFlatPanel(
       options?.legsMirrored,
     ),
   });
+  if (insets) fillPrintGreyByEdgeExtend(canvas, insets);
   return canvas;
 }
 
@@ -3776,6 +3894,7 @@ export function renderFlatPrintPanels(
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
           blueprintId: template.blueprintId,
+          mapDestToSafe: true,
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the

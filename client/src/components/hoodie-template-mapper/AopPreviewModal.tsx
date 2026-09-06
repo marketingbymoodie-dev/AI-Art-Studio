@@ -1275,6 +1275,7 @@ function FlatPanelThumbnails({
         fallbackSize,
         panelPlacementBias: panelBias,
         blueprintId: template.blueprintId,
+        mapDestToSafe: true,
       });
       out.push({
         id: layer.id,

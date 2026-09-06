@@ -165,25 +165,39 @@ describe("printPanelOutputScale", () => {
 });
 
 describe("buildFlatMeshTargetPoints", () => {
+  const mesh = {
+    cols: 3,
+    rows: 2,
+    targetPoints: [
+      { x: 10, y: 20 },
+      { x: 30, y: 20 },
+      { x: 50, y: 20 },
+      { x: 10, y: 80 },
+      { x: 30, y: 80 },
+      { x: 50, y: 80 },
+    ],
+  };
+
   it("maps mesh corners to the full flat canvas", () => {
-    const mesh = {
-      cols: 3,
-      rows: 2,
-      targetPoints: [
-        { x: 10, y: 20 },
-        { x: 30, y: 20 },
-        { x: 50, y: 20 },
-        { x: 10, y: 80 },
-        { x: 30, y: 80 },
-        { x: 50, y: 80 },
-      ],
-    };
     const flat = buildFlatMeshTargetPoints(mesh, 400, 200);
     expect(flat).toHaveLength(6);
     expect(flat[0]).toEqual({ x: 0, y: 0 });
     expect(flat[2]).toEqual({ x: 400, y: 0 });
     expect(flat[3]).toEqual({ x: 0, y: 200 });
     expect(flat[5]).toEqual({ x: 400, y: 200 });
+  });
+
+  it("maps UV 0–1 onto a Safe dest rect when insets are supplied", () => {
+    const flat = buildFlatMeshTargetPoints(mesh, 400, 200, {
+      x: 40,
+      y: 20,
+      width: 320,
+      height: 160,
+    });
+    expect(flat[0]).toEqual({ x: 40, y: 20 });
+    expect(flat[2]).toEqual({ x: 360, y: 20 });
+    expect(flat[3]).toEqual({ x: 40, y: 180 });
+    expect(flat[5]).toEqual({ x: 360, y: 180 });
   });
 });
 
