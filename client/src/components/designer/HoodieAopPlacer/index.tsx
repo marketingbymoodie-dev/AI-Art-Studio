@@ -61,6 +61,7 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import DesignRectHandlesOverlay from "@/components/hoodie-template-mapper/DesignRectHandlesOverlay";
 import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
+import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
 import { API_BASE } from "@/lib/urlBase";
 import { safeFetch } from "@/lib/safeFetch";
 
@@ -74,7 +75,8 @@ import { safeFetch } from "@/lib/safeFetch";
  *   2. View row: Front / Back / Hood
  *   3. Artwork Enabled (per-active-group)
  *   4. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
- *   5. Fine position nudge (leggings: in controls; others: under preview)
+ *   5. Fine position nudge (leggings: in controls; others: under preview on
+ *      mobile, under Artwork enabled on desktop)
  *   6. Scale slider (drives the active group)
  *   7. Reset (beside Link / Mirror)
  *
@@ -1262,7 +1264,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
 
   // ---------- Canvas rendering ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const eyedropperActiveRef = useRef(false);
   useEffect(() => {
+    if (eyedropperActiveRef.current) return;
     if (!data || !state) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1619,9 +1623,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [data, withFrontIfNeeded]);
 
   const setBgColor = useCallback((hex: string) => {
-    setState((prev) =>
-      prev ? { ...withFrontIfNeeded(prev), backgroundColor: hex } : prev,
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      if (prev.backgroundColor === hex) return prev;
+      return { ...withFrontIfNeeded(prev), backgroundColor: hex };
+    });
   }, [withFrontIfNeeded]);
 
   const updateActiveGroupPlacement = useCallback(
@@ -1897,14 +1903,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [withFrontIfNeeded]);
 
   const triggerEyedropper = useCallback(async () => {
-    const W = window as any;
-    if (!W.EyeDropper) return;
+    if (!isEyeDropperSupported()) return;
+    eyedropperActiveRef.current = true;
     try {
-      const ed = new W.EyeDropper();
-      const r = await ed.open();
-      if (r?.sRGBHex) setBgColor(r.sRGBHex);
-    } catch {
-      /* user cancelled — ignore */
+      const hex = await openScreenEyeDropper();
+      if (hex) setBgColor(hex);
+    } finally {
+      eyedropperActiveRef.current = false;
     }
   }, [setBgColor]);
 
@@ -2312,10 +2317,10 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             </div>
           )}
         </div>
-        {/* Non-leggings: nudge under preview. Leggings: nudge lives in controls. */}
+        {/* Mobile: nudge under preview. Desktop: under Artwork enabled. */}
         {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
-            className="relative z-10 border-t border-border bg-card px-3 py-2"
+            className="relative z-10 border-t border-border bg-card px-3 py-2 lg:hidden"
             onNudge={nudgePlacement}
           />
         )}
@@ -2814,6 +2819,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </div>
         )}
 
+        {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
+          <FinePositionNudgeInline
+            className="hidden rounded border border-border bg-muted/20 px-2 py-2 lg:block"
+            onNudge={nudgePlacement}
+          />
+        )}
+
         {/* Background colour */}
         <div>
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -2834,9 +2846,10 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
               spellCheck={false}
             />
-            {typeof window !== "undefined" && "EyeDropper" in window && (
+            {isEyeDropperSupported() && (
               <button
-                onClick={triggerEyedropper}
+                type="button"
+                onClick={() => void triggerEyedropper()}
                 className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
                 title="Pick a colour from anywhere on screen"
                 aria-label="Eyedropper"

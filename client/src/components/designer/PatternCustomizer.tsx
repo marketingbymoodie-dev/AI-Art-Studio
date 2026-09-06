@@ -25,6 +25,7 @@ import {
   FinePositionNudge,
   PLACEMENT_NUDGE_SCREEN_PX,
 } from "@/components/designer/placementNudge";
+import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
 import { placerSegmentClass } from "@/components/designer/placerControlStyles";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -3640,7 +3641,7 @@ export function PatternCustomizer({
   /** Radix Slider: Root > Track (span) > Range; Thumb is sibling span — no data-slot. */
   const sliderTrackClass =
     "mt-1 [&>span:first-child]:rounded-full [&>span:first-child]:ring-2 [&>span:first-child]:ring-foreground/35 [&>span:first-child]:bg-muted-foreground/25 dark:[&>span:first-child]:bg-muted-foreground/40 [&>span:first-child>span]:bg-foreground [&>span:last-child]:border-2 [&>span:last-child]:border-foreground [&>span:last-child]:bg-background";
-  const canUseEyeDropper = typeof window !== "undefined" && "EyeDropper" in window;
+  const canUseEyeDropper = isEyeDropperSupported();
 
   // Shared colour-selector block rendered above Tile size (Pattern mode) and
   // above Artwork scale (Place on Item mode). Originally lived at the bottom
@@ -3671,13 +3672,8 @@ export function PatternCustomizer({
           disabled={!canUseEyeDropper}
           onClick={async () => {
             if (!canUseEyeDropper) return;
-            try {
-              // @ts-expect-error EyeDropper is not yet in TS lib
-              const result = await new window.EyeDropper().open();
-              setBgColor(result.sRGBHex);
-            } catch {
-              // cancelled or unsupported
-            }
+            const hex = await openScreenEyeDropper();
+            if (hex) setBgColor(hex);
           }}
           className="h-9 w-9 shrink-0 flex items-center justify-center rounded border-2 border-foreground/25 bg-background hover:border-foreground/50 transition-colors disabled:opacity-35 disabled:cursor-not-allowed"
         >

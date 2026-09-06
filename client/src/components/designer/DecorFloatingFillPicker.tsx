@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { Pipette } from "lucide-react";
 import { DEFAULT_DECOR_BACKGROUND_FILL } from "@shared/decorBackgroundFill";
 import { Label } from "@/components/ui/label";
+import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
 
 type FillSwatch = { hex: string };
 
@@ -42,18 +43,10 @@ export function DecorFloatingFillPicker({
   ].filter((s, i, all) => all.findIndex((x) => x.hex.toUpperCase() === s.hex.toUpperCase()) === i);
 
   const triggerEyedropper = useCallback(async () => {
-    const W = window as unknown as {
-      EyeDropper?: new () => { open: () => Promise<{ sRGBHex?: string }> };
-    };
-    if (!W.EyeDropper) return;
-    try {
-      const ed = new W.EyeDropper();
-      const r = await ed.open();
-      const next = r?.sRGBHex ? normalizeHex(r.sRGBHex) : null;
-      if (next) onChange(next);
-    } catch {
-      /* cancelled */
-    }
+    if (!isEyeDropperSupported()) return;
+    const hex = await openScreenEyeDropper();
+    const next = hex ? normalizeHex(hex) : null;
+    if (next) onChange(next);
   }, [onChange]);
 
   return (
@@ -84,7 +77,7 @@ export function DecorFloatingFillPicker({
           spellCheck={false}
           aria-label="Background hex"
         />
-        {typeof window !== "undefined" && "EyeDropper" in window && (
+        {isEyeDropperSupported() && (
           <button
             type="button"
             onClick={() => void triggerEyedropper()}

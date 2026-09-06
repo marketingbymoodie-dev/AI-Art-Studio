@@ -21,6 +21,7 @@ import {
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
+import { isEyeDropperSupported, openScreenEyeDropper } from "@/components/designer/openEyeDropper";
 import { CATALOG_SIZE_BLANK_BLUEPRINTS } from "@shared/catalogSizeBlanks";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
@@ -814,7 +815,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   // ---------- Live canvas ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const eyedropperActiveRef = useRef(false);
   useEffect(() => {
+    if (eyedropperActiveRef.current) return;
     if (!state) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1042,16 +1045,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, []);
 
   const triggerEyedropper = useCallback(async () => {
-    const W = window as unknown as {
-      EyeDropper?: new () => { open: () => Promise<{ sRGBHex?: string }> };
-    };
-    if (!W.EyeDropper) return;
+    if (!isEyeDropperSupported()) return;
+    eyedropperActiveRef.current = true;
     try {
-      const ed = new W.EyeDropper();
-      const r = await ed.open();
-      if (r?.sRGBHex) setBgColor(r.sRGBHex);
-    } catch {
-      /* cancelled */
+      const hex = await openScreenEyeDropper();
+      if (hex) setBgColor(hex);
+    } finally {
+      eyedropperActiveRef.current = false;
     }
   }, [setBgColor]);
 
@@ -1778,7 +1778,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
                 spellCheck={false}
               />
-              {typeof window !== "undefined" && "EyeDropper" in window && (
+              {isEyeDropperSupported() && (
                 <button
                   type="button"
                   onClick={() => void triggerEyedropper()}
