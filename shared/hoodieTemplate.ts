@@ -48,14 +48,15 @@ export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 1;
  * (front ×1.1527, hood ×0.8079). N1 keeps hood scale (80.79%) and
  * moves hood offsetY only so the neck stitch abuts (front unchanged).
  */
-export const PULLOVER_HOOD_PLACE_SCALE = 1.203771;
-export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.210335;
-/** N1 stitch abut (was operator compose 57.429). Crown empty is accepted. */
-export const PULLOVER_HOOD_PLACE_OFFSET_Y = 84.445;
-/** Operator Printify front pos-left −0.59% (center-offset compose). */
-export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -2.527;
-/** Operator Printify front pos-top 2.09% (center-offset compose). */
-export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -304.439;
+export const PULLOVER_HOOD_PLACE_SCALE = 1.3611;
+export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.2103;
+/** Preview Studio operator defaults (Save as defaults, 2026-09). */
+export const PULLOVER_HOOD_PLACE_OFFSET_Y = 218.0846;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -4.721;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -65.1539;
+/** Centre-seam trim so L/R hoods do not share the same mural strip. */
+export const PULLOVER_HOOD_SEAM_ALLOWANCE = 0.08;
+export const PULLOVER_POCKET_SAMPLE_OFFSET_Y = 5;
 /**
  * Printify hood-bottom / front-top grey (Safe−Print) as a fraction of
  * that panel's mask height. Sample expansion only — not a dest clip.
@@ -923,7 +924,7 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
         },
         back: { ...blank },
       },
-      seamAllowance: 0,
+      seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE,
       lockedRatio: null,
       enabled: true,
     },
@@ -943,6 +944,15 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
           offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
         },
         back: { ...blank },
+      },
+      panelPlacementBias: {
+        pocket: {
+          offsetXPercent: 0,
+          offsetYPercent: 0,
+          offsetX: 0,
+          offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+          scale: 1,
+        },
       },
       seamAllowance: 0,
       lockedRatio: null,
@@ -1574,7 +1584,7 @@ function pulloverPocketBiasCleared(
     Math.abs(pocket.offsetXPercent ?? 0) < 1e-9 &&
     Math.abs(pocket.offsetYPercent ?? 0) < 1e-9 &&
     Math.abs(pocket.offsetX ?? 0) < 1e-9 &&
-    Math.abs(pocket.offsetY ?? 0) < 1e-9 &&
+    Math.abs((pocket.offsetY ?? 0) - PULLOVER_POCKET_SAMPLE_OFFSET_Y) < 1e-9 &&
     Math.abs((pocket.scale ?? 1) - 1) < 1e-9
   );
 }
@@ -1585,17 +1595,41 @@ function pulloverFrontPlacementIsSeed(
 ): boolean {
   if (!front) return false;
   return (
-    front.scale === seed.scale &&
-    front.offsetX === seed.offsetX &&
-    front.offsetY === seed.offsetY &&
+    Math.abs(front.scale - seed.scale) < 1e-6 &&
+    Math.abs(front.offsetX - seed.offsetX) < 1e-6 &&
+    Math.abs(front.offsetY - seed.offsetY) < 1e-6 &&
     (front.rotationDeg ?? 0) === 0
   );
 }
 
+/** Stale pullover seeds from before Preview Studio operator defaults. */
+const LEGACY_PULLOVER_HOOD_PLACEMENTS = [
+  { scale: 1.203771, offsetX: 0, offsetY: 84.445 },
+  { scale: 1, offsetX: 0, offsetY: 0 },
+] as const;
+
+const LEGACY_PULLOVER_FRONT_PLACEMENTS = [
+  { scale: 1.210335, offsetX: -2.527, offsetY: -304.439 },
+  { scale: 1.210335, offsetX: 0, offsetY: -304.439 },
+  { scale: 1, offsetX: 0, offsetY: 0 },
+] as const;
+
+function isLegacyPulloverPlacement(
+  front: { scale: number; offsetX: number; offsetY: number; rotationDeg?: number } | undefined,
+  leftovers: readonly { scale: number; offsetX: number; offsetY: number }[],
+): boolean {
+  return leftovers.some((seed) => pulloverFrontPlacementIsSeed(front, seed));
+}
+
+function withPulloverHoodSeam(group: DesignGroup): DesignGroup {
+  if ((group.seamAllowance ?? 0) > 1e-9) return group;
+  return { ...group, seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE };
+}
+
 /**
- * Pullover bp 450 only: seed front-body + hood front placements (N1
- * stitch abut). Clears leftover pocket bias — finished-shape sampling
- * replaced it. Does not touch back, sleeves, or zip templates.
+ * Pullover bp 450 only: heal leftover zip/N1 framing to the current
+ * operator defaults. Custom Preview Studio numbers are kept even when
+ * `placementAuthored` was stripped on publish. Zip templates are untouched.
  */
 export function restorePulloverFrontHoodZipFraming(
   template: HoodieTemplate,
@@ -1623,12 +1657,22 @@ export function restorePulloverFrontHoodZipFraming(
       ) {
         return g;
       }
+      if (!isLegacyPulloverPlacement(front, LEGACY_PULLOVER_FRONT_PLACEMENTS)) {
+        return g;
+      }
       changed = true;
-      const nextBias = { ...g.panelPlacementBias };
-      delete nextBias.pocket;
       return {
         ...g,
-        panelPlacementBias: Object.keys(nextBias).length > 0 ? nextBias : undefined,
+        panelPlacementBias: {
+          ...g.panelPlacementBias,
+          pocket: {
+            offsetXPercent: 0,
+            offsetYPercent: 0,
+            offsetX: 0,
+            offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+            scale: 1,
+          },
+        },
         placement: {
           ...g.placement,
           front: {
@@ -1643,32 +1687,34 @@ export function restorePulloverFrontHoodZipFraming(
       };
     }
     if (g.id === "hood") {
-      if (g.placementAuthored) return g;
-      const front = g.placement?.front;
-      if (
-        pulloverFrontPlacementIsSeed(front, {
+      let next = g;
+      if (!g.placementAuthored) {
+        const front = g.placement?.front;
+        const atSeed = pulloverFrontPlacementIsSeed(front, {
           scale: PULLOVER_HOOD_PLACE_SCALE,
           offsetX: 0,
           offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
-        })
-      ) {
-        return g;
+        });
+        if (!atSeed && isLegacyPulloverPlacement(front, LEGACY_PULLOVER_HOOD_PLACEMENTS)) {
+          next = {
+            ...g,
+            placement: {
+              ...g.placement,
+              front: {
+                ...(front ?? DEFAULT_GROUP_PLACEMENT),
+                scale: PULLOVER_HOOD_PLACE_SCALE,
+                offsetX: 0,
+                offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+                rotationDeg: 0,
+              },
+              back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+            },
+          };
+        }
       }
-      changed = true;
-      return {
-        ...g,
-        placement: {
-          ...g.placement,
-          front: {
-            ...(front ?? DEFAULT_GROUP_PLACEMENT),
-            scale: PULLOVER_HOOD_PLACE_SCALE,
-            offsetX: 0,
-            offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
-            rotationDeg: 0,
-          },
-          back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
-        },
-      };
+      const withSeam = withPulloverHoodSeam(next);
+      if (withSeam !== g) changed = true;
+      return withSeam;
     }
     return g;
   });

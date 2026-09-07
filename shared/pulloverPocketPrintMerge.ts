@@ -250,8 +250,8 @@ export const POCKET_WINDOW_OFFSET_Y = -100;
 export const PULLOVER_POCKET_FINISHED_INSET = {
   top: 0,
   bottom: 0.0611,
-  left: 0.0556,
-  right: 0.0566,
+  left: 0,
+  right: 0,
 } as const;
 export const POCKET_SEAM_PIN_X: number | null = null;
 /** Canvas-H used to convert `POCKET_WINDOW_OFFSET_Y` into mockup px (~10 mm at 3200). */

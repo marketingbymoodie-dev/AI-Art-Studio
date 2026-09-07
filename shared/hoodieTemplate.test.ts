@@ -359,10 +359,11 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
-    expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.210335);
-    expect(PULLOVER_HOOD_PLACE_SCALE).toBe(1.203771);
-    expect(PULLOVER_HOOD_PLACE_OFFSET_Y).toBe(84.445);
-    expect(groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket).toBeUndefined();
+    expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.2103);
+    expect(PULLOVER_HOOD_PLACE_SCALE).toBe(1.3611);
+    expect(PULLOVER_HOOD_PLACE_OFFSET_Y).toBe(218.0846);
+    expect(groups.find((g) => g.id === "hood")!.seamAllowance).toBe(0.08);
+    expect(groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.offsetY).toBe(5);
     expect(groups.find((g) => g.id === "back-body")!.placement.front.scale).toBe(1);
     expect(groups.find((g) => g.id === "back-body")!.placement.front.offsetY).toBe(0);
   });
@@ -394,8 +395,8 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
     expect(
-      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
-    ).toBeUndefined();
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.offsetY,
+    ).toBe(5);
     expect(back.front.scale).toBe(1);
     expect(back.front.offsetY).toBe(0);
     expect(back.back.scale).toBe(1);
@@ -454,9 +455,9 @@ describe("pullover hoodie panel keys (bp 450)", () => {
           },
           placement: {
             front: {
-              scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+              scale: 1.210335,
               offsetX: 0,
-              offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+              offsetY: -304.439,
               rotationDeg: 0,
             },
             back: { ...g.placement.back },
@@ -470,8 +471,8 @@ describe("pullover hoodie panel keys (bp 450)", () => {
       healed.designGroups!.find((g) => g.id === "front-body")!.placement.front.offsetX,
     ).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(
-      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
-    ).toBeUndefined();
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.offsetY,
+    ).toBe(5);
   });
 
   it("authored placements and flag survive normalizeHoodieTemplate twice", () => {
@@ -582,9 +583,9 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(again.designGroups!.find((g) => g.id === "front-body")!.placementAuthored).toBeUndefined();
   });
 
-  it("clears unauthored pocket offset/scale even when front is already at N1", () => {
+  it("keeps unauthored custom pocket / rotation instead of wiping operator numbers", () => {
     const pullover = createFreshAopTemplate({
-      name: "pullover-pocket-bias-heal",
+      name: "pullover-pocket-bias-keep",
       blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
     });
     const groups = pullover.designGroups!.map((g) => {
@@ -607,9 +608,26 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     });
     const healed = normalizeHoodieTemplate({ ...pullover, designGroups: groups });
     const front = healed.designGroups!.find((g) => g.id === "front-body")!;
-    expect(front.placementAuthored).toBeUndefined();
-    expect(front.placement.front.rotationDeg).toBe(0);
-    expect(front.panelPlacementBias?.pocket).toBeUndefined();
+    expect(front.placement.front.rotationDeg).toBe(4);
+    expect(front.panelPlacementBias?.pocket).toEqual({
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: 8,
+      offsetY: -3,
+      scale: 1.2,
+    });
+  });
+
+  it("heals a zero hood seam allowance so L/R do not share the centre mural", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-hood-seam-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const groups = pullover.designGroups!.map((g) =>
+      g.id === "hood" ? { ...g, seamAllowance: 0 } : g,
+    );
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: groups });
+    expect(healed.designGroups!.find((g) => g.id === "hood")!.seamAllowance).toBe(0.08);
   });
 
   it("expands pullover hood-bottom and front-top sample AABBs into the grey", () => {

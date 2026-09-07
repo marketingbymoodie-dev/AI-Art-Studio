@@ -411,9 +411,9 @@ describe("pocket source inset (sewn fold)", () => {
   it("insets pullover pocket to the finished per-edge shape and leaves zip on −100", () => {
     const grey = { x: 343.83, y: 635.48, width: 318.81, height: 193.44 };
     const finished = applyFinishedPocketSampleToBbox(grey);
-    expect(finished.width).toBeCloseTo(283.04, 1);
+    expect(finished.width).toBeCloseTo(318.81, 1);
     expect(finished.height).toBeCloseTo(181.62, 1);
-    expect(finished.x).toBeCloseTo(361.56, 1);
+    expect(finished.x).toBeCloseTo(343.83, 1);
     expect(finished.y).toBeCloseTo(635.48, 1);
     const pullover = applyPocketLiveSampleToBbox(grey, 524.93, "front_pocket", {
       y: 0,
