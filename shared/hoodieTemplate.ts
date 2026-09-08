@@ -48,15 +48,18 @@ export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 1;
  * (front ×1.1527, hood ×0.8079). N1 keeps hood scale (80.79%) and
  * moves hood offsetY only so the neck stitch abuts (front unchanged).
  */
-export const PULLOVER_HOOD_PLACE_SCALE = 1.3611;
-export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.2103;
-/** Preview Studio operator defaults (Save as defaults, 2026-09). */
-export const PULLOVER_HOOD_PLACE_OFFSET_Y = 218.0846;
-export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -4.721;
-export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -65.1539;
+export const PULLOVER_HOOD_PLACE_SCALE = 2.1574;
+export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.4519;
+/** Preview Studio operator defaults (Save as defaults, 2026-09-08). */
+export const PULLOVER_HOOD_PLACE_OFFSET_X = -0.8055;
+export const PULLOVER_HOOD_PLACE_OFFSET_Y = 168.6471;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -0.8055;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -170.8296;
 /** Centre-seam trim so L/R hoods do not share the same mural strip. */
 export const PULLOVER_HOOD_SEAM_ALLOWANCE = 0.08;
-export const PULLOVER_POCKET_SAMPLE_OFFSET_Y = 5;
+export const PULLOVER_POCKET_SAMPLE_OFFSET_X = 3;
+export const PULLOVER_POCKET_SAMPLE_OFFSET_Y = 10;
+export const PULLOVER_POCKET_SAMPLE_SCALE = 1.01;
 /**
  * Printify hood-bottom / front-top grey (Safe−Print) as a fraction of
  * that panel's mask height. Sample expansion only — not a dest clip.
@@ -920,6 +923,7 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
         front: {
           ...blank,
           scale: PULLOVER_HOOD_PLACE_SCALE,
+          offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
           offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
         },
         back: { ...blank },
@@ -949,9 +953,9 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
         pocket: {
           offsetXPercent: 0,
           offsetYPercent: 0,
-          offsetX: 0,
+          offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
           offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
-          scale: 1,
+          scale: PULLOVER_POCKET_SAMPLE_SCALE,
         },
       },
       seamAllowance: 0,
@@ -1583,9 +1587,9 @@ function pulloverPocketBiasCleared(
   return (
     Math.abs(pocket.offsetXPercent ?? 0) < 1e-9 &&
     Math.abs(pocket.offsetYPercent ?? 0) < 1e-9 &&
-    Math.abs(pocket.offsetX ?? 0) < 1e-9 &&
+    Math.abs((pocket.offsetX ?? 0) - PULLOVER_POCKET_SAMPLE_OFFSET_X) < 1e-9 &&
     Math.abs((pocket.offsetY ?? 0) - PULLOVER_POCKET_SAMPLE_OFFSET_Y) < 1e-9 &&
-    Math.abs((pocket.scale ?? 1) - 1) < 1e-9
+    Math.abs((pocket.scale ?? 1) - PULLOVER_POCKET_SAMPLE_SCALE) < 1e-9
   );
 }
 
@@ -1605,12 +1609,14 @@ function pulloverFrontPlacementIsSeed(
 /** Stale pullover seeds from before Preview Studio operator defaults. */
 const LEGACY_PULLOVER_HOOD_PLACEMENTS = [
   { scale: 1.203771, offsetX: 0, offsetY: 84.445 },
+  { scale: 1.3611, offsetX: 0, offsetY: 218.0846 },
   { scale: 1, offsetX: 0, offsetY: 0 },
 ] as const;
 
 const LEGACY_PULLOVER_FRONT_PLACEMENTS = [
   { scale: 1.210335, offsetX: -2.527, offsetY: -304.439 },
   { scale: 1.210335, offsetX: 0, offsetY: -304.439 },
+  { scale: 1.2103, offsetX: -4.721, offsetY: -65.1539 },
   { scale: 1, offsetX: 0, offsetY: 0 },
 ] as const;
 
@@ -1668,9 +1674,9 @@ export function restorePulloverFrontHoodZipFraming(
           pocket: {
             offsetXPercent: 0,
             offsetYPercent: 0,
-            offsetX: 0,
+            offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
             offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
-            scale: 1,
+            scale: PULLOVER_POCKET_SAMPLE_SCALE,
           },
         },
         placement: {
@@ -1692,7 +1698,7 @@ export function restorePulloverFrontHoodZipFraming(
         const front = g.placement?.front;
         const atSeed = pulloverFrontPlacementIsSeed(front, {
           scale: PULLOVER_HOOD_PLACE_SCALE,
-          offsetX: 0,
+          offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
           offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
         });
         if (!atSeed && isLegacyPulloverPlacement(front, LEGACY_PULLOVER_HOOD_PLACEMENTS)) {
@@ -1703,7 +1709,7 @@ export function restorePulloverFrontHoodZipFraming(
               front: {
                 ...(front ?? DEFAULT_GROUP_PLACEMENT),
                 scale: PULLOVER_HOOD_PLACE_SCALE,
-                offsetX: 0,
+                offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
                 offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
                 rotationDeg: 0,
               },

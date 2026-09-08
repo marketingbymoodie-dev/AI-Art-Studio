@@ -19,8 +19,12 @@ import {
   PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
   PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
   PULLOVER_FRONT_BODY_PLACE_SCALE,
+  PULLOVER_HOOD_PLACE_OFFSET_X,
   PULLOVER_HOOD_PLACE_OFFSET_Y,
   PULLOVER_HOOD_PLACE_SCALE,
+  PULLOVER_POCKET_SAMPLE_OFFSET_X,
+  PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+  PULLOVER_POCKET_SAMPLE_SCALE,
   PULLOVER_FRONT_NECK_GREY_BLEED_FRAC,
   PULLOVER_HOOD_NECK_GREY_BLEED_FRAC,
   applyPulloverNeckSeamBleedToBbox,
@@ -358,12 +362,20 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
-    expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.2103);
-    expect(PULLOVER_HOOD_PLACE_SCALE).toBe(1.3611);
-    expect(PULLOVER_HOOD_PLACE_OFFSET_Y).toBe(218.0846);
+    expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.4519);
+    expect(PULLOVER_HOOD_PLACE_SCALE).toBe(2.1574);
+    expect(PULLOVER_HOOD_PLACE_OFFSET_X).toBe(-0.8055);
+    expect(PULLOVER_HOOD_PLACE_OFFSET_Y).toBe(168.6471);
     expect(groups.find((g) => g.id === "hood")!.seamAllowance).toBe(0.08);
-    expect(groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.offsetY).toBe(5);
+    expect(groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket).toEqual({
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
+      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+      scale: PULLOVER_POCKET_SAMPLE_SCALE,
+    });
     expect(groups.find((g) => g.id === "back-body")!.placement.front.scale).toBe(1);
     expect(groups.find((g) => g.id === "back-body")!.placement.front.offsetY).toBe(0);
   });
@@ -393,10 +405,17 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
     expect(
-      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.offsetY,
-    ).toBe(5);
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
+    ).toEqual({
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
+      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+      scale: PULLOVER_POCKET_SAMPLE_SCALE,
+    });
     expect(back.front.scale).toBe(1);
     expect(back.front.offsetY).toBe(0);
     expect(back.back.scale).toBe(1);
@@ -471,8 +490,63 @@ describe("pullover hoodie panel keys (bp 450)", () => {
       healed.designGroups!.find((g) => g.id === "front-body")!.placement.front.offsetX,
     ).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(
-      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.offsetY,
-    ).toBe(5);
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
+    ).toEqual({
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
+      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+      scale: PULLOVER_POCKET_SAMPLE_SCALE,
+    });
+  });
+
+  it("heals the previous Preview Studio operator seeds to the current defaults", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-prev-operator-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const stale = pullover.designGroups!.map((g) => {
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1.2103, offsetX: -4.721, offsetY: -65.1539, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+          panelPlacementBias: {
+            pocket: {
+              offsetXPercent: 0,
+              offsetYPercent: 0,
+              offsetX: 0,
+              offsetY: 5,
+              scale: 1,
+            },
+          },
+        };
+      }
+      if (g.id === "hood") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1.3611, offsetX: 0, offsetY: 218.0846, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: stale });
+    const front = healed.designGroups!.find((g) => g.id === "front-body")!.placement.front;
+    const hood = healed.designGroups!.find((g) => g.id === "hood")!.placement.front;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.scale,
+    ).toBe(PULLOVER_POCKET_SAMPLE_SCALE);
   });
 
   it("authored placements and flag survive normalizeHoodieTemplate twice", () => {
