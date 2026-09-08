@@ -126,6 +126,7 @@ function Field({
 }
 
 export function PulloverPlacementDefaultsPanel({
+  garment = "pullover",
   hood,
   front,
   pocket,
@@ -140,6 +141,8 @@ export function PulloverPlacementDefaultsPanel({
   onSave,
   onReset,
 }: {
+  /** Zip has no pocket sample-window — halves follow front body + locked fold inset. */
+  garment?: "pullover" | "zip";
   hood: ArtworkPlacement;
   front: ArtworkPlacement;
   pocket: PocketSamplePlacement;
@@ -155,6 +158,7 @@ export function PulloverPlacementDefaultsPanel({
   onReset: () => void;
 }) {
   const [status, setStatus] = useState<string | null>(null);
+  const isZip = garment === "zip";
   const rows: Row[] = [
     {
       id: "hood",
@@ -165,37 +169,42 @@ export function PulloverPlacementDefaultsPanel({
     },
     {
       id: "front-body",
-      label: "Front body",
+      label: isZip ? "Front body (L/R)" : "Front body",
       offsetX: front.offsetX,
       offsetY: front.offsetY,
       scale: front.scale,
     },
-    {
-      id: "pocket",
-      label: "Pocket",
-      offsetX: pocket.offsetX,
-      offsetY: pocket.offsetY,
-      scale: pocket.scale,
-    },
+    ...(!isZip
+      ? [
+          {
+            id: "pocket" as const,
+            label: "Pocket",
+            offsetX: pocket.offsetX,
+            offsetY: pocket.offsetY,
+            scale: pocket.scale,
+          },
+        ]
+      : []),
   ];
 
   const patch = (id: PulloverCalibrationTarget, field: "offsetX" | "offsetY" | "scale", n: number) => {
     if (id === "hood") onChangeHood({ ...hood, [field]: n });
     else if (id === "front-body") onChangeFront({ ...front, [field]: n });
-    else onChangePocket({ ...pocket, [field]: n });
+    else if (!isZip) onChangePocket({ ...pocket, [field]: n });
   };
 
   return (
     <div
       className="space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-2"
-      data-testid="pullover-placement-defaults"
+      data-testid={isZip ? "zip-placement-defaults" : "pullover-placement-defaults"}
     >
       <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
         Template placement
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
-        Drag the selected panel on the preview or edit numbers. Save writes hood /
-        front-body placement and pocket sample-window as template defaults.
+        {isZip
+          ? "Drag the selected panel on the preview or edit numbers. Front body moves both zip halves and the pocket halves together. The pocket fold inset stays locked. Save writes hood / front-body as template defaults."
+          : "Drag the selected panel on the preview or edit numbers. Save writes hood / front-body placement and pocket sample-window as template defaults."}
       </p>
       {rows.map((row) => (
         <div
@@ -208,7 +217,7 @@ export function PulloverPlacementDefaultsPanel({
             type="button"
             onClick={() => onSelect(row.id)}
             className="text-[11px] font-semibold text-foreground"
-            data-testid={`pullover-place-select-${row.id}`}
+            data-testid={`${isZip ? "zip" : "pullover"}-place-select-${row.id}`}
           >
             {row.label}
           </button>
@@ -242,7 +251,7 @@ export function PulloverPlacementDefaultsPanel({
             setStatus(null);
             onSave();
           }}
-          data-testid="pullover-place-save-defaults"
+          data-testid={`${isZip ? "zip" : "pullover"}-place-save-defaults`}
         >
           {saving ? "Saving…" : "Save as defaults"}
         </Button>
@@ -256,7 +265,7 @@ export function PulloverPlacementDefaultsPanel({
             onReset();
           }}
           title="Discard to template values"
-          data-testid="pullover-place-reset-defaults"
+          data-testid={`${isZip ? "zip" : "pullover"}-place-reset-defaults`}
         >
           <RotateCcw className="h-3 w-3" />
         </Button>
