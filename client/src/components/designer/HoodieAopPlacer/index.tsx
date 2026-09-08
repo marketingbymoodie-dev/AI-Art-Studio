@@ -236,7 +236,7 @@ export type HoodieAopPlacerState = {
    * on the back face only.
    */
   wrapBackMode: WrapBackMode;
-  /** Pullover pocket sample-window after finished inset (Preview Studio + print). */
+  /** Pocket sample-window after garment inset (Preview Studio + print). Zip uses Y + scale only. */
   pocketSample?: PocketSamplePlacement;
 };
 
@@ -261,7 +261,7 @@ function pocketSampleFromTemplate(template: HoodieTemplate): PocketSamplePlaceme
   const pocket = template.designGroups?.find((g) => g.id === "front-body")?.panelPlacementBias
     ?.pocket;
   return {
-    offsetX: pocket?.offsetX ?? 0,
+    offsetX: isZipHoodieBlueprint(template.blueprintId) ? 0 : pocket?.offsetX ?? 0,
     offsetY: pocket?.offsetY ?? 0,
     scale: pocket?.scale ?? 1,
   };
@@ -960,7 +960,7 @@ function buildEffectiveRenderConfig(
         pocket: {
           offsetXPercent: g.panelPlacementBias?.pocket?.offsetXPercent ?? 0,
           offsetYPercent: g.panelPlacementBias?.pocket?.offsetYPercent ?? 0,
-          offsetX: pocket.offsetX,
+          offsetX: isZipHoodieBlueprint(template.blueprintId) ? 0 : pocket.offsetX,
           offsetY: pocket.offsetY,
           scale: pocket.scale,
         },
@@ -1859,15 +1859,22 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const writePocketSample = useCallback((next: PocketSamplePlacement) => {
     setState((prev) =>
       prev
-        ? { ...prev, pocketSample: { ...next, scale: clampPlaceScale(next.scale) } }
+        ? {
+            ...prev,
+            pocketSample: {
+              ...next,
+              offsetX: isZipOperator ? 0 : next.offsetX,
+              scale: clampPlaceScale(next.scale),
+            },
+          }
         : prev,
     );
-  }, []);
+  }, [isZipOperator]);
 
   const setActiveScale = useCallback((view: HoodieView, scale: number) => {
     if (
       allowTemplateDefaultsEdit &&
-      isPulloverOperator &&
+      (isPulloverOperator || isZipOperator) &&
       calibrationTarget === "pocket"
     ) {
       writePocketSample({
@@ -1958,6 +1965,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     allowTemplateDefaultsEdit,
     calibrationTarget,
     isPulloverOperator,
+    isZipOperator,
     state?.pocketSample,
     writePocketSample,
   ]);
@@ -1967,7 +1975,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       if (!state || !data) return;
       if (
         allowTemplateDefaultsEdit &&
-        isPulloverOperator &&
+        (isPulloverOperator || isZipOperator) &&
         calibrationTarget === "pocket"
       ) {
         const canvas = canvasRef.current;
@@ -1980,7 +1988,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         const cur = state.pocketSample ?? DEFAULT_POCKET_SAMPLE;
         writePocketSample({
           ...cur,
-          offsetX: cur.offsetX + (axis === "x" ? deltaMock : 0),
+          offsetX: isZipOperator
+            ? 0
+            : cur.offsetX + (axis === "x" ? deltaMock : 0),
           offsetY: cur.offsetY + (axis === "y" ? deltaMock : 0),
         });
         return;
@@ -2018,6 +2028,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       allowTemplateDefaultsEdit,
       calibrationTarget,
       isPulloverOperator,
+      isZipOperator,
       writePocketSample,
     ],
   );
@@ -2224,12 +2235,6 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     setState((prev) => (prev && prev.hoodLinked ? { ...prev, hoodLinked: false } : prev));
   }, [allowTemplateDefaultsEdit]);
 
-  useEffect(() => {
-    if (isZipOperator && calibrationTarget === "pocket") {
-      setCalibrationTarget("front-body");
-    }
-  }, [isZipOperator, calibrationTarget]);
-
   const resetPulloverDefaults = useCallback(() => {
     if (!data) return;
     const template = data.template;
@@ -2298,9 +2303,6 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               },
             },
           };
-          if (isZipHoodieBlueprint(data.template.blueprintId)) {
-            return nextFront;
-          }
           return {
             ...nextFront,
             panelPlacementBias: {
@@ -2308,7 +2310,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               pocket: {
                 offsetXPercent: g.panelPlacementBias?.pocket?.offsetXPercent ?? 0,
                 offsetYPercent: g.panelPlacementBias?.pocket?.offsetYPercent ?? 0,
-                offsetX: pocket.offsetX,
+                offsetX: isZipHoodieBlueprint(data.template.blueprintId)
+                  ? 0
+                  : pocket.offsetX,
                 offsetY: pocket.offsetY,
                 scale: pocket.scale,
               },
@@ -2417,13 +2421,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     allowTemplateDefaultsEdit &&
     (isPulloverOperator || isZipOperator) &&
     state.mode === "place";
-  const showPulloverPocketCal =
-    showOperatorDefaults && isPulloverOperator && calibrationTarget === "pocket";
+  const showPocketCal =
+    showOperatorDefaults && calibrationTarget === "pocket";
   const showOverlay =
     !!mockup &&
     !!artworkImg &&
     state.mode === "place" &&
-    !showPulloverPocketCal &&
+    !showPocketCal &&
     activePartEnabled &&
     // Hood/sleeve/leg handles only render on front view (back panels inherit via
     // the flat-panel bridge, no draggable equivalent).
@@ -2596,7 +2600,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               />
             )}
             {!canvasOverrideUrl &&
-              showPulloverPocketCal &&
+              showPocketCal &&
               mockup &&
               artworkImg && (
               <PocketSampleDragLayer
@@ -2607,7 +2611,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                   const cur = state.pocketSample ?? DEFAULT_POCKET_SAMPLE;
                   writePocketSample({
                     ...cur,
-                    offsetX: cur.offsetX + dx,
+                    offsetX: isZipOperator ? 0 : cur.offsetX + dx,
                     offsetY: cur.offsetY + dy,
                   });
                 }}
@@ -3177,13 +3181,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                 state.placements["front-body"]?.front,
                 data.template.designGroups?.find((g) => g.id === "front-body")?.placement.front,
               ) ||
+              (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).offsetY !==
+                pocketSampleFromTemplate(data.template).offsetY ||
+              (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale !==
+                pocketSampleFromTemplate(data.template).scale ||
               (!isZipOperator &&
-                ((state.pocketSample ?? DEFAULT_POCKET_SAMPLE).offsetX !==
-                  pocketSampleFromTemplate(data.template).offsetX ||
-                  (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).offsetY !==
-                    pocketSampleFromTemplate(data.template).offsetY ||
-                  (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale !==
-                    pocketSampleFromTemplate(data.template).scale))
+                (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).offsetX !==
+                  pocketSampleFromTemplate(data.template).offsetX)
             }
             error={defaultsError}
             onSelect={(id) => {
@@ -3295,7 +3299,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               <span className="text-muted-foreground/80">
                 {Math.round(
                   clampPlaceScale(
-                    showPulloverPocketCal
+                    showPocketCal
                       ? (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale
                       : placement.scale,
                   ) * 100,
@@ -3308,7 +3312,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               max={SCALE_MAX}
               step={0.01}
               value={clampPlaceScale(
-                showPulloverPocketCal
+                showPocketCal
                   ? (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale
                   : placement.scale,
               )}

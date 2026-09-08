@@ -141,7 +141,7 @@ export function PulloverPlacementDefaultsPanel({
   onSave,
   onReset,
 }: {
-  /** Zip has no pocket sample-window — halves follow front body + locked fold inset. */
+  /** Zip pocket row is Y + scale only (X stays locked to the zipper inset). */
   garment?: "pullover" | "zip";
   hood: ArtworkPlacement;
   front: ArtworkPlacement;
@@ -174,23 +174,19 @@ export function PulloverPlacementDefaultsPanel({
       offsetY: front.offsetY,
       scale: front.scale,
     },
-    ...(!isZip
-      ? [
-          {
-            id: "pocket" as const,
-            label: "Pocket",
-            offsetX: pocket.offsetX,
-            offsetY: pocket.offsetY,
-            scale: pocket.scale,
-          },
-        ]
-      : []),
+    {
+      id: "pocket",
+      label: isZip ? "Pocket (L/R)" : "Pocket",
+      offsetX: pocket.offsetX,
+      offsetY: pocket.offsetY,
+      scale: pocket.scale,
+    },
   ];
 
   const patch = (id: PulloverCalibrationTarget, field: "offsetX" | "offsetY" | "scale", n: number) => {
     if (id === "hood") onChangeHood({ ...hood, [field]: n });
     else if (id === "front-body") onChangeFront({ ...front, [field]: n });
-    else if (!isZip) onChangePocket({ ...pocket, [field]: n });
+    else onChangePocket({ ...pocket, [field]: isZip && field === "offsetX" ? 0 : n });
   };
 
   return (
@@ -203,7 +199,7 @@ export function PulloverPlacementDefaultsPanel({
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
         {isZip
-          ? "Drag the selected panel on the preview or edit numbers. Front body moves both zip halves and the pocket halves together. Zipper strip and pocket-up sample are applied in code. Save writes hood / front-body as template defaults."
+          ? "Front body moves both zip halves. Pocket Y / scale moves both pocket halves on top of the built-in up-shift. Negative Y lifts the pockets. Save writes hood / front-body / pocket as template defaults."
           : "Drag the selected panel on the preview or edit numbers. Save writes hood / front-body placement and pocket sample-window as template defaults."}
       </p>
       {rows.map((row) => (
@@ -221,12 +217,14 @@ export function PulloverPlacementDefaultsPanel({
           >
             {row.label}
           </button>
+          {!(isZip && row.id === "pocket") ? (
           <Field
             label="X"
             value={row.offsetX}
             step={0.5}
             onChange={(n) => patch(row.id, "offsetX", n)}
           />
+          ) : null}
           <Field
             label="Y"
             value={row.offsetY}

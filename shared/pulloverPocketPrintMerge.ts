@@ -1,5 +1,6 @@
 import {
   isPulloverHoodieBlueprint,
+  isZipHoodieBlueprint,
   mergeFrontBodyPanelPlacementBias,
   type DesignGroup,
   type FrontBodyPanelPlacementBias,
@@ -355,7 +356,7 @@ export function pocketRawTopPastMural(
 
 /**
  * Pullover `front_pocket`: sample the finished per-edge inset.
- * Zip halves keep the −100 fold inset (separate pass).
+ * Zip halves use height-fraction up-shift + zipper-side inset.
  * Skips both when the raw (grey) pocket top is already artV >= 1.
  */
 export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
@@ -380,9 +381,8 @@ export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
 }
 
 /**
- * Pullover pocket sample-window after the finished inset (not dest, not bleed).
- * Zip halves use `applyZipPocketSampleToBbox` (height-fraction up + zipper
- * inset), not this authored offset/scale.
+ * Operator pocket offset/scale after the garment sample-window.
+ * Zip applies this on top of `applyZipPocketSampleToBbox`.
  */
 export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
   bb: T,
@@ -400,7 +400,7 @@ export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
   return { ...next, x: next.x + dx, y: next.y + dy };
 }
 
-/** Finished inset, then operator pocket offset/scale. Zip stays fold-only. */
+/** Finished / zip sample, then operator pocket offset/scale. */
 export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
   bb: T,
   frontMaskH: number,
@@ -410,9 +410,12 @@ export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
   blueprintId?: number | null,
 ): T {
   const inset = applyPocketLiveSampleToBbox(bb, frontMaskH, panelKey, effective);
-  if (!isPulloverHoodieBlueprint(blueprintId) || panelKey !== "front_pocket") {
-    return inset;
-  }
+  const pulloverAuthored =
+    isPulloverHoodieBlueprint(blueprintId) && panelKey === "front_pocket";
+  const zipAuthored =
+    isZipHoodieBlueprint(blueprintId) &&
+    (panelKey === "pocket_left" || panelKey === "pocket_right");
+  if (!pulloverAuthored && !zipAuthored) return inset;
   return applyPocketAuthoredSampleToBbox(inset, bias);
 }
 

@@ -12,6 +12,7 @@ import {
   mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
   applyFinishedPocketSampleToBbox,
+  applyPocketAuthoredSampleToBbox,
   applyPulloverPocketSampleWindow,
   applyPocketLiveSampleToBbox,
   applyPocketSourceInsetToBbox,
@@ -467,14 +468,21 @@ describe("pocket source inset (sewn fold)", () => {
     expect(after.x).toBeCloseTo(finished.x + 10, 5);
     expect(after.y).toBeCloseTo(finished.y - 4, 5);
     expect(POCKET_WINDOW_OFFSET_Y).toBe(-100);
+    const zipBase = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left");
     const zip = applyPulloverPocketSampleWindow(
       grey,
       524.93,
       "pocket_left",
       null,
-      { offsetX: 10, offsetY: -4, scale: 1.2 },
+      { offsetX: 0, offsetY: -4, scale: 1.2 },
       ZIP_HOODIE_BLUEPRINT_ID,
     );
-    expect(zip).toEqual(applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left"));
+    const zipAuthored = applyPocketAuthoredSampleToBbox(zipBase, {
+      offsetX: 0,
+      offsetY: -4,
+      scale: 1.2,
+    });
+    expect(zip.y).toBeCloseTo(zipAuthored.y, 5);
+    expect(zip.width).toBeCloseTo(zipAuthored.width, 5);
   });
 });
