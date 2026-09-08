@@ -465,3 +465,89 @@ describe("artworkSliceSamplesMural", () => {
     );
   });
 });
+
+describe("artworkSourceRectForPanel hood seam clamp", () => {
+  const union = { x: 0, y: 0, width: 200, height: 200 };
+  const aw = 1000;
+  const ah = 1000;
+
+  function hoodRect(overrides: Partial<DesignRectInfo> = {}): DesignRectInfo {
+    return {
+      union,
+      base: union,
+      effective: union,
+      anchor: { x: 100, y: 100 },
+      hasSeamPair: false,
+      anchorIsSeam: false,
+      seamAllowance: 0.08,
+      groupId: "hood",
+      enabled: true,
+      rotationDeg: 0,
+      ...overrides,
+    };
+  }
+
+  it("does not let an overlapping left hood AABB sample past the seam gap", () => {
+    // Mask AABB crosses the centre (relRight = 0.6) the way pullover
+    // hood polygons do. Unclamped remap would still include the other
+    // nostril; print then stretches that onto the full left Safe rect.
+    const slice = artworkSourceRectForPanel(
+      { x: 0, y: 0, width: 120, height: 200 },
+      "left_hood",
+      hoodRect(),
+      aw,
+      ah,
+      "left",
+    );
+    expect(slice.x).toBeGreaterThanOrEqual(0);
+    expect((slice.x + slice.width) / aw).toBeCloseTo(0.5 * (1 - 0.08), 5);
+    expect(slice.x + slice.width).toBeLessThan(aw * 0.5);
+  });
+
+  it("does not let an overlapping right hood AABB sample before the seam gap", () => {
+    const slice = artworkSourceRectForPanel(
+      { x: 80, y: 0, width: 120, height: 200 },
+      "right_hood",
+      hoodRect(),
+      aw,
+      ah,
+      "right",
+    );
+    expect(slice.x / aw).toBeCloseTo(0.5 + 0.08 / 2, 5);
+    expect(slice.x).toBeGreaterThan(aw * 0.5);
+    expect(slice.x + slice.width).toBeLessThanOrEqual(aw);
+  });
+
+  it("applies hood seam even when hasSeamPair is false (print back-view rect)", () => {
+    const slice = artworkSourceRectForPanel(
+      { x: 0, y: 0, width: 120, height: 200 },
+      "left_hood",
+      hoodRect({ hasSeamPair: false, seamAllowance: 0.08 }),
+      aw,
+      ah,
+      "left",
+    );
+    expect(slice.x + slice.width).toBeLessThan(aw * 0.5);
+  });
+
+  it("falls back to the pullover hood seam when the template still has 0", () => {
+    const withZero = artworkSourceRectForPanel(
+      { x: 0, y: 0, width: 120, height: 200 },
+      "left_hood",
+      hoodRect({ hasSeamPair: false, seamAllowance: 0 }),
+      aw,
+      ah,
+      "left",
+    );
+    const withDefault = artworkSourceRectForPanel(
+      { x: 0, y: 0, width: 120, height: 200 },
+      "left_hood",
+      hoodRect({ hasSeamPair: false, seamAllowance: 0.08 }),
+      aw,
+      ah,
+      "left",
+    );
+    expect(withZero.x + withZero.width).toBeCloseTo(withDefault.x + withDefault.width, 5);
+    expect(withZero.x + withZero.width).toBeLessThan(aw * 0.5);
+  });
+});
