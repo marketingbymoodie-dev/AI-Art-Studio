@@ -23,7 +23,7 @@ export function PreviewStudioGenOverlay({
 
   return (
     <div
-      className="absolute inset-0 z-40 flex min-h-[280px] flex-col"
+      className="absolute inset-x-0 top-0 z-40 mx-auto flex w-full max-w-[520px] max-h-[520px] aspect-square flex-col overflow-hidden rounded-md"
       data-testid="preview-studio-gen-overlay"
       data-pending={pending ? "true" : "false"}
       data-failure-kind={failure?.kind ?? ""}

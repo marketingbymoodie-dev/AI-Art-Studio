@@ -15798,7 +15798,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           className={`grid grid-cols-1 gap-3 sm:gap-4 ${
             (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
               ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)] lg:items-start"
-              : "md:grid-cols-2"
+              : "md:grid-cols-2 md:items-start"
           }`}
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
