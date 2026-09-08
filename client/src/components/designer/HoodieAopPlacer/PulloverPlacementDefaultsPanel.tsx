@@ -203,7 +203,7 @@ export function PulloverPlacementDefaultsPanel({
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
         {isZip
-          ? "Drag the selected panel on the preview or edit numbers. Front body moves both zip halves and the pocket halves together. Zipper seam and pocket fold/Safe insets are applied in print. Save writes hood / front-body as template defaults."
+          ? "Drag the selected panel on the preview or edit numbers. Front body moves both zip halves and the pocket halves together. Zipper strip and pocket-up sample are applied in code. Save writes hood / front-body as template defaults."
           : "Drag the selected panel on the preview or edit numbers. Save writes hood / front-body placement and pocket sample-window as template defaults."}
       </p>
       {rows.map((row) => (

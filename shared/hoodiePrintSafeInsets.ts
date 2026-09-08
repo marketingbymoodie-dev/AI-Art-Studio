@@ -1,12 +1,8 @@
 import {
   isPulloverHoodieBlueprint,
-  isZipHoodieBlueprint,
   type HoodiePanelKey,
 } from "./hoodieTemplate";
-import {
-  PULLOVER_POCKET_FINISHED_INSET,
-  ZIP_POCKET_FINISHED_INSET,
-} from "./pulloverPocketPrintMerge";
+import { PULLOVER_POCKET_FINISHED_INSET } from "./pulloverPocketPrintMerge";
 
 /** Axis-aligned Safe rect as fractions of the Printify Print placeholder. */
 export type PrintSafeInsets = {
@@ -45,41 +41,12 @@ const PULLOVER_PRINT_SAFE_INSETS: Partial<Record<HoodiePanelKey, PrintSafeInsets
   },
 };
 
-/**
- * Zip bp 451 — Safe AABB vs Print placeholder (catalog SVG, 2026-09).
- * Front L/R from `5d9c8b82…` (mirrored for front_right). Pocket L/R from
- * `5d9c8e67…`. Pocket top stays 0 so the stitch-line mural is captured
- * (same as pullover); zipper strip is source `ZIP_FRONT_SEAM_ALLOWANCE`.
- */
-const ZIP_PRINT_SAFE_INSETS: Partial<Record<HoodiePanelKey, PrintSafeInsets>> = {
-  front_left: { left: 0.0784, right: 0.0784, top: 0.021, bottom: 0.021 },
-  front_right: { left: 0.0784, right: 0.0784, top: 0.021, bottom: 0.021 },
-  pocket_left: {
-    left: 0.0573,
-    right: 0.0573,
-    top: ZIP_POCKET_FINISHED_INSET.top,
-    bottom: ZIP_POCKET_FINISHED_INSET.bottom,
-  },
-  pocket_right: {
-    left: 0.0573,
-    right: 0.0573,
-    top: ZIP_POCKET_FINISHED_INSET.top,
-    bottom: ZIP_POCKET_FINISHED_INSET.bottom,
-  },
-};
-
 export function printSafeInsetsForPanel(
   panelKey: HoodiePanelKey | null | undefined,
   blueprintId?: number | null,
 ): PrintSafeInsets | null {
-  if (!panelKey) return null;
-  if (isPulloverHoodieBlueprint(blueprintId)) {
-    return PULLOVER_PRINT_SAFE_INSETS[panelKey] ?? null;
-  }
-  if (isZipHoodieBlueprint(blueprintId)) {
-    return ZIP_PRINT_SAFE_INSETS[panelKey] ?? null;
-  }
-  return null;
+  if (!isPulloverHoodieBlueprint(blueprintId) || !panelKey) return null;
+  return PULLOVER_PRINT_SAFE_INSETS[panelKey] ?? null;
 }
 
 /** Pixel Safe rect inside a placeholder-sized canvas. */

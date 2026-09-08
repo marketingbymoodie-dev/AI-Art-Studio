@@ -254,17 +254,13 @@ export const PULLOVER_POCKET_FINISHED_INSET = {
   right: 0,
 } as const;
 /**
- * Zip pocket Safe leftover (catalog SVG). Top is 0 — a Safe top inset
- * left Print-minus-Safe as solid garment fill on pullover; same here.
- * Zipper is `ZIP_FRONT_SEAM_ALLOWANCE` on the front-body group, not L/R
- * of this box. Fold "go up" stays `POCKET_WINDOW_OFFSET_Y` (−100).
+ * Zip pocket sample-window: shift up by this fraction of the pocket AABB
+ * so the stitch-line mural matches the chest (Printify was ~1" low).
+ * Do not dest-to-Safe on zip — placeholders stay full-bleed.
  */
-export const ZIP_POCKET_FINISHED_INSET = {
-  top: 0,
-  bottom: 0.0532,
-  left: 0,
-  right: 0,
-} as const;
+export const ZIP_POCKET_UP_FRAC = 0.22;
+/** Inner (zipper) edge inset as a fraction of the pocket AABB width. */
+export const ZIP_POCKET_ZIPPER_INSET_FRAC = 0.06;
 export const POCKET_SEAM_PIN_X: number | null = null;
 /** Canvas-H used to convert `POCKET_WINDOW_OFFSET_Y` into mockup px (~10 mm at 3200). */
 export const POCKET_SOURCE_INSET_CANVAS_REF_H = 3200;
@@ -286,6 +282,31 @@ export function applyPocketSourceInsetToBbox<T extends MockupBbox>(
 ): T {
   const dy = pocketSampleInsetMockupY(frontMaskH);
   if (dy === 0) return bb;
+  return { ...bb, y: bb.y + dy };
+}
+
+/** Zip L/R pocket: go up + inset the zipper-side edge only. */
+export function applyZipPocketSampleToBbox<T extends MockupBbox>(
+  bb: T,
+  panelKey?: HoodiePanelKey | null,
+): T {
+  const dy = -(bb.height * ZIP_POCKET_UP_FRAC);
+  const zipInset = bb.width * ZIP_POCKET_ZIPPER_INSET_FRAC;
+  if (panelKey === "pocket_left") {
+    return {
+      ...bb,
+      y: bb.y + dy,
+      width: Math.max(1, bb.width - zipInset),
+    };
+  }
+  if (panelKey === "pocket_right") {
+    return {
+      ...bb,
+      x: bb.x + zipInset,
+      y: bb.y + dy,
+      width: Math.max(1, bb.width - zipInset),
+    };
+  }
   return { ...bb, y: bb.y + dy };
 }
 
@@ -353,16 +374,15 @@ export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
     return applyFinishedPocketSampleToBbox(bb);
   }
   if (panelKey === "pocket_left" || panelKey === "pocket_right") {
-    const finished = applyFinishedPocketSampleToBbox(bb, ZIP_POCKET_FINISHED_INSET);
-    return applyPocketSourceInsetToBbox(finished, frontMaskH);
+    return applyZipPocketSampleToBbox(bb, panelKey);
   }
   return applyPocketSourceInsetToBbox(bb, frontMaskH);
 }
 
 /**
  * Pullover pocket sample-window after the finished inset (not dest, not bleed).
- * Zip halves use finished + −100 fold via `applyPocketLiveSampleToBbox`,
- * not this authored offset/scale.
+ * Zip halves use `applyZipPocketSampleToBbox` (height-fraction up + zipper
+ * inset), not this authored offset/scale.
  */
 export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
   bb: T,

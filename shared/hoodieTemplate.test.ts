@@ -468,7 +468,7 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     const stale = {
       ...zip,
       designGroups: zip.designGroups!.map((g) =>
-        g.id === "front-body" ? { ...g, seamAllowance: 0 } : g,
+        g.id === "front-body" ? { ...g, seamAllowance: 0.06 } : g,
       ),
     };
     const healed = normalizeHoodieTemplate(stale);

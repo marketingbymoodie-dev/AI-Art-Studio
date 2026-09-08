@@ -84,7 +84,7 @@ export const ZIP_HOODIE_BLUEPRINT_ID = 451;
  * Zip front-body L/R + pocket halves: centre strip consumed by the zipper
  * (fraction of the union design-rect width). Same value on chest and pockets.
  */
-export const ZIP_FRONT_SEAM_ALLOWANCE = 0.06;
+export const ZIP_FRONT_SEAM_ALLOWANCE = 0.03;
 /**
  * Printify blueprint 433 (men's bomber jacket AOP).
  * Catalog placeholders are a single `front` (+ back + sleeves) — not zip
@@ -1617,13 +1617,15 @@ function withPulloverHoodSeam(group: DesignGroup): DesignGroup {
 }
 
 function withZipFrontSeam(group: DesignGroup): DesignGroup {
-  if ((group.seamAllowance ?? 0) > 1e-9) return group;
+  if (Math.abs((group.seamAllowance ?? 0) - ZIP_FRONT_SEAM_ALLOWANCE) < 1e-9) {
+    return group;
+  }
   return { ...group, seamAllowance: ZIP_FRONT_SEAM_ALLOWANCE };
 }
 
 /**
- * Zip bp 451: published templates still have front-body `seamAllowance: 0`.
- * Stamp the zipper strip onto chest + pocket halves without touching pullover.
+ * Zip bp 451: stamp the current zipper strip onto chest + pocket halves.
+ * Overwrites stale 0 / 0.06 so retunes land without a template republish.
  */
 export function restoreZipFrontSeamAllowance(
   template: HoodieTemplate,

@@ -3,17 +3,14 @@ import {
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
 } from "./hoodieTemplate";
-import {
-  PULLOVER_POCKET_FINISHED_INSET,
-  ZIP_POCKET_FINISHED_INSET,
-} from "./pulloverPocketPrintMerge";
+import { PULLOVER_POCKET_FINISHED_INSET } from "./pulloverPocketPrintMerge";
 import {
   printSafeDestRect,
   printSafeInsetsForPanel,
 } from "./hoodiePrintSafeInsets";
 
 describe("printSafeInsetsForPanel", () => {
-  it("returns per-panel pullover insets and skips unknown keys", () => {
+  it("returns per-panel pullover insets and skips zip / unknown keys", () => {
     const hood = printSafeInsetsForPanel("left_hood", PULOVER_HOODIE_BLUEPRINT_ID);
     const front = printSafeInsetsForPanel("front", PULOVER_HOODIE_BLUEPRINT_ID);
     const pocket = printSafeInsetsForPanel("front_pocket", PULOVER_HOODIE_BLUEPRINT_ID);
@@ -29,28 +26,9 @@ describe("printSafeInsetsForPanel", () => {
       bottom: PULLOVER_POCKET_FINISHED_INSET.bottom,
     });
     expect(printSafeInsetsForPanel("front", ZIP_HOODIE_BLUEPRINT_ID)).toBeNull();
+    expect(printSafeInsetsForPanel("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toBeNull();
+    expect(printSafeInsetsForPanel("pocket_left", ZIP_HOODIE_BLUEPRINT_ID)).toBeNull();
     expect(printSafeInsetsForPanel("waistband", PULOVER_HOODIE_BLUEPRINT_ID)).toBeNull();
-  });
-
-  it("returns zip front and pocket Safe insets from the catalog SVG", () => {
-    expect(printSafeInsetsForPanel("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toEqual({
-      left: 0.0784,
-      right: 0.0784,
-      top: 0.021,
-      bottom: 0.021,
-    });
-    expect(printSafeInsetsForPanel("front_right", ZIP_HOODIE_BLUEPRINT_ID)).toEqual(
-      printSafeInsetsForPanel("front_left", ZIP_HOODIE_BLUEPRINT_ID),
-    );
-    expect(printSafeInsetsForPanel("pocket_left", ZIP_HOODIE_BLUEPRINT_ID)).toEqual({
-      left: 0.0573,
-      right: 0.0573,
-      top: ZIP_POCKET_FINISHED_INSET.top,
-      bottom: ZIP_POCKET_FINISHED_INSET.bottom,
-    });
-    expect(printSafeInsetsForPanel("pocket_right", ZIP_HOODIE_BLUEPRINT_ID)).toEqual(
-      printSafeInsetsForPanel("pocket_left", ZIP_HOODIE_BLUEPRINT_ID),
-    );
   });
 
   it("rounds a Safe dest rect inside the placeholder", () => {
