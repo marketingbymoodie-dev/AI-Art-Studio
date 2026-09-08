@@ -528,6 +528,32 @@ describe("clipSampleBbToSeamHalf / hood print overlap", () => {
     expect(clipped).toEqual(solo);
   });
 
+  it("keeps the front-view right hood that lives on the left of the photo", () => {
+    // Wearer's right hood AABB sits at small X and only just crosses
+    // the seam. The old "keep x > mid" clip deleted it (blank panel).
+    const rightHoodOnPhotoLeft = { x: 20, y: 0, width: 90, height: 200 };
+    const clipped = clipSampleBbToSeamHalf(
+      rightHoodOnPhotoLeft,
+      hoodRect(),
+      "right",
+      "right_hood",
+    );
+    expect(clipped.width).toBeGreaterThan(50);
+    expect(clipped.x).toBe(20);
+    expect(clipped.x + clipped.width).toBeLessThanOrEqual(100);
+
+    const slice = artworkSourceRectForPanel(
+      rightHoodOnPhotoLeft,
+      "right_hood",
+      hoodRect(),
+      aw,
+      ah,
+      "right",
+    );
+    expect(slice.width / aw).toBeGreaterThan(0.2);
+    expect(slice.x + slice.width).toBeLessThan(aw * 0.55);
+  });
+
   it("keeps a usable slice when Place scale moves artwork UV 0.5 off the hood AABB", () => {
     // Regression: UV-clamping left panels to [0, 0.5] of `effective`
     // collapsed this to a ~0-width column → banded legs on the hood.

@@ -1217,9 +1217,14 @@ export function synthesiseLeggingsMirroredSourceRect(
 /**
  * Hood / zip mask AABBs overlap the centre seam. Print stretches that
  * whole box onto the Safe rect, which is how both nostrils landed on
- * each hood. Clip in *mockup* space (the garment seam), not artwork-UV
- * 0.5 — Place scale/offset moves 0.5 off the seam and a UV clamp
- * collapses the slice into a thin column (banded legs on the hood).
+ * each hood.
+ *
+ * Trim only the *overhang* past the seam on the minority side of this
+ * AABB. Do not keep "image-left vs image-right" by anatomical side —
+ * on a front pullover, `right_hood` (wearer's right) sits on the left
+ * of the photo. Forcing that panel to x > mid deleted it (blank hood).
+ * Inset is a fraction of the *union* (garment px), not Place `effective`
+ * width, so scale cannot eat the smaller half.
  */
 export function clipSampleBbToSeamHalf(
   bb: Aabb,
@@ -1244,17 +1249,19 @@ export function clipSampleBbToSeamHalf(
         ? PULLOVER_HOOD_SEAM_ALLOWANCE
         : 0,
   );
-  const inset =
-    (seam * (rect.effective.width > 0 ? rect.effective.width : union.width)) / 2;
-  if (side === "left") {
-    const right = Math.min(bb.x + bb.width, mid - inset);
-    return { x: bb.x, y: bb.y, width: Math.max(0, right - bb.x), height: bb.height };
+  const inset = (seam * Math.max(1e-6, union.width)) / 2;
+  const leftSpan = Math.max(0, mid - bb.x);
+  const rightSpan = Math.max(0, bb.x + bb.width - mid);
+  const minKeep = bb.width * 0.4;
+  if (leftSpan >= rightSpan) {
+    const right = Math.max(bb.x + minKeep, Math.min(bb.x + bb.width, mid - inset));
+    return { x: bb.x, y: bb.y, width: right - bb.x, height: bb.height };
   }
-  const left = Math.max(bb.x, mid + inset);
+  const left = Math.min(bb.x + bb.width - minKeep, Math.max(bb.x, mid + inset));
   return {
     x: left,
     y: bb.y,
-    width: Math.max(0, bb.x + bb.width - left),
+    width: bb.x + bb.width - left,
     height: bb.height,
   };
 }
@@ -1273,7 +1280,12 @@ export function artworkSourceRectForPanel(
     return synthesiseLeggingsMirroredSourceRect(panelBb, groupRect, aw, ah);
   }
   const sample = clipSampleBbToSeamHalf(panelBb, groupRect, seamSide, panelKey);
-  return synthesiseSeamAwareSourceRect(sample, groupRect, aw, ah, seamSide);
+  // Front pullover hoods are mirrored in photo space (wearer's right is
+  // image-left). Anatomical L/R UV remap would shift the right hood onto
+  // the wrong mural half — clip already trimmed the seam in mockup px.
+  const synthSide =
+    panelKey === "left_hood" || panelKey === "right_hood" ? "none" : seamSide;
+  return synthesiseSeamAwareSourceRect(sample, groupRect, aw, ah, synthSide);
 }
 
 /** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
