@@ -253,6 +253,18 @@ export const PULLOVER_POCKET_FINISHED_INSET = {
   left: 0,
   right: 0,
 } as const;
+/**
+ * Zip pocket Safe leftover (catalog SVG). Top is 0 — a Safe top inset
+ * left Print-minus-Safe as solid garment fill on pullover; same here.
+ * Zipper is `ZIP_FRONT_SEAM_ALLOWANCE` on the front-body group, not L/R
+ * of this box. Fold "go up" stays `POCKET_WINDOW_OFFSET_Y` (−100).
+ */
+export const ZIP_POCKET_FINISHED_INSET = {
+  top: 0,
+  bottom: 0.0532,
+  left: 0,
+  right: 0,
+} as const;
 export const POCKET_SEAM_PIN_X: number | null = null;
 /** Canvas-H used to convert `POCKET_WINDOW_OFFSET_Y` into mockup px (~10 mm at 3200). */
 export const POCKET_SOURCE_INSET_CANVAS_REF_H = 3200;
@@ -291,11 +303,19 @@ export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
 }
 
 /** Inset the unsewn grey pocket AABB to the finished sewn face (all four edges). */
-export function applyFinishedPocketSampleToBbox<T extends MockupBbox>(bb: T): T {
-  const left = bb.width * PULLOVER_POCKET_FINISHED_INSET.left;
-  const right = bb.width * PULLOVER_POCKET_FINISHED_INSET.right;
-  const top = bb.height * PULLOVER_POCKET_FINISHED_INSET.top;
-  const bottom = bb.height * PULLOVER_POCKET_FINISHED_INSET.bottom;
+export function applyFinishedPocketSampleToBbox<T extends MockupBbox>(
+  bb: T,
+  inset: {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+  } = PULLOVER_POCKET_FINISHED_INSET,
+): T {
+  const left = bb.width * inset.left;
+  const right = bb.width * inset.right;
+  const top = bb.height * inset.top;
+  const bottom = bb.height * inset.bottom;
   const width = bb.width - left - right;
   const height = bb.height - top - bottom;
   if (!(width > 0) || !(height > 0)) return bb;
@@ -332,12 +352,17 @@ export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
   if (panelKey === "front_pocket") {
     return applyFinishedPocketSampleToBbox(bb);
   }
+  if (panelKey === "pocket_left" || panelKey === "pocket_right") {
+    const finished = applyFinishedPocketSampleToBbox(bb, ZIP_POCKET_FINISHED_INSET);
+    return applyPocketSourceInsetToBbox(finished, frontMaskH);
+  }
   return applyPocketSourceInsetToBbox(bb, frontMaskH);
 }
 
 /**
  * Pullover pocket sample-window after the finished inset (not dest, not bleed).
- * Zip halves must not use this — they keep the −100 fold inset only.
+ * Zip halves use finished + −100 fold via `applyPocketLiveSampleToBbox`,
+ * not this authored offset/scale.
  */
 export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
   bb: T,
@@ -355,7 +380,7 @@ export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
   return { ...next, x: next.x + dx, y: next.y + dy };
 }
 
-/** Finished inset, then operator pocket offset/scale. Zip is unchanged. */
+/** Finished inset, then operator pocket offset/scale. Zip stays fold-only. */
 export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
   bb: T,
   frontMaskH: number,

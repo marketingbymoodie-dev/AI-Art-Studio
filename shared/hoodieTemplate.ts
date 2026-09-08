@@ -81,6 +81,11 @@ export const PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT: SourceRect = {
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
 /**
+ * Zip front-body L/R + pocket halves: centre strip consumed by the zipper
+ * (fraction of the union design-rect width). Same value on chest and pockets.
+ */
+export const ZIP_FRONT_SEAM_ALLOWANCE = 0.06;
+/**
  * Printify blueprint 433 (men's bomber jacket AOP).
  * Catalog placeholders are a single `front` (+ back + sleeves) — not zip
  * `front_left`/`front_right`. Preview meshes may still be split; print export
@@ -855,7 +860,7 @@ export function defaultDesignGroups(): DesignGroup[] {
       // the same zip-seam allowance.
       panelKeys: ["front_left", "front_right", "pocket_left", "pocket_right"],
       placement: { front: { ...blank }, back: { ...blank } },
-      seamAllowance: 0,
+      seamAllowance: ZIP_FRONT_SEAM_ALLOWANCE,
       lockedRatio: null,
       enabled: true,
     },
@@ -1611,6 +1616,37 @@ function withPulloverHoodSeam(group: DesignGroup): DesignGroup {
   return { ...group, seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE };
 }
 
+function withZipFrontSeam(group: DesignGroup): DesignGroup {
+  if ((group.seamAllowance ?? 0) > 1e-9) return group;
+  return { ...group, seamAllowance: ZIP_FRONT_SEAM_ALLOWANCE };
+}
+
+/**
+ * Zip bp 451: published templates still have front-body `seamAllowance: 0`.
+ * Stamp the zipper strip onto chest + pocket halves without touching pullover.
+ */
+export function restoreZipFrontSeamAllowance(
+  template: HoodieTemplate,
+): HoodieTemplate {
+  if (
+    !isZipHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "zip-hoodie-aop"
+  ) {
+    return template;
+  }
+  const groups = template.designGroups;
+  if (!groups?.length) return template;
+  let changed = false;
+  const nextGroups = groups.map((g) => {
+    if (g.id !== "front-body") return g;
+    const next = withZipFrontSeam(g);
+    if (next !== g) changed = true;
+    return next;
+  });
+  if (!changed) return template;
+  return { ...template, designGroups: nextGroups };
+}
+
 /**
  * Pullover bp 450 only: stamp the current Preview Studio operator
  * defaults onto hood / front / pocket on every load. Published
@@ -1828,17 +1864,19 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     ...template,
     placerEditor: resolvedPlacer,
   });
-  return restorePulloverFrontHoodZipFraming(
-    restorePulloverFrontSleeveSourceRects({
-      ...template,
-      placerEditor: resolvedPlacer,
-      printFileLayout,
-      garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
-      designGroups,
-      tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
-      realWorldCalibration:
-        template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
-    }),
+  return restoreZipFrontSeamAllowance(
+    restorePulloverFrontHoodZipFraming(
+      restorePulloverFrontSleeveSourceRects({
+        ...template,
+        placerEditor: resolvedPlacer,
+        printFileLayout,
+        garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
+        designGroups,
+        tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
+        realWorldCalibration:
+          template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
+      }),
+    ),
   );
 }
 

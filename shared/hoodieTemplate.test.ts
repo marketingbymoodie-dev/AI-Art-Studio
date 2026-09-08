@@ -33,6 +33,7 @@ import {
   LEGGINGS_CAPRI_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  ZIP_FRONT_SEAM_ALLOWANCE,
   PILLOW_WRAP_BLUEPRINT_ID,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
@@ -454,6 +455,32 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(zipNorm.designGroups!.find((g) => g.id === "hood")!.placement.front).toEqual(
       zipStale.designGroups!.find((g) => g.id === "hood")!.placement.front,
     );
+  });
+
+  it("normalizeHoodieTemplate stamps zip front-body zipper seam, not pullover numbers", () => {
+    const zip = createFreshAopTemplate({
+      name: "zip-front-seam",
+      blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    });
+    expect(zip.designGroups!.find((g) => g.id === "front-body")!.seamAllowance).toBe(
+      ZIP_FRONT_SEAM_ALLOWANCE,
+    );
+    const stale = {
+      ...zip,
+      designGroups: zip.designGroups!.map((g) =>
+        g.id === "front-body" ? { ...g, seamAllowance: 0 } : g,
+      ),
+    };
+    const healed = normalizeHoodieTemplate(stale);
+    expect(healed.designGroups!.find((g) => g.id === "front-body")!.seamAllowance).toBe(
+      ZIP_FRONT_SEAM_ALLOWANCE,
+    );
+    expect(healed.designGroups!.find((g) => g.id === "hood")!.seamAllowance).toBe(0);
+    const pullover = createFreshAopTemplate({
+      name: "pullover-no-zip-seam",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    expect(pullover.designGroups!.find((g) => g.id === "front-body")!.seamAllowance).toBe(0);
   });
 
   it("heals front offsetX when scale and offsetY already match", () => {
