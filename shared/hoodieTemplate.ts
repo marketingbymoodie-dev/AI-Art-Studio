@@ -1606,36 +1606,17 @@ function pulloverFrontPlacementIsSeed(
   );
 }
 
-/** Stale pullover seeds from before Preview Studio operator defaults. */
-const LEGACY_PULLOVER_HOOD_PLACEMENTS = [
-  { scale: 1.203771, offsetX: 0, offsetY: 84.445 },
-  { scale: 1.3611, offsetX: 0, offsetY: 218.0846 },
-  { scale: 1, offsetX: 0, offsetY: 0 },
-] as const;
-
-const LEGACY_PULLOVER_FRONT_PLACEMENTS = [
-  { scale: 1.210335, offsetX: -2.527, offsetY: -304.439 },
-  { scale: 1.210335, offsetX: 0, offsetY: -304.439 },
-  { scale: 1.2103, offsetX: -4.721, offsetY: -65.1539 },
-  { scale: 1, offsetX: 0, offsetY: 0 },
-] as const;
-
-function isLegacyPulloverPlacement(
-  front: { scale: number; offsetX: number; offsetY: number; rotationDeg?: number } | undefined,
-  leftovers: readonly { scale: number; offsetX: number; offsetY: number }[],
-): boolean {
-  return leftovers.some((seed) => pulloverFrontPlacementIsSeed(front, seed));
-}
-
 function withPulloverHoodSeam(group: DesignGroup): DesignGroup {
   if ((group.seamAllowance ?? 0) > 1e-9) return group;
   return { ...group, seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE };
 }
 
 /**
- * Pullover bp 450 only: heal leftover zip/N1 framing to the current
- * operator defaults. Custom Preview Studio numbers are kept even when
- * `placementAuthored` was stripped on publish. Zip templates are untouched.
+ * Pullover bp 450 only: stamp the current Preview Studio operator
+ * defaults onto hood / front / pocket on every load. Published
+ * Supabase JSON and leftover `placementAuthored` sessions were winning
+ * (e.g. hood Y 91 / scale 1.25), so a hard refresh never showed the
+ * pinned seeds. Zip templates are untouched.
  */
 export function restorePulloverFrontHoodZipFraming(
   template: HoodieTemplate,
@@ -1651,7 +1632,6 @@ export function restorePulloverFrontHoodZipFraming(
   let changed = false;
   const nextGroups = groups.map((g) => {
     if (g.id === "front-body") {
-      if (g.placementAuthored) return g;
       const front = g.placement?.front;
       if (
         pulloverFrontPlacementIsSeed(front, {
@@ -1661,9 +1641,6 @@ export function restorePulloverFrontHoodZipFraming(
         }) &&
         pulloverPocketBiasCleared(g)
       ) {
-        return g;
-      }
-      if (!isLegacyPulloverPlacement(front, LEGACY_PULLOVER_FRONT_PLACEMENTS)) {
         return g;
       }
       changed = true;
@@ -1693,30 +1670,28 @@ export function restorePulloverFrontHoodZipFraming(
       };
     }
     if (g.id === "hood") {
+      const front = g.placement?.front;
+      const atSeed = pulloverFrontPlacementIsSeed(front, {
+        scale: PULLOVER_HOOD_PLACE_SCALE,
+        offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
+        offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+      });
       let next = g;
-      if (!g.placementAuthored) {
-        const front = g.placement?.front;
-        const atSeed = pulloverFrontPlacementIsSeed(front, {
-          scale: PULLOVER_HOOD_PLACE_SCALE,
-          offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
-          offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
-        });
-        if (!atSeed && isLegacyPulloverPlacement(front, LEGACY_PULLOVER_HOOD_PLACEMENTS)) {
-          next = {
-            ...g,
-            placement: {
-              ...g.placement,
-              front: {
-                ...(front ?? DEFAULT_GROUP_PLACEMENT),
-                scale: PULLOVER_HOOD_PLACE_SCALE,
-                offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
-                offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
-                rotationDeg: 0,
-              },
-              back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+      if (!atSeed) {
+        next = {
+          ...g,
+          placement: {
+            ...g.placement,
+            front: {
+              ...(front ?? DEFAULT_GROUP_PLACEMENT),
+              scale: PULLOVER_HOOD_PLACE_SCALE,
+              offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
+              offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+              rotationDeg: 0,
             },
-          };
-        }
+            back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+          },
+        };
       }
       const withSeam = withPulloverHoodSeam(next);
       if (withSeam !== g) changed = true;

@@ -663,9 +663,31 @@ function pillowDuplicateLinked(
  * enabled, locked-ratio) so the placer opens with the layout the admin
  * has dialed in.
  */
+function pinPulloverOperatorDefaults(
+  state: HoodieAopPlacerState,
+  template: HoodieTemplate,
+): HoodieAopPlacerState {
+  if (!isPulloverHoodieBlueprint(template.blueprintId)) return state;
+  const hood = template.designGroups?.find((g) => g.id === "hood")?.placement?.front;
+  const body = template.designGroups?.find((g) => g.id === "front-body")?.placement?.front;
+  const placements = { ...state.placements };
+  if (hood && placements.hood) {
+    placements.hood = { ...placements.hood, front: { ...hood } };
+  }
+  if (body && placements["front-body"]) {
+    placements["front-body"] = { ...placements["front-body"], front: { ...body } };
+  }
+  return {
+    ...state,
+    placements,
+    pocketSample: pocketSampleFromTemplate(template),
+  };
+}
+
 function buildInitialState(
   template: HoodieTemplate,
   saved?: Partial<HoodieAopPlacerState> | null,
+  options?: { pinPulloverOperatorDefaults?: boolean },
 ): HoodieAopPlacerState {
   const groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
   const isHoodieBp =
@@ -726,7 +748,11 @@ function buildInitialState(
     ...base,
     activeGroupId: pillow ? "front-face" : base.activeGroupId,
   };
-  if (!saved) return baseWithGroups;
+  if (!saved) {
+    return options?.pinPulloverOperatorDefaults
+      ? pinPulloverOperatorDefaults(baseWithGroups, template)
+      : baseWithGroups;
+  }
   const legsSynced = saved.legsSynced ?? base.legsSynced;
   const legsMirrored = saved.legsMirrored ?? base.legsMirrored;
   const resumed: HoodieAopPlacerState = {
@@ -761,7 +787,10 @@ function buildInitialState(
         ? "front-face"
         : (saved.activeGroupId ?? baseWithGroups.activeGroupId),
   };
-  return pinHoodieBackEditSurface(resumed, template);
+  const pinned = pinHoodieBackEditSurface(resumed, template);
+  return options?.pinPulloverOperatorDefaults
+    ? pinPulloverOperatorDefaults(pinned, template)
+    : pinned;
 }
 
 /**
@@ -1179,7 +1208,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             initialState.enabled ||
             initialState.tileSettings)
         );
-        return buildInitialState(data.template, initialState);
+        return buildInitialState(data.template, initialState, {
+          pinPulloverOperatorDefaults: allowTemplateDefaultsEdit,
+        });
       }
       return prev;
     });
