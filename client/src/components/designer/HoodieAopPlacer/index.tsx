@@ -1364,8 +1364,15 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   // ---------- Canvas rendering ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const eyedropperActiveRef = useRef(false);
+  const [eyedropperOn, setEyedropperOn] = useState(false);
   useEffect(() => {
-    if (eyedropperActiveRef.current) return;
+    eyedropperActiveRef.current = eyedropperOn;
+  }, [eyedropperOn]);
+  useEffect(() => {
+    // Use `eyedropperOn` (not the ref). The ref stays true until a later
+    // effect, so a pick would update the spectrum and skip this paint —
+    // hoodie bg stayed stale. Skip only while the session is still open.
+    if (eyedropperOn) return;
     if (!data || !state) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1409,7 +1416,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       legsLinked: state.mode === "pattern" && state.legsSynced,
       placeholderPositions,
     });
-  }, [data, state, mockups, artworkImg, placeholderPositions]);
+  }, [data, state, mockups, artworkImg, placeholderPositions, eyedropperOn]);
 
   // ---------- Helpers ----------
 
@@ -2077,13 +2084,10 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     );
   }, [withFrontIfNeeded]);
 
-  const [eyedropperOn, setEyedropperOn] = useState(false);
-  useEffect(() => {
-    eyedropperActiveRef.current = eyedropperOn;
-  }, [eyedropperOn]);
   const closeEyedropper = useCallback(() => setEyedropperOn(false), []);
   const pickEyedropper = useCallback(
     (hex: string) => {
+      eyedropperActiveRef.current = false;
       setBgColor(hex);
       setEyedropperOn(false);
     },
