@@ -8,6 +8,7 @@ import {
   artworkSliceMuralCoverage,
   artworkSliceSamplesMural,
   artworkSourceRectForPanel,
+  clipSampleBbToSeamHalf,
   computeGroupRects,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
@@ -466,7 +467,7 @@ describe("artworkSliceSamplesMural", () => {
   });
 });
 
-describe("artworkSourceRectForPanel hood seam clamp", () => {
+describe("clipSampleBbToSeamHalf / hood print overlap", () => {
   const union = { x: 0, y: 0, width: 200, height: 200 };
   const aw = 1000;
   const ah = 1000;
@@ -477,8 +478,8 @@ describe("artworkSourceRectForPanel hood seam clamp", () => {
       base: union,
       effective: union,
       anchor: { x: 100, y: 100 },
-      hasSeamPair: false,
-      anchorIsSeam: false,
+      hasSeamPair: true,
+      anchorIsSeam: true,
       seamAllowance: 0.08,
       groupId: "hood",
       enabled: true,
@@ -487,67 +488,66 @@ describe("artworkSourceRectForPanel hood seam clamp", () => {
     };
   }
 
-  it("does not let an overlapping left hood AABB sample past the seam gap", () => {
-    // Mask AABB crosses the centre (relRight = 0.6) the way pullover
-    // hood polygons do. Unclamped remap would still include the other
-    // nostril; print then stretches that onto the full left Safe rect.
+  it("trims an overlapping left hood AABB at the garment seam, not artwork UV 0.5", () => {
+    const overlapping = { x: 0, y: 0, width: 120, height: 200 };
+    const clipped = clipSampleBbToSeamHalf(overlapping, hoodRect(), "left", "left_hood");
+    expect(clipped.x + clipped.width).toBeLessThan(100);
+    expect(clipped.width).toBeGreaterThan(50);
+
     const slice = artworkSourceRectForPanel(
-      { x: 0, y: 0, width: 120, height: 200 },
+      overlapping,
       "left_hood",
       hoodRect(),
       aw,
       ah,
       "left",
     );
-    expect(slice.x).toBeGreaterThanOrEqual(0);
-    expect((slice.x + slice.width) / aw).toBeCloseTo(0.5 * (1 - 0.08), 5);
-    expect(slice.x + slice.width).toBeLessThan(aw * 0.5);
-  });
-
-  it("does not let an overlapping right hood AABB sample before the seam gap", () => {
-    const slice = artworkSourceRectForPanel(
-      { x: 80, y: 0, width: 120, height: 200 },
-      "right_hood",
-      hoodRect(),
-      aw,
-      ah,
-      "right",
-    );
-    expect(slice.x / aw).toBeCloseTo(0.5 + 0.08 / 2, 5);
-    expect(slice.x).toBeGreaterThan(aw * 0.5);
-    expect(slice.x + slice.width).toBeLessThanOrEqual(aw);
-  });
-
-  it("applies hood seam even when hasSeamPair is false (print back-view rect)", () => {
-    const slice = artworkSourceRectForPanel(
-      { x: 0, y: 0, width: 120, height: 200 },
-      "left_hood",
-      hoodRect({ hasSeamPair: false, seamAllowance: 0.08 }),
-      aw,
-      ah,
-      "left",
-    );
-    expect(slice.x + slice.width).toBeLessThan(aw * 0.5);
-  });
-
-  it("falls back to the pullover hood seam when the template still has 0", () => {
-    const withZero = artworkSourceRectForPanel(
-      { x: 0, y: 0, width: 120, height: 200 },
-      "left_hood",
+    const unclippedSlice = artworkSourceRectForPanel(
+      overlapping,
+      "front",
       hoodRect({ hasSeamPair: false, seamAllowance: 0 }),
       aw,
       ah,
-      "left",
+      "none",
     );
-    const withDefault = artworkSourceRectForPanel(
-      { x: 0, y: 0, width: 120, height: 200 },
+    expect(slice.width).toBeLessThan(unclippedSlice.width);
+    expect(slice.width / aw).toBeGreaterThan(0.2);
+  });
+
+  it("does not half a solo hood whose union is the panel itself", () => {
+    const solo = { x: 0, y: 0, width: 200, height: 200 };
+    const rect = hoodRect({
+      union: solo,
+      base: solo,
+      effective: solo,
+      hasSeamPair: false,
+      anchorIsSeam: false,
+      seamAllowance: 0,
+    });
+    const clipped = clipSampleBbToSeamHalf(solo, rect, "left", "left_hood");
+    expect(clipped).toEqual(solo);
+  });
+
+  it("keeps a usable slice when Place scale moves artwork UV 0.5 off the hood AABB", () => {
+    // Regression: UV-clamping left panels to [0, 0.5] of `effective`
+    // collapsed this to a ~0-width column → banded legs on the hood.
+    const overlapping = { x: 0, y: 0, width: 120, height: 80 };
+    const effective = { x: -80, y: 40, width: 360, height: 360 };
+    const rect = hoodRect({
+      effective,
+      base: union,
+      hasSeamPair: true,
+      seamAllowance: 0.08,
+    });
+    const slice = artworkSourceRectForPanel(
+      overlapping,
       "left_hood",
-      hoodRect({ hasSeamPair: false, seamAllowance: 0.08 }),
+      rect,
       aw,
       ah,
       "left",
     );
-    expect(withZero.x + withZero.width).toBeCloseTo(withDefault.x + withDefault.width, 5);
-    expect(withZero.x + withZero.width).toBeLessThan(aw * 0.5);
+    expect(slice.width / aw).toBeGreaterThan(0.15);
+    expect(slice.height / ah).toBeGreaterThan(0.1);
   });
 });

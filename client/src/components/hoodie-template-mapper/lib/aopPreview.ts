@@ -1112,32 +1112,20 @@ function synthesiseSeamAwareSourceRect(
   // half" guard silently ignored seam allowance for any group with
   // a non-zero offsetX — even an accidental 4 px offset on Front
   // body — because the rel coords then sat just below/above 0.5.
-  // Anatomical L/R (hood, zip) must trim even when this view's masks
-  // don't form a detected pair — print prefers back-view hood meshes
-  // whose rect often has hasSeamPair=false, which used to skip the
-  // trim and send a doubled nose to Printify.
-  const seam =
-    (rect.hasSeamPair || side === "left" || side === "right")
-      ? Math.max(0, rect.seamAllowance ?? 0)
-      : 0;
+  const seam = rect.hasSeamPair ? rect.seamAllowance : 0;
   const relLeft = (bb.x - eff.x) / eff.width;
   const relRight = (bb.x + bb.width - eff.x) / eff.width;
   let uLeft: number;
   let uRight: number;
   if (side === "left" && seam > 0) {
-    // Left half only: [0, 0.5] → [0, 0.5 - seam/2]. Clamp first —
-    // hood AABBs overlap the centre, so an unclamped relRight > 0.5
-    // was still sampling the other nostril into the print file.
-    const rL = Math.max(0, Math.min(relLeft, 0.5));
-    const rR = Math.max(0, Math.min(relRight, 0.5));
-    uLeft = rL * (1 - seam);
-    uRight = rR * (1 - seam);
+    // Left half compressed: [0, 0.5] → [0, 0.5 - seam/2]. Linear,
+    // applied unconditionally so seam allowance always lands.
+    uLeft = relLeft * (1 - seam);
+    uRight = relRight * (1 - seam);
   } else if (side === "right" && seam > 0) {
-    // Right half only: [0.5, 1] → [0.5 + seam/2, 1].
-    const rL = Math.max(0.5, Math.min(relLeft, 1));
-    const rR = Math.max(0.5, Math.min(relRight, 1));
-    uLeft = (rL - 0.5) * (1 - seam) + 0.5 + seam / 2;
-    uRight = (rR - 0.5) * (1 - seam) + 0.5 + seam / 2;
+    // Right half compressed: [0.5, 1] → [0.5 + seam/2, 1].
+    uLeft = (relLeft - 0.5) * (1 - seam) + 0.5 + seam / 2;
+    uRight = (relRight - 0.5) * (1 - seam) + 0.5 + seam / 2;
   } else {
     uLeft = relLeft;
     uRight = relRight;
@@ -1226,6 +1214,51 @@ export function synthesiseLeggingsMirroredSourceRect(
   return synthesiseSeamAwareSourceRect(panelBb, perPanelRect, aw, ah, "none");
 }
 
+/**
+ * Hood / zip mask AABBs overlap the centre seam. Print stretches that
+ * whole box onto the Safe rect, which is how both nostrils landed on
+ * each hood. Clip in *mockup* space (the garment seam), not artwork-UV
+ * 0.5 — Place scale/offset moves 0.5 off the seam and a UV clamp
+ * collapses the slice into a thin column (banded legs on the hood).
+ */
+export function clipSampleBbToSeamHalf(
+  bb: Aabb,
+  rect: DesignRectInfo,
+  side: "left" | "right" | "none",
+  panelKey?: HoodiePanelKey | null,
+): Aabb {
+  if (side !== "left" && side !== "right") return bb;
+  const union = rect.union;
+  const mid = rect.hasSeamPair ? rect.anchor.x : union.x + union.width / 2;
+  const crossesMid = bb.x < mid && bb.x + bb.width > mid;
+  const unionIsPair = union.width > bb.width * 1.05;
+  const isHood = panelKey === "left_hood" || panelKey === "right_hood";
+  if (!crossesMid) return bb;
+  if (!rect.hasSeamPair && !(isHood && unionIsPair)) return bb;
+
+  const seam = Math.max(
+    0,
+    rect.seamAllowance > 0
+      ? rect.seamAllowance
+      : isHood
+        ? PULLOVER_HOOD_SEAM_ALLOWANCE
+        : 0,
+  );
+  const inset =
+    (seam * (rect.effective.width > 0 ? rect.effective.width : union.width)) / 2;
+  if (side === "left") {
+    const right = Math.min(bb.x + bb.width, mid - inset);
+    return { x: bb.x, y: bb.y, width: Math.max(0, right - bb.x), height: bb.height };
+  }
+  const left = Math.max(bb.x, mid + inset);
+  return {
+    x: left,
+    y: bb.y,
+    width: Math.max(0, bb.x + bb.width - left),
+    height: bb.height,
+  };
+}
+
 export function artworkSourceRectForPanel(
   panelBb: Aabb,
   panelKey: HoodiePanelKey | null | undefined,
@@ -1239,12 +1272,8 @@ export function artworkSourceRectForPanel(
   if (isLeggingsSidePanelKey(panelKey)) {
     return synthesiseLeggingsMirroredSourceRect(panelBb, groupRect, aw, ah);
   }
-  const hoodRect =
-    (panelKey === "left_hood" || panelKey === "right_hood") &&
-    !(groupRect.seamAllowance > 0)
-      ? { ...groupRect, seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE }
-      : groupRect;
-  return synthesiseSeamAwareSourceRect(panelBb, hoodRect, aw, ah, seamSide);
+  const sample = clipSampleBbToSeamHalf(panelBb, groupRect, seamSide, panelKey);
+  return synthesiseSeamAwareSourceRect(sample, groupRect, aw, ah, seamSide);
 }
 
 /** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
