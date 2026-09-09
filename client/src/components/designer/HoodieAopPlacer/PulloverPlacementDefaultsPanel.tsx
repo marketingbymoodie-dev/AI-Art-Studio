@@ -199,7 +199,7 @@ export function PulloverPlacementDefaultsPanel({
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
         {isZip
-          ? "Front body moves both zip halves. Pocket Y / scale moves both pocket halves on top of the built-in up-shift. Negative Y lifts the pockets. Save writes hood / front-body / pocket as template defaults."
+          ? "Front body moves both zip halves. Pocket Y / scale compensate Printify's pocket print files only — the app mockup always stays on the built-in up-shift, so the preview will not visibly change. Save writes hood / front-body / pocket as template defaults."
           : "Drag the selected panel on the preview or edit numbers. Save writes hood / front-body placement and pocket sample-window as template defaults."}
       </p>
       {rows.map((row) => (

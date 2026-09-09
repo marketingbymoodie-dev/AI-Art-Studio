@@ -485,4 +485,62 @@ describe("pocket source inset (sewn fold)", () => {
     expect(zip.y).toBeCloseTo(zipAuthored.y, 5);
     expect(zip.width).toBeCloseTo(zipAuthored.width, 5);
   });
+
+  it("zip preview (applyAuthoredBias false) ignores authored Y/scale — built-in sample only", () => {
+    const grey = { x: 100, y: 200, width: 200, height: 100 };
+    const zipBase = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left");
+    const previewZip = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "pocket_left",
+      null,
+      { offsetX: 0, offsetY: -4, scale: 1.2 },
+      ZIP_HOODIE_BLUEPRINT_ID,
+      /* applyAuthoredBias */ false,
+    );
+    expect(previewZip).toEqual(zipBase);
+  });
+
+  it("zip print (default applyAuthoredBias) still applies authored Y/scale", () => {
+    const grey = { x: 100, y: 200, width: 200, height: 100 };
+    const zipBase = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_right");
+    const printZip = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "pocket_right",
+      null,
+      { offsetX: 0, offsetY: -4, scale: 1.2 },
+      ZIP_HOODIE_BLUEPRINT_ID,
+    );
+    const expected = applyPocketAuthoredSampleToBbox(zipBase, {
+      offsetX: 0,
+      offsetY: -4,
+      scale: 1.2,
+    });
+    expect(printZip).toEqual(expected);
+  });
+
+  it("pullover front_pocket authored offset/scale applies regardless of applyAuthoredBias", () => {
+    const grey = { x: 100, y: 200, width: 200, height: 100 };
+    const bias = { offsetX: 10, offsetY: -4, scale: 1 };
+    const withFlagTrue = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "front_pocket",
+      null,
+      bias,
+      PULOVER_HOODIE_BLUEPRINT_ID,
+      true,
+    );
+    const withFlagFalse = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "front_pocket",
+      null,
+      bias,
+      PULOVER_HOODIE_BLUEPRINT_ID,
+      false,
+    );
+    expect(withFlagFalse).toEqual(withFlagTrue);
+  });
 });
