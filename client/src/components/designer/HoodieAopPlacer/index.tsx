@@ -2423,11 +2423,6 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     state.mode === "place";
   const showPocketCal =
     showOperatorDefaults && calibrationTarget === "pocket";
-  // Zip Pocket Y/Scale are Printify-only now — dragging on the canvas would
-  // look like a no-op since the preview mockup ignores authored pocket bias.
-  // Pullover's pocket sample-window is still preview+print shared, so keep
-  // the drag layer there.
-  const showPocketDragLayer = showPocketCal && isPulloverOperator;
   const showOverlay =
     !!mockup &&
     !!artworkImg &&
@@ -2605,7 +2600,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               />
             )}
             {!canvasOverrideUrl &&
-              showPocketDragLayer &&
+              showPocketCal &&
               mockup &&
               artworkImg && (
               <PocketSampleDragLayer

@@ -1029,20 +1029,12 @@ export function applyPanelPlacementBiasToBbox(
   return { x: bb.x + dx, y: bb.y + dy, width: bb.width, height: bb.height };
 }
 
-/**
- * `applyAuthoredBias` (default true = print behavior). Preview call sites in
- * `renderAopPreview` pass `false` so the on-screen zip mockup stays on the
- * built-in pocket sample only — zip Pocket Y/Scale compensate Printify's
- * own pocket geometry, not the app render. Pullover ignores this flag (its
- * `front_pocket` sample-window is preview+print shared by design).
- */
 function samplingBboxForLayer(
   bb: Aabb,
   layer: MaskLayer,
   layerRect: DesignRectInfo,
   template: HoodieTemplate,
   panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
-  applyAuthoredBias = true,
 ): Aabb {
   const group = findGroupForPanel(template.designGroups, layer.panelKey);
   if (!group) return bb;
@@ -1060,7 +1052,6 @@ function samplingBboxForLayer(
       layerRect.effective,
       bias,
       template.blueprintId,
-      applyAuthoredBias,
     );
   }
   return applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId);
@@ -2824,7 +2815,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             layerRect,
             template,
             params.groupPanelBiasOverrides,
-            /* applyAuthoredBias */ false,
           );
           const rotForSlice = layerRect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
@@ -2882,7 +2872,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             layerRect,
             template,
             params.groupPanelBiasOverrides,
-            /* applyAuthoredBias */ false,
           );
           const rotDeg = layerRect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);

@@ -402,14 +402,7 @@ export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
 
 /**
  * Finished / zip sample, then operator pocket offset/scale.
- *
- * `applyAuthoredBias` (default true) lets zip callers skip the authored
- * Y/Scale for the **app mockup** (preview) while print export still applies
- * it — zip Pocket Y/Scale compensate Printify's own pocket geometry error,
- * not the in-app render, so the mockup should stay on the built-in
- * up-shift/zipper-inset sample only. Pullover always applies authored bias
- * regardless of this flag (its `front_pocket` sample-window is preview+print
- * shared by design).
+ * Zip Y/Scale apply on both the app mockup and Printify print files.
  */
 export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
   bb: T,
@@ -418,13 +411,11 @@ export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
   effective?: { y: number; height: number } | null,
   bias?: { offsetX?: number; offsetY?: number; scale?: number } | null,
   blueprintId?: number | null,
-  applyAuthoredBias = true,
 ): T {
   const inset = applyPocketLiveSampleToBbox(bb, frontMaskH, panelKey, effective);
   const pulloverAuthored =
     isPulloverHoodieBlueprint(blueprintId) && panelKey === "front_pocket";
   const zipAuthored =
-    applyAuthoredBias &&
     isZipHoodieBlueprint(blueprintId) &&
     (panelKey === "pocket_left" || panelKey === "pocket_right");
   if (!pulloverAuthored && !zipAuthored) return inset;
