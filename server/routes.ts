@@ -50,7 +50,10 @@ import {
   normalizePreviewUrl,
   unwrapMangledPreviewUrl,
 } from "@shared/previewUrl";
-import { ensureShadowVariantUntracked } from "./shadow-variant-purchasable";
+import {
+  ShadowVariantNotPurchasableError,
+  ensureShadowVariantPurchasable,
+} from "./shadow-variant-purchasable";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
@@ -9951,6 +9954,11 @@ ${orientationExtra}
             ) {
               // Reuse existing shadow product — just store the IDs on the job
               console.log(`[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId}`);
+              await ensureShadowVariantPurchasable({
+                shop,
+                token,
+                variantId: existing.shopifyVariantId,
+              });
               await storage.updateGenerationJob(jobId, {
                 shadowProductId: existing.shopifyProductId,
                 shadowVariantId: existing.shopifyVariantId,
@@ -10022,7 +10030,7 @@ ${orientationExtra}
             const { product: shadowProduct } = await createRes.json();
             const shadowVariant = shadowProduct.variants[0];
             console.log(`[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId}`);
-            await ensureShadowVariantUntracked({
+            await ensureShadowVariantPurchasable({
               shop,
               token,
               variantId: shadowVariant.id,
@@ -10856,6 +10864,40 @@ ${orientationExtra}
     }
   });
 
+  // ATC fast-path (b74b936d) skips resolve-design-variant. Repair CONTINUE here
+  // so a reused deny-shadow cannot 422. Asserted GraphQL write — not fire-and-forget.
+  app.post("/api/storefront/ensure-shadow-purchasable", async (req: Request, res: Response) => {
+    try {
+      const shop = normalizeMyshopifyShopDomain(req.body?.shop);
+      const variantId = String(req.body?.variantId || "").replace(/\D/g, "");
+      if (!shop || !variantId) {
+        return res.status(400).json({ success: false, error: "shop and variantId are required" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ success: false, error: "Shop not authorized" });
+      }
+      await ensureShadowVariantPurchasable({
+        shop,
+        token: installation.accessToken!,
+        variantId,
+      });
+      return res.json({ success: true, variantId, inventoryPolicy: "CONTINUE" });
+    } catch (error: any) {
+      if (error instanceof ShadowVariantNotPurchasableError) {
+        console.error("[ShadowProduct] ensure-shadow-purchasable policy write did not land:", error.message);
+        return res.status(409).json({
+          success: false,
+          error: error.message,
+          code: error.code,
+          variantId: error.variantId,
+        });
+      }
+      console.error("[ShadowProduct] ensure-shadow-purchasable error:", error?.message || error);
+      return res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+    }
+  });
+
   // ── Shadow product creation (replaces resolve-design-variant) ────────────────
   // Creates one hidden Shopify product per design with a single variant.
   // The shadow product is status=draft, not in any collection, tagged appai-shadow.
@@ -10956,7 +10998,7 @@ ${orientationExtra}
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
         );
-        await ensureShadowVariantUntracked({
+        await ensureShadowVariantPurchasable({
           shop,
           token,
           variantId: existing.shopifyVariantId,
@@ -11158,7 +11200,7 @@ ${orientationExtra}
       const { product: shadowProduct } = await createProductRes.json();
       const shadowVariant = shadowProduct.variants[0];
       console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId} (persist=${persistDesignId})`);
-      await ensureShadowVariantUntracked({
+      await ensureShadowVariantPurchasable({
         shop,
         token,
         variantId: shadowVariant.id,
@@ -11218,6 +11260,15 @@ ${orientationExtra}
         liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
       });
     } catch (error: any) {
+      if (error instanceof ShadowVariantNotPurchasableError) {
+        console.error("[ShadowProduct] Policy write did not land:", error.message);
+        return res.status(409).json({
+          success: false,
+          error: error.message,
+          code: error.code,
+          variantId: error.variantId,
+        });
+      }
       console.error("[ShadowProduct] Error:", error);
       res.status(500).json({ success: false, error: error?.message || "Internal server error" });
     }

@@ -11140,6 +11140,30 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       preShadowSyncedRetailRef.current?.jobId === shadowDesignId &&
       preShadowSyncedRetailRef.current?.retail === displayedRetailForAtc;
 
+    /** Awaited CONTINUE write — never fire-and-forget. Fast-path must not skip this. */
+    const runEnsureShadowPurchasable = async (shadowId: string): Promise<boolean> => {
+      if (!shopDomain || !shadowId) return false;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await safeFetch(`${API_BASE}/api/storefront/ensure-shadow-purchasable`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shop: shopDomain, variantId: shadowId }),
+          signal: controller.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) return true;
+        console.error("[Design Studio] Shadow purchasable write did not land:", res.status, data);
+        return false;
+      } catch (e: any) {
+        console.error("[Design Studio] Shadow purchasable request failed:", e?.message || e);
+        return false;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
     /** Best-effort resolve-design-variant with a single retry on network failure. */
     const runResolveVariant = async (
       opts: { attempts: number; label: string },
@@ -11194,26 +11218,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return { shadowVariantId: null, matched: false };
     };
 
-    // Kick off the (possibly fast-path) resolve in parallel with freezeAopLineSnapshot.
-    // canSkipResolveInline → still fires but not awaited: the cart uses preShadow now,
-    // and price sync happens server-side in the background.
+    // Fast-path still AWAITS CONTINUE repair. Skipping resolve must not skip policy write.
     const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean }> = canSkipResolveInline
-      ? Promise.resolve({ shadowVariantId: preShadowVariantId, matched: true })
+      ? (async () => {
+          console.log(
+            "[Design Studio] ATC fast-path — reusing preShadow variant",
+            preShadowVariantId,
+            "for job",
+            shadowDesignId,
+            "@ retail",
+            displayedRetailForAtc,
+          );
+          const repaired = await runEnsureShadowPurchasable(String(preShadowVariantId));
+          if (!repaired) {
+            console.warn("[Design Studio] Fast-path repair failed — falling through to full resolve");
+            return runResolveVariant({ attempts: 3, label: "resolve-design-variant (after fast-path repair fail)" });
+          }
+          void runResolveVariant({ attempts: 1, label: "resolve-design-variant (bg price sync)" }).catch(() => {});
+          return { shadowVariantId: preShadowVariantId, matched: true };
+        })()
       : runResolveVariant({ attempts: 3, label: "resolve-design-variant" });
-
-    if (canSkipResolveInline) {
-      console.log(
-        "[Design Studio] ATC fast-path — reusing preShadow variant",
-        preShadowVariantId,
-        "for job",
-        shadowDesignId,
-        "@ retail",
-        displayedRetailForAtc,
-      );
-      // Fire the resolve in the background so any Admin price drift is corrected
-      // for the NEXT ATC. Never awaited — cart proceeds immediately.
-      void runResolveVariant({ attempts: 1, label: "resolve-design-variant (bg price sync)" }).catch(() => {});
-    }
 
     // Await resolve (+ snapshot only when persist is already done). AOP lines
     // without a ready snapshot get `_print_files_pending` and finalize after cart-add.
@@ -11262,8 +11286,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       preShadowVariantId &&
       normalizeVariantId(finalVariantId) === normalizedVariant
     ) {
-      finalVariantId = preShadowVariantId;
-      console.warn("[Design Studio] Resolve did not return a shadow — falling back to pre-created variant", finalVariantId);
+      const repaired = await runEnsureShadowPurchasable(String(preShadowVariantId));
+      if (repaired) {
+        finalVariantId = preShadowVariantId;
+        console.warn("[Design Studio] Resolve did not return a shadow — falling back to repaired pre-created variant", finalVariantId);
+      } else {
+        console.error("[Design Studio] PreShadow fallback refused — CONTINUE write did not land");
+      }
     }
     if (preShadowProductId && shopDomain && normalizeVariantId(finalVariantId) !== normalizedVariant) {
       safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {

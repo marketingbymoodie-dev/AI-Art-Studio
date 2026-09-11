@@ -1,9 +1,82 @@
 /**
- * Shopify REST still creates InventoryItems as tracked=true (qty 0) even when
- * we send inventory_management: null. Force untracked + continue so a second
- * add of the same shadow cannot 422 as "already sold out".
+ * POD / shadow variants must stay purchasable. REST ProductVariant
+ * inventory_management / inventory_policy are ignored on Admin API 2025-10
+ * (default policy DENY, qty 0 → Ajax cart 422 "already sold out").
+ *
+ * Owner of the setting: GraphQL productVariantsBulkUpdate(inventoryPolicy: CONTINUE).
+ * REST is not used. CONTINUE is written unconditionally — never gated on tracked.
+ * The write is asserted: HTTP 200 with userErrors, or a returned policy other
+ * than CONTINUE, throws. Do not fire-and-forget.
  */
-export async function ensureShadowVariantUntracked(opts: {
+
+export class ShadowVariantNotPurchasableError extends Error {
+  readonly code = "shadow_not_purchasable" as const;
+  constructor(
+    message: string,
+    readonly variantId: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "ShadowVariantNotPurchasableError";
+  }
+}
+
+type GraphqlJson = {
+  data?: any;
+  errors?: Array<{ message?: string }>;
+};
+
+function formatGraphqlProblems(
+  json: GraphqlJson,
+  userErrors?: Array<{ field?: unknown; message?: string }>,
+): string {
+  const top = (json.errors ?? [])
+    .map((e) => String(e?.message || "").trim())
+    .filter(Boolean);
+  const users = (userErrors ?? [])
+    .map((e) => String(e?.message || "").trim())
+    .filter(Boolean);
+  return [...top, ...users].join("; ") || "unknown GraphQL failure";
+}
+
+async function shopifyGraphql(opts: {
+  shop: string;
+  token: string;
+  variantId: string;
+  query: string;
+  variables: Record<string, unknown>;
+}): Promise<GraphqlJson> {
+  const res = await fetch(`https://${opts.shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": opts.token,
+    },
+    body: JSON.stringify({ query: opts.query, variables: opts.variables }),
+  });
+  const json = (await res.json().catch(() => ({}))) as GraphqlJson;
+  if (!res.ok) {
+    throw new ShadowVariantNotPurchasableError(
+      `Shadow purchasable GraphQL HTTP ${res.status}`,
+      opts.variantId,
+      json,
+    );
+  }
+  if (Array.isArray(json.errors) && json.errors.length > 0) {
+    throw new ShadowVariantNotPurchasableError(
+      `Shadow purchasable GraphQL errors: ${formatGraphqlProblems(json)}`,
+      opts.variantId,
+      json.errors,
+    );
+  }
+  return json;
+}
+
+/**
+ * Write inventoryPolicy CONTINUE on this variant and assert it landed.
+ * Also attempts to untrack inventory (non-fatal if CONTINUE already landed).
+ */
+export async function ensureShadowVariantPurchasable(opts: {
   shop: string;
   token: string;
   variantId: string | number;
@@ -11,80 +84,102 @@ export async function ensureShadowVariantUntracked(opts: {
   const shop = String(opts.shop || "").trim();
   const token = String(opts.token || "").trim();
   const variantId = String(opts.variantId || "").replace(/\D/g, "");
-  if (!shop || !token || !variantId) return;
-
-  const apiBase = `https://${shop}/admin/api/2025-10`;
-  const restHeaders = {
-    "Content-Type": "application/json",
-    "X-Shopify-Access-Token": token,
-  };
-
-  try {
-    await fetch(`${apiBase}/variants/${variantId}.json`, {
-      method: "PUT",
-      headers: restHeaders,
-      body: JSON.stringify({
-        variant: {
-          id: Number(variantId),
-          inventory_management: null,
-          inventory_policy: "continue",
-        },
-      }),
-    });
-  } catch (e: any) {
-    console.warn(
-      `[ShadowProduct] REST untrack failed for ${variantId}:`,
-      e?.message || e,
+  if (!shop || !token || !variantId) {
+    throw new ShadowVariantNotPurchasableError(
+      "Shadow purchasable write skipped — missing shop, token, or variantId",
+      variantId || "unknown",
     );
   }
 
+  const variantGid = `gid://shopify/ProductVariant/${variantId}`;
+  const lookup = await shopifyGraphql({
+    shop,
+    token,
+    variantId,
+    query: `query($id: ID!) {
+      productVariant(id: $id) {
+        id
+        inventoryPolicy
+        product { id }
+        inventoryItem { id tracked }
+      }
+    }`,
+    variables: { id: variantGid },
+  });
+  const variant = lookup?.data?.productVariant;
+  const productGid = String(variant?.product?.id || "");
+  if (!productGid) {
+    throw new ShadowVariantNotPurchasableError(
+      `Shadow purchasable lookup missed product id for variant ${variantId}`,
+      variantId,
+      lookup,
+    );
+  }
+
+  // Unconditional CONTINUE — do not skip when inventoryItem.tracked is already false.
+  const updated = await shopifyGraphql({
+    shop,
+    token,
+    variantId,
+    query: `mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants { id inventoryPolicy }
+        userErrors { field message }
+      }
+    }`,
+    variables: {
+      productId: productGid,
+      variants: [{ id: variantGid, inventoryPolicy: "CONTINUE" }],
+    },
+  });
+  const bulk = updated?.data?.productVariantsBulkUpdate;
+  const userErrors: Array<{ field?: unknown; message?: string }> = bulk?.userErrors ?? [];
+  if (userErrors.length > 0) {
+    throw new ShadowVariantNotPurchasableError(
+      `Shadow inventoryPolicy CONTINUE rejected: ${formatGraphqlProblems(updated, userErrors)}`,
+      variantId,
+      userErrors,
+    );
+  }
+  const writtenPolicy = String(bulk?.productVariants?.[0]?.inventoryPolicy || "").toUpperCase();
+  if (writtenPolicy !== "CONTINUE") {
+    throw new ShadowVariantNotPurchasableError(
+      `Shadow inventoryPolicy write did not land (got ${writtenPolicy || "empty"})`,
+      variantId,
+      bulk,
+    );
+  }
+  console.log(`[ShadowProduct] inventoryPolicy CONTINUE confirmed for variant ${variantId}`);
+
+  const itemId = variant?.inventoryItem?.id;
+  if (!itemId) return;
   try {
-    const gqlEndpoint = `${apiBase}/graphql.json`;
-    const gid = `gid://shopify/ProductVariant/${variantId}`;
-    const lookup = await fetch(gqlEndpoint, {
-      method: "POST",
-      headers: restHeaders,
-      body: JSON.stringify({
-        query: `query($id: ID!) {
-          node(id: $id) {
-            ... on ProductVariant { id inventoryItem { id tracked } }
-          }
-        }`,
-        variables: { id: gid },
-      }),
+    const untracked = await shopifyGraphql({
+      shop,
+      token,
+      variantId,
+      query: `mutation($id: ID!, $input: InventoryItemInput!) {
+        inventoryItemUpdate(id: $id, input: $input) {
+          inventoryItem { id tracked }
+          userErrors { field message }
+        }
+      }`,
+      variables: { id: itemId, input: { tracked: false } },
     });
-    const lookupJson = (await lookup.json()) as any;
-    const itemId = lookupJson?.data?.node?.inventoryItem?.id;
-    const tracked = lookupJson?.data?.node?.inventoryItem?.tracked;
-    if (!itemId) return;
-    if (tracked === false) return;
-    const updated = await fetch(gqlEndpoint, {
-      method: "POST",
-      headers: restHeaders,
-      body: JSON.stringify({
-        query: `mutation($id: ID!, $input: InventoryItemInput!) {
-          inventoryItemUpdate(id: $id, input: $input) {
-            inventoryItem { id tracked }
-            userErrors { field message }
-          }
-        }`,
-        variables: { id: itemId, input: { tracked: false } },
-      }),
-    });
-    const updatedJson = (await updated.json()) as any;
-    const userErrors = updatedJson?.data?.inventoryItemUpdate?.userErrors ?? [];
-    if (userErrors.length > 0) {
-      console.warn(
-        `[ShadowProduct] GraphQL untrack userErrors for ${variantId}:`,
-        JSON.stringify(userErrors).slice(0, 240),
+    const untrackErrors = untracked?.data?.inventoryItemUpdate?.userErrors ?? [];
+    if (untrackErrors.length > 0) {
+      console.error(
+        `[ShadowProduct] inventoryItem untrack userErrors for ${variantId}:`,
+        JSON.stringify(untrackErrors).slice(0, 240),
       );
-    } else {
-      console.log(`[ShadowProduct] Forced untracked inventory for variant ${variantId}`);
     }
   } catch (e: any) {
-    console.warn(
-      `[ShadowProduct] GraphQL untrack failed for ${variantId}:`,
+    console.error(
+      `[ShadowProduct] inventoryItem untrack failed for ${variantId} (CONTINUE already confirmed):`,
       e?.message || e,
     );
   }
 }
+
+/** @deprecated Use ensureShadowVariantPurchasable */
+export const ensureShadowVariantUntracked = ensureShadowVariantPurchasable;
