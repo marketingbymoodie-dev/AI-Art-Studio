@@ -164,11 +164,18 @@ export type HoodieAopPlacerProps = {
    * numeric placement + Save-as-defaults. Storefront must leave this unset.
    */
   allowTemplateDefaultsEdit?: boolean;
+  /**
+   * Mobile customizer shell owns Place/Pattern, Apply Pattern, and Background.
+   * Hide those in-canvas duplicates so they don't stack under the chrome.
+   */
+  mobileShell?: boolean;
 };
 
 export type HoodieAopPlacerHandle = {
   applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
+  setMode: (mode: "place" | "pattern") => void;
+  setBackgroundColor: (hex: string) => void;
 };
 
 /**
@@ -1021,6 +1028,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       canvasOverrideLabel = null,
       onEngageLiveEditor,
       allowTemplateDefaultsEdit = false,
+      mobileShell = false,
     },
     ref,
   ) {
@@ -2226,8 +2234,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
 
   useImperativeHandle(
     ref,
-    () => ({ applyIfNeeded, hasPendingChanges }),
-    [applyIfNeeded, hasPendingChanges],
+    () => ({
+      applyIfNeeded,
+      hasPendingChanges,
+      setMode,
+      setBackgroundColor: setBgColor,
+    }),
+    [applyIfNeeded, hasPendingChanges, setMode, setBgColor],
   );
 
   useEffect(() => {
@@ -2680,8 +2693,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         data-hoodie-aop-controls
         className="w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]"
       >
-        {printersMockupAction && (
-          <div className="flex flex-col gap-1">
+        {printersMockupAction && !mobileShell && (
+          <div className="flex flex-col gap-1" data-hoodie-aop-shell-hidden>
             <button
               type="button"
               onClick={() => {
@@ -2745,7 +2758,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         )}
 
         {/* Pattern / Place segmented toggle */}
-        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
+        {!mobileShell && (
+        <div
+          data-hoodie-aop-mode-toggle
+          className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card"
+        >
           {(["pattern", "place"] as const).map((m) => (
             <button
               key={m}
@@ -2756,6 +2773,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             </button>
           ))}
         </div>
+        )}
 
         {/* View row: Front / Back / optional Hood or Collar group */}
         <div>
@@ -3205,7 +3223,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           />
         )}
 
-        {/* Background colour */}
+        {/* Background colour — on mobile the shell Background sheet owns this. */}
+        {!mobileShell && (
         <div>
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Background
@@ -3262,6 +3281,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             onPick={setBgColor}
           />
         </div>
+        )}
 
         {/* Leggings: fine-position nudges (replaces former Replace artwork slot). */}
         {isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (

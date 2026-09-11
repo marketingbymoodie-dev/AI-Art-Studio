@@ -223,6 +223,8 @@ export type FlatProductPlacerProps = {
     onChange: (next: string) => void;
     hint?: string;
   } | null;
+  /** Mobile customizer shell owns Generate/ATC and Background — hide duplicates. */
+  mobileShell?: boolean;
 };
 
 type LoadedAssets = {
@@ -343,6 +345,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       viewerHeightPx = null,
       garmentColorHex = null,
       decorGenerateFill = null,
+      mobileShell = false,
     },
     ref,
   ) {
@@ -1708,7 +1711,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {/* Phone cases: Printers Mockup replaces the Print-on-front toggle slot. */}
-        {edgeWrapMode && lifestyleAction && (
+        {edgeWrapMode && lifestyleAction && !mobileShell && (
           <div className="flex flex-col gap-1">
             <button
               type="button"
@@ -1755,7 +1758,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {/* Phone cases: fill under cutout art out to the blue dashed print canvas. */}
-        {edgeWrapMode && (
+        {edgeWrapMode && !mobileShell && (
           <div data-testid="flat-edge-wrap-background">
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Background
@@ -1842,7 +1845,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {!edgeWrapMode && decorGenerateFill && (
+        {!edgeWrapMode && decorGenerateFill && !mobileShell && (
           <DecorFloatingFillPicker
             value={decorGenerateFill.value}
             onChange={(next) => {

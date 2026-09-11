@@ -3533,6 +3533,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // this flag is only active below the mobile breakpoint; desktop is untouched.
   const isMobile = useIsMobile();
 
+  useEffect(() => {
+    if (!isMobile) return;
+    document.body.classList.add("appai-mobile-dialogs");
+    return () => document.body.classList.remove("appai-mobile-dialogs");
+  }, [isMobile]);
+
   const beginAopFinalizeToast = useCallback((jobId: string, shop: string) => {
     rememberAopFinalizeJob(jobId, shop);
     try {
@@ -4217,6 +4223,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setAopPatternSettings((prev) => ({ ...prev, bgColor: hex ?? "" }));
     setAopPlacementSettings((prev) =>
       prev ? { ...prev, bgColor: hex ?? undefined } : prev,
+    );
+    const aopHex = hex || "#FFFFFF";
+    hoodieAopPlacerRef.current?.setBackgroundColor?.(aopHex);
+    setHoodieAopPlacerState((prev) =>
+      prev ? { ...prev, backgroundColor: aopHex } : prev,
     );
     setSelectedMockupIndex(0);
   }, []);
@@ -6502,21 +6513,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId, productTypeConfig]);
 
-  // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
-  // fetch the job status directly from the server
+  // Fallback path: if the design isn't in the savedDesigns list (anonymous
+  // session still fetching, or a job that isn't in the gallery), fetch status.
   useEffect(() => {
     if (!effectiveLoadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
     if (configLoading || !productTypeConfig) return;
-    // Only run fallback after a short delay to give savedDesigns time to populate
+    const inList = savedDesigns.some((x) => x.id === effectiveLoadDesignId);
+    if (inList) return; // primary path will apply
+    const listResolved = !savedDesignsLoading;
+    const delay = listResolved ? 0 : 2000;
     const timer = setTimeout(() => {
-      if (loadDesignAppliedRef.current) return; // already restored from list
+      if (loadDesignAppliedRef.current) return;
       console.log('[LoadDesign] Fallback: fetching status for', effectiveLoadDesignId);
       const shop = shopDomain;
       safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(effectiveLoadDesignId)}&shop=${encodeURIComponent(shop)}&t=${Date.now()}`)
         .then(res => res.ok ? res.json() : null)
         .then(status => {
           if (!status || status.status !== 'complete') return;
-          if (loadDesignAppliedRef.current) return; // list restored it in the meantime
+          if (loadDesignAppliedRef.current) return;
           if (
             isAdminTester &&
             status.productTypeId != null &&
@@ -6536,10 +6550,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
         })
         .catch(() => {});
-    }, 2000);
+    }, delay);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId, productTypeConfig]);
+  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId, productTypeConfig, savedDesigns, savedDesignsLoading]);
 
   useEffect(() => {
     if (frameColorObjects.length === 0) return;
@@ -13583,6 +13597,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               loadSavedDesignInPlace(event.data.design);
               return;
             }
+            const currentHandle =
+              activeProductContext.pageHandle ||
+              searchParams.get("pageHandle") ||
+              searchParams.get("page") ||
+              "";
+            // Same customizer page: reuse the LoadDesign path. A full product
+            // switch unmounts the iframe UI (configLoading → blank) and was
+            // leaving anonymous gallery taps on an empty canvas.
+            if (currentHandle && pageHandle === currentHandle) {
+              loadSavedDesignInPlace(event.data.design);
+              return;
+            }
             await switchToSavedDesignProduct(event.data.design);
           } catch (error) {
             console.error('[SavedDesigns] Parent-requested in-app switch failed:', error);
@@ -13679,7 +13705,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants]);
+  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants, activeProductContext.pageHandle]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -14926,20 +14952,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
 
-  // Fetch saved designs when logged in
-  const isLoggedIn = storefrontLoggedIn;
-  const artworksRemainingLabel = (() => {
-    if (sessionLoading && !customer) {
-      return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
-    }
-    if (!isLoggedIn && creditBreakdown.paidTotal === 0 && creditBreakdown.shopFreeRemaining > 0) {
-      return `${creditBreakdown.shopFreeRemaining} free artwork${creditBreakdown.shopFreeRemaining !== 1 ? "s" : ""} remaining`;
-    }
-    return formatStorefrontCreditsSplit(creditBreakdown);
-  })();
+  // Fetch saved designs for the session identity (signed-in OR anonymous).
+  // Anonymous sessions still get a customerId from bootstrap — skipping this
+  // fetch meant gallery taps had nothing to restore besides a 2s status
+  // fallback, which often never applied and left a blank canvas.
   useEffect(() => {
-    const adminLibraryReady = isAdminTester && !!storefrontCustomerId && !!shopDomain;
-    if ((!isLoggedIn && !adminLibraryReady) || !storefrontCustomerId || !shopDomain) return;
+    if (!storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
       method: 'POST',
@@ -14955,7 +14973,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
-  }, [isLoggedIn, isAdminTester, storefrontCustomerId, shopDomain]);
+  }, [storefrontCustomerId, shopDomain]);
+
+  const isLoggedIn = storefrontLoggedIn;
+  const artworksRemainingLabel = (() => {
+    if (sessionLoading && !customer) {
+      return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
+    }
+    if (!isLoggedIn && creditBreakdown.paidTotal === 0 && creditBreakdown.shopFreeRemaining > 0) {
+      return `${creditBreakdown.shopFreeRemaining} free artwork${creditBreakdown.shopFreeRemaining !== 1 ? "s" : ""} remaining`;
+    }
+    return formatStorefrontCreditsSplit(creditBreakdown);
+  })();
 
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
@@ -15165,7 +15194,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             {freshDesignAllowed && (
               <button
                 type="button"
-                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                className="appai-mprimary-extras text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
                 onClick={() => startFreshDesign()}
               >
                 <Plus className="w-3 h-3" />
@@ -15173,7 +15202,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               </button>
             )}
             {isStorefront && (
-              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+              <div className="appai-mprimary-extras text-xs text-muted-foreground flex items-center justify-center gap-1">
                 {artworksRemainingLabel}
                 <button
                   type="button"
@@ -15188,7 +15217,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           </div>
         ) : (
           (isShopify || isStorefront) && (
-            <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+            <div className="appai-mprimary-extras text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
               {artworksRemainingLabel}
               <button
                 type="button"
@@ -15255,6 +15284,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     showDecorFloatingFill && !flatEdgeWrapMode && !useAopCustomizer && !flatPlacerActive ? (
       <DecorFloatingFillPicker value={decorBackgroundFill} onChange={applyLiveDecorFill} />
     ) : null;
+  // Background tray tool is always present (plan: Style · Background · Adjust ·
+  // Options · Prompt). AOP / phone / flat hide the form-column picker because
+  // those products already have a fill control — still show a working picker
+  // here so the tool is never filtered out of the bottom bar.
+  const mBackgroundNode =
+    showDecorFloatingFill && !flatEdgeWrapMode ? (
+      <DecorFloatingFillPicker value={decorBackgroundFill} onChange={applyLiveDecorFill} />
+    ) : (
+      <DecorFloatingFillPicker
+        value={
+          useAopCustomizer
+            ? hoodieAopPlacerState?.backgroundColor || decorBackgroundFill || "#FFFFFF"
+            : decorBackgroundFill
+        }
+        onChange={applyLiveDecorFill}
+      />
+    );
   const mOrientationPillsNode = (
     <div className="space-y-1" data-testid="container-size-orientation-pills">
       <Label className="text-xs">Orientation</Label>
@@ -15519,17 +15565,54 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
   })();
   const mUploadNode = (
-    <Button
-      type="button"
-      variant="outline"
-      className="w-full h-11"
-      onClick={() => fileInputRef.current?.click()}
-      disabled={referenceImages.length >= 5}
-      data-testid="button-upload-reference-mobile-sheet"
-    >
-      <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
-      {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : "Upload"}
-    </Button>
+    <div className="space-y-2">
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full h-11"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={referenceImages.length >= 5}
+        data-testid="button-upload-reference-mobile-sheet"
+      >
+        <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
+        {isImporting
+          ? "Importing..."
+          : referenceImages.length >= 5
+            ? "Max 5 images"
+            : referenceImages.length > 0
+              ? `Upload another (${referenceImages.length}/5)`
+              : "Upload"}
+      </Button>
+      <p className="text-xs text-muted-foreground text-center">
+        {referencePreviews.length > 0
+          ? `${referencePreviews.length} image${referencePreviews.length === 1 ? "" : "s"} attached`
+          : "Reference images (optional, up to 5)"}
+      </p>
+      {referencePreviews.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {referencePreviews.map((preview, idx) => (
+            <div key={idx} className="relative shrink-0">
+              <img
+                src={preview}
+                alt={`Reference ${idx + 1}`}
+                className="w-12 h-12 object-cover rounded"
+                data-testid={`img-reference-preview-mobile-${idx}`}
+              />
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                onClick={() => clearReferenceImage(idx)}
+                data-testid={`button-clear-reference-mobile-${idx}`}
+              >
+                <X className="w-2.5 h-2.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 
   return (
@@ -15539,7 +15622,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           ? "bg-transparent"
           : "bg-background min-h-screen"
       }${isMobile ? " appai-mobile-shell" : ""}${
-        isMobile && useAopCustomizer ? " appai-mobile-modebar-on" : ""
+        isMobile && useAopCustomizer && showPatternStep && !!aopPendingMotifUrl
+          ? " appai-mobile-modebar-on"
+          : ""
       }`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
@@ -15561,7 +15646,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             } catch {}
           }}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
-          showModeToggle={useAopCustomizer}
+          showModeToggle={
+            !!(useAopCustomizer && showPatternStep && aopPendingMotifUrl)
+          }
+          mode={hoodieAopPlacerState?.mode ?? "place"}
+          onModeChange={(m) => hoodieAopPlacerRef.current?.setMode(m)}
           primaryAction={renderPrimaryAction("", "mshell")}
           railSlots={[
             {
@@ -15628,7 +15717,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               icon: <Droplet />,
               title: "Background",
               subtitle: "Fills what your artwork doesn't cover.",
-              content: mDecorFillNode,
+              content: mBackgroundNode,
             },
             {
               id: "adjust",
@@ -16062,7 +16151,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           if (open) setPackCheckoutError(null);
         }}
       >
-        <DialogContent className="text-sm space-y-3 sm:max-w-sm">
+        <DialogContent className="text-sm space-y-3 sm:max-w-sm max-h-[min(92dvh,calc(100dvh-1.5rem))] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Studio Credits</DialogTitle>
           </DialogHeader>
@@ -16188,6 +16277,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               </Button>
             )}
           </div>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full md:hidden"
+            onClick={() => setCreditsPopoverOpen(false)}
+            data-testid="button-credits-dialog-close"
+          >
+            Close
+          </Button>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
@@ -17229,7 +17327,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full h-11"
+                    className="w-full h-11 hidden md:flex"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={referenceImages.length >= 5}
                     data-testid="button-upload-reference"
@@ -17237,11 +17335,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
                     {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : "Upload"}
                   </Button>
-                  <p className="text-xs text-muted-foreground mt-1 text-center">
+                  <p className="hidden md:block text-xs text-muted-foreground mt-1 text-center">
                     Reference Images (optional, up to 5)
                   </p>
                   {referencePreviews.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                    <div className="hidden md:flex flex-wrap gap-1.5 mt-1.5">
                       {referencePreviews.map((preview, idx) => (
                         <div key={idx} className="relative shrink-0">
                           <img
@@ -17729,6 +17827,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
                     onEngageLiveEditor={engageAopLiveEditor}
                     allowTemplateDefaultsEdit={isAdminTester}
+                    mobileShell={isMobile}
                     printersMockupAction={
                       canRequestAopPrintersMockup
                         ? {
@@ -18194,6 +18293,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     // Tester auto-flushes Apply after generate; never seed "saved"
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
+                    mobileShell={isMobile}
                     canvasOverrideUrl={flatCanvasOverrideUrl}
                     canvasOverrideLabel={flatCanvasOverrideLabel}
                     viewerHeightPx={

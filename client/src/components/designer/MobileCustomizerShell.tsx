@@ -1,5 +1,5 @@
 import "./mobile-customizer.css";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronLeft, HelpCircle, LayoutGrid, LogIn, X } from "lucide-react";
 
@@ -117,6 +117,37 @@ export function MobileCustomizerShell({
   const activeSlot = allSlots.find((s) => s.id === openId) || null;
   const bothTucked = bottomTucked && railTucked;
 
+  const modebarRef = useRef<HTMLDivElement | null>(null);
+  const primaryRef = useRef<HTMLDivElement | null>(null);
+  const bottombarRef = useRef<HTMLDivElement | null>(null);
+
+  // Measure the real chrome stack so canvas / modebar / primary never share
+  // pixels. `renderPrimaryAction` can grow (terms, ATC extras) past the
+  // 60px CSS budget — that was the AOP "Apply Pattern on top of Place/Pattern"
+  // collision.
+  useLayoutEffect(() => {
+    const root = document.querySelector(".appai-mobile-shell") as HTMLElement | null;
+    if (!root) return;
+    const sync = () => {
+      const modeH = showModeToggle && !bottomTucked ? modebarRef.current?.offsetHeight ?? 0 : 0;
+      const primaryH = primaryRef.current?.offsetHeight ?? 0;
+      const bottomH = bottomTucked ? 0 : bottombarRef.current?.offsetHeight ?? 0;
+      root.style.setProperty("--appai-mobile-modebar-h", `${modeH}px`);
+      root.style.setProperty("--appai-mobile-primary-h", `${Math.max(primaryH, 0)}px`);
+      root.style.setProperty("--appai-mobile-bottombar-h", `${bottomH}px`);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    if (modebarRef.current) ro.observe(modebarRef.current);
+    if (primaryRef.current) ro.observe(primaryRef.current);
+    if (bottombarRef.current) ro.observe(bottombarRef.current);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [showModeToggle, bottomTucked, rail.length, bottom.length]);
+
   return (
     <>
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
@@ -214,7 +245,7 @@ export function MobileCustomizerShell({
 
       {/* ── Under-canvas mode toggle (AOP) ──────────────────────────────── */}
       {showModeToggle && (
-        <div className="appai-mmodebar" data-testid="mobile-modebar">
+        <div ref={modebarRef} className="appai-mmodebar" data-testid="mobile-modebar">
           <button
             type="button"
             className={`appai-mseg${activeMode === "place" ? " sel" : ""}`}
@@ -236,7 +267,7 @@ export function MobileCustomizerShell({
 
       {/* ── Primary action row (Generate / Add to Cart) ─────────────────── */}
       {primaryAction ? (
-        <div className="appai-mprimary" data-testid="mobile-primary">
+        <div ref={primaryRef} className="appai-mprimary" data-testid="mobile-primary">
           {primaryAction}
         </div>
       ) : null}
@@ -244,6 +275,7 @@ export function MobileCustomizerShell({
       {/* ── Bottom bar (retractable) ────────────────────────────────────── */}
       {bottom.length > 0 && (
         <div
+          ref={bottombarRef}
           className={`appai-mbottombar${bottomTucked ? " tucked" : ""}`}
           data-testid="mobile-bottombar"
         >

@@ -188,7 +188,7 @@
   position: fixed;
   top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top) + 44px);
   right: 0;
-  z-index: 30;
+  z-index: 32;
   display: flex;
   align-items: flex-start;
   transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
@@ -290,7 +290,7 @@
     var(--appai-mobile-primary-h) + var(--appai-mobile-bottombar-h) +
       var(--appai-mobile-safe-bottom)
   );
-  z-index: 11;
+  z-index: 14;
   display: flex;
   gap: 6px;
   padding: 6px 12px;
@@ -323,13 +323,20 @@
   left: 0;
   right: 0;
   bottom: calc(var(--appai-mobile-bottombar-h) + var(--appai-mobile-safe-bottom));
-  z-index: 11;
-  padding: 4px 12px;
-  background: linear-gradient(to top, var(--appai-mobile-paper), rgba(246, 244, 239, 0));
+  z-index: 15;
+  padding: 4px 12px 8px;
+  background: linear-gradient(to top, var(--appai-mobile-paper) 55%, rgba(246, 244, 239, 0));
 }
 
 .appai-mprimary > * {
   width: 100%;
+}
+
+/* Compact the reused ATC/Generate stack: keep the CTA + required terms,
+   drop the under-button credits / start-fresh copy that inflated the slot
+   and painted over Place/Pattern. */
+.appai-mprimary .appai-mprimary-extras {
+  display: none;
 }
 
 /* ---------------------------------------------------------------------------
@@ -340,7 +347,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 12;
+  z-index: 16;
   background: var(--appai-mobile-panel);
   border-top: 1px solid var(--appai-mobile-line);
   transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
@@ -536,4 +543,53 @@
 
 .appai-msheet-body > * {
   max-width: 100%;
+}
+
+/* In-canvas placer chrome that the shell now owns — hide the duplicates. */
+.appai-mobile-shell [data-hoodie-aop-mode-toggle],
+.appai-mobile-shell [data-hoodie-aop-shell-hidden] {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Dialogs portal to document.body (outside .appai-mobile-shell). On a phone
+ * they must sit above the z-60 top bar, fit the viewport, and keep Close
+ * reachable. Applies to credits / clip-confirm / mismatch while the mobile
+ * customizer is mounted.
+ * ------------------------------------------------------------------------- */
+body.appai-mobile-dialogs [data-radix-dialog-overlay],
+body:has(.appai-mobile-shell) [data-radix-dialog-overlay] {
+  z-index: 80 !important;
+}
+
+body.appai-mobile-dialogs [data-radix-dialog-content],
+body:has(.appai-mobile-shell) [data-radix-dialog-content] {
+  z-index: 81 !important;
+  top: auto !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px))) !important;
+  translate: none !important;
+  transform: none !important;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 18px 18px 0 0 !important;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+body.appai-mobile-dialogs [data-radix-dialog-content] > button.absolute,
+body:has(.appai-mobile-shell) [data-radix-dialog-content] > button.absolute {
+  position: sticky;
+  top: 8px;
+  float: right;
+  width: 40px;
+  height: 40px;
+  margin: 0 0 8px 8px;
+  background: var(--appai-mobile-paper, #f6f4ef);
+  border-radius: 50%;
+  opacity: 1;
 }
