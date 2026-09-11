@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { countWords, findLiteralSlot, literalPlaceholder, parseUserSlotSchema } from "@shared/promptLayers";
 import {
   StorefrontTermsAccept,
@@ -153,6 +154,7 @@ import {
 } from "@shared/generationFailure";
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
 import { PreviewStudioGenOverlay } from "@/components/designer/PreviewStudioGenOverlay";
+import { MobileCustomizerShell } from "@/components/designer/MobileCustomizerShell";
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
@@ -3527,6 +3529,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
+  // Mobile customizer shell branch (checkpoint 1: scaffold). Everything gated by
+  // this flag is only active below the mobile breakpoint; desktop is untouched.
+  const isMobile = useIsMobile();
 
   const beginAopFinalizeToast = useCallback((jobId: string, shop: string) => {
     rememberAopFinalizeJob(jobId, shop);
@@ -15150,9 +15155,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         isEmbedded || isStorefront || isAdminTester || isMerchantStudio
           ? "bg-transparent"
           : "bg-background min-h-screen"
-      }`}
+      }${isMobile ? " appai-mobile-shell" : ""}`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
+      {isMobile && (
+        <MobileCustomizerShell
+          brandName="AI Art Studio"
+          isLoggedIn={isLoggedIn}
+          creditsLabel={creditBreakdown?.total ?? 0}
+          onBack={() => {
+            try {
+              if (
+                embeddedContext?.mode === "admin-tester" &&
+                embeddedContext.onLeaveProduct
+              ) {
+                embeddedContext.onLeaveProduct();
+                return;
+              }
+              window.parent?.postMessage({ type: "ai-art-studio:exit" }, "*");
+            } catch {}
+          }}
+        />
+      )}
       {reuseBusy && (
         <div
           className="fixed inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-[1px]"
@@ -17352,7 +17376,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-1 lg:col-span-2 flex min-h-0 flex-col"
                 : "space-y-3 md:order-1"
-            }`}
+            }${isMobile ? " appai-mobile-canvas" : ""}`}
           >
             {isAdminTester && (generateMutation.isPending || studioGenFailure) ? (
               <PreviewStudioGenOverlay

@@ -1,0 +1,139 @@
+/*
+ * Mobile customizer shell — scaffold styles + iOS Safari hardening.
+ *
+ * Everything is scoped under `.appai-mobile-shell`, which `EmbedDesign` only
+ * adds to the root when `useIsMobile()` is true. Desktop never gets this class,
+ * so desktop rendering is unaffected.
+ */
+
+/* ---------------------------------------------------------------------------
+ * iOS Safari: every field must be >= 16px so focus NEVER triggers auto-zoom
+ * (the single worst mobile bug). This deliberately overrides the reused
+ * components' Tailwind text-sm / text-xs. Not inherited from the prototype —
+ * enforced here on the real inputs. Must be re-verified on a real iPhone.
+ * ------------------------------------------------------------------------- */
+.appai-mobile-shell input,
+.appai-mobile-shell textarea,
+.appai-mobile-shell select {
+  font-size: 16px !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Global overflow / sizing guards — prevent horizontal blowout.
+ * ------------------------------------------------------------------------- */
+.appai-mobile-shell,
+.appai-mobile-shell * {
+  box-sizing: border-box;
+}
+
+.appai-mobile-shell {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden;
+
+  --appai-mobile-topbar-h: 52px;
+  --appai-mobile-paper: #f6f4ef;
+  --appai-mobile-line: #e7e3da;
+  --appai-mobile-ink: #141414;
+  --appai-mobile-accent: #1f2a44;
+
+  /* Clear the fixed top bar so existing content isn't hidden beneath it. */
+  padding-top: calc(var(--appai-mobile-topbar-h) + env(safe-area-inset-top, 0px));
+}
+
+/* ---------------------------------------------------------------------------
+ * Top bar (fixed) — the only chrome rendered in the scaffold checkpoint.
+ * ------------------------------------------------------------------------- */
+.appai-mshell-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--appai-mobile-topbar-h) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--appai-mobile-line, #e7e3da);
+  z-index: 60;
+}
+
+.appai-mshell-iconbtn {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--appai-mobile-ink, #141414);
+}
+
+.appai-mshell-iconbtn:active {
+  background: var(--appai-mobile-line, #e7e3da);
+}
+
+.appai-mshell-iconbtn svg {
+  width: 21px;
+  height: 21px;
+}
+
+.appai-mshell-brand {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--appai-mobile-ink, #141414);
+}
+
+.appai-mshell-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--appai-mobile-accent, #1f2a44);
+}
+
+.appai-mshell-credits {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--appai-mobile-ink, #141414);
+  background: #fff;
+  border: 1px solid var(--appai-mobile-line, #e7e3da);
+  padding: 7px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.appai-mshell-coin {
+  color: var(--appai-mobile-accent, #1f2a44);
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared preview column, reused as the mobile canvas.
+ *
+ * This is the SAME node the desktop layout renders (no fork/duplication). The
+ * class is only a stable hook for now; the canvas-first fixed positioning is
+ * added in the layout checkpoint so we don't disturb per-model preview sizing
+ * before it can be verified.
+ * ------------------------------------------------------------------------- */
+.appai-mobile-canvas {
+  /* placeholder hook — layout checkpoint fills this in */
+}
