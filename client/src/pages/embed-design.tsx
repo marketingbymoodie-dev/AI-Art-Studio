@@ -42,7 +42,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap, Pencil } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap, Pencil, Palette, Ruler, SlidersHorizontal, Type, LayoutTemplate, Droplet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { countWords, findLiteralSlot, literalPlaceholder, parseUserSlotSchema } from "@shared/promptLayers";
@@ -14057,6 +14057,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setPhoneViewerHeightPx(null);
       return;
     }
+    // Mobile: the form column is covered by the fixed canvas and its controls
+    // are gated off, so it is NOT a valid measurement source. Source the height
+    // from the fixed canvas box (measurement source only — placer logic
+    // unchanged). The ResizeObserver re-fires with the new fixed-box dimensions
+    // whenever the bars retract / the viewport rotates, so the phone-case /
+    // flat viewer recomputes to the correct size instead of freezing.
+    if (isMobile) {
+      const box = artworkColumnRef.current;
+      if (!box) return;
+      const sync = () => {
+        const h = box.clientHeight;
+        if (h <= 0) return;
+        const capped = Math.min(
+          Math.max(200, Math.round(h)),
+          Math.floor(window.innerHeight * 0.98),
+        );
+        setPhoneViewerHeightPx((prev) => (prev === capped ? prev : capped));
+      };
+      sync();
+      const ro = new ResizeObserver(sync);
+      ro.observe(box);
+      window.addEventListener("resize", sync);
+      return () => {
+        ro.disconnect();
+        window.removeEventListener("resize", sync);
+      };
+    }
     const form = formColumnRef.current;
     if (!form) return;
     const sync = () => {
@@ -14084,7 +14111,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ro.disconnect();
       window.removeEventListener("resize", sync);
     };
-  }, [flatEdgeWrapMode, flatPlacerActive]);
+  }, [flatEdgeWrapMode, flatPlacerActive, isMobile]);
 
   // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
   // Snap hidden Front back to Artwork — stepping backward wraps onto View N closeups.
@@ -15149,13 +15176,342 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
   };
 
+  // ── Mobile customizer control nodes (Checkpoint 2) ─────────────────────────
+  // Single source of truth for each control. The desktop form column renders
+  // these via {!isMobile && …} at their original positions (byte-for-byte
+  // output); MobileCustomizerShell renders the SAME element objects inside its
+  // sheets. One instance per session — reused, never re-implemented.
+  const mStyleSelectorNode = (
+    <StyleSelector
+      stylePresets={filteredStylePresets}
+      selectedStyle={selectedPreset}
+      onStyleChange={(id) => {
+        setSelectedPreset(id);
+        setSelectedStyleOption("");
+        const preset = filteredStylePresets.find((p) => p.id === id);
+        const catalogSlug = preset?.catalogSlug || id || null;
+        const cfg = resolveStyleBackgroundConfig(
+          {
+            catalogSlug,
+            outputMode: preset?.outputMode,
+            backgroundSelectorEnabled: preset?.backgroundSelectorEnabled,
+            defaultBackgroundColor: preset?.defaultBackgroundColor,
+            backgroundRequired: preset?.backgroundRequired,
+          },
+          {
+            isApparelProduct: isApparel,
+            designerType: productTypeConfig?.designerType,
+            catalogSlug,
+            styleName: preset?.name || null,
+            styleId: id,
+            outputMode: preset?.outputMode,
+            generationModel: preset?.generationModel,
+            useAopCustomizer,
+            edgeWrapMode: flatEdgeWrapMode,
+          },
+          null,
+        );
+        applyLiveDecorFill(cfg.defaultFill ?? "none");
+      }}
+    />
+  );
+  const mStyleHelperNode = (
+    <div className="mt-0.5 min-h-[1rem]">
+      {selectedPreset === "" && (
+        <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
+      )}
+    </div>
+  );
+  const mDecorFillNode =
+    showDecorFloatingFill && !flatEdgeWrapMode && !useAopCustomizer && !flatPlacerActive ? (
+      <DecorFloatingFillPicker value={decorBackgroundFill} onChange={applyLiveDecorFill} />
+    ) : null;
+  const mOrientationPillsNode = (
+    <div className="space-y-1" data-testid="container-size-orientation-pills">
+      <Label className="text-xs">Orientation</Label>
+      <div className="flex flex-wrap gap-1.5 min-h-9 items-center">
+        {(
+          [
+            { id: "horizontal" as const, name: "Horizontal" },
+            { id: "vertical" as const, name: "Vertical" },
+            { id: "square" as const, name: "Square" },
+          ] as const
+        )
+          .filter((choice) => {
+            if (!availableCanvasOrientations.includes(choice.id)) return false;
+            if (showSquareOrientationPillOnly) return choice.id === "square";
+            return true;
+          })
+          .map((choice) => {
+            const isSelected = sizeCanvasOrientation === choice.id;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                onClick={() => applyCanvasOrientation(choice.id)}
+                data-testid={`button-size-orientation-${choice.id}`}
+                style={
+                  isSelected
+                    ? {
+                        backgroundColor: "#111827",
+                        color: "#ffffff",
+                        border: "2px solid #111827",
+                        borderRadius: "9999px",
+                        padding: "5px 14px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        outline: "none",
+                      }
+                    : {
+                        backgroundColor: "transparent",
+                        color: "#374151",
+                        border: "1px solid #9ca3af",
+                        borderRadius: "9999px",
+                        padding: "5px 14px",
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        outline: "none",
+                      }
+                }
+              >
+                {choice.name}
+              </button>
+            );
+          })}
+      </div>
+      <div className="mt-0.5 min-h-[1rem]" />
+    </div>
+  );
+  const mSizeSelectorNode = printSizes.length > 0 ? (
+    <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+      <SizeSelector
+        sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
+        selectedSize={sizeSelectorValue}
+        label={isPhoneCaseProduct ? "Model" : "Size"}
+        onSizeChange={applySelectedSize}
+        prices={buildPriceMap()}
+        priceCurrencyCode={sizeDropdownCurrencyCode}
+        outOfStockSizeIds={outOfStockSizeIds}
+        mintedCatalog={mintedCatalog}
+        selectedColorName={frameColorObjects.find((c) => c.id === selectedFrameColor)?.name}
+        selectedColorId={selectedFrameColor}
+      />
+      <div className="mt-0.5 min-h-[1rem]">
+        {selectedSize === "" && (
+          <p className="text-[11px] text-muted-foreground leading-tight">
+            {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
+          </p>
+        )}
+      </div>
+    </div>
+  ) : null;
+  const mColourControlNode = showFrameColorSelector ? (
+    <FrameColorSelector
+      frameColors={frameColorObjects}
+      selectedFrameColor={selectedFrameColor}
+      onFrameColorChange={handleCustomerFrameColorChange}
+      colorLabel={productTypeConfig?.colorLabel || "Color"}
+      mintedCatalog={mintedCatalog}
+      selectedSizeName={printSizes.find((s) => s.id === selectedSize)?.name}
+    />
+  ) : null;
+  const mPrintSideNode = supportsPrintPlacementSelection ? (
+    <div className="space-y-1">
+      <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
+      <Select
+        value={printPlacement}
+        onValueChange={(value) => {
+          const nextPlacement = value as "front" | "back" | "both";
+          setPrintPlacement(nextPlacement);
+          if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
+            return;
+          }
+          const flatOnTheFly = usesFlatOnTheFlyPreview;
+          if (flatOnTheFly) {
+            setFlatPlacerState((prev) => ({
+              view: prev?.view ?? "front",
+              placements: prev?.placements ?? {
+                front: { scale: 1, offsetX: 0, offsetY: 0 },
+                back: { scale: 1, offsetX: 0, offsetY: 0 },
+              },
+              artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
+              enabled: {
+                front: nextPlacement === "front" || nextPlacement === "both",
+                back: nextPlacement === "back" || nextPlacement === "both",
+              },
+              linkSides: false,
+              backgroundColor: prev?.backgroundColor ?? null,
+            }));
+            currentMockupColorRef.current = "";
+            lastFlatGalleryMockupKeyRef.current = "";
+            return;
+          }
+          fetchPrintifyMockups(
+            toAbsoluteImageUrl(generatedDesign.imageUrl),
+            productTypeConfig.id,
+            selectedSize,
+            selectedFrameColor || "default",
+            transform.scale,
+            transform.x,
+            transform.y,
+            undefined,
+            undefined,
+            undefined,
+            nextPlacement,
+          );
+        }}
+      >
+        <SelectTrigger id="print-placement-select" className="h-9">
+          <SelectValue placeholder="Select print side" />
+        </SelectTrigger>
+        <SelectContent position="popper">
+          <SelectItem value="front">Print on Front Only</SelectItem>
+          <SelectItem value="back">Print on Back Only</SelectItem>
+          <SelectItem value="both">Print on Both Sides</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  ) : null;
+  const mStyleSubOptionsNode = showPresetsParam && selectedPreset !== "" ? (() => {
+    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    if (!activePreset?.options) return null;
+    const { label, choices } = activePreset.options;
+    return (
+      <div style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '12px', marginTop: '4px' }}>
+        <Label style={{ display: 'block', marginBottom: '8px' }}>{label}</Label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          {choices.map((choice) => {
+            const isSelected = selectedStyleOption === choice.id;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                onClick={() => {
+                  setSelectedStyleOption(choice.id);
+                  const orient =
+                    parseCanvasOrientationFromLabel(choice.name) ||
+                    parseCanvasOrientationFromLabel(choice.id);
+                  if (orient) applyCanvasOrientation(orient);
+                }}
+                data-testid={`button-style-option-${choice.id}`}
+                style={isSelected
+                  ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
+                  : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
+                }
+              >
+                {choice.name}
+              </button>
+            );
+          })}
+        </div>
+        {activePreset.options.required && selectedStyleOption === "" && (
+          <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose an art style option to continue</p>
+        )}
+      </div>
+    );
+  })() : null;
+  const mStyleBasePreviewNode = (() => {
+    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    let previewUrl: string | undefined;
+    if (selectedStyleOption !== "" && activePreset?.options) {
+      const choice = activePreset.options.choices.find((c: any) => c.id === selectedStyleOption);
+      if ((choice as any)?.baseImageUrl) previewUrl = (choice as any).baseImageUrl;
+    }
+    if (!previewUrl && (activePreset as any)?.baseImageUrl) previewUrl = (activePreset as any).baseImageUrl;
+    if (!previewUrl) return null;
+    return (
+      <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
+        <img src={previewUrl} alt="Art style reference" className="w-10 h-10 rounded object-cover" />
+        <span className="text-xs text-muted-foreground">Art style reference — AI will use this as visual inspiration</span>
+      </div>
+    );
+  })();
+  // Prompt textarea reused in the mobile Prompt sheet (same value/onChange as
+  // desktop, including the "start fresh when a saved design is loaded" guard).
+  const mPromptNode = (() => {
+    const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
+    const _descOptional = !!_activePresetForLabel?.descriptionOptional;
+    return (
+      <div className="space-y-1">
+        <Label htmlFor="prompt-mobile" className="text-xs">
+          {quotesMode ? "Theme" : "Describe your artwork"}
+          {reuseRegenerateBasePrompt ? (
+            <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional changes)</span>
+          ) : _descOptional ? (
+            <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional)</span>
+          ) : null}
+        </Label>
+        {reuseRegenerateBasePrompt ? (
+          <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">{reuseRegenerateBasePrompt}</p>
+        ) : null}
+        <Textarea
+          id="prompt-mobile"
+          data-testid="input-prompt-mobile"
+          placeholder={(() => {
+            if (reuseRegenerateBasePrompt) return "Optional: add changes, e.g. change the colours from red to green";
+            const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+            if (isQuotesActivePreset(activePreset)) return activePreset?.promptPlaceholder || QUOTES_PLACEHOLDER;
+            const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
+            if (literal) return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
+            if (activePreset?.descriptionOptional) return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+            return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
+          })()}
+          value={prompt}
+          onChange={(e) => {
+            if (generatedDesign && loadDesignAppliedRef.current && effectiveLoadDesignId) {
+              setGeneratedDesign(null);
+              setDesignSource(null);
+              setAddedToCart(false);
+              loadDesignAppliedRef.current = false;
+              setBridgeLoadDesignId('');
+              setPrintifyMockups([]);
+              setPrintifyMockupImages([]);
+              setSelectedMockupIndex(0);
+              try {
+                const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+                sessionStorage.removeItem(stateKey);
+              } catch (_) {}
+              const url = new URL(window.location.href);
+              url.searchParams.delete('loadDesignId');
+              window.history.replaceState({}, '', url.toString());
+              try {
+                const parentUrl = new URL(window.parent.location.href);
+                parentUrl.searchParams.delete('loadDesignId');
+                window.parent.history.replaceState({}, '', parentUrl.toString());
+              } catch (_) {}
+            }
+            setPrompt(e.target.value);
+          }}
+          className="min-h-[96px] text-sm"
+        />
+      </div>
+    );
+  })();
+  const mUploadNode = (
+    <Button
+      type="button"
+      variant="outline"
+      className="w-full h-11"
+      onClick={() => fileInputRef.current?.click()}
+      disabled={referenceImages.length >= 5}
+      data-testid="button-upload-reference-mobile-sheet"
+    >
+      <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
+      {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : "Upload"}
+    </Button>
+  );
+
   return (
     <div
       className={`p-2 sm:p-3 relative ${
         isEmbedded || isStorefront || isAdminTester || isMerchantStudio
           ? "bg-transparent"
           : "bg-background min-h-screen"
-      }${isMobile ? " appai-mobile-shell" : ""}`}
+      }${isMobile ? " appai-mobile-shell" : ""}${
+        isMobile && useAopCustomizer ? " appai-mobile-modebar-on" : ""
+      }`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
       {isMobile && (
@@ -15175,6 +15531,111 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               window.parent?.postMessage({ type: "ai-art-studio:exit" }, "*");
             } catch {}
           }}
+          onOpenCredits={() => setCreditsPopoverOpen(true)}
+          showModeToggle={useAopCustomizer}
+          primaryAction={renderPrimaryAction("", "mshell")}
+          railSlots={[
+            {
+              id: "size",
+              label: isPhoneCaseProduct ? "Model" : "Size",
+              icon: <Ruler />,
+              title: isPhoneCaseProduct ? "Choose a model" : "Size & ratio",
+              subtitle: "Choose before generating — it sets your artwork's shape.",
+              content: mSizeSelectorNode,
+              needsAttention: printSizes.length > 0 && selectedSize === "",
+            },
+            {
+              id: "layout",
+              label: "Layout",
+              icon: <LayoutTemplate />,
+              title: "Layout & orientation",
+              subtitle: "Choose the orientation for your artwork.",
+              content:
+                showSizeDrivenOrientationPills || showSquareOrientationPillOnly
+                  ? mOrientationPillsNode
+                  : null,
+            },
+            {
+              id: "colour",
+              label: productTypeConfig?.colorLabel || "Colour",
+              icon: <Palette />,
+              title: `Product ${(productTypeConfig?.colorLabel || "colour").toLowerCase()}`,
+              subtitle: "Pick the item colour.",
+              content: mColourControlNode,
+            },
+            {
+              id: "info",
+              label: "Info",
+              icon: <Info />,
+              title: "Product info",
+              subtitle: "Details, sizing and shipping.",
+              content: (
+                <p className="text-sm text-muted-foreground">
+                  Product details, size guide and shipping info will appear here.
+                </p>
+              ),
+            },
+          ]}
+          bottomSlots={[
+            {
+              id: "style",
+              label: "Style",
+              icon: <Sparkles />,
+              title: "Art style",
+              subtitle: "How your artwork is generated.",
+              content:
+                showPresetsParam && filteredStylePresets.length > 0 ? (
+                  <div className="space-y-2">
+                    {mStyleSelectorNode}
+                    {mStyleHelperNode}
+                    {mStyleSubOptionsNode}
+                    {mStyleBasePreviewNode}
+                  </div>
+                ) : null,
+            },
+            {
+              id: "background",
+              label: "Background",
+              icon: <Droplet />,
+              title: "Background",
+              subtitle: "Fills what your artwork doesn't cover.",
+              content: mDecorFillNode,
+            },
+            {
+              id: "adjust",
+              label: "Adjust",
+              icon: <SlidersHorizontal />,
+              title: "Adjust artwork",
+              subtitle: "Pinch, drag & twist directly on the canvas.",
+              content: (
+                <p className="text-sm text-muted-foreground">
+                  Pinch to scale, drag to move and twist to rotate directly on the
+                  preview. Fine-grained sliders are coming here.
+                </p>
+              ),
+            },
+            {
+              id: "options",
+              label: "Options",
+              icon: <Layers />,
+              title: "Product options",
+              subtitle: "Specific to this product.",
+              content: mPrintSideNode,
+            },
+            {
+              id: "prompt",
+              label: "Prompt",
+              icon: <Type />,
+              title: "Describe your artwork",
+              subtitle: "Generate from text, or upload your own image.",
+              content: (
+                <div className="space-y-2">
+                  {mPromptNode}
+                  {mUploadNode}
+                </div>
+              ),
+            },
+          ]}
         />
       )}
       {reuseBusy && (
@@ -16798,299 +17259,34 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
               {/* Art Style | Orientation (or Size), then Size | Color when orientation pills show */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-start">
-                {showPresetsParam && filteredStylePresets.length > 0 && (
+                {!isMobile && showPresetsParam && filteredStylePresets.length > 0 && (
                   <div data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
-                    <StyleSelector
-                      stylePresets={filteredStylePresets}
-                      selectedStyle={selectedPreset}
-                      onStyleChange={(id) => {
-                        setSelectedPreset(id);
-                        setSelectedStyleOption("");
-                        const preset = filteredStylePresets.find((p) => p.id === id);
-                        const catalogSlug = preset?.catalogSlug || id || null;
-                        const cfg = resolveStyleBackgroundConfig(
-                          {
-                            catalogSlug,
-                            outputMode: preset?.outputMode,
-                            backgroundSelectorEnabled: preset?.backgroundSelectorEnabled,
-                            defaultBackgroundColor: preset?.defaultBackgroundColor,
-                            backgroundRequired: preset?.backgroundRequired,
-                          },
-                          {
-                            isApparelProduct: isApparel,
-                            designerType: productTypeConfig?.designerType,
-                            catalogSlug,
-                            styleName: preset?.name || null,
-                            styleId: id,
-                            outputMode: preset?.outputMode,
-                            generationModel: preset?.generationModel,
-                            useAopCustomizer,
-                            edgeWrapMode: flatEdgeWrapMode,
-                          },
-                          null,
-                        );
-                        applyLiveDecorFill(cfg.defaultFill ?? "none");
-                      }}
-                    />
+                    {mStyleSelectorNode}
                     {/* Reserve helper-line height so Art Style / Size triggers stay aligned. */}
-                    <div className="mt-0.5 min-h-[1rem]">
-                      {selectedPreset === "" && (
-                        <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
-                      )}
-                    </div>
-                    {showDecorFloatingFill &&
-                      !flatEdgeWrapMode &&
-                      !useAopCustomizer &&
-                      !flatPlacerActive && (
-                      <DecorFloatingFillPicker
-                        value={decorBackgroundFill}
-                        onChange={applyLiveDecorFill}
-                      />
-                    )}
+                    {mStyleHelperNode}
+                    {mDecorFillNode}
                   </div>
                 )}
 
-                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) ? (
-                  <div className="space-y-1" data-testid="container-size-orientation-pills">
-                    <Label className="text-xs">Orientation</Label>
-                    <div className="flex flex-wrap gap-1.5 min-h-9 items-center">
-                      {(
-                        [
-                          { id: "horizontal" as const, name: "Horizontal" },
-                          { id: "vertical" as const, name: "Vertical" },
-                          { id: "square" as const, name: "Square" },
-                        ] as const
-                      )
-                        .filter((choice) => {
-                          if (!availableCanvasOrientations.includes(choice.id)) return false;
-                          if (showSquareOrientationPillOnly) return choice.id === "square";
-                          return true;
-                        })
-                        .map((choice) => {
-                          const isSelected = sizeCanvasOrientation === choice.id;
-                          return (
-                            <button
-                              key={choice.id}
-                              type="button"
-                              onClick={() => applyCanvasOrientation(choice.id)}
-                              data-testid={`button-size-orientation-${choice.id}`}
-                              style={
-                                isSelected
-                                  ? {
-                                      backgroundColor: "#111827",
-                                      color: "#ffffff",
-                                      border: "2px solid #111827",
-                                      borderRadius: "9999px",
-                                      padding: "5px 14px",
-                                      fontSize: "12px",
-                                      fontWeight: 600,
-                                      cursor: "pointer",
-                                      outline: "none",
-                                    }
-                                  : {
-                                      backgroundColor: "transparent",
-                                      color: "#374151",
-                                      border: "1px solid #9ca3af",
-                                      borderRadius: "9999px",
-                                      padding: "5px 14px",
-                                      fontSize: "12px",
-                                      fontWeight: 500,
-                                      cursor: "pointer",
-                                      outline: "none",
-                                    }
-                              }
-                            >
-                              {choice.name}
-                            </button>
-                          );
-                        })}
-                    </div>
-                    <div className="mt-0.5 min-h-[1rem]" />
-                  </div>
-                ) : (
-                  printSizes.length > 0 && (
-                    <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
-                      <SizeSelector
-                        sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
-                        selectedSize={sizeSelectorValue}
-                        label={isPhoneCaseProduct ? "Model" : "Size"}
-                        onSizeChange={applySelectedSize}
-                        prices={buildPriceMap()}
-                        priceCurrencyCode={sizeDropdownCurrencyCode}
-                        outOfStockSizeIds={outOfStockSizeIds}
-                        mintedCatalog={mintedCatalog}
-                        selectedColorName={
-                          frameColorObjects.find((c) => c.id === selectedFrameColor)?.name
-                        }
-                        selectedColorId={selectedFrameColor}
-                      />
-                      <div className="mt-0.5 min-h-[1rem]">
-                        {selectedSize === "" && (
-                          <p className="text-[11px] text-muted-foreground leading-tight">
-                            {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )
-                )}
+                {!isMobile &&
+                  ((showSizeDrivenOrientationPills || showSquareOrientationPillOnly)
+                    ? mOrientationPillsNode
+                    : mSizeSelectorNode)}
 
-                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) &&
-                  printSizes.length > 0 && (
-                  <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
-                    <SizeSelector
-                      sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
-                      selectedSize={sizeSelectorValue}
-                      label={isPhoneCaseProduct ? "Model" : "Size"}
-                      onSizeChange={applySelectedSize}
-                      prices={buildPriceMap()}
-                      priceCurrencyCode={sizeDropdownCurrencyCode}
-                      outOfStockSizeIds={outOfStockSizeIds}
-                      mintedCatalog={mintedCatalog}
-                      selectedColorName={
-                        frameColorObjects.find((c) => c.id === selectedFrameColor)?.name
-                      }
-                      selectedColorId={selectedFrameColor}
-                    />
-                    <div className="mt-0.5 min-h-[1rem]">
-                      {selectedSize === "" && (
-                        <p className="text-[11px] text-muted-foreground leading-tight">
-                          {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {!isMobile &&
+                  (showSizeDrivenOrientationPills || showSquareOrientationPillOnly) &&
+                  mSizeSelectorNode}
 
-                {showFrameColorSelector && (
-                  <FrameColorSelector
-                    frameColors={frameColorObjects}
-                    selectedFrameColor={selectedFrameColor}
-                    onFrameColorChange={handleCustomerFrameColorChange}
-                    colorLabel={productTypeConfig?.colorLabel || "Color"}
-                    mintedCatalog={mintedCatalog}
-                    selectedSizeName={
-                      printSizes.find((s) => s.id === selectedSize)?.name
-                    }
-                  />
-                )}
+                {!isMobile && mColourControlNode}
 
-                {supportsPrintPlacementSelection && (
-                  <div className="space-y-1">
-                    <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
-                    <Select
-                      value={printPlacement}
-                      onValueChange={(value) => {
-                        const nextPlacement = value as "front" | "back" | "both";
-                        setPrintPlacement(nextPlacement);
-                        if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
-                          return;
-                        }
-                        const flatOnTheFly = usesFlatOnTheFlyPreview;
-                        if (flatOnTheFly) {
-                          setFlatPlacerState((prev) => ({
-                            view: prev?.view ?? "front",
-                            placements: prev?.placements ?? {
-                              front: { scale: 1, offsetX: 0, offsetY: 0 },
-                              back: { scale: 1, offsetX: 0, offsetY: 0 },
-                            },
-                            artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
-                            enabled: {
-                              front: nextPlacement === "front" || nextPlacement === "both",
-                              back: nextPlacement === "back" || nextPlacement === "both",
-                            },
-                            linkSides: false,
-                            backgroundColor: prev?.backgroundColor ?? null,
-                          }));
-                          currentMockupColorRef.current = "";
-                          lastFlatGalleryMockupKeyRef.current = "";
-                          return;
-                        }
-                        fetchPrintifyMockups(
-                          toAbsoluteImageUrl(generatedDesign.imageUrl),
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || "default",
-                          transform.scale,
-                          transform.x,
-                          transform.y,
-                          undefined,
-                          undefined,
-                          undefined,
-                          nextPlacement,
-                        );
-                      }}
-                    >
-                      <SelectTrigger id="print-placement-select" className="h-9">
-                        <SelectValue placeholder="Select print side" />
-                      </SelectTrigger>
-                      <SelectContent position="popper">
-                        <SelectItem value="front">Print on Front Only</SelectItem>
-                        <SelectItem value="back">Print on Back Only</SelectItem>
-                        <SelectItem value="both">Print on Both Sides</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
+                {!isMobile && mPrintSideNode}
               </div>
 
               {/* Style Sub-Options */}
-              {showPresetsParam && selectedPreset !== "" && (() => {
-                const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                if (!activePreset?.options) return null;
-                const { label, choices } = activePreset.options;
-                return (
-                  <div style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '12px', marginTop: '4px' }}>
-                    <Label style={{ display: 'block', marginBottom: '8px' }}>{label}</Label>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                      {choices.map((choice) => {
-                        const isSelected = selectedStyleOption === choice.id;
-                        return (
-                          <button
-                            key={choice.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedStyleOption(choice.id);
-                              const orient =
-                                parseCanvasOrientationFromLabel(choice.name) ||
-                                parseCanvasOrientationFromLabel(choice.id);
-                              if (orient) applyCanvasOrientation(orient);
-                            }}
-                            data-testid={`button-style-option-${choice.id}`}
-                            style={isSelected
-                              ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
-                              : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
-                            }
-                          >
-                            {choice.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {activePreset.options.required && selectedStyleOption === "" && (
-                      <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose an art style option to continue</p>
-                    )}
-                  </div>
-                );
-              })()}
+              {!isMobile && mStyleSubOptionsNode}
 
               {/* Style base image preview */}
-              {(() => {
-                const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                let previewUrl: string | undefined;
-                if (selectedStyleOption !== "" && activePreset?.options) {
-                  const choice = activePreset.options.choices.find((c: any) => c.id === selectedStyleOption);
-                  if ((choice as any)?.baseImageUrl) previewUrl = (choice as any).baseImageUrl;
-                }
-                if (!previewUrl && (activePreset as any)?.baseImageUrl) previewUrl = (activePreset as any).baseImageUrl;
-                if (!previewUrl) return null;
-                return (
-                  <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
-                    <img src={previewUrl} alt="Art style reference" className="w-10 h-10 rounded object-cover" />
-                    <span className="text-xs text-muted-foreground">Art style reference — AI will use this as visual inspiration</span>
-                  </div>
-                );
-              })()}
+              {!isMobile && mStyleBasePreviewNode}
 
               {isCreatorStorefront && recentCreatorDesigns.length > 0 ? (
                 <div className="space-y-1.5" data-testid="creator-recent-designs">
@@ -17137,7 +17333,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               ) : null}
 
               {/* Prompt Description */}
-              {(() => {
+              {!isMobile && (() => {
                 const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
                 const _descOptional = !!_activePresetForLabel?.descriptionOptional;
                 return (
