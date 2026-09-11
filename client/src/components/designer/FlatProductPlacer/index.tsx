@@ -55,6 +55,7 @@ import {
   flatPrintCanvasPreviewDims,
   flatShouldFitToSafeArea,
   renderFlatView,
+  printCanvasFillForView,
   shouldSyncFlatFaceScale,
   FLAT_SCALE_FIT_FLOOR,
   type Rect,
@@ -85,6 +86,8 @@ import { flatArtFitForBlueprint, isBeanieBlueprint } from "@shared/hoodieTemplat
  *     dashed print canvas under cutout artwork.
  *   - Decor / tote fill: `backgroundColor` paints BOTH faces, even when
  *     artwork is off on a side (print-on-back is independent of fill).
+ *   - Apparel (t-shirt): fill is gated per face — no artwork on a side
+ *     means no background on that side (`printCanvasFillForView`).
  */
 
 type ViewName = FlatViewName;
@@ -758,6 +761,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const calib = resolveCalib(v);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
+      if (forApply && !enabled && !decorMode && !edgeWrapMode) return false;
       const rawPlacement = state.placements[v] ?? defaultPlacement;
       const placement = {
         ...rawPlacement,
@@ -776,8 +780,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
-          printCanvasBackgroundColor:
-            normalizeBgHex(String(state.backgroundColor ?? "")) ?? null,
+          printCanvasBackgroundColor: printCanvasFillForView({
+            backgroundColor: normalizeBgHex(String(state.backgroundColor ?? "")),
+            enabled,
+            decorMode,
+            edgeWrapMode,
+          }),
           decorMode,
           fabricWeave,
           catalogBlankShade: shouldApplyCatalogBlankShading(

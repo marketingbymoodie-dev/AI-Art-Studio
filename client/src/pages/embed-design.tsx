@@ -13722,20 +13722,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    // Send resize messages so the parent container grows with our content (no scrollbar).
-    // Debounced to 120ms and filtered to ignore sub-threshold changes so the iframe
-    // container does not jump while the mobile URL bar is auto-hiding/showing.
+    // Desktop: grow the parent iframe to content height (parent page scrolls).
+    // Mobile shell: the chrome is position:fixed to the IFRAME box. Posting
+    // document.scrollHeight made the parent stretch the iframe to the leftover
+    // form-column height, so `bottom: 0` sat below the phone. Report the visual
+    // viewport instead so the iframe box === the phone screen.
     let lastSent = 0;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const measure = () => {
+      if (isMobile) {
+        return Math.max(
+          400,
+          Math.round(window.visualViewport?.height ?? window.innerHeight),
+        );
+      }
+      return Math.max(
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        document.documentElement.offsetHeight,
+      );
+    };
     const sendHeight = () => {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        const h = Math.max(
-          document.documentElement.scrollHeight,
-          document.body.scrollHeight,
-          document.documentElement.offsetHeight
-        );
+        const h = measure();
         if (Math.abs(h - lastSent) < 4) return;
         lastSent = h;
         window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
@@ -13743,12 +13754,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const observer = new ResizeObserver(sendHeight);
     observer.observe(document.body);
-    sendHeight(); // send immediately on mount
+    window.visualViewport?.addEventListener("resize", sendHeight);
+    sendHeight();
     return () => {
       observer.disconnect();
+      window.visualViewport?.removeEventListener("resize", sendHeight);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, mobileNativeScroll, isMobile]);
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
@@ -16319,9 +16332,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       `}</style>
         <div
           className={
+          `${
           (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
             ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-2 space-y-2"
             : "max-w-6xl mx-auto space-y-2"
+          }${isMobile ? " appai-mobile-inflow" : ""}`
           }
         >
         {/* Free generation limit reached — prompt to create account */}
@@ -16420,7 +16435,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3 lg:self-start"
                 : "md:order-2"
-            }`}
+            }${isMobile ? " appai-mobile-form" : ""}`}
           >
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (

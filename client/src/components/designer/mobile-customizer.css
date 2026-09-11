@@ -26,10 +26,29 @@
   box-sizing: border-box;
 }
 
+/*
+ * Pin the shell to the iframe box. `overflow-x: hidden` alone computes
+ * overflow-y to `auto` and makes this element the containing block for
+ * position:fixed chrome — then in-flow form-column height stretches the
+ * shell, `bottom: 0` rides off the phone, and ai-art-studio:resize posts
+ * that tall scrollHeight to the parent. Both axes hidden + 100% height
+ * keeps fixed chrome anchored to the visible iframe, not the document.
+ */
+html:has(.appai-mobile-shell),
+html:has(.appai-mobile-shell) body,
+html:has(.appai-mobile-shell) body[data-scroll-locked] {
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
 .appai-mobile-shell {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  overflow-x: hidden;
+  position: relative;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 
   --appai-mobile-topbar-h: 52px;
   --appai-mobile-primary-h: 60px;
@@ -181,6 +200,29 @@
   max-width: 100%;
 }
 
+/* Take the leftover desktop layout out of document flow so it cannot
+   stretch the iframe. Isolate its stacking context so leftover z-50
+   overlays (newsletter, coupon) cannot paint over the chrome. Do NOT
+   overflow:hidden here — that can clip the position:fixed canvas. */
+.appai-mobile-shell .appai-mobile-inflow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.appai-mobile-shell .appai-mobile-canvas {
+  pointer-events: auto;
+}
+
+.appai-mobile-shell .appai-mobile-form {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------------------
  * Right rail (retractable) — tab + column slide together.
  * ------------------------------------------------------------------------- */
@@ -188,7 +230,9 @@
   position: fixed;
   top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top) + 44px);
   right: 0;
-  z-index: 32;
+  /* Above in-flow leftovers (newsletter z-50 is clipped with the form
+     column) and below the sheet scrim (40) so a sheet still covers the rail. */
+  z-index: 38;
   display: flex;
   align-items: flex-start;
   transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);

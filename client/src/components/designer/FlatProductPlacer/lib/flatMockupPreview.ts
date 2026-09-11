@@ -12,7 +12,7 @@ import {
   resolveFlatViewCalibration,
   type FlatViewName,
 } from "./flatAssets";
-import { renderFlatView } from "./flatRender";
+import { printCanvasFillForView, renderFlatView } from "./flatRender";
 
 /**
  * Client-side flat mockup raster for a single view — no upload. Used when the
@@ -69,6 +69,8 @@ export async function renderFlatMockupDataUrl(
     /^#[0-9a-fA-F]{6}$/.test(placerState.backgroundColor.trim())
       ? placerState.backgroundColor.trim()
       : null;
+  const decorMode = opts?.decorMode === true || !!manifest.decorPerSize;
+  const edgeWrapMode = !!manifest.edgeWrap;
   renderFlatView({
     target: canvas,
     blank: assets.blank,
@@ -78,13 +80,19 @@ export async function renderFlatMockupDataUrl(
     view: calib,
     placement: placerState.placements[view] as ArtworkPlacement,
     tier: manifest.tier,
-    forceShadingMap: !!manifest.edgeWrap,
-    edgeWrapMode: !!manifest.edgeWrap,
-    decorMode: opts?.decorMode === true || !!manifest.decorPerSize,
+    forceShadingMap: edgeWrapMode,
+    edgeWrapMode,
+    decorMode,
     fabricWeave: opts?.fabricWeave === true,
     catalogBlankShade: shouldApplyCatalogBlankShading(opts?.catalogBlueprintId),
     // Phone cases: customer BG colour must survive colour-swap re-bake.
-    printCanvasBackgroundColor: bg,
+    // Apparel: no fill on a face whose artwork is off.
+    printCanvasBackgroundColor: printCanvasFillForView({
+      backgroundColor: bg,
+      enabled: includeArtwork,
+      decorMode,
+      edgeWrapMode,
+    }),
     garmentColorHex: opts?.garmentColorHex ?? null,
     blueprintId: manifest.blueprintId,
     generationModel: opts?.generationModel ?? null,

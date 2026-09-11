@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   flatViewPaintsPrintLayer,
   parsePrintCanvasFillHex,
+  printCanvasFillForView,
 } from "./flatRender";
 
 describe("parsePrintCanvasFillHex", () => {
@@ -27,5 +28,45 @@ describe("flatViewPaintsPrintLayer", () => {
   it("paints when artwork is present even without a fill", () => {
     const art = { naturalWidth: 64, naturalHeight: 64, width: 64, height: 64 } as HTMLImageElement;
     expect(flatViewPaintsPrintLayer(art, null)).toBe(true);
+  });
+});
+
+describe("printCanvasFillForView", () => {
+  it("drops apparel fill when the face has no artwork", () => {
+    expect(
+      printCanvasFillForView({
+        backgroundColor: "#FF8800",
+        enabled: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps apparel fill when the face is enabled", () => {
+    expect(
+      printCanvasFillForView({
+        backgroundColor: "#FF8800",
+        enabled: true,
+      }),
+    ).toBe("#FF8800");
+  });
+
+  it("keeps tote / pillow fill on a disabled face", () => {
+    expect(
+      printCanvasFillForView({
+        backgroundColor: "#FF8800",
+        enabled: false,
+        decorMode: true,
+      }),
+    ).toBe("#FF8800");
+  });
+
+  it("keeps phone-case fill on a disabled face", () => {
+    expect(
+      printCanvasFillForView({
+        backgroundColor: "#FF8800",
+        enabled: false,
+        edgeWrapMode: true,
+      }),
+    ).toBe("#FF8800");
   });
 });

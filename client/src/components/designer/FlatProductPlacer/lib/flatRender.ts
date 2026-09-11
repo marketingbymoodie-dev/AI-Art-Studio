@@ -364,6 +364,21 @@ export function parsePrintCanvasFillHex(raw: string | null | undefined): string 
 }
 
 /**
+ * Per-view print-canvas fill. Apparel (t-shirt etc.) must not paint fill on a
+ * face whose artwork is off — that would bake a garbage print file. Decor /
+ * tote / phone keep fill on a disabled face (print-on-back independent of bg).
+ */
+export function printCanvasFillForView(opts: {
+  backgroundColor: string | null | undefined;
+  enabled: boolean;
+  decorMode?: boolean;
+  edgeWrapMode?: boolean;
+}): string | null {
+  if (!opts.enabled && !opts.decorMode && !opts.edgeWrapMode) return null;
+  return parsePrintCanvasFillHex(opts.backgroundColor);
+}
+
+/**
  * A view still composites a print layer when artwork is off but a fill hex
  * is set (tote / pillow back with print-on-back disabled).
  */
@@ -3519,8 +3534,8 @@ export function renderFlatView(input: FlatRenderInput): void {
   const areaFill = parsePrintCanvasFillHex(printCanvasBackgroundColor);
   const { w: artW, h: artH } = artwork ? imgDims(artwork) : { w: 0, h: 0 };
   const hasArt = !!(artwork && artW > 0 && artH > 0);
-  // Fill both faces even when this view's artwork is off (print-on-back
-  // independent of bg). Matches tote / pillow bake.
+  // Fill-without-art is for tote / pillow / phone (caller passes a fill via
+  // printCanvasFillForView). Apparel callers pass null when the face is off.
   if (!hasArt && !areaFill) return;
 
   const rect = applyFlatPreviewPlacementRect(

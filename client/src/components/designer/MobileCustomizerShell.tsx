@@ -142,9 +142,11 @@ export function MobileCustomizerShell({
     if (primaryRef.current) ro.observe(primaryRef.current);
     if (bottombarRef.current) ro.observe(bottombarRef.current);
     window.addEventListener("resize", sync);
+    window.visualViewport?.addEventListener("resize", sync);
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", sync);
+      window.visualViewport?.removeEventListener("resize", sync);
     };
   }, [showModeToggle, bottomTucked, rail.length, bottom.length]);
 
