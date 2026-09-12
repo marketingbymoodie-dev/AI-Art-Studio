@@ -2530,14 +2530,13 @@
         var landingMockup = data.mockupUrl || '';
         if (landingMockup) appaiStoreLandingMockup(landingMockup);
         appaiApplyLandingMockup(landingMockup);
+        // Always load the shop home. history.back() can land on a mid-flow
+        // customizer URL (hidden theme content, no Customize pill) and look
+        // like the homepage until a refresh.
         try {
-          if (window.history.length > 1) {
-            window.history.back();
-          } else {
-            window.location.assign(appaiExitFallbackUrl || '/');
-          }
-        } catch (e) {
           window.location.assign(appaiExitFallbackUrl || '/');
+        } catch (e) {
+          window.location.href = appaiExitFallbackUrl || '/';
         }
         return;
       }

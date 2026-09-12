@@ -131,6 +131,11 @@ html:has(.appai-mobile-shell) #root {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--appai-mobile-ink, #141414);
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
 }
 
 .appai-mshell-dot {

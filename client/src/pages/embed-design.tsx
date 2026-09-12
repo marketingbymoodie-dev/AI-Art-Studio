@@ -1635,6 +1635,26 @@ function replaceCustomizerPageHistory(
   }
 }
 
+/** Full-page open for a saved design — same path as the homepage tray pill. */
+function assignHostToSavedDesign(
+  pageHandle: string,
+  extra: Record<string, string | null | undefined> = {},
+) {
+  const fallback =
+    `/pages/${encodeURIComponent(pageHandle)}?loadDesignId=${encodeURIComponent(String(extra.loadDesignId || ""))}`;
+  try {
+    const url = new URL(hostWindow().location.href);
+    applyCustomizerPageToUrl(url, pageHandle, extra);
+    hostWindow().location.assign(url.toString());
+  } catch {
+    try {
+      window.location.assign(fallback);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // Module-level singleton guard — prevents re-initialization if the module is
 // evaluated more than once or if React StrictMode double-mounts the component.
 let __embedInstanceActive = false;
@@ -15417,10 +15437,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return formatStorefrontCreditsSplit(creditBreakdown);
   })();
 
+  const leaveCustomizerToHome = useCallback(() => {
+    const mockupUrl = getPreferredMockupUrl({ cartSafeOnly: true }) || "";
+    try {
+      window.parent.postMessage({ type: "ai-art-studio:exit", mockupUrl }, "*");
+    } catch {
+      /* ignore */
+    }
+    const goHome = () => {
+      try {
+        hostWindow().location.assign("/");
+      } catch {
+        window.location.assign("/");
+      }
+    };
+    if (isTopLevelHost || window.parent === window) {
+      goHome();
+      return;
+    }
+    window.setTimeout(() => {
+      try {
+        const path = hostWindow().location.pathname || "";
+        if (
+          path.includes("/pages/") ||
+          path.includes("/s/designer") ||
+          path.includes("/apps/appai")
+        ) {
+          goHome();
+        }
+      } catch {
+        goHome();
+      }
+    }, 450);
+  }, [getPreferredMockupUrl, isTopLevelHost]);
+
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
-    if (isInAppProductSwitching || reuseBusy) {
+    if (isInAppProductSwitching || reuseBusy || isTopLevelHost) {
       return (
         <div
           className="min-h-[520px] flex flex-col items-center justify-center gap-3 bg-[#f4f4f5]"
@@ -16125,8 +16179,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 void flushFlatPlacer({ force: true });
                 return;
               }
-            } catch {}
+              leaveCustomizerToHome();
+            } catch {
+              leaveCustomizerToHome();
+            }
           }}
+          onHome={leaveCustomizerToHome}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
           onOpenGallery={() => {
             setShowSavedDesigns(true);
@@ -17371,42 +17429,30 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                         return;
                                       }
                                     }
-                                    // If this design belongs to a different product type, switch
-                                    // the iframe's active customizer context without navigating the
-                                    // Shopify parent document.
-                                    const currentProductTypeId = productTypeId ? String(productTypeId) : null;
-                                    const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
-                                    const designPageHandle = d.pageHandle ? String(d.pageHandle) : null;
-                                    const currentPageHandle = activeProductContext.pageHandle || null;
-                                    const isDifferentProduct =
-                                      (!!designProductTypeId &&
-                                        !!currentProductTypeId &&
-                                        designProductTypeId !== currentProductTypeId) ||
-                                      (!!designPageHandle &&
-                                        !!currentPageHandle &&
-                                        designPageHandle !== currentPageHandle);
-                                    const needsNavigation = isDifferentProduct;
-                                    if (needsNavigation) {
-                                      void (async () => {
-                                        try {
-                                          const pageHandle = await resolveSavedDesignPageHandle(d);
-                                          if (!pageHandle) {
-                                            // Leftover job from a product not in this shop —
-                                            // reuse the artwork on the page they are already on.
-                                            loadSavedDesignInPlace(d);
-                                            return;
-                                          }
-                                          await switchToSavedDesignProduct(d);
-                                        } catch (error: any) {
-                                          console.error('[SavedDesigns] Cross-product in-app switch failed:', error);
-                                          setConfigLoading(false);
-                                          setIsInAppProductSwitching(false);
+                                    // Same full-page open as the homepage Customize pill.
+                                    // In-app switch from inside the editor hung on a blank load.
+                                    void (async () => {
+                                      try {
+                                        const pageHandle = await resolveSavedDesignPageHandle(d);
+                                        if (!pageHandle) {
                                           loadSavedDesignInPlace(d);
+                                          return;
                                         }
-                                      })();
-                                    } else {
-                                      loadSavedDesignInPlace(d);
-                                    }
+                                        setReuseBusy(true);
+                                        setReuseBusyLabel("Opening design…");
+                                        assignHostToSavedDesign(pageHandle, {
+                                          loadDesignId: clickedId,
+                                          loadMockup: savedDesignPreviewUrl(d)
+                                            ? toAbsoluteImageUrl(savedDesignPreviewUrl(d))
+                                            : null,
+                                          loadProductName: d.baseTitle || null,
+                                        });
+                                      } catch (error: any) {
+                                        console.error("[SavedDesigns] Open failed:", error);
+                                        setReuseBusy(false);
+                                        loadSavedDesignInPlace(d);
+                                      }
+                                    })();
                                   }}
                                 >
                                   <div className="aspect-square relative bg-muted">

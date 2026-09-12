@@ -27,6 +27,8 @@ export type MobileCustomizerShellProps = {
   isLoggedIn: boolean;
   creditsLabel?: string | number;
   onBack: () => void;
+  /** Always leaves the customizer for the shop homepage. */
+  onHome?: () => void;
   onHelp?: () => void;
   onOpenGallery?: () => void;
   onOpenCredits?: () => void;
@@ -65,6 +67,7 @@ export function MobileCustomizerShell({
   isLoggedIn,
   creditsLabel,
   onBack,
+  onHome,
   onHelp,
   onOpenGallery,
   onOpenCredits,
@@ -175,10 +178,16 @@ export function MobileCustomizerShell({
           <ChevronLeft />
         </button>
 
-        <div className="appai-mshell-brand">
+        <button
+          type="button"
+          className="appai-mshell-brand"
+          aria-label="Home"
+          onClick={onHome ?? onBack}
+          data-testid="button-mobile-home"
+        >
           <span className="appai-mshell-dot" />
           {brandName}
-        </div>
+        </button>
 
         <button
           type="button"
