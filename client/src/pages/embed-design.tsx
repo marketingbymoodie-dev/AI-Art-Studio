@@ -610,6 +610,27 @@ function isDataUrl(url: string): boolean {
   return !!url && url.startsWith("data:");
 }
 
+/** Copy Product Intelligence stock fields off a designer-config payload. */
+function designerStockFields(dc: {
+  variantAvailability?: unknown;
+  unavailableVariantKeys?: unknown;
+}): {
+  variantAvailability: VariantAvailabilityMap;
+  unavailableVariantKeys: string[];
+} {
+  const raw = dc?.variantAvailability;
+  const variantAvailability =
+    typeof raw === "string"
+      ? parseVariantAvailabilityMap(raw)
+      : raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as VariantAvailabilityMap)
+        : {};
+  const unavailableVariantKeys = Array.isArray(dc?.unavailableVariantKeys)
+    ? (dc.unavailableVariantKeys as string[])
+    : [];
+  return { variantAvailability, unavailableVariantKeys };
+}
+
 /**
  * Convert a CSS color string (rgb(), rgba(), or #hex) to an HSL string
  * in the format expected by the app's CSS variables: "H S% L%"
@@ -2464,6 +2485,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         id: c.id,
         name: c.name,
         hex: c.hex,
+        variantAvailable: c.variantAvailable,
+        inStock: c.inStock,
       })),
     [productTypeConfig],
   );
@@ -2513,6 +2536,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     !frameOptionsRedundantWithSizes &&
     !(isPhoneCaseProduct && !frameColorsArePhoneModels) &&
     !(!!productTypeConfig?.isAllOverPrint && frameColorObjects.length <= 1);
+
+  // If the current colour is fully OOS, move to the first in-stock colour.
+  useEffect(() => {
+    if (!showFrameColorSelector) return;
+    if (!selectedFrameColor || frameColorObjects.length === 0) return;
+    const current = frameColorObjects.find((c) => c.id === selectedFrameColor);
+    if (current?.inStock !== false) return;
+    const next = frameColorObjects.find((c) => c.inStock !== false);
+    if (next) setSelectedFrameColor(next.id);
+  }, [showFrameColorSelector, selectedFrameColor, frameColorObjects]);
 
   // Phone cases with models in Size: never leave a junk Model fragment as frameColor.
   useEffect(() => {
@@ -4654,6 +4687,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       printifyProviderId: dc.printifyProviderId,
       fabricWeaveTexture: dc.fabricWeaveTexture ?? null,
       sizeChart: dc.sizeChart || null,
+      ...designerStockFields(dc),
     });
     if (dc.sizeChart) {
       setSizeChart(dc.sizeChart);
@@ -5110,6 +5144,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             printifyBlueprintId: designerConfig.printifyBlueprintId,
             fabricWeaveTexture: designerConfig.fabricWeaveTexture ?? null,
             sizeChart: designerConfig.sizeChart || null,
+            ...designerStockFields(designerConfig),
           });
 
           if (designerConfig.sizeChart) {
@@ -13815,30 +13850,32 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     // Desktop: grow the parent iframe to content height (parent page scrolls).
-    // Mobile shell: the chrome is position:fixed to the IFRAME box. Posting
-    // document.scrollHeight made the parent stretch the iframe to the leftover
-    // form-column height, so `bottom: 0` sat below the phone. Report the visual
-    // viewport instead so the iframe box === the phone screen.
+    // Mobile shell: the PARENT pins the iframe to its own visualViewport
+    // (the phone screen, including URL-bar show/hide). Never post
+    // scrollHeight (useIsMobile is false on the first paint) or the child's
+    // visualViewport (that is the iframe box, not the phone).
+    const isPhoneShell = () => {
+      try {
+        return (
+          window.matchMedia("(pointer: coarse), (max-width: 767px)").matches ||
+          window.innerWidth < 768
+        );
+      } catch {
+        return window.innerWidth < 768;
+      }
+    };
     let lastSent = 0;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const measure = () => {
-      if (isMobile) {
-        return Math.max(
-          400,
-          Math.round(window.visualViewport?.height ?? window.innerHeight),
-        );
-      }
-      return Math.max(
-        document.documentElement.scrollHeight,
-        document.body.scrollHeight,
-        document.documentElement.offsetHeight,
-      );
-    };
     const sendHeight = () => {
+      if (isPhoneShell() || isMobile) return;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        const h = measure();
+        const h = Math.max(
+          document.documentElement.scrollHeight,
+          document.body.scrollHeight,
+          document.documentElement.offsetHeight,
+        );
         if (Math.abs(h - lastSent) < 4) return;
         lastSent = h;
         window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
@@ -13846,11 +13883,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const observer = new ResizeObserver(sendHeight);
     observer.observe(document.body);
-    window.visualViewport?.addEventListener("resize", sendHeight);
     sendHeight();
     return () => {
       observer.disconnect();
-      window.visualViewport?.removeEventListener("resize", sendHeight);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
     };
   }, [isEmbedded, isStorefront, mobileNativeScroll, isMobile]);
@@ -15751,6 +15786,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             } catch {}
           }}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
+          onOpenGallery={() => {
+            setShowSavedDesigns(true);
+            setShowOtpLogin(false);
+            setShowCouponInput(false);
+            setShowArtClassSignup(false);
+          }}
+          onLogin={() => {
+            setShowOtpLogin(true);
+            setShowSavedDesigns(false);
+            setShowCouponInput(false);
+            setShowArtClassSignup(false);
+          }}
           showModeToggle={
             !!(useAopCustomizer && showPatternStep && aopPendingMotifUrl)
           }
@@ -16648,7 +16695,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
                 {/* Auth panel — absolute overlay, doesn't push content */}
                 {showOtpLogin && (
-                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                  <div className="absolute left-0 top-full mt-2 z-50 appai-mobile-escape-overlay" style={{ maxWidth: '400px', width: '100%' }}>
                     <Card className="border-primary bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
@@ -16833,8 +16880,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 )}
 
                 {/* Saved Designs dropdown panel */}
-                {showSavedDesigns && isLoggedIn && (
-                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
+                {showSavedDesigns && (
+                  <div className="absolute left-0 top-full mt-2 z-50 appai-mobile-escape-overlay" style={{ maxWidth: '500px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         {isCreatorStorefront ? (

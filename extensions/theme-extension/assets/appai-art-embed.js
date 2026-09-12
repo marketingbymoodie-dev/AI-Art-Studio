@@ -886,13 +886,32 @@
     var container, studioContainer;
     var mobileNativeScroll = appaiIsMobileScrollMode();
     function appaiMobileFrameHeight() {
-      var h = window.visualViewport && window.visualViewport.height ? window.visualViewport.height : window.innerHeight;
-      return Math.max(520, Math.floor(h - 24));
+      // PARENT visual viewport is the phone screen (URL bar included).
+      // Child visualViewport is the iframe box — never use that here.
+      var vv = window.visualViewport;
+      var visH = vv && vv.height ? vv.height : (window.innerHeight || 800);
+      var visTop = vv && typeof vv.offsetTop === 'number' ? vv.offsetTop : 0;
+      var visBottom = visTop + visH;
+      if (studioContainer) {
+        var top = studioContainer.getBoundingClientRect().top;
+        var remaining = visBottom - top;
+        return Math.max(400, Math.floor(Math.min(visH, remaining)));
+      }
+      return Math.max(400, Math.floor(visH));
     }
-    // Option A: do not pin studioContainer to the viewport. Height is driven
-    // only by ai-art-studio:resize (same path as desktop). A live pin here
-    // would overwrite the posted content height on every URL-bar resize.
-    function applyMobileNativeScrollFrame() {}
+    function applyMobileNativeScrollFrame() {
+      if (!mobileNativeScroll || !studioContainer) return;
+      var h = appaiMobileFrameHeight();
+      studioContainer.style.height = h + 'px';
+      studioContainer.style.maxHeight = h + 'px';
+      studioContainer.style.overflow = 'hidden';
+      studioContainer.style.webkitOverflowScrolling = '';
+      try {
+        var frame = studioContainer.querySelector('iframe');
+        if (frame) frame.setAttribute('scrolling', 'no');
+      } catch (e) {}
+      appaiSyncScrollUnfix();
+    }
     // Undo mobile framing when switching back to desktop mode live (theme
     // editor toggle). 600px matches the container's pre-mount default so
     // there is no flash of collapsed height before the iframe's first
@@ -900,6 +919,7 @@
     function clearMobileNativeScrollFrame() {
       if (!studioContainer) return;
       studioContainer.style.height = '600px';
+      studioContainer.style.maxHeight = '';
       studioContainer.style.overflow = '';
       studioContainer.style.webkitOverflowScrolling = '';
       appaiClearScrollUnfix();
@@ -989,10 +1009,27 @@
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
     ensureAppaiLoadingCover();
-    // Baseline like desktop: 600px + reset overflow so the first
-    // ai-art-studio:resize message can drive the real content height.
-    // Do not attach window/visualViewport resize pins — nothing may re-pin.
-    clearMobileNativeScrollFrame();
+    if (mobileNativeScroll) {
+      applyMobileNativeScrollFrame();
+    } else {
+      clearMobileNativeScrollFrame();
+    }
+    // Re-pin on URL-bar show/hide (visualViewport resize) and offsetTop
+    // shifts (visualViewport scroll). applyMobileNativeScrollFrame no-ops
+    // on desktop, so these stay attached for live mobile-preview toggles.
+    var pinRaf = 0;
+    var resizeFrame = function () {
+      if (pinRaf) return;
+      pinRaf = window.requestAnimationFrame(function () {
+        pinRaf = 0;
+        applyMobileNativeScrollFrame();
+      });
+    };
+    window.addEventListener('resize', resizeFrame, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
+      window.visualViewport.addEventListener('scroll', resizeFrame, { passive: true });
+    }
     
     const params = new URLSearchParams();
     params.set('shop', normaliseMyshopifyShopForApi(config.shopDomain));
@@ -1060,7 +1097,7 @@
     iframe.allow = 'clipboard-write; popups';
     iframe.title = 'AI Art Design Studio';
     iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';
-    iframe.setAttribute('scrolling', mobileNativeScroll ? 'yes' : 'no');
+    iframe.setAttribute('scrolling', 'no');
     
     iframe.onload = function() {
       // Loading screen is removed on BRIDGE_ACK (when React app is fully mounted),
@@ -1069,6 +1106,7 @@
     };
     
     studioContainer.appendChild(iframe);
+    applyMobileNativeScrollFrame();
 
     // ── Live scroll-mode switching ──────────────────────────────────────
     // Shopify's theme editor "mobile preview" toggle resizes the SAME iframe
@@ -1092,7 +1130,7 @@
           appaiAttachIframeWheelForward(iframe, false);
         }
         try {
-          iframe.setAttribute('scrolling', mobileNativeScroll ? 'yes' : 'no');
+          iframe.setAttribute('scrolling', 'no');
         } catch (e) {}
         try {
           iframe.contentWindow.postMessage(
@@ -2282,6 +2320,13 @@
 
       // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
+        // Mobile shell: parent visualViewport owns the iframe box. Child
+        // posts must not stretch it (that's what put the bottom tab
+        // below the phone). Re-pin in case layout shifted.
+        if (mobileNativeScroll) {
+          applyMobileNativeScrollFrame();
+          return;
+        }
         var newH = Math.max(data.height || 0, 400);
         studioContainer.style.height = newH + 'px';
         return;
@@ -2314,6 +2359,7 @@
             _landEl.scrollTop = Math.max(0, _landEl.scrollTop + _rect.top - 16);
           } catch(e) {}
         }
+        applyMobileNativeScrollFrame();
         return;
       }
       // ===== WHEEL FORWARDING =====

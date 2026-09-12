@@ -80,14 +80,10 @@ export function MobileCustomizerShell({
   const [openId, setOpenId] = useState<string | null>(null);
   const [bottomTucked, setBottomTucked] = useState(false);
   const [railTucked, setRailTucked] = useState(false);
-  // Segmented control works standalone (uncontrolled) until a product wires the
-  // real place/pattern behaviour via `onModeChange` (AOP flow, a later step).
-  const [modeState, setModeState] = useState<"place" | "pattern">(mode);
-  const activeMode = onModeChange ? mode : modeState;
+  const activeMode = mode;
   const selectMode = useCallback(
     (m: "place" | "pattern") => {
-      if (onModeChange) onModeChange(m);
-      else setModeState(m);
+      onModeChange?.(m);
     },
     [onModeChange],
   );

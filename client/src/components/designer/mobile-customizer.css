@@ -36,7 +36,8 @@
  */
 html:has(.appai-mobile-shell),
 html:has(.appai-mobile-shell) body,
-html:has(.appai-mobile-shell) body[data-scroll-locked] {
+html:has(.appai-mobile-shell) body[data-scroll-locked],
+html:has(.appai-mobile-shell) #root {
   height: 100% !important;
   max-height: 100% !important;
   overflow: hidden !important;
@@ -219,8 +220,25 @@ html:has(.appai-mobile-shell) body[data-scroll-locked] {
   position: absolute;
   width: 0;
   height: 0;
-  overflow: hidden;
+  overflow: visible;
   pointer-events: none;
+}
+
+/* OTP / Saved Designs live in the hidden form column. Escape them to the
+   iframe viewport so the top-bar wires can actually show the same panels. */
+.appai-mobile-shell .appai-mobile-escape-overlay {
+  position: fixed !important;
+  left: 12px !important;
+  right: 12px !important;
+  top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top) + 8px) !important;
+  width: auto !important;
+  max-width: none !important;
+  max-height: calc(100% - var(--appai-mobile-topbar-h) - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  pointer-events: auto;
+  z-index: 70;
 }
 
 /* ---------------------------------------------------------------------------
