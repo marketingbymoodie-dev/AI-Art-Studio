@@ -254,6 +254,11 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    * enforcement uses this stamp until the shop re-subscribes.
    */
   pricingVersion: integer("pricing_version").default(0),
+  /**
+   * Merchant storefront theme snapshot (computed styles from the live theme).
+   * Captured by the theme embed and applied on the top-level mobile designer.
+   */
+  themeSnapshot: jsonb("theme_snapshot").$type<Record<string, string> | null>(),
 });
 
 /** Versioned SaaS plan catalogue (commit ≠ activate). */

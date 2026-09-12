@@ -413,6 +413,62 @@
     if (url && typeof url === 'string') appaiExitFallbackUrl = url;
   }
 
+  /**
+   * Back-from-customizer landing image. The iframe carousel's first slide is
+   * raw artwork; the product page should show the hero product-with-design
+   * mockup instead. Stash on exit, apply on the destination (including bfcache).
+   */
+  var APPAI_LANDING_MOCKUP_KEY = 'appai_landing_mockup';
+  function appaiStoreLandingMockup(url) {
+    if (!url || typeof url !== 'string') return;
+    try { sessionStorage.setItem(APPAI_LANDING_MOCKUP_KEY, url); } catch (e) {}
+  }
+  function appaiReadLandingMockup() {
+    try { return sessionStorage.getItem(APPAI_LANDING_MOCKUP_KEY) || ''; } catch (e) { return ''; }
+  }
+  function appaiApplyLandingMockup(url) {
+    var src = url || appaiReadLandingMockup();
+    if (!src) return false;
+    var applied = false;
+    var mainImg = document.getElementById('ai-art-main-img');
+    if (mainImg) {
+      mainImg.src = src;
+      applied = true;
+    }
+    var ph = document.getElementById('ai-art-placeholder');
+    if (ph) {
+      var phImg = ph.querySelector('img');
+      if (phImg) {
+        phImg.src = src;
+        phImg.removeAttribute('srcset');
+      } else {
+        phImg = document.createElement('img');
+        phImg.src = src;
+        phImg.alt = 'Product mockup';
+        phImg.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
+        ph.insertBefore(phImg, ph.firstChild);
+      }
+      ph.style.display = '';
+      applied = true;
+    }
+    var native = document.querySelector(
+      '.product__media-item img, .product__media img, [data-product-featured-image], .product-featured-media img, .product__main-photos img'
+    );
+    if (native && native.tagName === 'IMG' && !native.closest('.ai-art-studio-embed, .ai-art-studio-block')) {
+      native.src = src;
+      native.srcset = '';
+      if (native.dataset) {
+        if (native.dataset.src) native.dataset.src = src;
+        if (native.dataset.srcset) native.dataset.srcset = src;
+      }
+      applied = true;
+    }
+    return applied;
+  }
+  window.addEventListener('pageshow', function () {
+    appaiApplyLandingMockup();
+  });
+
   /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
   function appaiAttachIframeWheelForward(iframe, mobileNativeScroll) {
     if (mobileNativeScroll || !iframe) return;
@@ -1030,9 +1086,7 @@
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
     ensureAppaiLoadingCover();
-    if (appaiIsPhoneShellMode()) {
-      applyMobileNativeScrollFrame();
-    } else {
+    if (!appaiIsPhoneShellMode()) {
       clearMobileNativeScrollFrame();
     }
     // Re-pin on URL-bar show/hide (visualViewport resize) and offsetTop
@@ -1109,6 +1163,57 @@
     // page without a designer iframe — opens the OTP sign-in panel on load.
     if (urlParams.get('openSignIn') === '1') {
       params.set('openSignIn', '1');
+    }
+
+    function persistStoreThemeSnapshot(theme) {
+      if (!theme || typeof theme !== 'object') return;
+      try {
+        sessionStorage.setItem('appai:themeSnapshot', JSON.stringify(theme));
+      } catch (e) {}
+      try {
+        fetch('/apps/appai/theme-snapshot', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ theme: theme }),
+          keepalive: true,
+        }).catch(function () {});
+      } catch (e) {}
+    }
+
+    // Phone: top-level designer page (Option B). replace() so Back does not
+    // return to /pages/<handle> and immediately re-redirect.
+    if (appaiIsPhoneShellMode()) {
+      try { persistStoreThemeSnapshot(extractStoreTheme()); } catch (e) {}
+      params.delete('deferDesignerConfig');
+      params.set('host', 'page');
+      params.set('returnTo', window.location.pathname + window.location.search);
+      var s = window.Shopify || {};
+      var cur = (s.currency && s.currency.active) ? String(s.currency.active).toUpperCase() : '';
+      if (!cur) {
+        try {
+          var parts = document.cookie.split(';');
+          for (var ci = 0; ci < parts.length; ci++) {
+            var cp = parts[ci].replace(/^\s+/, '').split('=');
+            if (cp[0] === 'cart_currency' && cp[1]) {
+              cur = decodeURIComponent(cp[1]).toUpperCase();
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+      if (cur) params.set('currency', cur);
+      var rate = s.currency && s.currency.rate != null ? parseFloat(s.currency.rate) : NaN;
+      if (isFinite(rate)) params.set('rate', String(rate));
+      var rootEl = document.getElementById('appai-root');
+      var shopCur = rootEl && rootEl.getAttribute('data-shop-currency');
+      if (shopCur) params.set('shopCurrency', String(shopCur).toUpperCase());
+      if (s.country) params.set('country', String(s.country).toUpperCase());
+      if (s.locale) params.set('locale', String(s.locale));
+      window.location.replace(
+        window.location.origin + '/apps/appai/s/designer?' + params.toString()
+      );
+      return;
     }
     
     const iframe = document.createElement('iframe');
@@ -2058,6 +2163,7 @@
         try {
           var storeTheme = extractStoreTheme();
           if (storeTheme && Object.keys(storeTheme).length > 0) {
+            persistStoreThemeSnapshot(storeTheme);
             iframe.contentWindow.postMessage({
               type: 'AI_ART_STUDIO_THEME',
               theme: storeTheme,
@@ -2398,6 +2504,9 @@
       }
       // ===== EXIT (mobile Back) =====
       if (data.type === 'ai-art-studio:exit') {
+        var landingMockup = data.mockupUrl || '';
+        if (landingMockup) appaiStoreLandingMockup(landingMockup);
+        appaiApplyLandingMockup(landingMockup);
         try {
           if (window.history.length > 1) {
             window.history.back();
@@ -2826,6 +2935,7 @@
 
     native.parentNode.insertBefore(ph, native);
     console.log('[AI Art Embed] Created placeholder gallery. liquidImg:', !!liquidImgSrc, 'fallbackImg:', !liquidImgSrc && !!imgSrc);
+    appaiApplyLandingMockup();
   }
 
   function insertStudioAfterProductInfo(studioElement) {
@@ -3050,6 +3160,7 @@
       if (studioElement) {
         const doInsert = () => {
           createPlaceholderGallery();
+          appaiApplyLandingMockup();
           insertStudioAfterProductInfo(studioElement);
           cleanupDuplicateGenerators();
         };

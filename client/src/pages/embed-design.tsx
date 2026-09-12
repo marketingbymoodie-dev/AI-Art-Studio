@@ -963,6 +963,16 @@ function resolveSizeIdFromCoverage(
   return hit?.id ?? resolvePrintSizeId(sizeId, sizes);
 }
 
+/** Parent storefront when iframed; this window when top-level (`host=page`). */
+function hostWindow(): Window {
+  try {
+    if (window.parent && window.parent !== window) return window.parent;
+  } catch {
+    /* cross-origin parent */
+  }
+  return window;
+}
+
 function readUrlSizeParam(): string {
   try {
     const fromSelf = new URLSearchParams(window.location.search).get("size");
@@ -971,10 +981,153 @@ function readUrlSizeParam(): string {
     /* ignore */
   }
   try {
-    return new URL(window.parent.location.href).searchParams.get("size")?.trim() || "";
+    return new URL(hostWindow().location.href).searchParams.get("size")?.trim() || "";
   } catch {
     return "";
   }
+}
+
+function loggedInCustomerIdFromHost(): string {
+  try {
+    const fromQuery = new URLSearchParams(window.location.search).get("customerId") || "";
+    if (fromQuery.trim()) return fromQuery.trim();
+  } catch {
+    /* ignore */
+  }
+  try {
+    const injected = (window as any).__APPAI_LOGGED_IN_CUSTOMER_ID__;
+    if (injected != null && String(injected).trim()) return String(injected).trim();
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function applyPresentmentPayload(pres: any) {
+  if (!pres || typeof pres !== "object") return null;
+  const cur =
+    pres.currency != null && String(pres.currency).trim()
+      ? String(pres.currency).trim().toUpperCase()
+      : null;
+  const rawPrices =
+    pres.pricesByVariantId && typeof pres.pricesByVariantId === "object"
+      ? pres.pricesByVariantId
+      : {};
+  const pricesByVariantId: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rawPrices as Record<string, unknown>)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) pricesByVariantId[String(k)] = Math.round(n);
+  }
+  return {
+    currency: cur,
+    rate:
+      pres.rate != null && Number.isFinite(Number(pres.rate)) ? Number(pres.rate) : null,
+    shopCurrency: pres.shopCurrency ? String(pres.shopCurrency).trim().toUpperCase() : null,
+    country: pres.country ? String(pres.country).trim().toUpperCase() : null,
+    locale: pres.locale ? String(pres.locale) : null,
+    pricesByVariantId,
+  };
+}
+
+function presentmentQueryFromSearch(sp: URLSearchParams): string {
+  let q = "";
+  for (const key of ["currency", "rate", "shopCurrency", "country", "locale"] as const) {
+    const v = sp.get(key);
+    if (v) q += `&${key}=${encodeURIComponent(v)}`;
+  }
+  return q;
+}
+
+function themeSnapshotFromHostStorage(): Record<string, string> | null {
+  try {
+    const raw = hostWindow().sessionStorage.getItem("appai:themeSnapshot");
+    if (!raw) return null;
+    const t = JSON.parse(raw);
+    return t && typeof t === "object" && !Array.isArray(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Merchant theme CSS variables — same mapping as AI_ART_STUDIO_THEME. */
+function applyStoreThemeVars(t: Record<string, string>) {
+  if (!t || typeof t !== "object") return;
+  const root = document.documentElement.style;
+  const bgHSL = cssColorToHSL(t.backgroundColor);
+  const fgHSL = cssColorToHSL(t.textColor);
+  if (bgHSL) root.setProperty("--background", bgHSL);
+  if (fgHSL) {
+    const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
+    root.setProperty("--foreground", safeFg);
+    root.setProperty("--card-foreground", safeFg);
+  }
+  const btnBgHSL = cssColorToHSL(t.buttonBg);
+  const btnFgHSL = cssColorToHSL(t.buttonColor);
+  if (btnBgHSL) {
+    root.setProperty("--primary", btnBgHSL);
+    root.setProperty("--ring", btnBgHSL);
+    root.setProperty("--sidebar-primary", btnBgHSL);
+    root.setProperty("--primary-border", adjustHSLLightness(btnBgHSL, -8));
+    const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
+    if (safePrimaryFg) root.setProperty("--primary-foreground", safePrimaryFg);
+  } else if (btnFgHSL) {
+    const safePrimaryFg = ensureContrastingForeground("0 0% 9%", btnFgHSL);
+    if (safePrimaryFg) root.setProperty("--primary-foreground", safePrimaryFg);
+  }
+  if (t.buttonRadius) root.setProperty("--radius", t.buttonRadius);
+  if (t.fontFamily) root.setProperty("--font-sans", t.fontFamily);
+  if (t.inputFontFamily) root.setProperty("--appai-control-font-family", t.inputFontFamily);
+  if (t.inputFontSize) root.setProperty("--appai-control-font-size", t.inputFontSize);
+  else if (t.fontSize) root.setProperty("--appai-control-font-size", t.fontSize);
+  if (t.inputFontWeight) root.setProperty("--appai-control-font-weight", t.inputFontWeight);
+  if (t.headingFontFamily && t.headingFontFamily !== t.fontFamily) {
+    root.setProperty("--font-heading", t.headingFontFamily);
+  }
+  const inputBorderHSL = cssColorToHSL(t.inputBorderColor);
+  if (inputBorderHSL) {
+    root.setProperty("--border", inputBorderHSL);
+    root.setProperty("--input", inputBorderHSL);
+  }
+  const inputBgHSL = cssColorToHSL(t.inputBg);
+  const effectiveBgHSL = bgHSL ?? "0 0% 100%";
+  const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
+  const cardLightness = hslLightness(inputBgHSL);
+  let cardHSL = inputBgHSL;
+  if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
+    cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
+  }
+  if (cardHSL) {
+    root.setProperty("--card", cardHSL);
+    const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
+    if (safeCardFg) root.setProperty("--card-foreground", safeCardFg);
+  }
+  const accentHSL = cssColorToHSL(t.accentColor);
+  if (accentHSL) {
+    root.setProperty("--accent", accentHSL);
+    const safeAccentFg = ensureContrastingForeground(accentHSL, fgHSL);
+    if (safeAccentFg) root.setProperty("--accent-foreground", safeAccentFg);
+  }
+  if (bgHSL) {
+    root.setProperty("--secondary", adjustHSLLightness(bgHSL, -6));
+    root.setProperty("--secondary-border", adjustHSLLightness(bgHSL, -14));
+    root.setProperty("--muted", adjustHSLLightness(bgHSL, -8));
+    const popoverHSL = adjustHSLLightness(bgHSL, -3);
+    root.setProperty("--popover", popoverHSL);
+    const safePopoverFg = ensureContrastingForeground(popoverHSL, fgHSL);
+    if (safePopoverFg) root.setProperty("--popover-foreground", safePopoverFg);
+  }
+  if (fgHSL) {
+    const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
+    const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
+    const mutedFg = adjustHSLLightness(fgHSL, 30);
+    root.setProperty("--muted-foreground", ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
+    root.setProperty("--secondary-foreground", ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
+  }
+}
+
+if (typeof window !== "undefined") {
+  const bootTheme = themeSnapshotFromHostStorage();
+  if (bootTheme) applyStoreThemeVars(bootTheme);
 }
 
 /** Resolve a saved frameColor value (id, name, or slug) to the config color id. */
@@ -1103,8 +1256,8 @@ function reuseStorageTargets(): Storage[] {
   };
   try {
     if (window.parent && window.parent !== window) {
-      pushUnique(window.parent.sessionStorage);
-      pushUnique(window.parent.localStorage);
+      pushUnique(hostWindow().sessionStorage);
+      pushUnique(hostWindow().localStorage);
     }
   } catch {
     /* cross-origin parent */
@@ -1467,9 +1620,9 @@ function replaceCustomizerPageHistory(
   extra: Record<string, string | null | undefined> = {},
 ) {
   try {
-    const parentUrl = new URL(window.parent.location.href);
+    const parentUrl = new URL(hostWindow().location.href);
     applyCustomizerPageToUrl(parentUrl, pageHandle, extra);
-    window.parent.history.replaceState({}, "", parentUrl.toString());
+    hostWindow().history.replaceState({}, "", parentUrl.toString());
   } catch {
     /* parent may be inaccessible */
   }
@@ -1990,6 +2143,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
   const isMerchantStudio = runtimeMode === 'merchant-studio';
   const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
+  const isTopLevelHost =
+    searchParams.get("host") === "page" &&
+    typeof window !== "undefined" &&
+    window.parent === window;
   /** Creator Marketplace host: dual quota + Storefront API cart (not theme /cart/add.js). */
   const creatorUsernameRaw = (searchParams.get("creatorUsername") || "").trim();
   const creatorUsernameParam = creatorUsernameRaw.toLowerCase();
@@ -2082,7 +2239,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Fire once on mount; backend is idempotent so re-merging is safe.
   const mergeSessionRan = useRef(false);
   useEffect(() => {
-    const custId = searchParams.get("customerId") || '';
+    const custId = loggedInCustomerIdFromHost();
     if (!isStorefront || !anonSessionId || !custId || mergeSessionRan.current) return;
     mergeSessionRan.current = true;
 
@@ -2138,7 +2295,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       (searchParams.get("page") || searchParams.get("pageHandle") || "").trim();
     if (fromQuery) return fromQuery;
     try {
-      const parentPath = window.parent.location.pathname || "";
+      const parentPath = hostWindow().location.pathname || "";
       const match = parentPath.match(/^\/pages\/([^/?#]+)/);
       if (match && match[1]) return match[1];
     } catch {
@@ -2217,14 +2374,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, []);
   
   const showPresetsParam = searchParams.get("showPresets") !== "false";
-  const shopifyCustomerId = searchParams.get("customerId") || "";
+  const shopifyCustomerId = loggedInCustomerIdFromHost();
   const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
   const loadDesignId = searchParams.get("loadDesignId") || "";
   const parentReuseParams = (() => {
     try {
-      return new URLSearchParams(window.parent.location.search);
+      return new URLSearchParams(hostWindow().location.search);
     } catch {
       return new URLSearchParams();
     }
@@ -2238,11 +2395,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const autoReuseGenerateParam =
     (parentReuseParams.get("autoReuseGenerate") || searchParams.get("autoReuseGenerate") || "") === "1";
   // parentLoadDesignId: read loadDesignId directly from the parent page URL.
-  // The iframe is served on the same Shopify domain as the parent, so window.parent.location
+  // The iframe is served on the same Shopify domain as the parent, so hostWindow().location
   // is accessible (no cross-origin restriction). This bypasses the Shopify CDN-cached liquid file.
   const parentLoadDesignId = (() => {
     try {
-      const parentParams = new URLSearchParams(window.parent.location.search);
+      const parentParams = new URLSearchParams(hostWindow().location.search);
       return parentParams.get('loadDesignId') || '';
     } catch {
       return ''; // cross-origin guard (shouldn't happen on same domain)
@@ -2263,11 +2420,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const initialPreviewMockupUrl = (() => {
     let raw = "";
     try {
-      raw = new URLSearchParams(window.parent.location.search).get("loadMockup") || "";
+      raw = new URLSearchParams(hostWindow().location.search).get("loadMockup") || "";
     } catch {
       /* cross-origin guard */
     }
     if (!raw) raw = searchParams.get("loadMockup") || "";
+    if (!raw) {
+      try {
+        raw = hostWindow().sessionStorage.getItem("appai_landing_mockup") || "";
+      } catch {
+        /* sessionStorage blocked */
+      }
+    }
     if (!raw) return "";
     let decoded = raw;
     try {
@@ -2406,13 +2570,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         const se = document.scrollingElement || document.documentElement;
         se.scrollTop += target.getBoundingClientRect().top;
       }
-      try {
-        window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
-      } catch {
-        /* cross-origin parent */
+      if (!isTopLevelHost) {
+        try {
+          window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
+        } catch {
+          /* cross-origin parent */
+        }
       }
     });
-  }, []);
+  }, [isTopLevelHost]);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const stylePresetsOwnedRef = useRef(false);
@@ -2920,7 +3086,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   useEffect(() => {
     if (!isStorefront || isMerchantStudio || !shopDomain || !anonSessionId) return;
-    const shopifyCustomerId = searchParams.get("customerId") || null;
+    const shopifyCustomerId = loggedInCustomerIdFromHost() || null;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
 
@@ -4922,9 +5088,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Large imported products can exceed browser/proxy URL limits if the full
       // designer config is sent as a query param. In that mode the parent sends
       // the config over postMessage after the iframe announces it is ready.
-      if (searchParams.get('deferDesignerConfig') === '1') {
+      // Top-level (`host=page`) has no parent — fetch customizer-page ourselves.
+      if (searchParams.get('deferDesignerConfig') === '1' && !isTopLevelHost) {
         console.log(`${logPrefix} Waiting for designer config via postMessage`);
         return;
+      }
+
+      if (isTopLevelHost) {
+        const urlPres = applyPresentmentPayload({
+          currency: searchParams.get("currency"),
+          rate: searchParams.get("rate"),
+          shopCurrency: searchParams.get("shopCurrency"),
+          country: searchParams.get("country"),
+          locale: searchParams.get("locale"),
+        });
+        if (urlPres) {
+          if (urlPres.currency) setActiveCurrency(urlPres.currency);
+          presentmentMetaRef.current = {
+            rate: urlPres.rate,
+            shopCurrency: urlPres.shopCurrency,
+            country: urlPres.country,
+            locale: urlPres.locale,
+          };
+        }
+        const storedTheme = themeSnapshotFromHostStorage();
+        if (storedTheme) applyStoreThemeVars(storedTheme);
       }
 
       const cacheBuster = `_t=${Date.now()}`;
@@ -4951,6 +5139,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           const pageUrl =
             `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(myshopifyDomain)}` +
             `&handle=${encodeURIComponent(pageHandleForLoad)}&${cacheBuster}` +
+            presentmentQueryFromSearch(searchParams) +
             (creatorUsernameParam
               ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}`
               : "") +
@@ -4970,17 +5159,64 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
               }
               if (Array.isArray(pageCfg.variants) && pageCfg.variants.length > 0) {
-                setShopifyVariants(
-                  pageCfg.variants.map((v: any) => ({
-                    id: String(v.id),
-                    title: v.title || "",
-                    price: v.price || "0.00",
-                    option1: v.option1,
-                    option2: v.option2,
-                    option3: v.option3,
-                    imageSrc: v.imageSrc,
-                  })),
-                );
+                const mapped = pageCfg.variants.map((v: any) => ({
+                  id: String(v.id),
+                  title: v.title || "",
+                  price: v.price || "0.00",
+                  option1: v.option1,
+                  option2: v.option2,
+                  option3: v.option3,
+                  imageSrc: v.imageSrc,
+                }));
+                setShopifyVariants(mapped);
+                setVariants(mapped);
+                const urlVariant = searchParams.get("selectedVariant");
+                const base =
+                  urlVariant ||
+                  (pageCfg.baseVariantId ? String(pageCfg.baseVariantId) : null) ||
+                  mapped[0]?.id ||
+                  null;
+                if (base) {
+                  setShopifyVariantId(String(base));
+                  setOverrideVariantId(String(base));
+                }
+              }
+              const pagePres = applyPresentmentPayload(pageCfg.presentment);
+              if (pagePres) {
+                if (pagePres.currency) setActiveCurrency(pagePres.currency);
+                if (Object.keys(pagePres.pricesByVariantId).length > 0) {
+                  setPresentmentPricesByVariantId(pagePres.pricesByVariantId);
+                }
+                presentmentMetaRef.current = {
+                  rate: pagePres.rate,
+                  shopCurrency: pagePres.shopCurrency,
+                  country: pagePres.country,
+                  locale: pagePres.locale,
+                };
+              }
+              if (pageCfg.themeSnapshot && typeof pageCfg.themeSnapshot === "object") {
+                applyStoreThemeVars(pageCfg.themeSnapshot as Record<string, string>);
+              }
+              if (isTopLevelHost) {
+                const handleForPrices =
+                  pageCfg.baseProductHandle || productHandle || "";
+                if (handleForPrices) {
+                  fetch(`/products/${encodeURIComponent(handleForPrices)}.js`, {
+                    credentials: "same-origin",
+                  })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((p) => {
+                      if (isCancelled || !p?.variants) return;
+                      const map: Record<string, number> = {};
+                      for (const v of p.variants as Array<{ id?: unknown; price?: unknown }>) {
+                        if (!v || v.id == null || v.price == null) continue;
+                        const cents = parseInt(String(v.price), 10);
+                        if (Number.isFinite(cents) && cents > 0) map[String(v.id)] = cents;
+                      }
+                      if (Object.keys(map).length > 0) setPresentmentPricesByVariantId(map);
+                    })
+                    .catch(() => {});
+                }
               }
               setActiveProductContext((prev) => ({
                 ...prev,
@@ -5270,6 +5506,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     activeProductContext.stylePresets,
     applyDesignerConfig,
     isStorefront,
+    isTopLevelHost,
   ]);
 
   // Fetch merchant's branding settings and apply to designer
@@ -5925,7 +6162,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!clickedId) return;
     loadDesignAppliedRef.current = false;
     try {
-      const parentUrl = new URL(window.parent.location.href);
+      const parentUrl = new URL(hostWindow().location.href);
       parentUrl.searchParams.set("loadDesignId", clickedId);
       const mockupSrc = savedDesignPreviewUrl(design);
       if (mockupSrc) {
@@ -5933,7 +6170,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       } else {
         parentUrl.searchParams.delete("loadMockup");
       }
-      window.parent.history.replaceState({}, "", parentUrl.toString());
+      hostWindow().history.replaceState({}, "", parentUrl.toString());
     } catch {
       // cross-origin guard — fall back to iframe-only
     }
@@ -6358,11 +6595,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       /* ignore */
     }
     try {
-      const parentUrl = new URL(window.parent.location.href);
+      const parentUrl = new URL(hostWindow().location.href);
       parentUrl.searchParams.delete("loadDesignId");
       parentUrl.searchParams.delete("loadMockup");
       parentUrl.searchParams.delete("loadProductName");
-      window.parent.history.replaceState({}, "", parentUrl.toString());
+      hostWindow().history.replaceState({}, "", parentUrl.toString());
     } catch {
       /* cross-origin guard */
     }
@@ -12873,7 +13110,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setReuseBusy(true);
       setReuseBusyLabel("Opening product page…");
       try {
-        window.parent.location.href = url;
+        hostWindow().location.href = url;
       } catch {
         window.location.href = url;
       }
@@ -13213,12 +13450,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const clearReuseUrlParams = useCallback(() => {
     try {
-      const parentUrl = new URL(window.parent.location.href);
+      const parentUrl = new URL(hostWindow().location.href);
       parentUrl.searchParams.delete("reuseArtworkUrl");
       parentUrl.searchParams.delete("reusePrompt");
       parentUrl.searchParams.delete("reuseJobId");
       parentUrl.searchParams.delete("autoReuseGenerate");
-      window.parent.history.replaceState({}, "", parentUrl.toString());
+      hostWindow().history.replaceState({}, "", parentUrl.toString());
     } catch {
       /* ignore */
     }
@@ -13521,33 +13758,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         console.log('[Design Studio] SHOPIFY_VARIANTS received:', mapped.length, 'variants');
         setShopifyVariants(mapped);
         setVariants(mapped);
-        const pres = event.data.presentment;
-        if (pres && typeof pres === "object") {
-          const cur =
-            pres.currency != null && String(pres.currency).trim()
-              ? String(pres.currency).trim().toUpperCase()
-              : null;
-          setActiveCurrency(cur);
-          const rawPrices =
-            pres.pricesByVariantId && typeof pres.pricesByVariantId === "object"
-              ? pres.pricesByVariantId
-              : {};
-          const cleaned: Record<string, number> = {};
-          for (const [k, v] of Object.entries(rawPrices as Record<string, unknown>)) {
-            const n = Number(v);
-            if (Number.isFinite(n) && n > 0) cleaned[String(k)] = Math.round(n);
+        const pres = applyPresentmentPayload(event.data.presentment);
+        if (pres) {
+          if (pres.currency) setActiveCurrency(pres.currency);
+          if (Object.keys(pres.pricesByVariantId).length > 0) {
+            setPresentmentPricesByVariantId(pres.pricesByVariantId);
           }
-          setPresentmentPricesByVariantId(cleaned);
           presentmentMetaRef.current = {
-            rate:
-              pres.rate != null && Number.isFinite(Number(pres.rate))
-                ? Number(pres.rate)
-                : null,
-            shopCurrency: pres.shopCurrency
-              ? String(pres.shopCurrency).trim().toUpperCase()
-              : null,
-            country: pres.country ? String(pres.country).trim().toUpperCase() : null,
-            locale: pres.locale ? String(pres.locale) : null,
+            rate: pres.rate,
+            shopCurrency: pres.shopCurrency,
+            country: pres.country,
+            locale: pres.locale,
           };
         }
         const base = event.data.baseVariantId ? String(event.data.baseVariantId) : null;
@@ -13580,134 +13801,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
       // Store theme: apply merchant's colors, fonts and radius to the iframe's CSS variables
       if (type === "AI_ART_STUDIO_THEME" && event.data.theme) {
-        const t = event.data.theme as Record<string, string>;
-        const root = document.documentElement.style;
-
-        // -- Background & text --
-        const bgHSL = cssColorToHSL(t.backgroundColor);
-        const fgHSL = cssColorToHSL(t.textColor);
-        if (bgHSL) root.setProperty('--background', bgHSL);
-        if (fgHSL) {
-          // Guard body text against the body background. Some themes set a
-          // light heading/body colour intended for dark hero sections; applied
-          // verbatim it renders white-on-pale inside the studio's light cards.
-          // The guard is a no-op whenever the merchant's pair already contrasts.
-          const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
-          root.setProperty('--foreground', safeFg);
-          // Tentative card-foreground = guarded body text. Re-validated against
-          // --card below once it's set, since input bg can differ from
-          // body bg and would otherwise leave invisible card text.
-          root.setProperty('--card-foreground', safeFg);
-        }
-
-        // -- Primary button --
-        const btnBgHSL = cssColorToHSL(t.buttonBg);
-        const btnFgHSL = cssColorToHSL(t.buttonColor);
-        if (btnBgHSL) {
-          root.setProperty('--primary', btnBgHSL);
-          root.setProperty('--ring', btnBgHSL);
-          root.setProperty('--sidebar-primary', btnBgHSL);
-          // Derive primary-border as slightly darker
-          root.setProperty('--primary-border', adjustHSLLightness(btnBgHSL, -8));
-          // Bulletproof: if the merchant's button text colour didn't
-          // extract (or extracted to something low-contrast like inherited
-          // body text), force a black/white pair against the button bg.
-          // Without this, active segmented buttons render as solid black
-          // rectangles with invisible text on themes that use color: inherit.
-          const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
-          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
-        } else if (btnFgHSL) {
-          // btn bg missing but fg extracted — still guard against default dark primary.
-          const safePrimaryFg = ensureContrastingForeground('0 0% 9%', btnFgHSL);
-          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
-        }
-        if (t.buttonRadius) {
-          // Shopify buttons may have e.g. "4px" or "24px"; map to --radius
-          root.setProperty('--radius', t.buttonRadius);
-        }
-
-        // -- Fonts --
-        if (t.fontFamily) {
-          root.setProperty('--font-sans', t.fontFamily);
-        }
-        if (t.inputFontFamily) {
-          root.setProperty('--appai-control-font-family', t.inputFontFamily);
-        }
-        if (t.inputFontSize) {
-          root.setProperty('--appai-control-font-size', t.inputFontSize);
-        } else if (t.fontSize) {
-          root.setProperty('--appai-control-font-size', t.fontSize);
-        }
-        if (t.inputFontWeight) {
-          root.setProperty('--appai-control-font-weight', t.inputFontWeight);
-        }
-        if (t.headingFontFamily && t.headingFontFamily !== t.fontFamily) {
-          root.setProperty('--font-heading', t.headingFontFamily);
-        }
-
-        // -- Input border --
-        const inputBorderHSL = cssColorToHSL(t.inputBorderColor);
-        if (inputBorderHSL) {
-          root.setProperty('--border', inputBorderHSL);
-          root.setProperty('--input', inputBorderHSL);
-        }
-        const inputBgHSL = cssColorToHSL(t.inputBg);
-        // The studio is a light-surface UI: its cards/panels render on
-        // `--background` AND `--card`, so these must stay on the same
-        // light/dark side. A mis-extracted input bg (e.g. from a dark
-        // footer/search field) would otherwise invert `--card`, flip
-        // `--card-foreground` to white, and render white-on-pale text in
-        // panels that use `bg-background` (Saved Designs, Redeem, etc.).
-        // App default `--background` is white, so when the theme didn't supply
-        // a background colour treat the surface as light (lightness 100).
-        const effectiveBgHSL = bgHSL ?? '0 0% 100%';
-        const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
-        const cardLightness = hslLightness(inputBgHSL);
-        let cardHSL = inputBgHSL;
-        if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
-          // No usable input bg, or it disagrees with the page background —
-          // derive a card surface from the background instead of trusting it.
-          cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
-        }
-        if (cardHSL) {
-          root.setProperty('--card', cardHSL);
-          // Guarantee card text contrasts the (reconciled) card surface.
-          const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
-          if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
-        }
-
-        // -- Accent (links) --
-        const accentHSL = cssColorToHSL(t.accentColor);
-        if (accentHSL) {
-          root.setProperty('--accent', accentHSL);
-          const safeAccentFg = ensureContrastingForeground(accentHSL, fgHSL);
-          if (safeAccentFg) root.setProperty('--accent-foreground', safeAccentFg);
-        }
-
-        // -- Derived secondary/muted colors from background --
-        if (bgHSL) {
-          // Secondary is slightly off-background (darker in light mode)
-          root.setProperty('--secondary', adjustHSLLightness(bgHSL, -6));
-          root.setProperty('--secondary-border', adjustHSLLightness(bgHSL, -14));
-          // Muted is a subtle mid-tone
-          root.setProperty('--muted', adjustHSLLightness(bgHSL, -8));
-          // Dropdown surfaces — must set foreground too or Radix Select items
-          // inherit default dark text on a dark extracted popover (black-on-black).
-          const popoverHSL = adjustHSLLightness(bgHSL, -3);
-          root.setProperty('--popover', popoverHSL);
-          const safePopoverFg = ensureContrastingForeground(popoverHSL, fgHSL);
-          if (safePopoverFg) root.setProperty('--popover-foreground', safePopoverFg);
-        }
-        if (fgHSL) {
-          // Muted foreground is a lighter version of the text color, but still
-          // guarded so it can't drop below readable contrast on its surface.
-          const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
-          const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
-          const mutedFg = adjustHSLLightness(fgHSL, 30);
-          root.setProperty('--muted-foreground', ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
-          root.setProperty('--secondary-foreground', ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
-        }
-
+        applyStoreThemeVars(event.data.theme as Record<string, string>);
         console.log('[Design Studio] Applied store theme CSS variables');
       }
 
@@ -13783,7 +13877,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Bridge handshake: retry IFRAME_READY every 2s until parent responds with BRIDGE_READY
     let bridgeTimeout: ReturnType<typeof setTimeout> | null = null;
     let iframeReadyTimer: ReturnType<typeof setInterval> | null = null;
-    if (isStorefront) {
+    if (isStorefront && !isTopLevelHost) {
       const sendIframeReady = () => {
         if ((window as any).__aiArtBridgeReady) return; // already connected
         console.log('[Design Studio] Sending IFRAME_READY to parent');
@@ -13839,7 +13933,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants, activeProductContext.pageHandle]);
+  }, [isStorefront, isTopLevelHost, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants, activeProductContext.pageHandle]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -13855,6 +13949,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
     // Desktop: grow the parent iframe to content height (parent page scrolls).
     // Mobile shell: the PARENT pins the iframe to its own visualViewport
@@ -13892,7 +13987,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       observer.disconnect();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll, isMobile]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll, isMobile]);
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
@@ -13901,6 +13996,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Skip forwarding when the pointer is over a nested scrollable panel (e.g. placer
   // controls column) so the inner panel can scroll with the mouse wheel.
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
 
     const findScrollableAncestor = (el: Element | null): Element | null => {
@@ -14024,7 +14120,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return () => {
       window.removeEventListener('wheel', handleWheel, { capture: true } as EventListenerOptions);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll]);
 
   // Bbox / handles only — empty canvas is a sibling (overlay root is
   // pointer-events-none) so closest() misses it. All three: storefront AOP
@@ -14039,6 +14135,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Boundary-only handoff. Option A: inverted gate — OFF on mobile-native
   // (path (b) below owns those gestures).
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
     if (mobileNativeScroll) return;
     let lastY = 0;
@@ -14089,13 +14186,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll]);
 
   // Native-parent-scroll trial (Option A): iframe overflow:hidden has no
   // range, so WebKit chains in-iframe vertical drags to the parent. Do not
   // preventDefault or post touchscroll — InstantScrollBy was fighting that
   // native scroll. Artwork latch and inner-scroller yield stay.
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
     if (!mobileNativeScroll) return;
     const PAGE_SCROLL_THRESHOLD_PX = 6;
@@ -14162,7 +14260,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll]);
 
   // Counteract Radix UI's body scroll lock in iframe context.
   // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when
@@ -15232,7 +15330,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
                   return;
                 }
-                window.parent.location.href = "/cart";
+                hostWindow().location.href = "/cart";
               }}
               data-testid={withSuffix("button-view-cart")}
             >
@@ -15332,7 +15430,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             {variantError && (
               <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-variant-error-atc")}>{variantError}</p>
             )}
-            {isStorefront && bridgeError && (
+            {isStorefront && !isTopLevelHost && bridgeError && (
               <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-bridge-error")}>{bridgeError}</p>
             )}
             {freshDesignAllowed && (
@@ -15696,9 +15794,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               url.searchParams.delete('loadDesignId');
               window.history.replaceState({}, '', url.toString());
               try {
-                const parentUrl = new URL(window.parent.location.href);
+                const parentUrl = new URL(hostWindow().location.href);
                 parentUrl.searchParams.delete('loadDesignId');
-                window.parent.history.replaceState({}, '', parentUrl.toString());
+                hostWindow().history.replaceState({}, '', parentUrl.toString());
               } catch (_) {}
             }
             setPrompt(e.target.value);
@@ -15786,7 +15884,38 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 embeddedContext.onLeaveProduct();
                 return;
               }
-              window.parent?.postMessage({ type: "ai-art-studio:exit" }, "*");
+              const heroIdx = postGenGalleryItems.findIndex((item) => item.kind === "mockup");
+              const heroFromGallery =
+                heroIdx >= 0 && postGenGalleryItems[heroIdx].kind === "mockup"
+                  ? postGenGalleryItems[heroIdx].url
+                  : "";
+              const heroMockup = getPreferredMockupUrl() || heroFromGallery || "";
+              // Printify gallery index 0 is raw artwork — snap to the hero
+              // product-with-design before leaving so bfcache / same-page
+              // landings are not the bare art.
+              if (
+                showsPrintifyMockupPreview &&
+                generatedDesign?.imageUrl &&
+                heroIdx >= 0 &&
+                selectedMockupIndex === 0
+              ) {
+                setSelectedMockupIndex(heroIdx);
+              }
+              try {
+                if (heroMockup) {
+                  hostWindow().sessionStorage.setItem("appai_landing_mockup", heroMockup);
+                }
+              } catch {
+                /* sessionStorage blocked */
+              }
+              window.parent?.postMessage(
+                { type: "ai-art-studio:exit", mockupUrl: heroMockup },
+                "*",
+              );
+              if (isTopLevelHost) {
+                if (window.history.length > 1) window.history.back();
+                else window.location.assign("/");
+              }
             } catch {}
           }}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
@@ -17307,7 +17436,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
                             return;
                           }
-                          window.parent.location.href = "/cart";
+                          hostWindow().location.href = "/cart";
                         }}
                         data-testid="button-view-cart"
                       >
@@ -17411,7 +17540,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       {variantError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-variant-error-atc">{variantError}</p>
                       )}
-                      {isStorefront && bridgeError && (
+                      {isStorefront && !isTopLevelHost && bridgeError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
                       )}
                       {freshDesignAllowed && (
@@ -17794,9 +17923,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       url.searchParams.delete('loadDesignId');
                       window.history.replaceState({}, '', url.toString());
                       try {
-                        const parentUrl = new URL(window.parent.location.href);
+                        const parentUrl = new URL(hostWindow().location.href);
                         parentUrl.searchParams.delete('loadDesignId');
-                        window.parent.history.replaceState({}, '', parentUrl.toString());
+                        hostWindow().history.replaceState({}, '', parentUrl.toString());
                       } catch (_) {}
                     }
                     setPrompt(e.target.value);

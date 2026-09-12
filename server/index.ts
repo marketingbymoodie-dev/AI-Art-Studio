@@ -404,9 +404,12 @@ app.use((req, res, next) => {
       // Make proxy context explicit before the Vite bundle executes. Relying
       // only on window.location path detection is fragile inside Shopify app
       // proxy if the iframe request is redirected or normalized by the theme.
+      const loggedInCustomerId = String(
+        (req.query.logged_in_customer_id as string | undefined) || "",
+      ).replace(/[^\d]/g, "");
       html = html.replace(
         /<head>/i,
-        `<head><script>window.__APPAI_API_BASE__=${JSON.stringify(P)};window.__APPAI_ROUTER_BASE__=${JSON.stringify(P)};window.__APPAI_ASSET_BASE__=${JSON.stringify(assetBase)};</script>`
+        `<head><script>window.__APPAI_API_BASE__=${JSON.stringify(P)};window.__APPAI_ROUTER_BASE__=${JSON.stringify(P)};window.__APPAI_ASSET_BASE__=${JSON.stringify(assetBase)};window.__APPAI_LOGGED_IN_CUSTOMER_ID__=${JSON.stringify(loggedInCustomerId)};</script>`
       );
 
       res.setHeader("Content-Type", "text/html");

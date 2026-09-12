@@ -8365,6 +8365,9 @@ ${orientationExtra}
       promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
     }));
 
+    const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
+    const presentment = presentmentFromRequest(req, shopCurrency);
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -8382,6 +8385,8 @@ ${orientationExtra}
       stylePresets,
       styleConfig: pageStyleConfig,
       freshDesignAllowed: page.status === "active" || page.status === "preview",
+      presentment,
+      themeSnapshot: (installation as { themeSnapshot?: Record<string, string> | null } | null)?.themeSnapshot ?? null,
     });
   }));
 
@@ -23496,6 +23501,66 @@ ${orientationExtra}
     next();
   }
 
+  function presentmentFromRequest(
+    req: Request,
+    shopCurrency: string | null | undefined,
+  ) {
+    const q = req.query as Record<string, string | undefined>;
+    const qCurrency = String(q.currency || q.presentmentCurrency || "").trim().toUpperCase() || null;
+    const qShop = String(q.shopCurrency || "").trim().toUpperCase() || null;
+    const shop = qShop || (shopCurrency ? String(shopCurrency).trim().toUpperCase() : null) || null;
+    const currency = qCurrency || shop;
+    const rateRaw = parseFloat(String(q.rate || ""));
+    const rate =
+      Number.isFinite(rateRaw) && rateRaw > 0
+        ? rateRaw
+        : currency && shop && currency === shop
+          ? 1
+          : null;
+    const country = String(q.country || "").trim().toUpperCase() || null;
+    const locale = String(q.locale || "").trim() || null;
+    return {
+      shopCurrency: shop,
+      currency,
+      rate,
+      country,
+      locale,
+    };
+  }
+
+  async function shopCurrencyViaAdmin(
+    shop: string,
+    accessToken: string | null | undefined,
+  ): Promise<string | null> {
+    if (!shop || !accessToken) return null;
+    try {
+      const result = await shopifyApiCall(shop, accessToken, "shop.json?fields=id,currency");
+      const code = result?.ok ? result.data?.shop?.currency : null;
+      return code ? String(code).trim().toUpperCase() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  app.post("/api/proxy/theme-snapshot", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    const theme = req.body?.theme;
+    if (!shop) return res.status(400).json({ error: "Missing shop" });
+    if (!theme || typeof theme !== "object" || Array.isArray(theme)) {
+      return res.status(400).json({ error: "Missing theme" });
+    }
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation) return res.status(404).json({ error: "Shop not found" });
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(theme as Record<string, unknown>)) {
+      if (typeof k === "string" && typeof v === "string" && k.length < 80 && v.length < 500) {
+        clean[k] = v;
+      }
+    }
+    await storage.updateShopifyInstallation(installation.id, { themeSnapshot: clean });
+    return res.json({ ok: true });
+  }));
+
   /**
    * List customizer pages for an App Proxy shop. Tries the normalized
    * `*.myshopify.com` domain first, then the bare handle for legacy rows.
@@ -23848,6 +23913,9 @@ ${orientationExtra}
       res.setHeader("Cache-Control", "public, max-age=45, stale-while-revalidate=60");
     }
 
+    const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
+    const presentment = presentmentFromRequest(req, shopCurrency);
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -23868,6 +23936,8 @@ ${orientationExtra}
       productPublished,
       // Disabled pages: saved designs may ATC; new blank sessions cannot start.
       freshDesignAllowed: page.status === "active" || page.status === "preview",
+      presentment,
+      themeSnapshot: (installation as { themeSnapshot?: Record<string, string> | null } | null)?.themeSnapshot ?? null,
     });
   }));
 
