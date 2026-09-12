@@ -63,5 +63,17 @@ describe("tote line placement snapshot", () => {
     expect(decoded?.scale).toBeCloseTo(1.2);
     expect(decoded?.offsetX).toBeCloseTo(-0.2);
     expect(decoded?.offsetY).toBeCloseTo(0.2);
+    expect(decoded?.printBack).toBeUndefined();
+  });
+
+  it("freezes printBack=false so later job edits cannot enable the back panel", () => {
+    const encoded = encodeToteLinePlacement({ scale: 100, x: 50, y: 50, printBack: false });
+    const decoded = decodeToteLinePlacement(encoded);
+    expect(decoded?.printBack).toBe(false);
+  });
+
+  it("freezes printBack=true explicitly", () => {
+    const encoded = encodeToteLinePlacement({ scale: 100, x: 50, y: 50, printBack: true });
+    expect(decodeToteLinePlacement(encoded)?.printBack).toBe(true);
   });
 });

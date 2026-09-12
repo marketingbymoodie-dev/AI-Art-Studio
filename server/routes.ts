@@ -10994,11 +10994,12 @@ ${orientationExtra}
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
 
       // ── Shadow product path ────────────────────────────────────────────────
-      // 1. Reuse by job+catalog-variant (canonical), incoming key, or legacy
-      //    job / job::mockupHash. URL-hashed keys used to mint a new product on
-      //    every mockup refresh. A bare-job hit from a *different* size/colour
-      //    must not be reused — that left S / Navy at $93 after the customer
-      //    picked 2XL at $64.95.
+      // 1. Reuse by exact persist key. ATC stamps `job::variant::cfgHash` so
+      //    two print snapshots (e.g. two backgrounds) mint distinct shadows.
+      //    PreShadow / legacy still use job::variant; lookup falls back only
+      //    when the incoming id has NO print-config suffix. Never fall back
+      //    from a cfg-keyed id to job::variant — that reused the last mockup
+      //    onto every cart line for the same design.
       const persistDesignId = reusableShadowDesignId(String(designId), String(variantId));
       const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
       let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
@@ -11036,10 +11037,8 @@ ${orientationExtra}
               priceOverride: overridePriceFormatted,
             })
           : null;
-        // Placement edits reuse the same designId — replace the variant image
-        // so cart/checkout thumbnails match the latest mockup. Fire-and-forget:
-        // these two Admin round-trips were adding ~3s to every add-to-cart and
-        // the reused shadow already has a (usually identical) image + title.
+        // Exact cfg-keyed reuse only. A different print snapshot is a new
+        // persistDesignId, so this refresh cannot overwrite another cart line.
         if (existing.shopifyProductId && existing.shopifyVariantId) {
           const reusedProductId = existing.shopifyProductId;
           const reusedVariantId = existing.shopifyVariantId;

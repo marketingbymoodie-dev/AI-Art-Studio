@@ -8,7 +8,8 @@ import {
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
 import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
-import { reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
+import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
+import { atcShadowDesignId } from "@shared/printConfigFingerprint";
 import {
   LINE_AOP_PANELS_KEY,
   LINE_AOP_PENDING_KEY,
@@ -8451,9 +8452,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       properties["_appai_job_id"] = savedJobIdRef.current;
     }
     const cartStateJob = String(savedJobIdRef.current || rawId || "").trim();
-    if (cartStateJob) {
-      properties["_shadow_design_id"] = reusableShadowDesignId(cartStateJob, variantId);
-    }
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
@@ -8485,13 +8483,32 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnap = encodeFlatLinePlacement(liveFlat);
     if (flatSnap) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnap;
+    const totePrintBack =
+      printPlacement === "both" || liveFlat?.enabled?.back === true;
     if (toteFoldedLayout) {
       const toteSnap = encodeToteLinePlacement({
         scale: transform.scale,
         x: transform.x,
         y: transform.y,
+        printBack: totePrintBack,
       });
       if (toteSnap) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnap;
+    }
+    if (cartStateJob) {
+      properties["_shadow_design_id"] = atcShadowDesignId(cartStateJob, variantId, {
+        artworkUrl,
+        flat: liveFlat,
+        tote: toteFoldedLayout
+          ? {
+              scale: transform.scale,
+              x: transform.x,
+              y: transform.y,
+              printBack: totePrintBack,
+            }
+          : null,
+        aopHoodie: (hoodieAopPlacerState as Record<string, unknown> | null) ?? null,
+        aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
+      });
     }
 
     const flatPlacerOn = !!(
@@ -8581,7 +8598,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }, '*');
       });
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -10892,50 +10909,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     flatClipConfirmProceedRef.current = false;
 
-    // Changing scale/placement on a saved design must not overwrite that job —
-    // Printify would reprint the original (or the latest) for every cart line.
-    if (usesFlatOnTheFlyPreview && !flatRenderFailed) {
-      const liveForFork = flatPlacerRef.current?.getState() || flatPlacerState;
-      const liveSig = encodeFlatLinePlacement(liveForFork);
-      const frozenSig = placementFrozenSigRef.current;
-      if (liveSig && frozenSig && liveSig !== frozenSig && savedJobIdRef.current) {
-        if (savedDesigns.length >= galleryLimit) {
-          // Cart still gets `_flat_pl`. Do not add a 21st Saved Design.
-          skipGalleryPersistRef.current = true;
-        } else {
-        const forkShop = shopDomain || savedJobShopRef.current;
-        if (forkShop) {
-          try {
-            const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-placement`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                shop: forkShop,
-                sourceJobId: savedJobIdRef.current,
-                creatorId: creatorIdParam || undefined,
-                creatorSessionId: creatorSessionIdRef.current || undefined,
-                designState: {
-                  flatPlacerState: liveForFork,
-                  selectedSize: selectedSize || null,
-                  selectedFrameColor: selectedFrameColor || null,
-                },
-              }),
-            });
-            const forkJson = await forkRes.json().catch(() => ({}));
-            if (forkRes.ok && forkJson?.jobId) {
-              savedJobIdRef.current = String(forkJson.jobId);
-              placementFrozenSigRef.current = liveSig;
-              lastFlatGalleryMockupKeyRef.current = "";
-              preShadowJobIdRef.current = null;
-    preShadowSyncedRetailRef.current = null;
-            }
-          } catch (forkErr) {
-            console.warn("[Design Studio] fork-placement failed:", forkErr);
-          }
-        }
-        }
-      }
-    }
+    // Distinct cart lines come from the print-config fingerprint + `_flat_pl`
+    // at ATC. Do not fork a new job/gallery card when placement changes.
+    skipGalleryPersistRef.current = false;
 
     // Pending covers flush/skip + snapshot + resolve + cart/add — not just the tail.
     setIsAddingToCart(true);
@@ -11120,9 +11096,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
     }
-    if (shadowDesignId) {
-      properties["_shadow_design_id"] = reusableShadowDesignId(shadowDesignId, normalizedVariant);
-    }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
@@ -11154,13 +11127,35 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnapAtc = encodeFlatLinePlacement(liveFlatAtc);
     if (flatSnapAtc) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnapAtc;
+    const totePrintBackAtc =
+      printPlacement === "both" || liveFlatAtc?.enabled?.back === true;
     if (toteFoldedLayout) {
       const toteSnapAtc = encodeToteLinePlacement({
         scale: transform.scale,
         x: transform.x,
         y: transform.y,
+        printBack: totePrintBackAtc,
       });
       if (toteSnapAtc) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnapAtc;
+    }
+    const persistShadowDesignId = shadowDesignId
+      ? atcShadowDesignId(shadowDesignId, normalizedVariant, {
+          artworkUrl: artworkFullUrl || generatedDesign.imageUrl,
+          flat: liveFlatAtc,
+          tote: toteFoldedLayout
+            ? {
+                scale: transform.scale,
+                x: transform.x,
+                y: transform.y,
+                printBack: totePrintBackAtc,
+              }
+            : null,
+          aopHoodie: (hoodieAopPlacerState as Record<string, unknown> | null) ?? null,
+          aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
+        })
+      : "";
+    if (persistShadowDesignId) {
+      properties["_shadow_design_id"] = persistShadowDesignId;
     }
 
     // Resolve the unique design variant before adding to cart.
@@ -11222,6 +11217,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // A different retail (both-tier surcharge, retail change) invalidates the
     // fast path and forces an inline resolve so the customer pays the right price.
     const canSkipResolveInline =
+      !hasPrintConfigSuffix(persistShadowDesignId) &&
       preShadowMatchesJob &&
       !!preShadowVariantId &&
       !!displayedRetailForAtc &&
@@ -11273,7 +11269,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               shop: shopDomain,
               ...(productId ? { productId } : {}),
               variantId: normalizedVariant,
-              designId: reusableShadowDesignId(shadowDesignId, normalizedVariant) || shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
+              designId: persistShadowDesignId || reusableShadowDesignId(shadowDesignId, normalizedVariant) || shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
               mockupUrl: mockupFullUrl,
               productTypeId: productTypeConfig?.id ?? productTypeId,
               sizeId: selectedSize,
@@ -11384,6 +11380,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     if (
       shopDomain &&
+      !hasPrintConfigSuffix(persistShadowDesignId) &&
       preShadowMatchesJob &&
       preShadowVariantId &&
       normalizeVariantId(finalVariantId) === normalizedVariant

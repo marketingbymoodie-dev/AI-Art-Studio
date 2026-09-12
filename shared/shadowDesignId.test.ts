@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasPrintConfigSuffix,
   reusableShadowDesignId,
   shadowDesignIdForCart,
   shadowJobPrefix,
@@ -35,6 +36,32 @@ describe("shadowLookupKeys", () => {
     );
     expect(reusableShadowDesignId("job-1", "4617")).toBe("job-1::4617");
     expect(shadowJobPrefix("job-1::M::black")).toBe("job-1");
+  });
+
+  it("does not fall back to job::variant when a print-config suffix is present", () => {
+    const keyed = reusableShadowDesignId("job-1", "46172379185386", "bgred");
+    const keys = shadowLookupKeys(keyed, "https://cdn.example/a.png", "46172379185386");
+    expect(keys).toEqual([keyed]);
+    expect(keys).not.toContain("job-1");
+    expect(keys).not.toContain("job-1::46172379185386");
+  });
+});
+
+describe("print-config suffix", () => {
+  it("appends cfgHash so two backgrounds are distinct keys", () => {
+    const a = reusableShadowDesignId("job-1", "4617", "bgA");
+    const b = reusableShadowDesignId("job-1", "4617", "bgB");
+    expect(a).toBe("job-1::4617::bgA");
+    expect(b).toBe("job-1::4617::bgB");
+    expect(a).not.toBe(b);
+    expect(hasPrintConfigSuffix(a)).toBe(true);
+    expect(hasPrintConfigSuffix("job-1::4617")).toBe(false);
+    expect(hasPrintConfigSuffix("job-1::abc")).toBe(false);
+  });
+
+  it("preserves an incoming cfg suffix when rebuilding the persist id", () => {
+    expect(reusableShadowDesignId("job-1::4617::bgA", "4617")).toBe("job-1::4617::bgA");
+    expect(shadowJobPrefix("job-1::4617::bgA")).toBe("job-1");
   });
 });
 

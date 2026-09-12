@@ -485,6 +485,7 @@ export async function resolveDesignForOrderLine(
     }
 
     const lineTote = decodeToteLinePlacement(line.properties[LINE_TOTE_PLACEMENT_KEY]);
+    const lineFlat = decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
     const fps = designState?.flatPlacerState as
       | {
           placements?: { front?: { scale?: number; offsetX?: number; offsetY?: number } };
@@ -492,7 +493,12 @@ export async function resolveDesignForOrderLine(
         }
       | undefined;
     const front = fps?.placements?.front;
-    const printBack = fps?.enabled?.back !== false;
+    const printBack =
+      lineTote?.printBack != null
+        ? lineTote.printBack
+        : lineFlat?.enabled.back != null
+          ? lineFlat.enabled.back
+          : fps?.enabled?.back !== false;
     const dsScale = Number(designState?.scale ?? 100);
     const dsX = Number(designState?.x ?? 50);
     const dsY = Number(designState?.y ?? 50);

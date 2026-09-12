@@ -1351,26 +1351,33 @@
 
     function shadowDesignIdFromProps(properties) {
       var p = properties || {};
-      return String(p['_shadow_design_id'] || p['_appai_job_id'] || '').trim();
+      return String(p['_shadow_design_id'] || '').trim();
+    }
+
+    function hasPrintConfigSuffix(designId) {
+      var parts = String(designId || '').trim().split('::');
+      if (parts.length < 3) return false;
+      return /^\d+$/.test(parts[1]) && !!parts[2];
     }
 
     function findMatchingCartLine(cart, variantId, properties) {
       var items = (cart && cart.items) || [];
-      var job = shadowDesignIdFromProps(properties);
-      var size = properties && properties['_size'] ? String(properties['_size']) : '';
-      var color = properties && properties['_color'] ? String(properties['_color']) : '';
+      var incomingShadow = shadowDesignIdFromProps(properties);
+      var incomingCfg = hasPrintConfigSuffix(incomingShadow);
       var match = null;
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
         var p = item.properties || {};
-        var sameJob = job && (
-          String(p['_shadow_design_id'] || '') === job ||
-          String(p['_appai_job_id'] || '') === job
-        );
+        var itemShadow = String(p['_shadow_design_id'] || '').trim();
+        if (incomingShadow && itemShadow && incomingShadow === itemShadow) {
+          match = item;
+          break;
+        }
+        // cfg-keyed ATC lines are distinct snapshots — never merge on job id
+        // or a shared PreShadow variant_id.
+        if (incomingCfg) continue;
         var sameVariant = String(item.variant_id) === String(variantId);
-        var sameSize = !size || String(p['_size'] || '') === size;
-        var sameColor = !color || String(p['_color'] || '') === color;
-        if ((sameJob || sameVariant) && sameSize && sameColor) {
+        if (sameVariant) {
           match = item;
           break;
         }
