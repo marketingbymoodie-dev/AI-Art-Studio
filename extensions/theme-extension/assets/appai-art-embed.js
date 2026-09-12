@@ -3401,7 +3401,12 @@
           fontSize: bodyCs.fontSize
         }));
       } catch (e) {}
-      var early = new URLSearchParams();
+      // Seed from the incoming URL so deep links survive the hop: loadDesignId /
+      // loadMockup (Saved Designs), reuseArtworkUrl / reuseJobId (reuse flow),
+      // sharedDesignId, selectedVariant, preview_theme_id. Building this set from
+      // scratch silently dropped all of them.
+      var early = new URLSearchParams(window.location.search);
+      early.delete('deferDesignerConfig');
       early.set('shop', appaiResolveShopDomain());
       early.set('page', handle);
       early.set('pageHandle', handle);
