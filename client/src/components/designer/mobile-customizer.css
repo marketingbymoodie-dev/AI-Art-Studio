@@ -86,8 +86,9 @@ html:has(.appai-mobile-shell) #root {
   height: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top));
   padding: var(--appai-mobile-safe-top) 8px 0;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   /* Solid — no frosted glass. Sheets sit below this bar. */
   background: #ffffff;
   border-bottom: 1px solid var(--appai-mobile-line, #e7e3da);
@@ -126,15 +127,19 @@ html:has(.appai-mobile-shell) #root {
   font-weight: 700;
   font-size: 15px;
   letter-spacing: -0.02em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--appai-mobile-ink, #141414);
   border: none;
   background: transparent;
   padding: 0;
   cursor: pointer;
   text-align: left;
+}
+
+.appai-mshell-brand-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .appai-mshell-dot {
@@ -149,13 +154,14 @@ html:has(.appai-mobile-shell) #root {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-size: 13px;
   font-weight: 700;
+  white-space: nowrap;
   color: var(--appai-mobile-ink, #141414);
   background: #fff;
   border: 1px solid var(--appai-mobile-line, #e7e3da);
-  padding: 7px 11px;
+  padding: 6px 8px;
   border-radius: 999px;
   cursor: pointer;
 }

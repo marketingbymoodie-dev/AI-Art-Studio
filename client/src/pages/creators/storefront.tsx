@@ -819,7 +819,7 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
       ) : null}
       {printFilesPending ? (
         <p className="text-sm text-muted-foreground" role="status">
-          Finalising print files… Checkout unlocks when they are ready.
+          Finalizing print files… Checkout unlocks when they are ready.
         </p>
       ) : null}
       {checkoutError ? (
@@ -852,7 +852,7 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
                 if (res.status === 409 || json?.error === "PRINT_FILES_PENDING") {
                   setCheckoutError(
                     json?.message ||
-                      "Print files are still finalising. Checkout unlocks when they are ready.",
+                      "Print files are still finalizing. Checkout unlocks when they are ready.",
                   );
                   return;
                 }
@@ -882,7 +882,7 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
           }}
         >
           {printFilesPending
-            ? "Finalising print files…"
+            ? "Finalizing print files…"
             : preparingCheckout
             ? "Preparing checkout…"
             : `Checkout${itemCount > 0 ? ` (${itemCount})` : ""}`}

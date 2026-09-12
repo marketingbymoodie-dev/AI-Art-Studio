@@ -6,7 +6,8 @@ import {
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
-import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { creatorCheckoutRememberUrl, readLastCreatorVisit, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { resolveMobileShellBrandName } from "@/components/designer/resolveMobileShellBrandName";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import { atcShadowDesignId } from "@shared/printConfigFingerprint";
@@ -2233,6 +2234,35 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const creatorUsernameParam = creatorUsernameRaw.toLowerCase();
   const creatorIdParam = (searchParams.get("creatorId") || "").trim();
   const isCreatorStorefront = isStorefront && !isMerchantStudio && !!(creatorUsernameParam || creatorIdParam);
+  const shopNameParam = (searchParams.get("shopName") || "").trim();
+  const [creatorStoreName, setCreatorStoreName] = useState<string | null>(() => {
+    if (!creatorUsernameParam) return null;
+    const last = readLastCreatorVisit();
+    if (!last || last.username !== creatorUsernameParam) return null;
+    return last.shopName || null;
+  });
+  const [merchantStoreName, setMerchantStoreName] = useState<string | null>(null);
+  const shellBrandName = useMemo(
+    () =>
+      resolveMobileShellBrandName({
+        isCreatorStorefront,
+        creatorStoreName,
+        merchantStoreName,
+        shopNameParam,
+      }),
+    [isCreatorStorefront, creatorStoreName, merchantStoreName, shopNameParam],
+  );
+  const openStorefrontCart = useCallback(() => {
+    if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
+      window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
+      return;
+    }
+    try {
+      hostWindow().location.href = "/cart";
+    } catch {
+      window.location.href = "/cart";
+    }
+  }, [isCreatorStorefront, creatorUsernameRaw, creatorUsernameParam]);
   useEffect(() => {
     if (!isCreatorStorefront || !creatorUsernameParam) return;
     writeLastCreatorVisit({
@@ -2246,9 +2276,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (cancelled) return;
         const creator = json?.creator as { username?: string; publicName?: string } | undefined;
         if (!creator?.username) return;
+        const shopName = creator.publicName || creator.username;
+        setCreatorStoreName(shopName);
         writeLastCreatorVisit({
           username: creator.username,
-          shopName: creator.publicName || creator.username,
+          shopName,
           returnUrl: currentCreatorReturnUrl(creator.username),
         });
       })
@@ -3873,7 +3905,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     if (aopFinalizePendingCountRef.current === 0) {
       aopFinalizeToastRef.current = toast({
-        title: "Finalising print files…",
+        title: "Finalizing print files…",
         description: "Checkout unlocks when your print files are ready.",
         duration: 120_000,
       });
@@ -5346,6 +5378,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               if (pageCfg.themeSnapshot && typeof pageCfg.themeSnapshot === "object") {
                 applyStoreThemeVars(pageCfg.themeSnapshot as Record<string, string>);
               }
+              if (typeof pageCfg.storeName === "string" && pageCfg.storeName.trim()) {
+                setMerchantStoreName(pageCfg.storeName.trim());
+              }
               if (isTopLevelHost) {
                 const handleForPrices =
                   pageCfg.baseProductHandle || productHandle || "";
@@ -6455,6 +6490,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       throw new Error(`Could not load customizer page "${pageHandle}" (${res.status})`);
     }
     const config = await res.json();
+    if (typeof config.storeName === "string" && config.storeName.trim()) {
+      setMerchantStoreName(config.storeName.trim());
+    }
     if (!config?.designerConfig) {
       throw new Error(`Customizer page "${pageHandle}" has no designer config`);
     }
@@ -10639,7 +10677,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     atcFinalisingToastShownRef.current = true;
     pingAtcDebug({ event: "toast_shown", reason });
     toast({
-      title: "Finalising…",
+      title: "Finalizing print files…",
       description: "Adding your design to the cart.",
       duration: 12_000,
     });
@@ -15896,13 +15934,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           addedToCart ? (
             <Button
               className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-              onClick={() => {
-                if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
-                  window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
-                  return;
-                }
-                hostWindow().location.href = "/cart";
-              }}
+              onClick={openStorefrontCart}
               data-testid={withSuffix("button-view-cart")}
             >
               <CheckCircle className="w-5 h-5 mr-2" />
@@ -16461,7 +16493,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     >
       {isMobile && (
         <MobileCustomizerShell
-          brandName="AI Art Studio"
+          brandName={shellBrandName}
           isLoggedIn={isLoggedIn}
           creditsLabel={creditBreakdown?.total ?? 0}
           onBack={() => {
@@ -16517,6 +16549,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }
           }}
           onHome={leaveCustomizerToHome}
+          onOpenCart={openStorefrontCart}
+          onHelp={() => {
+            setAopSheetRequest((prev) => ({
+              id: "info",
+              nonce: (prev?.nonce ?? 0) + 1,
+            }));
+          }}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
           onOpenGallery={() => {
             setShowSavedDesigns((open) => !open);
@@ -18037,13 +18076,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     addedToCart ? (
                       <Button
                         className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-                        onClick={() => {
-                          if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
-                            window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
-                            return;
-                          }
-                          hostWindow().location.href = "/cart";
-                        }}
+                        onClick={openStorefrontCart}
                         data-testid="button-view-cart"
                       >
                         <CheckCircle className="w-5 h-5 mr-2" />

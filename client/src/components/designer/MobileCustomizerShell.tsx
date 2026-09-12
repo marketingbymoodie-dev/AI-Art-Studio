@@ -1,7 +1,8 @@
 import "./mobile-customizer.css";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronLeft, HelpCircle, LayoutGrid, LogIn, X } from "lucide-react";
+import { ChevronLeft, HelpCircle, LayoutGrid, ShoppingCart, X } from "lucide-react";
+import { DEFAULT_MOBILE_SHELL_BRAND } from "./resolveMobileShellBrandName";
 
 /**
  * One retractable-bar tool + its bottom sheet.
@@ -23,6 +24,7 @@ export type MobileSheetSlot = {
 };
 
 export type MobileCustomizerShellProps = {
+  /** Storefront-scoped label — never hardcode in the parent. */
   brandName?: string;
   isLoggedIn: boolean;
   creditsLabel?: string | number;
@@ -33,6 +35,8 @@ export type MobileCustomizerShellProps = {
   onOpenGallery?: () => void;
   onOpenCredits?: () => void;
   onLogin?: () => void;
+  /** Same cart the storefront / creator shop uses. */
+  onOpenCart?: () => void;
 
   /** Right-rail tools (Size / Layout / Colour / Info). */
   railSlots?: MobileSheetSlot[];
@@ -63,7 +67,7 @@ export type MobileCustomizerShellProps = {
  * column) when `useIsMobile()` is true.
  */
 export function MobileCustomizerShell({
-  brandName = "AI Art Studio",
+  brandName = DEFAULT_MOBILE_SHELL_BRAND,
   isLoggedIn,
   creditsLabel,
   onBack,
@@ -72,6 +76,7 @@ export function MobileCustomizerShell({
   onOpenGallery,
   onOpenCredits,
   onLogin,
+  onOpenCart,
   railSlots = [],
   bottomSlots = [],
   primaryAction,
@@ -188,12 +193,24 @@ export function MobileCustomizerShell({
         <button
           type="button"
           className="appai-mshell-brand"
-          aria-label="Home"
+          aria-label={`${brandName}, Home`}
+          title={brandName}
           onClick={onHome ?? onBack}
           data-testid="button-mobile-home"
         >
           <span className="appai-mshell-dot" />
-          {brandName}
+          <span className="appai-mshell-brand-label">{brandName}</span>
+        </button>
+
+        <button
+          type="button"
+          className="appai-mshell-credits"
+          aria-label={isLoggedIn ? "Credits" : "Credits, sign in"}
+          onClick={isLoggedIn ? onOpenCredits : onLogin ?? onOpenCredits}
+          data-testid="button-mobile-credits"
+        >
+          <span className="appai-mshell-coin">&#9670;</span>
+          {creditsLabel ?? 0}
         </button>
 
         <button
@@ -216,27 +233,15 @@ export function MobileCustomizerShell({
           <LayoutGrid />
         </button>
 
-        {isLoggedIn ? (
-          <button
-            type="button"
-            className="appai-mshell-credits"
-            onClick={onOpenCredits}
-            data-testid="button-mobile-credits"
-          >
-            <span className="appai-mshell-coin">&#9670;</span>
-            {creditsLabel ?? 0}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="appai-mshell-iconbtn"
-            aria-label="Sign in"
-            onClick={onLogin}
-            data-testid="button-mobile-login"
-          >
-            <LogIn />
-          </button>
-        )}
+        <button
+          type="button"
+          className="appai-mshell-iconbtn"
+          aria-label="Cart"
+          onClick={onOpenCart}
+          data-testid="button-mobile-cart"
+        >
+          <ShoppingCart />
+        </button>
       </div>
 
       {/* ── Right rail (retractable) ────────────────────────────────────── */}

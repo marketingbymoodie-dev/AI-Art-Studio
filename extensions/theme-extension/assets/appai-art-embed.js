@@ -1246,6 +1246,8 @@
       if (shopCur) params.set('shopCurrency', String(shopCur).toUpperCase());
       if (s.country) params.set('country', String(s.country).toUpperCase());
       if (s.locale) params.set('locale', String(s.locale));
+      var shopName = appaiShopDisplayName();
+      if (shopName) params.set('shopName', shopName);
       window.location.replace(
         window.location.origin + '/apps/appai/s/designer?' + params.toString()
       );
@@ -3307,6 +3309,16 @@
     return s;
   }
 
+  function appaiShopDisplayName() {
+    try {
+      var root = document.getElementById('appai-root');
+      var name = root && root.getAttribute('data-shop-name');
+      return name ? String(name).trim() : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
   function appaiIsHostedCustomizerPage() {
     return !!document.getElementById('appai-boot') ||
       !!document.querySelector('.ai-art-studio-block, [data-block-handle="ai-art-studio"]');
@@ -3480,6 +3492,8 @@
       if (earlyShopCur) early.set('shopCurrency', String(earlyShopCur).toUpperCase());
       if (shopifyObj.country) early.set('country', String(shopifyObj.country).toUpperCase());
       if (shopifyObj.locale) early.set('locale', String(shopifyObj.locale));
+      var earlyShopName = appaiShopDisplayName();
+      if (earlyShopName) early.set('shopName', earlyShopName);
       var earlyUrl = window.location.origin + '/apps/appai/s/designer?' + early.toString();
       console.log('[AI Art Embed] CP1 early location.replace', earlyUrl);
       window.location.replace(earlyUrl);

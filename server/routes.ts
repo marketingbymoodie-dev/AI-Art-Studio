@@ -8170,6 +8170,21 @@ ${orientationExtra}
     }
   });
 
+  async function merchantStoreDisplayName(
+    shop: string,
+    installation: { merchantId?: string | number | null } | null | undefined,
+  ): Promise<string | null> {
+    try {
+      const merchant = installation?.merchantId
+        ? await storage.getMerchant(String(installation.merchantId))
+        : await storage.getMerchantByShop(shop);
+      const name = String(merchant?.storeName || "").trim();
+      return name || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * GET /api/storefront/customizer-page?shop=&handle=
    * Same payload shape as App Proxy /api/proxy/customizer-page, but for
@@ -8367,6 +8382,7 @@ ${orientationExtra}
 
     const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
     const presentment = presentmentFromRequest(req, shopCurrency);
+    const storeName = await merchantStoreDisplayName(shop, installation);
 
     return res.json({
       id: page.id,
@@ -8386,6 +8402,7 @@ ${orientationExtra}
       styleConfig: pageStyleConfig,
       freshDesignAllowed: page.status === "active" || page.status === "preview",
       presentment,
+      storeName,
       themeSnapshot: (installation as { themeSnapshot?: Record<string, string> | null } | null)?.themeSnapshot ?? null,
     });
   }));
@@ -23913,6 +23930,7 @@ ${orientationExtra}
 
     const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
     const presentment = presentmentFromRequest(req, shopCurrency);
+    const storeName = await merchantStoreDisplayName(shop, installation);
 
     return res.json({
       id: page.id,
@@ -23935,6 +23953,7 @@ ${orientationExtra}
       // Disabled pages: saved designs may ATC; new blank sessions cannot start.
       freshDesignAllowed: page.status === "active" || page.status === "preview",
       presentment,
+      storeName,
       themeSnapshot: (installation as { themeSnapshot?: Record<string, string> | null } | null)?.themeSnapshot ?? null,
     });
   }));
