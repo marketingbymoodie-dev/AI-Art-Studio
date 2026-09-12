@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a5";
+const CP1_BUILD_MARKER = "cp2-a6";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -3590,6 +3590,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    */
   const [hoodieAopPlacerState, setHoodieAopPlacerState] =
     useState<HoodieAopPlacerState | null>(null);
+  const hoodieAopPlacerStateRef = useRef<HoodieAopPlacerState | null>(null);
+  hoodieAopPlacerStateRef.current = hoodieAopPlacerState;
+  const hoodieApplySeqRef = useRef(0);
   const hoodieAopPlacerRef = useRef<HoodieAopPlacerHandle>(null);
   const [aopApplyStatus, setAopApplyStatus] = useState<
     "idle" | "saving" | "saved" | "error"
@@ -10544,6 +10547,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   /** Leave the mesh editor: bake live Pattern/Place state, then stay on this page. */
   const leaveAopEditor = useCallback(() => {
+    const live = hoodieAopPlacerRef.current?.getState?.() ?? null;
+    if (live) {
+      hoodieAopPlacerStateRef.current = live;
+      setHoodieAopPlacerState(live);
+    }
     aopEditorDismissedRef.current = true;
     void flushHoodieAopPlacer({ force: true })
       .catch((err: unknown) => {
@@ -10554,6 +10562,34 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setShowPatternStep(false);
       });
   }, [flushHoodieAopPlacer]);
+
+  // Persist tile size / pattern type as they change so Back is not the only write.
+  useEffect(() => {
+    if (!isStorefront || !shopDomain || !showPatternStep) return;
+    const jobId = savedJobIdRef.current;
+    const live = hoodieAopPlacerState;
+    if (!jobId || !live?.tileSettings) return;
+    const t = window.setTimeout(() => {
+      const snap = hoodieAopPlacerStateRef.current ?? live;
+      void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          shop: shopDomain,
+          designState: { hoodieAopPlacerState: snap },
+        }),
+      }).catch(() => {});
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [
+    isStorefront,
+    shopDomain,
+    showPatternStep,
+    hoodieAopPlacerState?.mode,
+    hoodieAopPlacerState?.tileSettings?.tileSizeInches,
+    hoodieAopPlacerState?.tileSettings?.pattern,
+  ]);
 
   /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
   const openAopPlacer = useCallback(() => {
@@ -11986,7 +12022,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const handleHoodieAopApply = useCallback(async (
     result: HoodieAopPlacerApplyResult,
   ) => {
-    setHoodieAopPlacerState(result.state);
+    const applySeq = ++hoodieApplySeqRef.current;
+    // Live editor state is the source of truth. A stale in-flight Apply used
+    // to write the previous tile size (e.g. 3.2) over 0.8 / Offset.
+    const liveState = hoodieAopPlacerStateRef.current ?? result.state;
     setAopPlacementDirty(false);
     // NOTE: Do NOT call `setShowPatternStep(false)` here. Apply is deferred
     // (ATC / leave / Printers Mockup) — closing on every apply would boot
@@ -12017,7 +12056,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const panelJobId = savedJobIdRef.current;
       const seq = ++aopPanelPersistSeqRef.current;
       const isStale = () => seq !== aopPanelPersistSeqRef.current;
-      const panelCaptureSignature = canonicalAopPanelCaptureSignature(result.state);
+      const persistState = hoodieAopPlacerStateRef.current ?? liveState;
+      const panelCaptureSignature = canonicalAopPanelCaptureSignature(persistState);
       const panelsForSave = isAdminTester
         ? (result.renderPrintPanels() ?? mockupPanels)
         : (fullPrintPanels ?? result.renderPrintPanels());
@@ -12030,7 +12070,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const canSkipUploads =
         aopPanelCaptureSignaturesMatch(
           storedAopPanelCaptureSignatureRef.current,
-          result.state,
+          persistState,
         ) &&
         hasReusableHostedPrintSet(lastHostedPrintPanelsRef.current, positions);
       if (isAdminTester) {
@@ -12050,7 +12090,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               panels: panelsForSave,
               previous: lastHostedPrintPanelsRef.current,
               host: ensureHostedUrl,
-              reuseKey: result.state.backgroundColor ?? "",
+              reuseKey: persistState.backgroundColor ?? "",
             });
             // Replace — never keep leftover sleeve/cuff/back URLs from the
             // previous colour. Merge was how navy solids leaked into teal jobs.
@@ -12089,7 +12129,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }),
           });
           storedAopPanelCaptureSignatureRef.current = panelCaptureSignature;
-          lastPersistedAopCaptureStateRef.current = result.state;
+          lastPersistedAopCaptureStateRef.current = persistState;
           console.log(
             "[HoodieAopApply] Saved aopPrintPanelUrls on job",
             panelJobId,
@@ -12219,7 +12259,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           undefined,
           mockupPanels,
           undefined,
-          result.state.backgroundColor,
+          liveState.backgroundColor,
         );
       }
 
@@ -12240,6 +12280,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       //      instead of the customer's actual placement preview.
       void backHostedPromise
         .then((backHosted) => {
+          if (applySeq !== hoodieApplySeqRef.current) return;
+          const persistHoodie = hoodieAopPlacerStateRef.current ?? liveState;
           if (backHosted) {
             const baseWithBack = [
               { url: frontHosted, label: "front" },
@@ -12264,7 +12306,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               productTypeId: productTypeId || undefined,
               pageHandle: activeProductContext.pageHandle || undefined,
               designState: {
-                hoodieAopPlacerState: result.state,
+                hoodieAopPlacerState: persistHoodie,
                 aopPatternUrl: frontHosted,
                 hoodieAopMockups: { front: frontHosted, back: backHosted },
                 productTypeId: productTypeId || undefined,

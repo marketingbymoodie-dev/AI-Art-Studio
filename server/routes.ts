@@ -10305,6 +10305,10 @@ ${orientationExtra}
             ...((prevHoodie.enabled as object) || {}),
             ...((nextHoodie.enabled as object) || {}),
           },
+          tileSettings: {
+            ...((prevHoodie.tileSettings as object) || {}),
+            ...((nextHoodie.tileSettings as object) || {}),
+          },
         };
       }
       // Sync size / colour / artwork onto job columns so test orders and

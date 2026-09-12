@@ -198,6 +198,7 @@ function SlotHost({
 export type HoodieAopPlacerHandle = {
   applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
+  getState: () => HoodieAopPlacerState | null;
   setMode: (mode: "place" | "pattern") => void;
   setBackgroundColor: (hex: string) => void;
 };
@@ -1496,7 +1497,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       const leggings =
         !!data && isLeggingsBlueprint(data.template.blueprintId);
       // Always show Front View editor when switching Place ↔ Pattern.
-      if (!leggings) return { ...prev, mode, view: "front" };
+      if (!leggings) {
+        const next = { ...prev, mode, view: "front" as const };
+        stateRef.current = next;
+        return next;
+      }
 
       // Leaving Place: remember session, force Link+Mirror off for clean tile symmetry.
       if (prev.mode === "place" && mode === "pattern") {
@@ -1507,23 +1512,29 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           enabled: { ...prev.enabled },
           activeGroupId: prev.activeGroupId,
         };
-        return {
+        const next = {
           ...prev,
-          mode: "pattern",
-          view: "front",
+          mode: "pattern" as const,
+          view: "front" as const,
           legsSynced: false,
           legsMirrored: false,
         };
+        stateRef.current = next;
+        return next;
       }
 
       // Returning to Place: restore last Place Link/Mirror/placements/enabled.
       if (prev.mode === "pattern" && mode === "place") {
         const snap = placeSessionRef.current;
-        if (!snap) return { ...prev, mode: "place", view: "front" };
-        return {
+        if (!snap) {
+          const next = { ...prev, mode: "place" as const, view: "front" as const };
+          stateRef.current = next;
+          return next;
+        }
+        const next = {
           ...prev,
-          mode: "place",
-          view: "front",
+          mode: "place" as const,
+          view: "front" as const,
           legsSynced: snap.legsSynced,
           legsMirrored: snap.legsMirrored,
           placements: clonePlacements(snap.placements),
@@ -1532,9 +1543,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             ? snap.activeGroupId
             : "right-leg",
         };
+        stateRef.current = next;
+        return next;
       }
 
-      return { ...prev, mode, view: "front" };
+      const next = { ...prev, mode, view: "front" as const };
+      stateRef.current = next;
+      return next;
     });
   }, [data]);
 
@@ -2142,14 +2157,16 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [data, withFrontIfNeeded]);
 
   const setTileSettings = useCallback((patch: Partial<TileSettings>) => {
-    setState((prev) =>
-      prev
-        ? {
-            ...withFrontIfNeeded(prev),
-            tileSettings: { ...prev.tileSettings, ...patch },
-          }
-        : prev,
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...withFrontIfNeeded(prev),
+        tileSettings: { ...prev.tileSettings, ...patch },
+      };
+      // Sync before paint so Back flush cannot bake the previous tile size.
+      stateRef.current = next;
+      return next;
+    });
   }, [withFrontIfNeeded]);
 
   const closeEyedropper = useCallback(() => setEyedropperOn(false), []);
@@ -2267,9 +2284,10 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       applyInFlightRef.current = true;
       setApplyStatusBoth("saving");
       try {
+        const bakeState = stateRef.current ?? liveState;
         await Promise.resolve(
           onApply({
-            state: liveState,
+            state: bakeState,
             renderView: renderViewToCanvas,
             renderPrintPanels: renderPrintPanelsToDataUrls,
           }),
@@ -2295,6 +2313,15 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     () => ({
       applyIfNeeded,
       hasPendingChanges,
+      getState: () => {
+        const s = stateRef.current;
+        if (!s) return null;
+        return {
+          ...s,
+          tileSettings: { ...s.tileSettings },
+          enabled: { ...s.enabled },
+        };
+      },
       setMode,
       setBackgroundColor: setBgColor,
     }),
