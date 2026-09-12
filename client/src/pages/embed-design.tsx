@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a6";
+const CP1_BUILD_MARKER = "cp2-a7";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -1716,7 +1716,16 @@ function InfoCollapsible({
           <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent>
+      <CollapsibleContent
+        onAnimationEnd={() => {
+          if (typeof window === "undefined" || window.parent === window) return;
+          const h = Math.max(
+            document.documentElement.scrollHeight,
+            document.body.scrollHeight,
+          );
+          window.parent.postMessage({ type: "ai-art-studio:resize", height: h }, "*");
+        }}
+      >
         <div className="border-t px-3 py-3">{children}</div>
       </CollapsibleContent>
     </Collapsible>
