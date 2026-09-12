@@ -90,6 +90,10 @@ export function MobileCustomizerShell({
     setOpenId(openSheetRequest.id);
     setBottomTucked(false);
   }, [openSheetRequest]);
+  useLayoutEffect(() => {
+    if (showModeToggle) return;
+    setOpenId((cur) => (cur === "adjust" ? null : cur));
+  }, [showModeToggle]);
   const [railTucked, setRailTucked] = useState(false);
   const activeMode = mode;
   const selectMode = useCallback(
