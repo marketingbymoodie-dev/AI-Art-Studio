@@ -42,6 +42,8 @@ export type MobileCustomizerShellProps = {
   showModeToggle?: boolean;
   mode?: "place" | "pattern";
   onModeChange?: (mode: "place" | "pattern") => void;
+  /** Open this sheet when `nonce` changes (e.g. Pattern → Adjust). */
+  openSheetRequest?: { id: string; nonce: number } | null;
 };
 
 /**
@@ -73,12 +75,21 @@ export function MobileCustomizerShell({
   showModeToggle = false,
   mode = "place",
   onModeChange,
+  openSheetRequest,
 }: MobileCustomizerShellProps) {
   const rail = railSlots.filter((s) => s.content != null && s.content !== false);
   const bottom = bottomSlots.filter((s) => s.content != null && s.content !== false);
 
   const [openId, setOpenId] = useState<string | null>(null);
   const [bottomTucked, setBottomTucked] = useState(false);
+  const lastSheetRequestNonce = useRef(0);
+  useLayoutEffect(() => {
+    if (!openSheetRequest?.id) return;
+    if (openSheetRequest.nonce === lastSheetRequestNonce.current) return;
+    lastSheetRequestNonce.current = openSheetRequest.nonce;
+    setOpenId(openSheetRequest.id);
+    setBottomTucked(false);
+  }, [openSheetRequest]);
   const [railTucked, setRailTucked] = useState(false);
   const activeMode = mode;
   const selectMode = useCallback(

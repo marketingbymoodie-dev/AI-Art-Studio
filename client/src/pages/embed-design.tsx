@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a1";
+const CP1_BUILD_MARKER = "cp2-a2";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -3752,6 +3752,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // useRef) so the placer re-renders once the sheet containers exist.
   const [aopOptionsSlotEl, setAopOptionsSlotEl] = useState<HTMLDivElement | null>(null);
   const [aopAdjustSlotEl, setAopAdjustSlotEl] = useState<HTMLDivElement | null>(null);
+  const [aopSheetRequest, setAopSheetRequest] = useState<{ id: string; nonce: number } | null>(null);
   useEffect(() => {
     console.log("[EmbedDesign] CP1 host", {
       build: CP1_BUILD_MARKER,
@@ -15916,7 +15917,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 embeddedContext?.mode === "admin-tester" &&
                 embeddedContext.onLeaveProduct
               ) {
+                if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+                  void flushHoodieAopPlacer().finally(() => {
+                    embeddedContext.onLeaveProduct?.();
+                  });
+                  return;
+                }
+                if (flatPlacerActive) {
+                  void flushFlatPlacer().finally(() => {
+                    embeddedContext.onLeaveProduct?.();
+                  });
+                  return;
+                }
                 embeddedContext.onLeaveProduct();
+                return;
+              }
+              // Placement editor is open: same as the in-canvas Back — flush
+              // then return to the product preview. history.back() from
+              // /s/designer lands on /pages/<handle>, which immediately
+              // re-redirects here and remounts on "Loading AI Art Studio".
+              if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+                void flushHoodieAopPlacer().finally(() => {
+                  aopEditorDismissedRef.current = true;
+                  setShowPatternStep(false);
+                });
+                return;
+              }
+              if (showPatternStep) {
+                setShowPatternStep(false);
+                return;
+              }
+              if (flatPlacerActive) {
+                void flushFlatPlacer().finally(() => {
+                  setFlatPlacerEditOpen(false);
+                  const frontIdx = postGenGalleryItems.findIndex(
+                    (item) => item.kind === "mockup",
+                  );
+                  if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                });
                 return;
               }
               const heroIdx = postGenGalleryItems.findIndex((item) => item.kind === "mockup");
@@ -15925,9 +15963,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   ? postGenGalleryItems[heroIdx].url
                   : "";
               const heroMockup = getPreferredMockupUrl() || heroFromGallery || "";
-              // Printify gallery index 0 is raw artwork — snap to the hero
-              // product-with-design before leaving so bfcache / same-page
-              // landings are not the bare art.
               if (
                 showsPrintifyMockupPreview &&
                 generatedDesign?.imageUrl &&
@@ -15943,14 +15978,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               } catch {
                 /* sessionStorage blocked */
               }
-              window.parent?.postMessage(
-                { type: "ai-art-studio:exit", mockupUrl: heroMockup },
-                "*",
-              );
-              if (isTopLevelHost) {
-                if (window.history.length > 1) window.history.back();
-                else window.location.assign("/");
+              if (!isTopLevelHost) {
+                window.parent?.postMessage(
+                  { type: "ai-art-studio:exit", mockupUrl: heroMockup },
+                  "*",
+                );
+                return;
               }
+              // Top-level: do not history.back() / returnTo the customizer
+              // host page — that re-triggers the phone redirect.
+              window.location.assign("/");
             } catch {}
           }}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
@@ -15970,7 +16007,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             !!(useAopCustomizer && showPatternStep && aopPendingMotifUrl)
           }
           mode={hoodieAopPlacerState?.mode ?? "place"}
-          onModeChange={(m) => hoodieAopPlacerRef.current?.setMode(m)}
+          onModeChange={(m) => {
+            hoodieAopPlacerRef.current?.setMode(m);
+            if (m === "pattern") {
+              setAopSheetRequest((prev) => ({
+                id: "adjust",
+                nonce: (prev?.nonce ?? 0) + 1,
+              }));
+            }
+          }}
+          openSheetRequest={aopSheetRequest}
           primaryAction={renderPrimaryAction("", "mshell")}
           railSlots={[
             {
@@ -18045,7 +18091,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 <div className="relative flex flex-col gap-2 min-h-0">
                   {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
                       (not on every nudge). */}
-                  {(isStorefront || isShopify || isAdminTester) && (
+                  {!isMobile && (isStorefront || isShopify || isAdminTester) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
                         type="button"
@@ -18457,7 +18503,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   }
                 }}
                 footerSlot={
-                  (isStorefront || isShopify) ? (
+                  !isMobile && (isStorefront || isShopify) ? (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
                         type="button"
@@ -18497,7 +18543,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               // mockup flow for calibrated flat/mesh products). Falls back to
               // the Printify flow automatically if the renderer/assets fail.
               <div className="flex min-h-0 flex-col gap-2">
-                {(isStorefront || isShopify || isAdminTester) && (
+                {!isMobile && (isStorefront || isShopify || isAdminTester) && (
                   <div className="flex w-full gap-2 justify-stretch">
                     <Button
                       type="button"

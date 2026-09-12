@@ -1636,6 +1636,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         return;
       }
 
+      // Deferred (gesture checkpoint, not CP2): pinch/twist on AOP art;
+      // tap a disabled panel → open Options with that part selected;
+      // double-tap a panel to toggle artwork (pocket vs front must not collide).
       const mockup = mockups[state.view]!;
       const effective = buildEffectiveRenderConfig(data.template, state);
       const pt = mockupPointFromClick(e, canvasRef.current, mockup);
