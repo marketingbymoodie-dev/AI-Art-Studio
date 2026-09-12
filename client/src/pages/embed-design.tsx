@@ -3708,7 +3708,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const storedAopPanelCaptureSignatureRef = useRef<unknown>(null);
   /** Customer closed the AOP editor via Back — fallback must not reopen it. */
   const aopEditorDismissedRef = useRef(false);
+  /** Customer closed the flat placer via Back — fallback must not reopen it. */
+  const flatEditorDismissedRef = useRef(false);
   const lastAopArtworkUrlForDismissRef = useRef<string | null>(null);
+  /** Reuse-as-is: apply after the target product config has re-rendered. */
+  const pendingReuseApplyRef = useRef<{
+    jobId: string;
+    artworkUrl: string;
+    prompt: string;
+    productTypeId: string;
+  } | null>(null);
   /** HoodieAopPlacer state last written at Apply / load — not remount seed-fill. */
   const lastPersistedAopCaptureStateRef = useRef<unknown>(null);
   const lastHostedPrintPanelsRef = useRef<HostedPrintPanel[]>([]);
@@ -3878,6 +3887,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       duration: 8000,
     });
   }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn, isCreatorStorefront]);
+
+  const redeemStorefrontCoupon = useCallback(async () => {
+    const code = couponCode.trim();
+    if (!code) return;
+    setCouponLoading(true);
+    setCouponError(null);
+    setCouponSuccess(null);
+    try {
+      const r = await safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          customerId: storefrontCustomerId,
+          shop: shopDomain,
+        }),
+      });
+      const data = await r.json();
+      if (data.ok && data.creditsAdded > 0) {
+        setCouponSuccess(
+          `${data.creditsAdded} credit${data.creditsAdded !== 1 ? "s" : ""} added!`,
+        );
+        setCustomer((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, ...customerWalletFromApi(data, prev) };
+          persistCustomerRecord(next);
+          return next;
+        });
+        setCouponCode("");
+      } else {
+        setCouponError(data.error || "Invalid code");
+      }
+    } catch {
+      setCouponError("Failed to redeem code");
+    } finally {
+      setCouponLoading(false);
+    }
+  }, [couponCode, storefrontCustomerId, shopDomain]);
 
   useEffect(() => {
     if (!creditsPopoverOpen) return;
@@ -5663,6 +5710,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
   const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
+    aopEditorDismissedRef.current = false;
+    flatEditorDismissedRef.current = false;
     const abs = (u?: string) => {
       if (!u) return u;
       const n = normalizePreviewUrl(u);
@@ -6393,8 +6442,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setLoadDesignNonce((n) => n + 1);
   }, [applyDesignerConfig, shopDomain, creatorUsernameParam, creatorIdParam, resolveSavedDesignPageHandle]);
 
-  /** In-app customizer page switch (no full reload) — used by Reuse Artwork regenerate. */
-  const switchToCustomizerPageByHandle = useCallback(async (pageHandle: string) => {
+  /** In-app customizer page switch (no full reload) — used by Reuse Artwork. */
+  const switchToCustomizerPageByHandle = useCallback(async (
+    pageHandle: string,
+    historyExtra: Record<string, string | null | undefined> = {},
+  ) => {
     if (!pageHandle) throw new Error("Missing customizer page handle");
 
     setIsInAppProductSwitching(true);
@@ -6532,6 +6584,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       reusePrompt: null,
       reuseJobId: null,
       autoReuseGenerate: null,
+      ...historyExtra,
     });
 
     const params = new URLSearchParams(window.location.search);
@@ -6547,13 +6600,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     if (config.title) params.set("displayName", config.title);
     if (baseVariant) params.set("selectedVariant", baseVariant);
-    params.delete("loadDesignId");
-    params.delete("loadMockup");
+    if (historyExtra.loadDesignId) params.set("loadDesignId", String(historyExtra.loadDesignId));
+    else params.delete("loadDesignId");
+    if (historyExtra.loadMockup) params.set("loadMockup", String(historyExtra.loadMockup));
+    else params.delete("loadMockup");
     params.delete("reuseArtworkUrl");
     params.delete("reusePrompt");
     params.delete("reuseJobId");
     params.delete("autoReuseGenerate");
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    if (historyExtra.loadDesignId) {
+      setBridgeLoadDesignId(String(historyExtra.loadDesignId));
+      setLoadDesignNonce((n) => n + 1);
+    }
 
     applyDesignerConfig(config.designerConfig, "SWITCH REUSE PRODUCT");
     if (Array.isArray(config.stylePresets)) {
@@ -6616,6 +6675,29 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       stickAopPersonGalleryRef.current = false;
     }
   }, [effectiveLoadDesignId, loadDesignNonce]);
+
+  // Reuse-as-is: apply after switchToCustomizerPageByHandle has committed the
+  // TARGET product config so useAopCustomizer / flat flags are not stale.
+  useEffect(() => {
+    const pending = pendingReuseApplyRef.current;
+    if (!pending || configLoading || !productTypeConfig) return;
+    pendingReuseApplyRef.current = null;
+    loadDesignAppliedRef.current = true;
+    aopEditorDismissedRef.current = false;
+    flatEditorDismissedRef.current = false;
+    openPlacementEditorOnApplyRef.current = true;
+    applyLoadedDesign(
+      pending.jobId,
+      pending.artworkUrl,
+      pending.prompt,
+      { productTypeId: pending.productTypeId, pageHandle: activeProductContext.pageHandle },
+      { productTypeId: pending.productTypeId },
+    );
+    clearReuseHandoff();
+    setReuseBusy(false);
+    // applyLoadedDesign is a per-render closure; pageHandle is the switch signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configLoading, productTypeConfig, activeProductContext.pageHandle]);
 
   /** Drop sticky loadDesignId from the URL so a remount can't revive the wrong design. */
   const clearLoadDesignIdFromUrl = useCallback(() => {
@@ -7912,6 +7994,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (!hoodieAopPlacerState) setAopPatternUrl(null);
       setShowPatternStep(true);
     } else if (usesFlatOnTheFlyPreview) {
+        if (flatEditorDismissedRef.current) return;
         setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
@@ -7927,15 +8010,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
 
-  // New AOP artwork (generate / import / load) clears dismiss so the fallback
-  // can open the editor. Same imageUrl signal the fallback treats as "fresh".
+  // Track the current artwork URL. Do NOT clear dismiss here — Apply/Back flush
+  // can rewrite imageUrl (hosted upload) and that used to reopen the editor.
+  // Generate / import / load / Edit Pattern clear dismiss at those call sites.
   useEffect(() => {
     const url = generatedDesign?.imageUrl
       ? toAbsoluteImageUrl(generatedDesign.imageUrl)
       : null;
-    if (url && url !== lastAopArtworkUrlForDismissRef.current) {
-      aopEditorDismissedRef.current = false;
-    }
     lastAopArtworkUrlForDismissRef.current = url;
   }, [generatedDesign?.imageUrl]);
 
@@ -7971,6 +8052,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     ) return;
 
     if (usesFlatOnTheFlyPreview) {
+      if (flatEditorDismissedRef.current) return;
       setFlatPlacerEditOpen(true);
       return;
     }
@@ -9410,6 +9492,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         willFetch: shouldFetchMockups,
       });
       if (useAopCustomizer && imageUrl) {
+        aopEditorDismissedRef.current = false;
         lastAopPanelUrlsRef.current = null;
         lastHostedPrintPanelsRef.current = [];
         storedAopPanelCaptureSignatureRef.current = null;
@@ -9421,6 +9504,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Apron / tote / phone: open the live placer even when the product
         // has no Printify mockup flag (that used to leave Edit Placement closed
         // and "Syncing placement…" stuck forever).
+        flatEditorDismissedRef.current = false;
         setFlatRenderFailed(false);
         setFlatPlacerEditOpen(true);
         setFlatMockupRefreshing(true);
@@ -10144,10 +10228,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
       if (useAopCustomizer && importedImageUrl) {
+        aopEditorDismissedRef.current = false;
         setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
       } else if (usesFlatOnTheFlyPreview && importedImageUrl) {
+        flatEditorDismissedRef.current = false;
         setFlatPlacerEditOpen(true);
       } else if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
         fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
@@ -10554,7 +10640,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return applied;
   }, []);
 
-  /** Leave the mesh editor: bake live Pattern/Place state, then stay on this page. */
+  /** Leave the mesh editor: close immediately, then bake Pattern/Place in the background. */
   const leaveAopEditor = useCallback(() => {
     const live = hoodieAopPlacerRef.current?.getState?.() ?? null;
     if (live) {
@@ -10562,13 +10648,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setHoodieAopPlacerState(live);
     }
     aopEditorDismissedRef.current = true;
+    setShowPatternStep(false);
     void flushHoodieAopPlacer({ force: true })
       .catch((err: unknown) => {
         console.error("[AOP] Back flush failed:", err);
       })
       .finally(() => {
         aopEditorDismissedRef.current = true;
-        setShowPatternStep(false);
       });
   }, [flushHoodieAopPlacer]);
 
@@ -10602,6 +10688,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
   const openAopPlacer = useCallback(() => {
+    aopEditorDismissedRef.current = false;
     if (generatedDesign?.imageUrl) {
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
     }
@@ -13077,18 +13164,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       }
 
-      // As-is: fork artwork onto a NEW job for the TARGET product. Never
-      // loadDesignId of the source job — that kept the tee's productTypeId
+      // As-is: fork FIRST so refresh can recover, then switch the iframe.
+      // Never loadDesignId of the source job — that kept the tee's productTypeId
       // so Saved Designs later opened the reuse source instead of leggings.
       if (!opts.regenerate && opts.artworkUrl) {
+        const abs = toAbsoluteImageUrl(opts.artworkUrl);
         writeReuseHandoff({
           jobId: null,
-          artworkUrl: opts.artworkUrl,
+          artworkUrl: abs,
           prompt: opts.prompt,
           autoGenerate: false,
         });
+        reuseInAppBusyRef.current = true;
         setReuseBusy(true);
         setReuseBusyLabel("Opening product…");
+        let forkedJobId: string | null = null;
         try {
           const pageRes = await safeFetch(
             `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shopDomain)}` +
@@ -13105,9 +13195,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             : "";
           if (!targetProductTypeId) throw new Error("Target product has no product type");
 
-          await switchToCustomizerPageByHandle(handle);
-          const abs = toAbsoluteImageUrl(opts.artworkUrl);
-          let forkedJobId: string | null = null;
+          setReuseBusyLabel("Saving artwork…");
           if (shopDomain) {
             const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
               method: "POST",
@@ -13128,31 +13216,42 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               console.warn("[ReuseArtwork] fork-design failed:", forkRes.status);
             }
           }
+          if (!forkedJobId) throw new Error("Could not save reused artwork");
+
+          writeReuseHandoff({
+            jobId: forkedJobId,
+            artworkUrl: abs,
+            prompt: opts.prompt,
+            autoGenerate: false,
+          });
           savedJobIdRef.current = forkedJobId;
-          loadDesignAppliedRef.current = false;
-          clearLoadDesignIdFromUrl();
           openPlacementEditorOnApplyRef.current = true;
           setReuseAwaitingGenerate(false);
-          setGeneratedDesign({
-            id: forkedJobId || `reuse-${Date.now()}`,
-            imageUrl: abs,
-            prompt: opts.prompt || "",
-          });
           setReuseRegenerateBasePrompt(null);
           if (opts.prompt) setPrompt(opts.prompt);
-          if (useAopCustomizer) {
-            setAopPendingMotifUrl(abs);
-            setAopPatternUrl(null);
-            setShowPatternStep(true);
-          } else if (usesFlatOnTheFlyPreview) {
-            setFlatPlacerEditOpen(true);
-          }
-          clearReuseHandoff();
-          setReuseBusy(false);
+          pendingReuseApplyRef.current = {
+            jobId: forkedJobId,
+            artworkUrl: abs,
+            prompt: opts.prompt || "",
+            productTypeId: targetProductTypeId,
+          };
+
+          setReuseBusyLabel("Opening product…");
+          await switchToCustomizerPageByHandle(handle, { loadDesignId: forkedJobId });
           return;
         } catch (err: any) {
           console.error("[ReuseArtwork] in-app as-is failed, falling back to page nav:", err);
+          pendingReuseApplyRef.current = null;
           setReuseBusyLabel("Opening product page…");
+          if (forkedJobId) {
+            writeReuseHandoff({
+              jobId: forkedJobId,
+              artworkUrl: abs,
+              prompt: opts.prompt,
+              autoGenerate: false,
+            });
+            opts = { ...opts, designId: forkedJobId };
+          }
         } finally {
           reuseInAppBusyRef.current = false;
         }
@@ -13181,11 +13280,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       } else if (opts.artworkUrl) {
         writeReuseHandoff({
-          jobId: null,
+          jobId: opts.designId || null,
           artworkUrl: opts.artworkUrl,
           prompt: opts.prompt,
           autoGenerate: false,
         });
+        if (opts.designId) params.set("loadDesignId", opts.designId);
         params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       }
@@ -13386,6 +13486,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       loadDesignAppliedRef.current = false;
       clearLoadDesignIdFromUrl();
       openPlacementEditorOnApplyRef.current = true;
+      aopEditorDismissedRef.current = false;
+      flatEditorDismissedRef.current = false;
       setReuseAwaitingGenerate(false);
       setGeneratedDesign({
         id: forkedJobId || opts.designId || `reuse-${Date.now()}`,
@@ -16014,13 +16116,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 return;
               }
               if (flatPlacerEditOpenRef.current) {
-                void flushFlatPlacer({ force: true }).finally(() => {
-                  setFlatPlacerEditOpen(false);
-                  const frontIdx = postGenGalleryItems.findIndex(
-                    (item) => item.kind === "mockup",
-                  );
-                  if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
-                });
+                flatEditorDismissedRef.current = true;
+                setFlatPlacerEditOpen(false);
+                const frontIdx = postGenGalleryItems.findIndex(
+                  (item) => item.kind === "mockup",
+                );
+                if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                void flushFlatPlacer({ force: true });
                 return;
               }
             } catch {}
@@ -16649,6 +16751,45 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             {packCheckoutError ? (
               <p className="text-xs text-destructive">{packCheckoutError}</p>
             ) : null}
+            {isLoggedIn ? (
+              <div className="pt-3 mt-1 border-t border-border space-y-2">
+                <p className="font-medium text-foreground text-xs">Have a credit code?</p>
+                {couponError && (
+                  <p className="text-destructive text-xs" data-testid="text-credits-coupon-error">
+                    {couponError}
+                  </p>
+                )}
+                {couponSuccess && (
+                  <p className="text-green-600 text-xs" data-testid="text-credits-coupon-success">
+                    {couponSuccess}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter code"
+                    value={couponCode}
+                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                    className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
+                    disabled={couponLoading}
+                    data-testid="input-credits-coupon"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!couponCode.trim() || couponLoading}
+                    onClick={() => void redeemStorefrontCoupon()}
+                    data-testid="button-credits-coupon-redeem"
+                  >
+                    {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Redeem"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground pt-2">
+                Sign in to redeem a credit code.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (
@@ -17361,7 +17502,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
                 {/* Coupon Code dropdown panel */}
                 {showCouponInput && isLoggedIn && (
-                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                  <div className="absolute left-0 top-full mt-2 z-50 appai-mobile-escape-overlay" style={{ maxWidth: '400px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
@@ -17387,33 +17528,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           <Button
                             size="sm"
                             disabled={!couponCode.trim() || couponLoading}
-                            onClick={() => {
-                              setCouponLoading(true);
-                              setCouponError(null);
-                              setCouponSuccess(null);
-                              safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ code: couponCode.trim(), customerId: storefrontCustomerId, shop: shopDomain }),
-                              })
-                                .then(r => r.json())
-                                .then(data => {
-                                  if (data.ok && data.creditsAdded > 0) {
-                                    setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
-                                    setCustomer((prev) => {
-                                      if (!prev) return prev;
-                                      const next = { ...prev, ...customerWalletFromApi(data, prev) };
-                                      persistCustomerRecord(next);
-                                      return next;
-                                    });
-                                    setCouponCode('');
-                                  } else {
-                                    setCouponError(data.error || 'Invalid code');
-                                  }
-                                })
-                                .catch(() => setCouponError('Failed to redeem code'))
-                                .finally(() => setCouponLoading(false));
-                            }}
+                            onClick={() => void redeemStorefrontCoupon()}
                           >
                             {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Redeem'}
                           </Button>
@@ -18545,7 +18660,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         variant="outline"
                         size="sm"
                         className="flex-1 min-w-0"
-                        onClick={() => setShowPatternStep(false)}
+                        onClick={() => {
+                          aopEditorDismissedRef.current = true;
+                          setShowPatternStep(false);
+                        }}
                         title="Return to product preview without applying"
                         data-testid="button-back-from-pattern"
                       >
@@ -18586,22 +18704,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       size="sm"
                       className="flex-1 min-w-0"
                       onClick={() => {
-                        void flushFlatPlacer().finally(() => {
-                          if (
-                            isAdminTester &&
-                            embeddedContext?.mode === "admin-tester" &&
-                            embeddedContext.onLeaveProduct
-                          ) {
-                            embeddedContext.onLeaveProduct();
-                            return;
-                          }
-                          setFlatPlacerEditOpen(false);
-                          // Prefer Front composite over Artwork (avoids blank+art stack).
-                          const frontIdx = postGenGalleryItems.findIndex(
-                            (item) => item.kind === "mockup",
-                          );
-                          if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
-                        });
+                        flatEditorDismissedRef.current = true;
+                        if (
+                          isAdminTester &&
+                          embeddedContext?.mode === "admin-tester" &&
+                          embeddedContext.onLeaveProduct
+                        ) {
+                          void flushFlatPlacer({ force: true }).finally(() => {
+                            embeddedContext.onLeaveProduct?.();
+                          });
+                          return;
+                        }
+                        setFlatPlacerEditOpen(false);
+                        // Prefer Front composite over Artwork (avoids blank+art stack).
+                        const frontIdx = postGenGalleryItems.findIndex(
+                          (item) => item.kind === "mockup",
+                        );
+                        if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                        void flushFlatPlacer({ force: true });
                       }}
                       data-testid="button-back-flat-placer"
                     >
@@ -18874,6 +18994,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       variant="outline"
                       size="sm"
                       onClick={() => {
+                        flatEditorDismissedRef.current = false;
                         setFlatRenderFailed(false);
                         setFlatPlacerEditOpen(true);
                       }}
