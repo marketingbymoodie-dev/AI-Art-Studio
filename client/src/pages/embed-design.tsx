@@ -1604,17 +1604,37 @@ function isCreatorDesignerHost(): boolean {
   return path.startsWith("/s/designer") || path.startsWith("/c/");
 }
 
+/** App-proxy phone shell or creator designer — stay on this path when rewriting page=. */
+function designerAppPathname(path: string): string | null {
+  if (path.includes("/apps/appai/s/designer")) return "/apps/appai/s/designer";
+  if (path.startsWith("/s/designer")) return "/s/designer";
+  return null;
+}
+
 function applyCustomizerPageToUrl(
   url: URL,
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
 ) {
-  if (isCreatorDesignerHost() || url.pathname.startsWith("/s/designer")) {
-    if (!url.pathname.startsWith("/s/designer")) url.pathname = "/s/designer";
+  const designerPath = designerAppPathname(url.pathname);
+  if (designerPath || isCreatorDesignerHost()) {
+    url.pathname = designerPath || "/s/designer";
     url.searchParams.set("page", pageHandle);
     url.searchParams.set("pageHandle", pageHandle);
   } else {
     url.pathname = `/pages/${pageHandle}`;
+    // Phone-shell leftovers on a theme URL make the embed hop straight
+    // back to /s/designer with the previous product.
+    url.searchParams.delete("host");
+    url.searchParams.delete("returnTo");
+    url.searchParams.delete("storefront");
+    url.searchParams.delete("deferDesignerConfig");
+    url.searchParams.delete("mobileNativeScroll");
+    url.searchParams.delete("page");
+    url.searchParams.delete("pageHandle");
+    url.searchParams.delete("productHandle");
+    url.searchParams.delete("productTypeId");
+    url.searchParams.delete("productId");
   }
   for (const [key, value] of Object.entries(extra)) {
     if (value) url.searchParams.set(key, value);
@@ -1635,23 +1655,51 @@ function replaceCustomizerPageHistory(
   }
 }
 
-/** Full-page open for a saved design — same path as the homepage tray pill. */
+/** Homepage-pill URL: /pages/{handle}?loadDesignId=… — no designer leftovers. */
+function buildCleanSavedDesignUrl(
+  pageHandle: string,
+  extra: Record<string, string | null | undefined> = {},
+): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) qs.set(key, value);
+  }
+  const q = qs.toString();
+  return `/pages/${encodeURIComponent(pageHandle)}${q ? `?${q}` : ""}`;
+}
+
+function isTopLevelDesignerWindow(): boolean {
+  try {
+    if (window.parent === window) return true;
+  } catch {
+    return true;
+  }
+  try {
+    return new URLSearchParams(window.location.search).get("host") === "page";
+  } catch {
+    return false;
+  }
+}
+
+/** Full-page open for a saved design — same clean /pages/ URL as the homepage tray pill. */
 function assignHostToSavedDesign(
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
 ) {
-  const fallback =
-    `/pages/${encodeURIComponent(pageHandle)}?loadDesignId=${encodeURIComponent(String(extra.loadDesignId || ""))}`;
+  const dest = buildCleanSavedDesignUrl(pageHandle, extra);
   try {
-    const url = new URL(hostWindow().location.href);
-    applyCustomizerPageToUrl(url, pageHandle, extra);
-    hostWindow().location.assign(url.toString());
+    window.parent.postMessage({ type: "ai-art-studio:open-saved-design", url: dest }, "*");
   } catch {
-    try {
-      window.location.assign(fallback);
-    } catch {
-      /* ignore */
-    }
+    /* ignore */
+  }
+  if (isTopLevelDesignerWindow()) {
+    window.location.assign(dest);
+    return;
+  }
+  try {
+    hostWindow().location.assign(dest);
+  } catch {
+    window.location.assign(dest);
   }
 }
 
@@ -6236,6 +6284,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // Track whether we've already restored the loadDesignId so we don't do it twice
   const loadDesignAppliedRef = useRef(false);
+  // In-gallery same-product apply sets loadDesignId without a remount — skip the wipe.
+  const skipLoadDesignWipeRef = useRef(false);
 
   const resolveSavedDesignPageHandle = useCallback(async (design: any): Promise<string> => {
     const direct = design?.pageHandle ? String(design.pageHandle) : "";
@@ -6260,7 +6310,70 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [creatorUsernameParam]);
 
+  const applySavedDesignRecord = (design: any) => {
+    const clickedId = design?.id ? String(design.id) : "";
+    const artwork = String(design?.artworkUrl || design?.imageUrl || "");
+    if (!clickedId || !artwork) return false;
+    skipLoadDesignWipeRef.current = true;
+    loadDesignAppliedRef.current = true;
+    aopEditorDismissedRef.current = false;
+    flatEditorDismissedRef.current = false;
+    openPlacementEditorOnApplyRef.current = !!(
+      showPatternStepRef.current || flatPlacerEditOpenRef.current
+    );
+    applyLoadedDesign(clickedId, artwork, design.prompt || "", design.designState, {
+      size: design.size,
+      frameColor: design.frameColor,
+      stylePreset: design.stylePreset,
+      mockupUrls: design.mockupUrls,
+      productTypeId: design.productTypeId,
+    });
+    setBridgeLoadDesignId(clickedId);
+    return true;
+  };
+
+  const currentCustomizerPageHandle = () =>
+    (
+      activeProductContext.pageHandle ||
+      searchParams.get("pageHandle") ||
+      searchParams.get("page") ||
+      ""
+    ).toLowerCase();
+
+  const openSavedDesignFromGallery = async (design: any) => {
+    const clickedId = String(design?.id || "");
+    if (!clickedId) return;
+    const pageHandle = await resolveSavedDesignPageHandle(design);
+    const currentHandle = currentCustomizerPageHandle();
+    const sameProduct =
+      !pageHandle ||
+      !currentHandle ||
+      pageHandle.toLowerCase() === currentHandle;
+    if (sameProduct) {
+      if (!applySavedDesignRecord(design)) {
+        toast({
+          title: "Couldn't open this design",
+          description: "The artwork for this save is missing.",
+          variant: "destructive",
+        });
+      }
+      return;
+    }
+    setReuseBusy(true);
+    setReuseBusyLabel("Opening design…");
+    assignHostToSavedDesign(pageHandle, {
+      loadDesignId: clickedId,
+      loadMockup: savedDesignPreviewUrl(design)
+        ? toAbsoluteImageUrl(savedDesignPreviewUrl(design))
+        : null,
+      loadProductName: design.baseTitle || null,
+    });
+  };
+  const openSavedDesignFromGalleryRef = useRef(openSavedDesignFromGallery);
+  openSavedDesignFromGalleryRef.current = openSavedDesignFromGallery;
+
   const loadSavedDesignInPlace = useCallback((design: any) => {
+    if (applySavedDesignRecord(design)) return;
     const clickedId = design?.id ? String(design.id) : "";
     if (!clickedId) return;
     loadDesignAppliedRef.current = false;
@@ -6282,7 +6395,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     window.history.replaceState({}, "", `${window.location.pathname}?${params}`);
     setBridgeLoadDesignId(clickedId);
     setLoadDesignNonce((n) => n + 1);
-  }, []);
+  }, [applySavedDesignRecord]);
 
   const switchToSavedDesignProduct = useCallback(async (design: any) => {
     const pageHandle = await resolveSavedDesignPageHandle(design);
@@ -6659,6 +6772,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
+    if (skipLoadDesignWipeRef.current) {
+      skipLoadDesignWipeRef.current = false;
+      loadDesignAppliedRef.current = true;
+      return;
+    }
     loadDesignAppliedRef.current = false;
     if (effectiveLoadDesignId) {
       restoringSavedDesignRef.current = true;
@@ -14029,28 +14147,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (type === "AI_ART_STUDIO_SWITCH_SAVED_DESIGN" && event.data.design) {
         void (async () => {
           try {
-            const pageHandle = await resolveSavedDesignPageHandle(event.data.design);
-            if (!pageHandle) {
-              loadSavedDesignInPlace(event.data.design);
-              return;
-            }
-            const currentHandle =
-              activeProductContext.pageHandle ||
-              searchParams.get("pageHandle") ||
-              searchParams.get("page") ||
-              "";
-            // Same customizer page: reuse the LoadDesign path. A full product
-            // switch unmounts the iframe UI (configLoading → blank) and was
-            // leaving anonymous gallery taps on an empty canvas.
-            if (currentHandle && pageHandle === currentHandle) {
-              loadSavedDesignInPlace(event.data.design);
-              return;
-            }
-            await switchToSavedDesignProduct(event.data.design);
+            await openSavedDesignFromGalleryRef.current(event.data.design);
           } catch (error) {
-            console.error('[SavedDesigns] Parent-requested in-app switch failed:', error);
+            console.error('[SavedDesigns] Parent-requested open failed:', error);
             setConfigLoading(false);
             setIsInAppProductSwitching(false);
+            setReuseBusy(false);
             loadSavedDesignInPlace(event.data.design);
           }
         })();
@@ -17429,24 +17531,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                         return;
                                       }
                                     }
-                                    // Same full-page open as the homepage Customize pill.
-                                    // In-app switch from inside the editor hung on a blank load.
                                     void (async () => {
                                       try {
-                                        const pageHandle = await resolveSavedDesignPageHandle(d);
-                                        if (!pageHandle) {
-                                          loadSavedDesignInPlace(d);
-                                          return;
-                                        }
-                                        setReuseBusy(true);
-                                        setReuseBusyLabel("Opening design…");
-                                        assignHostToSavedDesign(pageHandle, {
-                                          loadDesignId: clickedId,
-                                          loadMockup: savedDesignPreviewUrl(d)
-                                            ? toAbsoluteImageUrl(savedDesignPreviewUrl(d))
-                                            : null,
-                                          loadProductName: d.baseTitle || null,
-                                        });
+                                        await openSavedDesignFromGallery(d);
                                       } catch (error: any) {
                                         console.error("[SavedDesigns] Open failed:", error);
                                         setReuseBusy(false);

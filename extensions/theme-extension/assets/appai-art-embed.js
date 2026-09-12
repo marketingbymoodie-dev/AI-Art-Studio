@@ -666,6 +666,19 @@
 
   window.addEventListener('message', function(event) {
     var data = event && event.data;
+    if (data && data.type === 'ai-art-studio:open-saved-design') {
+      var dest = data.url || '';
+      if (!dest && data.pageHandle) {
+        dest = '/pages/' + encodeURIComponent(String(data.pageHandle));
+        if (data.loadDesignId) {
+          dest += '?loadDesignId=' + encodeURIComponent(String(data.loadDesignId));
+        }
+      }
+      if (dest && dest.indexOf('/pages/') === 0) {
+        try { window.location.assign(dest); } catch (e) { window.location.href = dest; }
+      }
+      return;
+    }
     if (!data || data.type !== 'AI_ART_STUDIO_SHOW_TRANSITION') return;
     try {
       appaiShowTransitionOverlay();
@@ -2523,6 +2536,24 @@
           } catch(e) {}
         }
         applyMobileNativeScrollFrame();
+        return;
+      }
+      // ===== OPEN SAVED DESIGN (in-gallery tile → clean /pages/ URL) =====
+      if (data.type === 'ai-art-studio:open-saved-design') {
+        var savedDest = data.url || '';
+        if (!savedDest && data.pageHandle) {
+          savedDest = '/pages/' + encodeURIComponent(String(data.pageHandle));
+          if (data.loadDesignId) {
+            savedDest += '?loadDesignId=' + encodeURIComponent(String(data.loadDesignId));
+          }
+        }
+        if (savedDest) {
+          try {
+            window.location.assign(savedDest);
+          } catch (e) {
+            window.location.href = savedDest;
+          }
+        }
         return;
       }
       // ===== EXIT (mobile Back) =====
