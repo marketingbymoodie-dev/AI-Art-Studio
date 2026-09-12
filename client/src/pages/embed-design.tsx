@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp1-b3";
+const CP1_BUILD_MARKER = "cp2-a1";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -3748,6 +3748,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // this flag is only active below the mobile breakpoint; desktop is untouched.
   const rawIsMobile = useIsMobile();
   const isMobile = rawIsMobile || isTopLevelHost;
+  // Portal targets for the AOP placer's control column. Callback refs (not
+  // useRef) so the placer re-renders once the sheet containers exist.
+  const [aopOptionsSlotEl, setAopOptionsSlotEl] = useState<HTMLDivElement | null>(null);
+  const [aopAdjustSlotEl, setAopAdjustSlotEl] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     console.log("[EmbedDesign] CP1 host", {
       build: CP1_BUILD_MARKER,
@@ -16038,10 +16042,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               title: "Adjust artwork",
               subtitle: "Pinch, drag & twist directly on the canvas.",
               content: (
-                <p className="text-sm text-muted-foreground">
-                  Pinch to scale, drag to move and twist to rotate directly on the
-                  preview. Fine-grained sliders are coming here.
-                </p>
+                <div className="space-y-3">
+                  <div ref={setAopAdjustSlotEl} />
+                  {!useAopCustomizer && (
+                    <p className="text-sm text-muted-foreground">
+                      Pinch to scale, drag to move and twist to rotate directly on the
+                      preview.
+                    </p>
+                  )}
+                </div>
               ),
             },
             {
@@ -16050,7 +16059,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               icon: <Layers />,
               title: "Product options",
               subtitle: "Specific to this product.",
-              content: mPrintSideNode,
+              content:
+                useAopCustomizer || mPrintSideNode ? (
+                  <div className="space-y-3">
+                    <div ref={setAopOptionsSlotEl} />
+                    {mPrintSideNode}
+                  </div>
+                ) : null,
             },
             {
               id: "prompt",
@@ -18142,6 +18157,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     onEngageLiveEditor={engageAopLiveEditor}
                     allowTemplateDefaultsEdit={isAdminTester}
                     mobileShell={isMobile}
+                    mobileSheetTargets={
+                      isMobile
+                        ? { options: aopOptionsSlotEl, adjust: aopAdjustSlotEl }
+                        : undefined
+                    }
                     printersMockupAction={
                       canRequestAopPrintersMockup
                         ? {

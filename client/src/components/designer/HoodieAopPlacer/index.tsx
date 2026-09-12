@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Pipette,
   RotateCcw,
@@ -169,7 +170,30 @@ export type HoodieAopPlacerProps = {
    * Hide those in-canvas duplicates so they don't stack under the chrome.
    */
   mobileShell?: boolean;
+  /**
+   * Shell sheet containers to portal the control column into on a phone. The
+   * fixed canvas has no scroll range, so any control left in the column is
+   * simply unreachable — these move the SAME nodes into the Options / Adjust
+   * sheets (refs, callbacks and placement state all stay intact). The View row
+   * deliberately stays on the canvas: it changes what you're looking at.
+   */
+  mobileSheetTargets?: {
+    options?: HTMLElement | null;
+    adjust?: HTMLElement | null;
+  };
 };
+
+/** Renders children into `target` when one is supplied, otherwise in place. */
+function SlotHost({
+  target,
+  children,
+}: {
+  target?: HTMLElement | null;
+  children: React.ReactNode;
+}) {
+  if (!target) return <>{children}</>;
+  return createPortal(children, target);
+}
 
 export type HoodieAopPlacerHandle = {
   applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
@@ -1029,9 +1053,12 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       onEngageLiveEditor,
       allowTemplateDefaultsEdit = false,
       mobileShell = false,
+      mobileSheetTargets,
     },
     ref,
   ) {
+    const optionsSlot = mobileSheetTargets?.options ?? null;
+    const adjustSlot = mobileSheetTargets?.adjust ?? null;
   const onEngageLiveEditorRef = useRef(onEngageLiveEditor);
   onEngageLiveEditorRef.current = onEngageLiveEditor;
   const onApplyStatusChangeRef = useRef(onApplyStatusChange);
@@ -2668,13 +2695,15 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             </div>
           )}
         </div>
-        {/* Mobile: nudge under preview. Desktop: under Artwork enabled. */}
+        {/* Nudge: shell Adjust sheet on a phone, under the preview otherwise. */}
+        <SlotHost target={adjustSlot}>
         {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
             className="relative z-10 border-t border-border bg-card px-3 py-2 lg:hidden"
             onNudge={nudgePlacement}
           />
         )}
+        </SlotHost>
         {showLeggingsOffUnseenSideWarning && (
           <div
             className="relative z-10 border-t border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-950 dark:text-amber-50"
@@ -2828,6 +2857,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           )}
         </div>
 
+        {/* Part / Pockets / Artwork-enabled → shell Options sheet on a phone. */}
+        <SlotHost target={optionsSlot}>
         {/* Place mode: pick which part to scale / enable */}
         {state.mode === "place" && placePartGroups.length > 0 && !isPillow && (
           <div>
@@ -3023,6 +3054,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             )}
           </div>
         )}
+        </SlotHost>
+        {/* Link / Mirror → shell Adjust sheet on a phone. */}
+        <SlotHost target={adjustSlot}>
         {/* Pattern mode: Link / Mirror for leggings. */}
         {state.mode === "pattern" && isLeggings && (
           <div>
@@ -3104,6 +3138,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </div>
         )}
 
+        </SlotHost>
+        <SlotHost target={optionsSlot}>
         {/* Pillow wrap: back face print mode */}
         {isPillow && (
           <div>
@@ -3223,6 +3259,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           />
         )}
 
+        </SlotHost>
         {/* Background colour — on mobile the shell Background sheet owns this. */}
         {!mobileShell && (
         <div>
@@ -3283,6 +3320,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         </div>
         )}
 
+        {/* Nudge / Scale / tile sliders → shell Adjust sheet on a phone. */}
+        <SlotHost target={adjustSlot}>
         {/* Leggings: fine-position nudges (replaces former Replace artwork slot). */}
         {isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
@@ -3414,6 +3453,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </>
         )}
 
+        </SlotHost>
         {/* Deferred-apply status — flush on ATC / leave / Printers Mockup. */}
         {onApply && artworkImg && (
           <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
