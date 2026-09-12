@@ -963,6 +963,13 @@ function resolveSizeIdFromCoverage(
   return hit?.id ?? resolvePrintSizeId(sizeId, sizes);
 }
 
+/**
+ * CP1 diagnosis only — remove at CP5. Bump on every deploy so the badge proves
+ * which bundle the phone actually loaded (the console is unreachable on iOS
+ * without a Mac, so this is the only way to tell a stale bundle from a logic bug).
+ */
+const CP1_BUILD_MARKER = "cp1-b1";
+
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
   try {
@@ -3739,17 +3746,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const { toast } = useToast();
   // Mobile customizer shell branch (checkpoint 1: scaffold). Everything gated by
   // this flag is only active below the mobile breakpoint; desktop is untouched.
-  const isMobile = useIsMobile() || isTopLevelHost;
+  const rawIsMobile = useIsMobile();
+  const isMobile = rawIsMobile || isTopLevelHost;
   useEffect(() => {
     console.log("[EmbedDesign] CP1 host", {
+      build: CP1_BUILD_MARKER,
       host: searchParams.get("host"),
       isTopLevelHost,
       parentIsSelf: window.parent === window,
       innerWidth: window.innerWidth,
       path: window.location.pathname,
+      rawUseIsMobile: rawIsMobile,
       usePhoneLayout: isMobile,
     });
-  }, [isTopLevelHost, isMobile]);
+  }, [isTopLevelHost, isMobile, rawIsMobile]);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -15877,6 +15887,34 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
+      {/* CP1 diagnosis only — remove at CP5. Deliberately OUTSIDE the isMobile
+          gate so it also appears in the failing desktop-layout case. */}
+      {(isTopLevelHost || rawIsMobile) && (
+        <div
+          data-testid="cp1-debug-badge"
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            zIndex: 2147483647,
+            maxWidth: "100vw",
+            padding: "3px 6px",
+            background: isMobile ? "#064e3b" : "#7f1d1d",
+            color: "#fff",
+            font: "600 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
+            pointerEvents: "none",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-all",
+          }}
+        >
+          {`${CP1_BUILD_MARKER} shell=${isMobile ? "MOBILE" : "DESKTOP"} host=${
+            searchParams.get("host") || "-"
+          } TLH=${isTopLevelHost ? 1 : 0} rawMob=${rawIsMobile ? 1 : 0} iw=${
+            typeof window !== "undefined" ? window.innerWidth : "?"
+          } top=${typeof window !== "undefined" && window.parent === window ? 1 : 0}
+${typeof window !== "undefined" ? window.location.pathname : ""}`}
+        </div>
+      )}
       {isMobile && (
         <MobileCustomizerShell
           brandName="AI Art Studio"
