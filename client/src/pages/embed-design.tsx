@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * which bundle the phone actually loaded (the console is unreachable on iOS
  * without a Mac, so this is the only way to tell a stale bundle from a logic bug).
  */
-const CP1_BUILD_MARKER = "cp1-b1";
+const CP1_BUILD_MARKER = "cp1-b2";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -15651,6 +15651,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedSizeName={printSizes.find((s) => s.id === selectedSize)?.name}
     />
   ) : null;
+  // Shipping & returns / details / size chart for the shell's Info sheet. The
+  // in-flow `md:hidden` copy is suppressed while the shell owns the layout, so
+  // this is the only place a phone customer can reach the terms.
+  const mProductInfoNode = isStorefront || isShopify ? (
+    <ProductInfoSections
+      description={productTypeConfig?.description}
+      productName={productTypeConfig?.name || displayName}
+      sizeChart={sizeChart}
+      sizeChartLoading={sizeChartLoading}
+      blueprintId={productTypeConfig?.printifyBlueprintId}
+      commerceTerms={isStorefront}
+      commerceTermsOrigin={centralAppUrl}
+    />
+  ) : null;
   const mPrintSideNode = supportsPrintPlacementSelection ? (
     <div className="space-y-1">
       <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
@@ -16017,11 +16031,7 @@ ${typeof window !== "undefined" ? window.location.pathname : ""}`}
               icon: <Info />,
               title: "Product info",
               subtitle: "Details, sizing and shipping.",
-              content: (
-                <p className="text-sm text-muted-foreground">
-                  Product details, size guide and shipping info will appear here.
-                </p>
-              ),
+              content: mProductInfoNode,
             },
           ]}
           bottomSlots={[
@@ -19380,7 +19390,7 @@ ${typeof window !== "undefined" ? window.location.pathname : ""}`}
               </div>
             )}
 
-            {(isStorefront || isShopify) && (
+            {!isMobile && (isStorefront || isShopify) && (
               <ProductInfoSections
                 className="md:hidden border-t pt-4 mt-2"
                 description={productTypeConfig?.description}
