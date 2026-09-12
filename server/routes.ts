@@ -50,6 +50,7 @@ import {
   normalizePreviewUrl,
   unwrapMangledPreviewUrl,
 } from "@shared/previewUrl";
+import { selectVisibleGalleryJobs } from "@shared/galleryVisibleDesigns";
 import {
   ShadowVariantNotPurchasableError,
   ensureShadowVariantPurchasable,
@@ -11538,7 +11539,7 @@ ${orientationExtra}
       }
       const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
       console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
-      const rows = await db
+      const fetchedRows = await db
         .select()
         .from(generationJobs)
         .where(
@@ -11549,8 +11550,9 @@ ${orientationExtra}
           )
         )
         .orderBy(desc(generationJobs.createdAt))
-        .limit(GALLERY_LIMIT);
-      console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
+        .limit(GALLERY_LIMIT * 3);
+      const rows = selectVisibleGalleryJobs(fetchedRows).slice(0, GALLERY_LIMIT);
+      console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId} (from ${fetchedRows.length} complete jobs)`);
 
       // Resolve product type names AND page handles for all unique productTypeIds.
       // Some saved test designs were created before product types were recreated

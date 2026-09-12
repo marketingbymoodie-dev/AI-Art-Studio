@@ -3446,6 +3446,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  /** Sync lock — isPending lags one paint, so a second tap can POST another job. */
+  const generateInFlightRef = useRef(false);
   /** Placement already saved on that job — a later scale/move ATC forks a new saved design. */
   const placementFrozenSigRef = useRef<string | null>(null);
   // admin-tester has no shop URL param — the admin generate endpoint returns the job's
@@ -8996,6 +8998,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }).then(r => r.json()).then(saved => {
           console.log('[AutoSave] save-design response:', saved);
           if (saved.saved) {
+            // AOP / flat: mockup persist refreshes the gallery with the garment
+            // card. Refreshing here listed the raw artwork as its own card.
+            const deferGalleryUntilMockup = useAopCustomizer || usesFlatOnTheFlyPreview;
+            if (deferGalleryUntilMockup && !isMerchantStudio) {
+              return;
+            }
             // Refresh saved designs list
             setSavedDesignsLoading(true);
             safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
@@ -9114,6 +9122,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // React Query already sets isPending=false on rejection, stopping the spinner.
       // Clear any stale login error so it doesn't block the next attempt.
       setLoginError(null);
+    },
+    onSettled: () => {
+      generateInFlightRef.current = false;
     },
   });
 
@@ -9366,6 +9377,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [selectedStyleOption, quotesMode]);
 
   const handleQuotesOrGenerateClick = () => {
+    if (generateInFlightRef.current || generateMutation.isPending) return;
     if ((isShopify || isStorefront) && customer && !hasGenerationCapacity && !quotesNeedWrite) {
       notifyInsufficientCredits();
       return;
@@ -9393,7 +9405,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const quotesOrGenerateDisabled = (() => {
     if (!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate)) return true;
-    if (generateMutation.isPending || quoteWriting) return true;
+    if (generateInFlightRef.current || generateMutation.isPending || quoteWriting) return true;
     if (customerTermsEnabled && !storefrontTerms.accepted) return true;
     if (shippingBlocksGenerate) return true;
     if (quotesNeedWrite) return !prompt.trim();
@@ -9416,6 +9428,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       return;
     }
+    if (generateInFlightRef.current || generateMutation.isPending) return;
     if (customerTermsEnabled && !storefrontTerms.accepted) {
       toast({
         title: "Please accept the terms",
@@ -9586,6 +9599,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     });
 
     try {
+      generateInFlightRef.current = true;
       generateMutation.mutate({
         prompt: fullPrompt,
         userPrompt: effectivePrompt, // raw user text — stored separately so it can be restored cleanly
@@ -9630,6 +9644,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       scrollArtworkIntoViewOnMobile(50);
     } catch (err: any) {
+      generateInFlightRef.current = false;
       console.error('[Generate] Mutation trigger failed:', err);
       toast({
         title: "Generation Failed",
