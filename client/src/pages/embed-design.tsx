@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a4";
+const CP1_BUILD_MARKER = "cp2-a5";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -7892,6 +7892,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !mockupFailed
     ) {
     if (useAopCustomizer) {
+      if (aopEditorDismissedRef.current) return;
       // Resume with saved placer state: keep aopPatternUrl / mockups; only open
       // the placer. Clearing pattern URL forced a default re-apply path.
       console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
@@ -10540,6 +10541,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (applied) setAopPlacementDirty(false);
     return applied;
   }, []);
+
+  /** Leave the mesh editor: bake live Pattern/Place state, then stay on this page. */
+  const leaveAopEditor = useCallback(() => {
+    aopEditorDismissedRef.current = true;
+    void flushHoodieAopPlacer({ force: true })
+      .catch((err: unknown) => {
+        console.error("[AOP] Back flush failed:", err);
+      })
+      .finally(() => {
+        aopEditorDismissedRef.current = true;
+        setShowPatternStep(false);
+      });
+  }, [flushHoodieAopPlacer]);
 
   /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
   const openAopPlacer = useCallback(() => {
@@ -15917,13 +15931,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 embeddedContext?.mode === "admin-tester" &&
                 embeddedContext.onLeaveProduct
               ) {
-                if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
+                if (showPatternStepRef.current && productTypeConfig?.panelMappingTemplate) {
+                  aopEditorDismissedRef.current = true;
                   void flushHoodieAopPlacer({ force: true }).finally(() => {
                     embeddedContext.onLeaveProduct?.();
                   });
                   return;
                 }
-                if (flatPlacerActive) {
+                if (flatPlacerEditOpenRef.current) {
                   void flushFlatPlacer({ force: true }).finally(() => {
                     embeddedContext.onLeaveProduct?.();
                   });
@@ -15932,23 +15947,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 embeddedContext.onLeaveProduct();
                 return;
               }
-              // Placement editor is open: same as the in-canvas Back — flush
-              // then return to the product preview. history.back() from
-              // /s/designer lands on /pages/<handle>, which immediately
-              // re-redirects here and remounts on "Loading AI Art Studio".
-              if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
-                void flushHoodieAopPlacer({ force: true }).finally(() => {
-                  aopEditorDismissedRef.current = true;
-                  setShowPatternStep(false);
-                });
+              // Use refs — a stale showPatternStep=false here used to
+              // location.assign("/") / postMessage exit, remounting the
+              // saved design without the tile/offset just chosen.
+              if (
+                hoodieAopPlacerRef.current ||
+                (showPatternStepRef.current && productTypeConfig?.panelMappingTemplate)
+              ) {
+                leaveAopEditor();
                 return;
               }
-              if (showPatternStep) {
+              if (showPatternStepRef.current) {
+                aopEditorDismissedRef.current = true;
                 setShowPatternStep(false);
                 return;
               }
-              if (flatPlacerActive) {
-                void flushFlatPlacer().finally(() => {
+              if (flatPlacerEditOpenRef.current) {
+                void flushFlatPlacer({ force: true }).finally(() => {
                   setFlatPlacerEditOpen(false);
                   const frontIdx = postGenGalleryItems.findIndex(
                     (item) => item.kind === "mockup",
@@ -15957,37 +15972,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 });
                 return;
               }
-              const heroIdx = postGenGalleryItems.findIndex((item) => item.kind === "mockup");
-              const heroFromGallery =
-                heroIdx >= 0 && postGenGalleryItems[heroIdx].kind === "mockup"
-                  ? postGenGalleryItems[heroIdx].url
-                  : "";
-              const heroMockup = getPreferredMockupUrl() || heroFromGallery || "";
-              if (
-                showsPrintifyMockupPreview &&
-                generatedDesign?.imageUrl &&
-                heroIdx >= 0 &&
-                selectedMockupIndex === 0
-              ) {
-                setSelectedMockupIndex(heroIdx);
-              }
-              try {
-                if (heroMockup) {
-                  hostWindow().sessionStorage.setItem("appai_landing_mockup", heroMockup);
-                }
-              } catch {
-                /* sessionStorage blocked */
-              }
-              if (!isTopLevelHost) {
-                window.parent?.postMessage(
-                  { type: "ai-art-studio:exit", mockupUrl: heroMockup },
-                  "*",
-                );
-                return;
-              }
-              // Top-level: do not history.back() / returnTo the customizer
-              // host page — that re-triggers the phone redirect.
-              window.location.assign("/");
             } catch {}
           }}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
@@ -18091,7 +18075,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 <div className="relative flex flex-col gap-2 min-h-0">
                   {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
                       (not on every nudge). */}
-                  {!isMobile && (isStorefront || isShopify || isAdminTester) && (
+                  {(isStorefront || isShopify || isAdminTester) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
                         type="button"
@@ -18099,18 +18083,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         size="sm"
                         className="flex-1 min-w-0"
                         onClick={() => {
-                          void flushHoodieAopPlacer({ force: true }).finally(() => {
-                            if (
-                              isAdminTester &&
-                              embeddedContext?.mode === "admin-tester" &&
-                              embeddedContext.onLeaveProduct
-                            ) {
-                              embeddedContext.onLeaveProduct();
-                              return;
-                            }
+                          if (
+                            isAdminTester &&
+                            embeddedContext?.mode === "admin-tester" &&
+                            embeddedContext.onLeaveProduct
+                          ) {
                             aopEditorDismissedRef.current = true;
-                            setShowPatternStep(false);
-                          });
+                            void flushHoodieAopPlacer({ force: true }).finally(() => {
+                              embeddedContext.onLeaveProduct?.();
+                            });
+                            return;
+                          }
+                          leaveAopEditor();
                         }}
                         title={
                           isAdminTester

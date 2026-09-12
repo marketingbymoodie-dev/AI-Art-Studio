@@ -1293,6 +1293,14 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [state, onChange]);
 
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
+  const stateRef = useRef(state);
+  const dataRef = useRef(data);
+  const artworkImgRef = useRef(artworkImg);
+  const mockupsRef = useRef(mockups);
+  stateRef.current = state;
+  dataRef.current = data;
+  artworkImgRef.current = artworkImg;
+  mockupsRef.current = mockups;
   const [artworkLoading, setArtworkLoading] = useState(false);
   const [palette, setPalette] = useState<PaletteSwatch[]>([]);
   useEffect(() => {
@@ -2157,37 +2165,40 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   // ---------- Apply hand-off (Stage 3 will subscribe) ----------
   const renderViewToCanvas = useCallback(
     (v: HoodieView): HTMLCanvasElement | null => {
-      if (!data || !state) return null;
-      const mockup = mockups[v];
+      const liveData = dataRef.current;
+      const liveState = stateRef.current;
+      const liveArt = artworkImgRef.current;
+      if (!liveData || !liveState || !liveArt) return null;
+      const mockup = mockupsRef.current[v];
       if (!mockup) return null;
       const c = document.createElement("canvas");
       c.width = mockup.naturalWidth || mockup.width;
       c.height = mockup.naturalHeight || mockup.height;
       const ctx = c.getContext("2d");
       if (!ctx) return null;
-      const effective = buildEffectiveRenderConfig(data.template, state);
+      const effective = buildEffectiveRenderConfig(liveData.template, liveState);
       renderAopPreview(ctx, {
         template: effective.template,
         view: v,
         mockup,
-        artwork: artworkImg,
-        mode: state.mode === "pattern" ? "tile" : "single-sheet",
+        artwork: liveArt,
+        mode: liveState.mode === "pattern" ? "tile" : "single-sheet",
         showExclusions: true,
         applyShading: true,
         solidColorFallback: false,
         groupPlacementOverrides: effective.placements,
         groupEnabledOverrides: effective.enabled,
-        panelEnabledOverrides: buildPanelOverrides(state, data?.template),
-        backgroundColor: state.backgroundColor,
-        tileSettings: state.tileSettings,
-        pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
-        sleevesMirrored: state.sleevesMirrored,
-        legsMirrored: state.legsMirrored,
+        panelEnabledOverrides: buildPanelOverrides(liveState, liveData.template),
+        backgroundColor: liveState.backgroundColor,
+        tileSettings: liveState.tileSettings,
+        pixelsPerInch: liveData.template.realWorldCalibration?.pixelsPerInch,
+        sleevesMirrored: liveState.sleevesMirrored,
+        legsMirrored: liveState.legsMirrored,
         placeholderPositions,
       });
       return c;
     },
-    [data, state, mockups, artworkImg, placeholderPositions],
+    [placeholderPositions],
   );
 
   // Flat per-panel print files for order fulfillment (Phase 5 production
@@ -2196,24 +2207,27 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const renderPrintPanelsToDataUrls = useCallback((
     opts?: { maxLongEdgePx?: number },
   ): Array<{ position: string; dataUrl: string }> | null => {
-    if (!data || !state || !artworkImg) return null;
-    const effective = buildEffectiveRenderConfig(data.template, state);
+    const liveData = dataRef.current;
+    const liveState = stateRef.current;
+    const liveArt = artworkImgRef.current;
+    if (!liveData || !liveState || !liveArt) return null;
+    const effective = buildEffectiveRenderConfig(liveData.template, liveState);
     const panels = renderFlatPrintPanels({
       template: effective.template,
-      artwork: artworkImg,
-      mode: state.mode === "pattern" ? "tile" : "single-sheet",
-      tileSettings: state.tileSettings,
-      pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
-      backgroundColor: state.backgroundColor,
+      artwork: liveArt,
+      mode: liveState.mode === "pattern" ? "tile" : "single-sheet",
+      tileSettings: liveState.tileSettings,
+      pixelsPerInch: liveData.template.realWorldCalibration?.pixelsPerInch,
+      backgroundColor: liveState.backgroundColor,
       groupPlacementOverrides: effective.placements,
       groupEnabledOverrides: effective.enabled,
-      panelEnabledOverrides: buildPanelOverrides(state, data.template),
-      mockups,
+      panelEnabledOverrides: buildPanelOverrides(liveState, liveData.template),
+      mockups: mockupsRef.current,
       maxLongEdgePx: opts?.maxLongEdgePx,
       placeholderPositions,
-      sleevesMirrored: state.sleevesMirrored,
-      legsMirrored: state.legsMirrored,
-      legsLinked: state.mode === "pattern" && state.legsSynced,
+      sleevesMirrored: liveState.sleevesMirrored,
+      legsMirrored: liveState.legsMirrored,
+      legsLinked: liveState.mode === "pattern" && liveState.legsSynced,
     });
     // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
     // PNG — matters because a zip hoodie exports ~12 panels per save.
@@ -2221,7 +2235,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       position: p.position,
       dataUrl: p.canvas.toDataURL("image/jpeg", 0.92),
     }));
-  }, [data, state, mockups, artworkImg, placeholderPositions]);
+  }, [placeholderPositions]);
 
   const hasPendingChanges = useCallback((): boolean => {
     if (!state || !artworkImg) return false;
@@ -2232,25 +2246,36 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const applyInFlightRef = useRef(false);
   const applyIfNeeded = useCallback(
     async (opts?: { force?: boolean }): Promise<boolean> => {
-      if (!onApply || !state || !data || !artworkImg) return false;
+      if (!onApply) return false;
       if (applyInFlightRef.current) {
-        for (let i = 0; i < 100 && applyInFlightRef.current; i++) {
+        for (let i = 0; i < 200 && applyInFlightRef.current; i++) {
           await new Promise((r) => setTimeout(r, 50));
         }
         if (applyInFlightRef.current) return false;
       }
-      if (!opts?.force && !hasPendingChanges()) return false;
+      const liveState = stateRef.current;
+      const liveData = dataRef.current;
+      const liveArt = artworkImgRef.current;
+      if (!liveState || !liveData || !liveArt) return false;
+      if (
+        !opts?.force &&
+        lastAppliedSignatureRef.current !== null &&
+        outputSignature(liveState) === lastAppliedSignatureRef.current
+      ) {
+        return false;
+      }
       applyInFlightRef.current = true;
       setApplyStatusBoth("saving");
       try {
         await Promise.resolve(
           onApply({
-            state,
+            state: liveState,
             renderView: renderViewToCanvas,
             renderPrintPanels: renderPrintPanelsToDataUrls,
           }),
         );
-        lastAppliedSignatureRef.current = outputSignature(state);
+        const saved = stateRef.current ?? liveState;
+        lastAppliedSignatureRef.current = outputSignature(saved);
         setApplyStatusBoth("saved");
         return true;
       } catch (e) {
@@ -2262,16 +2287,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         applyInFlightRef.current = false;
       }
     },
-    [
-      onApply,
-      state,
-      data,
-      artworkImg,
-      hasPendingChanges,
-      renderViewToCanvas,
-      renderPrintPanelsToDataUrls,
-      setApplyStatusBoth,
-    ],
+    [onApply, renderViewToCanvas, renderPrintPanelsToDataUrls, setApplyStatusBoth],
   );
 
   useImperativeHandle(
