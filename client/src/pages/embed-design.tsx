@@ -10077,7 +10077,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const TIMEOUT_MS = 30_000;
+      const TIMEOUT_MS = 45_000;
 
       const cleanup = () => {
         window.removeEventListener('message', handler);
@@ -10085,6 +10085,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       };
 
       const handler = (event: MessageEvent) => {
+        if (
+          event.data?.type === 'AI_ART_STUDIO_ATC_PROGRESS' &&
+          event.data?.correlationId === correlationId &&
+          event.data?.phase === 'finalising'
+        ) {
+          toast({
+            title: "Finalising…",
+            description: "Adding your design to the cart.",
+            duration: 12_000,
+          });
+          return;
+        }
         if (
           event.data?.type === 'AI_ART_STUDIO_ADD_TO_CART_RESULT' &&
           event.data?.correlationId === correlationId
@@ -11522,7 +11534,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             resetStudioAfterPurchase();
           }, 2500);
         } else {
-          setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
+          const raw = String(result.error || "Unknown error");
+          const soldOutRace = /sold out|cannot add more|still appearing in the store/i.test(raw);
+          setVariantError(
+            soldOutRace
+              ? "This design is still appearing in the store. Please tap Add to cart again."
+              : `Failed to add to cart: ${raw}`,
+          );
         }
       } catch (e: any) {
         console.error('[Design Studio] Add-to-cart error:', e);
