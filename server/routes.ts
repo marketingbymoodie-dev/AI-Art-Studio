@@ -241,6 +241,7 @@ import {
   parseVariantAvailabilityMap,
   unavailableVariantKeys,
   isVariantKeyAvailable,
+  isVariantKeyExplicitlyOutOfStock,
   resolveEffectivePricingStrategy,
   resolveMarkupPercent,
   suggestedRetailDollarsString,
@@ -10941,26 +10942,18 @@ ${orientationExtra}
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
       }
 
-      // Product Intelligence OOS guard — refuse shadow create for unavailable size/colour.
+      // Product Intelligence OOS backstop — 409 only for an explicit out_of_stock key.
+      // Missing map/key, unknown/removed, or lookup errors fail-open. Storefront UI is
+      // the primary OOS lock; do not consult the legacy designs table.
       try {
-        let ptId =
+        const ptId =
           productTypeIdRaw != null && String(productTypeIdRaw).trim() !== ""
             ? parseInt(String(productTypeIdRaw), 10)
             : NaN;
-        if (!Number.isFinite(ptId) || ptId <= 0) {
-          const designNum = parseInt(String(designId).replace(/\D/g, ""), 10);
-          if (Number.isFinite(designNum) && designNum > 0) {
-            const design = await storage.getDesign(designNum);
-            if (design?.productTypeId) ptId = design.productTypeId;
-          }
-        }
         if (Number.isFinite(ptId) && ptId > 0 && sizeId) {
           const pt = await storage.getProductType(ptId);
           const avail = parseVariantAvailabilityMap((pt as any)?.variantAvailability);
-          if (
-            Object.keys(avail).length > 0 &&
-            !isVariantKeyAvailable(avail, String(sizeId), String(colorId || "default"))
-          ) {
+          if (isVariantKeyExplicitlyOutOfStock(avail, String(sizeId), String(colorId || "default"))) {
             console.warn("[ShadowProduct] App-side OOS guard blocked resolve", {
               shop,
               designId,
