@@ -2053,6 +2053,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * price drift is picked up on the next ATC.
    */
   const preShadowSyncedRetailRef = useRef<{ jobId: string; retail: string } | null>(null);
+  /** One Finalising toast per ATC click — mint wait and parent progress share this. */
+  const atcFinalisingToastShownRef = useRef(false);
 
   // Merge anonymous session into customer account when customer is logged in.
   // Fire once on mount; backend is idempotent so re-merging is safe.
@@ -10057,6 +10059,37 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
+  const pingAtcDebug = (payload: Record<string, unknown>) => {
+    console.log("[Design Studio] [ATC-debug]", payload);
+    try {
+      void safeFetch(`${API_BASE}/api/storefront/atc-debug`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop: shopDomain || undefined,
+          source: "iframe",
+          ...payload,
+        }),
+      }).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const showAtcFinalisingToast = (reason: string) => {
+    if (atcFinalisingToastShownRef.current) {
+      pingAtcDebug({ event: "toast_already_shown", reason });
+      return;
+    }
+    atcFinalisingToastShownRef.current = true;
+    pingAtcDebug({ event: "toast_shown", reason });
+    toast({
+      title: "Finalising…",
+      description: "Adding your design to the cart.",
+      duration: 12_000,
+    });
+  };
+
   /**
    * Send add-to-cart via postMessage to the parent Shopify storefront page.
    * The parent's theme extension script handles the actual /cart/add.js fetch.
@@ -10068,6 +10101,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     quantity: number;
     properties: Record<string, string>;
     price?: string | null;
+    shadowCreated?: boolean;
   }): Promise<{ success: boolean; error?: string }> => {
     // Log bridge state for diagnostics but don't fail fast — allow postMessage attempt
     // The parent sends BRIDGE_READY every 500ms, so React state may lag real connectivity
@@ -10090,11 +10124,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           event.data?.correlationId === correlationId &&
           event.data?.phase === 'finalising'
         ) {
-          toast({
-            title: "Finalising…",
-            description: "Adding your design to the cart.",
-            duration: 12_000,
+          pingAtcDebug({
+            event: "progress_received",
+            reason: "AI_ART_STUDIO_ATC_PROGRESS",
+            attempt: event.data?.attempt,
+            created: !!payload.shadowCreated,
+            cid: correlationId,
+            variantId: payload.variantId,
           });
+          showAtcFinalisingToast("parent_progress");
           return;
         }
         if (
@@ -10139,6 +10177,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         baseVariantId: payload.baseVariantId,
         quantity: payload.quantity,
         properties: payload.properties,
+        shadowCreated: !!payload.shadowCreated,
         ...(payload.price ? { price: payload.price } : {}),
         _bridgeVersion: '1.0.3',
       };
@@ -10147,9 +10186,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       console.log('[Design Studio] Sending add-to-cart postMessage:', {
         correlationId,
         variantId: payload.variantId,
+        shadowCreated: !!payload.shadowCreated,
         propertyKeys: Object.keys(payload.properties),
         sentTo: 'parent',
         origin: window.location.origin,
+      });
+      pingAtcDebug({
+        event: "add_to_cart_posted",
+        created: !!payload.shadowCreated,
+        cid: correlationId,
+        variantId: payload.variantId,
       });
       window.parent.postMessage(message, '*');
 
@@ -10893,6 +10939,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     // Pending covers flush/skip + snapshot + resolve + cart/add — not just the tail.
     setIsAddingToCart(true);
+    atcFinalisingToastShownRef.current = false;
     try {
     // Only re-raster/upload when placement actually changed — a clean Apply
     // already left https mockup URLs ready for shadow SKU + cart.
@@ -11208,9 +11255,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     /** Best-effort resolve-design-variant with a single retry on network failure. */
     const runResolveVariant = async (
       opts: { attempts: number; label: string },
-    ): Promise<{ shadowVariantId: string | null; matched: boolean }> => {
+    ): Promise<{ shadowVariantId: string | null; matched: boolean; created: boolean }> => {
       if (!shopDomain || !mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
-        return { shadowVariantId: null, matched: false };
+        return { shadowVariantId: null, matched: false, created: false };
       }
       for (let attempt = 0; attempt < opts.attempts; attempt++) {
         if (attempt > 0) {
@@ -11247,7 +11294,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               });
               const shadowId = String(data.variantId);
               const matched = normalizeVariantId(shadowId) !== normalizedVariant;
-              if (matched) return { shadowVariantId: shadowId, matched: true };
+              if (matched) return { shadowVariantId: shadowId, matched: true, created: !!data.created };
             }
           } else {
             console.warn(`[Design Studio] ${opts.label} failed:`, resolveRes.status);
@@ -11256,11 +11303,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           console.warn(`[Design Studio] ${opts.label} error/timeout:`, e?.message || e);
         }
       }
-      return { shadowVariantId: null, matched: false };
+      return { shadowVariantId: null, matched: false, created: false };
     };
 
     // Fast-path still AWAITS CONTINUE repair. Skipping resolve must not skip policy write.
-    const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean }> = canSkipResolveInline
+    const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean; created: boolean }> = canSkipResolveInline
       ? (async () => {
           console.log(
             "[Design Studio] ATC fast-path — reusing preShadow variant",
@@ -11276,13 +11323,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             return runResolveVariant({ attempts: 3, label: "resolve-design-variant (after fast-path repair fail)" });
           }
           void runResolveVariant({ attempts: 1, label: "resolve-design-variant (bg price sync)" }).catch(() => {});
-          return { shadowVariantId: preShadowVariantId, matched: true };
+          return { shadowVariantId: preShadowVariantId, matched: true, created: false };
         })()
       : runResolveVariant({ attempts: 3, label: "resolve-design-variant" });
+
+    if (!canSkipResolveInline) {
+      showAtcFinalisingToast("inline_resolve");
+    }
 
     // Await resolve (+ snapshot only when persist is already done). AOP lines
     // without a ready snapshot get `_print_files_pending` and finalize after cart-add.
     let finalVariantId = normalizedVariant;
+    let shadowJustCreated = false;
     let needsBackgroundAopFinalize = false;
     try {
       const [aopSnap, resolveResult] = await Promise.all([
@@ -11310,6 +11362,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
       if (resolveResult.matched && resolveResult.shadowVariantId) {
         finalVariantId = resolveResult.shadowVariantId;
+        shadowJustCreated = !!resolveResult.created;
+        if (shadowJustCreated) {
+          showAtcFinalisingToast("shadow_created");
+          pingAtcDebug({
+            event: "shadow_created_atc",
+            created: true,
+            variantId: finalVariantId,
+          });
+        }
         if (displayedRetailForAtc) {
           preShadowSyncedRetailRef.current = {
             jobId: shadowDesignId,
@@ -11493,6 +11554,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           quantity: 1,
           properties,
           price: displayedRetailForAtc,
+          shadowCreated: shadowJustCreated,
         });
 
         if (result.success) {

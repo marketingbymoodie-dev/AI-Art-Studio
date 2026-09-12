@@ -8087,6 +8087,22 @@ ${orientationExtra}
   );
 
   // Storefront ping endpoint - quick health check for embed to verify connectivity
+  // ATC-debug sits next to ping so Railway can see browser-side cart retries.
+  app.post("/api/storefront/atc-debug", (req: Request, res: Response) => {
+    const event = String(req.body?.event || "").slice(0, 64);
+    const attempt = req.body?.attempt;
+    const variantId = String(req.body?.variantId || "").replace(/\D/g, "").slice(0, 20);
+    const created = !!req.body?.created;
+    const soldOutRace = !!req.body?.soldOutRace;
+    const source = String(req.body?.source || "").slice(0, 32);
+    const cid = String(req.body?.cid || req.body?.correlationId || "").slice(0, 80);
+    const reason = String(req.body?.reason || "").slice(0, 64);
+    console.log(
+      `[ATC-debug] event=${event} attempt=${attempt ?? "-"} variant=${variantId || "-"} created=${created} soldOut=${soldOutRace} source=${source} cid=${cid} reason=${reason}`,
+    );
+    res.json({ ok: true });
+  });
+
   app.get("/api/storefront/ping", (req: Request, res: Response) => {
     const timestamp = Date.now();
     const reqId = (req as any).reqId || "none";

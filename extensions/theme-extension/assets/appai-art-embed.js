@@ -1420,6 +1420,24 @@
       return lower.indexOf('sold out') !== -1 || lower.indexOf('cannot add more') !== -1;
     }
 
+    function logAtcDebug(payload) {
+      try {
+        console.log(B, '[ATC-debug]', payload);
+        var appUrl = (config.appUrl || '').replace(/\/$/, '');
+        if (!appUrl) return;
+        var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
+        fetch(appUrl + '/api/storefront/atc-debug', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({
+            shop: shopDomain,
+            source: 'theme'
+          }, payload)),
+          keepalive: true
+        }).catch(function() {});
+      } catch (_) {}
+    }
+
     function logCartFailure(source, variantId, res, json, text) {
       console.error(B, '[' + source + ' FAIL]', {
         httpStatus: res && res.status,
@@ -2088,27 +2106,84 @@
           });
         }
 
-        function notifyAtcFinalising() {
+        function notifyAtcFinalising(attempt, createdHint) {
+          logAtcDebug({
+            event: 'progress_posted',
+            reason: 'AI_ART_STUDIO_ATC_PROGRESS',
+            attempt: nOrZero(attempt),
+            created: !!createdHint,
+            cid: cid,
+            variantId: data.variantId
+          });
           replyToIframe(event, {
             type: 'AI_ART_STUDIO_ATC_PROGRESS',
             correlationId: cid,
             phase: 'finalising',
+            attempt: nOrZero(attempt),
             _bridgeVersion: BRIDGE_VERSION
           });
         }
 
-        function addWithPublishRetry(variantId) {
+        function nOrZero(n) {
+          return typeof n === 'number' && isFinite(n) ? n : 0;
+        }
+
+        function addWithPublishRetry(variantId, createdHint) {
           var notifiedFinalising = false;
+          var created = !!createdHint;
           function attempt(n) {
+            logAtcDebug({
+              event: 'cart_add_attempt',
+              attempt: n,
+              created: created,
+              cid: cid,
+              variantId: variantId
+            });
+            console.log(B, '[ATC retry] attempt', n + '/3', 'variant', variantId,
+              created ? '(created:true)' : '(created:false)');
+            if ((created || n > 0) && !notifiedFinalising) {
+              notifiedFinalising = true;
+              notifyAtcFinalising(n, created);
+            }
             return addToCart(variantId, data.quantity, data.properties, data.price)
+              .then(function(cart) {
+                logAtcDebug({
+                  event: 'cart_add_ok',
+                  attempt: n,
+                  created: created,
+                  cid: cid,
+                  variantId: variantId
+                });
+                console.log(B, '[ATC retry] SUCCESS on attempt', n, 'variant', variantId);
+                return cart;
+              })
               .catch(function(err) {
-                if (!(err && err.__retryable) || n >= 3) throw err;
+                if (!(err && err.__retryable) || n >= 3) {
+                  logAtcDebug({
+                    event: 'cart_add_give_up',
+                    attempt: n,
+                    created: created,
+                    soldOutRace: !!(err && err.soldOutRace),
+                    cid: cid,
+                    variantId: variantId
+                  });
+                  throw err;
+                }
                 if (!notifiedFinalising) {
                   notifiedFinalising = true;
-                  notifyAtcFinalising();
+                  notifyAtcFinalising(n, created);
                 }
                 var wait = n === 0 ? 1000 : n === 1 ? 1500 : 2000;
-                console.log(B, 'Retrying ATC in', wait, 'ms for variant', err.variantId, 'attempt', n + 1,
+                logAtcDebug({
+                  event: 'cart_add_retry_wait',
+                  attempt: n + 1,
+                  created: created,
+                  soldOutRace: !!(err && err.soldOutRace),
+                  cid: cid,
+                  variantId: err.variantId || variantId
+                });
+                console.log(B, '[ATC retry] 422 — waiting', wait, 'ms then attempt', n + 1,
+                  'for variant', err.variantId,
                   err.soldOutRace ? '(fresh-shadow sold-out race)' : '(publish lag)');
                 return new Promise(function(resolve) { setTimeout(resolve, wait); })
                   .then(function() { return attempt(n + 1); });
@@ -2122,14 +2197,15 @@
             .then(function(sku) {
               console.log(B, 'Resolved SKU for ATC', sku.variantId,
                 sku.created ? '(created — may retry sold-out race)' : sku.reused ? '(reused)' : '');
-              return addWithPublishRetry(sku.variantId);
+              return addWithPublishRetry(sku.variantId, !!sku.created || !!data.shadowCreated);
             });
         }
 
         var addPromise;
         if (alreadyShadow) {
-          console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId);
-          addPromise = addWithPublishRetry(data.variantId).catch(function(err) {
+          console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId,
+            data.shadowCreated ? '(iframe created:true)' : '');
+          addPromise = addWithPublishRetry(data.variantId, !!data.shadowCreated).catch(function(err) {
             var msg = (err && err.message) || String(err || '');
             var soldOut = !!(err && err.soldOutRace) || isCartSoldOutMessage(msg);
             if (soldOut) {
@@ -2429,11 +2505,38 @@
         resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '', payload.price)
           .then(function(sku) {
             function attempt(n) {
+              logAtcDebug({
+                event: 'cart_add_attempt',
+                attempt: n,
+                created: !!sku.created,
+                variantId: sku.variantId,
+                reason: 'native_button'
+              });
+              console.log(B, '[ATC retry] button attempt', n + '/3', 'variant', sku.variantId,
+                sku.created ? '(created:true)' : '(created:false)');
               return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {}, payload.price)
+                .then(function(cart) {
+                  logAtcDebug({
+                    event: 'cart_add_ok',
+                    attempt: n,
+                    created: !!sku.created,
+                    variantId: sku.variantId,
+                    reason: 'native_button'
+                  });
+                  return cart;
+                })
                 .catch(function(err) {
                   if (!(err && err.__retryable) || n >= 3) throw err;
                   var wait = n === 0 ? 1000 : n === 1 ? 1500 : 2000;
-                  console.log(B, 'Button ATC retry in', wait, 'ms attempt', n + 1,
+                  logAtcDebug({
+                    event: 'cart_add_retry_wait',
+                    attempt: n + 1,
+                    created: !!sku.created,
+                    soldOutRace: !!(err && err.soldOutRace),
+                    variantId: err.variantId || sku.variantId,
+                    reason: 'native_button'
+                  });
+                  console.log(B, '[ATC retry] button 422 — waiting', wait, 'ms then attempt', n + 1,
                     err.soldOutRace ? '(fresh-shadow sold-out race)' : '(publish lag)');
                   return new Promise(function(resolve) { setTimeout(resolve, wait); })
                     .then(function() { return attempt(n + 1); });
