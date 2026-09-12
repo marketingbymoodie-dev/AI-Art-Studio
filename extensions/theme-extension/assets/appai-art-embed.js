@@ -408,6 +408,23 @@
     }
   }
 
+  function appaiIsDesignerPath() {
+    var path = window.location.pathname || '';
+    return path.indexOf('/apps/appai/s/designer') !== -1 || /(^|\/)s\/designer\/?$/.test(path);
+  }
+
+  function appaiLogPhoneShell(where) {
+    var phone = appaiIsPhoneShellMode();
+    console.log('[AI Art Embed] CP1 ' + where, {
+      phoneShell: phone,
+      innerWidth: window.innerWidth,
+      path: window.location.pathname,
+      designerPath: appaiIsDesignerPath(),
+      host: (window.location.search.match(/[?&]host=([^&]*)/) || [])[1] || ''
+    });
+    return phone;
+  }
+
   var appaiExitFallbackUrl = '/';
   function appaiRememberFallbackUrl(url) {
     if (url && typeof url === 'string') appaiExitFallbackUrl = url;
@@ -935,6 +952,11 @@
   }
   
   function createDesignStudio(config) {
+    if (appaiIsDesignerPath()) {
+      appaiLogPhoneShell('createDesignStudio skipped — already on /s/designer (no iframe)');
+      return null;
+    }
+    appaiLogPhoneShell('createDesignStudio');
     // Shopify.installations + our DB use *.myshopify.com; window.Shopify.shop is often only the handle.
     function normaliseMyshopifyShopForApi(raw) {
       var s = String(raw || '').trim();
@@ -1184,6 +1206,7 @@
     // Phone: top-level designer page (Option B). replace() so Back does not
     // return to /pages/<handle> and immediately re-redirect.
     if (appaiIsPhoneShellMode()) {
+      appaiLogPhoneShell('location.replace → /s/designer?host=page');
       try { persistStoreThemeSnapshot(extractStoreTheme()); } catch (e) {}
       params.delete('deferDesignerConfig');
       params.set('host', 'page');
@@ -3363,6 +3386,45 @@
   function initCustomizerPage(handle, opts) {
     opts = opts || {};
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
+    appaiLogPhoneShell('initCustomizerPage handle=' + handle);
+    if (appaiIsDesignerPath()) {
+      console.log('[AI Art Embed] CP1 initCustomizerPage skipped — already on /s/designer');
+      return;
+    }
+    if (appaiIsPhoneShellMode()) {
+      try {
+        var bodyCs = getComputedStyle(document.body);
+        sessionStorage.setItem('appai:themeSnapshot', JSON.stringify({
+          backgroundColor: bodyCs.backgroundColor,
+          textColor: bodyCs.color,
+          fontFamily: bodyCs.fontFamily,
+          fontSize: bodyCs.fontSize
+        }));
+      } catch (e) {}
+      var early = new URLSearchParams();
+      early.set('shop', appaiResolveShopDomain());
+      early.set('page', handle);
+      early.set('pageHandle', handle);
+      early.set('productHandle', handle);
+      early.set('host', 'page');
+      early.set('returnTo', window.location.pathname + window.location.search);
+      var shopifyObj = window.Shopify || {};
+      var earlyCur = (shopifyObj.currency && shopifyObj.currency.active)
+        ? String(shopifyObj.currency.active).toUpperCase() : '';
+      if (earlyCur) early.set('currency', earlyCur);
+      var earlyRate = shopifyObj.currency && shopifyObj.currency.rate != null
+        ? parseFloat(shopifyObj.currency.rate) : NaN;
+      if (isFinite(earlyRate)) early.set('rate', String(earlyRate));
+      var earlyRoot = document.getElementById('appai-root');
+      var earlyShopCur = earlyRoot && earlyRoot.getAttribute('data-shop-currency');
+      if (earlyShopCur) early.set('shopCurrency', String(earlyShopCur).toUpperCase());
+      if (shopifyObj.country) early.set('country', String(shopifyObj.country).toUpperCase());
+      if (shopifyObj.locale) early.set('locale', String(shopifyObj.locale));
+      var earlyUrl = window.location.origin + '/apps/appai/s/designer?' + early.toString();
+      console.log('[AI Art Embed] CP1 early location.replace', earlyUrl);
+      window.location.replace(earlyUrl);
+      return;
+    }
 
     // Hosted customizer pages (#appai-boot or theme app block) can start the
     // iframe immediately. Contact/About /pages/* must wait for the 404 so we

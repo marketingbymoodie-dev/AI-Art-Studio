@@ -2143,10 +2143,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
   const isMerchantStudio = runtimeMode === 'merchant-studio';
   const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
-  const isTopLevelHost =
-    searchParams.get("host") === "page" &&
-    typeof window !== "undefined" &&
-    window.parent === window;
+  const isTopLevelHost = searchParams.get("host") === "page";
   /** Creator Marketplace host: dual quota + Storefront API cart (not theme /cart/add.js). */
   const creatorUsernameRaw = (searchParams.get("creatorUsername") || "").trim();
   const creatorUsernameParam = creatorUsernameRaw.toLowerCase();
@@ -3742,7 +3739,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const { toast } = useToast();
   // Mobile customizer shell branch (checkpoint 1: scaffold). Everything gated by
   // this flag is only active below the mobile breakpoint; desktop is untouched.
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile() || isTopLevelHost;
+  useEffect(() => {
+    console.log("[EmbedDesign] CP1 host", {
+      host: searchParams.get("host"),
+      isTopLevelHost,
+      parentIsSelf: window.parent === window,
+      innerWidth: window.innerWidth,
+      path: window.location.pathname,
+      usePhoneLayout: isMobile,
+    });
+  }, [isTopLevelHost, isMobile]);
 
   useEffect(() => {
     if (!isMobile) return;
