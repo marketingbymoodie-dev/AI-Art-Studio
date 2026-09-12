@@ -10650,6 +10650,61 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * The parent's theme extension script handles the actual /cart/add.js fetch.
    * Returns a promise that resolves when the parent confirms the cart update.
    */
+  const ATC_SHADOW_NOT_LISTED =
+    "This design isn't listed in the store yet. Please refresh the page and try Add to cart again.";
+  const ATC_HANDLER_MISSING =
+    "Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.";
+  const ATC_HANDLER_SLOW =
+    "Adding this design to the cart is taking longer than expected. Please try again.";
+
+  const waitForStorefrontVariantJs = async (variantId: string): Promise<boolean> => {
+    const id = String(variantId || "").replace(/\D/g, "");
+    if (!id) return false;
+    const path = window.location.pathname || "";
+    const onShopOrigin =
+      /\.myshopify\.com$/i.test(window.location.hostname) ||
+      path.includes("/apps/appai") ||
+      /(^|\/)s\/designer\/?$/.test(path);
+    if (!onShopOrigin) return false;
+    const waits = [300, 500, 800, 1000, 1200, 1500];
+    for (let i = 0; i < waits.length; i++) {
+      try {
+        const res = await fetch(`/variants/${id}.js`, {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        if (res.ok) return true;
+      } catch {
+        /* Railway-origin iframe cannot see shop /variants */
+      }
+      await new Promise((r) => setTimeout(r, waits[i]));
+    }
+    return false;
+  };
+
+  const repairShadowPurchasable = async (shadowId: string): Promise<boolean> => {
+    if (!shopDomain || !shadowId) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await safeFetch(`${API_BASE}/api/storefront/ensure-shadow-purchasable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shop: shopDomain, variantId: shadowId }),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) return true;
+      console.error("[Design Studio] Shadow purchasable write did not land:", res.status, data);
+      return false;
+    } catch (e: any) {
+      console.error("[Design Studio] Shadow purchasable request failed:", e?.message || e);
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   const addToCartStorefront = (payload: {
     variantId: string;
     baseVariantId?: string;
@@ -10667,10 +10722,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const TIMEOUT_MS = 45_000;
+      let heardFromHandler = false;
+      let timer: ReturnType<typeof setTimeout>;
 
       const cleanup = () => {
         window.removeEventListener('message', handler);
         clearTimeout(timer);
+      };
+
+      const armTimeout = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          cleanup();
+          console.error('[Design Studio] Add-to-cart postMessage timed out after idle', TIMEOUT_MS, 'ms');
+          console.error('[Design Studio] Timeout diagnostics:', {
+            correlationId,
+            variantId: payload.variantId,
+            heardFromHandler,
+            parentExists: window.parent !== window,
+            topExists: window.top !== window,
+            bridgeReady: bridgeReady || !!(window as any).__aiArtBridgeReady,
+            locationOrigin: window.location.origin,
+          });
+          resolve({
+            success: false,
+            error: heardFromHandler ? ATC_HANDLER_SLOW : ATC_HANDLER_MISSING,
+          });
+        }, TIMEOUT_MS);
       };
 
       const handler = (event: MessageEvent) => {
@@ -10679,6 +10757,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           event.data?.correlationId === correlationId &&
           event.data?.phase === 'finalising'
         ) {
+          heardFromHandler = true;
+          armTimeout();
           pingAtcDebug({
             event: "progress_received",
             reason: "AI_ART_STUDIO_ATC_PROGRESS",
@@ -10709,19 +10789,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       };
 
-      const timer = setTimeout(() => {
-        cleanup();
-        console.error('[Design Studio] Add-to-cart postMessage timed out after', TIMEOUT_MS, 'ms');
-        console.error('[Design Studio] Timeout diagnostics:', {
-          correlationId,
-          variantId: payload.variantId,
-          parentExists: window.parent !== window,
-          topExists: window.top !== window,
-          bridgeReady: bridgeReady || !!(window as any).__aiArtBridgeReady,
-          locationOrigin: window.location.origin,
-        });
-        resolve({ success: false, error: 'Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.' });
-      }, TIMEOUT_MS);
+      armTimeout();
 
       window.addEventListener('message', handler);
 
@@ -10776,6 +10844,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     variantId: string;
     quantity: number;
     properties: Record<string, string>;
+    shadowCreated?: boolean;
   }): Promise<{ success: boolean; error?: string }> => {
     const variantNum = Number(normalizeVariantId(payload.variantId));
     if (!Number.isFinite(variantNum) || variantNum <= 0) {
@@ -10863,24 +10932,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const waits = [1000, 1500, 2000];
     let notified = false;
+    let repaired = false;
     for (let attempt = 0; attempt <= 3; attempt++) {
       const r = await doAdd(payload.quantity);
       if (r.ok) return { success: true };
       if (!r.retryable || attempt >= 3) {
         return {
           success: false,
-          error: r.soldOut
-            ? "This design is still appearing in the store. Please tap Add to cart again."
-            : r.error,
+          error: r.soldOut || r.retryable ? ATC_SHADOW_NOT_LISTED : r.error,
         };
       }
       if (!notified) {
         notified = true;
         showAtcFinalisingToast("host_page_retry");
       }
+      if (!repaired) {
+        repaired = true;
+        await repairShadowPurchasable(String(variantNum));
+        await waitForStorefrontVariantJs(String(variantNum));
+      }
       await new Promise((res) => setTimeout(res, waits[Math.min(attempt, waits.length - 1)]));
     }
-    return { success: false, error: "Cart add failed after retries." };
+    return { success: false, error: ATC_SHADOW_NOT_LISTED };
   };
 
   const flushFlatPlacer = useCallback(async (opts?: { force?: boolean }) => {
@@ -11926,28 +11999,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       preShadowSyncedRetailRef.current?.jobId === shadowDesignId &&
       preShadowSyncedRetailRef.current?.retail === displayedRetailForAtc;
 
-    /** Awaited CONTINUE write — never fire-and-forget. Fast-path must not skip this. */
+    /** Awaited CONTINUE + Online Store publish — never fire-and-forget. Fast-path must not skip this. */
     const runEnsureShadowPurchasable = async (shadowId: string): Promise<boolean> => {
-      if (!shopDomain || !shadowId) return false;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-      try {
-        const res = await safeFetch(`${API_BASE}/api/storefront/ensure-shadow-purchasable`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ shop: shopDomain, variantId: shadowId }),
-          signal: controller.signal,
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.success) return true;
-        console.error("[Design Studio] Shadow purchasable write did not land:", res.status, data);
-        return false;
-      } catch (e: any) {
-        console.error("[Design Studio] Shadow purchasable request failed:", e?.message || e);
-        return false;
-      } finally {
-        clearTimeout(timeout);
-      }
+      return repairShadowPurchasable(shadowId);
     };
 
     /** Best-effort resolve-design-variant with a single retry on network failure. */
@@ -12244,6 +12298,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
+    if (
+      !finalVariantId ||
+      normalizeVariantId(finalVariantId) === normalizedVariant
+    ) {
+      console.error("[Design Studio] Refusing base-catalog ATC — shadow is not storefront-ready", {
+        finalVariantId,
+        baseVariantId: normalizedVariant,
+      });
+      setVariantError(ATC_SHADOW_NOT_LISTED);
+      setIsAddingToCart(false);
+      return;
+    }
+
     // Storefront mode: use postMessage to parent (AJAX cart, no navigation)
     if (isStorefront) {
       try {
@@ -12252,6 +12319,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               variantId: finalVariantId,
               quantity: 1,
               properties,
+              shadowCreated: shadowJustCreated,
             })
           : await addToCartStorefront({
               variantId: finalVariantId,
@@ -12302,12 +12370,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }, 2500);
         } else {
           const raw = String(result.error || "Unknown error");
-          const soldOutRace = /sold out|cannot add more|still appearing in the store/i.test(raw);
-          setVariantError(
-            soldOutRace
-              ? "This design is still appearing in the store. Please tap Add to cart again."
-              : `Failed to add to cart: ${raw}`,
-          );
+          const soldOutRace = /sold out|cannot add more|still appearing in the store|not listed in the store|purchase is not allowed/i.test(raw);
+          setVariantError(soldOutRace ? ATC_SHADOW_NOT_LISTED : raw);
         }
       } catch (e: any) {
         console.error('[Design Studio] Add-to-cart error:', e);

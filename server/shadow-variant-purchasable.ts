@@ -7,7 +7,17 @@
  * REST is not used. CONTINUE is written unconditionally — never gated on tracked.
  * The write is asserted: HTTP 200 with userErrors, or a returned policy other
  * than CONTINUE, throws. Do not fire-and-forget.
+ *
+ * Ajax /cart/add.js also requires the shadow product on the Online Store
+ * channel. Publication is asserted here too — a CONTINUE-only write still
+ * 422s as sold-out / not-found when the product is unpublished, and reuse
+ * used to skip publish entirely (second tap stayed stuck).
  */
+
+import {
+  ShadowNotOnStorefrontError,
+  ensureProductOnOnlineStore,
+} from "./shopify-publications";
 
 export class ShadowVariantNotPurchasableError extends Error {
   readonly code = "shadow_not_purchasable" as const;
@@ -150,6 +160,23 @@ export async function ensureShadowVariantPurchasable(opts: {
     );
   }
   console.log(`[ShadowProduct] inventoryPolicy CONTINUE confirmed for variant ${variantId}`);
+
+  const numericProductId = productGid.replace(/\D/g, "");
+  try {
+    await ensureProductOnOnlineStore({
+      shop,
+      accessToken: token,
+      productId: numericProductId,
+    });
+  } catch (e: any) {
+    if (e instanceof ShadowNotOnStorefrontError) {
+      throw new ShadowVariantNotPurchasableError(e.message, variantId, e.details);
+    }
+    throw new ShadowVariantNotPurchasableError(
+      `Shadow Online Store publish failed: ${e?.message || e}`,
+      variantId,
+    );
+  }
 
   const itemId = variant?.inventoryItem?.id;
   if (!itemId) return;

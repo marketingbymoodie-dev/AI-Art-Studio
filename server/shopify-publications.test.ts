@@ -3,6 +3,7 @@ import {
   creatorMerchandiseMissingMessage,
   isCheckoutPublication,
   isMerchandiseMissingError,
+  isOnlineStorePublication,
   isPosPublication,
   partitionPublications,
 } from "./shopify-publications";
@@ -14,6 +15,12 @@ describe("publication classification", () => {
     expect(isCheckoutPublication("Hydrogen")).toBe(true);
     expect(isCheckoutPublication("AI Art Studio (Staging)")).toBe(true);
     expect(isCheckoutPublication("Storefront API")).toBe(true);
+  });
+
+  it("identifies the Online Store publication by exact name", () => {
+    expect(isOnlineStorePublication("Online Store")).toBe(true);
+    expect(isOnlineStorePublication("online store")).toBe(true);
+    expect(isOnlineStorePublication("AI Art Studio (Staging)")).toBe(false);
   });
 
   it("treats Point of Sale as POS-only", () => {

@@ -1408,7 +1408,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.4';
+    var BRIDGE_VERSION = '1.0.5';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -1506,8 +1506,8 @@
 
     // --- Design SKU: create/reuse a unique Shopify variant per design ---
     // This ensures each cart line item has its own variant image at checkout
-    // without requiring Shopify Plus. Falls back to the original variantId if
-    // the endpoint is unavailable or returns an error.
+    // without requiring Shopify Plus. Never fall back to the base catalog
+    // variant (POD qty 0 + DENY → Ajax "already sold out").
     function resolveDesignSku(sourceVariantId, designId, mockupUrl, retailPrice) {
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
@@ -1519,12 +1519,12 @@
       }
       // productId is optional — server resolves it from variantId when missing.
       if (!designId || !mockupUrl || !appUrl || !shopDomain) {
-        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'shopDomain:', !!shopDomain, '— using base variantId', sourceVariantId);
-        return Promise.resolve({ variantId: sourceVariantId });
+        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'shopDomain:', !!shopDomain);
+        return Promise.reject(new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.'));
       }
       if (!mockupUrl.startsWith('https://')) {
-        console.log(B, '[resolveDesignSku] Non-https mockupUrl:', mockupUrl.substring(0, 80), '— using base variantId', sourceVariantId);
-        return Promise.resolve({ variantId: sourceVariantId });
+        console.log(B, '[resolveDesignSku] Non-https mockupUrl:', mockupUrl.substring(0, 80));
+        return Promise.reject(new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.'));
       }
       var endpoint = appUrl.replace(/\/$/, '') + '/api/storefront/resolve-design-variant';
       console.log(B, '[resolveDesignSku] Calling endpoint for design', designId, 'productId:', productId || '(none, server will resolve)');
@@ -1543,22 +1543,64 @@
       })
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (data && data.success && data.variantId) {
+        if (
+          data &&
+          data.success &&
+          data.variantId &&
+          String(data.variantId) !== String(sourceVariantId)
+        ) {
           console.log(B, '[resolveDesignSku] Resolved variantId:', data.variantId,
-            data.created ? '(created)' : data.reused ? '(reused)' : '(fallback)');
+            data.created ? '(created)' : data.reused ? '(reused)' : '');
           return {
             variantId: data.variantId,
             created: !!data.created,
             reused: !!data.reused
           };
         }
-        console.warn(B, '[resolveDesignSku] Bad response, falling back:', data);
-        return { variantId: sourceVariantId, created: false, reused: false };
+        console.warn(B, '[resolveDesignSku] Shadow not ready — refusing base catalog variant:', data);
+        throw new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
       })
       .catch(function(err) {
-        console.warn(B, '[resolveDesignSku] Error, falling back:', err);
-        return { variantId: sourceVariantId, created: false, reused: false };
+        if (err && err.message && err.message.indexOf('isn\'t listed in the store') !== -1) throw err;
+        console.warn(B, '[resolveDesignSku] Error — refusing base catalog fallback:', err);
+        throw new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
       });
+    }
+
+    function waitForStorefrontVariant(variantId) {
+      var id = String(variantId || '').replace(/\D/g, '');
+      if (!id) return Promise.resolve(false);
+      var waits = [300, 500, 800, 1000, 1200, 1500];
+      function attempt(n) {
+        return fetch('/variants/' + id + '.js', {
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json' }
+        }).then(function(res) {
+          if (res.ok) return true;
+          if (n >= waits.length) return false;
+          return new Promise(function(r) { setTimeout(r, waits[n]); })
+            .then(function() { return attempt(n + 1); });
+        }).catch(function() {
+          if (n >= waits.length) return false;
+          return new Promise(function(r) { setTimeout(r, waits[n]); })
+            .then(function() { return attempt(n + 1); });
+        });
+      }
+      return attempt(0);
+    }
+
+    function repairShadowPurchasable(variantId) {
+      var appUrl = (config.appUrl || '').replace(/\/$/, '');
+      var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
+      var id = String(variantId || '').replace(/\D/g, '');
+      if (!appUrl || !shopDomain || !id) return Promise.resolve(false);
+      return fetch(appUrl + '/api/storefront/ensure-shadow-purchasable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop: shopDomain, variantId: id })
+      }).then(function(r) { return r.json(); })
+        .then(function(data) { return !!(data && data.success); })
+        .catch(function() { return false; });
     }
 
     function shadowDesignIdFromProps(properties) {
@@ -2351,6 +2393,7 @@
         function addWithPublishRetry(variantId, createdHint) {
           var notifiedFinalising = false;
           var created = !!createdHint;
+          var repaired = false;
           function attempt(n) {
             logAtcDebug({
               event: 'cart_add_attempt',
@@ -2405,8 +2448,16 @@
                 console.log(B, '[ATC retry] 422 — waiting', wait, 'ms then attempt', n + 1,
                   'for variant', err.variantId,
                   err.soldOutRace ? '(fresh-shadow sold-out race)' : '(publish lag)');
-                return new Promise(function(resolve) { setTimeout(resolve, wait); })
-                  .then(function() { return attempt(n + 1); });
+                var prep = Promise.resolve(false);
+                if (!repaired) {
+                  repaired = true;
+                  prep = repairShadowPurchasable(variantId).then(function() {
+                    return waitForStorefrontVariant(variantId);
+                  });
+                }
+                return prep.then(function() {
+                  return new Promise(function(resolve) { setTimeout(resolve, wait); });
+                }).then(function() { return attempt(n + 1); });
               });
           }
           return attempt(0);
@@ -2448,11 +2499,11 @@
           .catch(function(err) {
             var msg = (err && err.message) || String(err);
             if (err && err.soldOutRace) {
-              replyAtcFail('This design is still appearing in the store. Please tap Add to cart again.');
+              replyAtcFail('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
               return;
             }
             if (err && err.__retryable) {
-              replyAtcFail('This product is not available for purchase yet. Please refresh the page and try again.');
+              replyAtcFail('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
               return;
             }
             replyAtcFail(msg);
@@ -2790,18 +2841,11 @@
                 .catch(function(err) {
                   if (!(err && err.__retryable) || n >= 3) throw err;
                   var wait = n === 0 ? 1000 : n === 1 ? 1500 : 2000;
-                  logAtcDebug({
-                    event: 'cart_add_retry_wait',
-                    attempt: n + 1,
-                    created: !!sku.created,
-                    soldOutRace: !!(err && err.soldOutRace),
-                    variantId: err.variantId || sku.variantId,
-                    reason: 'native_button'
-                  });
-                  console.log(B, '[ATC retry] button 422 — waiting', wait, 'ms then attempt', n + 1,
-                    err.soldOutRace ? '(fresh-shadow sold-out race)' : '(publish lag)');
-                  return new Promise(function(resolve) { setTimeout(resolve, wait); })
-                    .then(function() { return attempt(n + 1); });
+                  return repairShadowPurchasable(sku.variantId).then(function() {
+                    return waitForStorefrontVariant(sku.variantId);
+                  }).then(function() {
+                    return new Promise(function(resolve) { setTimeout(resolve, wait); });
+                  }).then(function() { return attempt(n + 1); });
                 });
             }
             return attempt(0);

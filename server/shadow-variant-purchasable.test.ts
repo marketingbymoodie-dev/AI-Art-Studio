@@ -17,6 +17,27 @@ function parseBody(init?: RequestInit): { query: string; variables: any } {
   return JSON.parse(String(init?.body || "{}"));
 }
 
+function publicationOkResponse(query: string): Response | null {
+  if (query.includes("publications(")) {
+    return jsonResponse({
+      data: {
+        publications: {
+          edges: [{ node: { id: "gid://shopify/Publication/1", name: "Online Store" } }],
+        },
+      },
+    });
+  }
+  if (query.includes("publishablePublish")) {
+    return jsonResponse({ data: { publishablePublish: { userErrors: [] } } });
+  }
+  if (query.includes("publishedOnPublication")) {
+    return jsonResponse({
+      data: { product: { status: "UNLISTED", publishedOnPublication: true } },
+    });
+  }
+  return null;
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
@@ -57,6 +78,8 @@ describe("ensureShadowVariantPurchasable", () => {
           },
         });
       }
+      const pub = publicationOkResponse(body.query);
+      if (pub) return pub;
       return jsonResponse({ errors: [{ message: "unexpected query" }] }, 500);
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -146,6 +169,67 @@ describe("ensureShadowVariantPurchasable", () => {
     ).rejects.toMatchObject({
       name: "ShadowVariantNotPurchasableError",
       message: expect.stringContaining("did not land"),
+    });
+  });
+
+  it("throws when Online Store publication does not land", async () => {
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/products/") && init?.method === "PUT") {
+        return jsonResponse({ product: { id: 99, published: true } });
+      }
+      const body = parseBody(init);
+      if (body.query.includes("productVariant(id:")) {
+        return jsonResponse({
+          data: {
+            productVariant: {
+              id: "gid://shopify/ProductVariant/111",
+              inventoryPolicy: "DENY",
+              product: { id: "gid://shopify/Product/99" },
+              inventoryItem: { id: "gid://shopify/InventoryItem/5", tracked: false },
+            },
+          },
+        });
+      }
+      if (body.query.includes("productVariantsBulkUpdate")) {
+        return jsonResponse({
+          data: {
+            productVariantsBulkUpdate: {
+              productVariants: [{ id: "gid://shopify/ProductVariant/111", inventoryPolicy: "CONTINUE" }],
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (body.query.includes("publications(")) {
+        return jsonResponse({
+          data: {
+            publications: {
+              edges: [{ node: { id: "gid://shopify/Publication/1", name: "Online Store" } }],
+            },
+          },
+        });
+      }
+      if (body.query.includes("publishablePublish")) {
+        return jsonResponse({ data: { publishablePublish: { userErrors: [] } } });
+      }
+      if (body.query.includes("publishedOnPublication")) {
+        return jsonResponse({
+          data: { product: { status: "UNLISTED", publishedOnPublication: false } },
+        });
+      }
+      return jsonResponse({ errors: [{ message: "unexpected query" }] }, 500);
+    }) as unknown as typeof fetch;
+
+    await expect(
+      ensureShadowVariantPurchasable({
+        shop: "demo.myshopify.com",
+        token: "tok",
+        variantId: "111",
+      }),
+    ).rejects.toMatchObject({
+      name: "ShadowVariantNotPurchasableError",
+      message: expect.stringContaining("not on the Online Store"),
     });
   });
 });

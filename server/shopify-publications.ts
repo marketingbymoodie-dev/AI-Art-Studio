@@ -37,6 +37,22 @@ export function isMerchandiseMissingError(message: string): boolean {
   return /merchandise with id .* does not exist/i.test(String(message || ""));
 }
 
+export function isOnlineStorePublication(name: string): boolean {
+  return String(name || "").trim().toLowerCase() === "online store";
+}
+
+export class ShadowNotOnStorefrontError extends Error {
+  readonly code = "shadow_not_on_storefront" as const;
+  constructor(
+    message: string,
+    readonly productId: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "ShadowNotOnStorefrontError";
+  }
+}
+
 export function creatorMerchandiseMissingMessage(): string {
   return "This product is not available for checkout yet. Please try Add to cart again in a moment.";
 }
@@ -141,6 +157,97 @@ export async function publishProductToCheckoutChannels(
   }
 
   return { published, unpublished };
+}
+
+async function restPublishProduct(
+  shop: string,
+  accessToken: string,
+  productId: string,
+): Promise<void> {
+  const res = await fetch(`https://${shop}/admin/api/2025-10/products/${productId}.json`, {
+    method: "PUT",
+    headers: adminHeaders(accessToken),
+    body: JSON.stringify({ product: { id: Number(productId), published: true } }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new ShadowNotOnStorefrontError(
+      `REST published:true failed HTTP ${res.status}`,
+      productId,
+      t.slice(0, 240),
+    );
+  }
+}
+
+async function readOnlineStorePublication(
+  shop: string,
+  accessToken: string,
+): Promise<PublicationNode> {
+  const pubData = await adminGraphql<{
+    publications: { edges: Array<{ node: PublicationNode }> };
+  }>(shop, accessToken, `{ publications(first: 50) { edges { node { id name } } } }`);
+  const nodes = (pubData.publications?.edges || []).map((e) => e.node);
+  const onlineStore = nodes.find((n) => isOnlineStorePublication(n.name));
+  if (!onlineStore) {
+    throw new ShadowNotOnStorefrontError("Shop has no Online Store publication", "unknown", nodes);
+  }
+  return onlineStore;
+}
+
+/**
+ * Publish to checkout channels and ASSERT the product is on Online Store.
+ * GraphQL publishablePublish is primary; REST published:true is the fallback
+ * the old ensureProductPublishedToOnlineStore docstring promised but never ran.
+ */
+export async function ensureProductOnOnlineStore(opts: {
+  shop: string;
+  accessToken: string;
+  productId: string | number;
+}): Promise<{ published: string[] }> {
+  const productId = String(opts.productId || "").replace(/\D/g, "");
+  if (!productId) {
+    throw new ShadowNotOnStorefrontError("Shadow publish skipped — missing productId", "unknown");
+  }
+  const productGid = `gid://shopify/Product/${productId}`;
+  const published = await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
+
+  const checkPublished = async () => {
+    const onlineStore = await readOnlineStorePublication(opts.shop, opts.accessToken);
+    return adminGraphql<{
+      product: { publishedOnPublication: boolean; status: string } | null;
+    }>(
+      opts.shop,
+      opts.accessToken,
+      `query($id: ID!, $pub: ID!) {
+        product(id: $id) {
+          status
+          publishedOnPublication(publicationId: $pub)
+        }
+      }`,
+      { id: productGid, pub: onlineStore.id },
+    );
+  };
+
+  let check = await checkPublished();
+  if (!check.product?.publishedOnPublication) {
+    console.warn(
+      `[shopify-publications] GraphQL publish did not land for ${productId} — REST published:true fallback`,
+    );
+    await restPublishProduct(opts.shop, opts.accessToken, productId);
+    await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
+    check = await checkPublished();
+  }
+  if (!check.product?.publishedOnPublication) {
+    throw new ShadowNotOnStorefrontError(
+      `Shadow product ${productId} is not on the Online Store channel (status=${check.product?.status || "unknown"})`,
+      productId,
+      check,
+    );
+  }
+  console.log(
+    `[shopify-publications] Online Store confirmed for product ${productId} status=${check.product.status}`,
+  );
+  return { published: published.published };
 }
 
 /** Look up a variant's product and publish it to checkout / Storefront API channels. */

@@ -10059,9 +10059,6 @@ ${orientationExtra}
               variantId: shadowVariant.id,
             });
 
-            // Publish to Online Store channel
-            try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
-
             // Assign mockup image to the variant
             if (shadowProduct.images?.length > 0) {
               const imgId = shadowProduct.images[0].id;
@@ -10891,8 +10888,9 @@ ${orientationExtra}
     }
   });
 
-  // ATC fast-path (b74b936d) skips resolve-design-variant. Repair CONTINUE here
-  // so a reused deny-shadow cannot 422. Asserted GraphQL write — not fire-and-forget.
+  // ATC fast-path (b74b936d) skips resolve-design-variant. Repair CONTINUE +
+  // Online Store publication here so a reused deny/unpublished shadow cannot 422.
+  // Asserted GraphQL write — not fire-and-forget.
   app.post("/api/storefront/ensure-shadow-purchasable", async (req: Request, res: Response) => {
     try {
       const shop = normalizeMyshopifyShopDomain(req.body?.shop);
@@ -11224,11 +11222,7 @@ ${orientationExtra}
         variantId: shadowVariant.id,
       });
 
-      // 6. Ensure the shadow product is published to the Online Store sales channel
-      //    (required for unlisted products to be accessible via the storefront cart API)
-      try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
-
-      // 7. Assign the mockup image to the variant
+      // 6. Assign the mockup image to the variant
       if (shadowProduct.images && shadowProduct.images.length > 0) {
         const imgId = shadowProduct.images[0].id;
         await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
