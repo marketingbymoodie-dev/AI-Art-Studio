@@ -242,10 +242,10 @@ const DATA_MIGRATIONS: string[] = [
     )
     SELECT
       id,
-      COALESCE(credits, 0),
+      GREATEST(COALESCE(credits, 0), 0),
       0,
       0,
-      COALESCE(free_generations_used, 0),
+      GREATEST(COALESCE(free_generations_used, 0), 0),
       0,
       NOW()
     FROM customers
@@ -298,12 +298,12 @@ const DATA_MIGRATIONS: string[] = [
   // coupon grants dual-write both columns, so the legacy column being lower is
   // a strong signal that credits were already consumed.
   `UPDATE credit_balances cb
-    SET credits = c.credits,
+    SET credits = GREATEST(c.credits, 0),
         updated_at = NOW(),
         version = cb.version + 1
     FROM customers c
     WHERE cb.customer_id = c.id
-      AND c.credits < cb.credits`,
+      AND GREATEST(c.credits, 0) < cb.credits`,
   // Canonical hot-pink chroma prefixes for merchant apparel styles (matting-critical).
   // Guard matches a white BACKGROUND, not the bare word "white": every canonical prefix
   // says "no white mat" / "white may be used inside the subject", so `%white%` matched
@@ -642,6 +642,98 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "id" serial PRIMARY KEY,
         "coupon_id" integer NOT NULL,
         "customer_id" varchar NOT NULL,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "designs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "designs" (
+        "id" serial PRIMARY KEY,
+        "customer_id" varchar NOT NULL,
+        "merchant_id" varchar,
+        "product_type_id" integer,
+        "prompt" text NOT NULL,
+        "style_preset" text,
+        "reference_image_url" text,
+        "generated_image_url" text,
+        "thumbnail_image_url" text,
+        "size" text NOT NULL,
+        "frame_color" text NOT NULL DEFAULT 'black',
+        "aspect_ratio" text NOT NULL DEFAULT '3:4',
+        "transform_scale" integer NOT NULL DEFAULT 100,
+        "transform_x" integer NOT NULL DEFAULT 50,
+        "transform_y" integer NOT NULL DEFAULT 50,
+        "color_tier" text,
+        "alternate_image_url" text,
+        "design_source" text NOT NULL DEFAULT 'ai',
+        "status" text NOT NULL DEFAULT 'pending',
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "orders",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "orders" (
+        "id" serial PRIMARY KEY,
+        "design_id" integer NOT NULL,
+        "customer_id" varchar NOT NULL,
+        "merchant_id" varchar,
+        "printify_order_id" text,
+        "status" text NOT NULL DEFAULT 'pending',
+        "size" text NOT NULL,
+        "frame_color" text NOT NULL,
+        "quantity" integer NOT NULL DEFAULT 1,
+        "price_in_cents" integer NOT NULL,
+        "shipping_in_cents" integer NOT NULL DEFAULT 0,
+        "credit_refund_in_cents" integer NOT NULL DEFAULT 0,
+        "shipping_address" text,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shared_designs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shared_designs" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "design_id" integer,
+        "shop_domain" text,
+        "product_id" text,
+        "product_handle" text,
+        "share_token" text NOT NULL,
+        "image_url" text NOT NULL,
+        "thumbnail_url" text,
+        "prompt" text NOT NULL,
+        "style_preset" text,
+        "size" text NOT NULL,
+        "frame_color" text NOT NULL,
+        "transform_scale" integer NOT NULL DEFAULT 100,
+        "transform_x" integer NOT NULL DEFAULT 50,
+        "transform_y" integer NOT NULL DEFAULT 50,
+        "product_type_id" integer,
+        "expires_at" timestamp,
+        "view_count" integer NOT NULL DEFAULT 0,
+        "owner_customer_id" varchar,
+        "creator_id" varchar,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "cached_panel_images",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "cached_panel_images" (
+        "id" serial PRIMARY KEY,
+        "blueprint_id" integer NOT NULL,
+        "panel_name" text NOT NULL,
+        "panel_width" integer NOT NULL,
+        "panel_height" integer NOT NULL,
+        "image_data_url" text NOT NULL,
         "created_at" timestamp DEFAULT now() NOT NULL
       )
     `,
