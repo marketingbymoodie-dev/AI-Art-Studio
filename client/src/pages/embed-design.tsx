@@ -13856,10 +13856,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // visualViewport (that is the iframe box, not the phone).
     const isPhoneShell = () => {
       try {
-        return (
-          window.matchMedia("(pointer: coarse), (max-width: 767px)").matches ||
-          window.innerWidth < 768
-        );
+        return window.matchMedia("(max-width: 767px)").matches;
       } catch {
         return window.innerWidth < 768;
       }

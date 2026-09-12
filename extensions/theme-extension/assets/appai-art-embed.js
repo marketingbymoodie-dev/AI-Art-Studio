@@ -392,6 +392,27 @@
     }
   }
 
+  /**
+   * Phone-shell pin (fixed-height iframe) is WIDTH-ONLY.
+   * Do NOT reuse appaiIsMobileScrollMode() here: that includes pointer:coarse,
+   * so an iPad would pin the iframe to the viewport while the child still
+   * renders the desktop layout (useIsMobile is innerWidth < 768) and posts
+   * no height — content becomes unreachable. Wheel/touch stay on the locked
+   * coarse-or-narrow predicate above.
+   */
+  function appaiIsPhoneShellMode() {
+    try {
+      return window.matchMedia('(max-width: 767px)').matches;
+    } catch (e) {
+      return window.innerWidth < 768;
+    }
+  }
+
+  var appaiExitFallbackUrl = '/';
+  function appaiRememberFallbackUrl(url) {
+    if (url && typeof url === 'string') appaiExitFallbackUrl = url;
+  }
+
   /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
   function appaiAttachIframeWheelForward(iframe, mobileNativeScroll) {
     if (mobileNativeScroll || !iframe) return;
@@ -900,7 +921,7 @@
       return Math.max(400, Math.floor(visH));
     }
     function applyMobileNativeScrollFrame() {
-      if (!mobileNativeScroll || !studioContainer) return;
+      if (!appaiIsPhoneShellMode() || !studioContainer) return;
       var h = appaiMobileFrameHeight();
       studioContainer.style.height = h + 'px';
       studioContainer.style.maxHeight = h + 'px';
@@ -1009,7 +1030,7 @@
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
     ensureAppaiLoadingCover();
-    if (mobileNativeScroll) {
+    if (appaiIsPhoneShellMode()) {
       applyMobileNativeScrollFrame();
     } else {
       clearMobileNativeScrollFrame();
@@ -1143,6 +1164,18 @@
         appaiScrollModeMql.addEventListener('change', function (e) { appaiOnScrollModeChange(e.matches); });
       } else if (appaiScrollModeMql.addListener) {
         appaiScrollModeMql.addListener(function (e) { appaiOnScrollModeChange(e.matches); }); // Safari <14
+      }
+      // Width-only: pin/unpin the iframe box when crossing 768 without a
+      // pointer-type change (tablet rotate, theme-editor width drag).
+      var appaiPhoneShellMql = window.matchMedia('(max-width: 767px)');
+      var appaiOnPhoneShellChange = function () {
+        if (appaiIsPhoneShellMode()) applyMobileNativeScrollFrame();
+        else clearMobileNativeScrollFrame();
+      };
+      if (appaiPhoneShellMql.addEventListener) {
+        appaiPhoneShellMql.addEventListener('change', appaiOnPhoneShellChange);
+      } else if (appaiPhoneShellMql.addListener) {
+        appaiPhoneShellMql.addListener(appaiOnPhoneShellChange);
       }
     } catch (e) {}
 
@@ -2320,10 +2353,11 @@
 
       // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
-        // Mobile shell: parent visualViewport owns the iframe box. Child
+        // Phone shell: parent visualViewport owns the iframe box. Child
         // posts must not stretch it (that's what put the bottom tab
-        // below the phone). Re-pin in case layout shifted.
-        if (mobileNativeScroll) {
+        // below the phone). Tablets (coarse + width >= 768) still grow
+        // from the posted height so desktop layout stays reachable.
+        if (appaiIsPhoneShellMode()) {
           applyMobileNativeScrollFrame();
           return;
         }
@@ -2360,6 +2394,19 @@
           } catch(e) {}
         }
         applyMobileNativeScrollFrame();
+        return;
+      }
+      // ===== EXIT (mobile Back) =====
+      if (data.type === 'ai-art-studio:exit') {
+        try {
+          if (window.history.length > 1) {
+            window.history.back();
+          } else {
+            window.location.assign(appaiExitFallbackUrl || '/');
+          }
+        } catch (e) {
+          window.location.assign(appaiExitFallbackUrl || '/');
+        }
         return;
       }
       // ===== WHEEL FORWARDING =====
@@ -3250,6 +3297,8 @@
         if (config && config.__appaiNotFound && config.fallbackUrl && !opts.fallbackUrl) {
           opts = Object.assign({}, opts, { fallbackUrl: config.fallbackUrl });
         }
+        if (opts.fallbackUrl) appaiRememberFallbackUrl(opts.fallbackUrl);
+        if (config && config.fallbackUrl) appaiRememberFallbackUrl(config.fallbackUrl);
         if (!config || config.__appaiNotFound) {
           var staleBoot = document.getElementById('appai-boot');
           // Only pages the app itself created/hosts carry these markers: the
