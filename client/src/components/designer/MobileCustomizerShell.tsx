@@ -131,6 +131,13 @@ export function MobileCustomizerShell({
   const activeSlot = allSlots.find((s) => s.id === openId) || null;
   const bothTucked = bottomTucked && railTucked;
 
+  useLayoutEffect(() => {
+    const root = document.querySelector(".appai-mobile-shell");
+    if (!root) return;
+    root.classList.toggle("appai-mobile-sheet-open", !!activeSlot);
+    return () => root.classList.remove("appai-mobile-sheet-open");
+  }, [activeSlot]);
+
   const modebarRef = useRef<HTMLDivElement | null>(null);
   const primaryRef = useRef<HTMLDivElement | null>(null);
   const bottombarRef = useRef<HTMLDivElement | null>(null);

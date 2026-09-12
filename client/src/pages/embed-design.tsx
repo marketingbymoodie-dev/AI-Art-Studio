@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a7";
+const CP1_BUILD_MARKER = "cp2-a8";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -10766,6 +10766,123 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     });
   };
 
+  // Same-origin AJAX cart add for the phone `host=page` shell. The React app runs
+  // top-level on the shop origin there, so the theme bridge (appai-art-embed.js) is
+  // NOT present and no postMessage listener answers. Mirrors the bridge addToCart():
+  // /cart.js dedup → /cart/change.js increment, else /cart/add.js with the SAME
+  // 422 publish-lag / sold-out-race retry ladder. Fulfillment body is identical to
+  // the bridge: { items:[{ id, quantity, properties }] }.
+  const addToCartDirect = async (payload: {
+    variantId: string;
+    quantity: number;
+    properties: Record<string, string>;
+  }): Promise<{ success: boolean; error?: string }> => {
+    const variantNum = Number(normalizeVariantId(payload.variantId));
+    if (!Number.isFinite(variantNum) || variantNum <= 0) {
+      return { success: false, error: "Missing variant ID" };
+    }
+
+    let props = payload.properties || {};
+    if (props["_mockup_url"] && String(props["_mockup_url"]).startsWith("data:")) {
+      props = { ...props };
+      delete props["_mockup_url"];
+      delete (props as Record<string, string>)["mockup_url"];
+    }
+
+    const soldOutRe = /sold out|cannot add more|purchase is not allowed|still appearing in the store/i;
+    const notFoundRe = /cannot find|not found/i;
+
+    const postJson = async (url: string, body: unknown) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+      });
+      const json = await res.json().catch(() => ({} as any));
+      return { res, json };
+    };
+
+    const doAdd = async (
+      qty: number,
+    ): Promise<
+      | { ok: true }
+      | { ok: false; retryable: boolean; soldOut: boolean; error: string }
+    > => {
+      const { res, json } = await postJson("/cart/add.js", {
+        items: [{ id: variantNum, quantity: qty, properties: props }],
+      });
+      if (res.ok) return { ok: true };
+      const errMsg = (json && (json.description || json.message)) || `HTTP ${res.status}`;
+      const lower = String(errMsg).toLowerCase();
+      if (res.status === 422 && notFoundRe.test(lower)) {
+        return { ok: false, retryable: true, soldOut: false, error: "Product variant not available. It may still be publishing to the store." };
+      }
+      if (res.status === 422 && soldOutRe.test(lower)) {
+        return { ok: false, retryable: true, soldOut: true, error: "Cart add failed: " + errMsg };
+      }
+      return { ok: false, retryable: false, soldOut: false, error: "Cart add failed: " + errMsg };
+    };
+
+    // Ported verbatim from appai-art-embed.js (1564–1598) — do not re-derive.
+    // Dedup identity is _shadow_design_id (fulfillment), not _design_id (label);
+    // print-config snapshots stay distinct lines.
+    const shadowDesignIdFromProps = (p: Record<string, string>): string =>
+      String(p?.["_shadow_design_id"] || "").trim();
+
+    const findMatchingCartLine = (
+      cart: any,
+      variantId: string | number,
+      properties: Record<string, string>,
+    ): any | null => {
+      const items: any[] = (cart && cart.items) || [];
+      const incomingShadow = shadowDesignIdFromProps(properties);
+      const incomingCfg = hasPrintConfigSuffix(incomingShadow);
+      for (const item of items) {
+        const p = item.properties || {};
+        const itemShadow = String(p["_shadow_design_id"] || "").trim();
+        if (incomingShadow && itemShadow && incomingShadow === itemShadow) return item;
+        if (incomingCfg) continue; // cfg-keyed lines are distinct snapshots — never merge
+        if (String(item.variant_id) === String(variantId)) return item;
+      }
+      return null;
+    };
+
+    try {
+      const cartRes = await fetch("/cart.js", { credentials: "same-origin" });
+      const cart = cartRes.ok ? await cartRes.json() : { items: [] };
+      const existing = findMatchingCartLine(cart, variantNum, props);
+      if (existing && existing.key) {
+        const nextQty = (Number(existing.quantity) || 1) + payload.quantity;
+        const { res } = await postJson("/cart/change.js", { id: existing.key, quantity: nextQty });
+        if (res.ok) return { success: true };
+      }
+    } catch {
+      /* /cart.js unavailable — proceed straight to add */
+    }
+
+    const waits = [1000, 1500, 2000];
+    let notified = false;
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      const r = await doAdd(payload.quantity);
+      if (r.ok) return { success: true };
+      if (!r.retryable || attempt >= 3) {
+        return {
+          success: false,
+          error: r.soldOut
+            ? "This design is still appearing in the store. Please tap Add to cart again."
+            : r.error,
+        };
+      }
+      if (!notified) {
+        notified = true;
+        showAtcFinalisingToast("host_page_retry");
+      }
+      await new Promise((res) => setTimeout(res, waits[Math.min(attempt, waits.length - 1)]));
+    }
+    return { success: false, error: "Cart add failed after retries." };
+  };
+
   const flushFlatPlacer = useCallback(async (opts?: { force?: boolean }) => {
     if (!flatPlacerRef.current) return false;
     return flatPlacerRef.current.applyIfNeeded(opts);
@@ -12130,14 +12247,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Storefront mode: use postMessage to parent (AJAX cart, no navigation)
     if (isStorefront) {
       try {
-        const result = await addToCartStorefront({
-          variantId: finalVariantId,
-          baseVariantId: normalizedVariant,
-          quantity: 1,
-          properties,
-          price: displayedRetailForAtc,
-          shadowCreated: shadowJustCreated,
-        });
+        const result = isTopLevelHost
+          ? await addToCartDirect({
+              variantId: finalVariantId,
+              quantity: 1,
+              properties,
+            })
+          : await addToCartStorefront({
+              variantId: finalVariantId,
+              baseVariantId: normalizedVariant,
+              quantity: 1,
+              properties,
+              price: displayedRetailForAtc,
+              shadowCreated: shadowJustCreated,
+            });
 
         if (result.success) {
           console.log('[Design Studio] Storefront add-to-cart success');
@@ -15661,6 +15784,68 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     !showingMockupAtArtworkSlot
   );
 
+  // Phone-shell converted price. Desktop shows this as the form-column headline
+  // (text-product-price), which mobile CSS-collapses. Reuses the exact desktop
+  // converter + shop-currency source. DISPLAY ONLY — never feeds message.price.
+  const renderMobileHeadlinePrice = () => {
+    if (!(isShopify || isStorefront)) return null;
+    if (!shopifyVariants || shopifyVariants.length === 0) return null;
+
+    const meta = presentmentMetaRef.current;
+    const toDisplay = (shopAmount: number, showFrom: boolean, variantId?: string | null) =>
+      formatStorefrontHeadlineDisplay({
+        shopAmount,
+        showFrom,
+        variantId,
+        activeCurrency,
+        shopCurrency: meta.shopCurrency,
+        rate: meta.rate,
+        pricesByVariantId: presentmentPricesByVariantId,
+        country: meta.country,
+        locale: meta.locale,
+        allowAjaxPresentment: !printPlacementUsesBoth,
+      });
+
+    const sizeSelected = Boolean(selectedSize);
+    const priceMap = buildPriceMap();
+    const mappedCents = sizeSelected && selectedSize ? priceMap[selectedSize] : undefined;
+
+    let display: { text: string; converted: boolean } | null = null;
+    if (sizeSelected && mappedCents && mappedCents > 0) {
+      display = toDisplay(mappedCents / 100, false, shopifyVariantId);
+    } else {
+      const resolved = resolveStorefrontHeadlinePrice({
+        variants: shopifyVariants,
+        sizeSelected,
+        matchedVariantId: shopifyVariantId,
+        bothPrice: null,
+        hasBothRetailPrices: false,
+        printPlacementUsesBoth,
+      });
+      if (resolved) display = toDisplay(resolved.amount, resolved.showFrom, shopifyVariantId);
+    }
+    if (!display) return null;
+
+    const sizeName = sizeSelected
+      ? (printSizes.find((s) => s.id === selectedSize)?.name ?? "")
+      : "";
+
+    return (
+      <div
+        className="appai-mprimary-price flex items-baseline justify-center gap-2 pb-0.5 text-sm"
+        data-testid="mobile-headline-price"
+      >
+        {sizeName ? <span className="font-medium text-foreground">{sizeName}</span> : null}
+        <span className="font-semibold text-foreground">{display.text}</span>
+        {display.converted ? (
+          <span className="text-[10px] font-normal text-muted-foreground">
+            Final price at checkout
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderPrimaryAction = (className = "", testIdSuffix = "") => {
     const withSuffix = (id: string) => testIdSuffix ? `${id}-${testIdSuffix}` : id;
 
@@ -16226,6 +16411,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         isMobile && useAopCustomizer && showPatternStep && !!aopPendingMotifUrl
           ? " appai-mobile-modebar-on"
           : ""
+      }${
+        isMobile && (showSavedDesigns || showOtpLogin || showCouponInput)
+          ? " appai-mobile-escape-open"
+          : ""
       }`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
@@ -16289,7 +16478,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           onHome={leaveCustomizerToHome}
           onOpenCredits={() => setCreditsPopoverOpen(true)}
           onOpenGallery={() => {
-            setShowSavedDesigns(true);
+            setShowSavedDesigns((open) => !open);
             setShowOtpLogin(false);
             setShowCouponInput(false);
             setShowArtClassSignup(false);
@@ -16314,7 +16503,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }
           }}
           openSheetRequest={aopSheetRequest}
-          primaryAction={renderPrimaryAction("", "mshell")}
+          primaryAction={
+            <>
+              {renderMobileHeadlinePrice()}
+              {renderPrimaryAction("", "mshell")}
+            </>
+          }
           railSlots={[
             {
               id: "size",
@@ -18508,6 +18702,59 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           }
                         : null
                     }
+                    underPreviewSlot={
+                      showsPrintifyMockupPreview &&
+                      generatedDesign?.imageUrl &&
+                      postGenGalleryItems.length > 1 ? (
+                    <div
+                      className="flex justify-center gap-3 pt-2 pb-1"
+                      data-testid="hoodie-placer-gallery-dots"
+                    >
+                      {postGenGalleryItems.map((item, idx) => {
+                        if (!isAopPlacerGalleryReachable(item)) return null;
+                        return (
+                          <button
+                            key={`${item.kind}-${idx}`}
+                            type="button"
+                            onClick={() => {
+                              lastManualGalleryNavRef.current = Date.now();
+                              stickAopPersonGalleryRef.current = !!(
+                                item.kind === "mockup" &&
+                                isPrintifyOnDemandMockupLabel(item.label)
+                              );
+                              setSelectedMockupIndex(idx);
+                            }}
+                            aria-label={
+                              item.kind === "artwork" ? "Front View" : item.label
+                            }
+                            className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                              selectedMockupIndex === idx
+                                ? "opacity-100"
+                                : "opacity-40 hover:opacity-70"
+                            }`}
+                          >
+                            <span
+                              className={`rounded-full transition-all duration-200 ${
+                                selectedMockupIndex === idx
+                                  ? "w-4 h-2 bg-foreground"
+                                  : "w-2 h-2 bg-foreground/60"
+                              }`}
+                            />
+                            <span
+                              className={`text-[10px] leading-tight font-medium ${
+                                selectedMockupIndex === idx
+                                  ? "text-foreground"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
+                              {item.kind === "artwork" ? "Front View" : item.label}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                      ) : null
+                    }
                   />
                   {showsPrintifyMockupPreview &&
                     generatedDesign?.imageUrl &&
@@ -18568,57 +18815,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         <ChevronRight className="w-5 h-5" />
                       </button>
                     </>
-                  )}
-                  {showsPrintifyMockupPreview &&
-                    generatedDesign?.imageUrl &&
-                    postGenGalleryItems.length > 1 && (
-                    <div
-                      className="flex justify-center gap-3 mt-1 lg:pr-80"
-                      data-testid="hoodie-placer-gallery-dots"
-                    >
-                      {postGenGalleryItems.map((item, idx) => {
-                        if (!isAopPlacerGalleryReachable(item)) return null;
-                        return (
-                          <button
-                            key={`${item.kind}-${idx}`}
-                            type="button"
-                            onClick={() => {
-                              lastManualGalleryNavRef.current = Date.now();
-                              stickAopPersonGalleryRef.current = !!(
-                                item.kind === "mockup" &&
-                                isPrintifyOnDemandMockupLabel(item.label)
-                              );
-                              setSelectedMockupIndex(idx);
-                            }}
-                            aria-label={
-                              item.kind === "artwork" ? "Front View" : item.label
-                            }
-                            className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                              selectedMockupIndex === idx
-                                ? "opacity-100"
-                                : "opacity-40 hover:opacity-70"
-                            }`}
-                          >
-                            <span
-                              className={`rounded-full transition-all duration-200 ${
-                                selectedMockupIndex === idx
-                                  ? "w-4 h-2 bg-foreground"
-                                  : "w-2 h-2 bg-foreground/60"
-                              }`}
-                            />
-                            <span
-                              className={`text-[10px] leading-tight font-medium ${
-                                selectedMockupIndex === idx
-                                  ? "text-foreground"
-                                  : "text-muted-foreground"
-                              }`}
-                            >
-                              {item.kind === "artwork" ? "Front View" : item.label}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
                   )}
                 </div>
               ) : (
@@ -18993,61 +19189,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           }
                         : null
                     }
-                  />
-                  {/* Gallery arrows while placer is open (ProductMockup arrows are hidden). */}
-                  {showsPrintifyMockupPreview &&
-                    generatedDesign?.imageUrl &&
-                    postGenGalleryItems.length > 1 && (
-                    <>
-                      <button
-                        type="button"
-                        aria-label="Previous"
-                        onClick={() =>
-                          setSelectedMockupIndex((i) => {
-                            lastManualGalleryNavRef.current = Date.now();
-                            stickAopPersonGalleryRef.current = false;
-                            return stepPostGenGalleryIndex(
-                              i,
-                              -1,
-                              postGenGalleryItems,
-                              true,
-                            );
-                          })
-                        }
-                        className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
-                        data-testid="button-flat-gallery-prev"
-                      >
-                        <ChevronLeft className="w-5 h-5" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Next"
-                        onClick={() =>
-                          setSelectedMockupIndex((i) => {
-                            lastManualGalleryNavRef.current = Date.now();
-                            stickAopPersonGalleryRef.current = false;
-                            return stepPostGenGalleryIndex(
-                              i,
-                              1,
-                              postGenGalleryItems,
-                              true,
-                            );
-                          })
-                        }
-                        className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
-                        data-testid="button-flat-gallery-next"
-                      >
-                        <ChevronRight className="w-5 h-5" />
-                      </button>
-                    </>
-                  )}
-                </div>
-                {/* Dots while placer is open. lg:pr-80 centers under canvas (not controls). */}
-                {showsPrintifyMockupPreview &&
-                  generatedDesign?.imageUrl &&
-                  postGenGalleryItems.length > 1 && (
+                    underPreviewSlot={
+                      showsPrintifyMockupPreview &&
+                      generatedDesign?.imageUrl &&
+                      postGenGalleryItems.length > 1 ? (
                   <div
-                    className={`flex justify-center gap-3 mt-1 lg:pr-80${
+                    className={`flex justify-center gap-3 pt-2 pb-1${
                       flatEdgeWrapMode ? " shrink-0" : ""
                     }`}
                     data-testid="flat-placer-gallery-dots"
@@ -19099,7 +19246,57 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       );
                     })}
                   </div>
-                )}
+                      ) : null
+                    }
+                  />
+                  {/* Gallery arrows while placer is open (ProductMockup arrows are hidden). */}
+                  {showsPrintifyMockupPreview &&
+                    generatedDesign?.imageUrl &&
+                    postGenGalleryItems.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="Previous"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = false;
+                            return stepPostGenGalleryIndex(
+                              i,
+                              -1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                          })
+                        }
+                        className="absolute left-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                        data-testid="button-flat-gallery-prev"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next"
+                        onClick={() =>
+                          setSelectedMockupIndex((i) => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = false;
+                            return stepPostGenGalleryIndex(
+                              i,
+                              1,
+                              postGenGalleryItems,
+                              true,
+                            );
+                          })
+                        }
+                        className="absolute right-1 top-[28%] -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors lg:right-[calc(20rem+0.75rem)]"
+                        data-testid="button-flat-gallery-next"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             ) : (<>
             {/* Edit / Reuse / Share — above the viewing window (closed preview) */}

@@ -88,11 +88,10 @@ html:has(.appai-mobile-shell) #root {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(255, 255, 255, 0.96);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  /* Solid — no frosted glass. Sheets sit below this bar. */
+  background: #ffffff;
   border-bottom: 1px solid var(--appai-mobile-line, #e7e3da);
-  z-index: 60;
+  z-index: 80;
 }
 
 .appai-mshell-iconbtn {
@@ -229,21 +228,35 @@ html:has(.appai-mobile-shell) #root {
   pointer-events: none;
 }
 
-/* OTP / Saved Designs live in the hidden form column. Escape them to the
-   iframe viewport so the top-bar wires can actually show the same panels. */
+/* OTP / Saved Designs live in the hidden form column. Full-bleed opaque
+   cover from below the top bar to the screen bottom so Place/Pattern,
+   Add to Cart, and the tool bar cannot show through. */
 .appai-mobile-shell .appai-mobile-escape-overlay {
   position: fixed !important;
-  left: 12px !important;
-  right: 12px !important;
-  top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top) + 8px) !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top)) !important;
+  bottom: 0 !important;
   width: auto !important;
   max-width: none !important;
-  max-height: calc(100% - var(--appai-mobile-topbar-h) - 24px);
+  height: auto !important;
+  max-height: none !important;
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   pointer-events: auto;
-  z-index: 70;
+  z-index: 74;
+  background: #ffffff !important;
+  padding: 10px 12px calc(14px + var(--appai-mobile-safe-bottom));
+}
+
+.appai-mobile-shell .appai-mobile-escape-overlay > * {
+  max-width: none !important;
+  width: 100% !important;
+  box-shadow: none;
+  border-radius: 0;
+  border: none;
+  background: #ffffff;
 }
 
 /* ---------------------------------------------------------------------------
@@ -503,18 +516,23 @@ html:has(.appai-mobile-shell) #root {
 
 /* ---------------------------------------------------------------------------
  * Scrim + sheets.
+ *
+ * iOS Safari will composite later `position:fixed` chrome (modebar / ATC /
+ * bottom bar) above a translucent sheet even when z-index says otherwise.
+ * Scrim is fully opaque paper; sheet is solid white; chrome is hidden while
+ * a sheet or Gallery/OTP overlay is open.
  * ------------------------------------------------------------------------- */
 .appai-mscrim {
   position: fixed;
   inset: 0;
-  z-index: 40;
-  background: rgba(20, 20, 20, 0);
+  z-index: 70;
+  background: transparent;
   pointer-events: none;
-  transition: background 0.25s;
+  transition: background 0.2s;
 }
 
 .appai-mscrim.show {
-  background: rgba(20, 20, 20, 0.22);
+  background: #f6f4ef;
   pointer-events: auto;
 }
 
@@ -523,18 +541,34 @@ html:has(.appai-mobile-shell) #root {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 50;
-  background: rgba(255, 255, 255, 0.98);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  z-index: 72;
+  background: #ffffff;
   border-radius: 22px 22px 0 0;
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.16);
   transform: translateY(110%);
   transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
   padding-bottom: calc(14px + var(--appai-mobile-safe-bottom));
-  max-height: 72%;
+  max-height: 88%;
   display: flex;
   flex-direction: column;
+}
+
+/* Hide every control that lives under an open sheet / Gallery overlay.
+   Visibility (not display) so measured chrome heights stay stable. */
+.appai-mobile-shell:has(.appai-mscrim.show) .appai-mmodebar,
+.appai-mobile-shell:has(.appai-mscrim.show) .appai-mprimary,
+.appai-mobile-shell:has(.appai-mscrim.show) .appai-mbottombar,
+.appai-mobile-shell:has(.appai-mscrim.show) .appai-mrail,
+.appai-mobile-shell.appai-mobile-sheet-open .appai-mmodebar,
+.appai-mobile-shell.appai-mobile-sheet-open .appai-mprimary,
+.appai-mobile-shell.appai-mobile-sheet-open .appai-mbottombar,
+.appai-mobile-shell.appai-mobile-sheet-open .appai-mrail,
+.appai-mobile-shell.appai-mobile-escape-open .appai-mmodebar,
+.appai-mobile-shell.appai-mobile-escape-open .appai-mprimary,
+.appai-mobile-shell.appai-mobile-escape-open .appai-mbottombar,
+.appai-mobile-shell.appai-mobile-escape-open .appai-mrail {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .appai-msheet.show {
@@ -618,6 +652,30 @@ html:has(.appai-mobile-shell) #root {
   display: none !important;
 }
 
+/* Carousel view labels sit under the mockup and above Front/Back — keep
+   them in their own band so the toggle cannot cover the text. */
+.appai-mobile-shell .appai-under-preview-slot {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  padding: 8px 4px 10px;
+  background: transparent;
+}
+
+.appai-mobile-shell [data-testid="hoodie-placer-gallery-dots"],
+.appai-mobile-shell [data-testid="flat-placer-gallery-dots"] {
+  position: relative;
+  z-index: 3;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.appai-mobile-shell [data-hoodie-aop-controls] {
+  position: relative;
+  z-index: 2;
+  padding-top: 4px;
+}
+
 /* ---------------------------------------------------------------------------
  * Dialogs portal to document.body (outside .appai-mobile-shell). On a phone
  * they must sit above the z-60 top bar, fit the viewport, and keep Close
@@ -626,12 +684,12 @@ html:has(.appai-mobile-shell) #root {
  * ------------------------------------------------------------------------- */
 body.appai-mobile-dialogs [data-radix-dialog-overlay],
 body:has(.appai-mobile-shell) [data-radix-dialog-overlay] {
-  z-index: 80 !important;
+  z-index: 90 !important;
 }
 
 body.appai-mobile-dialogs [data-radix-dialog-content],
 body:has(.appai-mobile-shell) [data-radix-dialog-content] {
-  z-index: 81 !important;
+  z-index: 91 !important;
   top: auto !important;
   bottom: 0 !important;
   left: 0 !important;

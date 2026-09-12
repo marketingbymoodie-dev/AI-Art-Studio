@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -181,6 +182,11 @@ export type HoodieAopPlacerProps = {
     options?: HTMLElement | null;
     adjust?: HTMLElement | null;
   };
+  /**
+   * Carousel dots (Artwork / Primary / View 2) sit under the mockup and
+   * above the Front/Back view row so they never collide with that toggle.
+   */
+  underPreviewSlot?: ReactNode;
 };
 
 /** Renders children into `target` when one is supplied, otherwise in place. */
@@ -1055,6 +1061,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       allowTemplateDefaultsEdit = false,
       mobileShell = false,
       mobileSheetTargets,
+      underPreviewSlot,
     },
     ref,
   ) {
@@ -2637,8 +2644,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         onPick={pickEyedropper}
         onCancel={closeEyedropper}
       />
-      {/* Left: live mockup with overlay */}
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
+      {/* Left: live mockup with overlay. Outer wrapper is NOT overflow-hidden
+          so under-preview carousel labels can sit below the card (above the
+          Front/Back row) without being clipped. */}
+      <div className="relative flex min-w-0 flex-1 flex-col">
+      <div className="relative overflow-hidden rounded-lg border border-border bg-card">
         <div
           className={`relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:p-4 ${
             isLeggings ? "lg:min-h-[min(78vh,720px)]" : "lg:aspect-square"
@@ -2776,6 +2786,10 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             check placement.
           </div>
         )}
+      </div>
+      {underPreviewSlot ? (
+        <div className="appai-under-preview-slot shrink-0">{underPreviewSlot}</div>
+      ) : null}
       </div>
 
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}

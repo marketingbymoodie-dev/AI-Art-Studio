@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { Eye, EyeOff, ImagePlus, Loader2, Pipette, RotateCcw, AlertTriangle } from "lucide-react";
 import {
@@ -228,6 +229,11 @@ export type FlatProductPlacerProps = {
   } | null;
   /** Mobile customizer shell owns Generate/ATC and Background — hide duplicates. */
   mobileShell?: boolean;
+  /**
+   * Carousel dots sit under the mockup and above the Front/Back view row
+   * so labels stay fully visible.
+   */
+  underPreviewSlot?: ReactNode;
 };
 
 type LoadedAssets = {
@@ -349,6 +355,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       garmentColorHex = null,
       decorGenerateFill = null,
       mobileShell = false,
+      underPreviewSlot,
     },
     ref,
   ) {
@@ -1578,14 +1585,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         onPick={pickEyedropper}
         onCancel={closeEyedropper}
       />
-      {/* Live canvas + overlay (or lifestyle/context override) */}
+      {/* Live canvas + overlay. Outer wrapper lets carousel labels sit under
+          the mockup and above Front/Back without overflow clipping. */}
+      <div className="relative flex min-w-0 flex-1 flex-col self-stretch">
       <div
         className={
           // Phone cases: height is matched to the form/prompt column (px), not
           // viewport stretch — Zoom stays on the bottom of that card.
           edgeWrapMode
-            ? "relative flex w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card self-start"
-            : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
+            ? "relative flex w-full flex-col overflow-hidden rounded-lg border border-border bg-card self-start"
+            : "relative overflow-hidden rounded-lg border border-border bg-card"
         }
         style={
           edgeWrapCardHeight
@@ -1660,6 +1669,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
           />
         )}
+      </div>
+      {underPreviewSlot ? (
+        <div className="appai-under-preview-slot shrink-0">{underPreviewSlot}</div>
+      ) : null}
       </div>
 
       {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
