@@ -28,6 +28,8 @@
  * Saved designs: delegates to the existing drawer via
  * window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ (only present when the customer
  * is logged in and has designs — the section hides itself otherwise).
+ * openTray() REINITs that script when signed in and re-renders when
+ * `appai:saved-designs-ready` fires, so a fast open does not miss the row.
  * Sign-in: on pages hosting the designer iframe, postMessage opens the
  * designer's own OTP panel; on every other page the tray renders its own
  * sign-in panel — Continue with Google (central auth popup, when the
@@ -1322,6 +1324,27 @@
     }
   }
 
+  function trayIsShowingSignInPanel() {
+    return !!(document.querySelector('.appai-signin-title') || document.querySelector('.appai-signin-success'));
+  }
+
+  // Re-paint the listing only — never wipe an in-tray OTP / success panel.
+  function refreshTrayIfListing() {
+    var tray = document.getElementById(TRAY_ID);
+    if (!tray || !tray.classList.contains('appai-open')) return;
+    if (trayIsShowingSignInPanel()) return;
+    renderTrayBody();
+  }
+
+  function ensureSavedDesignsReady() {
+    if (typeof window.__APPAI_SAVED_DESIGNS_REINIT__ !== 'function') return;
+    var p;
+    try { p = window.__APPAI_SAVED_DESIGNS_REINIT__(); } catch (_) { return; }
+    if (p && typeof p.then === 'function') {
+      p.then(function () { refreshTrayIfListing(); }, function () {});
+    }
+  }
+
   function openTray() {
     buildTray();
     renderTrayBody();
@@ -1334,6 +1357,9 @@
       var closeBtn = document.getElementById('appai-tray-close');
       if (closeBtn) closeBtn.focus();
     }, 330);
+    // Signed-in: boot fetch may still be in flight (or iframe login just
+    // wrote identity). Join/re-run init and re-paint when the hook lands.
+    if (isSignedIn()) ensureSavedDesignsReady();
     // Background refresh so a just-published page appears without reload.
     // Never overwrite a good cache with a failed fetch (looks like "no pages").
     fetchPages().then(function (result) {
@@ -1369,6 +1395,8 @@
       if (tray && tray.classList.contains('appai-open')) closeTray();
     }
   });
+
+  window.addEventListener('appai:saved-designs-ready', refreshTrayIfListing);
 
   // ─── Init ─────────────────────────────────────────────────────────────
 

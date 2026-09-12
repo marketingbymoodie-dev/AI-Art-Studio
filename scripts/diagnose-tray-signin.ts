@@ -310,6 +310,55 @@ async function main() {
     await context.close();
   }
 
+  // ── Case 4: signed-in at boot, designs fetch delayed — tray wait/REINIT ──
+  {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await serveLocalTray(context);
+    await context.addInitScript(() => {
+      localStorage.setItem("appai_customer_id", "race-customer");
+      localStorage.setItem(
+        "appai_customer",
+        JSON.stringify({ isLoggedIn: true, email: "race@example.com", id: "race-customer", credits: 0 }),
+      );
+    });
+    await context.route(/\/apps\/appai\/api\/storefront\/customizer\/my-designs/, async (route) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          designs: [
+            { id: "d-race", artworkUrl: "", mockupUrls: [], prompt: "a fox", baseTitle: "Zip Hoodie", pageHandle: "zip-hoodie-aop", productTypeId: null, createdAt: "" },
+          ],
+        }),
+      });
+    });
+
+    const page = await context.newPage();
+    await gotoUrl(page, `https://${SHOP}/?preview_theme_id=${THEME_ID}`);
+    await page.waitForSelector("#appai-tray-launcher", { timeout: 20000 });
+    await page.click("#appai-tray-launcher");
+    await page.waitForTimeout(200);
+
+    const before = await page.evaluate(
+      () => document.getElementById("appai-tray-body")?.innerText || "",
+    );
+    const missingAtOpen = !before.includes("Saved Designs");
+    console.log("Case 4 Saved Designs absent on immediate open (fetch still in flight):", missingAtOpen);
+
+    await page.waitForFunction(
+      () => (document.getElementById("appai-tray-body")?.innerText || "").includes("Saved Designs"),
+      { timeout: 8000 },
+    );
+    const after = await page.evaluate(
+      () => document.getElementById("appai-tray-body")?.innerText || "",
+    );
+    const appeared = after.includes("Saved Designs");
+    console.log("Case 4 Saved Designs appears after fetch without reopen:", appeared);
+    if (!appeared) failures++;
+
+    await context.close();
+  }
+
   await browser.close();
   console.log(failures === 0 ? "ALL PASS" : `FAILURES: ${failures}`);
   if (failures > 0) process.exit(1);

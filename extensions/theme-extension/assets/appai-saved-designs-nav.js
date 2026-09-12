@@ -66,6 +66,15 @@
   // customizer iframe) without relying on a stale closure from init().
   var _customerId = null;
   var _shop = null;
+  // Share one in-flight fetch between boot init() and tray openTray() REINIT
+  // so a fast tray open waits on the same request instead of racing it.
+  var _initPromise = null;
+
+  function notifySavedDesignsReady() {
+    try {
+      window.dispatchEvent(new CustomEvent('appai:saved-designs-ready'));
+    } catch (_) {}
+  }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -661,12 +670,15 @@
     if (!customerId) return Promise.resolve(false);
 
     var shop = getShop();
+    // Same customer + in-flight fetch → reuse (tray openTray joins boot).
+    // A new id (iframe login) must not join the previous request.
+    if (_initPromise && _customerId === customerId) return _initPromise;
     // Expose to module scope so openDrawer()/refreshDrawerIfChanged() can
     // re-fetch without a stale closure.
     _customerId = customerId;
     _shop = shop;
 
-    return fetchDesigns(customerId, shop).then(function (data) {
+    _initPromise = fetchDesigns(customerId, shop).then(function (data) {
       if (!data || !data.designs || data.designs.length === 0) {
         console.log('[AppAI Nav] No saved designs for this customer.');
         return false;
@@ -705,6 +717,7 @@
       // window.__APPAI_SAVED_DESIGNS__) and let it kick a background
       // refresh — never close over this initial `designs` snapshot.
       window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(); };
+      notifySavedDesignsReady();
 
       if (_wired) return true;
       _wired = true;
@@ -756,6 +769,9 @@
     }).catch(function (e) {
       console.warn('[AppAI Nav] Failed to fetch saved designs:', e);
       return false;
+    }).then(function (result) {
+      _initPromise = null;
+      return result;
     });
   }
 
@@ -769,6 +785,19 @@
   window.__APPAI_SAVED_DESIGNS_REINIT__ = function () {
     return init();
   };
+
+  // Iframe / other-tab login writes identity without a reload. Boot init
+  // already bailed (or fetched the anonymous id). Re-run when the id appears.
+  window.addEventListener('storage', function (e) {
+    if (e.key !== 'appai_customer' && e.key !== 'appai_customer_id') return;
+    if (!getStoredCustomerId()) return;
+    init();
+  });
+  window.addEventListener('message', function (event) {
+    if (!event.data || event.data.type !== 'APPAI_STOREFRONT_LOGGED_IN') return;
+    if (event.origin !== window.location.origin) return;
+    init();
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {

@@ -3124,6 +3124,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
         .catch(() => {}).finally(() => setSavedDesignsLoading(false));
     }
+    // Parent tray/nav bailed at boot (no identity). Same hand-off as in-tray
+    // login calling __APPAI_SAVED_DESIGNS_REINIT__.
+    try {
+      window.parent.postMessage({ type: "APPAI_STOREFRONT_LOGGED_IN" }, window.location.origin);
+    } catch {
+      /* parent may be gone */
+    }
   }, [anonSessionId, shopDomain, otpEmail]);
 
   const refreshStorefrontWallet = useCallback(async () => {
