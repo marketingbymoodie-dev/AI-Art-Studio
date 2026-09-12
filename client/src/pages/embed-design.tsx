@@ -968,7 +968,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a2";
+const CP1_BUILD_MARKER = "cp2-a3";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -15918,13 +15918,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 embeddedContext.onLeaveProduct
               ) {
                 if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
-                  void flushHoodieAopPlacer().finally(() => {
+                  void flushHoodieAopPlacer({ force: true }).finally(() => {
                     embeddedContext.onLeaveProduct?.();
                   });
                   return;
                 }
                 if (flatPlacerActive) {
-                  void flushFlatPlacer().finally(() => {
+                  void flushFlatPlacer({ force: true }).finally(() => {
                     embeddedContext.onLeaveProduct?.();
                   });
                   return;
@@ -15937,7 +15937,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               // /s/designer lands on /pages/<handle>, which immediately
               // re-redirects here and remounts on "Loading AI Art Studio".
               if (showPatternStep && productTypeConfig?.panelMappingTemplate) {
-                void flushHoodieAopPlacer().finally(() => {
+                void flushHoodieAopPlacer({ force: true }).finally(() => {
                   aopEditorDismissedRef.current = true;
                   setShowPatternStep(false);
                 });
@@ -18099,7 +18099,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         size="sm"
                         className="flex-1 min-w-0"
                         onClick={() => {
-                          void flushHoodieAopPlacer().finally(() => {
+                          void flushHoodieAopPlacer({ force: true }).finally(() => {
                             if (
                               isAdminTester &&
                               embeddedContext?.mode === "admin-tester" &&

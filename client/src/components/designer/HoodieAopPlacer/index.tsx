@@ -1246,9 +1246,16 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             initialState.enabled ||
             initialState.tileSettings)
         );
-        return buildInitialState(data.template, initialState, {
+        const next = buildInitialState(data.template, initialState, {
           pinPulloverOperatorDefaults: allowTemplateDefaultsEdit,
         });
+        // Pin the resume baseline NOW (saved Place mockup), not later when
+        // artworkImg arrives — a Place→Pattern switch before load would
+        // otherwise mark Pattern as already applied and Back would skip bake.
+        if (seededAsResumeRef.current) {
+          lastAppliedSignatureRef.current = outputSignature(next);
+        }
+        return next;
       }
       return prev;
     });
@@ -2226,7 +2233,12 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const applyIfNeeded = useCallback(
     async (opts?: { force?: boolean }): Promise<boolean> => {
       if (!onApply || !state || !data || !artworkImg) return false;
-      if (applyInFlightRef.current) return false;
+      if (applyInFlightRef.current) {
+        for (let i = 0; i < 100 && applyInFlightRef.current; i++) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        if (applyInFlightRef.current) return false;
+      }
       if (!opts?.force && !hasPendingChanges()) return false;
       applyInFlightRef.current = true;
       setApplyStatusBoth("saving");
@@ -2383,10 +2395,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     if (!onApply || !state || !data || !artworkImg) return;
     if (initialApplyDoneRef.current) return;
     initialApplyDoneRef.current = true;
-    const sig = outputSignature(state);
     if (skipInitialAutoApply || seededAsResumeRef.current) {
-      lastAppliedSignatureRef.current = sig;
-      setApplyStatusBoth("saved");
+      if (lastAppliedSignatureRef.current === null) {
+        lastAppliedSignatureRef.current = outputSignature(state);
+      }
+      setApplyStatusBoth(
+        outputSignature(state) !== lastAppliedSignatureRef.current ? "idle" : "saved",
+      );
       return;
     }
     void applyIfNeeded({ force: true }).catch(() => {
