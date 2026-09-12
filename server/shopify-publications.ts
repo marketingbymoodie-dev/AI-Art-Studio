@@ -196,20 +196,19 @@ async function readOnlineStorePublication(
 
 /**
  * Publish to checkout channels and ASSERT the product is on Online Store.
- * GraphQL publishablePublish is primary; REST published:true is the fallback
- * the old ensureProductPublishedToOnlineStore docstring promised but never ran.
+ * If Admin already reports publishedOnPublication, do not republish — Ajax
+ * replica lag is a storefront poll, not another Admin write.
  */
 export async function ensureProductOnOnlineStore(opts: {
   shop: string;
   accessToken: string;
   productId: string | number;
-}): Promise<{ published: string[] }> {
+}): Promise<{ published: string[]; skipped: boolean }> {
   const productId = String(opts.productId || "").replace(/\D/g, "");
   if (!productId) {
     throw new ShadowNotOnStorefrontError("Shadow publish skipped — missing productId", "unknown");
   }
   const productGid = `gid://shopify/Product/${productId}`;
-  const published = await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
 
   const checkPublished = async () => {
     const onlineStore = await readOnlineStorePublication(opts.shop, opts.accessToken);
@@ -229,6 +228,15 @@ export async function ensureProductOnOnlineStore(opts: {
   };
 
   let check = await checkPublished();
+  if (check.product?.publishedOnPublication) {
+    console.log(
+      `[shopify-publications] Product ${productId} already on Online Store (status=${check.product.status}) — skip republish`,
+    );
+    return { published: [], skipped: true };
+  }
+
+  const published = await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
+  check = await checkPublished();
   if (!check.product?.publishedOnPublication) {
     console.warn(
       `[shopify-publications] GraphQL publish did not land for ${productId} — REST published:true fallback`,
@@ -247,7 +255,7 @@ export async function ensureProductOnOnlineStore(opts: {
   console.log(
     `[shopify-publications] Online Store confirmed for product ${productId} status=${check.product.status}`,
   );
-  return { published: published.published };
+  return { published: published.published, skipped: false };
 }
 
 /** Look up a variant's product and publish it to checkout / Storefront API channels. */

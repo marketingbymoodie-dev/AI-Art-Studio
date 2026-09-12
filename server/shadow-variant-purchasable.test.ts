@@ -99,6 +99,10 @@ describe("ensureShadowVariantPurchasable", () => {
     expect(bulkVars.variants).toEqual([
       { id: "gid://shopify/ProductVariant/111", inventoryPolicy: "CONTINUE" },
     ]);
+    const publishCall = fetchMock.mock.calls.find(([, init]) =>
+      parseBody(init).query.includes("publishablePublish"),
+    );
+    expect(publishCall).toBeUndefined();
   });
 
   it("throws when GraphQL returns 200 with userErrors (write did not land)", async () => {

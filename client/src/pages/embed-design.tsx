@@ -10657,31 +10657,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const ATC_HANDLER_SLOW =
     "Adding this design to the cart is taking longer than expected. Please try again.";
 
-  const waitForStorefrontVariantJs = async (variantId: string): Promise<boolean> => {
-    const id = String(variantId || "").replace(/\D/g, "");
-    if (!id) return false;
-    const path = window.location.pathname || "";
-    const onShopOrigin =
-      /\.myshopify\.com$/i.test(window.location.hostname) ||
-      path.includes("/apps/appai") ||
-      /(^|\/)s\/designer\/?$/.test(path);
-    if (!onShopOrigin) return false;
-    const waits = [300, 500, 800, 1000, 1200, 1500];
-    for (let i = 0; i < waits.length; i++) {
-      try {
-        const res = await fetch(`/variants/${id}.js`, {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-        if (res.ok) return true;
-      } catch {
-        /* Railway-origin iframe cannot see shop /variants */
-      }
-      await new Promise((r) => setTimeout(r, waits[i]));
-    }
-    return false;
-  };
-
   const repairShadowPurchasable = async (shadowId: string): Promise<boolean> => {
     if (!shopDomain || !shadowId) return false;
     const controller = new AbortController();
@@ -10930,13 +10905,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       /* /cart.js unavailable — proceed straight to add */
     }
 
-    const waits = [1000, 1500, 2000];
+    // Poll /cart/add.js itself — the purchase signal. /variants/{id}.js 404s
+    // for unlisted + seo.hidden shadows even after Admin publish, so it is
+    // not a ready check. Do not republish on sold-out replica lag.
+    const waits = [800, 1200, 1600, 2000, 2500, 3000];
     let notified = false;
     let repaired = false;
-    for (let attempt = 0; attempt <= 3; attempt++) {
+    for (let attempt = 0; attempt <= waits.length; attempt++) {
       const r = await doAdd(payload.quantity);
       if (r.ok) return { success: true };
-      if (!r.retryable || attempt >= 3) {
+      if (!r.retryable || attempt >= waits.length) {
         return {
           success: false,
           error: r.soldOut || r.retryable ? ATC_SHADOW_NOT_LISTED : r.error,
@@ -10946,12 +10924,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         notified = true;
         showAtcFinalisingToast("host_page_retry");
       }
-      if (!repaired) {
+      if (!r.soldOut && !repaired) {
         repaired = true;
         await repairShadowPurchasable(String(variantNum));
-        await waitForStorefrontVariantJs(String(variantNum));
       }
-      await new Promise((res) => setTimeout(res, waits[Math.min(attempt, waits.length - 1)]));
+      await new Promise((res) => setTimeout(res, waits[attempt]));
     }
     return { success: false, error: ATC_SHADOW_NOT_LISTED };
   };

@@ -1408,7 +1408,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.5';
+    var BRIDGE_VERSION = '1.0.6';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -1565,28 +1565,6 @@
         console.warn(B, '[resolveDesignSku] Error — refusing base catalog fallback:', err);
         throw new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
       });
-    }
-
-    function waitForStorefrontVariant(variantId) {
-      var id = String(variantId || '').replace(/\D/g, '');
-      if (!id) return Promise.resolve(false);
-      var waits = [300, 500, 800, 1000, 1200, 1500];
-      function attempt(n) {
-        return fetch('/variants/' + id + '.js', {
-          credentials: 'same-origin',
-          headers: { Accept: 'application/json' }
-        }).then(function(res) {
-          if (res.ok) return true;
-          if (n >= waits.length) return false;
-          return new Promise(function(r) { setTimeout(r, waits[n]); })
-            .then(function() { return attempt(n + 1); });
-        }).catch(function() {
-          if (n >= waits.length) return false;
-          return new Promise(function(r) { setTimeout(r, waits[n]); })
-            .then(function() { return attempt(n + 1); });
-        });
-      }
-      return attempt(0);
     }
 
     function repairShadowPurchasable(variantId) {
@@ -2394,6 +2372,8 @@
           var notifiedFinalising = false;
           var created = !!createdHint;
           var repaired = false;
+          var waits = [800, 1200, 1600, 2000, 2500, 3000];
+          var maxAttempt = waits.length;
           function attempt(n) {
             logAtcDebug({
               event: 'cart_add_attempt',
@@ -2402,7 +2382,7 @@
               cid: cid,
               variantId: variantId
             });
-            console.log(B, '[ATC retry] attempt', n + '/3', 'variant', variantId,
+            console.log(B, '[ATC retry] attempt', n + '/' + maxAttempt, 'variant', variantId,
               created ? '(created:true)' : '(created:false)');
             if ((created || n > 0) && !notifiedFinalising) {
               notifiedFinalising = true;
@@ -2421,7 +2401,7 @@
                 return cart;
               })
               .catch(function(err) {
-                if (!(err && err.__retryable) || n >= 3) {
+                if (!(err && err.__retryable) || n >= maxAttempt) {
                   logAtcDebug({
                     event: 'cart_add_give_up',
                     attempt: n,
@@ -2436,7 +2416,7 @@
                   notifiedFinalising = true;
                   notifyAtcFinalising(n, created);
                 }
-                var wait = n === 0 ? 1000 : n === 1 ? 1500 : 2000;
+                var wait = waits[Math.min(n, waits.length - 1)];
                 logAtcDebug({
                   event: 'cart_add_retry_wait',
                   attempt: n + 1,
@@ -2447,13 +2427,13 @@
                 });
                 console.log(B, '[ATC retry] 422 — waiting', wait, 'ms then attempt', n + 1,
                   'for variant', err.variantId,
-                  err.soldOutRace ? '(fresh-shadow sold-out race)' : '(publish lag)');
+                  err.soldOutRace ? '(fresh-shadow sold-out race)' : '(not-found)');
                 var prep = Promise.resolve(false);
-                if (!repaired) {
+                // Republish only when the storefront cannot see the variant.
+                // Sold-out after Admin publish is replica lag — poll /cart/add.js.
+                if (!repaired && !(err && err.soldOutRace)) {
                   repaired = true;
-                  prep = repairShadowPurchasable(variantId).then(function() {
-                    return waitForStorefrontVariant(variantId);
-                  });
+                  prep = repairShadowPurchasable(variantId);
                 }
                 return prep.then(function() {
                   return new Promise(function(resolve) { setTimeout(resolve, wait); });
@@ -2839,11 +2819,12 @@
                   return cart;
                 })
                 .catch(function(err) {
-                  if (!(err && err.__retryable) || n >= 3) throw err;
-                  var wait = n === 0 ? 1000 : n === 1 ? 1500 : 2000;
-                  return repairShadowPurchasable(sku.variantId).then(function() {
-                    return waitForStorefrontVariant(sku.variantId);
-                  }).then(function() {
+                  if (!(err && err.__retryable) || n >= 6) throw err;
+                  var wait = n === 0 ? 800 : n === 1 ? 1200 : n === 2 ? 1600 : n === 3 ? 2000 : n === 4 ? 2500 : 3000;
+                  var prep = (!(err && err.soldOutRace))
+                    ? repairShadowPurchasable(sku.variantId)
+                    : Promise.resolve(false);
+                  return prep.then(function() {
                     return new Promise(function(resolve) { setTimeout(resolve, wait); });
                   }).then(function() { return attempt(n + 1); });
                 });
