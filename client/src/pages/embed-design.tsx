@@ -10,7 +10,11 @@ import { creatorCheckoutRememberUrl, readLastCreatorVisit, writeLastCreatorVisit
 import { resolveMobileShellBrandName } from "@/components/designer/resolveMobileShellBrandName";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
-import { atcShadowDesignId } from "@shared/printConfigFingerprint";
+import {
+  atcShadowDesignId,
+  sanitizePrintConfigInput,
+  type PrintConfigFingerprintInput,
+} from "@shared/printConfigFingerprint";
 import {
   ATC_MAX_CART_ADD_CALLS_PER_TAP,
   ATC_RETRY_AFTER_DEFAULT_MS,
@@ -2349,6 +2353,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const preShadowPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preShadowJobIdRef = useRef<string | null>(null);
   /**
+   * Key (`job::variant::cfgHash`) the server pre-minted under at Apply, as
+   * reported by shadow-variant/:jobId. ATC only falls back to the pre-created
+   * variant when this equals the key it is about to persist — a stale hash
+   * (edit after Apply) must cold-mint per the snapshot rule.
+   */
+  const preShadowDesignIdRef = useRef<string | null>(null);
+  /**
    * Retail (dollars string, e.g. "18.95") last synced against the shadow
    * variant via resolve-design-variant. On the next ATC for the same
    * (job, retail) we can use preShadowVariantId directly and fire the
@@ -4295,6 +4306,48 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const toteFoldedLayout =
     productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1" ||
     Number(productTypeConfig?.printifyBlueprintId) === ADJUSTABLE_TOTE_BLUEPRINT_ID;
+
+  /**
+   * Canonical print-config fingerprint input. ONE builder feeds both the ATC
+   * persist key (`atcShadowDesignId`) and the Apply-time `save-mockups`
+   * pre-mint, so the server's derived key is byte-identical to what ATC
+   * later looks up. Kept on a ref (refreshed every render) so callbacks with
+   * narrow deps (fetchPrintifyMockups, persistFlatMockupsForGallery) read the
+   * committed state, not a stale closure.
+   * `artworkUrl` mirrors ensureHostedUrl's sync branches; a data: URL yields
+   * "" and simply falls back to cold-mint at tap (hash differs post-upload).
+   */
+  const buildAtcPrintConfigInputRef = useRef<
+    (overrides?: { artworkUrl?: string | null }) => PrintConfigFingerprintInput
+  >(() => ({}));
+  buildAtcPrintConfigInputRef.current = (overrides) => {
+    const rawArt = String(generatedDesign?.imageUrl || "");
+    const artworkIdentityUrl =
+      rawArt.startsWith("https://") || rawArt.startsWith("http://")
+        ? rawArt
+        : rawArt.startsWith("/")
+          ? buildAppUrl(rawArt)
+          : "";
+    const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
+    const totePrintBack = printPlacement === "both" || liveFlat?.enabled?.back === true;
+    return {
+      artworkUrl: overrides?.artworkUrl || artworkIdentityUrl,
+      flat: liveFlat,
+      tote: toteFoldedLayout
+        ? { scale: transform.scale, x: transform.x, y: transform.y, printBack: totePrintBack }
+        : null,
+      aopHoodie: (hoodieAopPlacerState as Record<string, unknown> | null) ?? null,
+      aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
+    };
+  };
+  /** `printConfig` + derived-key hint for a PreShadow-eligible save-mockups body. */
+  const preShadowKeyFields = useCallback((jobId: string, baseVariantId: string) => {
+    // Send the allow-listed slice (what the hash actually reads) — smaller wire
+    // payload and byte-identical to the server's own sanitize step.
+    const printConfig = sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current());
+    if (!printConfig) return {}; // oversize / unusable → legacy job::variant pre-mint (today's behaviour)
+    return { printConfig, designId: atcShadowDesignId(jobId, baseVariantId, printConfig) };
+  }, []);
   const useAopCustomizer = !!(
     (productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint) &&
     // Flat/mesh on-the-fly products must never also open PatternCustomizer —
@@ -6503,6 +6556,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupFailed(false);
     setVariantError(null);
     preShadowJobIdRef.current = null;
+    preShadowDesignIdRef.current = null;
     preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
@@ -6684,6 +6738,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupFailed(false);
     setVariantError(null);
     preShadowJobIdRef.current = null;
+    preShadowDesignIdRef.current = null;
     preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
@@ -7371,6 +7426,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const startShadowVariantPoll = useCallback((jobId: string | null, shop: string, initialDelay = 0) => {
     if (!jobId || !shop) return;
     preShadowJobIdRef.current = null;
+    preShadowDesignIdRef.current = null;
     preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
@@ -7387,8 +7443,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (r.ok) {
           const data = await r.json();
           if (data.ready && data.shadowVariantId) {
-            console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId, 'product:', data.shadowProductId);
+            console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId, 'product:', data.shadowProductId, 'key:', data.shadowDesignId || null);
             preShadowJobIdRef.current = jobId;
+            preShadowDesignIdRef.current =
+              typeof data.shadowDesignId === "string" && data.shadowDesignId ? data.shadowDesignId : null;
             setPreShadowVariantId(data.shadowVariantId);
             setPreShadowProductId(data.shadowProductId || null);
             return;
@@ -7998,6 +8056,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     baseProductId: productId,
                     baseVariantId: baseVariantForShadow,
                     ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                    // Pre-mint under the cfg-keyed id ATC will look up (server re-derives).
+                    ...preShadowKeyFields(savedJobIdRef.current, baseVariantForShadow),
                   }
                 : {}),
             }),
@@ -9591,6 +9651,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       preShadowJobIdRef.current = null;
+      preShadowDesignIdRef.current = null;
     preShadowSyncedRetailRef.current = null;
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
@@ -12033,21 +12094,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       if (toteSnapAtc) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnapAtc;
     }
+    // Same builder as the Apply-time pre-mint (save-mockups) — the two keys
+    // must not drift or the pre-minted shadow is never found at tap.
     const persistShadowDesignId = shadowDesignId
-      ? atcShadowDesignId(shadowDesignId, normalizedVariant, {
-          artworkUrl: artworkFullUrl || generatedDesign.imageUrl,
-          flat: liveFlatAtc,
-          tote: toteFoldedLayout
-            ? {
-                scale: transform.scale,
-                x: transform.x,
-                y: transform.y,
-                printBack: totePrintBackAtc,
-              }
-            : null,
-          aopHoodie: (hoodieAopPlacerState as Record<string, unknown> | null) ?? null,
-          aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
-        })
+      ? atcShadowDesignId(
+          shadowDesignId,
+          normalizedVariant,
+          buildAtcPrintConfigInputRef.current({
+            artworkUrl: artworkFullUrl || generatedDesign.imageUrl,
+          }),
+        )
       : "";
     if (persistShadowDesignId) {
       properties["_shadow_design_id"] = persistShadowDesignId;
@@ -12254,9 +12310,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       console.warn("[Design Studio] ATC snapshot+resolve failed:", parallelErr?.message || parallelErr);
     }
 
+    // Resolve returned nothing (network / timeout). Fall back to the Apply-time
+    // pre-mint ONLY when it was minted under the exact key ATC is persisting —
+    // a legacy job::variant pre-mint or a stale cfg hash must not be used.
+    const preShadowKeyMatches = hasPrintConfigSuffix(persistShadowDesignId)
+      ? !!preShadowDesignIdRef.current && preShadowDesignIdRef.current === persistShadowDesignId
+      : true;
     if (
       shopDomain &&
-      !hasPrintConfigSuffix(persistShadowDesignId) &&
+      preShadowKeyMatches &&
       preShadowMatchesJob &&
       preShadowVariantId &&
       normalizeVariantId(finalVariantId) === normalizedVariant
@@ -12264,7 +12326,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const repaired = await runEnsureShadowPurchasable(String(preShadowVariantId));
       if (repaired) {
         finalVariantId = preShadowVariantId;
-        console.warn("[Design Studio] Resolve did not return a shadow — falling back to repaired pre-created variant", finalVariantId);
+        console.warn("[Design Studio] Resolve did not return a shadow — falling back to repaired pre-created variant", finalVariantId, "key", persistShadowDesignId);
       } else {
         console.error("[Design Studio] PreShadow fallback refused — CONTINUE write did not land");
       }
@@ -13016,6 +13078,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   baseProductId: productId,
                   baseVariantId: baseVariantForShadow,
                   ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                  // Pre-mint under the cfg-keyed id ATC will look up (server re-derives).
+                  ...(jobId ? preShadowKeyFields(jobId, baseVariantForShadow) : {}),
                 }
               : {}),
           }),
@@ -13051,6 +13115,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       storefrontCustomerId,
       productId,
       startShadowVariantPoll,
+      preShadowKeyFields,
       activeProductContext.pageHandle,
       productTypeId,
     ],
@@ -19060,6 +19125,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   setMockupFailed(false);
                   setMockupsStale(false);
                   preShadowJobIdRef.current = null;
+                  preShadowDesignIdRef.current = null;
     preShadowSyncedRetailRef.current = null;
                   setPreShadowVariantId(null);
                   setPreShadowProductId(null);

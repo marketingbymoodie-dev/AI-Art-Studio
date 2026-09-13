@@ -40,10 +40,12 @@ import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import {
+  hasPrintConfigSuffix,
   reusableShadowDesignId,
   shadowLookupKeys,
   shadowMatchesBaseVariant,
 } from "@shared/shadowDesignId";
+import { atcShadowDesignId, sanitizePrintConfigInput } from "@shared/printConfigFingerprint";
 import {
   isHostedHttpUrl,
   isPersistablePreviewUrl,
@@ -9900,9 +9902,30 @@ ${orientationExtra}
   // Called by the client after mockups are generated, to persist them on the job record.
   // Also accepts optional baseProductId + baseVariantId to pre-create a shadow product
   // in the background, so Add to Cart is instant when the user clicks it.
+  /** One PreShadow mint per (shop, derived designId) at a time — a second Apply awaits the first. */
+  const preShadowInFlight = new Map<string, Promise<void>>();
+  /** Last path segment without query — stable across proxy / asset-base rewrites. */
+  const artworkFilename = (url: unknown): string => {
+    const s = String(url || "").trim();
+    if (!s || s.startsWith("data:")) return "";
+    const noQuery = s.split("?")[0].split("#")[0];
+    const seg = noQuery.split("/").filter(Boolean).pop() || "";
+    return seg.toLowerCase();
+  };
+
   app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, mockupUrls, baseProductId, baseVariantId, productTypeId, price } = req.body;
+      const {
+        shop,
+        jobId,
+        mockupUrls,
+        baseProductId,
+        baseVariantId,
+        productTypeId,
+        price,
+        printConfig,
+        designId: designIdHint,
+      } = req.body;
       const preShadowPriceNum = parseFloat(String(price ?? ""));
       const preShadowClientPrice =
         Number.isFinite(preShadowPriceNum) && preShadowPriceNum > 0
@@ -9940,13 +9963,84 @@ ${orientationExtra}
       // kick off shadow product creation now so Add to Cart is instant.
       // We respond immediately and let this run in the background.
       const primaryMockupUrl = validUrls[0];
-      if (baseProductId && baseVariantId && primaryMockupUrl && installation.accessToken) {
+
+      // ── Derive the pre-mint key server-side ─────────────────────────────────
+      // ATC persists `job::catalogVariant::cfgHash` (atcShadowDesignId). The
+      // pre-mint must land under that SAME key or it expires unused and ATC
+      // cold-mints at tap (replica race). The client sends the canonical
+      // fingerprint input it will hash at ATC; we allow-list it, check its
+      // artwork against the job, and derive the key ourselves. A client
+      // `designId` is a hint only — logged on mismatch, never minted from.
+      let preShadowDesignId = "";
+      let preShadowCfgInput: ReturnType<typeof sanitizePrintConfigInput> = null;
+      let preShadowSkipReason = "";
+      if (baseProductId && baseVariantId && primaryMockupUrl) {
+        if (printConfig !== undefined && printConfig !== null) {
+          preShadowCfgInput = sanitizePrintConfigInput(printConfig);
+          if (!preShadowCfgInput) {
+            preShadowSkipReason = "printConfig rejected by sanitizer";
+          } else {
+            const cfgArt = artworkFilename(preShadowCfgInput.artworkUrl);
+            const jobArt = artworkFilename(job.designImageUrl);
+            if (cfgArt && jobArt && cfgArt !== jobArt) {
+              preShadowSkipReason = `artwork mismatch cfg=${cfgArt} job=${jobArt}`;
+            } else {
+              preShadowDesignId = atcShadowDesignId(jobId, baseVariantId, preShadowCfgInput);
+            }
+          }
+        } else {
+          // Legacy caller without a print-config snapshot: keep job::variant.
+          preShadowDesignId = reusableShadowDesignId(jobId, baseVariantId);
+        }
+        if (preShadowSkipReason) {
+          console.warn(`[PreShadow] jobId=${jobId} skipped — ${preShadowSkipReason}`);
+        } else if (designIdHint && String(designIdHint).trim() !== preShadowDesignId) {
+          console.warn(
+            `[PreShadow] jobId=${jobId} designId hint mismatch hint=${String(designIdHint).slice(0, 120)} derived=${preShadowDesignId} — using derived`,
+          );
+        }
+      }
+
+      if (preShadowDesignId && installation.accessToken) {
         const token = installation.accessToken;
         const apiBase = `https://${shop}/admin/api/2025-10`;
         const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
+        const designId = preShadowDesignId;
+        const inFlightKey = `${shop}::${designId}`;
+        const cfgSnapshot = preShadowCfgInput;
 
-        // Fire-and-forget: don't await, respond to client immediately
-        (async () => {
+        /** Merge the derived key + cfg onto the job (designState) alongside the shadow ids. */
+        const writeJobShadow = async (patch: {
+          shadowProductId: string | null;
+          shadowVariantId: string | null;
+          shadowExpiresAt: Date | null;
+        }) => {
+          const fresh = await storage.getGenerationJob(jobId);
+          const prevDs =
+            fresh?.designState && typeof fresh.designState === "object" && !Array.isArray(fresh.designState)
+              ? (fresh.designState as Record<string, unknown>)
+              : {};
+          await storage.updateGenerationJob(jobId, {
+            ...patch,
+            designState: {
+              ...prevDs,
+              preShadowDesignId: designId,
+              ...(cfgSnapshot ? { printConfigSnapshot: cfgSnapshot } : {}),
+            },
+          } as any);
+        };
+
+        // Fire-and-forget: don't await, respond to client immediately.
+        // Same (shop, key) already minting → piggy-back on it, never mint twice.
+        const alreadyRunning = preShadowInFlight.get(inFlightKey);
+        if (alreadyRunning) {
+          console.log(`[PreShadow] jobId=${jobId} derived=${designId} already in flight — awaiting`);
+        }
+        const run = (async () => {
+          if (alreadyRunning) {
+            await alreadyRunning.catch(() => {});
+            return;
+          }
           try {
             const refreshShadowImage = async (productId: string, variantId: string) => {
               try {
@@ -9973,12 +10067,13 @@ ${orientationExtra}
               }
             };
 
-            // One shadow per (job, catalog variant). Never POST a new mockup onto
-            // job.shadowProductId unless that row's baseVariantId matches — that
-            // singleton refresh painted Blue onto an already-carted Natural line.
-            const designId = reusableShadowDesignId(jobId, baseVariantId);
+            // One shadow per (job, catalog variant, print snapshot). Never POST a
+            // new mockup onto job.shadowProductId unless that row's baseVariantId
+            // matches — that singleton refresh painted Blue onto an already-carted
+            // Natural line. A cfg-keyed id must NOT adopt a job::variant row
+            // (different snapshot); only legacy job::variant ids fall through.
             let existing = await storage.getPublishedProduct(shop, designId);
-            if (!existing || existing.status !== "active") {
+            if ((!existing || existing.status !== "active") && !hasPrintConfigSuffix(designId)) {
               for (const key of shadowLookupKeys(jobId, primaryMockupUrl, baseVariantId)) {
                 const row = await storage.getPublishedProduct(shop, key);
                 if (row?.status !== "active") continue;
@@ -9993,17 +10088,19 @@ ${orientationExtra}
               shadowMatchesBaseVariant(existing.baseVariantId, baseVariantId)
             ) {
               // Reuse existing shadow product — just store the IDs on the job
-              console.log(`[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId}`);
+              console.log(
+                `[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId} (key=${designId})`,
+              );
               await ensureShadowVariantPurchasable({
                 shop,
                 token,
                 variantId: existing.shopifyVariantId,
               });
-              await storage.updateGenerationJob(jobId, {
+              await writeJobShadow({
                 shadowProductId: existing.shopifyProductId,
                 shadowVariantId: existing.shopifyVariantId,
                 shadowExpiresAt: existing.expiresAt,
-              } as any);
+              });
               if (existing.shopifyProductId && existing.shopifyVariantId) {
                 await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
                 await syncShadowVariantPrice({
@@ -10069,7 +10166,9 @@ ${orientationExtra}
             }
             const { product: shadowProduct } = await createRes.json();
             const shadowVariant = shadowProduct.variants[0];
-            console.log(`[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId}`);
+            console.log(
+              `[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId} derived=${designId}`,
+            );
             await ensureShadowVariantPurchasable({
               shop,
               token,
@@ -10099,12 +10198,12 @@ ${orientationExtra}
               cartAddedAt: null,
             } as any);
 
-            // Store shadow product IDs on the job record for instant cart add
-            await storage.updateGenerationJob(jobId, {
+            // Store shadow product IDs (+ derived key / cfg) on the job record for instant cart add
+            await writeJobShadow({
               shadowProductId: String(shadowProduct.id),
               shadowVariantId: String(shadowVariant.id),
               shadowExpiresAt: oneHourFromNow,
-            } as any);
+            });
 
             // Phase 3 shipping: associate the pre-created shadow into its base
             // variant's delivery profile (no-op unless shop is in table mode).
@@ -10126,9 +10225,15 @@ ${orientationExtra}
             console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
           }
         })();
+        if (!alreadyRunning) {
+          preShadowInFlight.set(inFlightKey, run);
+          void run.finally(() => {
+            if (preShadowInFlight.get(inFlightKey) === run) preShadowInFlight.delete(inFlightKey);
+          });
+        }
       }
 
-      return res.json({ saved: true });
+      return res.json({ saved: true, ...(preShadowDesignId ? { shadowDesignId: preShadowDesignId } : {}) });
     } catch (err: any) {
       console.error("[SaveMockups]", err);
       return res.status(500).json({ error: "Failed to save mockups" });
@@ -10462,8 +10567,16 @@ ${orientationExtra}
       const shadowProductId = (job as any).shadowProductId || null;
       const shadowExpiresAt = (job as any).shadowExpiresAt || null;
       const ready = !!(shadowVariantId && shadowProductId);
-      console.log(`[ShadowVariant] jobId=${jobId} ready=${ready} variantId=${shadowVariantId}`);
-      return res.json({ ready, shadowVariantId, shadowProductId, shadowExpiresAt });
+      // Key the pre-mint landed under (job::variant::cfgHash) so the client can
+      // confirm it matches the key ATC will persist before using it as a fallback.
+      const ds =
+        job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
+          ? (job.designState as Record<string, unknown>)
+          : null;
+      const shadowDesignId =
+        ds && typeof ds.preShadowDesignId === "string" && ds.preShadowDesignId ? ds.preShadowDesignId : null;
+      console.log(`[ShadowVariant] jobId=${jobId} ready=${ready} variantId=${shadowVariantId} key=${shadowDesignId}`);
+      return res.json({ ready, shadowVariantId, shadowProductId, shadowExpiresAt, shadowDesignId });
     } catch (err: any) {
       console.error("[ShadowVariant]", err);
       return res.status(500).json({ error: "Failed to get shadow variant" });

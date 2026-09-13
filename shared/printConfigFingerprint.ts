@@ -145,3 +145,92 @@ export function atcShadowDesignId(
 ): string {
   return reusableShadowDesignId(jobId, variantId, printConfigFingerprint(input));
 }
+
+/** Wire-size ceiling for a client-supplied print-config snapshot. */
+export const PRINT_CONFIG_INPUT_MAX_JSON_BYTES = 32 * 1024;
+
+// Exactly the keys encodeFlatLinePlacement / encodeToteLinePlacement read.
+const FLAT_VIEW_KEYS = ["scale", "offsetX", "offsetY", "rotationDeg"] as const;
+const TOTE_NUMERIC_KEYS = ["scale", "x", "y", "offsetX", "offsetY"] as const;
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Mirrors the encoders' `Number.isFinite(Number(v))` coercion so hashes stay identical. */
+function finiteNumber(v: unknown): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function pickFlatView(raw: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const k of FLAT_VIEW_KEYS) {
+    const n = finiteNumber(raw[k]);
+    if (n !== undefined) out[k] = n;
+  }
+  return out;
+}
+
+/**
+ * Allow-list a client-supplied fingerprint input down to exactly what
+ * `printConfigFingerprint` reads, so a pre-mint at Apply hashes identically
+ * to the ATC call and unknown keys cannot ride along. Returns null when the
+ * payload is not an object or exceeds the wire ceiling.
+ */
+export function sanitizePrintConfigInput(raw: unknown): PrintConfigFingerprintInput | null {
+  if (!isPlainObject(raw)) return null;
+  try {
+    if (JSON.stringify(raw).length > PRINT_CONFIG_INPUT_MAX_JSON_BYTES) return null;
+  } catch {
+    return null;
+  }
+  const out: PrintConfigFingerprintInput = {};
+
+  if (typeof raw.artworkUrl === "string") out.artworkUrl = raw.artworkUrl;
+
+  if (isPlainObject(raw.flat)) {
+    const flat: NonNullable<PrintConfigFingerprintInput["flat"]> = {};
+    if (isPlainObject(raw.flat.placements)) {
+      const front = pickFlatView(raw.flat.placements.front);
+      const back = pickFlatView(raw.flat.placements.back);
+      flat.placements = {
+        ...(front ? { front } : {}),
+        ...(back ? { back } : {}),
+      };
+    }
+    if (isPlainObject(raw.flat.enabled)) {
+      // Encoder semantics: front defaults on (`!== false`), back defaults off (`!!`).
+      const en = raw.flat.enabled;
+      flat.enabled = {
+        ...(en.front !== undefined ? { front: en.front !== false } : {}),
+        ...(en.back !== undefined ? { back: !!en.back } : {}),
+      };
+    }
+    if (typeof raw.flat.backgroundColor === "string") {
+      flat.backgroundColor = raw.flat.backgroundColor;
+    }
+    out.flat = flat;
+  } else if (raw.flat === null) {
+    out.flat = null;
+  }
+
+  if (isPlainObject(raw.tote)) {
+    const tote: NonNullable<PrintConfigFingerprintInput["tote"]> = {};
+    for (const k of TOTE_NUMERIC_KEYS) {
+      const n = finiteNumber(raw.tote[k]);
+      if (n !== undefined) tote[k] = n;
+    }
+    if (typeof raw.tote.printBack === "boolean") tote.printBack = raw.tote.printBack;
+    out.tote = tote;
+  } else if (raw.tote === null) {
+    out.tote = null;
+  }
+
+  out.aopHoodie = pickAopSlice(raw.aopHoodie);
+  out.aopPattern = pickAopSlice(raw.aopPattern);
+
+  return out;
+}
