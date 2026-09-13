@@ -41,6 +41,33 @@ export function isOnlineStorePublication(name: string): boolean {
   return String(name || "").trim().toLowerCase() === "online store";
 }
 
+export type ProductOnlineStoreCheck = {
+  publishedOnPublication?: boolean | null;
+  status?: string | null;
+  resourcePublications?: {
+    edges?: Array<{
+      node?: {
+        isPublished?: boolean | null;
+        publication?: { name?: string | null } | null;
+      } | null;
+    }>;
+  } | null;
+} | null;
+
+/** True when Admin already has this product on the Online Store channel. */
+export function productIsOnOnlineStore(product: ProductOnlineStoreCheck): boolean {
+  if (!product) return false;
+  if (product.publishedOnPublication === true) return true;
+  const edges = product.resourcePublications?.edges ?? [];
+  for (const edge of edges) {
+    const name = edge?.node?.publication?.name;
+    if (edge?.node?.isPublished && isOnlineStorePublication(String(name || ""))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export class ShadowNotOnStorefrontError extends Error {
   readonly code = "shadow_not_on_storefront" as const;
   constructor(
@@ -194,10 +221,41 @@ async function readOnlineStorePublication(
   return onlineStore;
 }
 
+export async function readProductOnlineStoreState(opts: {
+  shop: string;
+  accessToken: string;
+  productId: string | number;
+}): Promise<{ onStore: boolean; status: string | null }> {
+  const productId = String(opts.productId || "").replace(/\D/g, "");
+  if (!productId) return { onStore: false, status: null };
+  const productGid = `gid://shopify/Product/${productId}`;
+  const onlineStore = await readOnlineStorePublication(opts.shop, opts.accessToken);
+  const data = await adminGraphql<{
+    product: ProductOnlineStoreCheck;
+  }>(
+    opts.shop,
+    opts.accessToken,
+    `query($id: ID!, $pub: ID!) {
+      product(id: $id) {
+        status
+        publishedOnPublication(publicationId: $pub)
+        resourcePublications(first: 20) {
+          edges { node { isPublished publication { id name } } }
+        }
+      }
+    }`,
+    { id: productGid, pub: onlineStore.id },
+  );
+  return {
+    onStore: productIsOnOnlineStore(data.product),
+    status: data.product?.status ?? null,
+  };
+}
+
 /**
  * Publish to checkout channels and ASSERT the product is on Online Store.
- * If Admin already reports publishedOnPublication, do not republish — Ajax
- * replica lag is a storefront poll, not another Admin write.
+ * If Admin already reports the product on Online Store, do not republish —
+ * Ajax replica lag is a storefront poll, not another Admin write.
  */
 export async function ensureProductOnOnlineStore(opts: {
   shop: string;
@@ -208,52 +266,46 @@ export async function ensureProductOnOnlineStore(opts: {
   if (!productId) {
     throw new ShadowNotOnStorefrontError("Shadow publish skipped — missing productId", "unknown");
   }
-  const productGid = `gid://shopify/Product/${productId}`;
 
-  const checkPublished = async () => {
-    const onlineStore = await readOnlineStorePublication(opts.shop, opts.accessToken);
-    return adminGraphql<{
-      product: { publishedOnPublication: boolean; status: string } | null;
-    }>(
-      opts.shop,
-      opts.accessToken,
-      `query($id: ID!, $pub: ID!) {
-        product(id: $id) {
-          status
-          publishedOnPublication(publicationId: $pub)
-        }
-      }`,
-      { id: productGid, pub: onlineStore.id },
-    );
-  };
-
-  let check = await checkPublished();
-  if (check.product?.publishedOnPublication) {
+  const before = await readProductOnlineStoreState({
+    shop: opts.shop,
+    accessToken: opts.accessToken,
+    productId,
+  });
+  if (before.onStore) {
     console.log(
-      `[shopify-publications] Product ${productId} already on Online Store (status=${check.product.status}) — skip republish`,
+      `[shopify-publications] Product ${productId} already on Online Store (status=${before.status}) — skip republish`,
     );
     return { published: [], skipped: true };
   }
 
   const published = await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
-  check = await checkPublished();
-  if (!check.product?.publishedOnPublication) {
+  let after = await readProductOnlineStoreState({
+    shop: opts.shop,
+    accessToken: opts.accessToken,
+    productId,
+  });
+  if (!after.onStore) {
     console.warn(
       `[shopify-publications] GraphQL publish did not land for ${productId} — REST published:true fallback`,
     );
     await restPublishProduct(opts.shop, opts.accessToken, productId);
     await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
-    check = await checkPublished();
-  }
-  if (!check.product?.publishedOnPublication) {
-    throw new ShadowNotOnStorefrontError(
-      `Shadow product ${productId} is not on the Online Store channel (status=${check.product?.status || "unknown"})`,
+    after = await readProductOnlineStoreState({
+      shop: opts.shop,
+      accessToken: opts.accessToken,
       productId,
-      check,
+    });
+  }
+  if (!after.onStore) {
+    throw new ShadowNotOnStorefrontError(
+      `Shadow product ${productId} is not on the Online Store channel (status=${after.status || "unknown"})`,
+      productId,
+      after,
     );
   }
   console.log(
-    `[shopify-publications] Online Store confirmed for product ${productId} status=${check.product.status}`,
+    `[shopify-publications] Online Store confirmed for product ${productId} status=${after.status}`,
   );
   return { published: published.published, skipped: false };
 }

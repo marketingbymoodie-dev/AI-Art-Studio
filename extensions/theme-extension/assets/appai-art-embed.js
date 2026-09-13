@@ -1410,7 +1410,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.6';
+    var BRIDGE_VERSION = '1.0.7';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -2374,7 +2374,8 @@
           var notifiedFinalising = false;
           var created = !!createdHint;
           var repaired = false;
-          var waits = [800, 1200, 1600, 2000, 2500, 3000];
+          // Keep aligned with shared/atcStorefrontRetry.ts (~35s of waits).
+          var waits = [1000, 1500, 2000, 2500, 3000, 4000, 5000, 7000, 9000];
           var maxAttempt = waits.length;
           function attempt(n) {
             logAtcDebug({
@@ -2386,7 +2387,7 @@
             });
             console.log(B, '[ATC retry] attempt', n + '/' + maxAttempt, 'variant', variantId,
               created ? '(created:true)' : '(created:false)');
-            if ((created || n > 0) && !notifiedFinalising) {
+            if (created || n > 0) {
               notifiedFinalising = true;
               notifyAtcFinalising(n, created);
             }
@@ -2414,10 +2415,8 @@
                   });
                   throw err;
                 }
-                if (!notifiedFinalising) {
-                  notifiedFinalising = true;
-                  notifyAtcFinalising(n, created);
-                }
+                notifiedFinalising = true;
+                notifyAtcFinalising(n, created);
                 var wait = waits[Math.min(n, waits.length - 1)];
                 logAtcDebug({
                   event: 'cart_add_retry_wait',
@@ -2481,11 +2480,11 @@
           .catch(function(err) {
             var msg = (err && err.message) || String(err);
             if (err && err.soldOutRace) {
-              replyAtcFail('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
+              replyAtcFail('This design is still being prepared for the store. Keep this page open and tap Add to cart again in a moment.');
               return;
             }
             if (err && err.__retryable) {
-              replyAtcFail('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
+              replyAtcFail('This design is still being prepared for the store. Keep this page open and tap Add to cart again in a moment.');
               return;
             }
             replyAtcFail(msg);
@@ -2807,7 +2806,7 @@
                 variantId: sku.variantId,
                 reason: 'native_button'
               });
-              console.log(B, '[ATC retry] button attempt', n + '/3', 'variant', sku.variantId,
+              console.log(B, '[ATC retry] button attempt', n + '/' + 9, 'variant', sku.variantId,
                 sku.created ? '(created:true)' : '(created:false)');
               return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {}, payload.price)
                 .then(function(cart) {
@@ -2821,8 +2820,9 @@
                   return cart;
                 })
                 .catch(function(err) {
-                  if (!(err && err.__retryable) || n >= 6) throw err;
-                  var wait = n === 0 ? 800 : n === 1 ? 1200 : n === 2 ? 1600 : n === 3 ? 2000 : n === 4 ? 2500 : 3000;
+                  var btnWaits = [1000, 1500, 2000, 2500, 3000, 4000, 5000, 7000, 9000];
+                  if (!(err && err.__retryable) || n >= btnWaits.length) throw err;
+                  var wait = btnWaits[Math.min(n, btnWaits.length - 1)];
                   var prep = (!(err && err.soldOutRace))
                     ? repairShadowPurchasable(sku.variantId)
                     : Promise.resolve(false);

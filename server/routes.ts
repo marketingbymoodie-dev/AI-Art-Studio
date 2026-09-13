@@ -23381,6 +23381,19 @@ ${orientationExtra}
     const productGid = `gid://shopify/Product/${productId}`;
 
     try {
+      const { partitionPublications, readProductOnlineStoreState } = await import("./shopify-publications");
+      const already = await readProductOnlineStoreState({
+        shop,
+        accessToken,
+        productId,
+      });
+      if (already.onStore) {
+        console.log(
+          `[ensurePublished] Product ${productId} already on Online Store (status=${already.status}) — skip republish`,
+        );
+        return;
+      }
+
       // Step 1: Get all publications (sales channels)
       const pubQuery = JSON.stringify({
         query: `{ publications(first: 50) { edges { node { id name } } } }`,
@@ -23397,7 +23410,6 @@ ${orientationExtra}
       }
 
       const publications = pubData?.data?.publications?.edges ?? [];
-      const { partitionPublications } = await import("./shopify-publications");
       const { checkout, pos } = partitionPublications(
         publications.map((e: any) => e.node).filter((n: any) => n?.id),
       );

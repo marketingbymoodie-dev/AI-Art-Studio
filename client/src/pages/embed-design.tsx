@@ -12,6 +12,10 @@ import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators
 import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import { atcShadowDesignId } from "@shared/printConfigFingerprint";
 import {
+  ATC_SHADOW_STILL_PREPARING,
+  ATC_STOREFRONT_PROPAGATION_WAITS_MS,
+} from "@shared/atcStorefrontRetry";
+import {
   LINE_AOP_PANELS_KEY,
   LINE_AOP_PENDING_KEY,
   LINE_FLAT_PLACEMENT_KEY,
@@ -10688,8 +10692,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * The parent's theme extension script handles the actual /cart/add.js fetch.
    * Returns a promise that resolves when the parent confirms the cart update.
    */
-  const ATC_SHADOW_NOT_LISTED =
-    "This design isn't listed in the store yet. Please refresh the page and try Add to cart again.";
+  const ATC_SHADOW_NOT_LISTED = ATC_SHADOW_STILL_PREPARING;
   const ATC_HANDLER_MISSING =
     "Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.";
   const ATC_HANDLER_SLOW =
@@ -10734,7 +10737,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const TIMEOUT_MS = 45_000;
+      const TIMEOUT_MS = 90_000;
       let heardFromHandler = false;
       let timer: ReturnType<typeof setTimeout>;
 
@@ -10946,7 +10949,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Poll /cart/add.js itself — the purchase signal. /variants/{id}.js 404s
     // for unlisted + seo.hidden shadows even after Admin publish, so it is
     // not a ready check. Do not republish on sold-out replica lag.
-    const waits = [800, 1200, 1600, 2000, 2500, 3000];
+    const waits = ATC_STOREFRONT_PROPAGATION_WAITS_MS;
     let notified = false;
     let repaired = false;
     for (let attempt = 0; attempt <= waits.length; attempt++) {
@@ -12385,7 +12388,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }, 2500);
         } else {
           const raw = String(result.error || "Unknown error");
-          const soldOutRace = /sold out|cannot add more|still appearing in the store|not listed in the store|purchase is not allowed/i.test(raw);
+          const soldOutRace = /sold out|cannot add more|still appearing in the store|not listed in the store|still being prepared|purchase is not allowed/i.test(raw);
           setVariantError(soldOutRace ? ATC_SHADOW_NOT_LISTED : raw);
         }
       } catch (e: any) {

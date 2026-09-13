@@ -6,6 +6,7 @@ import {
   isOnlineStorePublication,
   isPosPublication,
   partitionPublications,
+  productIsOnOnlineStore,
 } from "./shopify-publications";
 
 describe("publication classification", () => {
@@ -42,6 +43,54 @@ describe("publication classification", () => {
       "Headless",
     ]);
     expect(pos.map((c) => c.name)).toEqual(["Point of Sale"]);
+  });
+});
+
+describe("productIsOnOnlineStore", () => {
+  it("treats publishedOnPublication as already listed", () => {
+    expect(
+      productIsOnOnlineStore({
+        publishedOnPublication: true,
+        status: "UNLISTED",
+      }),
+    ).toBe(true);
+  });
+
+  it("falls back to resourcePublications named Online Store", () => {
+    expect(
+      productIsOnOnlineStore({
+        publishedOnPublication: false,
+        resourcePublications: {
+          edges: [
+            {
+              node: {
+                isPublished: true,
+                publication: { name: "Online Store" },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("is false when Online Store is missing or unpublished", () => {
+    expect(productIsOnOnlineStore(null)).toBe(false);
+    expect(
+      productIsOnOnlineStore({
+        publishedOnPublication: false,
+        resourcePublications: {
+          edges: [
+            {
+              node: {
+                isPublished: true,
+                publication: { name: "Point of Sale" },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
   });
 });
 
