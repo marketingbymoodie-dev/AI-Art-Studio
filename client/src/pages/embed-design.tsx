@@ -4318,7 +4318,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * "" and simply falls back to cold-mint at tap (hash differs post-upload).
    */
   const buildAtcPrintConfigInputRef = useRef<
-    (overrides?: { artworkUrl?: string | null }) => PrintConfigFingerprintInput
+    (overrides?: {
+      artworkUrl?: string | null;
+      aopHoodie?: Record<string, unknown> | null;
+    }) => PrintConfigFingerprintInput
   >(() => ({}));
   buildAtcPrintConfigInputRef.current = (overrides) => {
     const rawArt = String(generatedDesign?.imageUrl || "");
@@ -4336,15 +4339,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       tote: toteFoldedLayout
         ? { scale: transform.scale, x: transform.x, y: transform.y, printBack: totePrintBack }
         : null,
-      aopHoodie: (hoodieAopPlacerState as Record<string, unknown> | null) ?? null,
+      aopHoodie:
+        overrides?.aopHoodie !== undefined
+          ? overrides.aopHoodie
+          : ((hoodieAopPlacerState as Record<string, unknown> | null) ?? null),
       aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
     };
   };
   /** `printConfig` + derived-key hint for a PreShadow-eligible save-mockups body. */
-  const preShadowKeyFields = useCallback((jobId: string, baseVariantId: string) => {
+  const preShadowKeyFields = useCallback((
+    jobId: string,
+    baseVariantId: string,
+    overrides?: { aopHoodie?: Record<string, unknown> | null },
+  ) => {
     // Send the allow-listed slice (what the hash actually reads) — smaller wire
     // payload and byte-identical to the server's own sanitize step.
-    const printConfig = sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current());
+    const printConfig = sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current(overrides));
     if (!printConfig) return {}; // oversize / unusable → legacy job::variant pre-mint (today's behaviour)
     return { printConfig, designId: atcShadowDesignId(jobId, baseVariantId, printConfig) };
   }, []);
@@ -12955,6 +12965,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             (u): u is string => !!u,
           );
           if (mockupUrls.length > 0) {
+            // Hoodie/mesh AOP pre-mint (new surface): same cfg-keyed PreShadow as
+            // flat/Printify so first-tap ATC reuses an already-propagated shadow.
+            // Hash the state we are persisting (== render state ATC will hash).
+            const hoodieBaseVariant =
+              frontAbs && frontAbs.startsWith("https://") ? baseVariantForShadowRef.current : "";
+            const hoodiePreShadow =
+              productId && hoodieBaseVariant
+                ? {
+                    baseProductId: productId,
+                    baseVariantId: hoodieBaseVariant,
+                    ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                    ...preShadowKeyFields(jobId, hoodieBaseVariant, {
+                      aopHoodie: (persistHoodie as Record<string, unknown> | null) ?? null,
+                    }),
+                  }
+                : {};
             void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -12964,9 +12990,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 productTypeId: productTypeId || undefined,
                 // Front first (gallery thumbnail), back second.
                 mockupUrls,
+                ...hoodiePreShadow,
               }),
             })
               .then(() => {
+                if (productId && hoodieBaseVariant) {
+                  startShadowVariantPoll(jobId, shopDomain, 3000);
+                }
                 // Tell the parent storefront page to re-pull the gallery so a
                 // changed thumbnail shows up the next time the Saved Designs
                 // drawer is opened — no full page reload needed. Posted after
@@ -13024,6 +13054,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     loadedDecorStyle,
     transform.scale,
     fetchPrintifyMockups,
+    productId,
+    preShadowKeyFields,
+    startShadowVariantPoll,
   ]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
