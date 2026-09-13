@@ -61,6 +61,15 @@ import {
   ensureShadowVariantPurchasable,
 } from "./shadow-variant-purchasable";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
+import {
+  PRE_SHADOW_AWAIT_MS,
+  awaitExistingFlight,
+  awaitInFlightOrGenerate,
+  preShadowFlightKey,
+  registerPreShadowInFlight,
+  runPreShadowMint,
+} from "./pre-shadow-mint";
+import { ATC_SHADOW_STILL_PREPARING } from "@shared/atcStorefrontRetry";
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
@@ -9905,8 +9914,6 @@ ${orientationExtra}
   // Called by the client after mockups are generated, to persist them on the job record.
   // Also accepts optional baseProductId + baseVariantId to pre-create a shadow product
   // in the background, so Add to Cart is instant when the user clicks it.
-  /** One PreShadow mint per (shop, derived designId) at a time — a second Apply awaits the first. */
-  const preShadowInFlight = new Map<string, Promise<void>>();
   /** Last path segment without query — stable across proxy / asset-base rewrites. */
   const artworkFilename = (url: unknown): string => {
     const s = String(url || "").trim();
@@ -10008,259 +10015,119 @@ ${orientationExtra}
         }
       }
 
-      if (preShadowDesignId && installation.accessToken) {
+      if (preShadowDesignId && preShadowCfgInput && installation.accessToken) {
         const token = installation.accessToken;
-        const apiBase = `https://${shop}/admin/api/2025-10`;
-        const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
         const designId = preShadowDesignId;
-        const inFlightKey = `${shop}::${designId}`;
         const cfgSnapshot = preShadowCfgInput;
-
-        const catalogVid = String(baseVariantId ?? "").replace(/\D/g, "");
-        /** Atomic per-variant write: designId + snapshot (+ ids) from THIS mint, or nothing. */
-        const writeJobShadow = async (patch: {
-          shadowProductId: string | null;
-          shadowVariantId: string | null;
-          shadowExpiresAt: Date | null;
-        }) => {
-          if (!cfgSnapshot || !designId || !catalogVid) return;
-          const fresh = await storage.getGenerationJob(jobId);
-          const prevDs =
-            fresh?.designState && typeof fresh.designState === "object" && !Array.isArray(fresh.designState)
-              ? (fresh.designState as Record<string, unknown>)
-              : {};
-          const prevMap =
-            prevDs.preShadowByVariant &&
-            typeof prevDs.preShadowByVariant === "object" &&
-            !Array.isArray(prevDs.preShadowByVariant)
-              ? { ...(prevDs.preShadowByVariant as Record<string, unknown>) }
-              : {};
-          prevMap[catalogVid] = {
+        const flightKey = preShadowFlightKey(shop, designId);
+        // Fire-and-forget. Same persist key already minting (ATC tap during
+        // debounce, or a second Apply) joins that promise — never a 2nd product.
+        void awaitInFlightOrGenerate(flightKey, () =>
+          runPreShadowMint({
+            shop,
+            token,
+            jobId,
+            baseProductId: String(baseProductId),
+            baseVariantId: String(baseVariantId),
+            primaryMockupUrl,
             designId,
-            snapshot: cfgSnapshot,
-            shadowProductId: patch.shadowProductId,
-            shadowVariantId: patch.shadowVariantId,
-            shadowExpiresAt: patch.shadowExpiresAt,
-          };
-          await storage.updateGenerationJob(jobId, {
-            ...patch,
-            designState: {
-              ...prevDs,
-              preShadowByVariant: prevMap,
-              // Echo of THIS variant only — poll must read the map by vid.
-              preShadowDesignId: designId,
-              printConfigSnapshot: cfgSnapshot,
-            },
-          } as any);
-        };
-
-        // Fire-and-forget: don't await, respond to client immediately.
-        // Same (shop, key) already minting → piggy-back on it, never mint twice.
-        const alreadyRunning = preShadowInFlight.get(inFlightKey);
-        if (alreadyRunning) {
-          console.log(`[PreShadow] jobId=${jobId} derived=${designId} already in flight — awaiting`);
-        }
-        const run = (async () => {
-          if (alreadyRunning) {
-            await alreadyRunning.catch(() => {});
-            return;
-          }
-          try {
-            const refreshShadowImage = async (productId: string, variantId: string) => {
-              try {
-                const imgRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
-                  method: "POST",
-                  headers,
-                  body: JSON.stringify({
-                    image: {
-                      src: primaryMockupUrl,
-                      variant_ids: [Number(variantId)],
-                    },
-                  }),
-                });
-                if (!imgRes.ok) {
-                  const t = await imgRes.text();
-                  console.warn(
-                    `[PreShadow] Failed to refresh shadow image:`,
-                    imgRes.status,
-                    t.substring(0, 200),
-                  );
-                }
-              } catch (imgErr: any) {
-                console.warn(`[PreShadow] Failed to refresh shadow image:`, imgErr?.message || imgErr);
-              }
-            };
-
-            // One shadow per (job, catalog variant, print snapshot). Never POST a
-            // new mockup onto job.shadowProductId unless that row's baseVariantId
-            // matches — that singleton refresh painted Blue onto an already-carted
-            // Natural line. A cfg-keyed id must NOT adopt a job::variant row
-            // (different snapshot); only legacy job::variant ids fall through.
-            let existing = await storage.getPublishedProduct(shop, designId);
-            if ((!existing || existing.status !== "active") && !hasPrintConfigSuffix(designId)) {
-              for (const key of shadowLookupKeys(jobId, primaryMockupUrl, baseVariantId)) {
-                const row = await storage.getPublishedProduct(shop, key);
-                if (row?.status !== "active") continue;
-                if (!shadowMatchesBaseVariant(row.baseVariantId, baseVariantId)) continue;
-                existing = row;
-                break;
-              }
-            }
-            if (
-              existing &&
-              existing.status === "active" &&
-              shadowMatchesBaseVariant(existing.baseVariantId, baseVariantId)
-            ) {
-              // Reuse existing shadow product — just store the IDs on the job
-              console.log(
-                `[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId} (key=${designId})`,
-              );
-              await ensureShadowVariantPurchasable({
-                shop,
-                token,
-                variantId: existing.shopifyVariantId,
-              });
-              await writeJobShadow({
-                shadowProductId: existing.shopifyProductId,
-                shadowVariantId: existing.shopifyVariantId,
-                shadowExpiresAt: existing.expiresAt,
-              });
-              if (existing.shopifyProductId && existing.shopifyVariantId) {
-                await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
-                await syncShadowVariantPrice({
-                  shop,
-                  token,
-                  shadowVariantId: existing.shopifyVariantId,
-                  baseVariantId,
-                  priceOverride: preShadowClientPrice,
-                });
-              }
-              return;
-            }
-
-            // Fetch base product to get price/title
-            const productRes = await fetch(`${apiBase}/products/${baseProductId}.json`, { headers });
-            if (!productRes.ok) {
-              console.warn(`[PreShadow] Failed to fetch base product ${baseProductId}: ${productRes.status}`);
-              return;
-            }
-            const { product: baseProduct } = await productRes.json();
-            const baseVariant = baseProduct.variants.find((v: any) => String(v.id) === String(baseVariantId));
-            if (!baseVariant) {
-              console.warn(`[PreShadow] Base variant ${baseVariantId} not found on product ${baseProductId}`);
-              return;
-            }
-
-            // Build shadow product title
-            const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
-              .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
-              .join(' / ');
-            const shadowTitle = buildShadowProductTitle(baseProduct.title, variantOptionParts);
-
-            // Create the shadow product — expires in 1 hour if not added to cart
-            const oneHourFromNow = new Date(Date.now() + 1 * 60 * 60 * 1000);
-            const createRes = await fetch(`${apiBase}/products.json`, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({
-                product: {
-                  title: shadowTitle,
-                  status: 'unlisted',
-                  published: false,
-                  tags: 'appai-shadow',
-                  variants: [{
-                    price: preShadowClientPrice || baseVariant.price,
-                    compare_at_price: baseVariant.compare_at_price || null,
-                    taxable: baseVariant.taxable,
-                    requires_shipping: baseVariant.requires_shipping,
-                    weight: baseVariant.weight,
-                    weight_unit: baseVariant.weight_unit,
-                    inventory_management: null,
-                    inventory_policy: 'continue',
-                    fulfillment_service: 'manual',
-                  }],
-                  images: [{ src: primaryMockupUrl }],
-                },
-              }),
-            });
-            if (!createRes.ok) {
-              const errText = await createRes.text();
-              console.error(`[PreShadow] Failed to create shadow product: ${createRes.status}`, errText.substring(0, 200));
-              return;
-            }
-            const { product: shadowProduct } = await createRes.json();
-            const shadowVariant = shadowProduct.variants[0];
-            console.log(
-              `[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId} derived=${designId}`,
-            );
-            await ensureShadowVariantPurchasable({
-              shop,
-              token,
-              variantId: shadowVariant.id,
-            });
-
-            // Assign mockup image to the variant
-            if (shadowProduct.images?.length > 0) {
-              const imgId = shadowProduct.images[0].id;
-              await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
-                method: 'PUT', headers,
-                body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
-              }).catch(() => {});
-            }
-
-            // Persist in published_products table
-            await storage.createPublishedProduct({
-              shop,
-              designId,
-              customerKey: null,
-              shopifyProductId: String(shadowProduct.id),
-              shopifyVariantId: String(shadowVariant.id),
-              shopifyProductHandle: shadowProduct.handle || null,
-              baseVariantId: String(baseVariantId),
-              status: 'active',
-              expiresAt: oneHourFromNow,
-              cartAddedAt: null,
-            } as any);
-
-            // Store shadow product IDs (+ derived key / cfg) on the job record for instant cart add
-            await writeJobShadow({
-              shadowProductId: String(shadowProduct.id),
-              shadowVariantId: String(shadowVariant.id),
-              shadowExpiresAt: oneHourFromNow,
-            });
-
-            // Phase 3 shipping: associate the pre-created shadow into its base
-            // variant's delivery profile (no-op unless shop is in table mode).
-            import("./shipping-reconciler")
-              .then((m) =>
-                m.attachVariantToShipping({
-                  shop,
-                  shopifyVariantId: String(shadowVariant.id),
-                  sourceVariantId: String(baseVariantId),
-                  source: "shadow",
-                }),
-              )
-              .catch((e: any) =>
-                console.warn(`[PreShadow] shipping attach failed for ${shadowVariant.id}:`, e?.message),
-              );
-
-            console.log(`[PreShadow] jobId=${jobId} shadow product ready — variantId=${shadowVariant.id}`);
-          } catch (bgErr: any) {
+            cfgSnapshot,
+            priceOverride: preShadowClientPrice,
+          }).catch((bgErr: any) => {
             console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
-          }
-        })();
-        if (!alreadyRunning) {
-          preShadowInFlight.set(inFlightKey, run);
-          void run.finally(() => {
-            if (preShadowInFlight.get(inFlightKey) === run) preShadowInFlight.delete(inFlightKey);
-          });
-        }
+          }),
+        );
       }
 
       return res.json({ saved: true, ...(preShadowDesignId ? { shadowDesignId: preShadowDesignId } : {}) });
     } catch (err: any) {
       console.error("[SaveMockups]", err);
       return res.status(500).json({ error: "Failed to save mockups" });
+    }
+  });
+
+  // Warm the selected catalog variant's shadow after a size/colour change
+  // (no mockupUrls write). printConfig required — never a legacy job::vid row.
+  app.post("/api/storefront/preshadow-variant", async (req: Request, res: Response) => {
+    try {
+      const {
+        shop,
+        jobId,
+        baseProductId,
+        baseVariantId,
+        price,
+        printConfig,
+        designId: designIdHint,
+        mockupUrl,
+      } = req.body || {};
+      if (!shop || !jobId || !baseProductId || !baseVariantId) {
+        return res.status(400).json({ error: "shop, jobId, baseProductId, and baseVariantId are required" });
+      }
+      if (printConfig == null) {
+        return res.status(400).json({ error: "printConfig is required" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation?.accessToken) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      const clientMockup =
+        typeof mockupUrl === "string" && mockupUrl.startsWith("https://") ? mockupUrl : "";
+      const jobMockups = Array.isArray(job.mockupUrls) ? (job.mockupUrls as unknown[]) : [];
+      const jobPrimary = jobMockups
+        .filter((u): u is string => typeof u === "string")
+        .map((u) => normalizePreviewUrl(u))
+        .find((u) => !!u && u.startsWith("https://"));
+      const primaryMockupUrl = clientMockup || jobPrimary || "";
+      if (!primaryMockupUrl) {
+        return res.status(400).json({ error: "https mockupUrl is required" });
+      }
+      const cfg = sanitizePrintConfigInput(printConfig);
+      if (!cfg) {
+        return res.status(400).json({ error: "printConfig rejected by sanitizer" });
+      }
+      const cfgArt = artworkFilename(cfg.artworkUrl);
+      const jobArt = artworkFilename(job.designImageUrl);
+      if (cfgArt && jobArt && cfgArt !== jobArt) {
+        console.warn(`[PreShadow] preshadow-variant skipped — artwork mismatch cfg=${cfgArt} job=${jobArt}`);
+        return res.status(409).json({ error: "artwork mismatch" });
+      }
+      const atomic = atomicPreShadowVariantEntry(jobId, baseVariantId, cfg);
+      if (!atomic) {
+        return res.status(400).json({ error: "could not derive persist key" });
+      }
+      if (designIdHint && String(designIdHint).trim() !== atomic.designId) {
+        console.warn(
+          `[PreShadow] preshadow-variant hint mismatch hint=${String(designIdHint).slice(0, 120)} derived=${atomic.designId} — using derived`,
+        );
+      }
+      const priceNum = parseFloat(String(price ?? ""));
+      const priceOverride =
+        Number.isFinite(priceNum) && priceNum > 0 ? priceNum.toFixed(2) : null;
+      const flightKey = preShadowFlightKey(shop, atomic.designId);
+      // Join exact key or mint once. ATC tap during debounce hits this same key.
+      void awaitInFlightOrGenerate(flightKey, () =>
+        runPreShadowMint({
+          shop,
+          token: installation.accessToken!,
+          jobId,
+          baseProductId: String(baseProductId),
+          baseVariantId: String(baseVariantId),
+          primaryMockupUrl,
+          designId: atomic.designId,
+          cfgSnapshot: atomic.snapshot,
+          priceOverride,
+        }).catch((e: any) => {
+          console.error(`[PreShadow] preshadow-variant error jobId=${jobId}:`, e?.message);
+        }),
+      );
+      return res.json({ started: true, shadowDesignId: atomic.designId });
+    } catch (err: any) {
+      console.error("[PreShadowVariant]", err);
+      return res.status(500).json({ error: "Failed to start pre-mint" });
     }
   });
 
@@ -11113,6 +10980,8 @@ ${orientationExtra}
         colorId,
       } = req.body;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
+      let settleResolveFlight: ((v?: { shopifyProductId: string; shopifyVariantId: string } | void) => void) | null =
+        null;
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }
@@ -11278,6 +11147,56 @@ ${orientationExtra}
         });
       }
 
+      // Join a PreShadow mint already running for THIS persist key (size-change
+      // debounce). Timeout is "not ready" — do not start a second mint.
+      const flightKey = preShadowFlightKey(shop, persistDesignId);
+      const flight = await awaitExistingFlight(flightKey, PRE_SHADOW_AWAIT_MS);
+      if (flight === "timeout") {
+        console.warn(`[ShadowProduct] in-flight await timed out key=${persistDesignId}`);
+        return res.json({
+          success: false,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
+        });
+      }
+      if (flight === "joined") {
+        const after = await storage.getPublishedProduct(shop, persistDesignId);
+        if (
+          after?.status === "active" &&
+          shadowMatchesBaseVariant(after.baseVariantId, variantId)
+        ) {
+          console.log(
+            `[ShadowProduct] Reusing existing shadow product ${after.shopifyProductId} variant ${after.shopifyVariantId} for design ${designId} (matched key=${persistDesignId}, persist=${persistDesignId}, joined-inflight)`,
+          );
+          await ensureShadowVariantPurchasable({
+            shop,
+            token,
+            variantId: after.shopifyVariantId,
+          });
+          return res.json({
+            success: true,
+            variantId: after.shopifyVariantId,
+            reused: true,
+            designId: persistDesignId,
+            matchedKey: persistDesignId,
+          });
+        }
+        return res.json({
+          success: false,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
+        });
+      }
+
+      // Claim this key so a debounce that fires during ATC create joins us
+      // instead of minting a second product.
+      const flightPromise = new Promise<{ shopifyProductId: string; shopifyVariantId: string } | void>(
+        (resolveFlight) => {
+          settleResolveFlight = resolveFlight;
+        },
+      );
+      registerPreShadowInFlight(flightKey, flightPromise);
+
       // 2. Canonical source of truth: resolve productId from variantId.
       //    Ignore inbound productId because storefront/theme sources can be stale or wrong.
       const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
@@ -11433,6 +11352,11 @@ ${orientationExtra}
           console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
         );
 
+      settleResolveFlight?.({
+        shopifyProductId: String(shadowProduct.id),
+        shopifyVariantId: String(shadowVariant.id),
+      });
+      settleResolveFlight = null;
       return res.json({
         success: true,
         variantId: String(shadowVariant.id),
@@ -11454,6 +11378,8 @@ ${orientationExtra}
       }
       console.error("[ShadowProduct] Error:", error);
       res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+    } finally {
+      settleResolveFlight?.();
     }
   });
 

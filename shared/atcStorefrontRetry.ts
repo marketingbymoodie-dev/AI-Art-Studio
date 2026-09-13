@@ -13,6 +13,16 @@ export const ATC_STOREFRONT_PROPAGATION_WAITS_MS = [
 export const ATC_SHADOW_STILL_PREPARING =
   "This design is still being prepared for the store. Keep this page open and tap Add to cart again in a moment.";
 
+/** Size/colour change → committed selection before PreShadow mint. */
+export const PRE_SHADOW_SIZE_DEBOUNCE_MS = 400;
+
+/**
+ * Join an in-flight mint for this persist key. Hoodie/pillow Admin create
+ * is typically 6–15s; 30s sits above the slowest mint so a timeout means
+ * "not ready yet" (retry), not a failed create.
+ */
+export const PRE_SHADOW_AWAIT_MS = 30_000;
+
 /**
  * Resolve never returned a shadow (no https mockup, or resolve-design-variant
  * came back empty). Distinct from replica-lag copy so field logs split the two.

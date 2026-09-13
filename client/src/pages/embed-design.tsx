@@ -22,6 +22,8 @@ import {
   ATC_SHADOW_PREVIEW_NOT_READY,
   ATC_SHADOW_STILL_PREPARING,
   ATC_STOREFRONT_PROPAGATION_WAITS_MS,
+  PRE_SHADOW_AWAIT_MS,
+  PRE_SHADOW_SIZE_DEBOUNCE_MS,
   atcCustomerSafeError,
   classifyCartAddFailure,
   clearAtcRateLimitCooldown,
@@ -2360,6 +2362,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * (edit after Apply) must cold-mint per the snapshot rule.
    */
   const preShadowDesignIdRef = useRef<string | null>(null);
+  /** Persist keys already warmed (or in flight) per catalog variant. */
+  const preShadowWarmRef = useRef<Map<string, string>>(new Map());
+  const preShadowDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Retail (dollars string, e.g. "18.95") last synced against the shadow
    * variant via resolve-design-variant. On the next ATC for the same
@@ -6565,6 +6570,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setVariantError(null);
     preShadowJobIdRef.current = null;
     preShadowDesignIdRef.current = null;
+    preShadowWarmRef.current.clear();
     preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
@@ -6747,6 +6753,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setVariantError(null);
     preShadowJobIdRef.current = null;
     preShadowDesignIdRef.current = null;
+    preShadowWarmRef.current.clear();
     preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
@@ -7458,6 +7465,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             preShadowJobIdRef.current = jobId;
             preShadowDesignIdRef.current =
               typeof data.shadowDesignId === "string" && data.shadowDesignId ? data.shadowDesignId : null;
+            if (vid && preShadowDesignIdRef.current) {
+              preShadowWarmRef.current.set(vid, preShadowDesignIdRef.current);
+            }
             setPreShadowVariantId(data.shadowVariantId);
             setPreShadowProductId(data.shadowProductId || null);
             return;
@@ -8077,6 +8087,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }),
           }).then(r => r.json()).then(saved => {
             console.log('[Mockups] save-mockups response:', saved);
+            if (saved.shadowDesignId && baseVariantForShadow) {
+              preShadowWarmRef.current.set(baseVariantForShadow, String(saved.shadowDesignId));
+            }
             if (saved.saved) {
               // Refresh saved designs list so the new mockup shows up in the dropdown
               setSavedDesignsLoading(true);
@@ -9666,6 +9679,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Reset pre-created shadow variant for this new design
       preShadowJobIdRef.current = null;
       preShadowDesignIdRef.current = null;
+      preShadowWarmRef.current.clear();
     preShadowSyncedRetailRef.current = null;
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
@@ -10766,6 +10780,83 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
+  // Pre-mint the committed size/colour on an already-applied design.
+  // 400ms debounce cancels prior (rapid 16→20→18 → one request for 18).
+  // Tap during the window: ATC cold-mints; this POST then joins that exact
+  // persist key via server in-flight / existing — never a second product.
+  useEffect(() => {
+    if (!isStorefront || isCreatorStorefront) return;
+    const jobId = savedJobIdRef.current;
+    if (!jobId || !shopDomain || !productId) return;
+    const vid = normalizeVariantId(findVariantId({ quiet: true }) || "");
+    if (!vid) return;
+    if (mockupLoading || mockupsStale) return;
+    const artwork = generatedDesign?.imageUrl || "";
+    if (!artwork || artwork.startsWith("data:")) return;
+    const mockupUrl = getPreferredMockupUrl({ cartSafeOnly: true });
+    if (!mockupUrl.startsWith("https://")) return;
+
+    syncHoodieFingerprintRef();
+    const keys = preShadowKeyFields(jobId, vid);
+    if (!keys.designId || !keys.printConfig) return;
+    if (
+      preShadowWarmRef.current.get(vid) === keys.designId ||
+      preShadowDesignIdRef.current === keys.designId
+    ) {
+      preShadowWarmRef.current.set(vid, keys.designId);
+      return;
+    }
+
+    if (preShadowDebounceRef.current) clearTimeout(preShadowDebounceRef.current);
+    preShadowDebounceRef.current = setTimeout(() => {
+      preShadowDebounceRef.current = null;
+      if (preShadowWarmRef.current.get(vid) === keys.designId) return;
+      console.log("[PreShadow] size-change pre-mint", keys.designId, "vid", vid);
+      void safeFetch(`${API_BASE}/api/storefront/preshadow-variant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop: shopDomain,
+          jobId,
+          baseProductId: productId,
+          baseVariantId: vid,
+          mockupUrl,
+          ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+          ...keys,
+        }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.started && data.shadowDesignId) {
+            preShadowWarmRef.current.set(vid, String(data.shadowDesignId));
+            startShadowVariantPoll(jobId, shopDomain, 0);
+          }
+        })
+        .catch((e) => console.warn("[PreShadow] size-change pre-mint failed", e));
+    }, PRE_SHADOW_SIZE_DEBOUNCE_MS);
+
+    return () => {
+      if (preShadowDebounceRef.current) {
+        clearTimeout(preShadowDebounceRef.current);
+        preShadowDebounceRef.current = null;
+      }
+    };
+  }, [
+    selectedSize,
+    selectedFrameColor,
+    generatedDesign?.id,
+    generatedDesign?.imageUrl,
+    shopDomain,
+    productId,
+    isStorefront,
+    isCreatorStorefront,
+    mockupLoading,
+    mockupsStale,
+    getPreferredMockupUrl,
+    preShadowKeyFields,
+    startShadowVariantPoll,
+  ]);
+
   const pingAtcDebug = (payload: Record<string, unknown>) => {
     console.log("[Design Studio] [ATC-debug]", payload);
     try {
@@ -10812,6 +10903,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * Returns a promise that resolves when the parent confirms the cart update.
    */
   const ATC_SHADOW_NOT_LISTED = ATC_SHADOW_STILL_PREPARING;
+  const atcNoticeClass = (msg: string) =>
+    msg === ATC_SHADOW_STILL_PREPARING || msg === ATC_SHADOW_PREVIEW_NOT_READY
+      ? "text-muted-foreground"
+      : "text-destructive";
   const ATC_SHADOW_PREVIEW_PENDING = ATC_SHADOW_PREVIEW_NOT_READY;
   const ATC_HANDLER_MISSING =
     "Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.";
@@ -12201,7 +12296,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     /** Best-effort resolve-design-variant with a single retry on network failure. */
     const runResolveVariant = async (
       opts: { attempts: number; label: string },
-    ): Promise<{ shadowVariantId: string | null; matched: boolean; created: boolean }> => {
+    ): Promise<{
+      shadowVariantId: string | null;
+      matched: boolean;
+      created: boolean;
+      stillPreparing?: boolean;
+    }> => {
       if (!shopDomain || !mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
         return { shadowVariantId: null, matched: false, created: false };
       }
@@ -12211,7 +12311,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
         try {
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 20000);
+          const timeout = setTimeout(() => controller.abort(), PRE_SHADOW_AWAIT_MS + 5_000);
           const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -12231,6 +12331,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           clearTimeout(timeout);
           if (resolveRes.ok) {
             const data = await resolveRes.json();
+            if (data.code === "still_preparing" || data.error === ATC_SHADOW_STILL_PREPARING) {
+              console.log(`[Design Studio] ${opts.label} still preparing — not a hard fail`);
+              return { shadowVariantId: null, matched: false, created: false, stillPreparing: true };
+            }
             if (data.success && data.variantId) {
               console.log(`[Design Studio] ${opts.label} resolved shadow variant:`, {
                 variantId: data.variantId,
@@ -12282,6 +12386,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     let finalVariantId = normalizedVariant;
     let shadowJustCreated = false;
     let needsBackgroundAopFinalize = false;
+    let resolveStillPreparing = false;
     try {
       const [aopSnap, resolveResult] = await Promise.all([
         aopSnapshotPromise,
@@ -12306,6 +12411,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }
         }
       }
+      resolveStillPreparing = !!resolveResult.stillPreparing;
       if (resolveResult.matched && resolveResult.shadowVariantId) {
         finalVariantId = resolveResult.shadowVariantId;
         shadowJustCreated = !!resolveResult.created;
@@ -12506,7 +12612,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         finalVariantId,
         baseVariantId: normalizedVariant,
       });
-      setVariantError(ATC_SHADOW_PREVIEW_PENDING);
+      setVariantError(resolveStillPreparing ? ATC_SHADOW_STILL_PREPARING : ATC_SHADOW_PREVIEW_PENDING);
       setIsAddingToCart(false);
       return;
     }
@@ -16251,7 +16357,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         {(isShopify || isStorefront) && generatedDesign ? (
           <div className="mt-1 flex flex-col items-center gap-1">
             {variantError && (
-              <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-variant-error-atc")}>{variantError}</p>
+              <p className={`${atcNoticeClass(variantError)} text-xs text-center`} data-testid={withSuffix("text-variant-error-atc")}>{variantError}</p>
             )}
             {isStorefront && !isTopLevelHost && bridgeError && (
               <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-bridge-error")}>{bridgeError}</p>
@@ -18397,7 +18503,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   {(isShopify || isStorefront) && generatedDesign ? (
                     <div className="mt-1 flex flex-col items-center gap-1">
                       {variantError && (
-                        <p className="text-destructive text-xs text-center" data-testid="text-variant-error-atc">{variantError}</p>
+                        <p className={`${atcNoticeClass(variantError)} text-xs text-center`} data-testid="text-variant-error-atc">{variantError}</p>
                       )}
                       {isStorefront && !isTopLevelHost && bridgeError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
@@ -19171,6 +19277,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   setMockupsStale(false);
                   preShadowJobIdRef.current = null;
                   preShadowDesignIdRef.current = null;
+                  preShadowWarmRef.current.clear();
     preShadowSyncedRetailRef.current = null;
                   setPreShadowVariantId(null);
                   setPreShadowProductId(null);
@@ -20198,7 +20305,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             )}
 
             {variantError && (
-              <p className="text-destructive text-sm" data-testid="text-variant-error">
+              <p className={`${atcNoticeClass(variantError)} text-sm`} data-testid="text-variant-error">
                 {variantError}
               </p>
             )}
