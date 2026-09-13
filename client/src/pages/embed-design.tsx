@@ -3899,7 +3899,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Mobile customizer shell branch (checkpoint 1: scaffold). Everything gated by
   // this flag is only active below the mobile breakpoint; desktop is untouched.
   const rawIsMobile = useIsMobile();
-  const isMobile = rawIsMobile || isTopLevelHost;
+  // Do not OR host=page: that latched the phone shell after the theme hop and
+  // never released on grow (tablet landscape / re-maximise). useIsMobile now
+  // flips both ways and still treats phone landscape as mobile.
+  const isMobile = rawIsMobile;
   // Portal targets for the AOP placer's control column. Callback refs (not
   // useRef) so the placer re-renders once the sheet containers exist.
   const [aopOptionsSlotEl, setAopOptionsSlotEl] = useState<HTMLDivElement | null>(null);
