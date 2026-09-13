@@ -12,8 +12,17 @@ import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators
 import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import { atcShadowDesignId } from "@shared/printConfigFingerprint";
 import {
+  ATC_MAX_CART_ADD_CALLS_PER_TAP,
+  ATC_RETRY_AFTER_DEFAULT_MS,
+  ATC_SHADOW_PREVIEW_NOT_READY,
   ATC_SHADOW_STILL_PREPARING,
   ATC_STOREFRONT_PROPAGATION_WAITS_MS,
+  atcCustomerSafeError,
+  classifyCartAddFailure,
+  clearAtcRateLimitCooldown,
+  parseRetryAfterMs,
+  readAtcRateLimitRemainingMs,
+  writeAtcRateLimitCooldown,
 } from "@shared/atcStorefrontRetry";
 import {
   LINE_AOP_PANELS_KEY,
@@ -2637,6 +2646,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [reuseRegenerateBasePrompt, setReuseRegenerateBasePrompt] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [atcCooldownUntil, setAtcCooldownUntil] = useState(0);
+  const [atcCooldownNow, setAtcCooldownNow] = useState(() => Date.now());
+  const atcCooldownRemainingMs = Math.max(0, atcCooldownUntil - atcCooldownNow);
+  useEffect(() => {
+    const remaining = readAtcRateLimitRemainingMs();
+    if (remaining > 0) setAtcCooldownUntil(Date.now() + remaining);
+  }, []);
+  useEffect(() => {
+    if (!atcCooldownUntil) return;
+    const tick = () => {
+      const now = Date.now();
+      setAtcCooldownNow(now);
+      if (now >= atcCooldownUntil) setAtcCooldownUntil(0);
+    };
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [atcCooldownUntil]);
   const [bridgeReady, setBridgeReady] = useState(false);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
   const debugBridge = searchParams.get("debugBridge") === "1";
@@ -9110,15 +9137,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       aopPrintPanelsReady ||
       !!hoodieAopPlacerRef.current ||
       !!hoodieAopPlacerState;
+    const cooldownBlocks = atcCooldownRemainingMs > 0;
+    const cooldownSec = Math.max(1, Math.ceil(atcCooldownRemainingMs / 1000));
     const shouldDisable =
       waitingForMockups ||
       isAddingToCart ||
+      cooldownBlocks ||
       mockupsStaleBlocksCart ||
       mockupsUpdating ||
       saveBlocking ||
       saveStatePending;
     const label = isAddingToCart
       ? "Adding to Cart..."
+      : cooldownBlocks
+      ? `Try again in ${cooldownSec}s`
       : saveBlocking
       ? "Saving design\u2026"
       : waitingForMockups || mockupsUpdating
@@ -9146,7 +9178,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -9163,7 +9195,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (!snap || savedJobIdRef.current !== jobId) return;
         window.parent.postMessage({
           type: 'AI_ART_STUDIO_CART_STATE',
-          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart,
+          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
           disabled: shouldDisable,
           waitingForMockups,
           label,
@@ -9174,7 +9206,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }, '*');
       });
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -10673,6 +10705,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   };
 
+  const showAtcRateLimitToast = (remainingMs: number) => {
+    const sec = Math.max(1, Math.ceil(remainingMs / 1000));
+    toast({
+      title: "Finalizing print files…",
+      description: `${ATC_SHADOW_STILL_PREPARING} Try again in ${sec}s.`,
+      duration: Math.min(12_000, remainingMs + 800),
+    });
+  };
+
   const showAtcFinalisingToast = (reason: string) => {
     if (atcFinalisingToastShownRef.current) {
       pingAtcDebug({ event: "toast_already_shown", reason });
@@ -10693,6 +10734,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * Returns a promise that resolves when the parent confirms the cart update.
    */
   const ATC_SHADOW_NOT_LISTED = ATC_SHADOW_STILL_PREPARING;
+  const ATC_SHADOW_PREVIEW_PENDING = ATC_SHADOW_PREVIEW_NOT_READY;
   const ATC_HANDLER_MISSING =
     "Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.";
   const ATC_HANDLER_SLOW =
@@ -10874,39 +10916,60 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       delete (props as Record<string, string>)["mockup_url"];
     }
 
-    const soldOutRe = /sold out|cannot add more|purchase is not allowed|still appearing in the store/i;
-    const notFoundRe = /cannot find|not found/i;
-
     const postJson = async (url: string, body: unknown) => {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(body),
-        credentials: "same-origin",
-      });
-      const json = await res.json().catch(() => ({} as any));
-      return { res, json };
+      const controller = new AbortController();
+      const tid = window.setTimeout(() => controller.abort(), 15_000);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(body),
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        const json = await res.json().catch(() => ({} as any));
+        return { res, json, timeout: false, network: false };
+      } catch (e: any) {
+        const timeout = e?.name === "AbortError";
+        return {
+          res: null as Response | null,
+          json: {} as any,
+          timeout,
+          network: !timeout,
+        };
+      } finally {
+        window.clearTimeout(tid);
+      }
     };
 
     const doAdd = async (
       qty: number,
     ): Promise<
       | { ok: true }
-      | { ok: false; retryable: boolean; soldOut: boolean; error: string }
+      | {
+          ok: false;
+          retryable: boolean;
+          skipCartJsOnNext: boolean;
+          kind: ReturnType<typeof classifyCartAddFailure>["kind"];
+          retryAfterMs: number;
+        }
     > => {
-      const { res, json } = await postJson("/cart/add.js", {
+      const { res, json, timeout, network } = await postJson("/cart/add.js", {
         items: [{ id: variantNum, quantity: qty, properties: props }],
       });
-      if (res.ok) return { ok: true };
-      const errMsg = (json && (json.description || json.message)) || `HTTP ${res.status}`;
-      const lower = String(errMsg).toLowerCase();
-      if (res.status === 422 && notFoundRe.test(lower)) {
-        return { ok: false, retryable: true, soldOut: false, error: "Product variant not available. It may still be publishing to the store." };
-      }
-      if (res.status === 422 && soldOutRe.test(lower)) {
-        return { ok: false, retryable: true, soldOut: true, error: "Cart add failed: " + errMsg };
-      }
-      return { ok: false, retryable: false, soldOut: false, error: "Cart add failed: " + errMsg };
+      if (res?.ok) return { ok: true };
+      const errMsg = (json && (json.description || json.message)) || "";
+      const classified = classifyCartAddFailure({
+        status: res?.status,
+        message: errMsg,
+        timeout,
+        networkError: network,
+      });
+      return {
+        ok: false,
+        ...classified,
+        retryAfterMs: parseRetryAfterMs(res?.headers.get("Retry-After")),
+      };
     };
 
     // Ported verbatim from appai-art-embed.js (1564–1598) — do not re-derive.
@@ -10933,43 +10996,71 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return null;
     };
 
-    try {
-      const cartRes = await fetch("/cart.js", { credentials: "same-origin" });
-      const cart = cartRes.ok ? await cartRes.json() : { items: [] };
-      const existing = findMatchingCartLine(cart, variantNum, props);
-      if (existing && existing.key) {
-        const nextQty = (Number(existing.quantity) || 1) + payload.quantity;
-        const { res } = await postJson("/cart/change.js", { id: existing.key, quantity: nextQty });
-        if (res.ok) return { success: true };
+    const tryCartDedup = async (): Promise<boolean> => {
+      try {
+        const cartRes = await fetch("/cart.js", { credentials: "same-origin" });
+        const cart = cartRes.ok ? await cartRes.json() : { items: [] };
+        const existing = findMatchingCartLine(cart, variantNum, props);
+        if (existing && existing.key) {
+          const nextQty = (Number(existing.quantity) || 1) + payload.quantity;
+          const { res } = await postJson("/cart/change.js", { id: existing.key, quantity: nextQty });
+          if (res?.ok) return true;
+        }
+      } catch {
+        /* /cart.js unavailable — proceed straight to add */
       }
-    } catch {
-      /* /cart.js unavailable — proceed straight to add */
+      return false;
+    };
+
+    const cooldownLeft = readAtcRateLimitRemainingMs();
+    if (cooldownLeft > 0) {
+      setAtcCooldownUntil(Date.now() + cooldownLeft);
+      showAtcRateLimitToast(cooldownLeft);
+      return { success: false, error: ATC_SHADOW_NOT_LISTED };
     }
 
     // Poll /cart/add.js itself — the purchase signal. /variants/{id}.js 404s
     // for unlisted + seo.hidden shadows even after Admin publish, so it is
-    // not a ready check. Do not republish on sold-out replica lag.
+    // not a ready check. Skip /cart.js only after a clean 422 not-found.
     const waits = ATC_STOREFRONT_PROPAGATION_WAITS_MS;
     let notified = false;
     let repaired = false;
-    for (let attempt = 0; attempt <= waits.length; attempt++) {
+    let skipCartJs = false;
+    let addCalls = 0;
+    for (let attempt = 0; attempt < ATC_MAX_CART_ADD_CALLS_PER_TAP; attempt++) {
+      if (!skipCartJs && (await tryCartDedup())) {
+        clearAtcRateLimitCooldown();
+        setAtcCooldownUntil(0);
+        return { success: true };
+      }
+      if (addCalls >= ATC_MAX_CART_ADD_CALLS_PER_TAP) break;
+      addCalls += 1;
       const r = await doAdd(payload.quantity);
-      if (r.ok) return { success: true };
-      if (!r.retryable || attempt >= waits.length) {
-        return {
-          success: false,
-          error: r.soldOut || r.retryable ? ATC_SHADOW_NOT_LISTED : r.error,
-        };
+      if (r.ok) {
+        clearAtcRateLimitCooldown();
+        setAtcCooldownUntil(0);
+        return { success: true };
+      }
+      if (!r.retryable || attempt >= ATC_MAX_CART_ADD_CALLS_PER_TAP - 1) {
+        return { success: false, error: ATC_SHADOW_NOT_LISTED };
       }
       if (!notified) {
         notified = true;
         showAtcFinalisingToast("host_page_retry");
       }
-      if (!r.soldOut && !repaired) {
+      skipCartJs = r.skipCartJsOnNext;
+      if (r.kind === "rate_limited") {
+        const until = writeAtcRateLimitCooldown(r.retryAfterMs);
+        setAtcCooldownUntil(until);
+        showAtcRateLimitToast(r.retryAfterMs);
+        await new Promise((res) => setTimeout(res, r.retryAfterMs));
+        continue;
+      }
+      if (r.kind === "not_found" && !repaired) {
         repaired = true;
         await repairShadowPurchasable(String(variantNum));
       }
-      await new Promise((res) => setTimeout(res, waits[attempt]));
+      await new Promise((res) => setTimeout(res, waits[Math.min(attempt, waits.length - 1)] ?? ATC_RETRY_AFTER_DEFAULT_MS));
     }
     return { success: false, error: ATC_SHADOW_NOT_LISTED };
   };
@@ -11643,6 +11734,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+    const cooldownLeft = readAtcRateLimitRemainingMs();
+    if (cooldownLeft > 0 || atcCooldownRemainingMs > 0) {
+      const wait = Math.max(cooldownLeft, atcCooldownRemainingMs);
+      setAtcCooldownUntil(Date.now() + wait);
+      setVariantError(ATC_SHADOW_NOT_LISTED);
+      showAtcRateLimitToast(wait);
+      return;
+    }
     if (atcUpdatesPending || saveStatePending || mockupsUpdating) return;
     skipGalleryPersistRef.current = false;
 
@@ -12324,7 +12423,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         finalVariantId,
         baseVariantId: normalizedVariant,
       });
-      setVariantError(ATC_SHADOW_NOT_LISTED);
+      setVariantError(ATC_SHADOW_PREVIEW_PENDING);
       setIsAddingToCart(false);
       return;
     }
@@ -12387,13 +12486,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             resetStudioAfterPurchase();
           }, 2500);
         } else {
-          const raw = String(result.error || "Unknown error");
-          const soldOutRace = /sold out|cannot add more|still appearing in the store|not listed in the store|still being prepared|purchase is not allowed/i.test(raw);
-          setVariantError(soldOutRace ? ATC_SHADOW_NOT_LISTED : raw);
+          const raw = String(result.error || "");
+          const remaining = readAtcRateLimitRemainingMs();
+          if (remaining > 0) {
+            setAtcCooldownUntil(Date.now() + remaining);
+            showAtcRateLimitToast(remaining);
+          }
+          setVariantError(atcCustomerSafeError(raw));
         }
       } catch (e: any) {
         console.error('[Design Studio] Add-to-cart error:', e);
-        setVariantError(`Failed to add to cart: ${e.message || 'Unknown error'}`);
+        setVariantError(atcCustomerSafeError(e?.message));
       } finally {
         setIsAddingToCart(false);
       }
@@ -15844,6 +15947,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const atcPendingFreeze = atcUpdatesPending || saveStatePending;
   const atcPrimaryDisabled =
     isAddingToCart ||
+    atcCooldownRemainingMs > 0 ||
     atcWaitingForMockups ||
     mockupsUpdating ||
     flatPlacerSaveBlocking ||
