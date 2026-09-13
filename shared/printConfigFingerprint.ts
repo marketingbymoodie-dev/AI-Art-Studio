@@ -10,7 +10,7 @@ import {
   encodeFlatLinePlacement,
   encodeToteLinePlacement,
 } from "./linePlacementSnapshot";
-import { reusableShadowDesignId } from "./shadowDesignId";
+import { hasPrintConfigSuffix, reusableShadowDesignId } from "./shadowDesignId";
 
 const AOP_PRINT_KEYS = [
   "placements",
@@ -144,6 +144,47 @@ export function atcShadowDesignId(
   input: PrintConfigFingerprintInput,
 ): string {
   return reusableShadowDesignId(jobId, variantId, printConfigFingerprint(input));
+}
+
+/**
+ * Sync twin of embed `ensureHostedUrl`'s non-upload branches.
+ * http(s) pass through; relative `/…` stays relative (caller may prefix);
+ * `data:` is not an identity (matches `normalizeArtworkIdentity` → "").
+ *
+ * On a real generate, `generatedDesign.imageUrl` is already https — so
+ * `ensureHostedUrl(imageUrl)` returns that same string and this helper
+ * does too. Both sides must pass THAT url into the fingerprint (never a
+ * second hosted pathname from a later upload).
+ */
+export function artworkUrlForFingerprint(url?: string | null): string {
+  const s = String(url || "").trim();
+  if (!s || s.startsWith("data:")) return "";
+  return s;
+}
+
+export type PreShadowByVariantEntry = {
+  designId: string;
+  snapshot: PrintConfigFingerprintInput;
+  shadowVariantId?: string | null;
+  shadowProductId?: string | null;
+  shadowExpiresAt?: string | Date | null;
+};
+
+/**
+ * Atomic map value: designId and snapshot are derived from the same sanitized
+ * cfg. Missing cfg / unhashable id → null (caller must not write a partial).
+ */
+export function atomicPreShadowVariantEntry(
+  jobId: string,
+  variantId: string | number | null | undefined,
+  cfg: PrintConfigFingerprintInput | null | undefined,
+): PreShadowByVariantEntry | null {
+  if (!cfg) return null;
+  const vid = String(variantId ?? "").replace(/\D/g, "");
+  if (!vid) return null;
+  const designId = atcShadowDesignId(jobId, vid, cfg);
+  if (!hasPrintConfigSuffix(designId)) return null;
+  return { designId, snapshot: cfg };
 }
 
 /** Wire-size ceiling for a client-supplied print-config snapshot. */

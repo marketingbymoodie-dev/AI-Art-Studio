@@ -45,7 +45,10 @@ import {
   shadowLookupKeys,
   shadowMatchesBaseVariant,
 } from "@shared/shadowDesignId";
-import { atcShadowDesignId, sanitizePrintConfigInput } from "@shared/printConfigFingerprint";
+import {
+  atomicPreShadowVariantEntry,
+  sanitizePrintConfigInput,
+} from "@shared/printConfigFingerprint";
 import {
   isHostedHttpUrl,
   isPersistablePreviewUrl,
@@ -9974,23 +9977,27 @@ ${orientationExtra}
       let preShadowDesignId = "";
       let preShadowCfgInput: ReturnType<typeof sanitizePrintConfigInput> = null;
       let preShadowSkipReason = "";
-      if (baseProductId && baseVariantId && primaryMockupUrl) {
-        if (printConfig !== undefined && printConfig !== null) {
-          preShadowCfgInput = sanitizePrintConfigInput(printConfig);
-          if (!preShadowCfgInput) {
-            preShadowSkipReason = "printConfig rejected by sanitizer";
+      // PrintConfig-less callers (Printers-merge ~embed 7946) persist mockup
+      // URLs only — they must not mint and must not touch preShadowByVariant
+      // or the singleton preShadowDesignId (that partial write split snapshot vs id).
+      if (baseProductId && baseVariantId && primaryMockupUrl && printConfig != null) {
+        preShadowCfgInput = sanitizePrintConfigInput(printConfig);
+        if (!preShadowCfgInput) {
+          preShadowSkipReason = "printConfig rejected by sanitizer";
+        } else {
+          const cfgArt = artworkFilename(preShadowCfgInput.artworkUrl);
+          const jobArt = artworkFilename(job.designImageUrl);
+          if (cfgArt && jobArt && cfgArt !== jobArt) {
+            preShadowSkipReason = `artwork mismatch cfg=${cfgArt} job=${jobArt}`;
           } else {
-            const cfgArt = artworkFilename(preShadowCfgInput.artworkUrl);
-            const jobArt = artworkFilename(job.designImageUrl);
-            if (cfgArt && jobArt && cfgArt !== jobArt) {
-              preShadowSkipReason = `artwork mismatch cfg=${cfgArt} job=${jobArt}`;
+            const atomic = atomicPreShadowVariantEntry(jobId, baseVariantId, preShadowCfgInput);
+            if (!atomic) {
+              preShadowSkipReason = "atomic entry rejected";
             } else {
-              preShadowDesignId = atcShadowDesignId(jobId, baseVariantId, preShadowCfgInput);
+              preShadowDesignId = atomic.designId;
+              preShadowCfgInput = atomic.snapshot;
             }
           }
-        } else {
-          // Legacy caller without a print-config snapshot: keep job::variant.
-          preShadowDesignId = reusableShadowDesignId(jobId, baseVariantId);
         }
         if (preShadowSkipReason) {
           console.warn(`[PreShadow] jobId=${jobId} skipped — ${preShadowSkipReason}`);
@@ -10009,23 +10016,40 @@ ${orientationExtra}
         const inFlightKey = `${shop}::${designId}`;
         const cfgSnapshot = preShadowCfgInput;
 
-        /** Merge the derived key + cfg onto the job (designState) alongside the shadow ids. */
+        const catalogVid = String(baseVariantId ?? "").replace(/\D/g, "");
+        /** Atomic per-variant write: designId + snapshot (+ ids) from THIS mint, or nothing. */
         const writeJobShadow = async (patch: {
           shadowProductId: string | null;
           shadowVariantId: string | null;
           shadowExpiresAt: Date | null;
         }) => {
+          if (!cfgSnapshot || !designId || !catalogVid) return;
           const fresh = await storage.getGenerationJob(jobId);
           const prevDs =
             fresh?.designState && typeof fresh.designState === "object" && !Array.isArray(fresh.designState)
               ? (fresh.designState as Record<string, unknown>)
               : {};
+          const prevMap =
+            prevDs.preShadowByVariant &&
+            typeof prevDs.preShadowByVariant === "object" &&
+            !Array.isArray(prevDs.preShadowByVariant)
+              ? { ...(prevDs.preShadowByVariant as Record<string, unknown>) }
+              : {};
+          prevMap[catalogVid] = {
+            designId,
+            snapshot: cfgSnapshot,
+            shadowProductId: patch.shadowProductId,
+            shadowVariantId: patch.shadowVariantId,
+            shadowExpiresAt: patch.shadowExpiresAt,
+          };
           await storage.updateGenerationJob(jobId, {
             ...patch,
             designState: {
               ...prevDs,
+              preShadowByVariant: prevMap,
+              // Echo of THIS variant only — poll must read the map by vid.
               preShadowDesignId: designId,
-              ...(cfgSnapshot ? { printConfigSnapshot: cfgSnapshot } : {}),
+              printConfigSnapshot: cfgSnapshot,
             },
           } as any);
         };
@@ -10551,6 +10575,7 @@ ${orientationExtra}
   app.get("/api/storefront/shadow-variant/:jobId", async (req: Request, res: Response) => {
     try {
       const shop = req.query.shop as string;
+      const wantVid = String(req.query.variantId || "").replace(/\D/g, "");
       const { jobId } = req.params;
       if (!shop || !jobId) {
         return res.status(400).json({ error: "shop and jobId are required" });
@@ -10563,19 +10588,35 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
       }
-      const shadowVariantId = (job as any).shadowVariantId || null;
-      const shadowProductId = (job as any).shadowProductId || null;
-      const shadowExpiresAt = (job as any).shadowExpiresAt || null;
-      const ready = !!(shadowVariantId && shadowProductId);
-      // Key the pre-mint landed under (job::variant::cfgHash) so the client can
-      // confirm it matches the key ATC will persist before using it as a fallback.
       const ds =
         job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
           ? (job.designState as Record<string, unknown>)
           : null;
+      const map =
+        ds?.preShadowByVariant &&
+        typeof ds.preShadowByVariant === "object" &&
+        !Array.isArray(ds.preShadowByVariant)
+          ? (ds.preShadowByVariant as Record<string, Record<string, unknown>>)
+          : {};
+      const entry = wantVid && map[wantVid] && typeof map[wantVid] === "object" ? map[wantVid] : null;
+      // Prefer the atomic per-variant row. Never return another size's singleton.
       const shadowDesignId =
-        ds && typeof ds.preShadowDesignId === "string" && ds.preShadowDesignId ? ds.preShadowDesignId : null;
-      console.log(`[ShadowVariant] jobId=${jobId} ready=${ready} variantId=${shadowVariantId} key=${shadowDesignId}`);
+        (entry && typeof entry.designId === "string" && entry.designId) ||
+        (!wantVid && typeof ds?.preShadowDesignId === "string" && ds.preShadowDesignId) ||
+        null;
+      const shadowVariantId =
+        (entry && typeof entry.shadowVariantId === "string" && entry.shadowVariantId) ||
+        (!wantVid ? (job as any).shadowVariantId || null : null);
+      const shadowProductId =
+        (entry && typeof entry.shadowProductId === "string" && entry.shadowProductId) ||
+        (!wantVid ? (job as any).shadowProductId || null : null);
+      const shadowExpiresAt =
+        (entry && entry.shadowExpiresAt) ||
+        (!wantVid ? (job as any).shadowExpiresAt || null : null);
+      const ready = !!(shadowVariantId && shadowProductId && shadowDesignId);
+      console.log(
+        `[ShadowVariant] jobId=${jobId} vid=${wantVid || "-"} ready=${ready} variantId=${shadowVariantId} key=${shadowDesignId}`,
+      );
       return res.json({ ready, shadowVariantId, shadowProductId, shadowExpiresAt, shadowDesignId });
     } catch (err: any) {
       console.error("[ShadowVariant]", err);

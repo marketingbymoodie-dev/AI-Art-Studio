@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   PRINT_CONFIG_INPUT_MAX_JSON_BYTES,
+  artworkUrlForFingerprint,
+  atomicPreShadowVariantEntry,
   atcShadowDesignId,
+  normalizeArtworkIdentity,
   printConfigFingerprint,
   sanitizePrintConfigInput,
 } from "./printConfigFingerprint";
@@ -245,5 +248,42 @@ describe("sanitizePrintConfigInput (Apply pre-mint must hash like ATC)", () => {
       aopHoodie: { tileSettings: { pad: "x".repeat(PRINT_CONFIG_INPUT_MAX_JSON_BYTES) } },
     };
     expect(sanitizePrintConfigInput(big)).toBeNull();
+  });
+});
+
+describe("artwork identity — Apply and ATC must hash the same generate URL", () => {
+  // Real generate lands a hosted https URL on generatedDesign.imageUrl.
+  // ensureHostedUrl's first branch returns that string unchanged.
+  const generateUrl = "https://cdn.example/objects/designs/job-4cd938a6.png?token=abc";
+
+  it("ensureHostedUrl(https) ≡ artworkUrlForFingerprint ≡ generate imageUrl", () => {
+    const ensureHostedUrlHttpsPassthrough = (url: string) =>
+      url.startsWith("https://") || url.startsWith("http://") ? url : url;
+    expect(ensureHostedUrlHttpsPassthrough(generateUrl)).toBe(generateUrl);
+    expect(artworkUrlForFingerprint(generateUrl)).toBe(generateUrl);
+    expect(normalizeArtworkIdentity(artworkUrlForFingerprint(generateUrl))).toBe(
+      normalizeArtworkIdentity(ensureHostedUrlHttpsPassthrough(generateUrl)),
+    );
+    expect(normalizeArtworkIdentity(generateUrl)).toBe("https://cdn.example/objects/designs/job-4cd938a6.png");
+  });
+
+  it("data: has no identity on either side", () => {
+    expect(artworkUrlForFingerprint("data:image/png;base64,xx")).toBe("");
+    expect(normalizeArtworkIdentity("data:image/png;base64,xx")).toBe("");
+  });
+});
+
+describe("atomicPreShadowVariantEntry", () => {
+  it("writes designId + snapshot from the same cfg or nothing", () => {
+    const cfg = sanitizePrintConfigInput({
+      artworkUrl: art,
+      aopHoodie: { backgroundColor: "#B69172", pocketsEnabled: true },
+    })!;
+    const entry = atomicPreShadowVariantEntry("4cd938a6", "46172321153258", cfg);
+    expect(entry).not.toBeNull();
+    expect(entry!.designId).toBe(atcShadowDesignId("4cd938a6", "46172321153258", cfg));
+    expect(entry!.snapshot).toBe(cfg);
+    expect(atomicPreShadowVariantEntry("4cd938a6", "46172321153258", null)).toBeNull();
+    expect(atomicPreShadowVariantEntry("4cd938a6", "", cfg)).toBeNull();
   });
 });

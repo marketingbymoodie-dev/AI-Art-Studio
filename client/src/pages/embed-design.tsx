@@ -11,6 +11,7 @@ import { resolveMobileShellBrandName } from "@/components/designer/resolveMobile
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
 import {
+  artworkUrlForFingerprint,
   atcShadowDesignId,
   sanitizePrintConfigInput,
   type PrintConfigFingerprintInput,
@@ -4317,46 +4318,43 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * `artworkUrl` mirrors ensureHostedUrl's sync branches; a data: URL yields
    * "" and simply falls back to cold-mint at tap (hash differs post-upload).
    */
-  const buildAtcPrintConfigInputRef = useRef<
-    (overrides?: {
-      artworkUrl?: string | null;
-      aopHoodie?: Record<string, unknown> | null;
-    }) => PrintConfigFingerprintInput
-  >(() => ({}));
-  buildAtcPrintConfigInputRef.current = (overrides) => {
-    const rawArt = String(generatedDesign?.imageUrl || "");
-    const artworkIdentityUrl =
-      rawArt.startsWith("https://") || rawArt.startsWith("http://")
-        ? rawArt
-        : rawArt.startsWith("/")
-          ? buildAppUrl(rawArt)
-          : "";
+  /**
+   * One hoodie source for Apply + ATC. Callers write this ref immediately
+   * before hashing; the builder never reads React state or getState() itself.
+   */
+  const syncHoodieFingerprintRef = (explicit?: HoodieAopPlacerState | null) => {
+    if (explicit) {
+      hoodieAopPlacerStateRef.current = explicit;
+      return;
+    }
+    const live = hoodieAopPlacerRef.current?.getState?.() ?? hoodieAopPlacerStateRef.current;
+    if (live) hoodieAopPlacerStateRef.current = live;
+  };
+
+  const buildAtcPrintConfigInputRef = useRef<() => PrintConfigFingerprintInput>(() => ({}));
+  buildAtcPrintConfigInputRef.current = () => {
+    // Same identity Apply and ATC hash: generate already stores https on
+    // imageUrl; artworkUrlForFingerprint / ensureHostedUrl(https) are that string.
+    const artworkUrl = artworkUrlForFingerprint(generatedDesign?.imageUrl);
     const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
     const totePrintBack = printPlacement === "both" || liveFlat?.enabled?.back === true;
     return {
-      artworkUrl: overrides?.artworkUrl || artworkIdentityUrl,
+      artworkUrl,
       flat: liveFlat,
       tote: toteFoldedLayout
         ? { scale: transform.scale, x: transform.x, y: transform.y, printBack: totePrintBack }
         : null,
-      aopHoodie:
-        overrides?.aopHoodie !== undefined
-          ? overrides.aopHoodie
-          : ((hoodieAopPlacerState as Record<string, unknown> | null) ?? null),
+      aopHoodie: (hoodieAopPlacerStateRef.current as Record<string, unknown> | null) ?? null,
       aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
     };
   };
   /** `printConfig` + derived-key hint for a PreShadow-eligible save-mockups body. */
-  const preShadowKeyFields = useCallback((
-    jobId: string,
-    baseVariantId: string,
-    overrides?: { aopHoodie?: Record<string, unknown> | null },
-  ) => {
-    // Send the allow-listed slice (what the hash actually reads) — smaller wire
-    // payload and byte-identical to the server's own sanitize step.
-    const printConfig = sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current(overrides));
-    if (!printConfig) return {}; // oversize / unusable → legacy job::variant pre-mint (today's behaviour)
-    return { printConfig, designId: atcShadowDesignId(jobId, baseVariantId, printConfig) };
+  const preShadowKeyFields = useCallback((jobId: string, baseVariantId: string) => {
+    const printConfig = sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current());
+    if (!printConfig) return {};
+    const designId = atcShadowDesignId(jobId, baseVariantId, printConfig);
+    console.log("[PreShadow] client derived", designId, "vid", baseVariantId);
+    return { printConfig, designId };
   }, []);
   const useAopCustomizer = !!(
     (productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint) &&
@@ -7449,7 +7447,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return;
       }
       try {
-        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?shop=${encodeURIComponent(shop)}`);
+        const vid = baseVariantForShadowRef.current;
+        const qs = new URLSearchParams({ shop });
+        if (vid) qs.set("variantId", vid);
+        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?${qs.toString()}`);
         if (r.ok) {
           const data = await r.json();
           if (data.ready && data.shadowVariantId) {
@@ -8067,7 +8068,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     baseVariantId: baseVariantForShadow,
                     ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
                     // Pre-mint under the cfg-keyed id ATC will look up (server re-derives).
-                    ...preShadowKeyFields(savedJobIdRef.current, baseVariantForShadow),
+                    ...(() => {
+                      syncHoodieFingerprintRef();
+                      return preShadowKeyFields(savedJobIdRef.current, baseVariantForShadow);
+                    })(),
                   }
                 : {}),
             }),
@@ -11147,6 +11151,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const flushHoodieAopPlacer = useCallback(async (opts?: { force?: boolean }) => {
     if (!hoodieAopPlacerRef.current) return false;
     const applied = await hoodieAopPlacerRef.current.applyIfNeeded(opts);
+    const live = hoodieAopPlacerRef.current.getState?.() ?? hoodieAopPlacerStateRef.current;
+    if (live) hoodieAopPlacerStateRef.current = live;
     if (applied) setAopPlacementDirty(false);
     return applied;
   }, []);
@@ -12104,20 +12110,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       if (toteSnapAtc) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnapAtc;
     }
-    // Same builder as the Apply-time pre-mint (save-mockups) — the two keys
-    // must not drift or the pre-minted shadow is never found at tap.
+    // Same builder + sanitizer as Apply pre-mint. Artwork identity is
+    // generatedDesign.imageUrl (already https after generate) — not the
+    // ensureHostedUrl result used only for the cart _artwork_url property.
+    syncHoodieFingerprintRef();
     const persistShadowDesignId = shadowDesignId
       ? atcShadowDesignId(
           shadowDesignId,
           normalizedVariant,
-          buildAtcPrintConfigInputRef.current({
-            artworkUrl: artworkFullUrl || generatedDesign.imageUrl,
-          }),
+          sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current()) ??
+            buildAtcPrintConfigInputRef.current(),
         )
       : "";
     if (persistShadowDesignId) {
       properties["_shadow_design_id"] = persistShadowDesignId;
     }
+    console.log("[Design Studio] ATC persist key", persistShadowDesignId, "vid", normalizedVariant);
 
     // Resolve the unique design variant before adding to cart.
     // Fast path: use pre-created shadow variant if available (created in background after mockups).
@@ -12970,15 +12978,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             // Hash the state we are persisting (== render state ATC will hash).
             const hoodieBaseVariant =
               frontAbs && frontAbs.startsWith("https://") ? baseVariantForShadowRef.current : "";
+            syncHoodieFingerprintRef(persistHoodie);
             const hoodiePreShadow =
               productId && hoodieBaseVariant
                 ? {
                     baseProductId: productId,
                     baseVariantId: hoodieBaseVariant,
                     ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
-                    ...preShadowKeyFields(jobId, hoodieBaseVariant, {
-                      aopHoodie: (persistHoodie as Record<string, unknown> | null) ?? null,
-                    }),
+                    ...preShadowKeyFields(jobId, hoodieBaseVariant),
                   }
                 : {};
             void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
@@ -13112,7 +13119,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   baseVariantId: baseVariantForShadow,
                   ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
                   // Pre-mint under the cfg-keyed id ATC will look up (server re-derives).
-                  ...(jobId ? preShadowKeyFields(jobId, baseVariantForShadow) : {}),
+                  ...(jobId
+                    ? (() => {
+                        syncHoodieFingerprintRef();
+                        return preShadowKeyFields(jobId, baseVariantForShadow);
+                      })()
+                    : {}),
                 }
               : {}),
           }),
