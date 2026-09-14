@@ -1272,6 +1272,11 @@ type ReuseHandoff = {
   artworkUrl?: string;
   prompt?: string;
   autoGenerate?: boolean;
+  stylePreset?: string | null;
+  catalogSlug?: string | null;
+  styleName?: string | null;
+  outputMode?: string | null;
+  generationModel?: string | null;
   ts: number;
 };
 
@@ -2121,6 +2126,38 @@ function isPrintifyOnDemandMockupLabel(label: string): boolean {
 function isBackGalleryLabel(label: string | undefined): boolean {
   const l = String(label || "").trim().toLowerCase();
   return l === "back" || l.startsWith("back ");
+}
+
+/** Style keys already on a reuse / save payload — no extra fetch. */
+function carriedStyleHints(raw: Record<string, unknown> | null | undefined): {
+  stylePreset: string | null;
+  catalogSlug: string | null;
+  styleName: string | null;
+  outputMode: string | null;
+  generationModel: string | null;
+} {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const stylePreset =
+    coerceStyleHint(o.stylePreset) || coerceStyleHint(o.styleId) || "";
+  const catalogSlug =
+    coerceStyleHint(o.catalogSlug) || coerceStyleHint(o.catalog_slug) || "";
+  const styleName =
+    coerceStyleHint(o.styleName) || coerceStyleHint(o.style_name) || "";
+  return {
+    stylePreset: stylePreset || null,
+    catalogSlug: catalogSlug || null,
+    styleName: styleName || null,
+    outputMode: coerceStyleHint(o.outputMode) || null,
+    generationModel: coerceStyleHint(o.generationModel) || null,
+  };
+}
+
+function styleHintsHaveIdentity(h: {
+  stylePreset?: string | null;
+  catalogSlug?: string | null;
+  styleName?: string | null;
+}): boolean {
+  return !!(h.stylePreset || h.catalogSlug || h.styleName);
 }
 
 function resolveSavedStyleDropdownId(
@@ -3870,6 +3907,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     artworkUrl: string;
     prompt: string;
     productTypeId: string;
+    stylePreset?: string | null;
+    catalogSlug?: string | null;
+    styleName?: string | null;
+    outputMode?: string | null;
+    generationModel?: string | null;
   } | null>(null);
   /** HoodieAopPlacer state last written at Apply / load — not remount seed-fill. */
   const lastPersistedAopCaptureStateRef = useRef<unknown>(null);
@@ -5064,6 +5106,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // the current dropdown option so Art Style + the fill picker both light up.
   useEffect(() => {
     if (filteredStylePresets.length === 0) return;
+    if (pendingRestoreStyleRef.current) return;
     const hints: SavedStyleHints = {
       stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
       catalogSlug: loadedDecorStyle?.catalogSlug,
@@ -5929,7 +5972,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
-  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
+  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; catalogSlug?: string | null; styleName?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
     aopEditorDismissedRef.current = false;
     flatEditorDismissedRef.current = false;
     const abs = (u?: string) => {
@@ -5968,12 +6011,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Size/colour mockup cache is per-design — never reuse across designs.
     mockupColorCacheRef.current = {};
     currentMockupColorRef.current = "";
+    const fromDs = carriedStyleHints(ds);
+    const fromTop = carriedStyleHints(topLevel as Record<string, unknown>);
     const loadedStyle = {
-      stylePreset: coerceStyleHint(ds?.stylePreset) || coerceStyleHint(topLevel.stylePreset) || null,
-      catalogSlug: coerceStyleHint(ds?.catalogSlug) || null,
-      styleName: coerceStyleHint(ds?.styleName) || null,
-      outputMode: coerceStyleHint(ds?.outputMode) || null,
-      generationModel: coerceStyleHint(ds?.generationModel) || null,
+      stylePreset: fromDs.stylePreset || fromTop.stylePreset || null,
+      catalogSlug: fromDs.catalogSlug || fromTop.catalogSlug || null,
+      styleName: fromDs.styleName || fromTop.styleName || null,
+      outputMode: fromDs.outputMode || fromTop.outputMode || null,
+      generationModel: fromDs.generationModel || fromTop.generationModel || null,
     };
     setGeneratedDesign({
       id: designId,
@@ -5982,16 +6027,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       generationModel: loadedStyle.generationModel || null,
     });
     setLoadedDecorStyle(loadedStyle);
-    pendingRestoreStyleRef.current = loadedStyle;
-    {
+    // Keep origin hints until the style catalog can resolve them. Do not
+    // setSelectedPreset("") here — that default reset clobbers reuse fill.
+    if (styleHintsHaveIdentity(loadedStyle)) {
+      pendingRestoreStyleRef.current = loadedStyle;
+    }
+    if (filteredStylePresets.length > 0 && styleHintsHaveIdentity(loadedStyle)) {
       const styleId = resolveSavedStyleDropdownId(
         filteredStylePresets,
         loadedStyle,
         stylePresets,
         `saved-design:${designId}`,
       );
-      setSelectedPreset(styleId);
-      if (styleId) pendingRestoreStyleRef.current = null;
+      if (styleId) {
+        setSelectedPreset(styleId);
+        pendingRestoreStyleRef.current = null;
+      }
     }
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
@@ -6987,8 +7038,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       pending.jobId,
       pending.artworkUrl,
       pending.prompt,
-      { productTypeId: pending.productTypeId, pageHandle: activeProductContext.pageHandle },
-      { productTypeId: pending.productTypeId },
+      {
+        productTypeId: pending.productTypeId,
+        pageHandle: activeProductContext.pageHandle,
+        stylePreset: pending.stylePreset,
+        catalogSlug: pending.catalogSlug,
+        styleName: pending.styleName,
+        outputMode: pending.outputMode,
+        generationModel: pending.generationModel,
+      },
+      {
+        productTypeId: pending.productTypeId,
+        stylePreset: pending.stylePreset,
+        catalogSlug: pending.catalogSlug,
+        styleName: pending.styleName,
+      },
     );
     clearReuseHandoff();
     setReuseBusy(false);
@@ -7289,11 +7353,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   useEffect(() => {
     const hints = pendingRestoreStyleRef.current;
-    if (!hints) return;
-    if (selectedPreset) {
-      pendingRestoreStyleRef.current = null;
-      return;
-    }
+    if (!hints || !styleHintsHaveIdentity(hints)) return;
     if (filteredStylePresets.length === 0) return;
     const id = resolveSavedStyleDropdownId(
       filteredStylePresets,
@@ -7302,7 +7362,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       "saved-design-retry",
     );
     if (id) {
-      setSelectedPreset(id);
+      if (selectedPreset !== id) setSelectedPreset(id);
       pendingRestoreStyleRef.current = null;
     }
   }, [filteredStylePresets, stylePresets, selectedPreset]);
@@ -13760,6 +13820,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const navigateToReuseProduct = useCallback(
     async (handle: string, opts: { designId?: string | null; regenerate?: boolean; artworkUrl?: string; prompt?: string }) => {
+      const originStyle = {
+        ...carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null),
+        stylePreset:
+          carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).stylePreset ||
+          selectedPreset ||
+          null,
+      };
       // Regenerate: stay in the iframe, switch product in-app, attach reference immediately.
       // Full-page nav was dropping sessionStorage/URL handoff so Body Pillow landed blank.
       if (opts.regenerate && opts.artworkUrl) {
@@ -13835,6 +13902,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           artworkUrl: abs,
           prompt: opts.prompt,
           autoGenerate: false,
+          ...originStyle,
         });
         reuseInAppBusyRef.current = true;
         setReuseBusy(true);
@@ -13868,6 +13936,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 productTypeId: targetProductTypeId,
                 customerId: storefrontCustomerId || undefined,
                 pageHandle: handle,
+                stylePreset: originStyle.stylePreset,
+                catalogSlug: originStyle.catalogSlug,
+                styleName: originStyle.styleName,
               }),
             });
             if (forkRes.ok) {
@@ -13884,6 +13955,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             artworkUrl: abs,
             prompt: opts.prompt,
             autoGenerate: false,
+            ...originStyle,
           });
           savedJobIdRef.current = forkedJobId;
           openPlacementEditorOnApplyRef.current = true;
@@ -13895,6 +13967,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             artworkUrl: abs,
             prompt: opts.prompt || "",
             productTypeId: targetProductTypeId,
+            ...originStyle,
           };
 
           setReuseBusyLabel("Opening product…");
@@ -13910,6 +13983,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               artworkUrl: abs,
               prompt: opts.prompt,
               autoGenerate: false,
+              ...originStyle,
             });
             opts = { ...opts, designId: forkedJobId };
           }
@@ -13945,6 +14019,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           artworkUrl: opts.artworkUrl,
           prompt: opts.prompt,
           autoGenerate: false,
+          ...originStyle,
         });
         if (opts.designId) params.set("loadDesignId", opts.designId);
         params.set("reuseArtworkUrl", opts.artworkUrl);
@@ -13973,6 +14048,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       clearLoadDesignIdFromUrl,
       creatorUsernameParam,
       creatorIdParam,
+      loadedDecorStyle,
+      selectedPreset,
     ],
   );
 
@@ -14133,6 +14210,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               pageHandle: activeProductContext.pageHandle || productHandle || undefined,
               size: selectedSize || undefined,
               frameColor: selectedFrameColor || undefined,
+              stylePreset:
+                carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).stylePreset ||
+                selectedPreset ||
+                undefined,
+              catalogSlug: carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).catalogSlug || undefined,
+              styleName: carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).styleName || undefined,
             }),
           });
           if (forkRes.ok) {
@@ -14155,6 +14238,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         imageUrl: abs,
         prompt: originalPrompt,
       });
+      {
+        const originStyle = {
+          ...carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null),
+          stylePreset:
+            carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).stylePreset ||
+            selectedPreset ||
+            null,
+        };
+        if (styleHintsHaveIdentity(originStyle)) {
+          setLoadedDecorStyle(originStyle);
+          pendingRestoreStyleRef.current = originStyle;
+          if (filteredStylePresets.length > 0) {
+            const styleId = resolveSavedStyleDropdownId(
+              filteredStylePresets,
+              originStyle,
+              stylePresets,
+              "reuse-apply-here",
+            );
+            if (styleId) {
+              setSelectedPreset(styleId);
+              pendingRestoreStyleRef.current = null;
+            }
+          }
+        }
+      }
       setReuseRegenerateBasePrompt(null);
       if (originalPrompt) setPrompt(originalPrompt);
       if (useAopCustomizer) {
@@ -14220,6 +14328,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       printPlacement,
       showDecorFloatingFill,
       liveDecorFillHex,
+      loadedDecorStyle,
+      selectedPreset,
+      filteredStylePresets,
+      stylePresets,
     ],
   );
 
@@ -14345,6 +14457,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       prompt: promptText,
     });
     if (promptText) setPrompt(promptText);
+    {
+      const originStyle = carriedStyleHints(handoff as Record<string, unknown> | null);
+      if (styleHintsHaveIdentity(originStyle)) {
+        setLoadedDecorStyle(originStyle);
+        pendingRestoreStyleRef.current = originStyle;
+      }
+    }
     clearReuseHandoff();
     clearReuseUrlParams();
   }, [

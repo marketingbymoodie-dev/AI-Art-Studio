@@ -10141,6 +10141,27 @@ ${orientationExtra}
     try {
       const { shop, artworkUrl, prompt, productTypeId, customerId, size, frameColor, pageHandle } =
         req.body || {};
+      const stylePresetRaw =
+        typeof req.body?.stylePreset === "string"
+          ? req.body.stylePreset
+          : typeof req.body?.styleId === "string"
+            ? req.body.styleId
+            : "";
+      const catalogSlugRaw =
+        typeof req.body?.catalogSlug === "string"
+          ? req.body.catalogSlug
+          : typeof req.body?.catalog_slug === "string"
+            ? req.body.catalog_slug
+            : "";
+      const styleNameRaw =
+        typeof req.body?.styleName === "string"
+          ? req.body.styleName
+          : typeof req.body?.style_name === "string"
+            ? req.body.style_name
+            : "";
+      const stylePreset = stylePresetRaw.trim() || null;
+      const catalogSlug = catalogSlugRaw.trim() || null;
+      const styleName = styleNameRaw.trim() || null;
       if (!shop || !artworkUrl || !productTypeId) {
         return res
           .status(400)
@@ -10166,6 +10187,9 @@ ${orientationExtra}
         designState.pageHandle = pageHandle.trim();
       }
       designState.productTypeId = String(productTypeId);
+      if (stylePreset) designState.stylePreset = stylePreset;
+      if (catalogSlug) designState.catalogSlug = catalogSlug;
+      if (styleName) designState.styleName = styleName;
       const promptText =
         typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Reused artwork";
       const job = await storage.createGenerationJob({
@@ -10175,7 +10199,7 @@ ${orientationExtra}
         status: "complete",
         prompt: promptText,
         userPrompt: promptText,
-        stylePreset: null,
+        stylePreset,
         size: typeof size === "string" ? size : null,
         frameColor: typeof frameColor === "string" ? frameColor : null,
         productTypeId: String(productTypeId),
