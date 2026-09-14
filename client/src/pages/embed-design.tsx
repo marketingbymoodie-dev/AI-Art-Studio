@@ -1529,6 +1529,11 @@ function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null
 /** Preview Studio sync generate — settle at 90s so the loader cannot spin forever. */
 const GENERATE_REQUEST_TIMEOUT_MS = 90_000;
 
+/** ATC button overlay: reveal only after this wait so fast reuse adds never show it. */
+const ATC_FINALIZING_REVEAL_MS = 3_000;
+/** Exact title from the existing AOP finalize toast / checkout-gate copy. Do not add a second sentence. */
+const ATC_FINALIZING_LABEL = "Finalizing print files…";
+
 function isAbortLikeError(err: unknown): boolean {
   if (!err) return false;
   const name = (err as { name?: string }).name || "";
@@ -2375,8 +2380,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    * price drift is picked up on the next ATC.
    */
   const preShadowSyncedRetailRef = useRef<{ jobId: string; retail: string } | null>(null);
-  /** One Finalising toast per ATC click — mint wait and parent progress share this. */
-  const atcFinalisingToastShownRef = useRef(false);
 
   // Merge anonymous session into customer account when customer is logged in.
   // Fire once on mount; backend is idempotent so re-merging is safe.
@@ -2663,6 +2666,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [reuseRegenerateBasePrompt, setReuseRegenerateBasePrompt] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [atcFinalizingReveal, setAtcFinalizingReveal] = useState(false);
+  const [atcAvoidFinalizingLabel, setAtcAvoidFinalizingLabel] = useState(false);
   const [atcCooldownUntil, setAtcCooldownUntil] = useState(0);
   const [atcCooldownNow, setAtcCooldownNow] = useState(() => Date.now());
   const atcCooldownRemainingMs = Math.max(0, atcCooldownUntil - atcCooldownNow);
@@ -3887,6 +3892,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const aopPanelPersistInFlightRef = useRef(false);
   const aopFinalizePendingCountRef = useRef(0);
   const aopFinalizeToastRef = useRef<{ dismiss: () => void } | null>(null);
+  useEffect(() => {
+    if (!isAddingToCart) {
+      setAtcFinalizingReveal(false);
+      setAtcAvoidFinalizingLabel(false);
+      return;
+    }
+    setAtcAvoidFinalizingLabel(aopFinalizePendingCountRef.current > 0);
+    const timer = window.setTimeout(() => {
+      setAtcFinalizingReveal(true);
+    }, ATC_FINALIZING_REVEAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [isAddingToCart]);
   const showPatternStepRef = useRef(false);
   showPatternStepRef.current = showPatternStep;
   // Flat placer (apron / tee / phone etc.) open — keep the design after ATC so
@@ -8777,6 +8794,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // that includes `variants` in its dependency array (avoids TDZ ReferenceError in production bundle)
   const [variants, setVariants] = useState<any[]>([]);
   const [variantError, setVariantError] = useState<string | null>(null);
+  const atcWorkingLabel =
+    atcFinalizingReveal && !atcAvoidFinalizingLabel && !variantError
+      ? ATC_FINALIZING_LABEL
+      : "Adding to Cart...";
   const [variantsFetched, setVariantsFetched] = useState(false);
 
   // Variant selected by the storefront parent via AI_ART_STUDIO_VARIANT_CHANGE postMessage.
@@ -9238,7 +9259,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       saveBlocking ||
       saveStatePending;
     const label = isAddingToCart
-      ? "Adding to Cart..."
+      ? atcWorkingLabel
       : cooldownBlocks
       ? `Try again in ${cooldownSec}s`
       : saveBlocking
@@ -9296,7 +9317,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }, '*');
       });
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcWorkingLabel, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -10883,20 +10904,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     });
   };
 
-  const showAtcFinalisingToast = (reason: string) => {
-    if (atcFinalisingToastShownRef.current) {
-      pingAtcDebug({ event: "toast_already_shown", reason });
-      return;
-    }
-    atcFinalisingToastShownRef.current = true;
-    pingAtcDebug({ event: "toast_shown", reason });
-    toast({
-      title: "Finalizing print files…",
-      description: "Adding your design to the cart.",
-      duration: 12_000,
-    });
-  };
-
   /**
    * Send add-to-cart via postMessage to the parent Shopify storefront page.
    * The parent's theme extension script handles the actual /cart/add.js fetch.
@@ -10998,7 +11005,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             cid: correlationId,
             variantId: payload.variantId,
           });
-          showAtcFinalisingToast("parent_progress");
           return;
         }
         if (
@@ -11196,7 +11202,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // for unlisted + seo.hidden shadows even after Admin publish, so it is
     // not a ready check. Skip /cart.js only after a clean 422 not-found.
     const waits = ATC_STOREFRONT_PROPAGATION_WAITS_MS;
-    let notified = false;
     let repaired = false;
     let skipCartJs = false;
     let addCalls = 0;
@@ -11216,10 +11221,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
       if (!r.retryable || attempt >= ATC_MAX_CART_ADD_CALLS_PER_TAP - 1) {
         return { success: false, error: ATC_SHADOW_NOT_LISTED };
-      }
-      if (!notified) {
-        notified = true;
-        showAtcFinalisingToast("host_page_retry");
       }
       skipCartJs = r.skipCartJsOnNext;
       if (r.kind === "rate_limited") {
@@ -11982,7 +11983,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     // Pending covers flush/skip + snapshot + resolve + cart/add — not just the tail.
     setIsAddingToCart(true);
-    atcFinalisingToastShownRef.current = false;
+    setVariantError(null);
     try {
     // Only re-raster/upload when placement actually changed — a clean Apply
     // already left https mockup URLs ready for shadow SKU + cart.
@@ -12377,10 +12378,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         })()
       : runResolveVariant({ attempts: 3, label: "resolve-design-variant" });
 
-    if (!canSkipResolveInline) {
-      showAtcFinalisingToast("inline_resolve");
-    }
-
     // Await resolve (+ snapshot only when persist is already done). AOP lines
     // without a ready snapshot get `_print_files_pending` and finalize after cart-add.
     let finalVariantId = normalizedVariant;
@@ -12416,7 +12413,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         finalVariantId = resolveResult.shadowVariantId;
         shadowJustCreated = !!resolveResult.created;
         if (shadowJustCreated) {
-          showAtcFinalisingToast("shadow_created");
           pingAtcDebug({
             event: "shadow_created_atc",
             created: true,
@@ -16286,7 +16282,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               {isAddingToCart ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  <span className="shimmer-text-white">Adding to Cart...</span>
+                  <span className="shimmer-text-white">{atcWorkingLabel}</span>
                 </>
               ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                 <>
@@ -18428,7 +18424,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         {isAddingToCart ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Adding to Cart...</span>
+                            <span className="shimmer-text-white">{atcWorkingLabel}</span>
                           </>
                         ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                           <>
