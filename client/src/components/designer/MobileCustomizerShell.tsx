@@ -50,6 +50,8 @@ export type MobileCustomizerShellProps = {
   onModeChange?: (mode: "place" | "pattern") => void;
   /** Open this sheet when `nonce` changes (e.g. Pattern → Adjust). */
   openSheetRequest?: { id: string; nonce: number } | null;
+  /** Close the open sheet when `nonce` changes (size pick, info close). */
+  closeSheetRequest?: { nonce: number } | null;
 };
 
 /**
@@ -84,6 +86,7 @@ export function MobileCustomizerShell({
   mode = "place",
   onModeChange,
   openSheetRequest,
+  closeSheetRequest,
 }: MobileCustomizerShellProps) {
   const rail = railSlots.filter((s) => s.content != null && s.content !== false);
   const bottom = bottomSlots.filter((s) => s.content != null && s.content !== false);
@@ -91,6 +94,7 @@ export function MobileCustomizerShell({
   const [openId, setOpenId] = useState<string | null>(null);
   const [bottomTucked, setBottomTucked] = useState(false);
   const lastSheetRequestNonce = useRef(0);
+  const lastCloseRequestNonce = useRef(0);
   useLayoutEffect(() => {
     if (!openSheetRequest?.id) return;
     if (openSheetRequest.nonce === lastSheetRequestNonce.current) return;
@@ -120,6 +124,14 @@ export function MobileCustomizerShell({
     setOpenId(null);
     blurActive();
   }, [blurActive]);
+
+  useLayoutEffect(() => {
+    if (!closeSheetRequest?.nonce) return;
+    if (closeSheetRequest.nonce === lastCloseRequestNonce.current) return;
+    lastCloseRequestNonce.current = closeSheetRequest.nonce;
+    setOpenId(null);
+    blurActive();
+  }, [closeSheetRequest, blurActive]);
 
   // tap the same tool again → close; otherwise open it (single sheet at a time)
   const toggleSheet = useCallback((id: string) => {
@@ -161,6 +173,11 @@ export function MobileCustomizerShell({
       root.style.setProperty("--appai-mobile-modebar-h", `${modeH}px`);
       root.style.setProperty("--appai-mobile-primary-h", `${Math.max(primaryH, 0)}px`);
       root.style.setProperty("--appai-mobile-bottombar-h", `${bottomH}px`);
+      const pull = bottomTucked ? 0 : 22;
+      root.style.setProperty(
+        "--appai-mobile-chrome-h",
+        `${modeH + Math.max(primaryH, 0) + bottomH + pull}px`,
+      );
     };
     sync();
     const ro = new ResizeObserver(sync);

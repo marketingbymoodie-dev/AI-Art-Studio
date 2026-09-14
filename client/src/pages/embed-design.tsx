@@ -989,7 +989,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a8";
+const CP1_BUILD_MARKER = "cp2-a9";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -1799,13 +1799,23 @@ function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
 function InfoCollapsible({
   title,
   children,
+  onClose,
 }: {
   title: string;
   children: React.ReactNode;
+  /** Phone shell: collapsing a section dismisses the Info tray. */
+  onClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border-2 border-foreground bg-background">
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) onClose?.();
+      }}
+      className="rounded-md border-2 border-foreground bg-background"
+    >
       <CollapsibleTrigger asChild>
         <button
           type="button"
@@ -1861,7 +1871,11 @@ function ProductInfoSections({
   productName,
   commerceTerms,
   commerceTermsOrigin,
-}: ProductInfoSectionsProps & { productName?: string | null }) {
+  onSectionClose,
+}: ProductInfoSectionsProps & {
+  productName?: string | null;
+  onSectionClose?: () => void;
+}) {
   const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
   const hasDetails = !!safeDescription;
   const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
@@ -1871,12 +1885,12 @@ function ProductInfoSections({
   return (
     <div className={`space-y-2 ${className || ""}`} data-testid="container-product-info-sections">
       {showCommerce && (
-        <InfoCollapsible title="Shipping & returns">
+        <InfoCollapsible title="Shipping & returns" onClose={onSectionClose}>
           <CreatorProductTermsNote appOrigin={commerceTermsOrigin || undefined} />
         </InfoCollapsible>
       )}
       {hasDetails && (
-        <InfoCollapsible title="Product Details">
+        <InfoCollapsible title="Product Details" onClose={onSectionClose}>
           <div
             className="prose prose-sm max-w-none text-sm leading-relaxed text-muted-foreground"
             dangerouslySetInnerHTML={{ __html: safeDescription }}
@@ -1884,7 +1898,7 @@ function ProductInfoSections({
         </InfoCollapsible>
       )}
       {hasSizeChartArea && (
-        <InfoCollapsible title="Size Chart">
+        <InfoCollapsible title="Size Chart" onClose={onSectionClose}>
           {sizeChartLoading ? (
             <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
           ) : (
@@ -3984,6 +3998,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [aopOptionsSlotEl, setAopOptionsSlotEl] = useState<HTMLDivElement | null>(null);
   const [aopAdjustSlotEl, setAopAdjustSlotEl] = useState<HTMLDivElement | null>(null);
   const [aopSheetRequest, setAopSheetRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const [mobileSheetCloseRequest, setMobileSheetCloseRequest] = useState<{
+    nonce: number;
+  } | null>(null);
+  const dismissMobileSheet = useCallback(() => {
+    setMobileSheetCloseRequest((prev) => ({ nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
   useEffect(() => {
     console.log("[EmbedDesign] CP1 host", {
       build: CP1_BUILD_MARKER,
@@ -16651,7 +16671,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
         selectedSize={sizeSelectorValue}
         label={isPhoneCaseProduct ? "Model" : "Size"}
-        onSizeChange={applySelectedSize}
+        onSizeChange={(sizeId) => {
+          applySelectedSize(sizeId);
+          if (isMobile) {
+            window.setTimeout(() => dismissMobileSheet(), 160);
+          }
+        }}
         prices={buildPriceMap()}
         priceCurrencyCode={sizeDropdownCurrencyCode}
         outOfStockSizeIds={outOfStockSizeIds}
@@ -16690,6 +16715,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       blueprintId={productTypeConfig?.printifyBlueprintId}
       commerceTerms={isStorefront}
       commerceTermsOrigin={centralAppUrl}
+      onSectionClose={isMobile ? dismissMobileSheet : undefined}
     />
   ) : null;
   const mPrintSideNode = supportsPrintPlacementSelection ? (
@@ -17024,6 +17050,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }
           }}
           openSheetRequest={aopSheetRequest}
+          closeSheetRequest={mobileSheetCloseRequest}
           primaryAction={
             <>
               {renderMobileHeadlinePrice()}

@@ -55,6 +55,12 @@ html:has(.appai-mobile-shell) #root {
   --appai-mobile-primary-h: 60px;
   --appai-mobile-bottombar-h: 66px;
   --appai-mobile-modebar-h: 0px;
+  /* Measured chrome stack (mode + ATC + tools + pull tab). Backdrop / short
+     sheets cover this band only — mockup above stays visible. */
+  --appai-mobile-chrome-h: calc(
+    var(--appai-mobile-modebar-h) + var(--appai-mobile-primary-h) +
+      var(--appai-mobile-bottombar-h) + 22px
+  );
   --appai-mobile-paper: #f6f4ef;
   --appai-mobile-panel: #ffffff;
   --appai-mobile-line: #e7e3da;
@@ -234,25 +240,26 @@ html:has(.appai-mobile-shell) #root {
   pointer-events: none;
 }
 
-/* OTP / Saved Designs live in the hidden form column. Full-bleed opaque
-   cover from below the top bar to the screen bottom so Place/Pattern,
-   Add to Cart, and the tool bar cannot show through. */
+/* OTP / Saved Designs: bottom sheet, not a full-viewport takeover.
+   Mockup above the sheet stays visible; chrome is covered by the sheet. */
 .appai-mobile-shell .appai-mobile-escape-overlay {
   position: fixed !important;
   left: 0 !important;
   right: 0 !important;
-  top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top)) !important;
+  top: auto !important;
   bottom: 0 !important;
   width: auto !important;
   max-width: none !important;
   height: auto !important;
-  max-height: none !important;
+  max-height: min(72dvh, 72%) !important;
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   pointer-events: auto;
   z-index: 74;
   background: #ffffff !important;
+  border-radius: 22px 22px 0 0;
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.16);
   padding: 10px 12px calc(14px + var(--appai-mobile-safe-bottom));
 }
 
@@ -523,10 +530,12 @@ html:has(.appai-mobile-shell) #root {
 /* ---------------------------------------------------------------------------
  * Scrim + sheets.
  *
- * iOS Safari will composite later `position:fixed` chrome (modebar / ATC /
- * bottom bar) above a translucent sheet even when z-index says otherwise.
- * Scrim is fully opaque paper; sheet is solid white; chrome is hidden while
- * a sheet or Gallery/OTP overlay is open.
+ * Backdrop is scoped to the measured chrome stack (mode toggle + ATC +
+ * bottom tool bar), not the viewport. The mockup above that band stays
+ * visible. A transparent full-viewport layer still catches tap-to-dismiss.
+ * Sheet is solid white and at least as tall as the chrome so ATC cannot
+ * peek under a short Size picker. Chrome is visibility:hidden while open
+ * (iOS otherwise composites those fixed bars above the sheet).
  * ------------------------------------------------------------------------- */
 .appai-mscrim {
   position: fixed;
@@ -534,12 +543,21 @@ html:has(.appai-mobile-shell) #root {
   z-index: 70;
   background: transparent;
   pointer-events: none;
-  transition: background 0.2s;
 }
 
 .appai-mscrim.show {
-  background: #f6f4ef;
   pointer-events: auto;
+}
+
+.appai-mscrim.show::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--appai-mobile-chrome-h);
+  background: #ffffff;
+  pointer-events: none;
 }
 
 .appai-msheet {
@@ -554,7 +572,8 @@ html:has(.appai-mobile-shell) #root {
   transform: translateY(110%);
   transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
   padding-bottom: calc(14px + var(--appai-mobile-safe-bottom));
-  max-height: 88%;
+  min-height: var(--appai-mobile-chrome-h);
+  max-height: 72%;
   display: flex;
   flex-direction: column;
 }
@@ -574,6 +593,19 @@ html:has(.appai-mobile-shell) #root {
 .appai-mobile-shell.appai-mobile-escape-open .appai-mbottombar,
 .appai-mobile-shell.appai-mobile-escape-open .appai-mrail {
   visibility: hidden;
+  pointer-events: none;
+}
+
+/* Gallery / OTP: same chrome-zone cover as tool sheets (not full viewport). */
+.appai-mobile-shell.appai-mobile-escape-open::after {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--appai-mobile-chrome-h);
+  background: #ffffff;
+  z-index: 69;
   pointer-events: none;
 }
 
