@@ -196,6 +196,7 @@ export async function runPreShadowMint(args: {
       shop,
       token,
       variantId: existing.shopifyVariantId,
+      baseVariantId,
     });
     try {
       await assertAjaxVariantVisible({ shop, variantId: existing.shopifyVariantId, adminLive: true });
@@ -282,6 +283,7 @@ export async function runPreShadowMint(args: {
     shop,
     token,
     variantId: shadowVariant.id,
+    baseVariantId,
   });
 
   if (shadowProduct.images?.length > 0) {
@@ -311,19 +313,6 @@ export async function runPreShadowMint(args: {
     shadowVariantId: String(shadowVariant.id),
     shadowExpiresAt: oneHourFromNow,
   });
-
-  import("./shipping-reconciler")
-    .then((m) =>
-      m.attachVariantToShipping({
-        shop,
-        shopifyVariantId: String(shadowVariant.id),
-        sourceVariantId: String(baseVariantId),
-        source: "shadow",
-      }),
-    )
-    .catch((e: any) =>
-      console.warn(`[PreShadow] shipping attach failed for ${shadowVariant.id}:`, e?.message),
-    );
 
   try {
     await assertAjaxVariantVisible({ shop, variantId: shadowVariant.id, adminLive: true });

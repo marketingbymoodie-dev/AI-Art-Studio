@@ -10937,6 +10937,7 @@ ${orientationExtra}
     try {
       const shop = normalizeMyshopifyShopDomain(req.body?.shop);
       const variantId = String(req.body?.variantId || "").replace(/\D/g, "");
+      let baseVariantId = String(req.body?.baseVariantId || "").replace(/\D/g, "");
       if (!shop || !variantId) {
         return res.status(400).json({ success: false, error: "shop and variantId are required" });
       }
@@ -10944,10 +10945,19 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ success: false, error: "Shop not authorized" });
       }
+      if (!baseVariantId) {
+        const [row] = await db
+          .select({ baseVariantId: publishedProducts.baseVariantId })
+          .from(publishedProducts)
+          .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.shopifyVariantId, variantId)))
+          .limit(1);
+        baseVariantId = String(row?.baseVariantId || "").replace(/\D/g, "");
+      }
       await ensureShadowVariantPurchasable({
         shop,
         token: installation.accessToken!,
         variantId,
+        baseVariantId: baseVariantId || undefined,
       });
       return res.json({ success: true, variantId, inventoryPolicy: "CONTINUE" });
     } catch (error: any) {
@@ -11065,6 +11075,7 @@ ${orientationExtra}
             shop,
             token,
             variantId: existing.shopifyVariantId,
+            baseVariantId: existing.baseVariantId || variantId,
           });
           await assertAjaxVariantVisible({
             shop,
@@ -11208,6 +11219,7 @@ ${orientationExtra}
               shop,
               token,
               variantId: after.shopifyVariantId,
+              baseVariantId: after.baseVariantId || variantId,
             });
             await assertAjaxVariantVisible({
               shop,
@@ -11370,6 +11382,7 @@ ${orientationExtra}
         shop,
         token,
         variantId: shadowVariant.id,
+        baseVariantId: variantId,
       });
 
       // 6. Assign the mockup image to the variant
@@ -11395,22 +11408,6 @@ ${orientationExtra}
         expiresAt: sixHoursFromNow,
         cartAddedAt: null,
       } as any);
-
-      // 9. Phase 3 shipping: associate the new shadow into its base variant's
-      // delivery profile (no-op unless the shop is in table mode). Fire and
-      // forget — never delays add-to-cart.
-      import("./shipping-reconciler")
-        .then((m) =>
-          m.attachVariantToShipping({
-            shop,
-            shopifyVariantId: String(shadowVariant.id),
-            sourceVariantId: String(variantId),
-            source: "shadow",
-          }),
-        )
-        .catch((e: any) =>
-          console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
-        );
 
       try {
         await assertAjaxVariantVisible({
@@ -11461,11 +11458,10 @@ ${orientationExtra}
       }
       if (error instanceof ShadowVariantNotPurchasableError) {
         console.error("[ShadowProduct] Policy write did not land:", error.message);
-        return res.status(409).json({
+        return res.json({
           success: false,
-          error: error.message,
-          code: error.code,
-          variantId: error.variantId,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
         });
       }
       console.error("[ShadowProduct] Error:", error);
