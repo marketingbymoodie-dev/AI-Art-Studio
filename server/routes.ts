@@ -11746,7 +11746,7 @@ ${orientationExtra}
   // ==================== STOREFRONT CUSTOMER DESIGNS LIST ====================
   // POST instead of GET so customerId (UUID) is sent in the body, not the URL.
   // The Shopify App Proxy truncates long query parameter values, which broke UUID lookups.
-  app.post("/api/storefront/customizer/my-designs", async (req: Request, res: Response) => {
+  app.post("/api/storefront/customizer/my-designs", asyncHandler(async (req: Request, res: Response) => {
     try {
       const shop = (req.body.shop || req.query.shop) as string;
       const customerId = (req.body.customerId || req.query.customerId) as string;
@@ -12051,10 +12051,11 @@ ${orientationExtra}
         })
       });
     } catch (err: any) {
-      console.error("[MyDesigns GET]", err);
+      console.error("[MyDesigns POST]", err?.message ?? err);
+      console.error("[MyDesigns POST] stack:", err?.stack ?? err);
       return res.status(500).json({ error: "Failed to fetch designs" });
     }
-  });
+  }));
 
   // ==================== STOREFRONT AUTH (Google + OTP) ====================
 
@@ -23847,41 +23848,47 @@ ${orientationExtra}
   app.get("/api/proxy/remember-creator", proxyAuth, handleRememberCreatorProxy);
 
   /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
-  app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
-    const shop: string = (req as any).proxyShop;
-    if (!shop) return res.status(400).json({ error: "Missing shop" });
+  app.get("/api/proxy/customizer-pages", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
+    try {
+      const shop: string = (req as any).proxyShop;
+      if (!shop) return res.status(400).json({ error: "Missing shop" });
 
-    const [allPages, installation, merchantForGate] = await Promise.all([
-      listCustomizerPagesForProxyShop(shop),
-      storage.getShopifyInstallationByShop(shop),
-      storage.getMerchantByShop(shop),
-    ]);
+      const [allPages, installation, merchantForGate] = await Promise.all([
+        listCustomizerPagesForProxyShop(shop),
+        storage.getShopifyInstallationByShop(shop),
+        storage.getMerchantByShop(shop),
+      ]);
 
-    // Locked setup-rail rule: pages aren't publicly mountable until Printify is
-    // connected, unless this specific page's signed merchant-preview token is
-    // present (scoped to one handle — doesn't unlock the rest of the shop).
-    const printifyConnected = isPrintifyConnected(merchantForGate);
-    const previewToken = req.query.appai_preview as string | undefined;
-    const pages = allPages.map((p) => ({
-      id: p.id,
-      handle: p.handle,
-      title: p.title,
-      baseVariantId: p.baseVariantId,
-      baseProductTitle: p.baseProductTitle,
-      baseVariantTitle: p.baseVariantTitle,
-      baseProductPrice: displayRetailPrice(p.baseProductPrice),
-      status: p.status,
-      publiclyMountable:
-        (p.status === "active" && printifyConnected) ||
-        ((p.status === "active" || p.status === "preview") &&
-          verifyPreviewToken(previewToken, shop, p.handle)),
-    }));
+      // Locked setup-rail rule: pages aren't publicly mountable until Printify is
+      // connected, unless this specific page's signed merchant-preview token is
+      // present (scoped to one handle — doesn't unlock the rest of the shop).
+      const printifyConnected = isPrintifyConnected(merchantForGate);
+      const previewToken = req.query.appai_preview as string | undefined;
+      const pages = allPages.map((p) => ({
+        id: p.id,
+        handle: p.handle,
+        title: p.title,
+        baseVariantId: p.baseVariantId,
+        baseProductTitle: p.baseProductTitle,
+        baseVariantTitle: p.baseVariantTitle,
+        baseProductPrice: displayRetailPrice(p.baseProductPrice),
+        status: p.status,
+        publiclyMountable:
+          (p.status === "active" && printifyConnected) ||
+          ((p.status === "active" || p.status === "preview") &&
+            verifyPreviewToken(previewToken, shop, p.handle)),
+      }));
 
-    // Include fallback URL so embed can redirect disabled-page visitors
-    const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
+      // Include fallback URL so embed can redirect disabled-page visitors
+      const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
 
-    return res.json({ pages, fallbackUrl, shop });
-  });
+      return res.json({ pages, fallbackUrl, shop });
+    } catch (err: any) {
+      console.error("[proxy/customizer-pages]", err?.message ?? err);
+      console.error("[proxy/customizer-pages] stack:", err?.stack ?? err);
+      throw err;
+    }
+  }));
 
   /** Rewrites local /objects/... storage paths to go through the App Proxy so storefront can load them */
   function rewriteStoragePath(url: string | null | undefined): string | null {
