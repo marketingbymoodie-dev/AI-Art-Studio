@@ -5,8 +5,10 @@ import {
   isMerchandiseMissingError,
   isOnlineStorePublication,
   isPosPublication,
+  isStorefrontLiveStatus,
   partitionPublications,
   productIsOnOnlineStore,
+  productIsStorefrontLive,
 } from "./shopify-publications";
 
 describe("publication classification", () => {
@@ -91,6 +93,36 @@ describe("productIsOnOnlineStore", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("productIsStorefrontLive", () => {
+  it("rejects DRAFT even when already on Online Store", () => {
+    expect(isStorefrontLiveStatus("DRAFT")).toBe(false);
+    expect(
+      productIsStorefrontLive({
+        publishedOnPublication: true,
+        status: "DRAFT",
+        publishedAt: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts UNLISTED or ACTIVE with Online Store membership", () => {
+    expect(isStorefrontLiveStatus("UNLISTED")).toBe(true);
+    expect(
+      productIsStorefrontLive({
+        publishedOnPublication: true,
+        status: "UNLISTED",
+        publishedAt: "2026-09-14T00:00:00Z",
+      }),
+    ).toBe(true);
+    expect(
+      productIsStorefrontLive({
+        publishedOnPublication: true,
+        status: "ACTIVE",
+      }),
+    ).toBe(true);
   });
 });
 

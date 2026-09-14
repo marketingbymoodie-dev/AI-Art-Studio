@@ -1559,7 +1559,12 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     const [row] = await db
       .select()
       .from(publishedProducts)
-      .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.designId, designId)));
+      .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.designId, designId)))
+      .orderBy(
+        sql`case when ${publishedProducts.status} = 'active' then 0 else 1 end`,
+        desc(publishedProducts.createdAt),
+      )
+      .limit(1);
     return row;
   }
 

@@ -70,6 +70,10 @@ import {
   runPreShadowMint,
 } from "./pre-shadow-mint";
 import { ATC_SHADOW_STILL_PREPARING } from "@shared/atcStorefrontRetry";
+import {
+  ShadowStorefrontNotReadyError,
+  assertAjaxVariantVisible,
+} from "./shadow-storefront-visible";
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
@@ -10963,7 +10967,7 @@ ${orientationExtra}
 
   // ── Shadow product creation (replaces resolve-design-variant) ────────────────
   // Creates one hidden Shopify product per design with a single variant.
-  // The shadow product is status=draft, not in any collection, tagged appai-shadow.
+  // Status UNLISTED + Online Store; reuse is gated on Ajax /variants/{id}.js.
   // Expiry: 6 hours from creation (extended to 7 days if added to cart).
   // Reuse: if a shadow product already exists for this designId+shop, return it.
   // Legacy alias kept so old clients still work during rollout.
@@ -11056,11 +11060,41 @@ ${orientationExtra}
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
         );
-        await ensureShadowVariantPurchasable({
-          shop,
-          token,
-          variantId: existing.shopifyVariantId,
-        });
+        try {
+          await ensureShadowVariantPurchasable({
+            shop,
+            token,
+            variantId: existing.shopifyVariantId,
+          });
+          await assertAjaxVariantVisible({
+            shop,
+            variantId: existing.shopifyVariantId,
+          });
+        } catch (reuseErr: any) {
+          if (reuseErr instanceof ShadowStorefrontNotReadyError) {
+            console.warn(
+              `[ShadowProduct] reuse not storefront-visible yet variant=${existing.shopifyVariantId} probe=${reuseErr.probe}`,
+            );
+            return res.json({
+              success: false,
+              error: ATC_SHADOW_STILL_PREPARING,
+              code: "still_preparing",
+            });
+          }
+          if (reuseErr instanceof ShadowVariantNotPurchasableError) {
+            console.error(
+              `[ShadowProduct] reuse refused — shadow not live variant=${existing.shopifyVariantId}:`,
+              reuseErr.message,
+            );
+            await storage.updatePublishedProduct(existing.id, { status: "archived" });
+            return res.json({
+              success: false,
+              error: ATC_SHADOW_STILL_PREPARING,
+              code: "still_preparing",
+            });
+          }
+          throw reuseErr;
+        }
         // Refresh expiry: if not yet cart-added, reset the 6h window from now
         if (!existing.cartAddedAt) {
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
@@ -11168,11 +11202,34 @@ ${orientationExtra}
           console.log(
             `[ShadowProduct] Reusing existing shadow product ${after.shopifyProductId} variant ${after.shopifyVariantId} for design ${designId} (matched key=${persistDesignId}, persist=${persistDesignId}, joined-inflight)`,
           );
-          await ensureShadowVariantPurchasable({
-            shop,
-            token,
-            variantId: after.shopifyVariantId,
-          });
+          try {
+            await ensureShadowVariantPurchasable({
+              shop,
+              token,
+              variantId: after.shopifyVariantId,
+            });
+            await assertAjaxVariantVisible({
+              shop,
+              variantId: after.shopifyVariantId,
+            });
+          } catch (joinErr: any) {
+            if (joinErr instanceof ShadowStorefrontNotReadyError) {
+              return res.json({
+                success: false,
+                error: ATC_SHADOW_STILL_PREPARING,
+                code: "still_preparing",
+              });
+            }
+            if (joinErr instanceof ShadowVariantNotPurchasableError) {
+              await storage.updatePublishedProduct(after.id, { status: "archived" });
+              return res.json({
+                success: false,
+                error: ATC_SHADOW_STILL_PREPARING,
+                code: "still_preparing",
+              });
+            }
+            throw joinErr;
+          }
           return res.json({
             success: true,
             variantId: after.shopifyVariantId,
@@ -11271,7 +11328,6 @@ ${orientationExtra}
           product: {
             title: shadowTitle,
             status: 'unlisted',                   // accessible by direct link, hidden from browse/search
-            published: false,
             tags: 'appai-shadow',
             variants: [{
               price: overridePriceFormatted || baseVariant.price,
@@ -11305,7 +11361,9 @@ ${orientationExtra}
       }
       const { product: shadowProduct } = await createProductRes.json();
       const shadowVariant = shadowProduct.variants[0];
-      console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId} (persist=${persistDesignId})`);
+      console.log(
+        `[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId} (persist=${persistDesignId}) status=${shadowProduct.status} published_at=${shadowProduct.published_at ?? null}`,
+      );
       await ensureShadowVariantPurchasable({
         shop,
         token,
@@ -11352,6 +11410,30 @@ ${orientationExtra}
           console.warn(`[ShadowProduct] shipping attach failed for ${shadowVariant.id}:`, e?.message),
         );
 
+      try {
+        await assertAjaxVariantVisible({
+          shop,
+          variantId: shadowVariant.id,
+        });
+      } catch (visErr: any) {
+        if (visErr instanceof ShadowStorefrontNotReadyError) {
+          settleResolveFlight?.({
+            shopifyProductId: String(shadowProduct.id),
+            shopifyVariantId: String(shadowVariant.id),
+          });
+          settleResolveFlight = null;
+          console.warn(
+            `[ShadowProduct] created but not storefront-visible yet variant=${shadowVariant.id} probe=${visErr.probe}`,
+          );
+          return res.json({
+            success: false,
+            error: ATC_SHADOW_STILL_PREPARING,
+            code: "still_preparing",
+          });
+        }
+        throw visErr;
+      }
+
       settleResolveFlight?.({
         shopifyProductId: String(shadowProduct.id),
         shopifyVariantId: String(shadowVariant.id),
@@ -11367,6 +11449,13 @@ ${orientationExtra}
         liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
       });
     } catch (error: any) {
+      if (error instanceof ShadowStorefrontNotReadyError) {
+        return res.json({
+          success: false,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
+        });
+      }
       if (error instanceof ShadowVariantNotPurchasableError) {
         console.error("[ShadowProduct] Policy write did not land:", error.message);
         return res.status(409).json({

@@ -11,6 +11,7 @@ import {
 } from "@shared/shadowDesignId";
 import { storage } from "./storage";
 import { ensureShadowVariantPurchasable } from "./shadow-variant-purchasable";
+import { ShadowStorefrontNotReadyError, assertAjaxVariantVisible } from "./shadow-storefront-visible";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
 import type { PrintConfigFingerprintInput } from "@shared/printConfigFingerprint";
 import { PRE_SHADOW_AWAIT_MS } from "@shared/atcStorefrontRetry";
@@ -196,6 +197,14 @@ export async function runPreShadowMint(args: {
       token,
       variantId: existing.shopifyVariantId,
     });
+    try {
+      await assertAjaxVariantVisible({ shop, variantId: existing.shopifyVariantId });
+    } catch (e: any) {
+      if (!(e instanceof ShadowStorefrontNotReadyError)) throw e;
+      console.warn(
+        `[PreShadow] jobId=${jobId} reused Admin live but Ajax not visible yet variant=${existing.shopifyVariantId} probe=${e.probe}`,
+      );
+    }
     await writeJobShadow({
       shadowProductId: existing.shopifyProductId,
       shadowVariantId: existing.shopifyVariantId,
@@ -241,7 +250,6 @@ export async function runPreShadowMint(args: {
       product: {
         title: shadowTitle,
         status: "unlisted",
-        published: false,
         tags: "appai-shadow",
         variants: [
           {
@@ -268,7 +276,7 @@ export async function runPreShadowMint(args: {
   const { product: shadowProduct } = await createRes.json();
   const shadowVariant = shadowProduct.variants[0];
   console.log(
-    `[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId} derived=${designId}`,
+    `[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId} derived=${designId} status=${shadowProduct.status} published_at=${shadowProduct.published_at ?? null}`,
   );
   await ensureShadowVariantPurchasable({
     shop,
@@ -316,6 +324,18 @@ export async function runPreShadowMint(args: {
     .catch((e: any) =>
       console.warn(`[PreShadow] shipping attach failed for ${shadowVariant.id}:`, e?.message),
     );
+
+  try {
+    await assertAjaxVariantVisible({ shop, variantId: shadowVariant.id });
+  } catch (e: any) {
+    if (e instanceof ShadowStorefrontNotReadyError) {
+      console.warn(
+        `[PreShadow] jobId=${jobId} Admin live but Ajax not visible yet variant=${shadowVariant.id} probe=${e.probe}`,
+      );
+    } else {
+      throw e;
+    }
+  }
 
   console.log(`[PreShadow] jobId=${jobId} shadow product ready — variantId=${shadowVariant.id}`);
   return {
