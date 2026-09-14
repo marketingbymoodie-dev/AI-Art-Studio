@@ -1,6 +1,10 @@
 /**
  * Real storefront readiness: Ajax GET /variants/{id}.js, the same catalog
  * /cart/add.js reads. Admin publish 200 is not this.
+ *
+ * Degrade: 5xx / 429 / network on an Admin-live (UNLISTED/ACTIVE) variant
+ * is a flaky probe, not "unpublished". Those fall through to success.
+ * 404 / empty JSON is a real miss and stays still_preparing.
  */
 export const SHADOW_STOREFRONT_VISIBLE_WAITS_MS = [
   800, 1200, 1600, 2000, 2500, 3000,
@@ -36,7 +40,27 @@ export function isStorefrontPasswordHtml(text: string, contentType: string): boo
   return /storefront_password|name="password"|\/password/i.test(head);
 }
 
-export type AjaxVariantProbe = "visible" | "missing" | "password";
+export type AjaxVariantProbe = "visible" | "missing" | "password" | "error";
+
+/** Classify an Ajax probe HTTP outcome. 429/5xx are flakes, not unpublished. */
+export function classifyAjaxVariantResponse(opts: {
+  status: number;
+  text: string;
+  contentType: string;
+  variantId: string;
+}): AjaxVariantProbe {
+  if (parseAjaxVariantJson(opts.text, opts.variantId)) return "visible";
+  if (opts.status === 429 || opts.status >= 500) return "error";
+  if (opts.status === 404) return "missing";
+  if (isStorefrontPasswordHtml(opts.text, opts.contentType) || /<html/i.test(opts.text)) {
+    return "password";
+  }
+  return "missing";
+}
+
+export function storefrontPasswordConfigured(): boolean {
+  return !!(process.env.SHOPIFY_STOREFRONT_PASSWORD || process.env.STOREFRONT_PASSWORD);
+}
 
 export async function probeAjaxVariantVisible(
   shop: string,
@@ -45,19 +69,27 @@ export async function probeAjaxVariantVisible(
 ): Promise<AjaxVariantProbe> {
   const numeric = String(variantId || "").replace(/\D/g, "");
   if (!numeric || !shop) return "missing";
-  const res = await fetch(`https://${shop}/variants/${numeric}.js`, {
-    headers: {
-      Accept: "application/json",
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-  });
-  const text = await res.text();
-  if (parseAjaxVariantJson(text, numeric)) return "visible";
-  if (res.status === 404) return "missing";
-  if (isStorefrontPasswordHtml(text, res.headers.get("content-type") || "") || /<html/i.test(text)) {
-    return "password";
+  try {
+    const res = await fetch(`https://${shop}/variants/${numeric}.js`, {
+      headers: {
+        Accept: "application/json",
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    });
+    const text = await res.text();
+    return classifyAjaxVariantResponse({
+      status: res.status,
+      text,
+      contentType: res.headers.get("content-type") || "",
+      variantId: numeric,
+    });
+  } catch (e: any) {
+    console.warn(
+      `[ShadowProduct] Ajax /variants/${numeric}.js probe error:`,
+      e?.message || e,
+    );
+    return "error";
   }
-  return "missing";
 }
 
 async function storefrontPasswordCookie(shop: string): Promise<string | undefined> {
@@ -85,14 +117,22 @@ function sleep(ms: number): Promise<void> {
 export async function awaitAjaxVariantVisible(opts: {
   shop: string;
   variantId: string | number;
-}): Promise<{ visible: boolean; probe: AjaxVariantProbe | "timeout" }> {
+  adminLive?: boolean;
+}): Promise<{ visible: boolean; probe: AjaxVariantProbe | "timeout"; degraded?: boolean }> {
   const shop = String(opts.shop || "").trim();
   const variantId = String(opts.variantId || "").replace(/\D/g, "");
+  const adminLive = opts.adminLive !== false;
+  console.log(
+    `[ShadowProduct] Ajax probe unlock configured=${storefrontPasswordConfigured()} variant=${variantId}`,
+  );
   let cookie: string | undefined;
   try {
     cookie = await storefrontPasswordCookie(shop);
   } catch (e: any) {
     console.warn(`[ShadowProduct] storefront password unlock failed:`, e?.message || e);
+  }
+  if (storefrontPasswordConfigured() && !cookie) {
+    console.warn(`[ShadowProduct] password env is set but unlock did not return a cookie`);
   }
 
   let last: AjaxVariantProbe = "missing";
@@ -108,9 +148,21 @@ export async function awaitAjaxVariantVisible(opts: {
       );
       return { visible: false, probe: "password" };
     }
+    if (last === "error" && adminLive) {
+      console.warn(
+        `[ShadowProduct] variant ${variantId} Ajax probe flaked (5xx/429/network) on Admin-live shadow — degrading to success`,
+      );
+      return { visible: true, probe: "error", degraded: true };
+    }
     const wait = SHADOW_STOREFRONT_VISIBLE_WAITS_MS[i];
     if (wait == null) break;
     await sleep(wait);
+  }
+  if (last === "error" && adminLive) {
+    console.warn(
+      `[ShadowProduct] variant ${variantId} Ajax probe still flaking after poll — degrading to Admin live`,
+    );
+    return { visible: true, probe: "error", degraded: true };
   }
   console.warn(`[ShadowProduct] variant ${variantId} not Ajax-visible after poll (last=${last})`);
   return { visible: false, probe: last === "missing" ? "timeout" : last };
@@ -119,6 +171,7 @@ export async function awaitAjaxVariantVisible(opts: {
 export async function assertAjaxVariantVisible(opts: {
   shop: string;
   variantId: string | number;
+  adminLive?: boolean;
 }): Promise<void> {
   const variantId = String(opts.variantId || "").replace(/\D/g, "");
   const result = await awaitAjaxVariantVisible(opts);

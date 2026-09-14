@@ -11069,6 +11069,7 @@ ${orientationExtra}
           await assertAjaxVariantVisible({
             shop,
             variantId: existing.shopifyVariantId,
+            adminLive: true,
           });
         } catch (reuseErr: any) {
           if (reuseErr instanceof ShadowStorefrontNotReadyError) {
@@ -11211,6 +11212,7 @@ ${orientationExtra}
             await assertAjaxVariantVisible({
               shop,
               variantId: after.shopifyVariantId,
+              adminLive: true,
             });
           } catch (joinErr: any) {
             if (joinErr instanceof ShadowStorefrontNotReadyError) {
@@ -11414,6 +11416,7 @@ ${orientationExtra}
         await assertAjaxVariantVisible({
           shop,
           variantId: shadowVariant.id,
+          adminLive: true,
         });
       } catch (visErr: any) {
         if (visErr instanceof ShadowStorefrontNotReadyError) {

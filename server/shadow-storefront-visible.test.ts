@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyAjaxVariantResponse,
   isStorefrontPasswordHtml,
   parseAjaxVariantJson,
 } from "./shadow-storefront-visible";
@@ -26,5 +27,37 @@ describe("isStorefrontPasswordHtml", () => {
       ),
     ).toBe(true);
     expect(isStorefrontPasswordHtml(`{"id":1}`, "application/json")).toBe(false);
+  });
+});
+
+describe("classifyAjaxVariantResponse", () => {
+  it("treats 404 as unpublished, not a flake", () => {
+    expect(
+      classifyAjaxVariantResponse({
+        status: 404,
+        text: "Not Found",
+        contentType: "text/plain",
+        variantId: "46284091588842",
+      }),
+    ).toBe("missing");
+  });
+
+  it("treats 429 and 5xx as probe errors so Admin-live can degrade", () => {
+    expect(
+      classifyAjaxVariantResponse({
+        status: 429,
+        text: "Too Many Requests",
+        contentType: "text/plain",
+        variantId: "1",
+      }),
+    ).toBe("error");
+    expect(
+      classifyAjaxVariantResponse({
+        status: 503,
+        text: "unavailable",
+        contentType: "text/plain",
+        variantId: "1",
+      }),
+    ).toBe("error");
   });
 });

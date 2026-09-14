@@ -198,7 +198,7 @@ export async function runPreShadowMint(args: {
       variantId: existing.shopifyVariantId,
     });
     try {
-      await assertAjaxVariantVisible({ shop, variantId: existing.shopifyVariantId });
+      await assertAjaxVariantVisible({ shop, variantId: existing.shopifyVariantId, adminLive: true });
     } catch (e: any) {
       if (!(e instanceof ShadowStorefrontNotReadyError)) throw e;
       console.warn(
@@ -326,7 +326,7 @@ export async function runPreShadowMint(args: {
     );
 
   try {
-    await assertAjaxVariantVisible({ shop, variantId: shadowVariant.id });
+    await assertAjaxVariantVisible({ shop, variantId: shadowVariant.id, adminLive: true });
   } catch (e: any) {
     if (e instanceof ShadowStorefrontNotReadyError) {
       console.warn(
