@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MobileCustomizerShell } from "./MobileCustomizerShell";
 
 describe("MobileCustomizerShell top bar", () => {
@@ -46,5 +46,87 @@ describe("MobileCustomizerShell top bar", () => {
     expect(screen.getByTestId("button-mobile-credits")).toBeTruthy();
     expect(screen.getByTestId("button-mobile-cart")).toBeTruthy();
     expect(screen.queryByTestId("button-mobile-login")).toBeNull();
+  });
+});
+
+const styleSlot = {
+  id: "style",
+  label: "Style",
+  icon: <span />,
+  title: "Art style",
+  content: <div>style body</div>,
+};
+
+const sizeSlot = {
+  id: "size",
+  label: "Size",
+  icon: <span />,
+  title: "Size & ratio",
+  content: <div>size body</div>,
+};
+
+describe("MobileCustomizerShell bottom group", () => {
+  it("covers the bottom group when chromeCovered (Gallery / OTP)", () => {
+    render(
+      <MobileCustomizerShell
+        brandName="AI Art Studio"
+        isLoggedIn
+        onBack={vi.fn()}
+        chromeCovered
+        primaryAction={<button type="button">Generate</button>}
+        bottomSlots={[styleSlot]}
+      />,
+    );
+    expect(screen.getByTestId("mobile-bottomgroup").className).toMatch(
+      /is-covered/,
+    );
+    expect(screen.queryByTestId("mobile-rail")).toBeNull();
+  });
+
+  it("does not hide the rail when a sheet is open", () => {
+    render(
+      <MobileCustomizerShell
+        brandName="AI Art Studio"
+        isLoggedIn
+        onBack={vi.fn()}
+        primaryAction={<button type="button">Generate</button>}
+        railSlots={[sizeSlot]}
+        bottomSlots={[styleSlot]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("button-mobile-rtool-size"));
+    expect(screen.getByTestId("mobile-sheet-size").className).toMatch(/show/);
+    expect(screen.getByTestId("mobile-bottomgroup").className).toMatch(
+      /is-covered/,
+    );
+    expect(screen.getByTestId("mobile-rail").className).not.toMatch(/tucked/);
+    expect(screen.getByTestId("mobile-rail").className).not.toMatch(
+      /is-covered/,
+    );
+  });
+
+  it("keeps the rail tucked after auto-dismiss with retractRail", () => {
+    const { rerender } = render(
+      <MobileCustomizerShell
+        brandName="AI Art Studio"
+        isLoggedIn
+        onBack={vi.fn()}
+        primaryAction={<button type="button">Generate</button>}
+        railSlots={[sizeSlot]}
+        closeSheetRequest={null}
+      />,
+    );
+    expect(screen.getByTestId("mobile-rail").className).not.toMatch(/tucked/);
+    rerender(
+      <MobileCustomizerShell
+        brandName="AI Art Studio"
+        isLoggedIn
+        onBack={vi.fn()}
+        primaryAction={<button type="button">Generate</button>}
+        railSlots={[sizeSlot]}
+        closeSheetRequest={{ nonce: 1, retractRail: true }}
+      />,
+    );
+    expect(screen.getByTestId("mobile-rail").className).toMatch(/tucked/);
   });
 });

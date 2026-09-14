@@ -989,7 +989,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-a9";
+const CP1_BUILD_MARKER = "cp2-b1";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -4000,9 +4000,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [aopSheetRequest, setAopSheetRequest] = useState<{ id: string; nonce: number } | null>(null);
   const [mobileSheetCloseRequest, setMobileSheetCloseRequest] = useState<{
     nonce: number;
+    retractRail?: boolean;
   } | null>(null);
-  const dismissMobileSheet = useCallback(() => {
-    setMobileSheetCloseRequest((prev) => ({ nonce: (prev?.nonce ?? 0) + 1 }));
+  const dismissMobileSheet = useCallback((opts?: { retractRail?: boolean }) => {
+    setMobileSheetCloseRequest((prev) => ({
+      nonce: (prev?.nonce ?? 0) + 1,
+      retractRail: opts?.retractRail,
+    }));
   }, []);
   useEffect(() => {
     console.log("[EmbedDesign] CP1 host", {
@@ -16674,7 +16678,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         onSizeChange={(sizeId) => {
           applySelectedSize(sizeId);
           if (isMobile) {
-            window.setTimeout(() => dismissMobileSheet(), 160);
+            window.setTimeout(() => dismissMobileSheet({ retractRail: true }), 160);
           }
         }}
         prices={buildPriceMap()}
@@ -16715,7 +16719,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       blueprintId={productTypeConfig?.printifyBlueprintId}
       commerceTerms={isStorefront}
       commerceTermsOrigin={centralAppUrl}
-      onSectionClose={isMobile ? dismissMobileSheet : undefined}
+      onSectionClose={isMobile ? () => dismissMobileSheet({ retractRail: true }) : undefined}
     />
   ) : null;
   const mPrintSideNode = supportsPrintPlacementSelection ? (
@@ -16951,10 +16955,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         isMobile && useAopCustomizer && showPatternStep && !!aopPendingMotifUrl
           ? " appai-mobile-modebar-on"
           : ""
-      }${
-        isMobile && (showSavedDesigns || showOtpLogin || showCouponInput)
-          ? " appai-mobile-escape-open"
-          : ""
       }`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
@@ -17051,6 +17051,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }}
           openSheetRequest={aopSheetRequest}
           closeSheetRequest={mobileSheetCloseRequest}
+          chromeCovered={showSavedDesigns || showOtpLogin || showCouponInput}
           primaryAction={
             <>
               {renderMobileHeadlinePrice()}
@@ -19282,6 +19283,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                   : "w-2 h-2 bg-foreground/60"
                               }`}
                             />
+                            {!(isMobile && item.kind === "artwork") ? (
                             <span
                               className={`text-[10px] leading-tight font-medium ${
                                 selectedMockupIndex === idx
@@ -19291,6 +19293,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             >
                               {item.kind === "artwork" ? "Front View" : item.label}
                             </span>
+                            ) : null}
                           </button>
                         );
                       })}
@@ -19775,6 +19778,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                 : "w-2 h-2 bg-foreground/60"
                             }`}
                           />
+                          {!(isMobile && item.kind === "artwork") ? (
                           <span
                             className={`text-[10px] leading-tight font-medium ${
                               selectedMockupIndex === idx
@@ -19786,6 +19790,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                               ? "Front"
                               : item.label}
                           </span>
+                          ) : null}
                         </button>
                       );
                     })}

@@ -51,7 +51,12 @@ export type MobileCustomizerShellProps = {
   /** Open this sheet when `nonce` changes (e.g. Pattern → Adjust). */
   openSheetRequest?: { id: string; nonce: number } | null;
   /** Close the open sheet when `nonce` changes (size pick, info close). */
-  closeSheetRequest?: { nonce: number } | null;
+  closeSheetRequest?: { nonce: number; retractRail?: boolean } | null;
+  /**
+   * Gallery / OTP / coupon overlay is open — hide the bottom chrome group
+   * (visibility only; rail is independent state).
+   */
+  chromeCovered?: boolean;
 };
 
 /**
@@ -87,6 +92,7 @@ export function MobileCustomizerShell({
   onModeChange,
   openSheetRequest,
   closeSheetRequest,
+  chromeCovered = false,
 }: MobileCustomizerShellProps) {
   const rail = railSlots.filter((s) => s.content != null && s.content !== false);
   const bottom = bottomSlots.filter((s) => s.content != null && s.content !== false);
@@ -95,6 +101,7 @@ export function MobileCustomizerShell({
   const [bottomTucked, setBottomTucked] = useState(false);
   const lastSheetRequestNonce = useRef(0);
   const lastCloseRequestNonce = useRef(0);
+  const reopenBlockedUntil = useRef(0);
   useLayoutEffect(() => {
     if (!openSheetRequest?.id) return;
     if (openSheetRequest.nonce === lastSheetRequestNonce.current) return;
@@ -131,10 +138,15 @@ export function MobileCustomizerShell({
     lastCloseRequestNonce.current = closeSheetRequest.nonce;
     setOpenId(null);
     blurActive();
+    if (closeSheetRequest.retractRail) {
+      setRailTucked(true);
+      reopenBlockedUntil.current = Date.now() + 350;
+    }
   }, [closeSheetRequest, blurActive]);
 
   // tap the same tool again → close; otherwise open it (single sheet at a time)
   const toggleSheet = useCallback((id: string) => {
+    if (Date.now() < reopenBlockedUntil.current) return;
     setOpenId((cur) => {
       if (cur === id) {
         blurActive();
@@ -147,43 +159,40 @@ export function MobileCustomizerShell({
   const allSlots = [...rail, ...bottom];
   const activeSlot = allSlots.find((s) => s.id === openId) || null;
   const bothTucked = bottomTucked && railTucked;
+  const isCovered = !!activeSlot || chromeCovered;
+  const showBottomGroup = showModeToggle || !!primaryAction || bottom.length > 0;
 
-  useLayoutEffect(() => {
-    const root = document.querySelector(".appai-mobile-shell");
-    if (!root) return;
-    root.classList.toggle("appai-mobile-sheet-open", !!activeSlot);
-    return () => root.classList.remove("appai-mobile-sheet-open");
-  }, [activeSlot]);
-
+  const groupRef = useRef<HTMLDivElement | null>(null);
   const modebarRef = useRef<HTMLDivElement | null>(null);
   const primaryRef = useRef<HTMLDivElement | null>(null);
   const bottombarRef = useRef<HTMLDivElement | null>(null);
 
-  // Measure the real chrome stack so canvas / modebar / primary never share
-  // pixels. `renderPrimaryAction` can grow (terms, ATC extras) past the
-  // 60px CSS budget — that was the AOP "Apply Pattern on top of Place/Pattern"
-  // collision.
+  // Measure the real chrome stack so the canvas bottom and sheet min-height
+  // share one number. Transform (tuck) does not change offsetHeight.
   useLayoutEffect(() => {
     const root = document.querySelector(".appai-mobile-shell") as HTMLElement | null;
     if (!root) return;
     const sync = () => {
-      const modeH = showModeToggle && !bottomTucked ? modebarRef.current?.offsetHeight ?? 0 : 0;
+      const groupH = groupRef.current?.offsetHeight ?? 0;
+      const pull = 22;
+      const chromeH = groupH + pull;
+      const modeH = modebarRef.current?.offsetHeight ?? 0;
       const primaryH = primaryRef.current?.offsetHeight ?? 0;
-      const bottomH = bottomTucked ? 0 : bottombarRef.current?.offsetHeight ?? 0;
+      const bottomH = bottombarRef.current?.offsetHeight ?? 0;
       root.style.setProperty("--appai-mobile-modebar-h", `${modeH}px`);
       root.style.setProperty("--appai-mobile-primary-h", `${Math.max(primaryH, 0)}px`);
       root.style.setProperty("--appai-mobile-bottombar-h", `${bottomH}px`);
-      const pull = bottomTucked ? 0 : 22;
+      root.style.setProperty("--appai-mobile-chrome-h", `${chromeH}px`);
       root.style.setProperty(
-        "--appai-mobile-chrome-h",
-        `${modeH + Math.max(primaryH, 0) + bottomH + pull}px`,
+        "--appai-mobile-canvas-bottom",
+        bottomTucked
+          ? `calc(${pull}px + var(--appai-mobile-safe-bottom))`
+          : `${chromeH}px`,
       );
     };
     sync();
     const ro = new ResizeObserver(sync);
-    if (modebarRef.current) ro.observe(modebarRef.current);
-    if (primaryRef.current) ro.observe(primaryRef.current);
-    if (bottombarRef.current) ro.observe(bottombarRef.current);
+    if (groupRef.current) ro.observe(groupRef.current);
     window.addEventListener("resize", sync);
     window.visualViewport?.addEventListener("resize", sync);
     return () => {
@@ -191,7 +200,7 @@ export function MobileCustomizerShell({
       window.removeEventListener("resize", sync);
       window.visualViewport?.removeEventListener("resize", sync);
     };
-  }, [showModeToggle, bottomTucked, rail.length, bottom.length]);
+  }, [showModeToggle, bottomTucked, rail.length, bottom.length, primaryAction]);
 
   return (
     <>
@@ -294,41 +303,14 @@ export function MobileCustomizerShell({
         </div>
       )}
 
-      {/* ── Under-canvas mode toggle (AOP) ──────────────────────────────── */}
-      {showModeToggle && (
-        <div ref={modebarRef} className="appai-mmodebar" data-testid="mobile-modebar">
-          <button
-            type="button"
-            className={`appai-mseg${activeMode === "place" ? " sel" : ""}`}
-            onClick={() => selectMode("place")}
-            data-testid="button-mobile-mode-place"
-          >
-            Place on item
-          </button>
-          <button
-            type="button"
-            className={`appai-mseg${activeMode === "pattern" ? " sel" : ""}`}
-            onClick={() => selectMode("pattern")}
-            data-testid="button-mobile-mode-pattern"
-          >
-            Pattern
-          </button>
-        </div>
-      )}
-
-      {/* ── Primary action row (Generate / Add to Cart) ─────────────────── */}
-      {primaryAction ? (
-        <div ref={primaryRef} className="appai-mprimary" data-testid="mobile-primary">
-          {primaryAction}
-        </div>
-      ) : null}
-
-      {/* ── Bottom bar (retractable) ────────────────────────────────────── */}
-      {bottom.length > 0 && (
+      {/* ── Bottom chrome group (mode + ATC + tools tuck together) ───── */}
+      {showBottomGroup && (
         <div
-          ref={bottombarRef}
-          className={`appai-mbottombar${bottomTucked ? " tucked" : ""}`}
-          data-testid="mobile-bottombar"
+          ref={groupRef}
+          className={`appai-mbottomgroup${bottomTucked ? " tucked" : ""}${
+            isCovered ? " is-covered" : ""
+          }`}
+          data-testid="mobile-bottomgroup"
         >
           <button
             type="button"
@@ -337,20 +319,49 @@ export function MobileCustomizerShell({
             onClick={() => setBottomTucked((v) => !v)}
             data-testid="button-mobile-bottom-pull"
           />
-          <div className="appai-mtools">
-            {bottom.map((s) => (
+          {showModeToggle && (
+            <div ref={modebarRef} className="appai-mmodebar" data-testid="mobile-modebar">
               <button
-                key={s.id}
                 type="button"
-                className={`appai-mtool${openId === s.id ? " active" : ""}`}
-                onClick={() => toggleSheet(s.id)}
-                data-testid={`button-mobile-tool-${s.id}`}
+                className={`appai-mseg${activeMode === "place" ? " sel" : ""}`}
+                onClick={() => selectMode("place")}
+                data-testid="button-mobile-mode-place"
               >
-                <span className="appai-mtool-ico">{s.icon}</span>
-                <span className="appai-mtool-lbl">{s.label}</span>
+                Place on item
               </button>
-            ))}
-          </div>
+              <button
+                type="button"
+                className={`appai-mseg${activeMode === "pattern" ? " sel" : ""}`}
+                onClick={() => selectMode("pattern")}
+                data-testid="button-mobile-mode-pattern"
+              >
+                Pattern
+              </button>
+            </div>
+          )}
+          {primaryAction ? (
+            <div ref={primaryRef} className="appai-mprimary" data-testid="mobile-primary">
+              {primaryAction}
+            </div>
+          ) : null}
+          {bottom.length > 0 && (
+            <div ref={bottombarRef} className="appai-mbottombar" data-testid="mobile-bottombar">
+              <div className="appai-mtools">
+                {bottom.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={`appai-mtool${openId === s.id ? " active" : ""}`}
+                    onClick={() => toggleSheet(s.id)}
+                    data-testid={`button-mobile-tool-${s.id}`}
+                  >
+                    <span className="appai-mtool-ico">{s.icon}</span>
+                    <span className="appai-mtool-lbl">{s.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -1569,14 +1569,44 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           )
         : null;
 
+  const viewRow =
+    availableViews.length > 1 ? (
+          <div
+            className={mobileShell ? "appai-mobile-viewrow" : undefined}
+            data-testid="flat-placer-view-row"
+          >
+            {!mobileShell && (
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              View
+            </div>
+            )}
+            <div className="grid grid-cols-2 gap-1">
+              {availableViews.map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  aria-pressed={state.view === v}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
+                    state.view === v
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-card text-card-foreground hover:bg-muted border border-border"
+                  }`}
+                >
+                  {v === "front" ? "Front" : "Back"}
+                </button>
+              ))}
+            </div>
+          </div>
+    ) : null;
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div
       className={
         edgeWrapMode
-          ? "flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start"
-          : "flex w-full flex-col gap-4 lg:flex-row"
+          ? `flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start${mobileShell ? " appai-mobile-placer" : ""}`
+          : `flex w-full flex-col gap-4 lg:flex-row${mobileShell ? " appai-mobile-placer" : ""}`
       }
     >
       <ArtworkEyedropperSession
@@ -1593,8 +1623,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           // Phone cases: height is matched to the form/prompt column (px), not
           // viewport stretch — Zoom stays on the bottom of that card.
           edgeWrapMode
-            ? "relative flex w-full flex-col overflow-hidden rounded-lg border border-border bg-card self-start"
-            : "relative overflow-hidden rounded-lg border border-border bg-card"
+            ? `relative flex w-full flex-col overflow-hidden rounded-lg border border-border bg-card self-start${mobileShell ? " appai-mobile-placer-card" : ""}`
+            : `relative overflow-hidden rounded-lg border border-border bg-card${mobileShell ? " appai-mobile-placer-card" : ""}`
         }
         style={
           edgeWrapCardHeight
@@ -1670,6 +1700,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           />
         )}
       </div>
+      {mobileShell ? viewRow : null}
       {underPreviewSlot ? (
         <div className="appai-under-preview-slot shrink-0">{underPreviewSlot}</div>
       ) : null}
@@ -1693,29 +1724,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {/* View row: Front always; Back only when available */}
-        {availableViews.length > 1 && (
-          <div>
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              View
-            </div>
-            <div className="grid grid-cols-2 gap-1">
-              {availableViews.map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  aria-pressed={state.view === v}
-                  className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                    state.view === v
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-card text-card-foreground hover:bg-muted border border-border"
-                  }`}
-                >
-                  {v === "front" ? "Front" : "Back"}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        {!mobileShell ? viewRow : null}
 
         {/* Artwork enabled — skip for phone cases and any product with only
             one print face (single side has nothing to toggle between). */}

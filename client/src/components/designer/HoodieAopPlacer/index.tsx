@@ -2636,8 +2636,67 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     ...FIXED_PALETTE,
   ];
 
+  const viewRow = (
+        <div
+          className={mobileShell ? "appai-mobile-viewrow" : undefined}
+          data-testid="hoodie-aop-view-row"
+        >
+          {!mobileShell && (
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            View
+          </div>
+          )}
+          <div className={`grid ${viewGridClass} gap-1`}>
+            {(["front", "back"] as HoodieView[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                aria-pressed={state.view === v}
+                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  state.view === v,
+                )}`}
+              >
+                {v === "front" ? "Front" : "Back"}
+              </button>
+            ))}
+            {hasHoodGroup && (
+              <button
+                onClick={onHoodButton}
+                title={hoodTooltip}
+                aria-label={hoodTooltip}
+                aria-pressed={hoodSelected}
+                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  hoodSelected,
+                )}`}
+              >
+                {state.hoodLinked ? (
+                  <Link2 className="h-3 w-3" />
+                ) : (
+                  <Link2Off className="h-3 w-3" />
+                )}
+                Hood
+              </button>
+            )}
+            {hasCollarGroup && (
+              <button
+                onClick={() => onPartButton("collar")}
+                aria-pressed={state.activeGroupId === "collar"}
+                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  state.activeGroupId === "collar",
+                )}`}
+              >
+                Collar
+              </button>
+            )}
+          </div>
+          {hoodSelected && (
+            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
+          )}
+        </div>
+  );
+
   return (
-    <div className="flex w-full flex-col gap-4 lg:flex-row">
+    <div className={`flex w-full flex-col gap-4 lg:flex-row${mobileShell ? " appai-mobile-placer" : ""}`}>
       <ArtworkEyedropperSession
         canvasRef={canvasRef}
         active={eyedropperOn}
@@ -2648,7 +2707,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           so under-preview carousel labels can sit below the card (above the
           Front/Back row) without being clipped. */}
       <div className="relative flex min-w-0 flex-1 flex-col">
-      <div className="relative overflow-hidden rounded-lg border border-border bg-card">
+      <div className={`relative overflow-hidden rounded-lg border border-border bg-card${mobileShell ? " appai-mobile-placer-card" : ""}`}>
         <div
           className={`relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:p-4 ${
             isLeggings ? "lg:min-h-[min(78vh,720px)]" : "lg:aspect-square"
@@ -2787,6 +2846,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </div>
         )}
       </div>
+      {mobileShell ? viewRow : null}
       {underPreviewSlot ? (
         <div className="appai-under-preview-slot shrink-0">{underPreviewSlot}</div>
       ) : null}
@@ -2795,7 +2855,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}
       <div
         data-hoodie-aop-controls
-        className="w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]"
+        className={`w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]${mobileShell ? " appai-mobile-placer-controls" : ""}`}
       >
         {printersMockupAction && !mobileShell && (
           <div className="flex flex-col gap-1" data-hoodie-aop-shell-hidden>
@@ -2880,57 +2940,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         )}
 
         {/* View row: Front / Back / optional Hood or Collar group */}
-        <div>
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            View
-          </div>
-          <div className={`grid ${viewGridClass} gap-1`}>
-            {(["front", "back"] as HoodieView[]).map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                aria-pressed={state.view === v}
-                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  state.view === v,
-                )}`}
-              >
-                {v === "front" ? "Front" : "Back"}
-              </button>
-            ))}
-            {hasHoodGroup && (
-              <button
-                onClick={onHoodButton}
-                title={hoodTooltip}
-                aria-label={hoodTooltip}
-                aria-pressed={hoodSelected}
-                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  hoodSelected,
-                )}`}
-              >
-                {state.hoodLinked ? (
-                  <Link2 className="h-3 w-3" />
-                ) : (
-                  <Link2Off className="h-3 w-3" />
-                )}
-                Hood
-              </button>
-            )}
-            {hasCollarGroup && (
-              <button
-                onClick={() => onPartButton("collar")}
-                aria-pressed={state.activeGroupId === "collar"}
-                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  state.activeGroupId === "collar",
-                )}`}
-              >
-                Collar
-              </button>
-            )}
-          </div>
-          {hoodSelected && (
-            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
-          )}
-        </div>
+        {!mobileShell ? viewRow : null}
 
         {/* Part / Pockets / Artwork-enabled → shell Options sheet on a phone. */}
         <SlotHost target={optionsSlot}>

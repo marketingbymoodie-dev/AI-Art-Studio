@@ -55,11 +55,13 @@ html:has(.appai-mobile-shell) #root {
   --appai-mobile-primary-h: 60px;
   --appai-mobile-bottombar-h: 66px;
   --appai-mobile-modebar-h: 0px;
-  /* Measured chrome stack (mode + ATC + tools + pull tab). Backdrop / short
-     sheets cover this band only — mockup above stays visible. */
+  /* Measured chrome stack (mode + ATC + tools + pull tab). */
   --appai-mobile-chrome-h: calc(
     var(--appai-mobile-modebar-h) + var(--appai-mobile-primary-h) +
       var(--appai-mobile-bottombar-h) + 22px
+  );
+  --appai-mobile-canvas-bottom: calc(
+    var(--appai-mobile-chrome-h) + var(--appai-mobile-safe-bottom)
   );
   --appai-mobile-paper: #f6f4ef;
   --appai-mobile-panel: #ffffff;
@@ -190,31 +192,25 @@ html:has(.appai-mobile-shell) #root {
   top: calc(var(--appai-mobile-topbar-h) + var(--appai-mobile-safe-top));
   left: 0;
   right: 0;
-  bottom: calc(
-    var(--appai-mobile-primary-h) + var(--appai-mobile-bottombar-h) +
-      var(--appai-mobile-modebar-h) + var(--appai-mobile-safe-bottom)
-  );
+  bottom: var(--appai-mobile-canvas-bottom);
   z-index: 1;
   margin: 0;
   padding: 8px 12px;
-  /* Keep the preview column's OWN internal layout — just scroll if it overflows
-     the fixed box. Do not impose flex centering (it would fight the column's
-     stacked children / placer flex-col). */
-  overflow-x: hidden;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: radial-gradient(120% 90% at 50% 0%, #fff 0%, #f0ede6 70%, #e6e2d8 100%);
   transition: bottom 0.3s cubic-bezier(0.32, 0.72, 0, 1);
-}
-
-/* When both bars are tucked the canvas grows to (almost) full height. */
-.appai-mobile-shell.appai-mobile-fullscreen .appai-mobile-canvas {
-  bottom: var(--appai-mobile-safe-bottom);
 }
 
 /* Keep the preview media from causing horizontal blowout inside the fixed box. */
 .appai-mobile-shell .appai-mobile-canvas > * {
   max-width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Take the leftover desktop layout out of document flow so it cannot
@@ -373,20 +369,63 @@ html:has(.appai-mobile-shell) #root {
 }
 
 /* ---------------------------------------------------------------------------
- * Under-canvas mode toggle (AOP).
+ * Bottom chrome group — mode + ATC + tools share one tuck / cover state.
  * ------------------------------------------------------------------------- */
-.appai-mmodebar {
+.appai-mbottomgroup {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(
-    var(--appai-mobile-primary-h) + var(--appai-mobile-bottombar-h) +
-      var(--appai-mobile-safe-bottom)
-  );
-  z-index: 14;
+  bottom: 0;
+  z-index: 16;
+  display: flex;
+  flex-direction: column;
+  background: var(--appai-mobile-paper);
+  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.appai-mbottomgroup.tucked {
+  transform: translateY(100%);
+}
+
+.appai-mbottomgroup.is-covered {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.appai-mbottom-pull {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 22px;
+  padding: 0;
+  background: var(--appai-mobile-panel);
+  border: 1px solid var(--appai-mobile-line);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.appai-mbottom-pull::before {
+  content: "";
+  width: 26px;
+  height: 3px;
+  border-radius: 9px;
+  background: var(--appai-mobile-line-strong);
+}
+
+/* ---------------------------------------------------------------------------
+ * Under-canvas mode toggle (AOP) — in-flow inside the bottom group.
+ * ------------------------------------------------------------------------- */
+.appai-mmodebar {
   display: flex;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 6px 12px 0;
 }
 
 .appai-mseg {
@@ -412,13 +451,8 @@ html:has(.appai-mobile-shell) #root {
  * inner button full-width and comfortable.
  * ------------------------------------------------------------------------- */
 .appai-mprimary {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: calc(var(--appai-mobile-bottombar-h) + var(--appai-mobile-safe-bottom));
-  z-index: 15;
   padding: 4px 12px 8px;
-  background: linear-gradient(to top, var(--appai-mobile-paper) 55%, rgba(246, 244, 239, 0));
+  background: var(--appai-mobile-paper);
 }
 
 .appai-mprimary > * {
@@ -433,47 +467,11 @@ html:has(.appai-mobile-shell) #root {
 }
 
 /* ---------------------------------------------------------------------------
- * Bottom bar (retractable).
+ * Bottom bar (tools) — in-flow inside the bottom group.
  * ------------------------------------------------------------------------- */
 .appai-mbottombar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 16;
   background: var(--appai-mobile-panel);
   border-top: 1px solid var(--appai-mobile-line);
-  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
-}
-
-.appai-mbottombar.tucked {
-  transform: translateY(100%);
-}
-
-.appai-mbottom-pull {
-  position: absolute;
-  top: -22px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 56px;
-  height: 22px;
-  padding: 0;
-  background: var(--appai-mobile-panel);
-  border: 1px solid var(--appai-mobile-line);
-  border-bottom: none;
-  border-radius: 10px 10px 0 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.appai-mbottom-pull::before {
-  content: "";
-  width: 26px;
-  height: 3px;
-  border-radius: 9px;
-  background: var(--appai-mobile-line-strong);
 }
 
 .appai-mtools {
@@ -530,12 +528,10 @@ html:has(.appai-mobile-shell) #root {
 /* ---------------------------------------------------------------------------
  * Scrim + sheets.
  *
- * Backdrop is scoped to the measured chrome stack (mode toggle + ATC +
- * bottom tool bar), not the viewport. The mockup above that band stays
- * visible. A transparent full-viewport layer still catches tap-to-dismiss.
- * Sheet is solid white and at least as tall as the chrome so ATC cannot
- * peek under a short Size picker. Chrome is visibility:hidden while open
- * (iOS otherwise composites those fixed bars above the sheet).
+ * Transparent full-viewport layer catches tap-to-dismiss. The bottom chrome
+ * group is visibility:hidden via .is-covered (React state) so ATC / mode /
+ * tools cannot composite through the sheet. Rail is independent (railTucked).
+ * Sheet is solid white and at least as tall as the chrome stack.
  * ------------------------------------------------------------------------- */
 .appai-mscrim {
   position: fixed;
@@ -547,17 +543,6 @@ html:has(.appai-mobile-shell) #root {
 
 .appai-mscrim.show {
   pointer-events: auto;
-}
-
-.appai-mscrim.show::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: var(--appai-mobile-chrome-h);
-  background: #ffffff;
-  pointer-events: none;
 }
 
 .appai-msheet {
@@ -576,37 +561,6 @@ html:has(.appai-mobile-shell) #root {
   max-height: 72%;
   display: flex;
   flex-direction: column;
-}
-
-/* Hide every control that lives under an open sheet / Gallery overlay.
-   Visibility (not display) so measured chrome heights stay stable. */
-.appai-mobile-shell:has(.appai-mscrim.show) .appai-mmodebar,
-.appai-mobile-shell:has(.appai-mscrim.show) .appai-mprimary,
-.appai-mobile-shell:has(.appai-mscrim.show) .appai-mbottombar,
-.appai-mobile-shell:has(.appai-mscrim.show) .appai-mrail,
-.appai-mobile-shell.appai-mobile-sheet-open .appai-mmodebar,
-.appai-mobile-shell.appai-mobile-sheet-open .appai-mprimary,
-.appai-mobile-shell.appai-mobile-sheet-open .appai-mbottombar,
-.appai-mobile-shell.appai-mobile-sheet-open .appai-mrail,
-.appai-mobile-shell.appai-mobile-escape-open .appai-mmodebar,
-.appai-mobile-shell.appai-mobile-escape-open .appai-mprimary,
-.appai-mobile-shell.appai-mobile-escape-open .appai-mbottombar,
-.appai-mobile-shell.appai-mobile-escape-open .appai-mrail {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-/* Gallery / OTP: same chrome-zone cover as tool sheets (not full viewport). */
-.appai-mobile-shell.appai-mobile-escape-open::after {
-  content: "";
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: var(--appai-mobile-chrome-h);
-  background: #ffffff;
-  z-index: 69;
-  pointer-events: none;
 }
 
 .appai-msheet.show {
@@ -712,6 +666,48 @@ html:has(.appai-mobile-shell) #root {
   position: relative;
   z-index: 2;
   padding-top: 4px;
+}
+
+/* Fit-to-box placer: mockup shrinks so Front/Back + dots stay in the canvas. */
+.appai-mobile-shell .appai-mobile-placer {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  gap: 8px;
+}
+
+.appai-mobile-shell .appai-mobile-placer-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="hoodie-aop-canvas-area"],
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="flat-placer-canvas-area"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+}
+
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="hoodie-aop-placer-canvas"],
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="hoodie-aop-canvas-override"] {
+  max-height: 100% !important;
+}
+
+.appai-mobile-shell .appai-mobile-viewrow {
+  flex: 0 0 auto;
+  padding: 6px 0 0;
+}
+
+/* AOP leftover controls are portaled into sheets — keep them mounted,
+   take them out of the canvas flex so Front/Back + dots stay visible. */
+.appai-mobile-shell .appai-mobile-placer-controls {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 /* ---------------------------------------------------------------------------
