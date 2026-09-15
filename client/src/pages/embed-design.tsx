@@ -19470,7 +19470,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     const seq = ++aopPanelPersistSeqRef.current;
                     const isStale = () => seq !== aopPanelPersistSeqRef.current;
                     emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
-                    void (async () => {
+                    // Mirror handleHoodieAopApply's in-flight bookkeeping: ATC's
+                    // freezeAopLineSnapshot race guard (aopPanelPersistInFlightRef /
+                    // aopPanelPersistPromiseRef) only defers to the background finalize
+                    // path when it can see this persist running. Without it, a fresh-gen
+                    // ATC click lands before aopPrintPanelUrls is saved and
+                    // aop-line-snapshot 400s with "No print panels to freeze".
+                    const persistWork = (async () => {
+                      aopPanelPersistInFlightRef.current = true;
                       try {
                         const printPanels = isMerchantStudio && options.getPrintPanelUrls
                           ? await options.getPrintPanelUrls()
@@ -19531,8 +19538,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         if (!isStale() && !isUploadRateLimitedError(e)) {
                           emitTesterDesignStatus({ aopPanels: 'error' });
                         }
+                      } finally {
+                        aopPanelPersistInFlightRef.current = false;
                       }
                     })();
+                    aopPanelPersistPromiseRef.current = persistWork;
                   }
                 }}
                 footerSlot={

@@ -11011,6 +11011,12 @@ ${orientationExtra}
   // Reuse: if a shadow product already exists for this designId+shop, return it.
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
+    // Declared outside the try so the `finally` below (a separate block scope
+    // from `try`) can still see it — a `let` declared inside `try {}` is not
+    // visible in `catch {}`/`finally {}` and threw "settleResolveFlight is not
+    // defined" there after the response had already been sent.
+    let settleResolveFlight: ((v?: { shopifyProductId: string; shopifyVariantId: string } | void) => void) | null =
+      null;
     try {
       const {
         shop: shopRaw,
@@ -11023,8 +11029,6 @@ ${orientationExtra}
         colorId,
       } = req.body;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
-      let settleResolveFlight: ((v?: { shopifyProductId: string; shopifyVariantId: string } | void) => void) | null =
-        null;
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }
