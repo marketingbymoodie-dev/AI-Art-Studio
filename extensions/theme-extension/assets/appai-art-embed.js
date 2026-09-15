@@ -1199,6 +1199,10 @@
     if (urlParams.get('openSignIn') === '1') {
       params.set('openSignIn', '1');
     }
+    // TEMP: iPhone on-screen console. Remove with MobileDebugOverlay.
+    if (urlParams.get('debugoverlay') === '1') {
+      params.set('debugoverlay', '1');
+    }
 
     function persistStoreThemeSnapshot(theme) {
       if (!theme || typeof theme !== 'object') return;

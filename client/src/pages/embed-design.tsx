@@ -177,6 +177,7 @@ import {
 import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
 import { PreviewStudioGenOverlay } from "@/components/designer/PreviewStudioGenOverlay";
 import { MobileCustomizerShell } from "@/components/designer/MobileCustomizerShell";
+import { MobileDebugOverlay } from "@/components/designer/MobileDebugOverlay";
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
@@ -7789,6 +7790,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
+      console.log("[AOP-TRACE] fetchPrintifyMockups duplicate — mockupsStale unchanged");
       return { ok: false, error: "Mockup already in progress" };
     }
 
@@ -7802,6 +7804,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       : ++mockupRequestSeqRef.current;
     if (!isOnDemandMerge) {
       setMockupLoading(true);
+      console.log("[AOP-TRACE] setMockupsStale(false) fetchPrintifyMockups start");
       setMockupsStale(false);
       // Notify parent page so it can show the "Artwork Generating" overlay
       if (runtimeMode !== 'standalone') {
@@ -8346,6 +8349,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setMockupFailed(true);
       // Keep mockupsStale so the UI surfaces an error rather than silently
       // showing a stale mockup from a previous size/color combination.
+      console.log("[AOP-TRACE] setMockupsStale(true) fetchPrintifyMockups catch");
       setMockupsStale(true);
       return {
         ok: false,
@@ -11461,7 +11465,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   /** Stale AOP/Printify mockups: rebuild from panels or flush, never silent no-op. */
   const refreshStaleMockups = useCallback(async () => {
+    console.log("[AOP-TRACE] refreshStaleMockups start", {
+      useAopCustomizer,
+      mockupsStale,
+      hasPlacerRef: !!hoodieAopPlacerRef.current,
+      hasPanels: !!lastAopPanelUrlsRef.current?.length,
+      selectedSize,
+    });
     if (!String(selectedSize || "").trim()) {
+      console.log("[AOP-TRACE] refreshStaleMockups abort no-size — mockupsStale unchanged");
       setVariantError("Select a size to continue.");
       toast({
         title: "Select a size",
@@ -11471,6 +11483,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
     if (!generatedDesign?.imageUrl || !productTypeConfig) {
+      console.log("[AOP-TRACE] refreshStaleMockups abort no-artwork — mockupsStale unchanged");
       toast({
         title: "Can't refresh mockups",
         description: "Artwork is missing. Generate or reload the design.",
@@ -11499,6 +11512,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             ? (panels ?? lastAopPanelUrlsRef.current ?? undefined)
             : undefined,
         );
+        console.log("[AOP-TRACE] refreshStaleMockups runFetch", {
+          ok: !!result?.ok,
+          error: result?.error ?? null,
+        });
         if (!result?.ok) {
           toast({
             title: "Couldn't refresh mockups",
@@ -11507,6 +11524,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           });
         }
       } catch (err: any) {
+        console.log("[AOP-TRACE] refreshStaleMockups runFetch threw", err?.message || err);
         toast({
           title: "Couldn't refresh mockups",
           description: err?.message || "Try again.",
@@ -11519,8 +11537,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (hoodieAopPlacerRef.current) {
         try {
           const applied = await flushHoodieAopPlacer({ force: true });
+          console.log("[AOP-TRACE] refreshStaleMockups applied", {
+            applied,
+            willReturn: !!applied,
+          });
           if (applied) return;
         } catch (err: any) {
+          console.log("[AOP-TRACE] refreshStaleMockups flush threw", err?.message || err);
           toast({
             title: "Couldn't refresh mockups",
             description: err?.message || "Try again.",
@@ -11528,6 +11551,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           });
           return;
         }
+      } else {
+        console.log("[AOP-TRACE] refreshStaleMockups no placer ref");
       }
       const panels = lastAopPanelUrlsRef.current;
       if (panels?.length) {
@@ -11565,6 +11590,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     aopPatternUrl,
     aopPlacementSettings?.mirrorMode,
     hoodieAopPlacerState,
+    mockupsStale,
     fetchPrintifyMockups,
     flushHoodieAopPlacer,
     toast,
@@ -13099,6 +13125,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setAopPatternUrl(frontHosted);
       setMockupFailed(false);
       setMockupError(null);
+      console.log("[AOP-TRACE] setMockupsStale(false) handleHoodieAopApply");
       setMockupsStale(false);
 
       if (
@@ -17008,6 +17035,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }`}
       {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
+      {isMobile && searchParams.get("debugoverlay") === "1" && (
+        <MobileDebugOverlay />
+      )}
       {isMobile && (
         <MobileCustomizerShell
           brandName={shellBrandName}
