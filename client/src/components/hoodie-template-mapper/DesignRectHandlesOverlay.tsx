@@ -7,6 +7,7 @@ import {
   type ArtworkPlacement,
   type DesignRectInfo,
 } from "./lib/aopPreview";
+import { useTwoFingerTransform } from "@/components/designer/useTwoFingerTransform";
 
 /**
  * Reusable design-rect drag/resize/rotate overlay for AOP placement UIs.
@@ -152,6 +153,39 @@ export default function DesignRectHandlesOverlay({
         startAngleRad?: number;
       }
   >(null);
+
+  // Pinch-to-scale + two-finger-twist-to-rotate — additive to the drag modes
+  // above, never fighting them. Snapshot the placement once when the 2nd
+  // finger arms the gesture; every move computes scale/rotation fresh off
+  // that snapshot (never compounding tick-to-tick), matching the "never
+  // compounding" comment on dragRef above.
+  const twoFingerStartRef = useRef<ArtworkPlacement | null>(null);
+  const twoFinger = useTwoFingerTransform({
+    onGestureStart: () => {
+      // Cancel any in-progress single-finger translate so the two systems
+      // never run at once and fight over onChange.
+      dragRef.current = null;
+      twoFingerStartRef.current = placement;
+    },
+    onChange: ({ scaleRatio, rotateDeltaDeg }) => {
+      const start = twoFingerStartRef.current;
+      if (!start) return;
+      // Same local safety clamp the corner-drag scale branch below already
+      // applies (minScale=0.05, maxScale prop) — the final commit is
+      // re-clamped to SCALE_MIN/SCALE_MAX by updateActiveGroupPlacement
+      // regardless, so this only keeps the live drag feel consistent with
+      // corner-drag.
+      let nextScale = start.scale * scaleRatio;
+      const minScale = 0.05;
+      if (nextScale < minScale) nextScale = minScale;
+      if (typeof maxScale === "number" && maxScale > 0 && nextScale > maxScale) {
+        nextScale = maxScale;
+      }
+      let nextRotation = normalizeRotationDeg((start.rotationDeg ?? 0) + rotateDeltaDeg);
+      if (Math.abs(nextRotation) <= ROTATION_SNAP_DEG) nextRotation = 0;
+      onChange({ ...start, scale: nextScale, rotationDeg: nextRotation });
+    },
+  });
 
   const invertXRef = useRef(invertOffsetX);
   invertXRef.current = invertOffsetX;
@@ -378,7 +412,12 @@ export default function DesignRectHandlesOverlay({
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          onPointerDown={(e) => startDrag(e, "translate")}
+          onPointerDown={(e) => {
+            // A 2nd concurrent finger arms/continues pinch-scale +
+            // twist-rotate instead of starting a translate drag.
+            if (twoFinger.onPointerDown(e)) return;
+            startDrag(e, "translate");
+          }}
           className="absolute inset-0 cursor-move ring-2 ring-primary/70 transition hover:bg-primary/5"
           style={{ touchAction: "none" }}
           title="Drag to move artwork"

@@ -20,6 +20,7 @@ import {
 } from "./lib/flatRender";
 import type { FlatArtFit } from "@shared/hoodieTemplate";
 import type { FlatViewCalibration } from "@/pages/embed-design";
+import { useTwoFingerTransform } from "../useTwoFingerTransform";
 
 /**
  * Self-contained drag/resize/rotate overlay for the flat-product placer.
@@ -114,6 +115,33 @@ export default function FlatDesignRectOverlay({
         startAngleRad?: number;
       }
   >(null);
+
+  // Pinch-to-scale + two-finger-twist-to-rotate — additive to the drag modes
+  // above, never fighting them. Snapshot the placement once when the 2nd
+  // finger arms the gesture; every move computes scale/rotation fresh off
+  // that snapshot (never compounding tick-to-tick), exactly like the
+  // existing corner-drag/rotate-handle math below.
+  const twoFingerStartRef = useRef<ArtworkPlacement | null>(null);
+  const twoFinger = useTwoFingerTransform({
+    onGestureStart: () => {
+      // Cancel any in-progress single-finger translate so the two systems
+      // never run at once and fight over onChange.
+      dragRef.current = null;
+      twoFingerStartRef.current = latestPlacementRef.current;
+      onDragActivity?.();
+    },
+    onChange: ({ scaleRatio, rotateDeltaDeg }) => {
+      const start = twoFingerStartRef.current;
+      if (!start) return;
+      onDragActivity?.();
+      const nextScale = Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, start.scale * scaleRatio));
+      let nextRotation = normalizeRotationDeg((start.rotationDeg ?? 0) + rotateDeltaDeg);
+      if (Math.abs(nextRotation) <= ROTATION_SNAP_DEG) nextRotation = 0;
+      const next: ArtworkPlacement = { ...start, scale: nextScale, rotationDeg: nextRotation };
+      latestPlacementRef.current = next;
+      onChange(next);
+    },
+  });
 
   // Prefer parent-provided blank/canvas bitmap size (stable across renders).
   const mockupW =
@@ -445,7 +473,12 @@ export default function FlatDesignRectOverlay({
           onClick={(e) => e.stopPropagation()}
         >
           <div
-            onPointerDown={(e) => startDrag(e, "translate")}
+            onPointerDown={(e) => {
+              // A 2nd concurrent finger arms/continues pinch-scale +
+              // twist-rotate instead of starting a translate drag.
+              if (twoFinger.onPointerDown(e)) return;
+              startDrag(e, "translate");
+            }}
             className="absolute inset-0 cursor-move ring-2 ring-primary/70 transition hover:bg-primary/5"
             style={{ touchAction: "none" }}
             title="Drag to move artwork"
