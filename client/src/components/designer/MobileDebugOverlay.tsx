@@ -16,6 +16,7 @@ function formatArg(arg: unknown): string {
  */
 export function MobileDebugOverlay() {
   const [lines, setLines] = useState<string[]>([]);
+  const [open, setOpen] = useState(true);
   const boxRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -57,38 +58,74 @@ export function MobileDebugOverlay() {
   }, []);
 
   useEffect(() => {
+    if (!open) return;
     const el = boxRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+  }, [lines, open]);
 
   return (
     <div
-      ref={boxRef}
       data-testid="mobile-debug-overlay"
       style={{
         position: "fixed",
         left: 0,
         right: 0,
         bottom: 0,
-        height: "30vh",
         zIndex: 9999,
-        overflow: "auto",
-        WebkitOverflowScrolling: "touch",
-        background: "rgba(0,0,0,0.72)",
-        color: "#d1f7c4",
-        font: "10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
-        padding: "6px 8px",
+        height: open ? "30vh" : "auto",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: open ? "stretch" : "center",
+        pointerEvents: "none",
         boxSizing: "border-box",
       }}
     >
-      {lines.map((line, i) => (
+      <button
+        type="button"
+        data-testid="button-mobile-debug-toggle"
+        aria-expanded={open}
+        aria-label={open ? "Hide debug log" : "Show debug log"}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          flex: "0 0 auto",
+          pointerEvents: "auto",
+          marginBottom: open ? 0 : 8,
+          padding: "6px 14px",
+          border: "none",
+          borderRadius: "10px 10px 0 0",
+          background: "rgba(0,0,0,0.82)",
+          color: "#d1f7c4",
+          font: "11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace",
+          cursor: "pointer",
+        }}
+      >
+        {open ? `Hide logs ▾ (${lines.length})` : `Logs ▴ (${lines.length})`}
+      </button>
+      {open ? (
         <div
-          key={i}
-          style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+          ref={boxRef}
+          style={{
+            flex: "1 1 auto",
+            minHeight: 0,
+            pointerEvents: "auto",
+            overflow: "auto",
+            WebkitOverflowScrolling: "touch",
+            background: "rgba(0,0,0,0.72)",
+            color: "#d1f7c4",
+            font: "10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
+            padding: "6px 8px",
+          }}
         >
-          {line}
+          {lines.map((line, i) => (
+            <div
+              key={i}
+              style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            >
+              {line}
+            </div>
+          ))}
         </div>
-      ))}
+      ) : null}
     </div>
   );
 }
