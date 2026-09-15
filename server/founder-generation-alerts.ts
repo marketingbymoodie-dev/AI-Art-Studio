@@ -62,22 +62,31 @@ async function sendFounderEmail(params: {
   }
 }
 
-/** Record outcome and maybe email the founder (rate-limited per shop). */
+/**
+ * Record outcome and maybe email the founder (rate-limited per shop).
+ * Every call site fires this with a bare `void` (fire-and-forget) — an
+ * uncaught rejection here has no .catch() upstream and crashes the process.
+ * Swallow and log instead of throwing.
+ */
 export async function recordGenerationOutcomeForFounder(
   installation: ShopifyInstallation | null | undefined,
   success: boolean,
 ): Promise<void> {
   if (!installation?.id || !installation.shopDomain) return;
 
-  const health = await storage.recordGenerationHealthEvent(
-    installation.id,
-    installation.shopDomain,
-    success,
-  );
+  try {
+    const health = await storage.recordGenerationHealthEvent(
+      installation.id,
+      installation.shopDomain,
+      success,
+    );
 
-  if (success) return;
+    if (success) return;
 
-  await maybeSendFounderAlert(installation, health);
+    await maybeSendFounderAlert(installation, health);
+  } catch (err: any) {
+    console.error(`${TAG} recordGenerationOutcomeForFounder failed:`, err?.message ?? err);
+  }
 }
 
 async function maybeSendFounderAlert(

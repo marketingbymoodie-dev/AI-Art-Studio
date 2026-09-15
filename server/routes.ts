@@ -9637,7 +9637,12 @@ ${orientationExtra}
           });
           void recordGenerationOutcomeForFounder(installation, false);
         }
-      })();
+      })().catch((fatalErr: any) => {
+        // Last-resort net: anything that slips past the try/catch above (e.g. a
+        // rejection from a bare `void` fire-and-forget call) must not become an
+        // unhandled promise rejection — that crashes the whole Node process.
+        console.error(`${P} ${reqId} worker IIFE unhandled rejection:`, fatalErr?.stack ?? fatalErr);
+      });
 
       // Return jobId immediately — client will poll /generate/status
       console.log(P, reqId, `responding jobId=${jobId} — total ${Date.now() - t0}ms`);

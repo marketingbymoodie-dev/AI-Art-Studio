@@ -32,6 +32,12 @@ console.log("[SERVER STARTUP] NODE_ENV:", process.env.NODE_ENV);
 console.log("[SERVER STARTUP] Timestamp:", new Date().toISOString());
 console.log("=".repeat(60));
 
+// Safety net: an unhandled rejection or uncaught exception otherwise crashes
+// the whole process (Railway then restarts it — ~55s of 502s on every route
+// mid-reboot). Log and keep the process alive instead.
+process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e instanceof Error ? e.stack : e));
+process.on("uncaughtException", (e: any) => console.error("[uncaughtException]", e?.stack || e));
+
 const app = express();
 
 // ============================================================
