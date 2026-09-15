@@ -3947,7 +3947,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   /** True only while persistPrintPanels uploads are actually running (not a leftover resolved promise). */
   const aopPanelPersistInFlightRef = useRef(false);
   const aopFinalizePendingCountRef = useRef(0);
-  const aopFinalizeToastRef = useRef<{ dismiss: () => void } | null>(null);
   useEffect(() => {
     if (!isAddingToCart) {
       setAtcFinalizingReveal(false);
@@ -3985,6 +3984,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const activeMockupJobKeyRef = useRef<string | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
+  // Badges the editor's own mobile Cart icon (MobileCustomizerShell) — Shopify's
+  // native theme cart icon lives on the parent storefront page and already
+  // updates itself; this is the app-owned icon shown while the customizer
+  // shell has taken over the screen. App Proxy mode serves this iframe on the
+  // shop's own origin (see appai-art-embed.js comment near iframe.src), so a
+  // same-origin /cart.js fetch resolves against the real Shopify cart.
+  const [cartItemCount, setCartItemCount] = useState<number | null>(null);
+  const refreshShopCartCount = useCallback(async () => {
+    if (isCreatorStorefront || isMerchantStudio) return;
+    try {
+      const res = await fetch("/cart.js", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const cart = await res.json();
+      if (typeof cart?.item_count === "number") {
+        setCartItemCount(cart.item_count);
+      }
+    } catch {
+      // Cross-origin direct-Railway dev fallback, or a network hiccup —
+      // the badge just stays at its last known value.
+    }
+  }, [isCreatorStorefront, isMerchantStudio]);
+  useEffect(() => {
+    void refreshShopCartCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const { toast } = useToast();
   // Mobile customizer shell branch (checkpoint 1: scaffold). Everything gated by
   // this flag is only active below the mobile breakpoint; desktop is untouched.
@@ -4037,15 +4061,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     } catch {
       /* ignore */
     }
-    if (aopFinalizePendingCountRef.current === 0) {
-      aopFinalizeToastRef.current = toast({
-        title: "Finalizing print files…",
-        description: "Checkout unlocks when your print files are ready.",
-        duration: 120_000,
-      });
-    }
+    // Finalize progress lives in the ATC button (ATC_FINALIZING_LABEL) only —
+    // a separate top-of-screen toast duplicated that status and, since it was
+    // only ever dismissed when aopFinalizePendingCountRef returned to 0,
+    // could linger past what the button showed. Keep the pending-count
+    // bookkeeping (still drives atcAvoidFinalizingLabel) without a second toast.
     aopFinalizePendingCountRef.current += 1;
-  }, [toast]);
+  }, []);
 
   const endAopFinalizeToast = useCallback((jobId: string, ok: boolean) => {
     forgetAopFinalizeJob(jobId);
@@ -4058,16 +4080,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       /* ignore */
     }
     aopFinalizePendingCountRef.current = Math.max(0, aopFinalizePendingCountRef.current - 1);
-    if (aopFinalizePendingCountRef.current === 0) {
-      aopFinalizeToastRef.current?.dismiss();
-      aopFinalizeToastRef.current = null;
-      if (!ok) {
-        toast({
-          variant: "destructive",
-          title: "Couldn’t finalise print files",
-          description: "Please try adding to cart again before checkout.",
-        });
-      }
+    if (aopFinalizePendingCountRef.current === 0 && !ok) {
+      toast({
+        variant: "destructive",
+        title: "Couldn’t finalise print files",
+        description: "Please try adding to cart again before checkout.",
+      });
     }
   }, [toast]);
 
@@ -12720,6 +12738,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           console.log('[Design Studio] Storefront add-to-cart success');
           kickBackgroundAopFinalize();
           setAddedToCart(true);
+          void refreshShopCartCount();
           if (!needsBackgroundAopFinalize) {
             toast({
               title: "Added to cart!",
@@ -17017,6 +17036,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }}
           onHome={leaveCustomizerToHome}
           onOpenCart={openStorefrontCart}
+          cartCount={cartItemCount ?? 0}
           onHelp={() => {
             setAopSheetRequest((prev) => ({
               id: "info",

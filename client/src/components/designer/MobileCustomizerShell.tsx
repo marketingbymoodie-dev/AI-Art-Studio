@@ -37,6 +37,8 @@ export type MobileCustomizerShellProps = {
   onLogin?: () => void;
   /** Same cart the storefront / creator shop uses. */
   onOpenCart?: () => void;
+  /** Native Shopify cart item count — badges the Cart icon when > 0. */
+  cartCount?: number;
 
   /** Right-rail tools (Size / Layout / Colour / Info). */
   railSlots?: MobileSheetSlot[];
@@ -84,6 +86,7 @@ export function MobileCustomizerShell({
   onOpenCredits,
   onLogin,
   onOpenCart,
+  cartCount = 0,
   railSlots = [],
   bottomSlots = [],
   primaryAction,
@@ -261,12 +264,17 @@ export function MobileCustomizerShell({
 
         <button
           type="button"
-          className="appai-mshell-iconbtn"
-          aria-label="Cart"
+          className="appai-mshell-iconbtn appai-mshell-iconbtn--cart"
+          aria-label={cartCount > 0 ? `Cart, ${cartCount} item${cartCount === 1 ? "" : "s"}` : "Cart"}
           onClick={onOpenCart}
           data-testid="button-mobile-cart"
         >
           <ShoppingCart />
+          {cartCount > 0 ? (
+            <span className="appai-mshell-cart-badge" data-testid="text-mobile-cart-count">
+              {cartCount > 99 ? "99+" : cartCount}
+            </span>
+          ) : null}
         </button>
       </div>
 

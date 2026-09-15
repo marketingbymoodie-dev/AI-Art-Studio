@@ -121,6 +121,26 @@ html:has(.appai-mobile-shell) #root {
   background: var(--appai-mobile-line, #e7e3da);
 }
 
+.appai-mshell-iconbtn--cart {
+  position: relative;
+}
+
+.appai-mshell-cart-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--appai-mobile-accent, #141414);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
 .appai-mshell-iconbtn svg {
   width: 21px;
   height: 21px;
