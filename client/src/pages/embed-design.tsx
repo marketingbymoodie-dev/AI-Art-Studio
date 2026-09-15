@@ -286,6 +286,7 @@ import {
   aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
   canonicalAopPanelCaptureSignature,
+  parseStoredAopPanelCaptureSignature,
 } from "@shared/aopPanelCaptureSignature";
 import {
   UploadRateLimitedError,
@@ -12107,6 +12108,34 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const aopHasRestoredPanels = !!(lastAopPanelUrlsRef.current?.length);
     const aopPendingEdits = !!hoodieAopPlacerRef.current?.hasPendingChanges();
+    // TEMP DIAGNOSTIC — cp2-b2 saved-design ATC revert trace. Remove after repro.
+    const aopTraceStoredCanonical = parseStoredAopPanelCaptureSignature(
+      storedAopPanelCaptureSignatureRef.current,
+    );
+    const aopTraceLiveCanonical = canonicalAopPanelCaptureSignature(hoodieAopPlacerState);
+    const aopTraceLastPersistedCanonical = canonicalAopPanelCaptureSignature(
+      lastPersistedAopCaptureStateRef.current,
+    );
+    const aopTraceMatchLive = aopPanelCaptureSignaturesMatch(
+      storedAopPanelCaptureSignatureRef.current,
+      hoodieAopPlacerState,
+    );
+    const aopTraceMatchLastPersisted = aopPanelCaptureSignaturesMatch(
+      storedAopPanelCaptureSignatureRef.current,
+      lastPersistedAopCaptureStateRef.current,
+    );
+    console.log("[AOP-TRACE] aopCanReuseStoredPanels inputs", {
+      hasRestoredPanels: aopHasRestoredPanels,
+      hasPendingChanges: aopPendingEdits,
+      matchLive: aopTraceMatchLive,
+      matchLastPersisted: aopTraceMatchLastPersisted,
+      storedCanonical: aopTraceStoredCanonical,
+      liveCanonical: aopTraceLiveCanonical,
+      lastPersistedCanonical: aopTraceLastPersistedCanonical,
+      storedRaw: storedAopPanelCaptureSignatureRef.current,
+      liveRaw: hoodieAopPlacerState,
+      lastPersistedRaw: lastPersistedAopCaptureStateRef.current,
+    });
     const aopCanReusePanels = !!(
       useAopCustomizer &&
       aopCanReuseStoredPanels({
@@ -12117,6 +12146,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         hasPendingChanges: aopPendingEdits,
       })
     );
+    // TEMP DIAGNOSTIC — cp2-b2 saved-design ATC revert trace. Remove after repro.
+    console.log("[AOP-TRACE] aopCanReusePanels result", aopCanReusePanels);
     const aopNeedsFlush = !!(
       useAopCustomizer &&
       productTypeConfig?.panelMappingTemplate &&
