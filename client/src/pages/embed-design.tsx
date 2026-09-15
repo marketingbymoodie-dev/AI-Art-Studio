@@ -989,7 +989,7 @@ function resolveSizeIdFromCoverage(
  * headless diagnose scripts confirm a Railway deploy actually went live before
  * a phone test, which is otherwise unknowable (no iOS remote console here).
  */
-const CP1_BUILD_MARKER = "cp2-b1";
+const CP1_BUILD_MARKER = "cp2-b1.1";
 
 /** Parent storefront when iframed; this window when top-level (`host=page`). */
 function hostWindow(): Window {
@@ -19094,7 +19094,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-1 lg:col-span-2 flex min-h-0 flex-col"
                 : "space-y-3 md:order-1"
-            }${isMobile ? " appai-mobile-canvas" : ""}`}
+            }${isMobile ? " appai-mobile-canvas" : ""}${
+              isMobile &&
+              ((showPatternStep && aopPendingMotifUrl) || flatPlacerActive)
+                ? " appai-mobile-canvas--placer"
+                : ""
+            }`}
           >
             {isAdminTester && (generateMutation.isPending || studioGenFailure) ? (
               <PreviewStudioGenOverlay
@@ -19112,12 +19117,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
                       (not on every nudge). */}
                   {(isStorefront || isShopify || isAdminTester) && (
-                    <div className="flex w-full gap-2 justify-stretch">
+                    <div
+                      className={`flex w-full justify-stretch${isMobile ? " gap-1" : " gap-2"}`}
+                    >
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="flex-1 min-w-0"
+                        className={`flex-1 min-w-0${isMobile ? " h-7" : ""}`}
                         onClick={() => {
                           if (
                             isAdminTester &&
@@ -19146,7 +19153,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="flex-1 min-w-0"
+                        className={`flex-1 min-w-0${isMobile ? " h-7" : ""}`}
                         onClick={handleShare}
                         disabled={isSharing || !generatedDesign?.imageUrl}
                         data-testid="button-share-hoodie-placer"

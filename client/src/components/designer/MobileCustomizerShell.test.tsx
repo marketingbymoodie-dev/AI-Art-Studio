@@ -1,6 +1,14 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MobileCustomizerShell } from "./MobileCustomizerShell";
+
+const css = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "mobile-customizer.css"),
+  "utf8",
+);
 
 describe("MobileCustomizerShell top bar", () => {
   it("renders Back · brand · Credits · Help · Gallery · Cart in that order", () => {
@@ -128,5 +136,18 @@ describe("MobileCustomizerShell bottom group", () => {
       />,
     );
     expect(screen.getByTestId("mobile-rail").className).toMatch(/tucked/);
+  });
+});
+
+describe("mobile-customizer.css canvas scoping", () => {
+  it("does not force flex-column on closed-preview canvas children", () => {
+    const baseChild = css.match(
+      /\.appai-mobile-shell \.appai-mobile-canvas > \* \{([^}]+)\}/,
+    );
+    expect(baseChild?.[1]).toBeTruthy();
+    expect(baseChild?.[1]).not.toMatch(/flex-direction:\s*column/);
+    expect(css).toMatch(
+      /\.appai-mobile-shell \.appai-mobile-canvas--placer > \*/,
+    );
   });
 });

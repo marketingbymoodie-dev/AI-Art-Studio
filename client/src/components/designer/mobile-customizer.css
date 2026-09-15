@@ -196,10 +196,9 @@ html:has(.appai-mobile-shell) #root {
   z-index: 1;
   margin: 0;
   padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: radial-gradient(120% 90% at 50% 0%, #fff 0%, #f0ede6 70%, #e6e2d8 100%);
   transition: bottom 0.3s cubic-bezier(0.32, 0.72, 0, 1);
 }
@@ -207,6 +206,19 @@ html:has(.appai-mobile-shell) #root {
 /* Keep the preview media from causing horizontal blowout inside the fixed box. */
 .appai-mobile-shell .appai-mobile-canvas > * {
   max-width: 100%;
+}
+
+/* Placer only: fit-to-box so Front/Back + dots stay in the canvas.
+   Must NOT apply to the closed-preview column — that row of Edit /
+   Reuse / Share buttons would stack into a column of icon buttons. */
+.appai-mobile-shell .appai-mobile-canvas--placer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.appai-mobile-shell .appai-mobile-canvas--placer > * {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -379,7 +391,8 @@ html:has(.appai-mobile-shell) #root {
   z-index: 16;
   display: flex;
   flex-direction: column;
-  background: var(--appai-mobile-paper);
+  background: var(--appai-mobile-panel);
+  border-top: 1px solid var(--appai-mobile-line);
   transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
@@ -394,7 +407,7 @@ html:has(.appai-mobile-shell) #root {
 
 .appai-mbottom-pull {
   position: absolute;
-  top: -22px;
+  top: -23px;
   left: 50%;
   transform: translateX(-50%);
   width: 56px;
@@ -452,7 +465,7 @@ html:has(.appai-mobile-shell) #root {
  * ------------------------------------------------------------------------- */
 .appai-mprimary {
   padding: 4px 12px 8px;
-  background: var(--appai-mobile-paper);
+  background: transparent;
 }
 
 .appai-mprimary > * {
@@ -690,9 +703,24 @@ html:has(.appai-mobile-shell) #root {
   max-height: none !important;
 }
 
+/* Size containment so a 1:1 canvas can cap to leftover height (pillow).
+   Portrait/hoodie is width-bound and stays under the cap. Phone-case
+   edge-wrap uses .h-full and sizes itself — leave it alone. */
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="hoodie-aop-canvas-area"],
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="flat-placer-canvas-area"]:not(.h-full) {
+  container-type: size;
+}
+
 .appai-mobile-shell .appai-mobile-placer-card [data-testid="hoodie-aop-placer-canvas"],
 .appai-mobile-shell .appai-mobile-placer-card [data-testid="hoodie-aop-canvas-override"] {
-  max-height: 100% !important;
+  max-height: calc(100cqh - 24px) !important;
+  max-width: 100%;
+}
+
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="flat-placer-canvas-area"]:not(.h-full) [data-testid="flat-placer-canvas"],
+.appai-mobile-shell .appai-mobile-placer-card [data-testid="flat-placer-canvas-area"]:not(.h-full) [data-testid="flat-placer-context-preview"] {
+  max-height: calc(100cqh - 60px) !important;
+  max-width: 100%;
 }
 
 .appai-mobile-shell .appai-mobile-viewrow {
