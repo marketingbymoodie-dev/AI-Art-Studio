@@ -290,6 +290,11 @@ import {
   parseStoredAopPanelCaptureSignature,
 } from "@shared/aopPanelCaptureSignature";
 import {
+  aopLifestyleMockupNotice,
+  hasLocalAopFrontComposite,
+  shouldKeepAopCartReadyOnPrintifyFailure,
+} from "@shared/aopLifestyleMockup";
+import {
   UploadRateLimitedError,
   hasReusableHostedPrintSet,
   hostPrintPanelsBatched,
@@ -3776,6 +3781,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [mockupTriggered, setMockupTriggered] = useState(false);
   const [mockupError, setMockupError] = useState<string | null>(null);
   const [mockupFailed, setMockupFailed] = useState(false);
+  /** AOP lifestyle/Printify in flight — never blocks ATC when local front exists. */
+  const [mockupPending, setMockupPending] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const [catalogPreviewIndex, setCatalogPreviewIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
@@ -3784,6 +3791,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [showPatternStep, setShowPatternStep] = useState(false);
   const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
   const [aopPatternUrl, setAopPatternUrl] = useState<string | null>(null);
+  const aopPatternUrlRef = useRef<string | null>(null);
+  aopPatternUrlRef.current = aopPatternUrl;
   const [printPlacement, setPrintPlacement] = useState<"front" | "back" | "both">("front");
   // Persisted PatternCustomizer settings — survive close/reopen of the overlay
   const [aopPatternSettings, setAopPatternSettings] = useState<{
@@ -7802,10 +7811,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const requestSeq = isOnDemandMerge
       ? mockupRequestSeqRef.current
       : ++mockupRequestSeqRef.current;
+    const keepAopCartReady = shouldKeepAopCartReadyOnPrintifyFailure({
+      useAopCustomizer,
+      hasLocalFrontComposite: hasLocalAopFrontComposite({
+        aopPatternUrl: aopPatternUrlRef.current,
+        baseMockups: aopBaseMockupsRef.current,
+      }),
+    });
     if (!isOnDemandMerge) {
       setMockupLoading(true);
       console.log("[AOP-TRACE] setMockupsStale(false) fetchPrintifyMockups start");
       setMockupsStale(false);
+      if (keepAopCartReady) {
+        setMockupPending(true);
+        setMockupError(null);
+      }
       // Notify parent page so it can show the "Artwork Generating" overlay
       if (runtimeMode !== 'standalone') {
         window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
@@ -8345,21 +8365,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return contextMergeOutcome;
       }
       console.error("Failed to generate Printify mockups:", error);
-      setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
+      const failMsg = error instanceof Error ? error.message : "Failed to generate product preview";
+      setMockupError(failMsg);
       setMockupFailed(true);
+      // AOP cart uses the local front composite. A lifestyle/Printify timeout
+      // must not re-stale the button back to "Refresh Mockups".
+      if (keepAopCartReady) {
+        console.log("[AOP-TRACE] fetchPrintifyMockups catch keep-cart-ready — mockupsStale unchanged");
+        return { ok: false, error: failMsg };
+      }
       // Keep mockupsStale so the UI surfaces an error rather than silently
       // showing a stale mockup from a previous size/color combination.
       console.log("[AOP-TRACE] setMockupsStale(true) fetchPrintifyMockups catch");
       setMockupsStale(true);
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : "Failed to generate product preview",
-      };
+      return { ok: false, error: failMsg };
     } finally {
       if (!isOnDemandMerge && activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
       }
       if (!isOnDemandMerge && requestSeq === mockupRequestSeqRef.current) {
+        setMockupPending(false);
         setMockupLoading(false);
         setMockupTriggered(false);
         // Clear the "Artwork Generating" overlay on the parent page
@@ -16467,6 +16492,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
   };
 
+  const aopLifestyleStatus = useAopCustomizer
+    ? aopLifestyleMockupNotice({ pending: mockupPending, error: mockupError })
+    : null;
+  const renderAopLifestyleNotice = (testId: string) =>
+    aopLifestyleStatus ? (
+      <p
+        className="text-[11px] leading-snug text-center text-muted-foreground px-1 pb-1"
+        data-testid={testId}
+      >
+        {aopLifestyleStatus}
+      </p>
+    ) : null;
+
   const renderPrimaryAction = (className = "", testIdSuffix = "") => {
     const withSuffix = (id: string) => testIdSuffix ? `${id}-${testIdSuffix}` : id;
 
@@ -17136,6 +17174,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           primaryAction={
             <>
               {renderMobileHeadlinePrice()}
+              {renderAopLifestyleNotice("mobile-lifestyle-mockup-status")}
               {renderPrimaryAction("", "mshell")}
             </>
           }
@@ -20524,7 +20563,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
                   <span className="text-sm text-destructive flex-1">
-                    Preview unavailable — {mockupError || 'mockup generation failed'}. You can still add to cart.
+                    {useAopCustomizer && aopLifestyleStatus
+                      ? aopLifestyleStatus
+                      : `Preview unavailable — ${mockupError || "mockup generation failed"}. You can still add to cart.`}
                   </span>
                   <button
                     type="button"
