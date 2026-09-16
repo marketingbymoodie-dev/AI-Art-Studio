@@ -6,7 +6,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.1";
+  var VER = "1.2";
   if (window.__APPAI_PRINT_FILES_GATE_VER__ === VER) return;
   window.__APPAI_PRINT_FILES_GATE_VER__ = VER;
 
@@ -219,26 +219,45 @@
         return r.ok ? r.json() : null;
       })
       .then(function (cart) {
-        var pendingJobs = readPendingJobs();
         var cartPending = false;
-        if (cart && cart.items) {
-          for (var i = 0; i < cart.items.length; i++) {
-            if (lineIsPending(cart.items[i])) {
-              cartPending = true;
-              var jid = String((cart.items[i].properties || {})[JOB_PROP] || "");
-              if (jid) {
-                rememberJob(
-                  jid,
-                  shopDomain(),
-                  String((cart.items[i].properties || {})[CAP_PROP] || ""),
-                );
-              }
+        var tracked = readPendingJobs();
+        var items = (cart && cart.items) || [];
+        // A tracked job can be stamped `_aop_pl` by something other than this
+        // page's own stamp/poll flow (e.g. server-side at add-to-cart, or a
+        // sibling page's postMessage handler that ran before this page's JS
+        // realm existed — sessionStorage survives the navigation, the "job
+        // resolved" notification does not). Reconcile against the live cart
+        // on every refresh (not just once at init) so a job resolved
+        // elsewhere is forgotten here too, instead of relying solely on this
+        // page's own poll to notice — which can 409 forever against a live
+        // capture signature that has since moved on, and never calls
+        // forgetJob on failure.
+        if (Object.keys(tracked).length > 0) {
+          for (var i = 0; i < items.length; i++) {
+            var jid = String((items[i].properties || {})[JOB_PROP] || "");
+            if (jid && tracked[jid] && !lineIsPending(items[i])) {
+              forgetJob(jid);
+              delete tracked[jid];
             }
           }
         }
-        var sessionPending = Object.keys(pendingJobs).length > 0;
+        for (var j = 0; j < items.length; j++) {
+          if (lineIsPending(items[j])) {
+            cartPending = true;
+            var pendingJid = String((items[j].properties || {})[JOB_PROP] || "");
+            if (pendingJid) {
+              rememberJob(
+                pendingJid,
+                shopDomain(),
+                String((items[j].properties || {})[CAP_PROP] || ""),
+              );
+              tracked[pendingJid] = readPendingJobs()[pendingJid];
+            }
+          }
+        }
+        var sessionPending = Object.keys(tracked).length > 0;
         setCheckoutBlocked(cartPending || sessionPending);
-        return { cart: cart, cartPending: cartPending, pendingJobs: pendingJobs };
+        return { cart: cart, cartPending: cartPending, pendingJobs: tracked };
       })
       .catch(function () {
         var sessionPending = Object.keys(readPendingJobs()).length > 0;
