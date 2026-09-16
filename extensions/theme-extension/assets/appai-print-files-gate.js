@@ -6,7 +6,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.2";
+  var VER = "1.3";
   if (window.__APPAI_PRINT_FILES_GATE_VER__ === VER) return;
   window.__APPAI_PRINT_FILES_GATE_VER__ = VER;
 
@@ -16,8 +16,48 @@
   var SNAP_PROP = "_aop_pl";
   var CAP_PROP = "_aop_cap";
   var JOB_PROP = "_appai_job_id";
+  var PENDING_HTML_CLASS = "appai-print-pending";
+  // Same selector set findCheckoutControls() scans for — shared so the CSS
+  // default-disable rule and the click-time guard can never drift from it.
+  var CHECKOUT_SELECTOR =
+    'button[name="checkout"], [name="checkout"], #checkout, a[href="/checkout"], a[href^="/checkout"], button[formaction*="/checkout"]';
   var bannerEl = null;
   var pollTimer = null;
+  // Set synchronously inside setCheckoutBlocked — read at click time so a
+  // freshly-rendered control that the scan hasn't reached yet (e.g. a cart
+  // drawer opened between poll ticks) is still blocked. This does not
+  // depend on any per-element scan/tag having run.
+  var isBlocked = false;
+
+  /** Same two-tier match findCheckoutControls() uses: known selectors, plus
+   *  a /cart-form submit button whose text/value contains "check". */
+  function isCheckoutLikeControl(el) {
+    if (!el || !el.closest) return false;
+    if (el.closest(CHECKOUT_SELECTOR)) return true;
+    var submit = el.closest(
+      'form[action="/cart"] button[type="submit"], form[action^="/cart"] button[type="submit"], ' +
+        'form[action="/cart"] input[type="submit"], form[action^="/cart"] input[type="submit"]',
+    );
+    if (!submit) return false;
+    var text = (submit.textContent || submit.value || "").toLowerCase();
+    return text.indexOf("check") !== -1;
+  }
+
+  // Pure-CSS default-disable: the browser applies this the instant a
+  // matching element enters the DOM, regardless of when — no JS scan, no
+  // MutationObserver, no dependency on a drawer-open event this app doesn't
+  // control across merchant themes. This is the visual cue; isBlocked +
+  // the click-time guard below is what actually stops a click landing on
+  // unstamped print files if the CSS never applies for any reason.
+  (function injectPendingStyle() {
+    var style = document.createElement("style");
+    style.setAttribute("data-appai-print-gate-style", "1");
+    style.textContent =
+      "html." + PENDING_HTML_CLASS + " " + CHECKOUT_SELECTOR.split(", ").join(
+        ", html." + PENDING_HTML_CLASS + " ",
+      ) + " { pointer-events: none !important; opacity: .5 !important; cursor: not-allowed !important; }";
+    (document.head || document.documentElement).appendChild(style);
+  })();
 
   function shopDomain() {
     var root = document.getElementById("appai-root");
@@ -83,9 +123,7 @@
       seen.add(el);
       nodes.push(el);
     }
-    var list = document.querySelectorAll(
-      'button[name="checkout"], [name="checkout"], #checkout, a[href="/checkout"], a[href^="/checkout"], button[formaction*="/checkout"]',
-    );
+    var list = document.querySelectorAll(CHECKOUT_SELECTOR);
     for (var i = 0; i < list.length; i++) add(list[i]);
     var forms = document.querySelectorAll('form[action="/cart"], form[action^="/cart"]');
     for (var f = 0; f < forms.length; f++) {
@@ -99,6 +137,8 @@
   }
 
   function setCheckoutBlocked(blocked) {
+    isBlocked = !!blocked;
+    document.documentElement.classList.toggle(PENDING_HTML_CLASS, isBlocked);
     var controls = findCheckoutControls();
     for (var i = 0; i < controls.length; i++) {
       var el = controls[i];
@@ -266,8 +306,30 @@
       });
   }
 
+  // Polling used to be gated to the dedicated /cart page (`onCart`), so a
+  // line that finished (or was reconciled as already-finished) while the
+  // customer was anywhere else — e.g. the homepage with the cart open as a
+  // drawer overlay — never got re-checked: no iframe there to postMessage,
+  // no /cart-path poll, just the one refreshGateFromCart() call at script
+  // load. Self-schedule instead: keep polling on ANY page for exactly as
+  // long as something is actually pending, theme/drawer-implementation
+  // agnostic (no assumption about a specific cart-drawer open/render event).
+  function maybeManagePolling(state) {
+    var stillPending = !!(
+      state &&
+      (state.cartPending || Object.keys(state.pendingJobs || {}).length > 0)
+    );
+    if (stillPending) {
+      if (!pollTimer) pollTimer = setInterval(tickRecover, 2500);
+    } else if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
   function tickRecover() {
     refreshGateFromCart().then(function (state) {
+      maybeManagePolling(state);
       if (!state) return;
       var jobs = state.pendingJobs || {};
       var ids = Object.keys(jobs);
@@ -292,7 +354,7 @@
           stampLine(jobId, snap).then(function (ok) {
             if (ok) {
               forgetJob(jobId);
-              refreshGateFromCart();
+              refreshGateFromCart().then(maybeManagePolling);
             }
           });
         });
@@ -306,45 +368,49 @@
     if (d.type === "AI_ART_STUDIO_PRINT_FILES_PENDING" && d.jobId) {
       rememberJob(d.jobId, d.shop, d.captureHash);
       setCheckoutBlocked(true);
+      if (!pollTimer) pollTimer = setInterval(tickRecover, 2500);
       return;
     }
     if (d.type === "AI_ART_STUDIO_PRINT_FILES_READY" && d.jobId) {
       forgetJob(d.jobId);
-      refreshGateFromCart();
+      tickRecover();
       return;
     }
     if (d.type === "AI_ART_STUDIO_PRINT_FILES_FAILED" && d.jobId) {
-      refreshGateFromCart();
+      tickRecover();
       return;
     }
     if (d.type === "AI_ART_STUDIO_STAMP_AOP_PL" && d.jobId && d.snapshot) {
       stampLine(d.jobId, d.snapshot).then(function (ok) {
         if (ok) forgetJob(d.jobId);
-        refreshGateFromCart();
+        tickRecover();
       });
     }
   });
 
+  // Capture phase, ahead of the theme's own checkout handler. Checks the
+  // live isBlocked flag against the click target on every click — not a
+  // per-element tag from the last scan — so a checkout control that
+  // rendered after the last scan (e.g. a cart drawer opened between poll
+  // ticks) is still stopped. Works for mouse and keyboard activation alike
+  // (Enter/Space on a focused control still dispatches a "click").
   document.addEventListener(
     "click",
     function (e) {
+      if (!isBlocked) return;
       var t = e.target;
-      if (!t || !t.closest) return;
-      var hit = t.closest('[data-appai-print-gate="1"]');
-      if (!hit) return;
+      if (!isCheckoutLikeControl(t)) return;
       e.preventDefault();
       e.stopPropagation();
     },
     true,
   );
 
-  var path = window.location.pathname || "";
-  var onCart = path === "/cart" || path.indexOf("/cart/") === 0;
-  refreshGateFromCart();
-  if (onCart) {
-    tickRecover();
-    pollTimer = setInterval(tickRecover, 2500);
-  }
+  // Not gated to /cart — the drawer-on-any-page case needs the same recheck.
+  // tickRecover both attempts an immediate poll/stamp for anything already
+  // tracked and starts the interval only if it finds something still
+  // pending; it self-stops once resolved.
+  tickRecover();
 
   console.log(LOG, "v" + VER + " installed");
 })();
