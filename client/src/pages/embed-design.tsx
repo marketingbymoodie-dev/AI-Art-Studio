@@ -32,6 +32,7 @@ import {
   writeAtcRateLimitCooldown,
 } from "@shared/atcStorefrontRetry";
 import {
+  LINE_AOP_CAPTURE_KEY,
   LINE_AOP_PANELS_KEY,
   LINE_AOP_PENDING_KEY,
   LINE_FLAT_PLACEMENT_KEY,
@@ -287,6 +288,7 @@ import {
   aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
   canonicalAopPanelCaptureSignature,
+  expectedAopCaptureHashFromLiveState,
   parseStoredAopPanelCaptureSignature,
 } from "@shared/aopPanelCaptureSignature";
 import {
@@ -311,11 +313,18 @@ function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined)
 
 const AOP_FINALIZE_JOBS_KEY = "appai:aopFinalizeJobs";
 
-function rememberAopFinalizeJob(jobId: string, shop: string) {
+function rememberAopFinalizeJob(jobId: string, shop: string, captureHash?: string | null) {
   try {
     const raw = sessionStorage.getItem(AOP_FINALIZE_JOBS_KEY);
-    const map = raw ? (JSON.parse(raw) as Record<string, { shop: string; at: number }>) : {};
-    map[jobId] = { shop, at: Date.now() };
+    const map = raw
+      ? (JSON.parse(raw) as Record<string, { shop: string; at: number; captureHash?: string }>)
+      : {};
+    const prev = map[jobId];
+    map[jobId] = {
+      shop,
+      at: Date.now(),
+      captureHash: (captureHash || prev?.captureHash || "").trim() || undefined,
+    };
     sessionStorage.setItem(AOP_FINALIZE_JOBS_KEY, JSON.stringify(map));
   } catch {
     /* iframe storage may be blocked */
@@ -333,12 +342,20 @@ function forgetAopFinalizeJob(jobId: string) {
   }
 }
 
-async function freezeAopLineSnapshot(shop: string, jobId: string): Promise<string | null> {
+async function freezeAopLineSnapshot(
+  shop: string,
+  jobId: string,
+  expectedCaptureHash?: string | null,
+): Promise<string | null> {
   try {
     const res = await safeFetch(`${API_BASE}/api/storefront/aop-line-snapshot`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ shop, jobId }),
+      body: JSON.stringify({
+        shop,
+        jobId,
+        expectedCaptureHash: expectedCaptureHash || undefined,
+      }),
     });
     if (!res.ok) {
       console.error("[AOP] aop-line-snapshot failed", res.status, "— ATC will proceed without _aop_pl");
@@ -4062,11 +4079,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return () => document.body.classList.remove("appai-mobile-dialogs");
   }, [isMobile]);
 
-  const beginAopFinalizeToast = useCallback((jobId: string, shop: string) => {
-    rememberAopFinalizeJob(jobId, shop);
+  const beginAopFinalizeToast = useCallback((
+    jobId: string,
+    shop: string,
+    captureHash?: string | null,
+  ) => {
+    rememberAopFinalizeJob(jobId, shop, captureHash);
     try {
       window.parent.postMessage(
-        { type: "AI_ART_STUDIO_PRINT_FILES_PENDING", jobId, shop },
+        { type: "AI_ART_STUDIO_PRINT_FILES_PENDING", jobId, shop, captureHash },
         "*",
       );
     } catch {
@@ -9434,7 +9455,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !properties[LINE_AOP_PANELS_KEY]
     ) {
       const jobId = savedJobIdRef.current;
-      void freezeAopLineSnapshot(shopDomain, jobId).then((snap) => {
+      const cartStateCap = expectedAopCaptureHashFromLiveState(
+        hoodieAopPlacerStateRef.current ?? hoodieAopPlacerState,
+      );
+      void freezeAopLineSnapshot(shopDomain, jobId, cartStateCap).then((snap) => {
         if (!snap || savedJobIdRef.current !== jobId) return;
         window.parent.postMessage({
           type: 'AI_ART_STUDIO_CART_STATE',
@@ -12217,6 +12241,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     skipGalleryPersistRef.current = false;
 
+    const expectedCaptureHash = productTypeConfig?.isAllOverPrint
+      ? expectedAopCaptureHashFromLiveState(
+          hoodieAopPlacerStateRef.current ?? hoodieAopPlacerState,
+        )
+      : null;
+    if (productTypeConfig?.isAllOverPrint && !expectedCaptureHash) {
+      setVariantError("Couldn't save your placement. Please try again.");
+      skipGalleryPersistRef.current = false;
+      setIsAddingToCart(false);
+      return;
+    }
+
     if (mockupsStale) {
       setVariantError(
         "Please refresh mockups before adding to cart — zoom or colour changed since the last preview.",
@@ -12372,8 +12408,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       productTypeConfig?.isAllOverPrint &&
       shopDomain &&
       savedJobIdRef.current &&
+      expectedCaptureHash &&
       !aopPersistInFlightAtClick
-        ? freezeAopLineSnapshot(shopDomain, savedJobIdRef.current)
+        ? freezeAopLineSnapshot(shopDomain, savedJobIdRef.current, expectedCaptureHash)
         : Promise.resolve(null);
 
     const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
@@ -12579,14 +12616,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       } else if (productTypeConfig?.isAllOverPrint && savedJobIdRef.current) {
         if (aopPanelPersistInFlightRef.current || aopPersistInFlightAtClick) {
           properties[LINE_AOP_PENDING_KEY] = "1";
+          if (expectedCaptureHash) properties[LINE_AOP_CAPTURE_KEY] = expectedCaptureHash;
           needsBackgroundAopFinalize = true;
           console.log("[AOP] ATC returning before panel persist — checkout gated until _aop_pl stamps");
         } else {
-          const lateSnap = await freezeAopLineSnapshot(shopDomain, savedJobIdRef.current);
+          const lateSnap = await freezeAopLineSnapshot(
+            shopDomain,
+            savedJobIdRef.current,
+            expectedCaptureHash,
+          );
           if (lateSnap) {
             properties[LINE_AOP_PANELS_KEY] = lateSnap;
           } else {
             properties[LINE_AOP_PENDING_KEY] = "1";
+            if (expectedCaptureHash) properties[LINE_AOP_CAPTURE_KEY] = expectedCaptureHash;
             needsBackgroundAopFinalize = true;
             console.warn("[AOP] Snapshot missed after persist — background retry + checkout gate");
           }
@@ -12667,7 +12710,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const kickBackgroundAopFinalize = (creatorCartId?: string) => {
       const jobId = savedJobIdRef.current;
       if (!needsBackgroundAopFinalize || !jobId || !shopDomain) return;
-      beginAopFinalizeToast(jobId, shopDomain);
+      beginAopFinalizeToast(jobId, shopDomain, expectedCaptureHash);
       void (async () => {
         try {
           if (aopPanelPersistPromiseRef.current) {
@@ -12675,7 +12718,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           }
           let snap: string | null = null;
           for (let i = 0; i < 8 && !snap; i++) {
-            snap = await freezeAopLineSnapshot(shopDomain, jobId);
+            snap = await freezeAopLineSnapshot(shopDomain, jobId, expectedCaptureHash);
             if (!snap) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
           }
           if (!snap) {

@@ -110,6 +110,7 @@ import {
   isBodyPillowBlueprint,
   isLeggingsBlueprint,
 } from "@shared/hoodieTemplate";
+import { evaluateAopSnapshotFreeze } from "@shared/aopPanelCaptureSignature";
 import { buildCostsByNormalizedLabel, buildVariantKeyCosts } from "@shared/printifyCostLabels";
 import {
   cacheCoversVariantIds,
@@ -10445,6 +10446,17 @@ ${orientationExtra}
           designState = {};
         }
       }
+      const freezeGate = evaluateAopSnapshotFreeze({
+        expectedCaptureHash: req.body?.expectedCaptureHash,
+        storedSignature: designState.aopPanelCaptureSignature,
+      });
+      if (!freezeGate.ok) {
+        return res.status(409).json({
+          error: "persist_incomplete",
+          code: freezeGate.code,
+        });
+      }
+
       let panels = normalizeAopPanels(
         Array.isArray(req.body?.panels) ? req.body.panels : designState.aopPrintPanelUrls,
       );

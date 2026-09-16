@@ -52,6 +52,60 @@ export function canonicalAopPanelCaptureSignature(
   });
 }
 
+/**
+ * Short fingerprint of a *canonical* capture string for cart-line / snapshot
+ * compare. Same djb2+length form as `hashPanelDataUrl` so theme JS and Node
+ * stay in lockstep. Never hash raw placer JSON — canonicalize first.
+ */
+export function hashAopCaptureSignature(
+  canonical: string | null | undefined,
+): string | null {
+  if (typeof canonical !== "string" || !canonical) return null;
+  let h = 5381;
+  for (let i = 0; i < canonical.length; i++) {
+    h = ((h << 5) + h) ^ canonical.charCodeAt(i);
+  }
+  return `${canonical.length}:${h >>> 0}`;
+}
+
+/** ATC path: live placer state → canonical → hash. */
+export function expectedAopCaptureHashFromLiveState(liveState: unknown): string | null {
+  return hashAopCaptureSignature(canonicalAopPanelCaptureSignature(liveState));
+}
+
+/** Server path: stored persist signature → parse/canonicalize → hash. */
+export function storedAopCaptureHash(storedSignature: unknown): string | null {
+  return hashAopCaptureSignature(parseStoredAopPanelCaptureSignature(storedSignature));
+}
+
+export type AopSnapshotFreezeDecision =
+  | { ok: true }
+  | {
+      ok: false;
+      status: 409;
+      code: "EXPECTED_CAPTURE_REQUIRED" | "CAPTURE_MISMATCH";
+    };
+
+/**
+ * Authoritative freeze gate. Missing expected hash, unparseable job
+ * signature, or hash mismatch → 409 (do not freeze stale panels).
+ */
+export function evaluateAopSnapshotFreeze(opts: {
+  expectedCaptureHash?: unknown;
+  storedSignature?: unknown;
+}): AopSnapshotFreezeDecision {
+  const expected =
+    typeof opts.expectedCaptureHash === "string" ? opts.expectedCaptureHash.trim() : "";
+  if (!expected) {
+    return { ok: false, status: 409, code: "EXPECTED_CAPTURE_REQUIRED" };
+  }
+  const jobHash = storedAopCaptureHash(opts.storedSignature);
+  if (!jobHash || jobHash !== expected) {
+    return { ok: false, status: 409, code: "CAPTURE_MISMATCH" };
+  }
+  return { ok: true };
+}
+
 /** Re-canonicalize a stored string or object. Unparseable → null. */
 export function parseStoredAopPanelCaptureSignature(
   raw: unknown,

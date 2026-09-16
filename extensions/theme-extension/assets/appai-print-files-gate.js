@@ -6,7 +6,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.0";
+  var VER = "1.1";
   if (window.__APPAI_PRINT_FILES_GATE_VER__ === VER) return;
   window.__APPAI_PRINT_FILES_GATE_VER__ = VER;
 
@@ -14,6 +14,7 @@
   var JOBS_KEY = "appai:aopFinalizeJobs";
   var PENDING_PROP = "_print_files_pending";
   var SNAP_PROP = "_aop_pl";
+  var CAP_PROP = "_aop_cap";
   var JOB_PROP = "_appai_job_id";
   var bannerEl = null;
   var pollTimer = null;
@@ -54,10 +55,16 @@
     writePendingJobs(map);
   }
 
-  function rememberJob(jobId, shop) {
+  function rememberJob(jobId, shop, captureHash) {
     if (!jobId) return;
     var map = readPendingJobs();
-    map[jobId] = { shop: shop || shopDomain(), at: Date.now() };
+    var prev = map[jobId] || {};
+    var nextHash = String(captureHash || prev.captureHash || "").trim();
+    map[jobId] = {
+      shop: shop || prev.shop || shopDomain(),
+      at: Date.now(),
+      captureHash: nextHash || undefined,
+    };
     writePendingJobs(map);
   }
 
@@ -182,8 +189,12 @@
       });
   }
 
-  function pollSnapshot(jobId, shop) {
-    var body = JSON.stringify({ shop: shop || shopDomain(), jobId: jobId });
+  function pollSnapshot(jobId, shop, expectedCaptureHash) {
+    var body = JSON.stringify({
+      shop: shop || shopDomain(),
+      jobId: jobId,
+      expectedCaptureHash: expectedCaptureHash || "",
+    });
     return fetch("/apps/appai/api/storefront/aop-line-snapshot", {
       method: "POST",
       credentials: "same-origin",
@@ -215,7 +226,13 @@
             if (lineIsPending(cart.items[i])) {
               cartPending = true;
               var jid = String((cart.items[i].properties || {})[JOB_PROP] || "");
-              if (jid) rememberJob(jid, shopDomain());
+              if (jid) {
+                rememberJob(
+                  jid,
+                  shopDomain(),
+                  String((cart.items[i].properties || {})[CAP_PROP] || ""),
+                );
+              }
             }
           }
         }
@@ -238,7 +255,20 @@
       if (ids.length === 0) return;
       ids.forEach(function (jobId) {
         var shop = (jobs[jobId] && jobs[jobId].shop) || shopDomain();
-        pollSnapshot(jobId, shop).then(function (snap) {
+        var cap = "";
+        if (state.cart && state.cart.items) {
+          for (var i = 0; i < state.cart.items.length; i++) {
+            var props = state.cart.items[i].properties || {};
+            if (String(props[JOB_PROP] || "") === String(jobId)) {
+              cap = String(props[CAP_PROP] || "").trim();
+              break;
+            }
+          }
+        }
+        if (!cap && jobs[jobId] && jobs[jobId].captureHash) {
+          cap = String(jobs[jobId].captureHash || "").trim();
+        }
+        pollSnapshot(jobId, shop, cap).then(function (snap) {
           if (!snap) return;
           stampLine(jobId, snap).then(function (ok) {
             if (ok) {
@@ -255,7 +285,7 @@
     var d = e && e.data;
     if (!d || typeof d !== "object") return;
     if (d.type === "AI_ART_STUDIO_PRINT_FILES_PENDING" && d.jobId) {
-      rememberJob(d.jobId, d.shop);
+      rememberJob(d.jobId, d.shop, d.captureHash);
       setCheckoutBlocked(true);
       return;
     }

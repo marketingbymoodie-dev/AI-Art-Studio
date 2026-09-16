@@ -5,6 +5,8 @@ export const LINE_TOTE_PLACEMENT_KEY = "_tote_pl";
 export const LINE_AOP_PANELS_KEY = "_aop_pl";
 /** Set on the cart line while background panel persist/snapshot is still running. */
 export const LINE_AOP_PENDING_KEY = "_print_files_pending";
+/** Hash of the live capture this line is waiting for — gate/snapshot compare. */
+export const LINE_AOP_CAPTURE_KEY = "_aop_cap";
 
 export type LineViewPlacement = {
   scale: number;
