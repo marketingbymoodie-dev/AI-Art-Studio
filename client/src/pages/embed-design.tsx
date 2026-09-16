@@ -8781,6 +8781,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    // AOP: never fire a panel-bearing POST from an interactive handler — on a
+    // phone it competes with the panel uploads the checkout gate depends on.
+    // The placer re-applies on a colour change, and that Apply re-runs the
+    // deferred (post-persist) lifestyle fetch. Keep the existing composites
+    // on screen until it does; clearing them here would blank the preview and
+    // `setMockupsStale` must stay false or ATC re-locks.
+    if (useAopCustomizer) {
+      console.log('[Mockups] AOP colour change — deferring lifestyle refetch to post-persist');
+      return;
+    }
+
     console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
     setMockupError(null);
     setMockupFailed(false);
@@ -8822,6 +8833,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
       setMockupsStale(false);
       console.log('[Mockups] Swapped to cached mockups for size change', cacheKey);
+    } else if (useAopCustomizer) {
+      // Same rule as the colour effect: no panel-bearing POST from an
+      // interactive handler, and do NOT fall through to the `setMockupsStale`
+      // branch below — that would re-lock ATC on a size change.
+      console.log('[Mockups] AOP size change — deferring lifestyle refetch to post-persist');
     } else if (generatedDesign?.imageUrl && productTypeConfig && selectedFrameColor) {
       console.log('[Mockups] No cache for size', selectedSize, '— auto-refetching');
       setMockupError(null);
@@ -13081,7 +13097,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }));
           }
           if (isStale()) return;
-          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -13090,6 +13106,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
             }),
           });
+          // A non-2xx here means the panels are hosted but the job never
+          // recorded them — the snapshot gate would 409 forever. Fail the
+          // persist so it lands in the same locked-checkout state as an
+          // upload failure instead of being marked saved silently.
+          if (!saveRes.ok) {
+            throw new Error(`save-state failed (${saveRes.status})`);
+          }
           storedAopPanelCaptureSignatureRef.current = panelCaptureSignature;
           lastPersistedAopCaptureStateRef.current = persistState;
           console.log(
@@ -13103,6 +13126,40 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               retryAfterSec: undefined,
               rateLimitedUntil: undefined,
             });
+            // Lifestyle mockup is not load-bearing for the cart — the local
+            // composite feeds `_mockup_url` and the shadow variant. Run it only
+            // once panels are confirmed hosted AND recorded, so it never
+            // competes with the uploads the checkout gate depends on. Merge
+            // mode: no `mockupLoading`, no sequence bump, and its catch exits
+            // before the branch that could re-arm `mockupsStale`.
+            // Preview Studio deliberately skips lifestyle mockups (see the
+            // admin-tester branch below) and awaits this persist before the
+            // front composite exists, so it must not fire here either.
+            const deferredMockupUrl = isAdminTester
+              ? null
+              : aopBaseMockupsRef.current[0]?.url ?? aopPatternUrlRef.current ?? null;
+            if (
+              deferredMockupUrl &&
+              productTypeConfig?.hasPrintifyMockups &&
+              selectedSize &&
+              mockupPanels?.length
+            ) {
+              void fetchPrintifyMockups(
+                deferredMockupUrl,
+                productTypeConfig.id,
+                selectedSize,
+                selectedFrameColor || "default",
+                transform.scale,
+                50,
+                50,
+                deferredMockupUrl,
+                undefined,
+                mockupPanels,
+                undefined,
+                persistState.backgroundColor,
+                { mergePersonViews: true },
+              );
+            }
           }
         } catch (e) {
           console.error("[HoodieAopApply] Failed to persist print panels:", e);
@@ -13180,6 +13237,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const withOnDemandUrls = withOnDemand.map((i) => i.url);
       setPrintifyMockupImages(withOnDemand);
       setPrintifyMockups(withOnDemandUrls);
+      // For AOP the local composites ARE the mockups. Record them under the
+      // size:colour key so coming back to this combination short-circuits at
+      // the cache guard instead of re-firing a panel-bearing Printify POST.
+      if (useAopCustomizer && selectedSize) {
+        const aopCacheKey = mockupCacheKey(selectedSize, selectedFrameColor || "default");
+        currentMockupColorRef.current = aopCacheKey;
+        mockupColorCacheRef.current[aopCacheKey] = {
+          urls: withOnDemandUrls,
+          images: withOnDemand,
+        };
+      }
       setSelectedMockupIndex((prev) => {
         // Stick keeps Printers Mockup (person or pillow lifestyle) after
         // placement edits; mode switch clears stick so apply lands on live editor.
@@ -13208,22 +13276,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         selectedSize &&
         mockupPanels?.length
       ) {
+        // The Printify lifestyle call used to fire here, competing with the
+        // panel uploads for a mobile uplink. It now runs from the persist
+        // success block once the panels are confirmed hosted. These two
+        // assignments stay — the ATC no-mockups safety net reads them.
         lastAopPanelUrlsRef.current = mockupPanels;
         setAopPrintPanelsReady(true);
-        void fetchPrintifyMockups(
-          frontHosted,
-          productTypeConfig.id,
-          selectedSize,
-          selectedFrameColor || "default",
-          transform.scale,
-          50,
-          50,
-          frontHosted,
-          undefined,
-          mockupPanels,
-          undefined,
-          liveState.backgroundColor,
-        );
       }
 
       // Persist print panels in the background so ATC is not blocked.
