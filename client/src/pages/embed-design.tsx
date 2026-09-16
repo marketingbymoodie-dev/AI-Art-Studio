@@ -298,10 +298,10 @@ import {
 } from "@shared/aopLifestyleMockup";
 import {
   UploadRateLimitedError,
-  hasReusableHostedPrintSet,
   hostPrintPanelsBatched,
   isUploadRateLimitedError,
   parseRetryAfterSec,
+  resolveSignatureMatchedPanels,
   shouldKickAopPersist,
   type HostedPrintPanel,
 } from "@shared/storefrontDesignUpload";
@@ -13022,12 +13022,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return;
       }
       const positions = panelsForSave.map((p) => p.position);
-      const canSkipUploads =
-        aopPanelCaptureSignaturesMatch(
-          storedAopPanelCaptureSignatureRef.current,
-          persistState,
-        ) &&
-        hasReusableHostedPrintSet(lastHostedPrintPanelsRef.current, positions);
+      // Signature match alone proves every panel's bytes are unchanged since
+      // the last successful persist — a stronger guarantee than the
+      // per-panel hash `hasReusableHostedPrintSet` used to require (that
+      // hash is deliberately left empty on cross-session restores, so it
+      // could never pass on the first persist after a reload/reopen,
+      // forcing a full render + re-upload storm of every panel even when
+      // nothing changed). Only the signature match is required now; URL
+      // coverage is still all-or-nothing (see resolveSignatureMatchedPanels).
+      const signatureMatchedPanels = aopPanelCaptureSignaturesMatch(
+        storedAopPanelCaptureSignatureRef.current,
+        persistState,
+      )
+        ? resolveSignatureMatchedPanels(positions, lastHostedPrintPanelsRef.current)
+        : null;
+      const canSkipUploads = !!signatureMatchedPanels;
       if (isAdminTester) {
         emitTesterDesignStatus({ jobId: panelJobId, aopPanels: "saving" });
       }
@@ -13037,9 +13046,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           if (isStale()) return;
           let aopPrintPanelUrls: Array<{ position: string; url: string }>;
           if (canSkipUploads) {
-            aopPrintPanelUrls = lastHostedPrintPanelsRef.current
-              .filter((p) => positions.includes(p.position))
-              .map((p) => ({ position: p.position, url: p.url }));
+            aopPrintPanelUrls = signatureMatchedPanels!;
           } else {
             const hostedResult = await hostPrintPanelsBatched({
               panels: panelsForSave,

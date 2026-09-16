@@ -5,6 +5,7 @@ import {
   hasReusableHostedPrintSet,
   hostPrintPanelsBatched,
   parseRetryAfterSec,
+  resolveSignatureMatchedPanels,
   shouldKickAopPersist,
 } from "./storefrontDesignUpload";
 
@@ -70,6 +71,47 @@ describe("hasReusableHostedPrintSet", () => {
         ["left_hood", "right_hood"],
       ),
     ).toBe(true);
+  });
+});
+
+describe("resolveSignatureMatchedPanels", () => {
+  it("reuses a restored URL with an empty hash — signature match is the caller's proof", () => {
+    expect(
+      resolveSignatureMatchedPanels(
+        ["left_hood", "right_hood"],
+        [
+          { position: "left_hood", url: "https://cdn.example/l.jpg", hash: "" },
+          { position: "right_hood", url: "https://cdn.example/r.jpg", hash: "" },
+        ],
+      ),
+    ).toEqual([
+      { position: "left_hood", url: "https://cdn.example/l.jpg" },
+      { position: "right_hood", url: "https://cdn.example/r.jpg" },
+    ]);
+  });
+
+  it("returns null (all-or-nothing) when any position is missing a hosted URL", () => {
+    expect(
+      resolveSignatureMatchedPanels(
+        ["left_hood", "right_hood"],
+        [{ position: "left_hood", url: "https://cdn.example/l.jpg", hash: "" }],
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects a non-hosted (data:) URL even with a matching position", () => {
+    expect(
+      resolveSignatureMatchedPanels(
+        ["front"],
+        [{ position: "front", url: "data:image/png;base64,AAA", hash: "" }],
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null when there is nothing to reuse from", () => {
+    expect(resolveSignatureMatchedPanels(["front"], null)).toBeNull();
+    expect(resolveSignatureMatchedPanels(["front"], [])).toBeNull();
+    expect(resolveSignatureMatchedPanels([], [{ position: "front", url: "https://cdn.example/f.jpg", hash: "" }])).toBeNull();
   });
 });
 

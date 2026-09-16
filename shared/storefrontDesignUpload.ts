@@ -117,6 +117,35 @@ export function hasReusableHostedPrintSet(
   });
 }
 
+/**
+ * Reuse restored/previously-hosted URLs when the caller has ALREADY proven
+ * the whole design is byte-for-byte unchanged (a matching
+ * `aopPanelCaptureSignature`) — a stronger guarantee than the per-panel hash
+ * `hasReusableHostedPrintSet` requires, which is deliberately left empty on
+ * cross-session restores (see that function's comment) and so can never
+ * pass on the first persist after a reload/reopen. That forces a full
+ * render + re-upload of every panel even when nothing changed, which is
+ * exactly the "upload storm" a slow mobile connection can't survive.
+ *
+ * Callers MUST gate this on a signature match themselves — this function
+ * only checks URL coverage, not whether the design actually matches.
+ * All-or-nothing: any missing/un-hosted position returns `null` so the
+ * caller falls back to the normal render + upload path for every panel.
+ */
+export function resolveSignatureMatchedPanels(
+  positions: string[],
+  previous: HostedPrintPanel[] | null | undefined,
+): Array<{ position: string; url: string }> | null {
+  if (!previous?.length || !positions.length) return null;
+  const out: Array<{ position: string; url: string }> = [];
+  for (const pos of positions) {
+    const found = previous.find((p) => p.position === pos);
+    if (!found?.url || !isHostedHttpUrl(found.url)) return null;
+    out.push({ position: pos, url: found.url });
+  }
+  return out;
+}
+
 export const PRINT_PANEL_UPLOAD_BATCH_SIZE = 2;
 
 export type HostPrintPanelsResult = {
