@@ -1587,7 +1587,7 @@ export function renderHoodFlatPanel(
       options?.sleevesMirrored,
       options?.legsMirrored,
     ),
-  });
+  }, { seamInflateScale: outputScale });
   if (insets && !options?.backgroundColor) {
     fillPrintGreyByEdgeExtend(canvas, insets);
   }

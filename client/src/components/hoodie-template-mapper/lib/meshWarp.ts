@@ -107,10 +107,32 @@ export type WarpOptions = {
    */
   inflateSeams?: boolean;
   /**
+   * Multiplies whichever base seam-inflate constant applies (raster or SVG)
+   * before use. Default 1 (no-op) — every caller that omits this gets
+   * byte-identical behaviour to before this option existed. Print export
+   * upscales the mesh via `outputScale` while the seam-inflate constants
+   * stay fixed absolute pixels, so exported panels show more visible
+   * triangle-seam crosshatching than the on-screen preview at the same
+   * relative zoom; pass `outputScale` here to restore constant relative
+   * seam coverage. Clamped to `MAX_SEAM_INFLATE_SCALE` so a pathologically
+   * small `mesh.sourceRect` (bad calibration) can't blow up the inflate.
+   */
+  seamInflateScale?: number;
+  /**
    * Optional global alpha applied around the mesh draw. Restored on exit.
    */
   globalAlpha?: number;
 };
+
+/**
+ * Upper bound for `WarpOptions.seamInflateScale`. Real calibrated mesh
+ * `sourceRect` long edges are documented at ~hundreds-to-1024px (see
+ * `hoodFlatPanelBaseDims` in aopPreview.ts), giving legitimate scales up to
+ * roughly 11x at the 3200px print target — this cap sits well above that so
+ * it never clamps a real calibration, only a degenerate/near-zero
+ * `sourceRect` that would already produce a broken export regardless.
+ */
+const MAX_SEAM_INFLATE_SCALE = 16;
 
 /**
  * Render `image`, clipped to `mesh.sourceRect`, warped through `mesh` onto
@@ -144,6 +166,11 @@ export function drawMeshWarp(
     drawWidth = raster.width;
     drawHeight = raster.height;
     if (inflate) seamInflate = SVG_RASTER_SEAM_INFLATE_PX;
+  }
+
+  if (inflate && options.seamInflateScale != null) {
+    const scale = Math.max(1, Math.min(options.seamInflateScale, MAX_SEAM_INFLATE_SCALE));
+    seamInflate *= scale;
   }
 
   const src: SourceRect = mesh.sourceRect ?? {
