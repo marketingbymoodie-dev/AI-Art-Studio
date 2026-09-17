@@ -342,6 +342,9 @@ function forgetAopFinalizeJob(jobId: string) {
   }
 }
 
+/** Idle window before the cart-state effect's AOP pre-warm actually fires — see aopSnapshotDebounceRef. */
+const AOP_SNAPSHOT_DEBOUNCE_MS = 600;
+
 async function freezeAopLineSnapshot(
   shop: string,
   jobId: string,
@@ -3919,6 +3922,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     key: string;
     status: "warm" | "cooling";
     until?: number;
+  } | null>(null);
+  /**
+   * Debounce in front of the per-key cache above. Dedup-by-value only
+   * throttles a REPEATED key — during an active drag/scale/rotate gesture,
+   * `placements` (and thus the capture hash) changes on nearly every
+   * pointermove frame, so every key is novel and the cache alone can't
+   * throttle it. Only start the actual freeze attempt once a given key has
+   * been the current one, uninterrupted, for AOP_SNAPSHOT_DEBOUNCE_MS — a
+   * superseding key (the gesture continuing) clears this timer before it
+   * fires, so at most one attempt is ever in flight per settled state.
+   */
+  const aopSnapshotDebounceRef = useRef<{
+    key: string;
+    timer: ReturnType<typeof setTimeout>;
   } | null>(null);
   /** Sync lock — isPending lags one paint, so a second tap can POST another job. */
   const generateInFlightRef = useRef(false);
@@ -9506,32 +9523,58 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // A different key (real edit, or this same design once the ref
         // populates) is never held back by either check above — both are
         // scoped to this exact (jobId, hash) pair, not the job as a whole.
-        if (!alreadyWarm && !cooling) {
-          void freezeAopLineSnapshot(shopDomain, jobId, cartStateCap).then((snap) => {
-            if (savedJobIdRef.current !== jobId) return;
-            if (!snap) {
-              // Not ready yet — short cooldown on this exact key only, so
-              // it doesn't get hammered every render while unresolved.
-              aopSnapshotWarmRef.current = {
-                key: warmKey,
-                status: "cooling",
-                until: Date.now() + 5000,
-              };
-              return;
-            }
-            aopSnapshotWarmRef.current = { key: warmKey, status: "warm" };
-            window.parent.postMessage({
-              type: 'AI_ART_STUDIO_CART_STATE',
-              ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
-              disabled: shouldDisable,
-              waitingForMockups,
-              label,
-              payload: {
-                ...cartStatePayload,
-                properties: { ...properties, [LINE_AOP_PANELS_KEY]: snap },
-              },
-            }, '*');
-          });
+        const pendingDebounce = aopSnapshotDebounceRef.current;
+        if (pendingDebounce && pendingDebounce.key !== warmKey) {
+          // A newer hash superseded whatever was pending (e.g. the drag
+          // continued past the previous frame) — that attempt is now for a
+          // stale state and must never fire.
+          clearTimeout(pendingDebounce.timer);
+          aopSnapshotDebounceRef.current = null;
+        }
+        if (
+          !alreadyWarm &&
+          !cooling &&
+          (!aopSnapshotDebounceRef.current || aopSnapshotDebounceRef.current.key !== warmKey)
+        ) {
+          // Don't attempt yet — wait to see if this key is still current
+          // after the idle window. An unrelated re-render of this effect
+          // (many of this dependency list's other values change far more
+          // often than the AOP placement does) with the SAME key must not
+          // reset this timer, or a key that never gets a quiet window would
+          // never warm — the `key !== warmKey` guard above and this branch's
+          // own condition are what keep a same-key re-render a no-op here.
+          const timer = setTimeout(() => {
+            // Re-check we're still the live pending attempt for this key —
+            // belt-and-braces alongside the clearTimeout above.
+            if (aopSnapshotDebounceRef.current?.key !== warmKey) return;
+            aopSnapshotDebounceRef.current = null;
+            void freezeAopLineSnapshot(shopDomain, jobId, cartStateCap).then((snap) => {
+              if (savedJobIdRef.current !== jobId) return;
+              if (!snap) {
+                // Not ready yet — short cooldown on this exact key only, so
+                // it doesn't get hammered every render while unresolved.
+                aopSnapshotWarmRef.current = {
+                  key: warmKey,
+                  status: "cooling",
+                  until: Date.now() + 5000,
+                };
+                return;
+              }
+              aopSnapshotWarmRef.current = { key: warmKey, status: "warm" };
+              window.parent.postMessage({
+                type: 'AI_ART_STUDIO_CART_STATE',
+                ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
+                disabled: shouldDisable,
+                waitingForMockups,
+                label,
+                payload: {
+                  ...cartStatePayload,
+                  properties: { ...properties, [LINE_AOP_PANELS_KEY]: snap },
+                },
+              }, '*');
+            });
+          }, AOP_SNAPSHOT_DEBOUNCE_MS);
+          aopSnapshotDebounceRef.current = { key: warmKey, timer };
         }
       }
     }
