@@ -6,7 +6,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.4";
+  var VER = "1.5";
   if (window.__APPAI_PRINT_FILES_GATE_VER__ === VER) return;
   window.__APPAI_PRINT_FILES_GATE_VER__ = VER;
 
@@ -141,6 +141,13 @@
     return Object.keys(readGaveUpJobs()).length > 0;
   }
 
+  // `at` is the ceiling's clock start for this job — it must be set once,
+  // on first sighting, and never bumped by later ticks. refreshGateFromCart
+  // calls this on every poll for every still-pending line (not just new
+  // ones), so re-stamping `at: Date.now()` here unconditionally would reset
+  // the age on every tick and the MAX_PENDING_AGE_MS ceiling below could
+  // never fire for a line that stays pending — exactly the case it exists
+  // to catch.
   function rememberJob(jobId, shop, captureHash) {
     if (!jobId) return;
     var map = readPendingJobs();
@@ -148,7 +155,7 @@
     var nextHash = String(captureHash || prev.captureHash || "").trim();
     map[jobId] = {
       shop: shop || prev.shop || shopDomain(),
-      at: Date.now(),
+      at: prev.at || Date.now(),
       captureHash: nextHash || undefined,
     };
     writePendingJobs(map);
