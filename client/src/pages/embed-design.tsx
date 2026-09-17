@@ -3903,6 +3903,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  /**
+   * AOP cart-state pre-warm cache/dedup (embed-design.tsx cart-state effect).
+   * Keyed on `${jobId}::${hash}` so a real edit (new hash) always gets a
+   * fresh attempt. `status: "warm"` means we already have `_aop_pl` for this
+   * exact key — skip re-fetching. `status: "cooling"` means the LAST attempt
+   * at this exact key failed (429/network/no-snapshot-yet) — skip retrying
+   * it until `until` passes, but this is a short wait, not a permanent
+   * suppression: a different key (edit, or the placer ref finally
+   * populating) is never blocked by it, and the SAME key retries once the
+   * cooldown elapses. Never persists across a full page reload — refs reset
+   * on remount, so a stuck cooldown can't outlive the session it was set in.
+   */
+  const aopSnapshotWarmRef = useRef<{
+    key: string;
+    status: "warm" | "cooling";
+    until?: number;
+  } | null>(null);
   /** Sync lock — isPending lags one paint, so a second tap can POST another job. */
   const generateInFlightRef = useRef(false);
   /** Placement already saved on that job — a later scale/move ATC forks a new saved design. */
@@ -9467,27 +9484,56 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (
       productTypeConfig?.isAllOverPrint &&
       shopDomain &&
-      savedJobIdRef.current &&
-      !properties[LINE_AOP_PANELS_KEY]
+      savedJobIdRef.current
     ) {
       const jobId = savedJobIdRef.current;
       const cartStateCap = expectedAopCaptureHashFromLiveState(
         hoodieAopPlacerStateRef.current ?? hoodieAopPlacerState,
       );
-      void freezeAopLineSnapshot(shopDomain, jobId, cartStateCap).then((snap) => {
-        if (!snap || savedJobIdRef.current !== jobId) return;
-        window.parent.postMessage({
-          type: 'AI_ART_STUDIO_CART_STATE',
-          ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
-          disabled: shouldDisable,
-          waitingForMockups,
-          label,
-          payload: {
-            ...cartStatePayload,
-            properties: { ...properties, [LINE_AOP_PANELS_KEY]: snap },
-          },
-        }, '*');
-      });
+      // No valid hash yet (e.g. the placer ref hasn't populated on this
+      // render) — nothing usable to send, and nothing is cached against
+      // this case, so the next render with a real hash tries normally.
+      // This must never collapse to "give up for the session" — that's
+      // exactly the EXPECTED_CAPTURE_REQUIRED storm this replaces.
+      if (cartStateCap) {
+        const warmKey = `${jobId}::${cartStateCap}`;
+        const warm = aopSnapshotWarmRef.current;
+        const alreadyWarm = warm?.key === warmKey && warm.status === "warm";
+        const cooling =
+          warm?.key === warmKey &&
+          warm.status === "cooling" &&
+          (warm.until ?? 0) > Date.now();
+        // A different key (real edit, or this same design once the ref
+        // populates) is never held back by either check above — both are
+        // scoped to this exact (jobId, hash) pair, not the job as a whole.
+        if (!alreadyWarm && !cooling) {
+          void freezeAopLineSnapshot(shopDomain, jobId, cartStateCap).then((snap) => {
+            if (savedJobIdRef.current !== jobId) return;
+            if (!snap) {
+              // Not ready yet — short cooldown on this exact key only, so
+              // it doesn't get hammered every render while unresolved.
+              aopSnapshotWarmRef.current = {
+                key: warmKey,
+                status: "cooling",
+                until: Date.now() + 5000,
+              };
+              return;
+            }
+            aopSnapshotWarmRef.current = { key: warmKey, status: "warm" };
+            window.parent.postMessage({
+              type: 'AI_ART_STUDIO_CART_STATE',
+              ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
+              disabled: shouldDisable,
+              waitingForMockups,
+              label,
+              payload: {
+                ...cartStatePayload,
+                properties: { ...properties, [LINE_AOP_PANELS_KEY]: snap },
+              },
+            }, '*');
+          });
+        }
+      }
     }
   }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcWorkingLabel, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
 

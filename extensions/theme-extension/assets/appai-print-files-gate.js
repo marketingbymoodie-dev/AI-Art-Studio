@@ -6,12 +6,19 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.3";
+  var VER = "1.4";
   if (window.__APPAI_PRINT_FILES_GATE_VER__ === VER) return;
   window.__APPAI_PRINT_FILES_GATE_VER__ = VER;
 
   var LOG = "[AppAI print-files-gate]";
   var JOBS_KEY = "appai:aopFinalizeJobs";
+  var GAVE_UP_KEY = "appai:aopGaveUpJobs";
+  // Hard ceiling on how long we actively retry a single job's snapshot. Past
+  // this, a permanently-stuck line must never be able to keep hitting the
+  // server — checkout stays blocked regardless (see cartPending below,
+  // computed straight from the live cart on every check, independent of
+  // this ceiling), but active retrying stops for good.
+  var MAX_PENDING_AGE_MS = 10 * 60 * 1000;
   var PENDING_PROP = "_print_files_pending";
   var SNAP_PROP = "_aop_pl";
   var CAP_PROP = "_aop_cap";
@@ -95,6 +102,45 @@
     writePendingJobs(map);
   }
 
+  // Separate from the pending-jobs map: this persists which jobs we've
+  // stopped actively retrying (ceiling hit), independent of whether the
+  // underlying cart line is still pending. Never gates cartPending/blocking
+  // — only whether tickRecover re-tracks and re-polls a given job.
+  function readGaveUpJobs() {
+    try {
+      var raw = sessionStorage.getItem(GAVE_UP_KEY);
+      var map = raw ? JSON.parse(raw) : {};
+      return map && typeof map === "object" ? map : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function markGaveUp(jobId) {
+    var map = readGaveUpJobs();
+    map[jobId] = true;
+    try {
+      sessionStorage.setItem(GAVE_UP_KEY, JSON.stringify(map));
+    } catch (_) {}
+  }
+
+  function clearGaveUp(jobId) {
+    var map = readGaveUpJobs();
+    if (!map[jobId]) return;
+    delete map[jobId];
+    try {
+      sessionStorage.setItem(GAVE_UP_KEY, JSON.stringify(map));
+    } catch (_) {}
+  }
+
+  function hasGaveUp(jobId) {
+    return !!readGaveUpJobs()[jobId];
+  }
+
+  function hasAnyGaveUp() {
+    return Object.keys(readGaveUpJobs()).length > 0;
+  }
+
   function rememberJob(jobId, shop, captureHash) {
     if (!jobId) return;
     var map = readPendingJobs();
@@ -136,7 +182,7 @@
     return nodes;
   }
 
-  function setCheckoutBlocked(blocked) {
+  function setCheckoutBlocked(blocked, gaveUp) {
     isBlocked = !!blocked;
     document.documentElement.classList.toggle(PENDING_HTML_CLASS, isBlocked);
     var controls = findCheckoutControls();
@@ -169,23 +215,29 @@
         el.style.pointerEvents = "";
       }
     }
-    ensureBanner(blocked);
+    ensureBanner(blocked, gaveUp);
   }
 
-  function ensureBanner(show) {
+  function ensureBanner(show, gaveUp) {
     if (!show) {
       if (bannerEl && bannerEl.parentNode) bannerEl.parentNode.removeChild(bannerEl);
       bannerEl = null;
       return;
     }
-    if (bannerEl) return;
+    var text = gaveUp
+      ? "We couldn't finish preparing your print files. Try refreshing, or contact support if this persists."
+      : "Finalising print files… Checkout unlocks when they are ready.";
+    if (bannerEl) {
+      if (bannerEl.textContent !== text) bannerEl.textContent = text;
+      return;
+    }
     bannerEl = document.createElement("div");
     bannerEl.id = "appai-print-files-banner";
     bannerEl.setAttribute("role", "status");
     bannerEl.style.cssText =
       "position:sticky;top:0;z-index:9999;background:#111;color:#fff;padding:10px 16px;" +
       "text-align:center;font-size:14px;font-family:inherit;";
-    bannerEl.textContent = "Finalising print files… Checkout unlocks when they are ready.";
+    bannerEl.textContent = text;
     document.body.insertBefore(bannerEl, document.body.firstChild);
   }
 
@@ -277,15 +329,34 @@
             var jid = String((items[i].properties || {})[JOB_PROP] || "");
             if (jid && tracked[jid] && !lineIsPending(items[i])) {
               forgetJob(jid);
+              clearGaveUp(jid);
               delete tracked[jid];
             }
+          }
+        }
+        // Hard ceiling: a job we've been actively retrying for too long
+        // without ever landing a snapshot is stopped outright — never left
+        // to poll forever. This only stops RE-TRACKING/RE-POLLING that job;
+        // cartPending below is computed straight from the live cart on
+        // every single check, so a still-pending line stays blocked
+        // regardless of whether we've given up trying to unstick it.
+        for (var gid in tracked) {
+          if (!Object.prototype.hasOwnProperty.call(tracked, gid)) continue;
+          var age = Date.now() - (tracked[gid] && tracked[gid].at || 0);
+          if (age > MAX_PENDING_AGE_MS) {
+            console.warn(LOG, "giving up after " + Math.round(age / 1000) + "s, job:", gid);
+            markGaveUp(gid);
+            forgetJob(gid);
+            delete tracked[gid];
           }
         }
         for (var j = 0; j < items.length; j++) {
           if (lineIsPending(items[j])) {
             cartPending = true;
             var pendingJid = String((items[j].properties || {})[JOB_PROP] || "");
-            if (pendingJid) {
+            // Never resurrect tracking/polling for a job we've already given
+            // up on — the line stays blocked via cartPending above either way.
+            if (pendingJid && !hasGaveUp(pendingJid)) {
               rememberJob(
                 pendingJid,
                 shopDomain(),
@@ -295,13 +366,13 @@
             }
           }
         }
-        var sessionPending = Object.keys(tracked).length > 0;
-        setCheckoutBlocked(cartPending || sessionPending);
+        var gaveUp = hasAnyGaveUp();
+        setCheckoutBlocked(cartPending || Object.keys(tracked).length > 0, gaveUp);
         return { cart: cart, cartPending: cartPending, pendingJobs: tracked };
       })
       .catch(function () {
         var sessionPending = Object.keys(readPendingJobs()).length > 0;
-        setCheckoutBlocked(sessionPending);
+        setCheckoutBlocked(sessionPending, hasAnyGaveUp());
         return null;
       });
   }
@@ -314,11 +385,12 @@
   // load. Self-schedule instead: keep polling on ANY page for exactly as
   // long as something is actually pending, theme/drawer-implementation
   // agnostic (no assumption about a specific cart-drawer open/render event).
+  // Deliberately keys ONLY on pendingJobs (actively-tracked, ceiling-aware),
+  // never on cartPending — a line can stay blocked (cartPending true)
+  // indefinitely after we've given up retrying it, and the timer must still
+  // stop in that case. Blocking and retrying are two different signals.
   function maybeManagePolling(state) {
-    var stillPending = !!(
-      state &&
-      (state.cartPending || Object.keys(state.pendingJobs || {}).length > 0)
-    );
+    var stillPending = !!(state && Object.keys(state.pendingJobs || {}).length > 0);
     if (stillPending) {
       if (!pollTimer) pollTimer = setInterval(tickRecover, 2500);
     } else if (pollTimer) {
@@ -366,8 +438,12 @@
     var d = e && e.data;
     if (!d || typeof d !== "object") return;
     if (d.type === "AI_ART_STUDIO_PRINT_FILES_PENDING" && d.jobId) {
+      // A fresh PENDING signal is a genuinely new persist attempt (rememberJob
+      // stamps a new `at:` below) — not a continuation of whatever we gave up
+      // on before, so it's allowed to retry from a clean ceiling.
+      clearGaveUp(d.jobId);
       rememberJob(d.jobId, d.shop, d.captureHash);
-      setCheckoutBlocked(true);
+      setCheckoutBlocked(true, hasAnyGaveUp());
       if (!pollTimer) pollTimer = setInterval(tickRecover, 2500);
       return;
     }
