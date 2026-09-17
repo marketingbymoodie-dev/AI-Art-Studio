@@ -10397,6 +10397,63 @@ ${orientationExtra}
     }
   });
 
+  // Best-effort observability: record when the client's AOP panel-capture
+  // persist (persistPrintPanels in embed-design.tsx) fails or silently
+  // no-ops, so a permanently-stranded line stops being invisible. Stores a
+  // single latest diagnostic, not a history — this is a breadcrumb for the
+  // stuck-job DB sweep, not an audit log. Never blocks or affects ATC.
+  app.post("/api/storefront/aop-panel-persist-diagnostic", async (req: Request, res: Response) => {
+    try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `aop-persist-diag:${clientIpFromReq(req)}`,
+        limit: 60,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        return res.status(429).json({ error: "Too many diagnostic requests." });
+      }
+
+      const shop = normalizeMyshopifyShopDomain(req.body?.shop);
+      const jobId = String(req.body?.jobId || "").trim();
+      const outcome = String(req.body?.outcome || "").trim();
+      const reason = String(req.body?.reason || "").trim().slice(0, 200);
+      if (!shop || !jobId || (outcome !== "no_op" && outcome !== "error")) {
+        return res.status(400).json({ error: "shop, jobId, and a valid outcome are required" });
+      }
+      if (jobId.length > 80 || jobId.includes("/") || jobId.includes("..")) {
+        return res.status(400).json({ error: "Invalid jobId" });
+      }
+
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const prevState =
+        job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
+          ? (job.designState as Record<string, unknown>)
+          : {};
+      const mergedDesignState: Record<string, unknown> = {
+        ...prevState,
+        aopPanelPersistDiagnostic: {
+          at: new Date().toISOString(),
+          outcome,
+          reason: reason || undefined,
+        },
+      };
+      await storage.updateGenerationJob(jobId, { designState: mergedDesignState } as any);
+      return res.json({ ok: true });
+    } catch (err: any) {
+      console.error("[AopPanelPersistDiagnostic]", err);
+      return res.status(500).json({ error: "Failed to record diagnostic" });
+    }
+  });
+
   // Freeze AOP print panels onto a short _aop_pl path for merchant Ajax ATC.
   // Creator cart already does this in attachAopPanelSnapshotToLineAttributes.
   app.post("/api/storefront/aop-line-snapshot", async (req: Request, res: Response) => {

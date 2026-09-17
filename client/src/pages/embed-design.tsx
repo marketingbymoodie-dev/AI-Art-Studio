@@ -13103,12 +13103,38 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ? null
       : result.renderPrintPanels();
 
+    // Best-effort observability only — never awaited, never blocks the caller,
+    // never touches aopPanelPersistSeqRef/InFlightRef/PromiseRef. Records the
+    // latest failure/no-op reason on the job so a permanently-stranded line
+    // (missing aopPrintPanelUrls forever) stops being invisible in the DB.
+    const reportAopPanelPersistDiagnostic = (
+      shop: string,
+      jobId: string,
+      outcome: "no_op" | "error",
+      reason: string,
+    ) => {
+      if (!isStorefront) return;
+      try {
+        void safeFetch(`${API_BASE}/api/storefront/aop-panel-persist-diagnostic`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shop, jobId, outcome, reason }),
+        }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    };
+
     const persistPrintPanels = async () => {
       if (!(isStorefront || isAdminTester) || !savedJobIdRef.current) {
+        // No jobId yet to attach a diagnostic to — this specific no-op shape
+        // is only visible via the DB sweep (valid hoodieAopPlacerState with
+        // no aopPrintPanelUrls), not this per-job record.
         return;
       }
       if (!panelSaveShop) {
         console.warn("[HoodieAopApply] No shop for print-panel persist");
+        reportAopPanelPersistDiagnostic(shopDomain, savedJobIdRef.current, "no_op", "no_shop");
         if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
         if (isAdminTester) throw new Error("No shop for print-panel persist");
         return;
@@ -13122,6 +13148,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         ? (result.renderPrintPanels() ?? mockupPanels)
         : (fullPrintPanels ?? result.renderPrintPanels());
       if (!panelsForSave?.length) {
+        reportAopPanelPersistDiagnostic(panelSaveShop, panelJobId, "no_op", "no_panels_rendered");
         if (isAdminTester && !isStale()) emitTesterDesignStatus({ aopPanels: "error" });
         if (isAdminTester) throw new Error("No print panels to persist");
         return;
@@ -13254,6 +13281,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           console.error("[HoodieAopApply] Failed to persist print panels:", e);
           if (!isStale() && !isUploadRateLimitedError(e)) {
             emitTesterDesignStatus({ aopPanels: "error" });
+            // Stale (superseded by a newer Apply) and rate-limited (expected,
+            // retryable) are not genuine failures — only record the case
+            // nothing else is going to retry.
+            reportAopPanelPersistDiagnostic(
+              panelSaveShop,
+              panelJobId,
+              "error",
+              e instanceof Error ? e.message : String(e),
+            );
           }
           if (isAdminTester) throw e;
         } finally {
