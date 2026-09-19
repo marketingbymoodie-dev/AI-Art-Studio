@@ -1037,8 +1037,31 @@ function samplingBboxForLayer(
   template: HoodieTemplate,
   panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
 ): Aabb {
+  return samplingBboxAndSeamForLayer(
+    bb,
+    layer,
+    layerRect,
+    template,
+    panelBiasOverrides,
+  ).bb;
+}
+
+/**
+ * As samplingBboxForLayer, but also returns the pocket-only seam override
+ * (undefined for every non-pocket panel) so the caller can thread the SAME
+ * resolved display bias into artworkSourceRectForPanel without resolving a
+ * second time. samplingBboxForLayer stays the thin bbox-only wrapper so its
+ * existing callers are unchanged.
+ */
+function samplingBboxAndSeamForLayer(
+  bb: Aabb,
+  layer: MaskLayer,
+  layerRect: DesignRectInfo,
+  template: HoodieTemplate,
+  panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
+): { bb: Aabb; seamOverride: number | undefined } {
   const group = findGroupForPanel(template.designGroups, layer.panelKey);
-  if (!group) return bb;
+  if (!group) return { bb, seamOverride: undefined };
   const bias = resolveFrontBodyPanelBias(
     group,
     layer.panelKey,
@@ -1055,7 +1078,10 @@ function samplingBboxForLayer(
       template.blueprintId,
     );
   }
-  return applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId);
+  return {
+    bb: applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId),
+    seamOverride: pocketBiasSeam(bias, layer.panelKey),
+  };
 }
 
 /**
@@ -1098,6 +1124,7 @@ function synthesiseSeamAwareSourceRect(
   aw: number,
   ah: number,
   side: "left" | "right" | "none",
+  seamOverride?: number | null,
 ): Aabb {
   const eff = rect.effective;
   if (eff.width <= 0 || eff.height <= 0) {
@@ -1113,7 +1140,9 @@ function synthesiseSeamAwareSourceRect(
   // half" guard silently ignored seam allowance for any group with
   // a non-zero offsetX — even an accidental 4 px offset on Front
   // body — because the rel coords then sat just below/above 0.5.
-  const seam = rect.hasSeamPair ? rect.seamAllowance : 0;
+  const seam = rect.hasSeamPair
+    ? (seamOverride != null ? seamOverride : rect.seamAllowance)
+    : 0;
   const relLeft = (bb.x - eff.x) / eff.width;
   const relRight = (bb.x + bb.width - eff.x) / eff.width;
   let uLeft: number;
@@ -1232,6 +1261,7 @@ export function clipSampleBbToSeamHalf(
   rect: DesignRectInfo,
   side: "left" | "right" | "none",
   panelKey?: HoodiePanelKey | null,
+  seamOverride?: number | null,
 ): Aabb {
   if (side !== "left" && side !== "right") return bb;
   const union = rect.union;
@@ -1242,10 +1272,14 @@ export function clipSampleBbToSeamHalf(
   if (!crossesMid) return bb;
   if (!rect.hasSeamPair && !(isHood && unionIsPair)) return bb;
 
+  // Pocket-specific seam override (fraction) wins over the shared group
+  // value when supplied; everything else inherits rect.seamAllowance
+  // exactly as before, so non-pocket callers are byte-for-byte unchanged.
+  const baseSeam = seamOverride != null ? seamOverride : rect.seamAllowance;
   const seam = Math.max(
     0,
-    rect.seamAllowance > 0
-      ? rect.seamAllowance
+    baseSeam > 0
+      ? baseSeam
       : isHood
         ? PULLOVER_HOOD_SEAM_ALLOWANCE
         : 0,
@@ -1267,6 +1301,21 @@ export function clipSampleBbToSeamHalf(
   };
 }
 
+/**
+ * Pocket-only seam override for the source-rect helpers: returns the bias's
+ * seamAllowance ONLY for pocket panel keys, else undefined (→ helpers inherit
+ * rect.seamAllowance, unchanged). Chest/hood/sleeve always pass undefined, so
+ * their geometry is byte-for-byte identical to pre-change.
+ */
+function pocketBiasSeam(
+  bias: PanelPlacementBiasPercent | null | undefined,
+  panelKey: HoodiePanelKey | null | undefined,
+): number | undefined {
+  if (bias?.seamAllowance == null) return undefined;
+  if (!isKangarooPocketPanelKey(panelKey)) return undefined;
+  return bias.seamAllowance;
+}
+
 export function artworkSourceRectForPanel(
   panelBb: Aabb,
   panelKey: HoodiePanelKey | null | undefined,
@@ -1275,18 +1324,32 @@ export function artworkSourceRectForPanel(
   ah: number,
   seamSide: "left" | "right" | "none",
   _legsMirrored?: boolean,
+  seamOverride?: number | null,
 ): Aabb {
   // Leggings always use full-panel place (Sync/Mirror only change transforms/flip).
   if (isLeggingsSidePanelKey(panelKey)) {
     return synthesiseLeggingsMirroredSourceRect(panelBb, groupRect, aw, ah);
   }
-  const sample = clipSampleBbToSeamHalf(panelBb, groupRect, seamSide, panelKey);
+  const sample = clipSampleBbToSeamHalf(
+    panelBb,
+    groupRect,
+    seamSide,
+    panelKey,
+    seamOverride,
+  );
   // Front pullover hoods are mirrored in photo space (wearer's right is
   // image-left). Anatomical L/R UV remap would shift the right hood onto
   // the wrong mural half — clip already trimmed the seam in mockup px.
   const synthSide =
     panelKey === "left_hood" || panelKey === "right_hood" ? "none" : seamSide;
-  return synthesiseSeamAwareSourceRect(sample, groupRect, aw, ah, synthSide);
+  return synthesiseSeamAwareSourceRect(
+    sample,
+    groupRect,
+    aw,
+    ah,
+    synthSide,
+    seamOverride,
+  );
 }
 
 /**
@@ -1343,6 +1406,8 @@ export function computeArtworkSampleRectForPanel(
     bakedForSlice.width,
     bakedForSlice.height,
     side,
+    undefined,
+    pocketBiasSeam(options?.panelPlacementBias, layer.panelKey),
   );
 }
 
@@ -1615,6 +1680,7 @@ export function renderHoodFlatPanel(
       bakedForSlice.height,
       side,
       options?.legsMirrored,
+      pocketBiasSeam(options?.panelPlacementBias, frontLayer.panelKey),
     );
   }
   if (slice.width <= 0 || slice.height <= 0) return null;
@@ -2867,13 +2933,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       ) {
         const bb = layerBb;
         if (bb) {
-          const sampleBb = samplingBboxForLayer(
+          const sampled = samplingBboxAndSeamForLayer(
             bb,
             layer,
             layerRect,
             template,
             params.groupPanelBiasOverrides,
           );
+          const sampleBb = sampled.bb;
           const rotForSlice = layerRect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
           synthSrc = artworkSourceRectForPanel(
@@ -2884,6 +2951,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
+            sampled.seamOverride,
           );
         }
       } else {
@@ -2924,13 +2992,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
-          const sampleBb = samplingBboxForLayer(
+          const sampled = samplingBboxAndSeamForLayer(
             bb,
             layer,
             layerRect,
             template,
             params.groupPanelBiasOverrides,
           );
+          const sampleBb = sampled.bb;
           const rotDeg = layerRect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
@@ -2941,6 +3010,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
+            sampled.seamOverride,
           );
           if (artworkSliceSamplesMural(slice, bakedForSlice.width, bakedForSlice.height)) {
             const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);

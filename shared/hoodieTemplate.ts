@@ -537,6 +537,14 @@ export type PanelPlacementBiasPercent = {
   offsetY?: number;
   /** Pullover pocket sample-window scale, applied AFTER finished inset. */
   scale?: number;
+  /**
+   * Pocket-only seam-allowance override (fraction, same units/range as
+   * DesignGroup.seamAllowance, 0..0.15). When present on a POCKET panel's
+   * resolved bias, replaces the shared group seam in BOTH seam mechanisms
+   * (clipSampleBbToSeamHalf inset + synthesiseSeamAwareSourceRect UV
+   * compression) for that panel only. Absent = inherit group seam (no-op).
+   */
+  seamAllowance?: number;
 };
 
 export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
@@ -625,12 +633,14 @@ export function mergePanelPlacementBiasPercent(
   const offsetX = override?.offsetX ?? base?.offsetX;
   const offsetY = override?.offsetY ?? base?.offsetY;
   const scale = override?.scale ?? base?.scale;
+  const seamAllowance = override?.seamAllowance ?? base?.seamAllowance;
   return {
     offsetXPercent: override?.offsetXPercent ?? base?.offsetXPercent ?? 0,
     offsetYPercent: override?.offsetYPercent ?? base?.offsetYPercent ?? 0,
     ...(offsetX != null ? { offsetX } : {}),
     ...(offsetY != null ? { offsetY } : {}),
     ...(scale != null ? { scale } : {}),
+    ...(seamAllowance != null ? { seamAllowance } : {}),
   };
 }
 
